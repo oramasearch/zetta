@@ -1,17 +1,19 @@
 ---
 name: zetta-dev
-description: zetta's project coding conventions and architecture. Use whenever writing, reviewing, or committing code for the zetta database — C++/CMake, storage, the query layer, the SDL3+ImGui GUI, tests, or docs. Covers C++ style (C++23, Core Guidelines, smart pointers, std::string), the zetta-core/no-SDL rule, the data model, build/test commands, commit/push rules, and the docs-after-change rule.
+description: zetta's project coding conventions and architecture. Use whenever writing, reviewing, or committing code for the zetta database — C++/CMake, storage, the query layer, the SDL3+ImGui GUI, tests, or docs. Covers C++ style (C++26, Core Guidelines, smart pointers, std::string), the bridge/modules layout, the Homebrew-Clang toolchain, the zetta-core/no-SDL rule, the data model, build/test commands, commit/push rules, and the docs-after-change rule.
 ---
 
 # zetta-dev — coding conventions
 
-zetta is a C++23 database. A *node* runs **headed** (SDL3 + Dear ImGui UI) or
+zetta is a C++26 database. A *node* runs **headed** (SDL3 + Dear ImGui UI) or
 **headless** (no UI). Apply these conventions to all zetta work. CLAUDE.md and
 `docs/` are authoritative and detailed; this is the working checklist.
 
 ## C++ style
 
-- **C++23** (`CMAKE_CXX_STANDARD 23`, `-std=c++2b`); use modern idioms.
+- **C++26** (`CMAKE_CXX_STANDARD 26`, `-std=c++2c`); use modern idioms. Built
+  with Homebrew Clang on macOS (auto-selected in CMakeLists.txt); Apple Clang
+  is too old.
 - **Follow the C++ Core Guidelines.**
 - **Text is `std::string` / `std::string_view`** — never `char[]` / `char*`
   buffers. ImGui text fields use the `imgui_stdlib` `std::string` overloads.

@@ -6,7 +6,7 @@ can run in two modes:
 - **headed** (default) — the node plus an SDL3 + Dear ImGui UI rendering it.
 - **headless** — the node alone, no UI, for servers with no display.
 
-C++23, macOS-first. Single statically-linked binary; the whole GUI stack comes
+C++26, macOS-first. Single statically-linked binary; the whole GUI stack comes
 via CMake `FetchContent`, so there's no `brew install` ritual.
 
 ## Architecture
@@ -84,7 +84,8 @@ another database format = writing another `Dialect` that targets the same AST �
 
 ## Tech stack
 
-- **C++23** (`-std=c++2b`; Apple Clang 15+) — modern C++; see C++ conventions below
+- **C++26** (`-std=c++2c`) — built with **Homebrew LLVM Clang** (`brew install
+  llvm`, Clang 21) on macOS; Apple's system Clang is too old. See C++ conventions below
 - **CMake 3.28+ / Ninja**, GUI deps via `FetchContent`:
   - **SDL3** (release-3.2.0) — window + input + Metal-backed renderer
   - **Dear ImGui** (v1.91.5) — immediate-mode GUI, SDL3 + SDL_Renderer backend
@@ -191,8 +192,10 @@ asset dependency.
 ## Conventions
 
 ### C++ conventions
-- **C++23** (`set(CMAKE_CXX_STANDARD 23)`, `cxx_std_23`). Use modern
-  facilities; don't reach for older idioms when a newer one is clearer.
+- **C++26** (`set(CMAKE_CXX_STANDARD 26)`, `cxx_std_26`). Use modern
+  facilities; don't reach for older idioms when a newer one is clearer. The
+  build auto-selects Homebrew Clang on macOS (see the pre-`project()` block in
+  CMakeLists.txt); Apple Clang 15 can't do C++26 or build Capy/Corosio.
 - **Follow the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/).**
 - **No C-style strings or buffers** — use `std::string` / `std::string_view`,
   never `char[]` / `char*` for text. ImGui text fields bind to `std::string`

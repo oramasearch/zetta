@@ -1,16 +1,44 @@
 cmake_minimum_required(VERSION 3.28)
 
+# zetta's coroutine stack (Capy/Corosio, vendored under modules/) needs
+# Clang 17+ — Apple's system Clang 15 is too old. On macOS, build with Homebrew
+# LLVM clang (`brew install llvm`) when the user hasn't chosen a compiler. This
+# must run before project(). Opt out with -DZETTA_USE_SYSTEM_COMPILER=ON or by
+# passing -DCMAKE_CXX_COMPILER=...
+if(APPLE AND NOT DEFINED CMAKE_CXX_COMPILER AND NOT ZETTA_USE_SYSTEM_COMPILER
+   AND EXISTS "/opt/homebrew/opt/llvm/bin/clang++")
+  set(CMAKE_C_COMPILER   "/opt/homebrew/opt/llvm/bin/clang"   CACHE FILEPATH "")
+  set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++" CACHE FILEPATH "")
+  # Homebrew clang doesn't assume Xcode's SDK; point it at the active one so
+  # libc++ can find the C headers (time.h, etc.).
+  if(NOT CMAKE_OSX_SYSROOT)
+    execute_process(COMMAND xcrun --show-sdk-path
+                    OUTPUT_VARIABLE ZETTA_SDKROOT OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set(CMAKE_OSX_SYSROOT "${ZETTA_SDKROOT}" CACHE PATH "")
+  endif()
+endif()
+
 project(zetta
   VERSION 0.0.1
   DESCRIPTION "A database; runs headless or with an SDL3 + Dear ImGui UI"
   LANGUAGES C CXX
 )
 
+# When built by Homebrew clang, run against its newer libc++ (its headers are
+# ahead of the system dylib); link + rpath the matching runtime.
+if(APPLE AND CMAKE_CXX_COMPILER MATCHES "/opt/homebrew/opt/llvm/")
+  add_link_options(-L/opt/homebrew/opt/llvm/lib/c++
+                   -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++)
+endif()
+
+# We don't use C++20 modules; skip the clang-scan-deps pass.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 # -----------------------------------------------------------------------------
 # Project-wide settings
 # -----------------------------------------------------------------------------
 
-set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD 26)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -150,7 +178,7 @@ add_library(zetta-core STATIC
   src/core/signals.cpp
 )
 
-target_compile_features(zetta-core PUBLIC cxx_std_23)
+target_compile_features(zetta-core PUBLIC cxx_std_26)
 
 target_include_directories(zetta-core PUBLIC
   ${CMAKE_SOURCE_DIR}/include
@@ -169,7 +197,7 @@ add_executable(zetta
   src/gui/app.cpp
 )
 
-target_compile_features(zetta PRIVATE cxx_std_23)
+target_compile_features(zetta PRIVATE cxx_std_26)
 
 target_include_directories(zetta PRIVATE
   ${CMAKE_SOURCE_DIR}/src

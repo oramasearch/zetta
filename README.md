@@ -2,7 +2,7 @@
 
 A database. A *zetta node* is one running instance; it runs **headed** (default
 — with an SDL3 + Dear ImGui UI) or **headless** (no UI, for servers with no
-display). C++23, macOS-first, single statically-linked binary.
+display). C++26, macOS-first, single statically-linked binary.
 
 Data is organized as databases → tables → JSON rows, persisted to disk. Query it
 with basic Postgres-flavored SQL (DDL + INSERT/SELECT); the query engine is
@@ -35,6 +35,7 @@ ctest --test-dir build --output-on-failure
 ## Requirements
 
 - CMake 3.28+ and Ninja
-- A C++23 compiler (Apple Clang 15+ / recent Clang or GCC)
+- Homebrew LLVM Clang on macOS (`brew install llvm`, Clang 21) — C++26 needs
+  Clang 17+; Apple's system Clang is too old. The build auto-selects it.
 - macOS (SDL3 uses a Metal-backed renderer); other platforms should work but
   are untested

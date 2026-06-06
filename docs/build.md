@@ -3,7 +3,11 @@
 ## Prerequisites
 
 - CMake 3.28+ and Ninja
-- A C++23 compiler (Apple Clang 15+ / recent Clang or GCC)
+- **Homebrew LLVM Clang** on macOS (`brew install llvm`, Clang 21) — zetta is
+  C++26 and the Capy/Corosio coroutine stack needs Clang 17+, so Apple's system
+  Clang is too old. CMake auto-selects `/opt/homebrew/opt/llvm` on macOS (a
+  pre-`project()` block also sets the SDK sysroot and links Homebrew's libc++);
+  override with `-DZETTA_USE_SYSTEM_COMPILER=ON` or `-DCMAKE_CXX_COMPILER=...`.
 - macOS for the headed UI (SDL3 uses a Metal-backed renderer); the headless core
   is portable.
 

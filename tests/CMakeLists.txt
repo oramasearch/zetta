@@ -24,7 +24,7 @@ add_executable(zetta-tests
   test_import.cpp
 )
 
-target_compile_features(zetta-tests PRIVATE cxx_std_23)
+target_compile_features(zetta-tests PRIVATE cxx_std_26)
 target_include_directories(zetta-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(zetta-tests PRIVATE zetta-core GTest::gtest_main)
 
