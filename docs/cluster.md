@@ -7,22 +7,25 @@ leader election and failover are planned; until then all nodes are equal.
 
 ## Running a cluster
 
-Nodes default to the **same port** (`--listen`, default `127.0.0.1:7777`). To run
-several nodes on one host (e.g. one per NUMA node), each binds the **first free
-port in a range** (`--port-range`, default 16) — so a second local node grabs
-`7778` automatically. Point a node at others with `--peer HOST:PORT` (repeatable;
-all peers are equal — a seed is just somewhere to start).
+Nodes listen on **all interfaces** and the **same port** by default (`--listen`,
+default `0.0.0.0:7777`) so a plain node is reachable across machines out of the
+box. To run several nodes on one host (e.g. one per NUMA node), each binds the
+**first free port in a range** (`--port-range`, default 16) — so a second local
+node grabs `7778` automatically. Point a node at others with `--peer HOST:PORT`
+(repeatable; all peers are equal — a seed is just somewhere to start).
 
 ```bash
-# First node (binds 127.0.0.1:7777):
+# First node (binds 0.0.0.0:7777, prints its LAN address):
 zetta
+
+# Another machine joins it (use the LAN address it printed):
+zetta --peer 192.168.1.10:7777
 
 # Second node on the same host (auto-binds 7778), joining the first:
 zetta --peer 127.0.0.1:7777
 
-# Explicit address / across machines:
-zetta --listen 0.0.0.0:7777
-zetta --listen 0.0.0.0:7777 --peer <other-host>:7777
+# Restrict to loopback (not reachable from other machines):
+zetta --listen 127.0.0.1:7777
 ```
 
 ## Where am I reachable?
@@ -59,6 +62,9 @@ Copy button). Headless logs `cluster: N peer(s)` each second.
   `ZETTA/1 HELLO <node-id> <listen-addr>` and records the other; the dialer
   speaks first, the acceptor replies. The connection stays open; dropping it
   removes the peer. Peers are de-duplicated by node id.
+- The advertised `<listen-addr>` is a **reachable** address, never the bare
+  wildcard — a `0.0.0.0` bind advertises (and `peer_command()`/the banner show)
+  the host's first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
 - `node-id` is a UUIDv4 generated per process.
 
 ## Limits / future

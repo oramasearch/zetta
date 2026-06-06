@@ -238,7 +238,10 @@ void Cluster::start() {
     }
     if (state_->bound_port == 0) state_->acceptor.reset();  // nothing bound
 
-    const std::string my_listen = listen_address();
+    // Advertise a *reachable* address in the handshake — never the bare wildcard
+    // (0.0.0.0), which a peer can't dial. listen_addresses() puts the best
+    // (non-loopback) one first.
+    const std::string my_listen = listen_addresses().front();
     if (state_->bound_port != 0) {
         capy::run_async(state_->io_context.get_executor())(
             accept_loop(state_.get(), node_id_, my_listen));

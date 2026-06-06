@@ -80,15 +80,21 @@ networking. Background + migration plan:
 ### Cluster (equal peers)
 
 Nodes form a cluster of **equal peers** over TCP — no configured leader. Each
-listens (`--listen HOST:PORT`, default `127.0.0.1:7777`) and dials any `--peer
-HOST:PORT` (repeatable); the handshake is symmetric so both record each other.
-Nodes default to the same port and bind the first free one in a range
-(`--port-range`, default 16) so several can share a host (e.g. NUMA).
-`zetta::Cluster` runs networking on a background thread via **Corosio**, behind
-the `zetta::runtime::net` seam (adapter: `src/core/cluster.cpp`; public API
-exposes no backend types). The headed Cluster panel shows the node id, listen
-address, peers, and the **command to add another node**; headless logs the peer
-count. **Leader election + failover are the planned next step** (`ClusterRole`
+listens on all interfaces by default (`--listen HOST:PORT`, default
+`0.0.0.0:7777`, so a plain node is network-reachable; set `127.0.0.1` to
+restrict to loopback) and dials any `--peer HOST:PORT` (repeatable); the
+handshake is symmetric so both record each other. Nodes default to the same port
+and bind the first free one in a range (`--port-range`, default 16) so several
+can share a host (e.g. NUMA). On startup (both modes) a node prints its id, the
+address(es) it's reachable at, and the join command — a wildcard bind expands to
+the host's real LAN IPs (`Cluster::listen_addresses()`), since `0.0.0.0` itself
+isn't dial-able; the same reachable address is what it advertises in the
+handshake. `zetta::Cluster` runs networking on a background thread via
+**Corosio**, behind the `zetta::runtime::net` seam (adapter:
+`src/core/cluster.cpp`; public API exposes no backend types). The headed Cluster
+panel shows the node id, every reachable listen address, peers, and the
+**command to add another node**; headless logs the peer count. **Leader election
++ failover are the planned next step** (`ClusterRole`
 exists for it, currently always `Follower`); membership only for now. See
 [docs/cluster.md](docs/cluster.md).
 

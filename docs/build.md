@@ -57,7 +57,7 @@ later builds are fast. `build/` is git-ignored.
 ./build/bin/zetta                       # headed (default)
 ./build/bin/zetta --headless            # no UI, Ctrl-C to stop
 ./build/bin/zetta --data-dir /path/db   # override the database directory
-./build/bin/zetta --listen 0.0.0.0:7777 # cluster listen address (default 127.0.0.1:7777)
+./build/bin/zetta --listen 127.0.0.1:7777 # restrict to loopback (default is 0.0.0.0:7777, all interfaces)
 ./build/bin/zetta --port-range 16       # ports to try from --listen, for several nodes/host
 ./build/bin/zetta --peer HOST:PORT      # join another node (repeatable; all peers equal)
 ./build/bin/zetta --help

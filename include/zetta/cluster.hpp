@@ -19,10 +19,13 @@ struct ClusterPeer {
 };
 
 struct ClusterConfig {
-    // Nodes default to the same port; the range lets several nodes share one
-    // host (e.g. one per NUMA node) — each binds the first free port in
-    // [listen_port, listen_port + port_range).
-    std::string listen_host = "127.0.0.1";
+    // Bind all interfaces by default (the wildcard 0.0.0.0) so a plain node is
+    // reachable from other machines out of the box; listen_addresses() expands
+    // it to the host's real LAN IPs. Set a specific host (e.g. "127.0.0.1") to
+    // restrict it to loopback. Nodes default to the same port; the range lets
+    // several share one host (e.g. one per NUMA node) — each binds the first
+    // free port in [listen_port, listen_port + port_range).
+    std::string listen_host = "0.0.0.0";
     std::uint16_t listen_port = 7777;
     std::uint16_t port_range = 16;
     // Other nodes (host:port) to dial. All peers are equal — a seed is just

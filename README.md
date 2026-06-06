@@ -38,18 +38,19 @@ cmake --build build
 
 ## Clustering
 
-Run multiple nodes as a cluster of **equal peers**. Each node listens (default
-`127.0.0.1:7777`) and dials any `--peer` you give it. Several nodes can share a
-host — each binds the first free port in a range (default 16). At startup a node
-prints the address(es) it's reachable at and the exact command to add another
-node (a wildcard bind expands to the machine's real LAN IPs). In headed mode the
-**Cluster** panel shows the same, plus connected peers; headless logs the peer
-count each second.
+Run multiple nodes as a cluster of **equal peers**. Each node listens on all
+interfaces by default (`0.0.0.0:7777`) and dials any `--peer` you give it.
+Several nodes can share a host — each binds the first free port in a range
+(default 16). At startup a node prints the address(es) it's reachable at — the
+wildcard bind expands to the machine's real LAN IPs — and the exact command to
+add another node. In headed mode the **Cluster** panel shows the same, plus
+connected peers; headless logs the peer count each second.
 
 ```bash
-zetta                                # first node (binds 127.0.0.1:7777)
-zetta --peer 127.0.0.1:7777          # second node here (auto-binds 7778), joins it
-zetta --listen 0.0.0.0:7777          # across machines: prints its LAN address to share
+zetta                                # first node — prints its LAN address to share
+zetta --peer 192.168.1.10:7777       # another machine joins it
+zetta --peer 127.0.0.1:7777          # second node on this host (auto-binds 7778)
+zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachable)
 ```
 
 State replicates between nodes as an [Automerge](docs/replication.md) CRDT

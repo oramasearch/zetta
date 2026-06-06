@@ -37,6 +37,22 @@ TEST(Cluster, PortRangeLetsNodesShareAHost) {
     first.stop();
 }
 
+TEST(Cluster, DefaultsToAllInterfacesAndAdvertisesReachableAddress) {
+    // A plain node binds the wildcard so it's reachable across machines, but
+    // never advertises the bare 0.0.0.0 — that isn't dial-able.
+    EXPECT_EQ(ClusterConfig{}.listen_host, "0.0.0.0");
+
+    Cluster node(zetta::new_uuid(), ClusterConfig{});
+    node.start();
+    const std::vector<std::string> addresses = node.listen_addresses();
+    ASSERT_FALSE(addresses.empty());
+    for (const std::string& address : addresses) {
+        EXPECT_EQ(address.rfind("0.0.0.0:", 0), std::string::npos);
+    }
+    EXPECT_EQ(node.peer_command(), "zetta --peer " + addresses.front());
+    node.stop();
+}
+
 TEST(Cluster, SpecificHostAdvertisesExactlyThatAddress) {
     ClusterConfig config;
     config.listen_host = "127.0.0.1";
