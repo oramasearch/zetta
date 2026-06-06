@@ -103,6 +103,26 @@ currently always `Follower`); membership + replication gossip for now. See
 
 ### Replication (CRDT)
 
+**Core rule: EVERYTHING is replicated state.** Replication is not a feature
+bolted onto some data — it is the single source of truth for *all* distributed
+state in zetta: **schemas (databases + tables / DDL), rows, cluster membership
+(the node list), metadata — everything.** When you add any state that more than
+one node should agree on, it goes through `ReplicationManager` (the Automerge
+CRDT), period. Do **not** introduce a parallel, separately-maintained copy of
+state that lives outside the replicated document and gets synced by hand — that's
+exactly the anti-pattern this rule exists to prevent. The replicated document is
+authoritative; in-memory structures (the `Node`'s database tree, the `Cluster`'s
+peer table) should be **derived from / kept in lockstep with** it, not the other
+way around. New replicated state = a new key/shape in the document, replicated by
+the existing gossip; new "kinds of agreement" = a new `ReplicationPolicy`, never a
+bespoke sync path.
+
+> Current reality vs. the rule: today schemas are *seeded* into the document at
+> startup and membership is still tracked in the `Cluster` peer table separately.
+> That gap is **migration debt, not the design** — the direction is to route
+> live `Node` mutations (DDL + rows) and the node list through replication so the
+> document is the one source of truth. Move things *toward* this rule, never away.
+
 A node's replicated state (DDL/metadata/rows) is an **Automerge CRDT**
 (`modules/automerge-cpp`, from-scratch C++23, no Rust). `zetta::ReplicationManager`
 exposes only JSON + bytes (`set`/`snapshot`/`save`/`merge`, plus `entry_count`/

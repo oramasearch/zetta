@@ -1,9 +1,21 @@
 # Replication
 
-A node's **replicated state** — DDL, metadata, and rows — is backed by an
-**Automerge CRDT** (`modules/automerge-cpp`, a from-scratch C++23 CRDT, no Rust).
-Nodes exchange document blobs and merge them **conflict-free**: concurrent
-changes on different nodes all survive, with no coordination or central leader.
+> **Core rule: EVERYTHING is replicated state.** Replication is the single source
+> of truth for *all* distributed state in zetta — **schemas (databases + tables /
+> DDL), rows, cluster membership (the node list), metadata, everything.** Any
+> state more than one node must agree on goes through `ReplicationManager` (the
+> Automerge CRDT). Never maintain a parallel copy of that state outside the
+> replicated document and sync it by hand. In-memory structures (the `Node`'s
+> database tree, the `Cluster`'s peer table) are **derived from / kept in lockstep
+> with** the document, not authoritative on their own. New replicated state = a
+> new key/shape in the document; new kinds of agreement = a new
+> `ReplicationPolicy` — never a bespoke sync path.
+
+A node's **replicated state** — DDL, metadata, rows, and node membership — is
+backed by an **Automerge CRDT** (`modules/automerge-cpp`, a from-scratch C++23
+CRDT, no Rust). Nodes exchange document blobs and merge them **conflict-free**:
+concurrent changes on different nodes all survive, with no coordination or
+central leader.
 
 ## Policies
 
@@ -68,6 +80,11 @@ replication status. It surfaces three ways:
   per-node actor ids, conflict-free convergence (`tests/test_replication.cpp`);
   and **gossip over the cluster** — peers exchange documents and converge
   automatically, with per-node status in `nodes()` (`tests/test_cluster.cpp`).
-- **Next:** hook the live `Node`'s DDL / metadata / row mutations into the
-  replicated document, so real database operations replicate (today each node
-  seeds its schema snapshot at startup; ongoing mutations aren't yet streamed in).
+- **Next (toward "everything is replicated"):**
+  - Route the live `Node`'s DDL / metadata / **row** mutations into the document
+    so real database operations replicate (today each node only *seeds* a schema
+    snapshot at startup; ongoing mutations aren't yet streamed in).
+  - Make cluster **membership** a projection of the replicated node map rather
+    than a separately-maintained `Cluster` peer table.
+  - In both cases the in-memory structures become **views derived from** the
+    document — the document stays authoritative (see the Core rule above).
