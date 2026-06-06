@@ -222,7 +222,9 @@ implementing `Dialect`, not by special-casing the executor or UI.
 ### Documentation
 **After any system change, update `docs/*.md` to match** (architecture, storage,
 query, build). Docs are markdown and are the human-facing description of the
-system — treat them as part of the change, not an afterthought.
+system — treat them as part of the change, not an afterthought. Long-form
+background/research (deep dives, design investigations) goes in `docs/research/`
+with a provenance header (source + date + status); index it in `docs/README.md`.
 
 ### Committing + pushing
 - **Always commit and push after any major work.** When a meaningful unit of
@@ -243,6 +245,8 @@ loop thread).
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/build.md`](docs/build.md) — build, run, test.
+- [`docs/research/`](docs/research/) — long-form research/design deep dives
+  (e.g. [coroutines.md](docs/research/coroutines.md)).
 - [`README.md`](README.md) — quick start.
 
 ## Skills

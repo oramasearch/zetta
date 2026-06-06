@@ -9,3 +9,12 @@ This directory documents the system; keep it in sync as the system changes.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [build.md](build.md) — building, running, and testing.
+
+## Research / background
+
+Long-form reference material (not descriptions of shipped code) lives in
+[research/](research/):
+
+- [research/coroutines.md](research/coroutines.md) — C++20/23 coroutine runtime
+  design deep-dive (Boost.Asio/Cobalt, Seastar, folly::coro, stdexec) and the
+  recommended path for zetta. Informs the planned coroutine adoption.
