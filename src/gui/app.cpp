@@ -2,6 +2,7 @@
 
 #include "zetta/database.hpp"
 #include "zetta/node.hpp"
+#include "zetta/query/service.hpp"
 #include "zetta/signals.hpp"
 #include "zetta/table.hpp"
 #include "zetta/version.hpp"
@@ -48,7 +49,8 @@ float ui_pixel_density(SDL_Window* window) {
 
 }  // namespace
 
-App::App(Node& node) : node_(node) {}
+App::App(Node& node)
+    : node_(node), query_(std::make_unique<query::QueryService>(node)) {}
 
 App::~App() {
     if (initialized_) {
@@ -373,6 +375,69 @@ void App::draw_rows() {
     }
 }
 
+void App::draw_query() {
+    if (!ImGui::CollapsingHeader("Query (postgres)",
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::TextDisabled(
+        "Unqualified names use the selected database (%s); use db.table to "
+        "target another.",
+        selected_db_.empty() ? "none" : selected_db_.c_str());
+
+    ImGui::InputTextMultiline("##query", &query_input_,
+                              ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 6));
+
+    if (ImGui::Button("Run")) {
+        const query::QueryService::Outcome outcome =
+            query_->run(query_input_, selected_db_);
+        query_status_.clear();
+        query_error_.clear();
+        query_result_columns_.clear();
+        query_result_rows_.clear();
+        if (!outcome.ok()) {
+            query_error_ = outcome.error;
+        } else {
+            for (std::size_t i = 0; i < outcome.messages.size(); ++i) {
+                if (i) query_status_ += "   ";
+                query_status_ += outcome.messages[i];
+            }
+            query_result_columns_ = outcome.columns;
+            for (const nlohmann::json& row : outcome.rows) {
+                query_result_rows_.push_back(row.dump());
+            }
+        }
+    }
+
+    if (!query_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", query_error_.c_str());
+    } else if (!query_status_.empty()) {
+        ImGui::TextDisabled("%s", query_status_.c_str());
+    }
+
+    if (ImGui::BeginChild("##query_results", ImVec2(0, 160),
+                          ImGuiChildFlags_Borders)) {
+        if (!query_result_columns_.empty()) {
+            std::string cols;
+            for (std::size_t i = 0; i < query_result_columns_.size(); ++i) {
+                if (i) cols += ", ";
+                cols += query_result_columns_[i];
+            }
+            ImGui::TextDisabled("columns: %s", cols.c_str());
+        }
+        constexpr std::size_t kMaxShown = 500;
+        const std::size_t shown = std::min(query_result_rows_.size(), kMaxShown);
+        for (std::size_t i = 0; i < shown; ++i) {
+            ImGui::TextWrapped("%s", query_result_rows_[i].c_str());
+        }
+        if (query_result_rows_.size() > shown) {
+            ImGui::TextDisabled("... and %zu more",
+                                query_result_rows_.size() - shown);
+        }
+    }
+    ImGui::EndChild();
+}
+
 void App::run() {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -420,6 +485,8 @@ void App::run() {
 
         draw_menu_bar(running);
         draw_dashboard();
+        draw_query();
+        ImGui::Separator();
         draw_explorer();
 
         ImGui::End();

@@ -4,6 +4,11 @@ A database. A *zetta node* is one running instance; it runs **headed** (default
 — with an SDL3 + Dear ImGui UI) or **headless** (no UI, for servers with no
 display). C++23, macOS-first, single statically-linked binary.
 
+Data is organized as databases → tables → JSON rows, persisted to disk. Query it
+with basic Postgres-flavored SQL (DDL + INSERT/SELECT); the query engine is
+dialect-agnostic, so other SQL formats can be added as frontends. See
+[docs/](docs/) for details.
+
 ## Build + run
 
 ```bash

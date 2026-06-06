@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 // Forward declarations keep SDL3 + Dear ImGui headers out of this file — only
 // app.cpp (and no other translation unit) needs the full definitions.
@@ -12,6 +13,9 @@ struct ImGuiStyle;
 namespace zetta {
 
 class Node;
+namespace query {
+class QueryService;
+}
 
 namespace gui {
 
@@ -44,6 +48,7 @@ private:
     void draw_databases();
     void draw_tables();
     void draw_rows();
+    void draw_query();       // the SQL text area + results
 
     Node& node_;
     SDL_Window* window_ = nullptr;
@@ -64,6 +69,20 @@ private:
     std::string db_error_;
     std::string table_error_;
     std::string row_error_;
+
+    // Query panel: the SQL being composed, the dialect runner, and the last
+    // result (rows pre-dumped to strings for display, plus status/error).
+    std::unique_ptr<query::QueryService> query_;
+    std::string query_input_{
+        "-- Postgres-flavored SQL. Examples:\n"
+        "CREATE DATABASE shop;\n"
+        "CREATE TABLE shop.items (sku text, qty int);\n"
+        "INSERT INTO shop.items (sku, qty) VALUES ('A1', 5), ('B2', 3);\n"
+        "SELECT * FROM shop.items WHERE sku = 'A1';"};
+    std::vector<std::string> query_result_columns_;
+    std::vector<std::string> query_result_rows_;
+    std::string query_status_;
+    std::string query_error_;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

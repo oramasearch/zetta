@@ -59,6 +59,17 @@ appends a line to the active chunk immediately (append-open per record — simpl
 and crash-resilient; can hold the stream open later). `data_dir` defaults to
 `./zetta-data` and is git-ignored.
 
+### Query layer
+
+Queries are **dialect-agnostic**: text → a `Dialect` parser → a generic,
+dialect-neutral AST (`zetta::query::Statement`, a `std::variant`) → the
+`Executor` (which runs the AST against a `Node`). `PostgresDialect` is the first
+frontend; `QueryService` is the parse+execute facade the UI calls. Supporting
+another database format = writing another `Dialect` that targets the same AST —
+**never** add dialect specifics to the executor. Supported today: basic DDL
+(CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT + single
+`WHERE` equality). Full detail in [docs/query.md](docs/query.md).
+
 ## Tech stack
 
 - **C++23** (`-std=c++2b`; Apple Clang 15+) — modern C++; see C++ conventions below
@@ -188,6 +199,16 @@ asset dependency.
   trailer, no "Generated with Claude Code" footer — on commits or PRs. The
   commit author is the user, full stop.
 
+### Query layer (dialect-agnostic)
+Keep the query frontend and execution separate: dialects parse to the generic
+AST; the `Executor` only ever sees the generic AST. Add a database format by
+implementing `Dialect`, not by special-casing the executor or UI.
+
+### Documentation
+**After any system change, update `docs/*.md` to match** (architecture, storage,
+query, build). Docs are markdown and are the human-facing description of the
+system — treat them as part of the change, not an afterthought.
+
 ### Committing + pushing
 - **Always commit and push after any major work.** When a meaningful unit of
   work is done and verified, `git commit` it and `git push` to `origin/main` —
@@ -200,3 +221,11 @@ vsync spin — it wakes immediately on input so interaction stays full-speed but
 doesn't burn CPU on identical frames. The headless loop ticks at 10 Hz. Keep any
 background work cheap enough to run inside those cadences (or move it off the
 loop thread).
+
+## Pointers
+
+- [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
+- [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
+- [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
+- [`docs/build.md`](docs/build.md) — build, run, test.
+- [`README.md`](README.md) — quick start.

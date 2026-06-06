@@ -18,6 +18,7 @@ add_executable(zetta-tests
   test_jsonl_store.cpp
   test_database.cpp
   test_node.cpp
+  test_query.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_23)
