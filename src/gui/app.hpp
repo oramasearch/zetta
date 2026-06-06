@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 // Forward declarations keep SDL3 + Dear ImGui headers out of this file — only
 // app.cpp (and no other translation unit) needs the full definitions.
@@ -39,12 +40,17 @@ private:
     void apply_display_scale();
     void draw_menu_bar(bool& running);
     void draw_dashboard();
+    void draw_store();
 
     Node& node_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
     bool initialized_ = false;
     bool show_demo_ = false;
+
+    // "Store" panel: the JSON document being composed, and the last add error.
+    char doc_input_[4096] = R"({"name": "example", "value": 1})";
+    std::string store_error_;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

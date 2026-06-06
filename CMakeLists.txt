@@ -109,6 +109,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   )
 endif()
 
+# --- nlohmann/json -----------------------------------------------------------
+# Header-only JSON. The first storage engine (JsonStore) holds nlohmann::json
+# documents. Turn off its tests/install to keep the build graph small.
+set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
+set(JSON_Install    OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  nlohmann_json
+  GIT_REPOSITORY https://github.com/nlohmann/json.git
+  GIT_TAG        v3.11.3
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
@@ -128,6 +141,10 @@ target_compile_features(zetta-core PUBLIC cxx_std_23)
 target_include_directories(zetta-core PUBLIC
   ${CMAKE_SOURCE_DIR}/include
 )
+
+# PUBLIC: zetta::Node's interface exposes nlohmann::json (add_object) and the
+# storage headers include it, so consumers (the GUI) get it transitively.
+target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

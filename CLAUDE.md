@@ -26,10 +26,12 @@ main()                       picks the mode, owns the Node lifecycle
   ...then node.stop()
 ```
 
-The storage + query engine doesn't exist yet. Today `Node` is a lifecycle
-skeleton (`start` / `tick` / `stop` + a heartbeat) so both run modes have a real
-object to drive. **Build the engine out behind the `Node` interface** — don't
-let SDL/ImGui types leak into `zetta-core`.
+A node holds objects through a **storage engine** (`zetta::StorageEngine`) — a
+small interface so a node can use different engines over time. The first and
+only engine today is `zetta::JsonStore`: an in-memory `std::vector<nlohmann::json>`,
+no persistence yet. `Node` owns one (`node.store()`) and `node.add_object(json)`
+appends to it. **New engines implement `StorageEngine`; persistence/query land
+behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
 
 ## Tech stack
 
@@ -37,6 +39,8 @@ let SDL/ImGui types leak into `zetta-core`.
 - **CMake 3.28+ / Ninja**, GUI deps via `FetchContent`:
   - **SDL3** (release-3.2.0) — window + input + Metal-backed renderer
   - **Dear ImGui** (v1.91.5) — immediate-mode GUI, SDL3 + SDL_Renderer backend
+  - **nlohmann/json** (v3.11.3) — JSON documents for the storage engine
+    (linked into `zetta-core`, so headless gets it too)
 - **ccache** used as the compiler launcher when present (auto-detected).
 
 ## Build + run
@@ -63,9 +67,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node — the database node
   headless.hpp              zetta::run_headless(Node&)
+  signals.hpp               install_signal_handlers / stop_requested
+  storage/
+    engine.hpp              zetta::StorageEngine interface
+    json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
 src/core/                   zetta-core impl
   node.cpp
   headless.cpp              signal-driven headless loop
+  signals.cpp               SIGINT/SIGTERM stop flag
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node
 src/main.cpp                arg parsing + mode dispatch

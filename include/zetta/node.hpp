@@ -2,7 +2,12 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <string>
+
+#include <nlohmann/json.hpp>
+
+#include "zetta/storage/engine.hpp"
 
 namespace zetta {
 
@@ -42,6 +47,14 @@ public:
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
     void stop();
 
+    // Append a JSON document to the node's storage engine; returns the new
+    // document count.
+    std::size_t add_object(nlohmann::json doc);
+
+    // The node's active storage engine (a JsonStore for now).
+    StorageEngine& store() { return *store_; }
+    const StorageEngine& store() const { return *store_; }
+
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
@@ -61,6 +74,7 @@ private:
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;
+    std::unique_ptr<StorageEngine> store_;  // the active storage engine
 };
 
 }  // namespace zetta

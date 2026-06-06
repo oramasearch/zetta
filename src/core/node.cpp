@@ -1,5 +1,6 @@
 #include "zetta/node.hpp"
 
+#include "zetta/storage/json_store.hpp"
 #include "zetta/version.hpp"
 
 #include <cstdio>
@@ -7,7 +8,14 @@
 
 namespace zetta {
 
-Node::Node(NodeConfig config) : config_(std::move(config)) {}
+Node::Node(NodeConfig config)
+    : config_(std::move(config)),
+      store_(std::make_unique<JsonStore>()) {}
+
+std::size_t Node::add_object(nlohmann::json doc) {
+    store_->add(std::move(doc));
+    return store_->size();
+}
 
 bool Node::start() {
     if (running_) return false;
@@ -43,10 +51,12 @@ double Node::uptime_seconds() const {
 
 std::string Node::status_line() const {
     if (!running_) return "stopped";
-    char buf[128];
-    std::snprintf(buf, sizeof(buf), "running — up %.0fs, %llu ticks",
+    char buf[160];
+    std::snprintf(buf, sizeof(buf),
+                  "running — up %.0fs, %llu ticks, %zu objects (%s)",
                   uptime_seconds(),
-                  static_cast<unsigned long long>(ticks_));
+                  static_cast<unsigned long long>(ticks_),
+                  store_->size(), store_->name());
     return buf;
 }
 

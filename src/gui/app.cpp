@@ -10,7 +10,12 @@
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlrenderer3.h>
 
+#include <nlohmann/json.hpp>
+
+#include <cfloat>
 #include <cstdio>
+#include <string>
+#include <utility>
 
 #include "zetta_font_embedded.hpp"
 
@@ -178,9 +183,51 @@ void App::draw_dashboard() {
 
     ImGui::Spacing();
     ImGui::TextDisabled(
-        "Headed mode. The storage + query engine is not built yet; this view "
-        "renders the live node heartbeat. Run with --headless for the same "
+        "Headed mode renders the live node. Run with --headless for the same "
         "node without a UI.");
+}
+
+void App::draw_store() {
+    StorageEngine& store = node_.store();
+
+    ImGui::SeparatorText("Store");
+    ImGui::Text("Engine: %s    Objects: %zu", store.name(), store.size());
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Add a JSON object:");
+    ImGui::InputTextMultiline(
+        "##doc", doc_input_, sizeof(doc_input_),
+        ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 5));
+
+    if (ImGui::Button("Add object")) {
+        // Parse without exceptions — a malformed doc yields a discarded value
+        // we report inline rather than throwing across the UI loop.
+        nlohmann::json doc =
+            nlohmann::json::parse(doc_input_, nullptr, /*allow_exceptions=*/false);
+        if (doc.is_discarded()) {
+            store_error_ = "invalid JSON — not added";
+        } else {
+            node_.add_object(std::move(doc));
+            store_error_.clear();
+        }
+    }
+    if (!store_error_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
+                           store_error_.c_str());
+    }
+
+    ImGui::Spacing();
+    if (ImGui::BeginChild("##docs", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+        if (store.size() == 0) {
+            ImGui::TextDisabled("(empty)");
+        }
+        for (std::size_t i = 0; i < store.size(); ++i) {
+            const std::string line = store.at(i).dump();
+            ImGui::TextWrapped("%zu  %s", i, line.c_str());
+        }
+    }
+    ImGui::EndChild();
 }
 
 void App::run() {
@@ -230,6 +277,7 @@ void App::run() {
 
         draw_menu_bar(running);
         draw_dashboard();
+        draw_store();
 
         ImGui::End();
 
