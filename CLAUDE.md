@@ -371,6 +371,16 @@ name. "Update the docs" means *all* of the above, not just `docs/`.
   don't leave finished work uncommitted or unpushed. Push directly to `main`
   (this is a personal repo; no PR ceremony).
 
+### Knowledge lives in git — do NOT use the agent memory store
+- **Do not use the file-based memory system** (the `~/.claude/.../memory/`
+  directory, `MEMORY.md`, "save this to memory", etc.). It lives **outside the
+  repo**, so it is **not reproducible** — a fresh clone, another machine, or
+  another contributor never sees it. Anything worth remembering about this
+  project goes into **git-tracked files**: `CLAUDE.md` (conventions,
+  architecture, rules), `docs/*.md`, `README.md`, or the relevant
+  `.claude/skills/*/SKILL.md` (those *are* committed). If asked to "remember"
+  something, write it to the right git-tracked doc instead — never to memory.
+
 ### Idle loop
 The headed loop uses `SDL_WaitEventTimeout` (≈30fps idle cap) rather than a busy
 vsync spin — it wakes immediately on input so interaction stays full-speed but
