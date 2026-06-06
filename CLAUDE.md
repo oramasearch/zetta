@@ -244,3 +244,12 @@ loop thread).
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`README.md`](README.md) — quick start.
+
+## Skills
+
+Project skills live in `.claude/skills/` (committed, shared):
+- **zetta-dev** — these coding conventions as a working checklist.
+- **new-input** — how to add a new input language/format (parser + executor that
+  re-implements its behavior in zetta's runtime; e.g. Python `load_dataset` → a
+  table).
+- **skill-writer** — author new skills.
