@@ -1,0 +1,155 @@
+cmake_minimum_required(VERSION 3.28)
+
+project(zetta
+  VERSION 0.0.1
+  DESCRIPTION "SDL3 + Dear ImGui desktop app"
+  LANGUAGES C CXX
+)
+
+# -----------------------------------------------------------------------------
+# Project-wide settings
+# -----------------------------------------------------------------------------
+
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Use ccache as the compiler launcher when available — turns rebuilds after
+# `cmake --build build` clean / fresh checkouts from minutes into seconds.
+# Honors CMAKE_C/CXX_COMPILER_LAUNCHER if already set (e.g. by the user).
+find_program(CCACHE_PROGRAM ccache)
+if(CCACHE_PROGRAM)
+  if(NOT CMAKE_C_COMPILER_LAUNCHER)
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  endif()
+  if(NOT CMAKE_CXX_COMPILER_LAUNCHER)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+  endif()
+  message(STATUS "ccache enabled: ${CCACHE_PROGRAM}")
+endif()
+
+if(APPLE)
+  # Targets macOS 12+. Bump if a dep requires newer (SDL3 + ImGui both fine
+  # at 12+). The OSX_ARCHITECTURES default = native; override with
+  # -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" for a universal build.
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "12.0" CACHE STRING "")
+endif()
+
+# Quiet some clang warnings emitted by SDL/ImGui internals — we want a clean
+# build for OUR code, not theirs.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(
+    -Wno-deprecated-declarations  # SDL3 emits some on macOS for older APIs
+  )
+endif()
+
+# -----------------------------------------------------------------------------
+# Fetched dependencies (FetchContent — no brew install ritual needed)
+# -----------------------------------------------------------------------------
+
+include(FetchContent)
+
+# --- SDL3 -------------------------------------------------------------------
+# Window + input + GPU/renderer on macOS (Metal-backed by default in SDL3).
+# Static so we ship a single binary; no .dylib next to the executable.
+set(SDL_SHARED OFF CACHE BOOL "" FORCE)
+set(SDL_STATIC ON  CACHE BOOL "" FORCE)
+set(SDL_TEST_LIBRARY OFF CACHE BOOL "" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
+
+FetchContent_Declare(
+  SDL3
+  GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+  GIT_TAG        release-3.2.0
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(SDL3)
+
+# --- Dear ImGui --------------------------------------------------------------
+# Dear ImGui doesn't ship a CMakeLists.txt; fetch the source and build our
+# own static-library target with the SDL3 + SDL_Renderer backend files.
+# FetchContent_MakeAvailable skips add_subdirectory silently when no
+# CMakeLists.txt is present at the root, which is exactly what we want
+# (CMake 4.2+ behavior; the older FetchContent_Populate is deprecated).
+FetchContent_Declare(
+  imgui
+  GIT_REPOSITORY https://github.com/ocornut/imgui.git
+  GIT_TAG        v1.91.5
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(imgui)
+
+add_library(imgui STATIC
+  ${imgui_SOURCE_DIR}/imgui.cpp
+  ${imgui_SOURCE_DIR}/imgui_demo.cpp
+  ${imgui_SOURCE_DIR}/imgui_draw.cpp
+  ${imgui_SOURCE_DIR}/imgui_tables.cpp
+  ${imgui_SOURCE_DIR}/imgui_widgets.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
+  ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp
+)
+
+target_include_directories(imgui PUBLIC
+  ${imgui_SOURCE_DIR}
+  ${imgui_SOURCE_DIR}/backends
+)
+
+target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
+
+# Silence ImGui's own warnings on our compiler — they're upstream concerns.
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  target_compile_options(imgui PRIVATE
+    -Wno-nontrivial-memaccess
+    -Wno-deprecated-enum-enum-conversion
+  )
+endif()
+
+# -----------------------------------------------------------------------------
+# zetta (the SDL3 + Dear ImGui desktop app)
+# -----------------------------------------------------------------------------
+
+add_executable(zetta
+  src/main.cpp
+)
+
+target_compile_features(zetta PRIVATE cxx_std_23)
+
+target_include_directories(zetta PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+)
+
+target_link_libraries(zetta PRIVATE
+  imgui
+  SDL3::SDL3-static
+)
+
+# Embed DroidSans.ttf (ships inside the FetchContent'd imgui tree) so the
+# GUI can rasterize a real TTF at framebuffer-pixel density on HiDPI
+# displays. ImGui's default ProggyClean is a 13px bitmap font that goes
+# blurry the moment SDL_SetRenderScale upscales it; AddFontFromMemoryTTF
+# with RasterizerDensity = pixel_density keeps text crisp.
+set(ZETTA_FONT_SRC   "${imgui_SOURCE_DIR}/misc/fonts/DroidSans.ttf")
+set(ZETTA_FONT_HPP   "${CMAKE_BINARY_DIR}/generated/zetta_font_embedded.hpp")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
+add_custom_command(
+  OUTPUT  "${ZETTA_FONT_HPP}"
+  COMMAND ${CMAKE_COMMAND}
+          -DIN_FILE=${ZETTA_FONT_SRC}
+          -DOUT_FILE=${ZETTA_FONT_HPP}
+          -DSYMBOL=kDroidSans
+          -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+  DEPENDS ${ZETTA_FONT_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+  COMMENT "Embedding DroidSans.ttf into zetta_font_embedded.hpp"
+)
+add_custom_target(zetta-font-embed ALL DEPENDS "${ZETTA_FONT_HPP}")
+add_dependencies(zetta zetta-font-embed)
+target_include_directories(zetta PRIVATE "${CMAKE_BINARY_DIR}/generated")
+
+set_target_properties(zetta PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+)

@@ -1,0 +1,45 @@
+# Build artifacts
+/build/
+/build-*/
+/cmake-build-*/
+*.o
+*.obj
+*.a
+*.dylib
+*.so
+*.dll
+*.exe
+
+# CMake-generated
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+install_manifest.txt
+Makefile
+compile_commands.json
+.cmake/
+
+# FetchContent
+/_deps/
+
+# IDE
+.vscode/settings.json
+.vscode/launch.json
+.vscode/c_cpp_properties.json
+.idea/
+*.iml
+.cache/
+
+# Editor backups
+*~
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+
+# Local config (don't commit secrets / per-user paths)
+.env
+.env.local
