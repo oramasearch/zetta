@@ -20,6 +20,13 @@ The first configure clones SDL3 and Dear ImGui via CMake `FetchContent` (a few
 minutes); subsequent builds are fast (ccache-backed when available). No
 `brew install` step is needed for the GUI stack.
 
+## Tests
+
+```bash
+cmake --build build --target zetta-tests
+ctest --test-dir build --output-on-failure
+```
+
 ## Requirements
 
 - CMake 3.28+ and Ninja

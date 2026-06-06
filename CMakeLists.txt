@@ -199,3 +199,12 @@ target_include_directories(zetta PRIVATE "${CMAKE_BINARY_DIR}/generated")
 set_target_properties(zetta PROPERTIES
   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+
+# -----------------------------------------------------------------------------
+# Tests (GoogleTest via FetchContent + CTest)
+# -----------------------------------------------------------------------------
+option(ZETTA_BUILD_TESTS "Build zetta unit tests" ON)
+if(ZETTA_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()

@@ -84,6 +84,21 @@ cmake --build build
 The first configure clones SDL3 + ImGui into `build/_deps/` (a few minutes);
 subsequent builds are fast (ccache). `build/` is git-ignored.
 
+## Tests
+
+GoogleTest, fetched via FetchContent, wired into CTest:
+
+```bash
+cmake --build build --target zetta-tests
+ctest --test-dir build --output-on-failure
+```
+
+Tests live in `tests/` (one file per area) and link `zetta-core` directly —
+they exercise the headless core, never the GUI. `tests/temp_dir.hpp` gives each
+test an isolated, auto-cleaned `data_dir` for persistence tests. **Add/extend
+tests when you touch core logic** (storage, persistence, CRUD, parsing).
+Building tests is on by default; turn off with `-DZETTA_BUILD_TESTS=OFF`.
+
 ## Code layout
 
 ```
@@ -112,6 +127,7 @@ src/core/                   zetta-core impl
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node
 src/main.cpp                arg parsing + mode dispatch
+tests/                      GoogleTest unit tests (CTest); link zetta-core
 build/generated/            embedded font header (generated; git-ignored)
 ```
 
