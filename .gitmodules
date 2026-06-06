@@ -6,3 +6,6 @@
 	path = modules/corosio
 	url = https://github.com/cppalliance/corosio.git
 	branch = develop
+[submodule "modules/automerge-cpp"]
+	path = modules/automerge-cpp
+	url = git@github.com:homer6/automerge-cpp.git

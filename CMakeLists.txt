@@ -140,18 +140,10 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   )
 endif()
 
-# --- nlohmann/json -----------------------------------------------------------
-# Header-only JSON. The first storage engine (JsonStore) holds nlohmann::json
-# documents. Turn off its tests/install to keep the build graph small.
-set(JSON_BuildTests OFF CACHE BOOL "" FORCE)
-set(JSON_Install    OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-  nlohmann_json
-  GIT_REPOSITORY https://github.com/nlohmann/json.git
-  GIT_TAG        v3.11.3
-  GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(nlohmann_json)
+# nlohmann/json (the storage engine + query layer use nlohmann::json) is
+# provided by automerge-cpp's vendored copy — it adds the `nlohmann_json` target
+# unconditionally (modules/automerge-cpp/upstream/json), so we consume that one
+# rather than FetchContent a second, clashing copy. See the modules section.
 
 # -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
@@ -184,11 +176,22 @@ set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/corosio EXCLUDE_FROM_ALL)
 
+# automerge-cpp — a CRDT (conflict-free replicated data type) for the replicated
+# DDL/metadata/rows. From-scratch C++23, no Rust. It vendors nlohmann/json under
+# upstream/json and adds the `nlohmann_json` target, which the rest of zetta-core
+# also links (see the json note above). Needs its nested submodules initialized.
+set(AUTOMERGE_CPP_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
+set(AUTOMERGE_CPP_BUILD_EXAMPLES   OFF CACHE BOOL "" FORCE)
+set(AUTOMERGE_CPP_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+set(AUTOMERGE_CPP_BUILD_FUZZ       OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/automerge-cpp EXCLUDE_FROM_ALL)
+
 # -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
   src/core/cluster.cpp
+  src/core/replication.cpp
   src/core/node.cpp
   src/core/database.cpp
   src/core/table.cpp
@@ -215,10 +218,10 @@ target_include_directories(zetta-core PUBLIC
 # storage headers include it, so consumers (the GUI) get it transitively.
 # Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
 target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json Boost::capy)
-# Corosio (networking) is used only by the cluster adapter (src/core/cluster.cpp)
-# via the private networking seam (include/zetta/runtime/net.hpp) — PRIVATE so it
-# stays out of zetta-core's public surface and the GUI.
-target_link_libraries(zetta-core PRIVATE Boost::corosio)
+# Corosio (networking) and automerge-cpp (the replication CRDT) are used only by
+# adapters (src/core/cluster.cpp, src/core/replication.cpp) — PRIVATE so they
+# stay out of zetta-core's public surface and the GUI.
+target_link_libraries(zetta-core PRIVATE Boost::corosio automerge-cpp::automerge-cpp)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

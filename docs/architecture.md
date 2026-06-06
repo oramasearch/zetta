@@ -47,6 +47,10 @@ in `modules/`) lives behind the `zetta::runtime` seam — see
 [runtime.md](runtime.md). Its first user is the **cluster**: nodes form a mesh
 of equal peers over TCP via `zetta::Cluster` — see [cluster.md](cluster.md).
 
+**Replication** (`zetta::ReplicationManager`) holds a node's DDL/metadata/rows
+as an Automerge CRDT (`modules/automerge-cpp`) and merges peers' state
+conflict-free — see [replication.md](replication.md).
+
 ## Module map
 
 ```
@@ -58,6 +62,7 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   runtime.hpp             zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp         networking slice of the seam (Corosio; adapter-only)
   cluster.hpp             Cluster — equal-peer membership over TCP
+  replication.hpp         ReplicationManager — Automerge CRDT replicated state
   headless.hpp            run_headless(Node&, Cluster&)
   signals.hpp             install_signal_handlers / stop_requested
   large_object.hpp        LargeObjectStore — files as blobs (Postgres LO API)
@@ -74,6 +79,6 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
 src/core/                 zetta-core implementation (incl. cluster.cpp adapter)
 src/gui/                  headed UI (App), links SDL3 + ImGui
 src/main.cpp              arg parsing + mode dispatch
-modules/                  vendored deps (git submodules: capy, corosio)
+modules/                  vendored deps (git submodules: capy, corosio, automerge-cpp)
 tests/                    GoogleTest unit tests (CTest)
 ```

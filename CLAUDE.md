@@ -22,6 +22,10 @@ like amaro-bridge, which has no code of its own — zetta has both.)
   executors, thread pools); the backend for the `zetta::runtime` async seam. Built.
 - `modules/corosio` — **Corosio** (coroutine-native networking, the Asio
   successor); built, and backs the cluster (`src/core/cluster.cpp`).
+- `modules/automerge-cpp` — from-scratch **C++23 CRDT** (no Rust); backs
+  replication (`src/core/replication.cpp`). Has its **own** nested submodules
+  (`upstream/json`, which also provides zetta's nlohmann/json) — so the
+  `--recursive` clone matters.
 
 Both track `develop` and need **Clang 17+** (hence the Homebrew-Clang toolchain).
 **Clone with submodules** — `git clone --recurse-submodules`, or
@@ -87,6 +91,19 @@ address, peers, and the **command to add another node**; headless logs the peer
 count. **Leader election + failover are the planned next step** (`ClusterRole`
 exists for it, currently always `Follower`); membership only for now. See
 [docs/cluster.md](docs/cluster.md).
+
+### Replication (CRDT)
+
+A node's replicated state (DDL/metadata/rows) is an **Automerge CRDT**
+(`modules/automerge-cpp`, from-scratch C++23, no Rust). `zetta::ReplicationManager`
+exposes only JSON + bytes (`set`/`snapshot`/`save`/`merge`); Automerge is hidden
+in the adapter `src/core/replication.cpp`. Peers exchange `save()`/`merge()`
+blobs and converge **conflict-free**. Each node's **UUIDv4 is its actor id** (16
+bytes; distinct ids make concurrent edits merge without dropping changes) — the
+same UUID as its cluster node id. Policies plug in via `ReplicationPolicy`; the
+first is `ReplicateToAllNodes` (full copy on every node). The CRDT core is done +
+tested; gossiping it over the cluster and hooking live `Node` mutations into it
+are the next steps. See [docs/replication.md](docs/replication.md).
 
 ### On-disk layout
 
@@ -193,6 +210,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
   cluster.hpp               zetta::Cluster — equal-peer membership over TCP
+  replication.hpp           zetta::ReplicationManager — Automerge CRDT state
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
@@ -206,6 +224,7 @@ src/core/                   zetta-core impl
   jsonl_store.cpp
   uuid.cpp
   cluster.cpp               cluster networking adapter (the one Corosio user)
+  replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag
 src/gui/                    headed UI (links SDL3 + ImGui)
