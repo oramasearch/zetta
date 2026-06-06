@@ -21,6 +21,8 @@ vendored as git submodules under [`modules/`](modules/) (currently `capy` and
 git clone --recurse-submodules <repo-url>
 #   …existing checkout: git submodule update --init --recursive
 
+./scripts/install-deps.sh                # system tools (macOS / Ubuntu)
+
 cmake -S . -B build -G Ninja
 cmake --build build
 

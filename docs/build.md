@@ -2,6 +2,15 @@
 
 ## Prerequisites
 
+Install the system build tools with the helper — macOS (Homebrew) or
+Ubuntu/Debian (apt):
+
+```bash
+./scripts/install-deps.sh
+```
+
+What it installs (or install manually):
+
 - CMake 3.28+ and Ninja
 - **Homebrew LLVM Clang** on macOS (`brew install llvm`, Clang 21) — zetta is
   C++26 and the Capy/Corosio coroutine stack needs Clang 17+, so Apple's system

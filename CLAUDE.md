@@ -161,8 +161,9 @@ another database format = writing another `Dialect` that targets the same AST â€
 ## Build + run
 
 ```bash
-# Submodules (modules/capy, modules/corosio) must be present:
+# Submodules (modules/capy, corosio, automerge-cpp + their nested ones):
 git submodule update --init --recursive   # or clone with --recurse-submodules
+./scripts/install-deps.sh                  # system build tools (macOS / Ubuntu)
 
 cmake -S . -B build -G Ninja
 cmake --build build
@@ -198,6 +199,7 @@ Building tests is on by default; turn off with `-DZETTA_BUILD_TESTS=OFF`.
 ```
 CMakeLists.txt              build graph: imgui lib, zetta-core lib, zetta exe
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
+scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node â€” the node; CRUD over databases
