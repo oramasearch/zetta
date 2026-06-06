@@ -41,10 +41,18 @@ zetta is a C++26 database. A *node* runs **headed** (SDL3 + Dear ImGui UI) or
   `zetta::query` AST; the `Executor` is dialect-neutral). Add a dialect/engine by
   implementing the interface, not by branching the executor. (To add a whole new
   input *language*, see the **new-input** skill.)
+- **Bridge/modules:** pinned third-party deps are git submodules under
+  `modules/` (Capy now, Corosio next), built via `add_subdirectory` (not
+  FetchContent). Clone with `--recurse-submodules`. See `modules/README.md`.
+- **Async runtime seam:** all coroutine / IO / networking goes through
+  `zetta::runtime` (`include/zetta/runtime.hpp`) — `task<Value>`, `block_on`,
+  `thread_pool`. **Never name `boost::capy` / `boost::corosio` directly** so the
+  beta backend stays swappable. See `docs/runtime.md`.
 
 ## Build & test
 
 ```bash
+git submodule update --init --recursive   # vendored deps under modules/
 cmake -S . -B build -G Ninja && cmake --build build
 ./build/bin/zetta              # headed (default); --headless, --data-dir PATH
 cmake --build build --target zetta-tests
@@ -68,10 +76,11 @@ persistence, CRUD, parsing, formatting).
 ## Layout
 
 ```
-include/zetta/   public core API (no SDL/ImGui)
+include/zetta/   public core API (no SDL/ImGui); runtime.hpp = async seam
 src/core/        zetta-core implementation
 src/gui/         App — links SDL3 + ImGui
 src/main.cpp     arg parsing + run-mode dispatch
+modules/         vendored deps as git submodules (capy, corosio)
 tests/           GoogleTest (link zetta-core)
-docs/            markdown system docs
+docs/            markdown system docs (+ docs/research/ background)
 ```
