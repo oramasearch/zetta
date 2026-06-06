@@ -120,6 +120,7 @@ endif()
 add_library(zetta-core STATIC
   src/core/node.cpp
   src/core/headless.cpp
+  src/core/signals.cpp
 )
 
 target_compile_features(zetta-core PUBLIC cxx_std_23)

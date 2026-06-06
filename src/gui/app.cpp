@@ -1,6 +1,7 @@
 #include "gui/app.hpp"
 
 #include "zetta/node.hpp"
+#include "zetta/signals.hpp"
 #include "zetta/version.hpp"
 
 #include <SDL3/SDL.h>
@@ -185,8 +186,14 @@ void App::draw_dashboard() {
 void App::run() {
     ImGuiIO& io = ImGui::GetIO();
 
+    // Install our handlers last (after SDL_Init may have set its own) so
+    // terminal Ctrl-C quits the headed app too, matching headless. The flag is
+    // polled below; SDL_WaitEventTimeout's cap bounds the response to ~33ms.
+    install_signal_handlers();
+
     bool running = true;
     while (running) {
+        if (stop_requested()) break;
         node_.tick();
 
         // Sleep until the next input arrives or kIdleFrameMs elapses, so an
