@@ -1,6 +1,7 @@
 #include "gui/app.hpp"
 
 #include "zetta/bytes.hpp"
+#include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
 #include "zetta/duration.hpp"
 #include "zetta/import.hpp"
@@ -56,8 +57,10 @@ float ui_pixel_density(SDL_Window* window) {
 
 }  // namespace
 
-App::App(Node& node)
-    : node_(node), query_(std::make_unique<query::QueryService>(node)) {}
+App::App(Node& node, Cluster& cluster)
+    : node_(node),
+      cluster_(cluster),
+      query_(std::make_unique<query::QueryService>(node)) {}
 
 App::~App() {
     if (initialized_) {
@@ -555,6 +558,34 @@ void App::handle_incoming_files() {
     }
 }
 
+void App::draw_cluster() {
+    if (!ImGui::CollapsingHeader("Cluster", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::Text("Node: %s", cluster_.node_id().c_str());
+    ImGui::Text("Listening on: %s", cluster_.listen_address().c_str());
+    ImGui::TextDisabled(
+        "All nodes are equal — leader election + failover are planned.");
+
+    ImGui::TextUnformatted("Add another node with:");
+    std::string command = cluster_.peer_command();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputText("##peer_command", &command, ImGuiInputTextFlags_ReadOnly);
+    if (ImGui::Button("Copy command")) {
+        ImGui::SetClipboardText(command.c_str());
+    }
+
+    ImGui::SeparatorText("Peers");
+    const std::vector<ClusterPeer> connected = cluster_.peers();
+    if (connected.empty()) {
+        ImGui::TextDisabled("(none connected)");
+    }
+    for (const ClusterPeer& peer : connected) {
+        ImGui::BulletText("%s  @ %s", peer.node_id.c_str(),
+                          peer.address.c_str());
+    }
+}
+
 void App::run() {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -611,6 +642,7 @@ void App::run() {
         draw_menu_bar(running);
         draw_dashboard();
         draw_query();
+        draw_cluster();
         ImGui::Separator();
         draw_explorer();
 

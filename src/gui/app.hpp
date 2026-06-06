@@ -14,6 +14,7 @@ struct ImGuiStyle;
 namespace zetta {
 
 class Node;
+class Cluster;
 namespace query {
 class QueryService;
 }
@@ -25,7 +26,7 @@ namespace gui {
 // construct it, init(), run(), then let it destruct.
 class App {
 public:
-    explicit App(Node& node);
+    App(Node& node, Cluster& cluster);
     ~App();
 
     App(const App&) = delete;
@@ -61,6 +62,7 @@ private:
     void draw_rows();
     void draw_large_objects();
     void draw_query();       // the SQL text area + results
+    void draw_cluster();     // role, listen address, peers, join command
 
     void handle_incoming_files();  // drain + route the queue (main thread)
     void enqueue_file(std::string path, FileIntent intent);
@@ -68,6 +70,7 @@ private:
     static void on_open_large_object(void* userdata, const char* const* files, int filter);
 
     Node& node_;
+    Cluster& cluster_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
     bool initialized_ = false;

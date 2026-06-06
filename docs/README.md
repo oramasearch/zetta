@@ -9,6 +9,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
+- [cluster.md](cluster.md) — single-leader clustering: running multiple nodes, the join command, the protocol.
 - [build.md](build.md) — building, running, and testing.
 
 ## Research / background

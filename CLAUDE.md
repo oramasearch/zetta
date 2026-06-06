@@ -21,7 +21,7 @@ like amaro-bridge, which has no code of its own — zetta has both.)
 - `modules/capy` — the C++ Alliance **Capy** coroutine foundation (`task<T>`,
   executors, thread pools); the backend for the `zetta::runtime` async seam. Built.
 - `modules/corosio` — **Corosio** (coroutine-native networking, the Asio
-  successor); vendored, wired into the build when zetta grows a server.
+  successor); built, and backs the cluster (`src/core/cluster.cpp`).
 
 Both track `develop` and need **Clang 17+** (hence the Homebrew-Clang toolchain).
 **Clone with submodules** — `git clone --recurse-submodules`, or
@@ -72,6 +72,21 @@ header. Backed by Capy today (`modules/capy`); Corosio (`modules/corosio`) adds
 networking. Background + migration plan:
 [docs/runtime.md](docs/runtime.md) and
 [docs/research/coroutines.md](docs/research/coroutines.md).
+
+### Cluster (equal peers)
+
+Nodes form a cluster of **equal peers** over TCP — no configured leader. Each
+listens (`--listen HOST:PORT`, default `127.0.0.1:7777`) and dials any `--peer
+HOST:PORT` (repeatable); the handshake is symmetric so both record each other.
+Nodes default to the same port and bind the first free one in a range
+(`--port-range`, default 16) so several can share a host (e.g. NUMA).
+`zetta::Cluster` runs networking on a background thread via **Corosio**, behind
+the `zetta::runtime::net` seam (adapter: `src/core/cluster.cpp`; public API
+exposes no backend types). The headed Cluster panel shows the node id, listen
+address, peers, and the **command to add another node**; headless logs the peer
+count. **Leader election + failover are the planned next step** (`ClusterRole`
+exists for it, currently always `Follower`); membership only for now. See
+[docs/cluster.md](docs/cluster.md).
 
 ### On-disk layout
 
@@ -138,6 +153,8 @@ cmake --build build
 ./build/bin/zetta                       # headed (default)
 ./build/bin/zetta --headless            # no UI, Ctrl-C to stop
 ./build/bin/zetta --data-dir /path/db   # override the database directory
+./build/bin/zetta                                  # cluster node (binds :7777)
+./build/bin/zetta --peer 127.0.0.1:7777            # 2nd node here (auto :7778), joins it
 ./build/bin/zetta --help
 ```
 
@@ -170,11 +187,13 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   database.hpp              zetta::Database — owns tables (disk-backed)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
-  imporuntime.hpp                zetta::import_records — JSON/JSONL files → table rows
+  import.hpp                zetta::import_records — JSON/JSONL files → table rows
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   bytes.hpp / duration.hpp  human-readable size / time formatters
-  runtime.hpp                    zetta::runtime — async/coroutine seam over Capy
-  headless.hpp              zetta::run_headless(Node&)
+  runtime.hpp               zetta::runtime — async/coroutine seam over Capy
+  runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
+  cluster.hpp               zetta::Cluster — single-leader membership
+  headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
     engine.hpp              zetta::StorageEngine interface
@@ -186,6 +205,7 @@ src/core/                   zetta-core impl
   table.cpp
   jsonl_store.cpp
   uuid.cpp
+  cluster.cpp               cluster networking adapter (the one Corosio user)
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag
 src/gui/                    headed UI (links SDL3 + ImGui)

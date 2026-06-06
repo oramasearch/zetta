@@ -30,6 +30,22 @@ cmake --build build
 ./build/bin/zetta --help
 ```
 
+## Clustering
+
+Run multiple nodes as a cluster of **equal peers**. Each node listens (default
+`127.0.0.1:7777`) and dials any `--peer` you give it. Several nodes can share a
+host — each binds the first free port in a range (default 16). In headed mode
+the **Cluster** panel shows the command to add another node and the connected
+peers; in headless mode the heartbeat logs the peer count.
+
+```bash
+zetta                                # first node (binds 127.0.0.1:7777)
+zetta --peer 127.0.0.1:7777          # second node here (auto-binds 7778), joins it
+```
+
+See [docs/cluster.md](docs/cluster.md). Membership only for now — **leader
+election and failover are the planned next step**.
+
 The first configure clones SDL3, Dear ImGui, nlohmann/json, and GoogleTest via
 CMake `FetchContent` (a few minutes); the Capy/Corosio coroutine stack comes
 from the `modules/` submodules. Subsequent builds are fast (ccache-backed when

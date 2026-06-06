@@ -11,7 +11,7 @@ time and not vendored.
 | Module | Upstream | Branch | Role | Built? |
 |---|---|---|---|---|
 | `capy` | [cppalliance/capy](https://github.com/cppalliance/capy) | `develop` | C++ Alliance **Capy** — coroutine foundation (`task<T>`, executors, thread pools). Backs the `zetta::runtime` seam. | yes |
-| `corosio` | [cppalliance/corosio](https://github.com/cppalliance/corosio) | `develop` | **Corosio** — coroutine-native networking (the Boost.Asio successor). | not yet (wired in when zetta grows a server) |
+| `corosio` | [cppalliance/corosio](https://github.com/cppalliance/corosio) | `develop` | **Corosio** — coroutine-native networking (the Boost.Asio successor). | yes (backs the cluster, `src/core/cluster.cpp`) |
 
 Both are **beta** (C++ Alliance "rts"/Beast2 family, ~2026) and require
 **Clang 17+** — which is why zetta builds with Homebrew Clang, not Apple Clang.

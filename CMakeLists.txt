@@ -174,10 +174,21 @@ set(BOOST_CAPY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_CAPY_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/capy EXCLUDE_FROM_ALL)
 
+# Corosio — coroutine-native networking (needs Capy above). Its optional TLS
+# provider wants OpenSSL, which is keg-only on Homebrew.
+if(APPLE)
+  list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/openssl@3)
+endif()
+set(BOOST_COROSIO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/corosio EXCLUDE_FROM_ALL)
+
 # -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
+  src/core/cluster.cpp
   src/core/node.cpp
   src/core/database.cpp
   src/core/table.cpp
@@ -204,6 +215,10 @@ target_include_directories(zetta-core PUBLIC
 # storage headers include it, so consumers (the GUI) get it transitively.
 # Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
 target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json Boost::capy)
+# Corosio (networking) is used only by the cluster adapter (src/core/cluster.cpp)
+# via the private networking seam (include/zetta/runtime/net.hpp) — PRIVATE so it
+# stays out of zetta-core's public surface and the GUI.
+target_link_libraries(zetta-core PRIVATE Boost::corosio)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

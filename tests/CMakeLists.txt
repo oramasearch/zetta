@@ -23,6 +23,7 @@ add_executable(zetta-tests
   test_large_object.cpp
   test_import.cpp
   test_runtime.cpp
+  test_cluster.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_26)
