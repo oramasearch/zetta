@@ -253,3 +253,4 @@ Project skills live in `.claude/skills/` (committed, shared):
   re-implements its behavior in zetta's runtime; e.g. Python `load_dataset` → a
   table).
 - **skill-writer** — author new skills.
+- **perplexity** — generate a long Perplexity deep-dive query from a topic.
