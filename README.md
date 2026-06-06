@@ -1,14 +1,19 @@
 # zetta
 
-A C++23 desktop app built on **SDL3 + Dear ImGui** — single statically-linked
-binary, macOS-first.
+A database. A *zetta node* is one running instance; it runs **headed** (default
+— with an SDL3 + Dear ImGui UI) or **headless** (no UI, for servers with no
+display). C++23, macOS-first, single statically-linked binary.
 
 ## Build + run
 
 ```bash
 cmake -S . -B build -G Ninja
 cmake --build build
-./build/bin/zetta
+
+./build/bin/zetta                       # headed (default)
+./build/bin/zetta --headless            # no UI, Ctrl-C to stop
+./build/bin/zetta --data-dir /path/db   # override the database directory
+./build/bin/zetta --help
 ```
 
 The first configure clones SDL3 and Dear ImGui via CMake `FetchContent` (a few

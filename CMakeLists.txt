@@ -110,11 +110,31 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 # -----------------------------------------------------------------------------
-# zetta (the SDL3 + Dear ImGui desktop app)
+# zetta-core (the headless database node — no SDL/ImGui dependency)
+# -----------------------------------------------------------------------------
+# Everything a node needs to run without a display lives here: the node
+# lifecycle today, the storage + query engine later. The GUI links it; the
+# headless runner links it; keeping SDL/ImGui out of this target is the
+# guarantee that a node can run on a headless server.
+
+add_library(zetta-core STATIC
+  src/core/node.cpp
+  src/core/headless.cpp
+)
+
+target_compile_features(zetta-core PUBLIC cxx_std_23)
+
+target_include_directories(zetta-core PUBLIC
+  ${CMAKE_SOURCE_DIR}/include
+)
+
+# -----------------------------------------------------------------------------
+# zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)
 # -----------------------------------------------------------------------------
 
 add_executable(zetta
   src/main.cpp
+  src/gui/app.cpp
 )
 
 target_compile_features(zetta PRIVATE cxx_std_23)
@@ -124,6 +144,7 @@ target_include_directories(zetta PRIVATE
 )
 
 target_link_libraries(zetta PRIVATE
+  zetta-core
   imgui
   SDL3::SDL3-static
 )
