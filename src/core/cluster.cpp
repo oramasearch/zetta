@@ -1,5 +1,11 @@
 #include "zetta/cluster.hpp"
 
+#include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+
+#include <algorithm>
 #include <charconv>
 #include <cstdint>
 #include <mutex>
@@ -164,6 +170,45 @@ capy::task<> dial_seed(Cluster::State* self, net::ipv4_address address,
                                 my_listen_address, /*initiate=*/true);
 }
 
+// True for the IPv4 loopback range (127.0.0.0/8).
+bool is_loopback_ipv4(const std::string& address) {
+    return address.rfind("127.", 0) == 0;
+}
+
+// The machine's IPv4 addresses on up, running interfaces — what a peer on
+// another machine could actually dial. Non-loopback addresses come first so a
+// real LAN address is preferred over 127.0.0.1.
+std::vector<std::string> local_ipv4_addresses() {
+    std::vector<std::string> addresses;
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0 || interfaces == nullptr) return addresses;
+    for (const ifaddrs* it = interfaces; it != nullptr; it = it->ifa_next) {
+        if (it->ifa_addr == nullptr || it->ifa_addr->sa_family != AF_INET) {
+            continue;
+        }
+        if ((it->ifa_flags & IFF_UP) == 0 ||
+            (it->ifa_flags & IFF_RUNNING) == 0) {
+            continue;
+        }
+        const auto* in = reinterpret_cast<const sockaddr_in*>(it->ifa_addr);
+        char text[INET_ADDRSTRLEN] = {};
+        if (inet_ntop(AF_INET, &in->sin_addr, text, sizeof text) == nullptr) {
+            continue;
+        }
+        std::string address(text);
+        if (std::find(addresses.begin(), addresses.end(), address) ==
+            addresses.end()) {
+            addresses.push_back(std::move(address));
+        }
+    }
+    freeifaddrs(interfaces);
+    std::stable_partition(addresses.begin(), addresses.end(),
+                          [](const std::string& a) {
+                              return !is_loopback_ipv4(a);
+                          });
+    return addresses;
+}
+
 }  // namespace
 
 Cluster::Cluster(std::string node_id, ClusterConfig config)
@@ -223,8 +268,32 @@ std::string Cluster::listen_address() const {
     return config_.listen_host + ":" + std::to_string(port);
 }
 
+std::vector<std::string> Cluster::listen_addresses() const {
+    const std::uint16_t port =
+        state_->bound_port != 0 ? state_->bound_port : config_.listen_port;
+    const std::string suffix = ":" + std::to_string(port);
+
+    // A wildcard bind ("0.0.0.0" / "::") accepts on every interface, but isn't
+    // itself a connectable address — expand it to the machine's real IPv4s so
+    // we hand peers something they can dial. Otherwise the configured host is
+    // exactly what we bound.
+    const bool wildcard =
+        config_.listen_host == "0.0.0.0" || config_.listen_host == "::";
+    if (!wildcard) return {config_.listen_host + suffix};
+
+    std::vector<std::string> addresses;
+    for (const std::string& ip : local_ipv4_addresses()) {
+        addresses.push_back(ip + suffix);
+    }
+    if (addresses.empty()) addresses.push_back("127.0.0.1" + suffix);
+    return addresses;
+}
+
 std::string Cluster::peer_command() const {
-    return "zetta --peer " + listen_address();
+    // Prefer the first reachable address — local_ipv4_addresses() already puts
+    // non-loopback (LAN) addresses ahead of 127.0.0.1.
+    const std::vector<std::string> addresses = listen_addresses();
+    return "zetta --peer " + addresses.front();
 }
 
 std::vector<ClusterPeer> Cluster::peers() const {

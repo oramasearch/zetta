@@ -13,10 +13,9 @@ namespace zetta {
 int run_headless(Node& node, const Cluster& cluster) {
     install_signal_handlers();
 
+    // The cluster banner (node id, listen addresses, join command) is printed
+    // by main() right after start(), for both modes.
     std::printf("zetta: headless mode — Ctrl-C to stop\n");
-    std::printf("zetta: cluster node %s at %s — add a node with: %s\n",
-                cluster.node_id().c_str(), cluster.listen_address().c_str(),
-                cluster.peer_command().c_str());
     std::fflush(stdout);
 
     using namespace std::chrono_literals;

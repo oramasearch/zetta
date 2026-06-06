@@ -25,10 +25,27 @@ zetta --listen 0.0.0.0:7777
 zetta --listen 0.0.0.0:7777 --peer <other-host>:7777
 ```
 
-Headed mode's **Cluster** panel shows this node's id, its bound listen address,
-the connected peers, and the **command to add another node**
-(`zetta --peer <this address>`, with a Copy button). Headless logs
-`cluster: N peer(s)` each second.
+## Where am I reachable?
+
+At startup (both modes) a node prints its id, the address(es) it's reachable at,
+and the command to add another node:
+
+```
+zetta: cluster node 229431f5-275e-4754-acb9-2eea4bac007b
+zetta: listening on 192.168.123.140:7777
+zetta: listening on 127.0.0.1:7777
+zetta: add another node with: zetta --peer 192.168.123.140:7777
+```
+
+When bound to a specific host that's the one address. When bound to a **wildcard**
+(`0.0.0.0` / `::`), the wildcard itself isn't connectable, so `listen_addresses()`
+expands it to the machine's actual interface IPv4s — **non-loopback (LAN) first**,
+falling back to `127.0.0.1` — and the join command uses the first (most
+reachable) one. Other nodes copy that `--peer` line to join.
+
+Headed mode's **Cluster** panel shows this node's id, every reachable listen
+address, the connected peers, and the **command to add another node** (with a
+Copy button). Headless logs `cluster: N peer(s)` each second.
 
 ## How it works
 

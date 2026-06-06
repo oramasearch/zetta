@@ -563,7 +563,9 @@ void App::draw_cluster() {
         return;
     }
     ImGui::Text("Node: %s", cluster_.node_id().c_str());
-    ImGui::Text("Listening on: %s", cluster_.listen_address().c_str());
+    for (const std::string& address : cluster_.listen_addresses()) {
+        ImGui::Text("Listening on: %s", address.c_str());
+    }
     ImGui::TextDisabled(
         "All nodes are equal — leader election + failover are planned.");
 

@@ -143,6 +143,15 @@ int main(int argc, char** argv) {
     zetta::Cluster cluster(zetta::new_uuid(), opts.cluster);
     cluster.start();
 
+    // Tell the operator where this node is reachable so they can connect more
+    // nodes. A wildcard bind expands to every interface IPv4.
+    std::printf("zetta: cluster node %s\n", cluster.node_id().c_str());
+    for (const std::string& address : cluster.listen_addresses()) {
+        std::printf("zetta: listening on %s\n", address.c_str());
+    }
+    std::printf("zetta: add another node with: %s\n",
+                cluster.peer_command().c_str());
+
     int rc = 0;
     if (opts.mode == Mode::Headless) {
         rc = zetta::run_headless(node, cluster);

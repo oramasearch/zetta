@@ -37,6 +37,47 @@ TEST(Cluster, PortRangeLetsNodesShareAHost) {
     first.stop();
 }
 
+TEST(Cluster, SpecificHostAdvertisesExactlyThatAddress) {
+    ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 42150;
+    config.port_range = 4;
+
+    Cluster node(zetta::new_uuid(), config);
+    node.start();
+
+    // A non-wildcard bind is reachable exactly where it bound — one address.
+    const std::vector<std::string> addresses = node.listen_addresses();
+    ASSERT_EQ(addresses.size(), 1u);
+    EXPECT_EQ(addresses.front(), "127.0.0.1:42150");
+    EXPECT_EQ(node.peer_command(), "zetta --peer 127.0.0.1:42150");
+
+    node.stop();
+}
+
+TEST(Cluster, WildcardBindExpandsToReachableAddresses) {
+    ClusterConfig config;
+    config.listen_host = "0.0.0.0";
+    config.listen_port = 42160;
+    config.port_range = 4;
+
+    Cluster node(zetta::new_uuid(), config);
+    node.start();
+
+    // A wildcard bind isn't itself dial-able, so it expands to the machine's
+    // interface IPv4s (falling back to loopback) — each a real host:port.
+    const std::vector<std::string> addresses = node.listen_addresses();
+    ASSERT_FALSE(addresses.empty());
+    for (const std::string& address : addresses) {
+        EXPECT_NE(address, "0.0.0.0:42160");
+        EXPECT_NE(address.find(":42160"), std::string::npos);
+    }
+    // peer_command picks the first (non-loopback preferred) reachable address.
+    EXPECT_EQ(node.peer_command(), "zetta --peer " + addresses.front());
+
+    node.stop();
+}
+
 TEST(Cluster, PeersConnectAsEquals) {
     ClusterConfig first_config;
     first_config.listen_host = "127.0.0.1";

@@ -56,7 +56,14 @@ public:
     // picks a free port in the range).
     std::string listen_address() const;
 
-    // Command to run on another machine to add it to this cluster.
+    // The address(es) other nodes can reach this one at. When bound to a
+    // specific host, that host:port. When bound to a wildcard (0.0.0.0), the
+    // machine's actual interface IPv4 addresses (non-loopback first) — the
+    // wildcard itself isn't connectable.
+    std::vector<std::string> listen_addresses() const;
+
+    // Command to run on another machine to add it to this cluster (uses the
+    // best reachable address — a non-loopback one when available).
     std::string peer_command() const;
 
     // Snapshot of currently-connected peers (thread-safe).
