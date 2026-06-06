@@ -15,6 +15,9 @@ zetta is a C++26 database. A *node* runs **headed** (SDL3 + Dear ImGui UI) or
   with Homebrew Clang on macOS (auto-selected in CMakeLists.txt); Apple Clang
   is too old.
 - **Follow the C++ Core Guidelines.**
+- **Full, descriptive names — legibility first.** No 1–2 letter or cryptic
+  abbreviations for namespaces, types, functions, variables, or template
+  parameters (`runtime` not `rt`, `error_code` not `ec`, `Value` not `T`).
 - **Text is `std::string` / `std::string_view`** — never `char[]` / `char*`
   buffers. ImGui text fields use the `imgui_stdlib` `std::string` overloads.
 - **No naked owning/handle pointers.** `std::unique_ptr` for sole ownership;

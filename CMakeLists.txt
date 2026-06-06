@@ -161,6 +161,22 @@ FetchContent_MakeAvailable(nlohmann_json)
 # headless runner links it; keeping SDL/ImGui out of this target is the
 # guarantee that a node can run on a headless server.
 
+# -----------------------------------------------------------------------------
+# Vendored modules (git submodules under modules/)
+# -----------------------------------------------------------------------------
+# zetta is a "bridge"-style repo: third-party dependencies we want pinned and
+# locally readable (vs FetchContent) live as git submodules in modules/. Capy
+# is the C++ Alliance coroutine foundation; Corosio (networking, also vendored)
+# is wired in when zetta grows a server. Both need Clang 17+ (see the
+# pre-project() toolchain block above).
+set(BOOST_CAPY_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_CAPY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(BOOST_CAPY_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/capy EXCLUDE_FROM_ALL)
+
+# -----------------------------------------------------------------------------
+# zetta-core (the headless database node — no SDL/ImGui dependency)
+# -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
   src/core/node.cpp
   src/core/database.cpp
@@ -186,7 +202,8 @@ target_include_directories(zetta-core PUBLIC
 
 # PUBLIC: zetta::Node's interface exposes nlohmann::json (add_object) and the
 # storage headers include it, so consumers (the GUI) get it transitively.
-target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json)
+# Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
+target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json Boost::capy)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

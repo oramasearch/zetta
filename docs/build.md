@@ -15,6 +15,17 @@ SDL3, Dear ImGui (+ `imgui_stdlib`), nlohmann/json, and GoogleTest are fetched
 via CMake `FetchContent` — no `brew install` needed for the stack. ccache is
 used as the compiler launcher when present.
 
+## Submodules
+
+The coroutine stack (Capy, Corosio) is vendored under `modules/` as git
+submodules — clone with them, or the build fails at `add_subdirectory(modules/capy)`:
+
+```bash
+git clone --recurse-submodules <repo-url>
+# existing checkout:
+git submodule update --init --recursive
+```
+
 ## Build
 
 ```bash

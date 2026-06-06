@@ -6,8 +6,29 @@ can run in two modes:
 - **headed** (default) — the node plus an SDL3 + Dear ImGui UI rendering it.
 - **headless** — the node alone, no UI, for servers with no display.
 
-C++26, macOS-first. Single statically-linked binary; the whole GUI stack comes
-via CMake `FetchContent`, so there's no `brew install` ritual.
+C++26, macOS-first. The GUI stack (SDL3, Dear ImGui, nlohmann/json, GoogleTest)
+comes via CMake `FetchContent`; the coroutine/networking stack is vendored as
+git submodules (see below). macOS builds need Homebrew Clang (`brew install
+llvm`).
+
+## Repository shape: bridge + modules
+
+zetta is both a buildable product **and** a bridge repo: third-party
+dependencies we want pinned and locally readable (rather than fetched opaquely)
+live as **git submodules under `modules/`**. (This differs from a pure bridge
+like amaro-bridge, which has no code of its own — zetta has both.)
+
+- `modules/capy` — the C++ Alliance **Capy** coroutine foundation (`task<T>`,
+  executors, thread pools); the backend for the `zetta::runtime` async seam. Built.
+- `modules/corosio` — **Corosio** (coroutine-native networking, the Asio
+  successor); vendored, wired into the build when zetta grows a server.
+
+Both track `develop` and need **Clang 17+** (hence the Homebrew-Clang toolchain).
+**Clone with submodules** — `git clone --recurse-submodules`, or
+`git submodule update --init --recursive` in an existing checkout — or the build
+fails at `add_subdirectory(modules/capy)`. Update a vendored module with
+`git submodule update --remote modules/<name>` and commit the new gitlink.
+`modules/README.md` is the index.
 
 ## Architecture
 
@@ -39,6 +60,18 @@ the `StorageEngine` seam: `zetta::JsonlStore` (the default tables use — JSON
 Lines on disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a
 future `:memory:` mode). **New engines implement `StorageEngine`; query/indexes
 land behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
+
+### Async runtime (`zetta::runtime`)
+
+zetta's async / coroutine / networking layer lives behind
+`include/zetta/runtime.hpp` (namespace `zetta::runtime`). Code uses `zetta::runtime::task<T>`,
+`zetta::runtime::block_on`, `zetta::runtime::thread_pool`, etc. and **never names
+`boost::capy` / `boost::corosio` directly** — so the (beta, churning) C++
+Alliance backend can be swapped, or replaced by Boost.Asio, by editing that one
+header. Backed by Capy today (`modules/capy`); Corosio (`modules/corosio`) adds
+networking. Background + migration plan:
+[docs/runtime.md](docs/runtime.md) and
+[docs/research/coroutines.md](docs/research/coroutines.md).
 
 ### On-disk layout
 
@@ -96,6 +129,9 @@ another database format = writing another `Dialect` that targets the same AST �
 ## Build + run
 
 ```bash
+# Submodules (modules/capy, modules/corosio) must be present:
+git submodule update --init --recursive   # or clone with --recurse-submodules
+
 cmake -S . -B build -G Ninja
 cmake --build build
 
@@ -134,9 +170,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   database.hpp              zetta::Database — owns tables (disk-backed)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
-  import.hpp                zetta::import_records — JSON/JSONL files → table rows
+  imporuntime.hpp                zetta::import_records — JSON/JSONL files → table rows
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   bytes.hpp / duration.hpp  human-readable size / time formatters
+  runtime.hpp                    zetta::runtime — async/coroutine seam over Capy
   headless.hpp              zetta::run_headless(Node&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
@@ -154,6 +191,7 @@ src/core/                   zetta-core impl
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node
 src/main.cpp                arg parsing + mode dispatch
+modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
 build/generated/            embedded font header (generated; git-ignored)
 ```
@@ -197,6 +235,10 @@ asset dependency.
   build auto-selects Homebrew Clang on macOS (see the pre-`project()` block in
   CMakeLists.txt); Apple Clang 15 can't do C++26 or build Capy/Corosio.
 - **Follow the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/).**
+- **Full, descriptive names — legibility first.** No 1–2 letter or cryptic
+  abbreviations anywhere: namespaces, types, functions, variables, *and template
+  parameters*. `runtime` not `rt`, `error_code` not `ec`, `index` not `i`,
+  `Value`/`Result` not `T`. Rename existing short names when you touch them.
 - **No C-style strings or buffers** — use `std::string` / `std::string_view`,
   never `char[]` / `char*` for text. ImGui text fields bind to `std::string`
   via `imgui_stdlib.h` (linked into the `imgui` target); use those overloads.
