@@ -1,7 +1,10 @@
 #include "gui/app.hpp"
 
+#include "zetta/bytes.hpp"
 #include "zetta/database.hpp"
 #include "zetta/duration.hpp"
+#include "zetta/import.hpp"
+#include "zetta/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/signals.hpp"
@@ -18,10 +21,13 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cstddef>
+#include <filesystem>
 #include <cstdio>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 
@@ -186,13 +192,16 @@ void App::draw_dashboard() {
     ImGui::Text("Node: %s", node_.status_line().c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("|  data dir: %s", node_.config().data_dir.c_str());
+    if (!io_status_.empty()) {
+        ImGui::TextDisabled("%s", io_status_.c_str());
+    }
     ImGui::Spacing();
 }
 
 void App::draw_explorer() {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =
-        (ImGui::GetContentRegionAvail().x - 2.0f * spacing) / 3.0f;
+        (ImGui::GetContentRegionAvail().x - 3.0f * spacing) / 4.0f;
 
     ImGui::BeginChild("##databases", ImVec2(col_w, 0), ImGuiChildFlags_Borders);
     draw_databases();
@@ -204,8 +213,13 @@ void App::draw_explorer() {
     ImGui::EndChild();
 
     ImGui::SameLine();
-    ImGui::BeginChild("##rows", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##rows", ImVec2(col_w, 0), ImGuiChildFlags_Borders);
     draw_rows();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##largeobjects", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    draw_large_objects();
     ImGui::EndChild();
 }
 
@@ -339,6 +353,13 @@ void App::draw_rows() {
     ImGui::TextDisabled("%s.%s  (%zu rows)", db->name().c_str(),
                         table->name().c_str(), table->row_count());
 
+    if (ImGui::Button("Import JSON/JSONL...")) {
+        static const SDL_DialogFileFilter filters[] = {
+            {"JSON / JSON Lines", "json;jsonl"}, {"All files", "*"}};
+        SDL_ShowOpenFileDialog(&App::on_open_records, this, window_, filters, 2,
+                               nullptr, false);
+    }
+
     ImGui::TextUnformatted("Add a JSON object:");
     ImGui::InputTextMultiline("##doc", &doc_input_,
                               ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 5));
@@ -444,6 +465,96 @@ void App::draw_query() {
     ImGui::EndChild();
 }
 
+void App::draw_large_objects() {
+    ImGui::SeparatorText("Large Objects");
+    const auto db = node_.find_database(selected_db_);
+    if (!db) {
+        ImGui::TextDisabled("Select a database.");
+        return;
+    }
+    if (ImGui::Button("Store file...")) {
+        SDL_ShowOpenFileDialog(&App::on_open_large_object, this, window_,
+                               nullptr, 0, nullptr, false);
+    }
+    ImGui::TextDisabled("or drop any file on the window");
+    ImGui::Separator();
+
+    const std::vector<LargeObject> objects = db->large_objects().list();
+    if (objects.empty()) ImGui::TextDisabled("(none)");
+    for (const LargeObject& lo : objects) {
+        ImGui::PushID(lo.id.c_str());
+        if (ImGui::SmallButton("x")) db->large_objects().unlink(lo.id);
+        ImGui::SameLine();
+        ImGui::TextWrapped("%s  (%s)", lo.name.c_str(),
+                           format_bytes(lo.size).c_str());
+        ImGui::PopID();
+    }
+}
+
+void App::enqueue_file(std::string path, FileIntent intent) {
+    const std::lock_guard<std::mutex> lock(incoming_mutex_);
+    incoming_files_.push_back({std::move(path), intent});
+}
+
+void App::on_open_records(void* userdata, const char* const* files, int) {
+    if (files && files[0]) {
+        static_cast<App*>(userdata)->enqueue_file(files[0],
+                                                  FileIntent::Records);
+    }
+}
+
+void App::on_open_large_object(void* userdata, const char* const* files, int) {
+    if (files && files[0]) {
+        static_cast<App*>(userdata)->enqueue_file(files[0],
+                                                  FileIntent::LargeObject);
+    }
+}
+
+void App::handle_incoming_files() {
+    std::vector<IncomingFile> files;
+    {
+        const std::lock_guard<std::mutex> lock(incoming_mutex_);
+        if (incoming_files_.empty()) return;
+        files.swap(incoming_files_);
+    }
+    for (const IncomingFile& f : files) {
+        const std::filesystem::path path = f.path;
+        FileIntent intent = f.intent;
+        if (intent == FileIntent::Auto) {
+            std::string ext = path.extension().string();
+            for (char& c : ext) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            intent = (ext == ".json" || ext == ".jsonl") ? FileIntent::Records
+                                                         : FileIntent::LargeObject;
+        }
+        if (intent == FileIntent::Records) {
+            auto db = node_.find_database(selected_db_);
+            auto table = db ? db->find_table(selected_table_) : nullptr;
+            if (!table) {
+                io_status_ = "Import: select a table first (" +
+                             path.filename().string() + ")";
+                continue;
+            }
+            const ImportResult r = import_records(*table, path);
+            io_status_ = r.ok() ? "Imported " + std::to_string(r.added) +
+                                      " record(s) into " + table->name()
+                                : "Import failed: " + r.error;
+        } else {
+            auto db = node_.find_database(selected_db_);
+            if (!db) {
+                io_status_ = "Store: select a database first (" +
+                             path.filename().string() + ")";
+                continue;
+            }
+            const auto lo = db->large_objects().import_file(path);
+            io_status_ = lo ? "Stored " + lo->name + " (" +
+                                  format_bytes(lo->size) + ") as a large object"
+                            : "Store failed: " + path.string();
+        }
+    }
+}
+
 void App::run() {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -473,8 +584,16 @@ void App::run() {
             } else if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED ||
                        event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
                 apply_display_scale();
+            } else if (event.type == SDL_EVENT_DROP_FILE) {
+                if (event.drop.data) {
+                    enqueue_file(event.drop.data, FileIntent::Auto);
+                }
             }
         } while (SDL_PollEvent(&event));
+
+        // Ingest any files dropped or picked since the last frame (the dialog
+        // callback runs on another thread; this drains on the main thread).
+        handle_incoming_files();
 
         ImGui_ImplSDLRenderer3_NewFrame();
         ImGui_ImplSDL3_NewFrame();

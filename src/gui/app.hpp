@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -39,16 +40,32 @@ public:
     void run();
 
 private:
+    // A file to ingest, queued from a drop event or the native file dialog
+    // (whose callback may fire on another thread — hence the mutex). Auto
+    // routes by extension: .json/.jsonl import as rows, anything else stores as
+    // a large object.
+    enum class FileIntent { Auto, Records, LargeObject };
+    struct IncomingFile {
+        std::string path;
+        FileIntent intent;
+    };
+
     // Re-rasterize the font and rescale the style for the current display.
     // See app.cpp for the content-scale vs pixel-density rationale.
     void apply_display_scale();
     void draw_menu_bar(bool& running);
     void draw_dashboard();
-    void draw_explorer();    // the Databases | Tables | Rows columns
+    void draw_explorer();    // the Databases | Tables | Rows | Large Objects columns
     void draw_databases();
     void draw_tables();
     void draw_rows();
+    void draw_large_objects();
     void draw_query();       // the SQL text area + results
+
+    void handle_incoming_files();  // drain + route the queue (main thread)
+    void enqueue_file(std::string path, FileIntent intent);
+    static void on_open_records(void* userdata, const char* const* files, int filter);
+    static void on_open_large_object(void* userdata, const char* const* files, int filter);
 
     Node& node_;
     SDL_Window* window_ = nullptr;
@@ -84,6 +101,11 @@ private:
     std::string query_status_;
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
+
+    // File ingestion (drag-and-drop + native dialog) and its last status line.
+    std::mutex incoming_mutex_;
+    std::vector<IncomingFile> incoming_files_;
+    std::string io_status_;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

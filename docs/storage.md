@@ -21,6 +21,10 @@ So renaming a database rewrites `database.json` and never moves the folder.
 `Node::start()` scans `data_dir`, reads each `database.json` / `table.json`, and
 rebuilds the in-memory tree (sorted by name for stable display).
 
+Each database also has a `large_objects/` folder holding stored files as blobs;
+see [large-objects.md](large-objects.md). The table scan ignores it (no
+`table.json`).
+
 ## Storage engines
 
 Rows are held through the `StorageEngine` interface, so a table's backing format

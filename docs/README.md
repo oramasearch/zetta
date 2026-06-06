@@ -7,4 +7,5 @@ This directory documents the system; keep it in sync as the system changes.
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
+- [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [build.md](build.md) — building, running, and testing.

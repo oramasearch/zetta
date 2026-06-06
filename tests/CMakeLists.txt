@@ -20,6 +20,8 @@ add_executable(zetta-tests
   test_database.cpp
   test_node.cpp
   test_query.cpp
+  test_large_object.cpp
+  test_import.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_23)

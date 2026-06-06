@@ -59,6 +59,18 @@ appends a line to the active chunk immediately (append-open per record — simpl
 and crash-resilient; can hold the stream open later). `data_dir` defaults to
 `./zetta-data` and is git-ignored.
 
+### Files: large objects + import
+
+Two ways to ingest files, both via a native file dialog and drag-and-drop onto
+the window (routed by extension):
+- **Record import** (`zetta::import_records`) — a `.json`/`.jsonl` file becomes
+  rows in the selected table (array → many rows, object/value → one; duplicates
+  allowed; all-or-nothing on parse error).
+- **Large objects** (`zetta::LargeObjectStore`, per `Database`) — any file
+  stored as a binary blob under `<db>/large_objects/<lo-uuid>/`, modeled on
+  Postgres' LO API (`import_file`/`export_file`/`read`/`unlink`/`list`). Ids are
+  UUIDv4. Detail in [docs/large-objects.md](docs/large-objects.md).
+
 ### Query layer
 
 Queries are **dialect-agnostic**: text → a `Dialect` parser → a generic,
@@ -120,7 +132,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   node.hpp                  zetta::Node — the node; CRUD over databases
   database.hpp              zetta::Database — owns tables (disk-backed)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
+  large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
+  import.hpp                zetta::import_records — JSON/JSONL files → table rows
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
+  bytes.hpp / duration.hpp  human-readable size / time formatters
   headless.hpp              zetta::run_headless(Node&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/

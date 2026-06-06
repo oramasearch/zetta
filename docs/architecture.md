@@ -49,6 +49,9 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   uuid.hpp                new_uuid() — v4 UUID for folder names
   headless.hpp            run_headless(Node&)
   signals.hpp             install_signal_handlers / stop_requested
+  large_object.hpp        LargeObjectStore — files as blobs (Postgres LO API)
+  import.hpp              import_records — JSON/JSONL files into a table
+  bytes.hpp / duration.hpp human-readable size / time formatters
   storage/engine.hpp      StorageEngine interface
   storage/json_store.hpp  JsonStore — in-memory engine
   storage/jsonl_store.hpp JsonlStore — on-disk JSONL engine (default)

@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "zetta/large_object.hpp"
 #include "zetta/table.hpp"
 
 namespace zetta {
@@ -41,11 +42,16 @@ public:
     std::vector<std::string> table_names() const;
     std::size_t table_count() const { return tables_.size(); }
 
+    // Files stored in this database as binary blobs (Postgres-style LO API).
+    LargeObjectStore& large_objects() { return large_objects_; }
+    const LargeObjectStore& large_objects() const { return large_objects_; }
+
 private:
     std::string id_;
     std::string name_;
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<Table>> tables_;
+    LargeObjectStore large_objects_;
 };
 
 }  // namespace zetta
