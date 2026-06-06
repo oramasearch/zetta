@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +28,7 @@ public:
         std::vector<std::string> columns;   // columns of the last SELECT
         std::vector<nlohmann::json> rows;    // rows of the last SELECT
         std::string error;                   // first parse/execution error
+        std::chrono::nanoseconds elapsed{};  // wall-clock for parse + execute
 
         bool ok() const { return error.empty(); }
     };

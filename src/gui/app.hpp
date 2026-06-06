@@ -83,6 +83,7 @@ private:
     std::vector<std::string> query_result_rows_;
     std::string query_status_;
     std::string query_error_;
+    std::string query_time_;  // formatted elapsed time of the last run
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

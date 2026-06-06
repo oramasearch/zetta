@@ -1,6 +1,7 @@
 #include "gui/app.hpp"
 
 #include "zetta/database.hpp"
+#include "zetta/duration.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/signals.hpp"
@@ -395,6 +396,7 @@ void App::draw_query() {
         query_error_.clear();
         query_result_columns_.clear();
         query_result_rows_.clear();
+        query_time_ = format_duration(outcome.elapsed);
         if (!outcome.ok()) {
             query_error_ = outcome.error;
         } else {
@@ -413,6 +415,10 @@ void App::draw_query() {
         ImGui::TextColored(kErrorColor, "%s", query_error_.c_str());
     } else if (!query_status_.empty()) {
         ImGui::TextDisabled("%s", query_status_.c_str());
+    }
+    if (!query_time_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s)", query_time_.c_str());
     }
 
     if (ImGui::BeginChild("##query_results", ImVec2(0, 160),

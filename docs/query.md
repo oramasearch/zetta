@@ -57,6 +57,14 @@ optional leading `-`, `true` / `false` / `null`.
 - `WHERE` supports a single `column = value` equality.
 - Statements run in order; the first failure stops the batch and is reported.
 
+## Timing
+
+`QueryService::Outcome::elapsed` is the wall-clock time of the whole parse +
+execute, measured at nanosecond resolution (`std::chrono::nanoseconds`). The UI
+renders it with `zetta::format_duration`, which picks a human unit by
+magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
+`(2.00 wk)`.
+
 ## Limitations (today)
 
 Single-equality `WHERE` only; no joins, ordering, aggregation, `UPDATE`,

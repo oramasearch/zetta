@@ -15,6 +15,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(zetta-tests
   test_uuid.cpp
+  test_duration.cpp
   test_jsonl_store.cpp
   test_database.cpp
   test_node.cpp
