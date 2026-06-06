@@ -71,7 +71,9 @@ persistence, CRUD, parsing, formatting).
   (no `Co-Authored-By`, no "Generated with…" footer). The author is the user.
 - **Always commit AND push to `origin/main`** after a major, verified unit of
   work — don't leave finished work unpushed.
-- **After any system change, update `docs/*.md`** to match.
+- **After any system change, update ALL relevant docs in the same commit** —
+  CLAUDE.md, README.md, `docs/*.md` (+ `docs/README.md` index), `modules/README.md`,
+  and the affected skill. Grep for stale terms before committing. Not just `docs/`.
 
 ## Layout
 

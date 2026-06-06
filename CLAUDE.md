@@ -40,11 +40,11 @@ SDL/ImGui dependency** — which is what guarantees a node can run on a headless
 server.
 
 ```
-main()                       picks the mode, owns the Node lifecycle
-  │  builds zetta::Node, node.start()
-  ├── --headless ─→ zetta::run_headless(node)     # core only, no SDL
-  └── --headed   ─→ zetta::gui::App(node).run()   # SDL3 + ImGui over the node
-  ...then node.stop()
+main()                       picks the mode, owns the Node + Cluster lifecycle
+  │  builds zetta::Node + zetta::Cluster, starts both
+  ├── --headless ─→ zetta::run_headless(node, cluster)   # core only, no SDL
+  └── --headed   ─→ zetta::gui::App(node, cluster).run() # SDL3 + ImGui over them
+  ...then cluster.stop(), node.stop()
 ```
 
 A node owns **databases**, each database owns **tables**, and each table holds
@@ -192,7 +192,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
-  cluster.hpp               zetta::Cluster — single-leader membership
+  cluster.hpp               zetta::Cluster — equal-peer membership over TCP
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
@@ -284,12 +284,24 @@ Keep the query frontend and execution separate: dialects parse to the generic
 AST; the `Executor` only ever sees the generic AST. Add a database format by
 implementing `Dialect`, not by special-casing the executor or UI.
 
-### Documentation
-**After any system change, update `docs/*.md` to match** (architecture, storage,
-query, build). Docs are markdown and are the human-facing description of the
-system — treat them as part of the change, not an afterthought. Long-form
-background/research (deep dives, design investigations) goes in `docs/research/`
-with a provenance header (source + date + status); index it in `docs/README.md`.
+### Documentation — update it with EVERY change (not optional)
+Docs are **part of the change, in the same commit** — never a follow-up. After
+any change to behavior, architecture, build, CLI, layout, or conventions, update
+**every relevant doc surface**:
+
+- **This `CLAUDE.md`** — architecture, code layout, run commands, conventions.
+- **`README.md`** — quick start / requirements / feature list.
+- **`docs/*.md`** — the matching page(s): `architecture`, `storage`, `query`,
+  `large-objects`, `runtime`, `cluster`, `build` — and keep `docs/README.md`
+  (the index) in sync. Long-form background/research goes in `docs/research/`
+  with a provenance header (source + date + status).
+- **`modules/README.md`** — when a vendored module changes.
+- The relevant **`.claude/skills/*/SKILL.md`** (especially `zetta-dev`) — when a
+  convention or workflow changes.
+
+Before committing, **grep the docs for stale terms** (renamed symbols, removed
+flags): if you renamed or removed something, no doc should still mention the old
+name. "Update the docs" means *all* of the above, not just `docs/`.
 
 ### Committing + pushing
 - **Always commit and push after any major work.** When a meaningful unit of

@@ -57,8 +57,9 @@ incremental:
 3. **Async file I/O** — replace blocking reads/writes via Corosio (or a kqueue
    wrapper), keeping the call graph from step 2.
 4. **Networking** *(started)* — Corosio is wired in; the cluster
-   (`src/core/cluster.cpp`, see [cluster.md](cluster.md)) is the first user — a
-   leader accept-loop + per-connection coroutines, behind `zetta::runtime::net`.
+   (`src/core/cluster.cpp`, see [cluster.md](cluster.md)) is the first user — an
+   accept loop + per-peer dial coroutines (equal peers), behind
+   `zetta::runtime::net`.
 5. **Structured concurrency / cancellation** — `when_all` for parallel
    sub-queries, stop-tokens for timeouts.
 

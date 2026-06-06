@@ -10,9 +10,10 @@ data and knows nothing about any UI, so it can run two ways:
 - **headless** — `zetta::run_headless` ticks the node on a 10 Hz heartbeat with
   no UI; for servers with no display.
 
-`main()` parses arguments, builds the `Node`, starts it, dispatches to one run
-mode, then stops it. Both modes install SIGINT/SIGTERM handlers so terminal
-Ctrl-C shuts down cleanly.
+`main()` parses arguments, builds the `Node` and a `Cluster` (cluster networking
+runs on its own background thread), starts them, dispatches to a run mode, then
+stops them. Both modes install SIGINT/SIGTERM handlers so terminal Ctrl-C shuts
+down cleanly.
 
 The core is the static library **`zetta-core`**, which has **no SDL/ImGui
 dependency** — the build-level guarantee that a node runs headless. The GUI is a
@@ -39,6 +40,13 @@ Text → `Dialect` (parser) → generic AST (`zetta::query::Statement`) →
 `Executor` → results. The executor is dialect-neutral; new database formats are
 added by writing a `Dialect` that targets the same AST. See [query.md](query.md).
 
+## Async runtime & cluster
+
+The coroutine / IO / networking backend (C++ Alliance Capy + Corosio, vendored
+in `modules/`) lives behind the `zetta::runtime` seam — see
+[runtime.md](runtime.md). Its first user is the **cluster**: nodes form a mesh
+of equal peers over TCP via `zetta::Cluster` — see [cluster.md](cluster.md).
+
 ## Module map
 
 ```
@@ -47,7 +55,10 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   database.hpp            Database — owns tables (disk-backed)
   table.hpp               Table — owns a storage engine (its rows)
   uuid.hpp                new_uuid() — v4 UUID for folder names
-  headless.hpp            run_headless(Node&)
+  runtime.hpp             zetta::runtime — async/coroutine seam over Capy
+  runtime/net.hpp         networking slice of the seam (Corosio; adapter-only)
+  cluster.hpp             Cluster — equal-peer membership over TCP
+  headless.hpp            run_headless(Node&, Cluster&)
   signals.hpp             install_signal_handlers / stop_requested
   large_object.hpp        LargeObjectStore — files as blobs (Postgres LO API)
   import.hpp              import_records — JSON/JSONL files into a table
@@ -60,8 +71,9 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   query/postgres.hpp      PostgresDialect (parser)
   query/executor.hpp      Executor — runs the AST against a Node
   query/service.hpp       QueryService — parse + execute facade
-src/core/                 zetta-core implementation
+src/core/                 zetta-core implementation (incl. cluster.cpp adapter)
 src/gui/                  headed UI (App), links SDL3 + ImGui
 src/main.cpp              arg parsing + mode dispatch
+modules/                  vendored deps (git submodules: capy, corosio)
 tests/                    GoogleTest unit tests (CTest)
 ```
