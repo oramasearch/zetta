@@ -43,3 +43,6 @@ compile_commands.json
 # Local config (don't commit secrets / per-user paths)
 .env
 .env.local
+
+# Node data directory (default data_dir; UUID-named db/table folders + JSONL)
+/zetta-data/

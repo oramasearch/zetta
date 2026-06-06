@@ -31,10 +31,33 @@ its rows through a **storage engine** (`zetta::StorageEngine`). `Node` has full
 CRUD over databases (`create`/`find`/`drop`/`rename_database`, `database_names`)
 and `Database` over tables (`create`/`find`/`drop_table`, `table_names`);
 ownership is via `shared_ptr` so lookups hand back a safe handle, never a raw
-pointer. The only storage engine today is `zetta::JsonStore` — an in-memory
-`std::vector<nlohmann::json>`, no persistence yet. **New engines implement
-`StorageEngine`; persistence/query land behind it** — and don't let SDL/ImGui
-types leak into `zetta-core`.
+pointer.
+
+**Everything persists to disk** under `config_.data_dir`, and `Node::start()`
+rebuilds the in-memory tree by scanning it. Two storage engines exist behind
+the `StorageEngine` seam: `zetta::JsonlStore` (the default tables use — JSON
+Lines on disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a
+future `:memory:` mode). **New engines implement `StorageEngine`; query/indexes
+land behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
+
+### On-disk layout
+
+```
+data_dir/
+  <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
+    database.json            ← { id, name }
+    <table-uuid>/            ← one folder per table (UUIDv4 = its id)
+      table.json             ← { id, name }
+      000000.jsonl           ← records 0..9999      (one JSON doc per line)
+      000001.jsonl           ← records 10000..19999
+      ...                    ← JsonlStore::kRecordsPerChunk = 10k per chunk
+```
+
+The folder name *is* the id; the human name lives only in `database.json` /
+`table.json` (so rename rewrites that file, never moves the folder). `add_row`
+appends a line to the active chunk immediately (append-open per record — simple
+and crash-resilient; can hold the stream open later). `data_dir` defaults to
+`./zetta-data` and is git-ignored.
 
 ## Tech stack
 
@@ -69,17 +92,21 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node — the node; CRUD over databases
-  database.hpp              zetta::Database — owns tables
+  database.hpp              zetta::Database — owns tables (disk-backed)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
+  uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   headless.hpp              zetta::run_headless(Node&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
     engine.hpp              zetta::StorageEngine interface
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
+    jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
 src/core/                   zetta-core impl
-  node.cpp
+  node.cpp                  + load_databases() (scan data_dir on start)
   database.cpp
   table.cpp
+  jsonl_store.cpp
+  uuid.cpp
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag
 src/gui/                    headed UI (links SDL3 + ImGui)

@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cfloat>
 #include <cstddef>
 #include <cstdio>
@@ -360,8 +361,15 @@ void App::draw_rows() {
     if (store.size() == 0) {
         ImGui::TextDisabled("(empty)");
     }
-    for (std::size_t i = 0; i < store.size(); ++i) {
+    // Cap how many rows we render — a persisted table can hold far more than is
+    // useful to draw every frame.
+    constexpr std::size_t kMaxShown = 500;
+    const std::size_t shown = std::min(store.size(), kMaxShown);
+    for (std::size_t i = 0; i < shown; ++i) {
         ImGui::TextWrapped("%zu  %s", i, store.at(i).dump().c_str());
+    }
+    if (store.size() > shown) {
+        ImGui::TextDisabled("... and %zu more", store.size() - shown);
     }
 }
 

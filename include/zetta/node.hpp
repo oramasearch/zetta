@@ -71,6 +71,9 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
 
+    // Rebuild databases_ by scanning config_.data_dir. Called from start().
+    void load_databases();
+
     NodeConfig config_;
     bool running_ = false;
     Clock::time_point started_at_{};
