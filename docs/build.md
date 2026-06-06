@@ -12,11 +12,13 @@ Ubuntu/Debian (apt):
 What it installs (or install manually):
 
 - CMake 3.28+ and Ninja
-- **Homebrew LLVM Clang** on macOS (`brew install llvm`, Clang 21) — zetta is
-  C++26 and the Capy/Corosio coroutine stack needs Clang 17+, so Apple's system
-  Clang is too old. CMake auto-selects `/opt/homebrew/opt/llvm` on macOS (a
-  pre-`project()` block also sets the SDK sysroot and links Homebrew's libc++);
-  override with `-DZETTA_USE_SYSTEM_COMPILER=ON` or `-DCMAKE_CXX_COMPILER=...`.
+- A **C++26 compiler — Clang 17+** (or GCC 14+). zetta is C++26 and the
+  Capy/Corosio stack needs Clang 17+, so older system defaults (Apple Clang 15,
+  Ubuntu's GCC 13) won't build it. CMake auto-selects one in a pre-`project()`
+  block: Homebrew LLVM (`/opt/homebrew/opt/llvm`, + SDK sysroot + its libc++) on
+  macOS; the newest installed `clang++-NN` (≥17) on Linux. Override with
+  `-DCMAKE_CXX_COMPILER=...` (e.g. `clang++-19` or `g++-14`) or
+  `-DZETTA_USE_SYSTEM_COMPILER=ON`. `install-deps.sh` installs a suitable clang.
 - macOS for the headed UI (SDL3 uses a Metal-backed renderer); the headless core
   is portable.
 

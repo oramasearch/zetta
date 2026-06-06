@@ -149,8 +149,9 @@ another database format = writing another `Dialect` that targets the same AST �
 
 ## Tech stack
 
-- **C++26** (`-std=c++2c`) — built with **Homebrew LLVM Clang** (`brew install
-  llvm`, Clang 21) on macOS; Apple's system Clang is too old. See C++ conventions below
+- **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
+  Homebrew LLVM Clang on macOS (`brew install llvm`), newest `clang++-NN` on
+  Linux. System defaults (Apple Clang 15, Ubuntu GCC 13) are too old. See C++ conventions below
 - **CMake 3.28+ / Ninja**, GUI deps via `FetchContent`:
   - **SDL3** (release-3.2.0) — window + input + Metal-backed renderer
   - **Dear ImGui** (v1.91.5) — immediate-mode GUI, SDL3 + SDL_Renderer backend
@@ -273,8 +274,9 @@ asset dependency.
 ### C++ conventions
 - **C++26** (`set(CMAKE_CXX_STANDARD 26)`, `cxx_std_26`). Use modern
   facilities; don't reach for older idioms when a newer one is clearer. The
-  build auto-selects Homebrew Clang on macOS (see the pre-`project()` block in
-  CMakeLists.txt); Apple Clang 15 can't do C++26 or build Capy/Corosio.
+  build auto-selects a C++26 compiler in the pre-`project()` block in
+  CMakeLists.txt — Homebrew Clang on macOS, `clang++-NN` (≥17) on Linux. System
+  defaults (Apple Clang 15, Ubuntu GCC 13) can't do C++26 or build Capy/Corosio.
 - **Follow the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/).**
 - **Full, descriptive names — legibility first.** No 1–2 letter or cryptic
   abbreviations anywhere: namespaces, types, functions, variables, *and template

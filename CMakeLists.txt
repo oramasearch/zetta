@@ -1,20 +1,38 @@
 cmake_minimum_required(VERSION 3.28)
 
-# zetta's coroutine stack (Capy/Corosio, vendored under modules/) needs
-# Clang 17+ — Apple's system Clang 15 is too old. On macOS, build with Homebrew
-# LLVM clang (`brew install llvm`) when the user hasn't chosen a compiler. This
-# must run before project(). Opt out with -DZETTA_USE_SYSTEM_COMPILER=ON or by
-# passing -DCMAKE_CXX_COMPILER=...
-if(APPLE AND NOT DEFINED CMAKE_CXX_COMPILER AND NOT ZETTA_USE_SYSTEM_COMPILER
-   AND EXISTS "/opt/homebrew/opt/llvm/bin/clang++")
-  set(CMAKE_C_COMPILER   "/opt/homebrew/opt/llvm/bin/clang"   CACHE FILEPATH "")
-  set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++" CACHE FILEPATH "")
-  # Homebrew clang doesn't assume Xcode's SDK; point it at the active one so
-  # libc++ can find the C headers (time.h, etc.).
-  if(NOT CMAKE_OSX_SYSROOT)
-    execute_process(COMMAND xcrun --show-sdk-path
-                    OUTPUT_VARIABLE ZETTA_SDKROOT OUTPUT_STRIP_TRAILING_WHITESPACE)
-    set(CMAKE_OSX_SYSROOT "${ZETTA_SDKROOT}" CACHE PATH "")
+# zetta is C++26 and its coroutine stack (Capy/Corosio) needs Clang 17+ — older
+# system compilers (Apple Clang 15, Ubuntu's GCC 13) can't build it. When the
+# user hasn't chosen a compiler, pick a suitable one. This must run before
+# project(). Opt out with -DZETTA_USE_SYSTEM_COMPILER=ON or by passing
+# -DCMAKE_CXX_COMPILER=... (e.g. clang++-19, or g++-14 which also does C++26).
+if(NOT DEFINED CMAKE_CXX_COMPILER AND NOT ZETTA_USE_SYSTEM_COMPILER)
+  if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin"
+     AND EXISTS "/opt/homebrew/opt/llvm/bin/clang++")
+    # macOS: Homebrew LLVM clang (`brew install llvm`).
+    set(CMAKE_C_COMPILER   "/opt/homebrew/opt/llvm/bin/clang"   CACHE FILEPATH "")
+    set(CMAKE_CXX_COMPILER "/opt/homebrew/opt/llvm/bin/clang++" CACHE FILEPATH "")
+    # Homebrew clang doesn't assume Xcode's SDK; point it at the active one so
+    # libc++ can find the C headers (time.h, etc.).
+    if(NOT CMAKE_OSX_SYSROOT)
+      execute_process(COMMAND xcrun --show-sdk-path
+                      OUTPUT_VARIABLE ZETTA_SDKROOT OUTPUT_STRIP_TRAILING_WHITESPACE)
+      set(CMAKE_OSX_SYSROOT "${ZETTA_SDKROOT}" CACHE PATH "")
+    endif()
+  elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+    # Linux: prefer the newest installed clang >= 17 (e.g. clang++-18 from apt).
+    # install-deps.sh provides one. Falls through to the system default (and a
+    # clear cxx_std_26 error) if none is found — then pass -DCMAKE_CXX_COMPILER.
+    foreach(ZETTA_VER 21 20 19 18 17)
+      find_program(ZETTA_CLANGXX_${ZETTA_VER} "clang++-${ZETTA_VER}")
+      if(ZETTA_CLANGXX_${ZETTA_VER})
+        set(CMAKE_CXX_COMPILER "${ZETTA_CLANGXX_${ZETTA_VER}}" CACHE FILEPATH "")
+        find_program(ZETTA_CLANGC_${ZETTA_VER} "clang-${ZETTA_VER}")
+        if(ZETTA_CLANGC_${ZETTA_VER})
+          set(CMAKE_C_COMPILER "${ZETTA_CLANGC_${ZETTA_VER}}" CACHE FILEPATH "")
+        endif()
+        break()
+      endif()
+    endforeach()
   endif()
 endif()
 
