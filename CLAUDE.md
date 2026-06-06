@@ -26,16 +26,19 @@ main()                       picks the mode, owns the Node lifecycle
   ...then node.stop()
 ```
 
-A node holds objects through a **storage engine** (`zetta::StorageEngine`) — a
-small interface so a node can use different engines over time. The first and
-only engine today is `zetta::JsonStore`: an in-memory `std::vector<nlohmann::json>`,
-no persistence yet. `Node` owns one (`node.store()`) and `node.add_object(json)`
-appends to it. **New engines implement `StorageEngine`; persistence/query land
-behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
+A node owns **databases**, each database owns **tables**, and each table holds
+its rows through a **storage engine** (`zetta::StorageEngine`). `Node` has full
+CRUD over databases (`create`/`find`/`drop`/`rename_database`, `database_names`)
+and `Database` over tables (`create`/`find`/`drop_table`, `table_names`);
+ownership is via `shared_ptr` so lookups hand back a safe handle, never a raw
+pointer. The only storage engine today is `zetta::JsonStore` — an in-memory
+`std::vector<nlohmann::json>`, no persistence yet. **New engines implement
+`StorageEngine`; persistence/query land behind it** — and don't let SDL/ImGui
+types leak into `zetta-core`.
 
 ## Tech stack
 
-- **C++23** (Apple Clang ships `std::expected` etc. under `-std=c++2b`)
+- **C++23** (`-std=c++2b`; Apple Clang 15+) — modern C++; see C++ conventions below
 - **CMake 3.28+ / Ninja**, GUI deps via `FetchContent`:
   - **SDL3** (release-3.2.0) — window + input + Metal-backed renderer
   - **Dear ImGui** (v1.91.5) — immediate-mode GUI, SDL3 + SDL_Renderer backend
@@ -65,7 +68,9 @@ CMakeLists.txt              build graph: imgui lib, zetta-core lib, zetta exe
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the database node
+  node.hpp                  zetta::Node — the node; CRUD over databases
+  database.hpp              zetta::Database — owns tables
+  table.hpp                 zetta::Table — owns a storage engine (its rows)
   headless.hpp              zetta::run_headless(Node&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
@@ -73,6 +78,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
 src/core/                   zetta-core impl
   node.cpp
+  database.cpp
+  table.cpp
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag
 src/gui/                    headed UI (links SDL3 + ImGui)
@@ -113,6 +120,22 @@ asset dependency.
   reasonable future tweak if it becomes annoying.)
 
 ## Conventions
+
+### C++ conventions
+- **C++23** (`set(CMAKE_CXX_STANDARD 23)`, `cxx_std_23`). Use modern
+  facilities; don't reach for older idioms when a newer one is clearer.
+- **Follow the [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/).**
+- **No C-style strings or buffers** — use `std::string` / `std::string_view`,
+  never `char[]` / `char*` for text. ImGui text fields bind to `std::string`
+  via `imgui_stdlib.h` (linked into the `imgui` target); use those overloads.
+- **No naked/owning raw pointers.** `std::unique_ptr` for sole ownership,
+  `std::shared_ptr` for shared/handle ownership; lookups return a
+  `shared_ptr` (empty on miss), not `T*`. References (`T&`) are fine for
+  non-owning params/returns. The only raw pointers allowed are unavoidable
+  C-API handles (`SDL_Window*`, the ImGui font byte buffer), and those stay
+  RAII-managed (e.g. owned + destroyed by `gui::App`).
+- Prefer `const`, value semantics, RAII, `enum class`, and free functions over
+  members where the Core Guidelines would.
 
 ### Commit messages
 - **Conventional Commits** (`feat:`, `fix:`, `refactor:`, `docs:`, etc.).

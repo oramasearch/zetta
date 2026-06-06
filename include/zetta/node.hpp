@@ -1,13 +1,13 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
-#include <nlohmann/json.hpp>
-
-#include "zetta/storage/engine.hpp"
+#include "zetta/database.hpp"
 
 namespace zetta {
 
@@ -47,13 +47,14 @@ public:
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
     void stop();
 
-    // Append a JSON document to the node's storage engine; returns the new
-    // document count.
-    std::size_t add_object(nlohmann::json doc);
-
-    // The node's active storage engine (a JsonStore for now).
-    StorageEngine& store() { return *store_; }
-    const StorageEngine& store() const { return *store_; }
+    // CRUD for databases. create/rename yield an empty handle / false on an
+    // empty name or a name clash; the UI surfaces that inline.
+    std::shared_ptr<Database> create_database(std::string name);
+    std::shared_ptr<Database> find_database(const std::string& name) const;
+    bool drop_database(const std::string& name);
+    bool rename_database(const std::string& from, const std::string& to);
+    std::vector<std::string> database_names() const;
+    std::size_t database_count() const { return databases_.size(); }
 
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
@@ -74,7 +75,7 @@ private:
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;
-    std::unique_ptr<StorageEngine> store_;  // the active storage engine
+    std::vector<std::shared_ptr<Database>> databases_;  // insertion order
 };
 
 }  // namespace zetta

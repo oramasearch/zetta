@@ -40,7 +40,10 @@ private:
     void apply_display_scale();
     void draw_menu_bar(bool& running);
     void draw_dashboard();
-    void draw_store();
+    void draw_explorer();    // the Databases | Tables | Rows columns
+    void draw_databases();
+    void draw_tables();
+    void draw_rows();
 
     Node& node_;
     SDL_Window* window_ = nullptr;
@@ -48,9 +51,19 @@ private:
     bool initialized_ = false;
     bool show_demo_ = false;
 
-    // "Store" panel: the JSON document being composed, and the last add error.
-    char doc_input_[4096] = R"({"name": "example", "value": 1})";
-    std::string store_error_;
+    // Explorer selection (held by name; re-resolved each frame so a dropped
+    // database/table can't leave a dangling handle) and input fields. ImGui's
+    // imgui_stdlib InputText overloads bind directly to std::string.
+    std::string selected_db_;
+    std::string selected_table_;
+    std::string new_db_input_;
+    std::string new_table_input_;
+    std::string rename_db_input_;
+    std::string doc_input_{R"({"name": "example", "value": 1})"};
+    // Per-column inline error messages.
+    std::string db_error_;
+    std::string table_error_;
+    std::string row_error_;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

@@ -1,7 +1,9 @@
 #include "gui/app.hpp"
 
+#include "zetta/database.hpp"
 #include "zetta/node.hpp"
 #include "zetta/signals.hpp"
+#include "zetta/table.hpp"
 #include "zetta/version.hpp"
 
 #include <SDL3/SDL.h>
@@ -9,11 +11,14 @@
 #include <imgui.h>
 #include <imgui_impl_sdl3.h>
 #include <imgui_impl_sdlrenderer3.h>
+#include <imgui_stdlib.h>
 
 #include <nlohmann/json.hpp>
 
 #include <cfloat>
+#include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -24,6 +29,9 @@ namespace {
 
 // Base logical font size; multiplied by the OS content scale per display.
 constexpr float kBaseFontPixels = 15.0f;
+
+// Inline-error text colour (soft red).
+constexpr ImVec4 kErrorColor{1.0f, 0.4f, 0.4f, 1.0f};
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -71,10 +79,9 @@ bool App::init() {
         if (win_h < 600) win_h = 600;
     }
 
-    char title[64];
-    std::snprintf(title, sizeof(title), "zetta %s", kVersion);
+    const std::string title = std::string{"zetta "} + kVersion;
     window_ = SDL_CreateWindow(
-        title, win_w, win_h,
+        title.c_str(), win_w, win_h,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (window_ == nullptr) {
         std::fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
@@ -172,62 +179,190 @@ void App::draw_menu_bar(bool& running) {
 }
 
 void App::draw_dashboard() {
-    ImGui::SeparatorText("Node");
-
-    const NodeConfig& cfg = node_.config();
-    ImGui::Text("Status:    %s", node_.status_line().c_str());
-    ImGui::Text("Data dir:  %s", cfg.data_dir.c_str());
-    ImGui::Text("Uptime:    %.1f s", node_.uptime_seconds());
-    ImGui::Text("Ticks:     %llu",
-                static_cast<unsigned long long>(node_.ticks()));
-
+    ImGui::Text("Node: %s", node_.status_line().c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("|  data dir: %s", node_.config().data_dir.c_str());
     ImGui::Spacing();
-    ImGui::TextDisabled(
-        "Headed mode renders the live node. Run with --headless for the same "
-        "node without a UI.");
 }
 
-void App::draw_store() {
-    StorageEngine& store = node_.store();
+void App::draw_explorer() {
+    const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    const float col_w =
+        (ImGui::GetContentRegionAvail().x - 2.0f * spacing) / 3.0f;
 
-    ImGui::SeparatorText("Store");
-    ImGui::Text("Engine: %s    Objects: %zu", store.name(), store.size());
+    ImGui::BeginChild("##databases", ImVec2(col_w, 0), ImGuiChildFlags_Borders);
+    draw_databases();
+    ImGui::EndChild();
 
-    ImGui::Spacing();
+    ImGui::SameLine();
+    ImGui::BeginChild("##tables", ImVec2(col_w, 0), ImGuiChildFlags_Borders);
+    draw_tables();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##rows", ImVec2(0, 0), ImGuiChildFlags_Borders);
+    draw_rows();
+    ImGui::EndChild();
+}
+
+void App::draw_databases() {
+    ImGui::SeparatorText("Databases");
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool submit = ImGui::InputTextWithHint(
+        "##newdb", "new database name", &new_db_input_,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::Button("Create database") || submit) {
+        if (new_db_input_.empty()) {
+            db_error_ = "name required";
+        } else if (!node_.create_database(new_db_input_)) {
+            db_error_ = "database already exists";
+        } else {
+            selected_db_ = new_db_input_;
+            selected_table_.clear();
+            new_db_input_.clear();
+            db_error_.clear();
+        }
+    }
+    if (!db_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", db_error_.c_str());
+    }
+
+    ImGui::Separator();
+
+    for (const std::string& name : node_.database_names()) {
+        ImGui::PushID(name.c_str());
+        if (ImGui::SmallButton("x")) {
+            node_.drop_database(name);
+            if (selected_db_ == name) {
+                selected_db_.clear();
+                selected_table_.clear();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Selectable(name.c_str(), selected_db_ == name)) {
+            selected_db_ = name;
+            selected_table_.clear();
+        }
+        ImGui::PopID();
+    }
+
+    // Rename (the "U" in CRUD) the selected database.
+    if (const auto db = node_.find_database(selected_db_)) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Rename '%s' to:", db->name().c_str());
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        const bool rename = ImGui::InputTextWithHint(
+            "##rendb", "new name", &rename_db_input_,
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ImGui::Button("Rename") || rename) {
+            if (rename_db_input_.empty()) {
+                db_error_ = "name required";
+            } else if (!node_.rename_database(selected_db_, rename_db_input_)) {
+                db_error_ = "rename failed (name taken?)";
+            } else {
+                selected_db_ = rename_db_input_;
+                rename_db_input_.clear();
+                db_error_.clear();
+            }
+        }
+    }
+}
+
+void App::draw_tables() {
+    ImGui::SeparatorText("Tables");
+
+    const auto db = node_.find_database(selected_db_);
+    if (!db) {
+        ImGui::TextDisabled("Select a database.");
+        return;
+    }
+
+    ImGui::TextDisabled("in '%s'", db->name().c_str());
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool submit = ImGui::InputTextWithHint(
+        "##newtable", "new table name", &new_table_input_,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::Button("Create table") || submit) {
+        if (new_table_input_.empty()) {
+            table_error_ = "name required";
+        } else if (!db->create_table(new_table_input_)) {
+            table_error_ = "table already exists";
+        } else {
+            selected_table_ = new_table_input_;
+            new_table_input_.clear();
+            table_error_.clear();
+        }
+    }
+    if (!table_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", table_error_.c_str());
+    }
+
+    ImGui::Separator();
+
+    for (const std::string& name : db->table_names()) {
+        ImGui::PushID(name.c_str());
+        if (ImGui::SmallButton("x")) {
+            db->drop_table(name);
+            if (selected_table_ == name) selected_table_.clear();
+        }
+        ImGui::SameLine();
+        const auto table = db->find_table(name);
+        const std::size_t rows = table ? table->row_count() : 0;
+        const std::string label = name + "  (" + std::to_string(rows) + ")";
+        if (ImGui::Selectable(label.c_str(), selected_table_ == name)) {
+            selected_table_ = name;
+        }
+        ImGui::PopID();
+    }
+}
+
+void App::draw_rows() {
+    ImGui::SeparatorText("Rows");
+
+    const auto db = node_.find_database(selected_db_);
+    if (!db) {
+        ImGui::TextDisabled("Select a database.");
+        return;
+    }
+    const auto table = db->find_table(selected_table_);
+    if (!table) {
+        ImGui::TextDisabled("Select or create a table.");
+        return;
+    }
+
+    ImGui::TextDisabled("%s.%s  (%zu rows)", db->name().c_str(),
+                        table->name().c_str(), table->row_count());
+
     ImGui::TextUnformatted("Add a JSON object:");
-    ImGui::InputTextMultiline(
-        "##doc", doc_input_, sizeof(doc_input_),
-        ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 5));
-
+    ImGui::InputTextMultiline("##doc", &doc_input_,
+                              ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 5));
     if (ImGui::Button("Add object")) {
         // Parse without exceptions — a malformed doc yields a discarded value
         // we report inline rather than throwing across the UI loop.
-        nlohmann::json doc =
-            nlohmann::json::parse(doc_input_, nullptr, /*allow_exceptions=*/false);
+        auto doc = nlohmann::json::parse(doc_input_, nullptr,
+                                         /*allow_exceptions=*/false);
         if (doc.is_discarded()) {
-            store_error_ = "invalid JSON — not added";
+            row_error_ = "invalid JSON — not added";
         } else {
-            node_.add_object(std::move(doc));
-            store_error_.clear();
+            table->add_row(std::move(doc));
+            row_error_.clear();
         }
     }
-    if (!store_error_.empty()) {
+    if (!row_error_.empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "%s",
-                           store_error_.c_str());
+        ImGui::TextColored(kErrorColor, "%s", row_error_.c_str());
     }
 
     ImGui::Spacing();
-    if (ImGui::BeginChild("##docs", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
-        if (store.size() == 0) {
-            ImGui::TextDisabled("(empty)");
-        }
-        for (std::size_t i = 0; i < store.size(); ++i) {
-            const std::string line = store.at(i).dump();
-            ImGui::TextWrapped("%zu  %s", i, line.c_str());
-        }
+    const StorageEngine& store = table->store();
+    if (store.size() == 0) {
+        ImGui::TextDisabled("(empty)");
     }
-    ImGui::EndChild();
+    for (std::size_t i = 0; i < store.size(); ++i) {
+        ImGui::TextWrapped("%zu  %s", i, store.at(i).dump().c_str());
+    }
 }
 
 void App::run() {
@@ -277,7 +412,7 @@ void App::run() {
 
         draw_menu_bar(running);
         draw_dashboard();
-        draw_store();
+        draw_explorer();
 
         ImGui::End();
 

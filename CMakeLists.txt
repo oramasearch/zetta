@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 project(zetta
   VERSION 0.0.1
-  DESCRIPTION "SDL3 + Dear ImGui desktop app"
+  DESCRIPTION "A database; runs headless or with an SDL3 + Dear ImGui UI"
   LANGUAGES C CXX
 )
 
@@ -92,11 +92,14 @@ add_library(imgui STATIC
   ${imgui_SOURCE_DIR}/imgui_widgets.cpp
   ${imgui_SOURCE_DIR}/backends/imgui_impl_sdl3.cpp
   ${imgui_SOURCE_DIR}/backends/imgui_impl_sdlrenderer3.cpp
+  # std::string helpers for InputText — so we never touch char[] buffers.
+  ${imgui_SOURCE_DIR}/misc/cpp/imgui_stdlib.cpp
 )
 
 target_include_directories(imgui PUBLIC
   ${imgui_SOURCE_DIR}
   ${imgui_SOURCE_DIR}/backends
+  ${imgui_SOURCE_DIR}/misc/cpp
 )
 
 target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
@@ -132,6 +135,8 @@ FetchContent_MakeAvailable(nlohmann_json)
 
 add_library(zetta-core STATIC
   src/core/node.cpp
+  src/core/database.cpp
+  src/core/table.cpp
   src/core/headless.cpp
   src/core/signals.cpp
 )
