@@ -57,6 +57,24 @@ optional leading `-`, `true` / `false` / `null`.
 - `WHERE` supports a single `column = value` equality.
 - Statements run in order; the first failure stops the batch and is reported.
 
+## System tables
+
+`zetta_nodes` is a read-only system table — like Postgres' `pg_stat_replication`
+— exposing cluster membership + [replication](replication.md) status. It's
+available whenever the `QueryService` was given a `Cluster` (the headed UI wires
+this; without a cluster, selecting it returns a clear error).
+
+```sql
+SELECT * FROM zetta_nodes;
+SELECT node_id, address, in_sync FROM zetta_nodes WHERE is_self = false;
+```
+
+Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
+`version`, `in_sync`, `last_sync_seconds`. `SELECT *`, projection, and a single
+`WHERE` equality all work, exactly as for a regular table — the executor just
+sources the rows from `Cluster::nodes()` instead of a storage engine. (The name
+is reserved: it's matched before any database lookup.)
+
 ## Timing
 
 `QueryService::Outcome::elapsed` is the wall-clock time of the whole parse +

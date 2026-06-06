@@ -47,8 +47,20 @@ falling back to `127.0.0.1` — and the join command uses the first (most
 reachable) one. Other nodes copy that `--peer` line to join.
 
 Headed mode's **Cluster** panel shows this node's id, every reachable listen
-address, the connected peers, and the **command to add another node** (with a
-Copy button). Headless logs `cluster: N peer(s)` each second.
+address, the **command to add another node** (with a Copy button), and a
+**Nodes & replication** table. Headless logs the same table whenever it changes.
+
+## All nodes + replication status
+
+`Cluster::nodes()` returns this node (first) plus every connected peer, each with
+its [replication](replication.md) status: entries, version, whether it's **in
+sync** with this node, and how long ago it last synced. Once a `ReplicationManager`
+is wired in, peers gossip their documents and status over the connection (see
+[replication.md](replication.md)). The view shows up three ways:
+
+- **Headed** — the Cluster panel's Nodes table.
+- **Headless** — the heartbeat prints a per-node table when it changes.
+- **SQL** — `SELECT * FROM zetta_nodes;` (see [query.md](query.md)).
 
 ## How it works
 
@@ -69,7 +81,11 @@ Copy button). Headless logs `cluster: N peer(s)` each second.
 
 ## Limits / future
 
-- **Equal peers + membership only.** Leader election and failover are the next
-  step; `ClusterRole` exists for that future (currently always `Follower`).
-- No data replication or consensus yet.
+- **Equal peers + membership + replication gossip.** Leader election and failover
+  are the next step; `ClusterRole` exists for that future (currently always
+  `Follower`).
+- Replication gossips a per-node schema snapshot today; streaming live `Node`
+  mutations into the replicated document is the next replication step (see
+  [replication.md](replication.md)). No consensus (it's CRDT convergence, not
+  Raft/Paxos) — by design.
 - Plaintext TCP (Corosio supports TLS; not wired yet).

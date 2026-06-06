@@ -13,15 +13,20 @@
 namespace zetta {
 
 class Node;
+class Cluster;
 
 namespace query {
 
 // The facade the UI (and tests) call: parse `sql` with the Postgres dialect and
 // execute every statement against the node, using `current_database` for
 // unqualified table names. Swapping/adding a dialect is a one-line change here.
+//
+// Pass a Cluster to make the `zetta_nodes` system table queryable (all nodes +
+// replication status).
 class QueryService {
 public:
-    explicit QueryService(Node& node) : executor_(node) {}
+    explicit QueryService(Node& node, const Cluster* cluster = nullptr)
+        : executor_(node, cluster) {}
 
     struct Outcome {
         std::vector<std::string> messages;  // one status per executed statement

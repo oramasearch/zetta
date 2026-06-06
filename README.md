@@ -43,8 +43,7 @@ interfaces by default (`0.0.0.0:7777`) and dials any `--peer` you give it.
 Several nodes can share a host — each binds the first free port in a range
 (default 16). At startup a node prints the address(es) it's reachable at — the
 wildcard bind expands to the machine's real LAN IPs — and the exact command to
-add another node. In headed mode the **Cluster** panel shows the same, plus
-connected peers; headless logs the peer count each second.
+add another node.
 
 ```bash
 zetta                                # first node — prints its LAN address to share
@@ -54,8 +53,12 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 ```
 
 State replicates between nodes as an [Automerge](docs/replication.md) CRDT
-(replicate-to-all policy; each node has a UUIDv4 actor id). See
-[docs/cluster.md](docs/cluster.md). Membership + replication primitives for now —
+(replicate-to-all policy; each node has a UUIDv4 actor id). Peers gossip their
+state and converge conflict-free. You can see **all nodes and their replication
+status** (entries, version, in-sync/syncing) three ways: the headed **Cluster**
+panel's Nodes table, the headless heartbeat log, or SQL —
+`SELECT * FROM zetta_nodes;`. See [docs/cluster.md](docs/cluster.md) and
+[docs/replication.md](docs/replication.md). Membership + replication for now —
 **leader election and failover are the planned next step**.
 
 The first configure clones SDL3, Dear ImGui, and GoogleTest via CMake

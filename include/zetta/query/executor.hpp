@@ -10,6 +10,7 @@
 namespace zetta {
 
 class Node;
+class Cluster;
 
 namespace query {
 
@@ -26,14 +27,19 @@ struct QueryResult {
 // Runs generic statements against a Node. `current_database` is the default for
 // unqualified table references (the UI's selected database). Dialect-neutral:
 // it only ever sees the generic AST.
+//
+// An optional Cluster lets SELECT read the `zetta_nodes` system table (all nodes
+// + replication status); without one, querying it returns a clear error.
 class Executor {
 public:
-    explicit Executor(Node& node) : node_(node) {}
+    explicit Executor(Node& node, const Cluster* cluster = nullptr)
+        : node_(node), cluster_(cluster) {}
 
     QueryResult execute(const Statement& stmt, const std::string& current_database);
 
 private:
     Node& node_;
+    const Cluster* cluster_;
 };
 
 }  // namespace query

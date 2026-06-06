@@ -3,8 +3,11 @@
 #include <cstddef>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <variant>
+#include <vector>
 
+#include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
@@ -12,6 +15,10 @@
 
 namespace zetta::query {
 namespace {
+
+// The system table exposing cluster membership + replication status, à la
+// Postgres' pg_stat_replication. SELECT-only; backed by Cluster::nodes().
+constexpr std::string_view kNodesTable = "zetta_nodes";
 
 template <class... Ts>
 struct overloaded : Ts... {
@@ -24,6 +31,62 @@ QueryResult error(std::string message) {
     QueryResult r;
     r.error = std::move(message);
     return r;
+}
+
+// One JSON row per node for the zetta_nodes system table. Unknown replication
+// fields (e.g. a peer that hasn't reported yet, or self's sync state) are null.
+std::vector<nlohmann::json> cluster_node_rows(const Cluster& cluster) {
+    std::vector<nlohmann::json> rows;
+    for (const NodeStatus& node : cluster.nodes()) {
+        const NodeReplication& replication = node.replication;
+        nlohmann::json row;
+        row["node_id"] = node.node_id;
+        row["address"] = node.address;
+        row["role"] = to_string(node.role);
+        row["is_self"] = node.is_self;
+        row["connected"] = node.connected;
+        row["entries"] = replication.known ? nlohmann::json(replication.entries)
+                                           : nlohmann::json();
+        row["version"] = replication.known ? nlohmann::json(replication.version)
+                                           : nlohmann::json();
+        row["in_sync"] = (replication.known && !node.is_self)
+                             ? nlohmann::json(replication.in_sync)
+                             : nlohmann::json();
+        row["last_sync_seconds"] =
+            (replication.known && !node.is_self)
+                ? nlohmann::json(replication.seconds_since_sync)
+                : nlohmann::json();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// Apply a SELECT's WHERE equality + projection to in-memory rows (used by the
+// system table; regular tables stream straight from the storage engine).
+QueryResult select_over_rows(const SelectStmt& statement,
+                             const std::vector<nlohmann::json>& source) {
+    QueryResult result;
+    if (!statement.all) result.columns = statement.columns;
+    for (const nlohmann::json& row : source) {
+        if (statement.where) {
+            if (!row.contains(statement.where->column) ||
+                row.at(statement.where->column) != statement.where->value) {
+                continue;
+            }
+        }
+        if (statement.all) {
+            result.rows.push_back(row);
+        } else {
+            nlohmann::json projected = nlohmann::json::object();
+            for (const std::string& column : statement.columns) {
+                projected[column] =
+                    row.contains(column) ? row.at(column) : nlohmann::json();
+            }
+            result.rows.push_back(std::move(projected));
+        }
+    }
+    result.message = "SELECT " + std::to_string(result.rows.size());
+    return result;
 }
 
 }  // namespace
@@ -116,6 +179,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "INSERT 0 " + std::to_string(inserted)};
             },
             [&](const SelectStmt& s) -> QueryResult {
+                // System table: cluster membership + replication status.
+                if (s.table.database.empty() && s.table.table == kNodesTable) {
+                    if (!cluster_) {
+                        return error(
+                            "\"zetta_nodes\" is unavailable here (no cluster)");
+                    }
+                    return select_over_rows(s, cluster_node_rows(*cluster_));
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +

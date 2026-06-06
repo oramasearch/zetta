@@ -60,7 +60,7 @@ float ui_pixel_density(SDL_Window* window) {
 App::App(Node& node, Cluster& cluster)
     : node_(node),
       cluster_(cluster),
-      query_(std::make_unique<query::QueryService>(node)) {}
+      query_(std::make_unique<query::QueryService>(node, &cluster)) {}
 
 App::~App() {
     if (initialized_) {
@@ -577,14 +577,56 @@ void App::draw_cluster() {
         ImGui::SetClipboardText(command.c_str());
     }
 
-    ImGui::SeparatorText("Peers");
-    const std::vector<ClusterPeer> connected = cluster_.peers();
-    if (connected.empty()) {
-        ImGui::TextDisabled("(none connected)");
-    }
-    for (const ClusterPeer& peer : connected) {
-        ImGui::BulletText("%s  @ %s", peer.node_id.c_str(),
-                          peer.address.c_str());
+    ImGui::SeparatorText("Nodes & replication");
+    const std::vector<NodeStatus> nodes = cluster_.nodes();
+    const ImGuiTableFlags table_flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("nodes", 6, table_flags)) {
+        ImGui::TableSetupColumn("Node");
+        ImGui::TableSetupColumn("Address");
+        ImGui::TableSetupColumn("Role");
+        ImGui::TableSetupColumn("Entries");
+        ImGui::TableSetupColumn("Version");
+        ImGui::TableSetupColumn("Replication");
+        ImGui::TableHeadersRow();
+        for (const NodeStatus& node : nodes) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            // First UUID segment — enough to tell nodes apart at a glance.
+            const std::string id = node.node_id.substr(0, node.node_id.find('-'));
+            ImGui::TextUnformatted(node.is_self ? (id + " (self)").c_str()
+                                                : id.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(node.address.c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(to_string(node.role).c_str());
+            ImGui::TableSetColumnIndex(3);
+            if (node.replication.known) {
+                ImGui::Text("%zu", node.replication.entries);
+            } else {
+                ImGui::TextDisabled("—");
+            }
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TextUnformatted(node.replication.known
+                                       ? node.replication.version.c_str()
+                                       : "—");
+            ImGui::TableSetColumnIndex(5);
+            if (node.is_self) {
+                ImGui::TextDisabled("—");
+            } else if (!node.replication.known) {
+                ImGui::TextDisabled("no status yet");
+            } else if (node.replication.in_sync) {
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f),
+                                   "in sync (%.1fs)",
+                                   node.replication.seconds_since_sync);
+            } else {
+                ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f),
+                                   "syncing (%.1fs)",
+                                   node.replication.seconds_since_sync);
+            }
+        }
+        ImGui::EndTable();
     }
 }
 

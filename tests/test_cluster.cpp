@@ -5,10 +5,13 @@
 #include <thread>
 
 #include "zetta/cluster.hpp"
+#include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
 
 using zetta::Cluster;
 using zetta::ClusterConfig;
+using zetta::NodeStatus;
+using zetta::ReplicationManager;
 
 namespace {
 
@@ -133,4 +136,69 @@ TEST(Cluster, PeersConnectAsEquals) {
 
     second.stop();
     first.stop();
+}
+
+TEST(Cluster, GossipsReplicationStatusBetweenNodes) {
+    // Each node seeds its own entry; after they connect, gossip should converge
+    // their documents and nodes() should report the peer in-sync.
+    const std::string id_a = zetta::new_uuid();
+    const std::string id_b = zetta::new_uuid();
+    ReplicationManager repl_a{id_a};
+    ReplicationManager repl_b{id_b};
+    repl_a.set(id_a, nlohmann::json{{"address", "127.0.0.1:43010"}});
+    repl_b.set(id_b, nlohmann::json{{"address", "127.0.0.1:43011"}});
+
+    ClusterConfig config_a;
+    config_a.listen_host = "127.0.0.1";
+    config_a.listen_port = 43010;
+    config_a.port_range = 1;
+    Cluster a{id_a, config_a, &repl_a};
+    a.start();
+    sleep_ms(100);
+
+    ClusterConfig config_b;
+    config_b.listen_host = "127.0.0.1";
+    config_b.listen_port = 43011;
+    config_b.port_range = 1;
+    config_b.seeds = {"127.0.0.1:43010"};
+    Cluster b{id_b, config_b, &repl_b};
+    b.start();
+
+    // The peer entry is reported in-sync once the gossip exchange has both
+    // merged the other's document and exchanged a matching status.
+    const auto peer_in_sync = [](const Cluster& cluster) {
+        const std::vector<NodeStatus> nodes = cluster.nodes();
+        return nodes.size() == 2 && nodes[1].replication.in_sync;
+    };
+    bool synced = false;
+    for (int attempt = 0; attempt < 120; ++attempt) {
+        if (peer_in_sync(a) && peer_in_sync(b)) {
+            synced = true;
+            break;
+        }
+        sleep_ms(50);
+    }
+    EXPECT_TRUE(synced);
+
+    // Documents converged: both hold both nodes' entries at the same version.
+    EXPECT_EQ(repl_a.entry_count(), 2u);
+    EXPECT_EQ(repl_b.entry_count(), 2u);
+    EXPECT_EQ(repl_a.version(), repl_b.version());
+
+    // nodes() lists self first, then the connected, in-sync peer.
+    const std::vector<NodeStatus> nodes = a.nodes();
+    ASSERT_EQ(nodes.size(), 2u);
+    EXPECT_TRUE(nodes[0].is_self);
+    EXPECT_EQ(nodes[0].node_id, id_a);
+    EXPECT_EQ(nodes[0].replication.entries, 2u);
+    EXPECT_FALSE(nodes[1].is_self);
+    EXPECT_EQ(nodes[1].node_id, id_b);
+    EXPECT_TRUE(nodes[1].connected);
+    EXPECT_TRUE(nodes[1].replication.known);
+    EXPECT_TRUE(nodes[1].replication.in_sync);
+    EXPECT_EQ(nodes[1].replication.entries, 2u);
+    EXPECT_GE(nodes[1].replication.seconds_since_sync, 0.0);
+
+    b.stop();
+    a.stop();
 }

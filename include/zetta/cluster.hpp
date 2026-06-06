@@ -8,14 +8,41 @@
 
 namespace zetta {
 
+class ReplicationManager;
+
 // Elected at runtime. Leader election + failover are planned; until then every
 // node stays a Follower and all nodes are treated as equals.
 enum class ClusterRole { Follower, Candidate, Leader };
+
+// Human-readable role name ("follower" / "candidate" / "leader").
+std::string to_string(ClusterRole role);
 
 // A peer this node is currently connected to.
 struct ClusterPeer {
     std::string node_id;
     std::string address;  // host:port the peer reported it listens on
+};
+
+// A node's replication state, as last learned over the gossip exchange. For the
+// local node it's read straight from its ReplicationManager; for a peer it's
+// what that peer last reported.
+struct NodeReplication {
+    bool known = false;          // have we learned this node's replication state?
+    std::size_t entries = 0;     // top-level keys in its replicated document
+    std::string version;         // heads fingerprint (matches ours when in sync)
+    bool in_sync = false;        // version equals this node's own version
+    double seconds_since_sync = -1.0;  // <0 = not applicable (self) or never
+};
+
+// One row of the "all nodes + replication status" view: who the node is, how it
+// connects, and where its replicated state stands. Built by Cluster::nodes().
+struct NodeStatus {
+    std::string node_id;
+    std::string address;
+    ClusterRole role = ClusterRole::Follower;
+    bool is_self = false;
+    bool connected = false;  // membership (always true for self)
+    NodeReplication replication;
 };
 
 struct ClusterConfig {
@@ -41,7 +68,12 @@ struct ClusterConfig {
 // types (the adapter is src/core/cluster.cpp).
 class Cluster {
 public:
-    Cluster(std::string node_id, ClusterConfig config);
+    // `replication`, when given, is gossiped to peers: on each connection the
+    // nodes exchange their replicated documents (save/merge) and report their
+    // replication status, which surfaces in nodes(). Must outlive the Cluster.
+    // Passing nullptr runs membership only (no replication gossip).
+    Cluster(std::string node_id, ClusterConfig config,
+            ReplicationManager* replication = nullptr);
     ~Cluster();
 
     Cluster(const Cluster&) = delete;
@@ -72,6 +104,12 @@ public:
     // Snapshot of currently-connected peers (thread-safe).
     std::vector<ClusterPeer> peers() const;
     std::size_t peer_count() const;
+
+    // Every node and its replication status, for the "list of all nodes" view:
+    // this node first (is_self), then each connected peer with the replication
+    // state it last reported. Thread-safe. With no ReplicationManager wired in,
+    // the replication fields are left unknown.
+    std::vector<NodeStatus> nodes() const;
 
     // Opaque networking state, defined in cluster.cpp — hides the Corosio
     // backend, the io_context thread, and the peer table. Public so the

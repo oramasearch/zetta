@@ -1,5 +1,8 @@
 #include "zetta/replication.hpp"
 
+#include <algorithm>
+#include <cstdint>
+#include <format>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -53,6 +56,32 @@ nlohmann::json ReplicationManager::snapshot() const {
                                             : std::move(value);
     }
     return result;
+}
+
+std::size_t ReplicationManager::entry_count() const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->document.keys(am::root).size();
+}
+
+std::string ReplicationManager::version() const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    std::vector<am::ChangeHash> heads = state_->document.get_heads();
+    if (heads.empty()) return "empty";
+    // Sort so the fingerprint is order-independent: two documents with the same
+    // set of heads (i.e. converged) hash identically regardless of merge order.
+    std::sort(heads.begin(), heads.end());
+    std::uint64_t hash = 1469598103934665603ull;  // FNV-1a (64-bit) offset basis
+    for (const am::ChangeHash& head : heads) {
+        for (const std::byte raw : head.bytes) {
+            hash ^= static_cast<std::uint8_t>(raw);
+            hash *= 1099511628211ull;  // FNV-1a prime
+        }
+    }
+    // Fold to 32 bits and render 8 hex chars — short but collision-resistant
+    // enough to tell converged from diverged documents at a glance.
+    const std::uint32_t folded =
+        static_cast<std::uint32_t>(hash ^ (hash >> 32));
+    return std::format("{:08x}", folded);
 }
 
 std::vector<std::byte> ReplicationManager::save() const {

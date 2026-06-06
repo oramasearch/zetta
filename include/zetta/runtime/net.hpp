@@ -11,6 +11,7 @@
 #include <boost/capy/write.hpp>
 #include <boost/corosio.hpp>
 #include <boost/corosio/tcp_acceptor.hpp>
+#include <boost/corosio/timer.hpp>
 
 namespace zetta::runtime::net {
 
@@ -19,6 +20,7 @@ using tcp_acceptor = boost::corosio::tcp_acceptor;
 using tcp_socket = boost::corosio::tcp_socket;
 using endpoint = boost::corosio::endpoint;
 using ipv4_address = boost::corosio::ipv4_address;
+using timer = boost::corosio::timer;
 
 using boost::capy::const_buffer;
 using boost::capy::mutable_buffer;

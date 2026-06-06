@@ -9,6 +9,7 @@
 #include "zetta/cluster.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/node.hpp"
+#include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
 #include "zetta/version.hpp"
 
@@ -19,6 +20,8 @@
 #include <cstdio>
 #include <string>
 #include <system_error>
+
+#include <nlohmann/json.hpp>
 
 namespace {
 
@@ -121,6 +124,20 @@ Options parse_args(int argc, char** argv) {
     return o;
 }
 
+// This node's replicated entry: where it listens and the schema it holds
+// (databases → their tables). Each node writes only its own node_id key, so the
+// CRDT merges every node's entry conflict-free into one shared map.
+nlohmann::json node_document(const zetta::Node& node,
+                             const std::string& address) {
+    nlohmann::json databases = nlohmann::json::object();
+    for (const std::string& name : node.database_names()) {
+        auto database = node.find_database(name);
+        databases[name] = database ? nlohmann::json(database->table_names())
+                                    : nlohmann::json::array();
+    }
+    return nlohmann::json{{"address", address}, {"databases", databases}};
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -140,8 +157,19 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    zetta::Cluster cluster(zetta::new_uuid(), opts.cluster);
+    // One UUID is both the cluster node id and the replication actor id, so a
+    // node's changes are attributed to it and merge conflict-free. Replication
+    // must outlive the cluster (its network thread gossips it).
+    const std::string node_id = zetta::new_uuid();
+    zetta::ReplicationManager replication(node_id);
+
+    zetta::Cluster cluster(node_id, opts.cluster, &replication);
     cluster.start();
+
+    // Seed this node's replicated entry now that its reachable address is known;
+    // peers merge it so every node's document lists all nodes.
+    replication.set(node_id,
+                    node_document(node, cluster.listen_addresses().front()));
 
     // Tell the operator where this node is reachable so they can connect more
     // nodes. A wildcard bind expands to every interface IPv4.

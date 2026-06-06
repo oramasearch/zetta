@@ -48,6 +48,17 @@ public:
     // The merged document as JSON.
     nlohmann::json snapshot() const;
 
+    // Number of top-level keys in the replicated document — a coarse "how much
+    // is replicated" count (zetta seeds one key per node, so this is the number
+    // of nodes the document knows about).
+    std::size_t entry_count() const;
+
+    // A short, stable fingerprint of the document's current Automerge heads
+    // (the change-DAG leaves). Two nodes hold identical state exactly when their
+    // versions match — that's the convergence/"in sync" check. "empty" for an
+    // empty document.
+    std::string version() const;
+
     // Serialize the whole document, to gossip to a peer.
     std::vector<std::byte> save() const;
     // Merge a peer's serialized document into ours (conflict-free). Ignored if

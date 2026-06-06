@@ -4,11 +4,14 @@
 #include <variant>
 
 #include "temp_dir.hpp"
+#include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/replication.hpp"
 #include "zetta/table.hpp"
+#include "zetta/uuid.hpp"
 
 using zetta::Node;
 using zetta::NodeConfig;
@@ -175,5 +178,55 @@ TEST(QueryService, ReportsExecutionErrors) {
     auto no_db_selected = svc.run("SELECT * FROM floating;", /*current=*/"");
     EXPECT_FALSE(no_db_selected.ok());
 
+    node.stop();
+}
+
+// ---- zetta_nodes system table ---------------------------------------------
+
+TEST(QueryService, SelectsClusterNodesSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    const std::string node_id = zetta::new_uuid();
+    zetta::ReplicationManager replication{node_id};
+    replication.set(node_id, nlohmann::json{{"address", "127.0.0.1:43500"}});
+
+    zetta::ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 43500;
+    config.port_range = 1;
+    zetta::Cluster cluster{node_id, config, &replication};
+    cluster.start();
+
+    QueryService svc{node, &cluster};
+    auto sel = svc.run("SELECT * FROM zetta_nodes;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 1u);  // just this node
+    EXPECT_EQ(sel.rows[0]["node_id"].get<std::string>(), node_id);
+    EXPECT_TRUE(sel.rows[0]["is_self"].get<bool>());
+    EXPECT_EQ(sel.rows[0]["entries"].get<int>(), 1);
+
+    // WHERE + projection work over the system table too.
+    auto projected = svc.run(
+        "SELECT node_id, address FROM zetta_nodes WHERE node_id = '" + node_id +
+            "';",
+        "");
+    ASSERT_TRUE(projected.ok()) << projected.error;
+    ASSERT_EQ(projected.rows.size(), 1u);
+    EXPECT_TRUE(projected.rows[0].contains("address"));
+    EXPECT_FALSE(projected.rows[0].contains("role"));
+
+    cluster.stop();
+    node.stop();
+}
+
+TEST(QueryService, ClusterNodesNeedsACluster) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};  // no cluster wired in
+    auto sel = svc.run("SELECT * FROM zetta_nodes;", "");
+    EXPECT_FALSE(sel.ok());
     node.stop();
 }

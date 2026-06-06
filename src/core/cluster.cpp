@@ -6,12 +6,19 @@
 #include <netinet/in.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <charconv>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -19,6 +26,7 @@
 
 #include <boost/capy.hpp>
 
+#include "zetta/replication.hpp"
 #include "zetta/runtime/net.hpp"
 
 // src/core/cluster.cpp is the networking adapter: the one .cpp allowed to use
@@ -30,27 +38,54 @@ namespace capy = boost::capy;
 namespace net = zetta::runtime::net;
 
 struct Cluster::State {
+    // A connected peer plus the replication status it last reported over gossip.
+    struct PeerRecord {
+        std::string node_id;
+        std::string address;
+        bool has_status = false;  // have we received a STATUS from it yet?
+        std::size_t entries = 0;
+        std::string version;
+        std::chrono::steady_clock::time_point last_sync{};
+    };
+
     net::io_context io_context;
     std::optional<net::tcp_acceptor> acceptor;
     std::thread network_thread;
     std::uint16_t bound_port = 0;
+    ReplicationManager* replication = nullptr;  // gossip target (optional)
     mutable std::mutex mutex;
-    std::vector<ClusterPeer> peers;
+    std::vector<PeerRecord> peers;
 
     // Add a peer unless one with the same node_id is already present. Returns
     // whether it was newly added (so the matching disconnect removes it once).
-    bool add_peer(ClusterPeer peer) {
+    bool add_peer(std::string node_id, std::string address) {
         const std::lock_guard<std::mutex> lock(mutex);
-        for (const ClusterPeer& existing : peers) {
-            if (existing.node_id == peer.node_id) return false;
+        for (const PeerRecord& existing : peers) {
+            if (existing.node_id == node_id) return false;
         }
-        peers.push_back(std::move(peer));
+        peers.push_back(PeerRecord{.node_id = std::move(node_id),
+                                   .address = std::move(address)});
         return true;
     }
     void remove_peer(const std::string& node_id) {
         const std::lock_guard<std::mutex> lock(mutex);
         std::erase_if(peers,
-                      [&](const ClusterPeer& p) { return p.node_id == node_id; });
+                      [&](const PeerRecord& p) { return p.node_id == node_id; });
+    }
+    // Record a peer's reported replication status (entries + version) and stamp
+    // the sync time. No-op if the peer has since disconnected.
+    void update_peer_status(const std::string& node_id, std::size_t entries,
+                            std::string version,
+                            std::chrono::steady_clock::time_point when) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        for (PeerRecord& peer : peers) {
+            if (peer.node_id != node_id) continue;
+            peer.has_status = true;
+            peer.entries = entries;
+            peer.version = std::move(version);
+            peer.last_sync = when;
+            return;
+        }
     }
 };
 
@@ -72,11 +107,15 @@ bool parse_host_port(const std::string& text, net::ipv4_address& address,
     return true;
 }
 
+// Cap on a single line, generous enough for a gossiped (base64) document blob
+// but bounded so a misbehaving peer can't make us buffer without limit.
+constexpr std::size_t kMaxLineBytes = 8 * 1024 * 1024;
+
 // Read one '\n'-terminated line (without the newline). Empty optional on
-// EOF/error.
+// EOF/error or if the line exceeds kMaxLineBytes.
 capy::task<std::optional<std::string>> read_line(net::tcp_socket& socket) {
     std::string accumulated;
-    char buffer[512];
+    char buffer[4096];
     for (;;) {
         auto [ec, n] = co_await socket.read_some(
             net::mutable_buffer(buffer, sizeof buffer));
@@ -87,16 +126,16 @@ capy::task<std::optional<std::string>> read_line(net::tcp_socket& socket) {
             accumulated.resize(newline);
             co_return accumulated;
         }
-        if (accumulated.size() > 8192) co_return accumulated;  // sanity bound
+        if (accumulated.size() > kMaxLineBytes) co_return std::nullopt;
     }
 }
 
-capy::task<> write_line(net::tcp_socket& socket, std::string line) {
+// Returns whether the whole line was written (false on a closed/broken socket).
+capy::task<bool> write_line(net::tcp_socket& socket, std::string line) {
     line.push_back('\n');
     auto [ec, written] =
         co_await net::write(socket, net::const_buffer(line.data(), line.size()));
-    (void)ec;
-    (void)written;
+    co_return !ec && written == line.size();
 }
 
 // Parse "ZETTA/1 HELLO <node_id> <listen_address>". Returns an empty node_id on
@@ -113,6 +152,126 @@ ClusterPeer parse_hello(const std::string& line) {
 std::string hello_line(const std::string& node_id,
                        const std::string& listen_address) {
     return std::string(kProtocol) + " HELLO " + node_id + " " + listen_address;
+}
+
+// --- Replication gossip -----------------------------------------------------
+//
+// Once peers have shaken hands they exchange replicated state on a timer:
+//   ZETTA/1 SYNC <base64 of ReplicationManager::save()>   — merge into ours
+//   ZETTA/1 STATUS <entries> <version>                    — its status, for nodes()
+// SYNC carries the whole document (the ReplicateToAllNodes policy); the CRDT
+// merge is conflict-free, so order and duplication don't matter.
+
+constexpr std::string_view kBase64Alphabet =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64_encode(std::span<const std::byte> data) {
+    std::string out;
+    out.reserve((data.size() + 2) / 3 * 4);
+    std::size_t index = 0;
+    while (index + 3 <= data.size()) {
+        const std::uint32_t triple =
+            (static_cast<std::uint32_t>(data[index]) << 16) |
+            (static_cast<std::uint32_t>(data[index + 1]) << 8) |
+            static_cast<std::uint32_t>(data[index + 2]);
+        out.push_back(kBase64Alphabet[(triple >> 18) & 0x3f]);
+        out.push_back(kBase64Alphabet[(triple >> 12) & 0x3f]);
+        out.push_back(kBase64Alphabet[(triple >> 6) & 0x3f]);
+        out.push_back(kBase64Alphabet[triple & 0x3f]);
+        index += 3;
+    }
+    if (const std::size_t remaining = data.size() - index; remaining > 0) {
+        std::uint32_t triple = static_cast<std::uint32_t>(data[index]) << 16;
+        if (remaining == 2) {
+            triple |= static_cast<std::uint32_t>(data[index + 1]) << 8;
+        }
+        out.push_back(kBase64Alphabet[(triple >> 18) & 0x3f]);
+        out.push_back(kBase64Alphabet[(triple >> 12) & 0x3f]);
+        out.push_back(remaining == 2 ? kBase64Alphabet[(triple >> 6) & 0x3f]
+                                     : '=');
+        out.push_back('=');
+    }
+    return out;
+}
+
+std::vector<std::byte> base64_decode(std::string_view text) {
+    auto value_of = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;  // '=' padding or invalid
+    };
+    std::vector<std::byte> out;
+    std::uint32_t accumulator = 0;
+    int bits = 0;
+    for (const char c : text) {
+        const int value = value_of(c);
+        if (value < 0) continue;  // skip padding / whitespace
+        accumulator = (accumulator << 6) | static_cast<std::uint32_t>(value);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out.push_back(static_cast<std::byte>((accumulator >> bits) & 0xff));
+        }
+    }
+    return out;
+}
+
+std::string sync_line(const ReplicationManager& replication) {
+    return std::string(kProtocol) + " SYNC " +
+           base64_encode(replication.save());
+}
+
+std::string status_line(const ReplicationManager& replication) {
+    return std::string(kProtocol) + " STATUS " +
+           std::to_string(replication.entry_count()) + " " +
+           replication.version();
+}
+
+// Apply one gossip line to our state. `peer_node_id` is who sent it.
+void apply_gossip(Cluster::State* self, const std::string& line,
+                  const std::string& peer_node_id) {
+    std::istringstream parser(line);
+    std::string protocol, verb;
+    parser >> protocol >> verb;
+    if (protocol != kProtocol) return;
+    if (verb == "SYNC") {
+        std::string encoded;
+        parser >> encoded;
+        if (self->replication && !encoded.empty()) {
+            self->replication->merge(base64_decode(encoded));
+        }
+    } else if (verb == "STATUS") {
+        std::size_t entries = 0;
+        std::string version;
+        parser >> entries >> version;
+        self->update_peer_status(peer_node_id, entries, std::move(version),
+                                 std::chrono::steady_clock::now());
+    }
+}
+
+// Periodically push our replicated document + status to a peer until the link
+// dies. Runs alongside the read pump (one outstanding write, one read — the
+// full-duplex pattern a socket allows).
+capy::task<> gossip_writer(Cluster::State* self,
+                           std::shared_ptr<net::tcp_socket> socket,
+                           std::shared_ptr<std::atomic<bool>> alive) {
+    using namespace std::chrono_literals;
+    net::timer timer(self->io_context);
+    while (alive->load()) {
+        if (self->replication) {
+            if (!co_await write_line(*socket, sync_line(*self->replication))) {
+                break;
+            }
+            if (!co_await write_line(*socket, status_line(*self->replication))) {
+                break;
+            }
+        }
+        timer.expires_after(500ms);
+        [[maybe_unused]] const auto wait_result = co_await timer.wait();
+    }
 }
 
 // Run the symmetric handshake over an established connection and stay joined
@@ -139,12 +298,28 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         socket.close();  // malformed, or we dialed ourselves
         co_return;
     }
-    const bool added = self->add_peer(peer);
-    for (;;) {
-        if (!co_await read_line(socket)) break;  // peer disconnected
+    const bool added = self->add_peer(peer.node_id, peer.address);
+
+    // Share the socket between this read pump and the gossip write pump, and a
+    // liveness flag so the writer stops once the connection drops.
+    auto shared_socket =
+        std::make_shared<net::tcp_socket>(std::move(socket));
+    auto alive = std::make_shared<std::atomic<bool>>(true);
+    if (self->replication) {
+        capy::run_async(self->io_context.get_executor())(
+            gossip_writer(self, shared_socket, alive));
     }
+
+    // Read pump: merge gossiped state and record peer status until disconnect.
+    for (;;) {
+        std::optional<std::string> line = co_await read_line(*shared_socket);
+        if (!line) break;  // peer disconnected
+        apply_gossip(self, *line, peer.node_id);
+    }
+
+    alive->store(false);
     if (added) self->remove_peer(peer.node_id);
-    socket.close();
+    shared_socket->close();
 }
 
 capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
@@ -211,11 +386,26 @@ std::vector<std::string> local_ipv4_addresses() {
 
 }  // namespace
 
-Cluster::Cluster(std::string node_id, ClusterConfig config)
+std::string to_string(ClusterRole role) {
+    switch (role) {
+        case ClusterRole::Follower:
+            return "follower";
+        case ClusterRole::Candidate:
+            return "candidate";
+        case ClusterRole::Leader:
+            return "leader";
+    }
+    return "follower";
+}
+
+Cluster::Cluster(std::string node_id, ClusterConfig config,
+                 ReplicationManager* replication)
     : state_(std::make_unique<State>()),
       node_id_(std::move(node_id)),
       config_(std::move(config)),
-      role_(ClusterRole::Follower) {}
+      role_(ClusterRole::Follower) {
+    state_->replication = replication;
+}
 
 Cluster::~Cluster() { stop(); }
 
@@ -301,12 +491,69 @@ std::string Cluster::peer_command() const {
 
 std::vector<ClusterPeer> Cluster::peers() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
-    return state_->peers;
+    std::vector<ClusterPeer> result;
+    result.reserve(state_->peers.size());
+    for (const State::PeerRecord& peer : state_->peers) {
+        result.push_back(ClusterPeer{.node_id = peer.node_id,
+                                     .address = peer.address});
+    }
+    return result;
 }
 
 std::size_t Cluster::peer_count() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     return state_->peers.size();
+}
+
+std::vector<NodeStatus> Cluster::nodes() const {
+    // Read our own replication status first (its own lock), so we can flag each
+    // peer in_sync when its reported version matches ours.
+    const bool have_replication = state_->replication != nullptr;
+    std::string my_version;
+    std::size_t my_entries = 0;
+    if (have_replication) {
+        my_version = state_->replication->version();
+        my_entries = state_->replication->entry_count();
+    }
+    const std::string my_address = listen_addresses().front();
+    const auto now = std::chrono::steady_clock::now();
+
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    std::vector<NodeStatus> result;
+    result.reserve(state_->peers.size() + 1);
+
+    NodeStatus self;
+    self.node_id = node_id_;
+    self.address = my_address;
+    self.role = role_;
+    self.is_self = true;
+    self.connected = true;
+    self.replication.known = have_replication;
+    self.replication.entries = my_entries;
+    self.replication.version = my_version;
+    self.replication.in_sync = true;            // trivially in sync with itself
+    self.replication.seconds_since_sync = -1.0;  // not applicable
+    result.push_back(std::move(self));
+
+    for (const State::PeerRecord& peer : state_->peers) {
+        NodeStatus node;
+        node.node_id = peer.node_id;
+        node.address = peer.address;
+        node.role = ClusterRole::Follower;
+        node.is_self = false;
+        node.connected = true;
+        node.replication.known = peer.has_status;
+        node.replication.entries = peer.entries;
+        node.replication.version = peer.version;
+        node.replication.in_sync =
+            peer.has_status && have_replication && peer.version == my_version;
+        node.replication.seconds_since_sync =
+            peer.has_status
+                ? std::chrono::duration<double>(now - peer.last_sync).count()
+                : -1.0;
+        result.push_back(std::move(node));
+    }
+    return result;
 }
 
 }  // namespace zetta

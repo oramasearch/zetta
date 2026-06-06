@@ -28,15 +28,46 @@ of zetta stays decoupled from the backend.
 - `set(key, json)` — a local change (any JSON value, stored as JSON text in the CRDT).
 - `snapshot()` — the merged document as JSON.
 - `save()` → bytes; `merge(bytes)` — exchange + merge with a peer, conflict-free.
+- `entry_count()` — number of top-level keys (zetta seeds one per node).
+- `version()` — a short fingerprint of the document's Automerge **heads** (the
+  change-DAG leaves). Two nodes hold identical state exactly when their versions
+  match — this is the "in sync" check. `"empty"` for an empty document.
 
 It is thread-safe (the cluster's network thread and local callers both touch it).
+
+## Gossip over the cluster
+
+The [cluster](cluster.md) carries replication. When a node is built with a
+`ReplicationManager`, each peer connection runs a gossip exchange on a ~½s timer
+(adapter: `src/core/cluster.cpp`):
+
+- `ZETTA/1 SYNC <base64 of save()>` — the whole document; the receiver `merge()`s
+  it (conflict-free, so order and duplicates don't matter).
+- `ZETTA/1 STATUS <entries> <version>` — the sender's status, recorded against
+  that peer so `Cluster::nodes()` can report each node's entries, version, and
+  whether it's **in sync** (its version equals ours) and how long ago it last
+  synced.
+
+Each node seeds its own entry — `node_id → { address, databases }` — so it writes
+only its own key; the merge unions every node's entry into one shared map and the
+documents converge to the same `version()`.
+
+## Seeing it: all nodes + replication status
+
+`Cluster::nodes()` returns this node plus every connected peer with its
+replication status. It surfaces three ways:
+
+- **Headed** — the Cluster panel's *Nodes & replication* table (id, address,
+  role, entries, version, in-sync/syncing + age).
+- **Headless** — the heartbeat logs a per-node table whenever it changes.
+- **SQL** — `SELECT * FROM zetta_nodes;` (see [query.md](query.md)).
 
 ## Status / next steps
 
 - **Done + tested:** the CRDT core — `set`/`snapshot`/`save`/`merge`, distinct
-  per-node actor ids, and conflict-free convergence of concurrent edits
-  (`tests/test_replication.cpp`).
-- **Next:** gossip `save()`/`merge()` over the [cluster](cluster.md)'s peer
-  connections so state replicates automatically across running nodes; then hook
-  the live `Node`'s DDL / metadata / row mutations into the replicated document
-  (so real database operations replicate).
+  per-node actor ids, conflict-free convergence (`tests/test_replication.cpp`);
+  and **gossip over the cluster** — peers exchange documents and converge
+  automatically, with per-node status in `nodes()` (`tests/test_cluster.cpp`).
+- **Next:** hook the live `Node`'s DDL / metadata / row mutations into the
+  replicated document, so real database operations replicate (today each node
+  seeds its schema snapshot at startup; ongoing mutations aren't yet streamed in).

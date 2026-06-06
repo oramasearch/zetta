@@ -93,23 +93,32 @@ handshake. `zetta::Cluster` runs networking on a background thread via
 **Corosio**, behind the `zetta::runtime::net` seam (adapter:
 `src/core/cluster.cpp`; public API exposes no backend types). The headed Cluster
 panel shows the node id, every reachable listen address, peers, and the
-**command to add another node**; headless logs the peer count. **Leader election
-+ failover are the planned next step** (`ClusterRole`
-exists for it, currently always `Follower`); membership only for now. See
+**command to add another node** plus a **Nodes & replication** table; headless
+logs that table. `Cluster::nodes()` returns this node + every connected peer with
+its replication status (entries, version, in-sync, last-sync) — surfaced in the
+headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
+election + failover are the planned next step** (`ClusterRole` exists for it,
+currently always `Follower`); membership + replication gossip for now. See
 [docs/cluster.md](docs/cluster.md).
 
 ### Replication (CRDT)
 
 A node's replicated state (DDL/metadata/rows) is an **Automerge CRDT**
 (`modules/automerge-cpp`, from-scratch C++23, no Rust). `zetta::ReplicationManager`
-exposes only JSON + bytes (`set`/`snapshot`/`save`/`merge`); Automerge is hidden
-in the adapter `src/core/replication.cpp`. Peers exchange `save()`/`merge()`
-blobs and converge **conflict-free**. Each node's **UUIDv4 is its actor id** (16
-bytes; distinct ids make concurrent edits merge without dropping changes) — the
-same UUID as its cluster node id. Policies plug in via `ReplicationPolicy`; the
-first is `ReplicateToAllNodes` (full copy on every node). The CRDT core is done +
-tested; gossiping it over the cluster and hooking live `Node` mutations into it
-are the next steps. See [docs/replication.md](docs/replication.md).
+exposes only JSON + bytes (`set`/`snapshot`/`save`/`merge`, plus `entry_count`/
+`version` for status); Automerge is hidden in the adapter
+`src/core/replication.cpp`. Peers **gossip** `save()`/`merge()` blobs over the
+cluster (the `Cluster` takes a `ReplicationManager*`; per-connection `SYNC`/
+`STATUS` exchange on a timer in `src/core/cluster.cpp`) and converge
+**conflict-free**. `version()` fingerprints the Automerge heads, so two nodes are
+"in sync" exactly when their versions match. Each node's **UUIDv4 is its actor
+id** (16 bytes; distinct ids make concurrent edits merge without dropping
+changes) — the same UUID as its cluster node id, and the key under which it seeds
+its own `{address, databases}` entry (so the merge unions all nodes). Policies
+plug in via `ReplicationPolicy`; the first is `ReplicateToAllNodes` (full copy on
+every node). Done + tested: the CRDT core **and** cluster gossip + per-node
+status; **next** is streaming live `Node` mutations into the document (today it
+seeds a schema snapshot at startup). See [docs/replication.md](docs/replication.md).
 
 ### On-disk layout
 
@@ -151,7 +160,11 @@ frontend; `QueryService` is the parse+execute facade the UI calls. Supporting
 another database format = writing another `Dialect` that targets the same AST —
 **never** add dialect specifics to the executor. Supported today: basic DDL
 (CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT + single
-`WHERE` equality). Full detail in [docs/query.md](docs/query.md).
+`WHERE` equality). The executor also serves the read-only **`zetta_nodes`**
+system table (cluster membership + replication status, à la
+`pg_stat_replication`) when a `Cluster*` is wired into the `Executor`/
+`QueryService` — a reserved table name, not a dialect quirk. Full detail in
+[docs/query.md](docs/query.md).
 
 ## Tech stack
 
