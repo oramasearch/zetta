@@ -22,17 +22,21 @@ What it installs (or install manually):
 - macOS for the headed UI (SDL3 uses a Metal-backed renderer); the headless core
   is portable.
 
-SDL3, Dear ImGui (+ `imgui_stdlib`), nlohmann/json, and GoogleTest are fetched
-via CMake `FetchContent` — no `brew install` needed for the stack. ccache is
-used as the compiler launcher when present.
+SDL3, Dear ImGui (+ `imgui_stdlib`), and GoogleTest are fetched via CMake
+`FetchContent` — no `brew install` needed for the stack. nlohmann/json comes from
+automerge-cpp's vendored copy (a submodule), not FetchContent. ccache is used as
+the compiler launcher when present.
 
 ## Submodules
 
-The coroutine stack (Capy, Corosio) is vendored under `modules/` as git
-submodules — clone with them, or the build fails at `add_subdirectory(modules/capy)`:
+The coroutine stack (Capy, Corosio) and the replication library (automerge-cpp,
+which itself vendors nlohmann/json as a nested submodule) are vendored under
+`modules/` as git submodules. Clone with them — `--recursive` matters because
+automerge-cpp nests submodules — or the build fails at
+`add_subdirectory(modules/capy)` / a missing `upstream/json`:
 
 ```bash
-git clone --recurse-submodules <repo-url>
+git clone --recurse-submodules git@github.com:homer6/zetta.git
 # existing checkout:
 git submodule update --init --recursive
 ```
@@ -53,8 +57,14 @@ later builds are fast. `build/` is git-ignored.
 ./build/bin/zetta                       # headed (default)
 ./build/bin/zetta --headless            # no UI, Ctrl-C to stop
 ./build/bin/zetta --data-dir /path/db   # override the database directory
+./build/bin/zetta --listen 0.0.0.0:7777 # cluster listen address (default 127.0.0.1:7777)
+./build/bin/zetta --port-range 16       # ports to try from --listen, for several nodes/host
+./build/bin/zetta --peer HOST:PORT      # join another node (repeatable; all peers equal)
 ./build/bin/zetta --help
 ```
+
+On startup a node prints its id, the address(es) it's reachable at, and the
+command to add another node — see [cluster.md](cluster.md).
 
 In headed mode, the **Query (postgres)** panel runs SQL against the selected
 database; the **Databases | Tables | Rows** explorer reflects changes live.
