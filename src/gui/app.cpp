@@ -268,6 +268,15 @@ void App::draw_databases() {
         ImGui::PopID();
     }
 
+    // The virtual, read-only `system` database (computed system tables like
+    // system.zetta_nodes). It isn't a real on-disk database, so it's listed
+    // apart and can't be renamed/dropped.
+    ImGui::Separator();
+    if (ImGui::Selectable("system  (virtual)", selected_db_ == "system")) {
+        selected_db_ = "system";
+        selected_table_.clear();
+    }
+
     // Rename (the "U" in CRUD) the selected database.
     if (const auto db = node_.find_database(selected_db_)) {
         ImGui::Separator();
@@ -292,6 +301,17 @@ void App::draw_databases() {
 
 void App::draw_tables() {
     ImGui::SeparatorText("Tables");
+
+    if (selected_db_ == "system") {
+        ImGui::TextDisabled("in 'system' (read-only)");
+        ImGui::Separator();
+        for (const char* table_name : {"zetta_nodes"}) {
+            if (ImGui::Selectable(table_name, selected_table_ == table_name)) {
+                selected_table_ = table_name;
+            }
+        }
+        return;
+    }
 
     const auto db = node_.find_database(selected_db_);
     if (!db) {
@@ -341,6 +361,26 @@ void App::draw_tables() {
 
 void App::draw_rows() {
     ImGui::SeparatorText("Rows");
+
+    // System tables are computed + read-only: query them and show the result.
+    if (selected_db_ == "system") {
+        if (selected_table_.empty()) {
+            ImGui::TextDisabled("Select a system table.");
+            return;
+        }
+        const query::QueryService::Outcome outcome = query_->run(
+            "SELECT * FROM system." + selected_table_ + ";", selected_db_);
+        if (!outcome.ok()) {
+            ImGui::TextColored(kErrorColor, "%s", outcome.error.c_str());
+            return;
+        }
+        ImGui::TextDisabled("system.%s  (%zu rows)", selected_table_.c_str(),
+                            outcome.rows.size());
+        for (std::size_t i = 0; i < outcome.rows.size(); ++i) {
+            ImGui::TextWrapped("%zu  %s", i, outcome.rows[i].dump().c_str());
+        }
+        return;
+    }
 
     const auto db = node_.find_database(selected_db_);
     if (!db) {

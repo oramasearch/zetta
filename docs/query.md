@@ -78,7 +78,9 @@ SELECT * FROM zetta_nodes;   -- bare name still resolves (back-compat alias)
 Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
 `version`, `in_sync`, `last_sync_seconds`. `SELECT *`, projection, and a single
 `WHERE` equality all work, exactly as for a regular table — the executor just
-sources the rows from `Cluster::nodes()` instead of a storage engine.
+sources the rows from `Cluster::nodes()` instead of a storage engine. The headed
+explorer also lists `system` (marked *virtual*) so its tables are browsable, not
+just queryable.
 
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
