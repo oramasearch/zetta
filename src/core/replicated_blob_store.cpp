@@ -67,9 +67,14 @@ bool ReplicatedBlobStore::store_blob(const std::string& id,
         bytes.size() != meta["size"].get<std::uintmax_t>()) {
         return false;
     }
-    if (meta.contains("sha256") &&
-        sha256_hex(bytes) != meta["sha256"].get<std::string>()) {
-        return false;
+    // Only enforce the hash when one was recorded. Objects imported before
+    // SHA-256 existed carry an empty hash — verify by size and accept (matching
+    // the preflight check, which also skips an empty hash).
+    if (meta.contains("sha256")) {
+        const std::string expected = meta["sha256"].get<std::string>();
+        if (!expected.empty() && sha256_hex(bytes) != expected) {
+            return false;
+        }
     }
     const fs::path path = blob_path(meta["db"].get<std::string>(), id);
     std::error_code ec;

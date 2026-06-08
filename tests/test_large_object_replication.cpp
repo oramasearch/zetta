@@ -158,3 +158,20 @@ TEST(ReplicatedBlobStore, VerifiesHashAndRejectsMismatch) {
     EXPECT_EQ(*blobs.read_blob(lo_id), body);
     EXPECT_TRUE(blobs.missing_blobs().empty());
 }
+
+TEST(ReplicatedBlobStore, AcceptsLegacyObjectWithEmptyHash) {
+    // Objects imported before SHA-256 existed carry an empty hash; the body must
+    // still transfer (verified by size only), not be rejected forever.
+    TempDir dir;
+    ReplicationManager replication{zetta::new_uuid()};
+    ReplicatedBlobStore blobs{dir.path(), replication};
+    const std::string lo_id = zetta::new_uuid();
+    const std::string body = "legacy body with no recorded hash";
+    replication.set("lo:" + lo_id, nlohmann::json{{"db", zetta::new_uuid()},
+                                                  {"name", "legacy.bin"},
+                                                  {"size", body.size()},
+                                                  {"sha256", ""}});
+    EXPECT_FALSE(blobs.store_blob(lo_id, "wrong length"));  // size still enforced
+    EXPECT_TRUE(blobs.store_blob(lo_id, body));             // empty hash → accept
+    EXPECT_EQ(blobs.read_blob(lo_id).value_or(""), body);
+}
