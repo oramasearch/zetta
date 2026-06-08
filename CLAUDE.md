@@ -199,7 +199,14 @@ the window (routed by extension):
 - **Large objects** (`zetta::LargeObjectStore`, per `Database`) — any file
   stored as a binary blob under `<db>/large_objects/<lo-uuid>/`, modeled on
   Postgres' LO API (`import_file`/`export_file`/`read`/`unlink`/`list`). Ids are
-  UUIDv4. Detail in [docs/large-objects.md](docs/large-objects.md).
+  UUIDv4; a SHA-256 (`zetta::sha256_hex`) is recorded on import. **They
+  replicate split:** the *metadata* (`lo:` key — `{db, name, size, sha256}`)
+  rides in the CRDT; the *body* does **not** (it would bloat every node's
+  document) — it transfers peer-to-peer (`LOREQ`/`LORES`) and is **verified
+  against size + sha256** before being written. The cluster moves bodies through
+  the `zetta::BlobStore` seam; `ReplicatedBlobStore` implements it from the CRDT
+  metadata + on-disk paths (no Node access → safe on the network thread). Detail
+  in [docs/large-objects.md](docs/large-objects.md).
 
 ### Query layer
 
@@ -278,11 +285,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
+  sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
   cluster.hpp               zetta::Cluster — equal-peer membership over TCP
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
+  blob_store.hpp            zetta::BlobStore — large-object body transfer seam
+  replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
@@ -296,6 +306,8 @@ src/core/                   zetta-core impl
   table.cpp
   jsonl_store.cpp
   uuid.cpp
+  sha256.cpp                self-contained SHA-256 (no crypto dependency)
+  replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   cluster.cpp               cluster networking adapter (the one Corosio user)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop

@@ -215,9 +215,11 @@ add_library(zetta-core STATIC
   src/core/table.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp
+  src/core/sha256.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp
+  src/core/replicated_blob_store.cpp
   src/core/import.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp

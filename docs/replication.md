@@ -96,6 +96,11 @@ The [cluster](cluster.md) carries replication. When a node is built with a
   that peer so `Cluster::nodes()` can report each node's entries, version, and
   whether it's **in sync** (its version equals ours) and how long ago it last
   synced.
+- `ZETTA/1 LOREQ <lo-uuid>` / `ZETTA/1 LORES <lo-uuid> <base64-body>` —
+  large-object **body** transfer (the metadata rode in via SYNC). A node requests
+  the bodies it's missing (`BlobStore::missing_blobs`) and serves the ones it has
+  (`read_blob`); the receiver verifies size + SHA-256 (`store_blob`) before
+  writing. Bodies never enter the document.
 
 Each node seeds its own membership entry — `node:<node_id> → { address }` — under
 its own key, so the merge unions every node's entry conflict-free. The database
@@ -129,6 +134,10 @@ are a materialized *projection* of it.** Concretely:
   - `row:<row_uuid>` → `{ tbl: <tbl_uuid>, seq, data: {…} }` — a row. The UUID key
     means two nodes inserting concurrently both survive (no collision); `seq`
     gives a stable-ish order. Deletes remove the key (`remove()`).
+  - `lo:<lo_uuid>` → `{ db, name, size, sha256 }` — large-object **metadata**
+    only. The body is **not** in the document (it would bloat every node); it
+    transfers peer-to-peer and is verified against `size` + `sha256`. See
+    [large-objects.md](large-objects.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,

@@ -56,7 +56,9 @@ Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
 and rows created on any node converge onto every node — in memory and on disk**,
 conflict-free, with no leader (the CRDT document is the source of truth; disk
-follows). You can see **all nodes and their replication status** (entries,
+follows). [Large objects](docs/large-objects.md) replicate too — their metadata
+(size + SHA-256) in the CRDT, the file bodies transferred peer-to-peer and
+verified against the hash. You can see **all nodes and their replication status** (entries,
 version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,
 the headless heartbeat log, or SQL — `SELECT * FROM zetta_nodes;`. See
 [docs/cluster.md](docs/cluster.md) and [docs/replication.md](docs/replication.md).

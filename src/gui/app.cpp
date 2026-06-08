@@ -490,6 +490,12 @@ void App::draw_large_objects() {
         ImGui::SameLine();
         ImGui::TextWrapped("%s  (%s)", lo.name.c_str(),
                            format_bytes(lo.size).c_str());
+        // The metadata replicates immediately; the body transfers separately,
+        // so a freshly-replicated object may not have its bytes here yet.
+        if (!lo.body_present) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "(syncing body)");
+        }
         ImGui::PopID();
     }
 }

@@ -9,6 +9,7 @@
 #include "zetta/cluster.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/node.hpp"
+#include "zetta/replicated_blob_store.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
 #include "zetta/version.hpp"
@@ -150,7 +151,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    zetta::Cluster cluster(node_id, opts.cluster, &replication);
+    // Large-object bodies transfer peer-to-peer (their metadata is in the CRDT).
+    zetta::ReplicatedBlobStore blobs(opts.node.data_dir, replication);
+    zetta::Cluster cluster(node_id, opts.cluster, &replication, &blobs);
     cluster.start();
 
     // Seed this node's membership entry now that its reachable address is known;

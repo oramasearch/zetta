@@ -11,6 +11,9 @@
 //   db:<db_uuid>    -> { name }                         (a database)
 //   tbl:<tbl_uuid>  -> { db: <db_uuid>, name }          (a table)
 //   row:<row_uuid>  -> { tbl: <tbl_uuid>, data: {…} }   (a row)
+//   lo:<lo_uuid>    -> { db, name, size, sha256 }       (large-object metadata;
+//                       the body is NOT in the document — it transfers
+//                       peer-to-peer and is verified against size + sha256)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -21,6 +24,7 @@ inline constexpr std::string_view kNodePrefix = "node:";
 inline constexpr std::string_view kDatabasePrefix = "db:";
 inline constexpr std::string_view kTablePrefix = "tbl:";
 inline constexpr std::string_view kRowPrefix = "row:";
+inline constexpr std::string_view kLargeObjectPrefix = "lo:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -33,6 +37,9 @@ inline std::string table_key(const std::string& table_id) {
 }
 inline std::string row_key(const std::string& row_id) {
     return std::string(kRowPrefix) + row_id;
+}
+inline std::string large_object_key(const std::string& large_object_id) {
+    return std::string(kLargeObjectPrefix) + large_object_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

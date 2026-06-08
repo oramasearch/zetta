@@ -9,6 +9,7 @@
 namespace zetta {
 
 class ReplicationManager;
+class BlobStore;
 
 // zetta is multi-leader by default (the CRDT data plane needs no leader).
 // Leadership applies only to exclusive resources (locks, sequences, …), and is
@@ -73,10 +74,14 @@ class Cluster {
 public:
     // `replication`, when given, is gossiped to peers: on each connection the
     // nodes exchange their replicated documents (save/merge) and report their
-    // replication status, which surfaces in nodes(). Must outlive the Cluster.
-    // Passing nullptr runs membership only (no replication gossip).
+    // replication status, which surfaces in nodes(). `blobs`, when given, lets
+    // peers transfer large-object **bodies** (metadata travels in `replication`;
+    // bodies don't) — a node fetches the bodies it's missing and serves the ones
+    // it has, verifying each against its hash. Both must outlive the Cluster.
+    // Passing nullptr for either disables that part (membership-only at minimum).
     Cluster(std::string node_id, ClusterConfig config,
-            ReplicationManager* replication = nullptr);
+            ReplicationManager* replication = nullptr,
+            BlobStore* blobs = nullptr);
     ~Cluster();
 
     Cluster(const Cluster&) = delete;

@@ -20,7 +20,7 @@ Database::Database(std::string id, std::string name, fs::path dir,
     : id_(std::move(id)),
       name_(std::move(name)),
       dir_(std::move(dir)),
-      large_objects_(dir_ / "large_objects"),
+      large_objects_(dir_ / "large_objects", id_, replication),
       replication_(replication) {}
 
 void Database::set_name(std::string name) {

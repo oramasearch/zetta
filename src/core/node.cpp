@@ -234,6 +234,15 @@ void Node::migrate_to_replication() {
                 }
             }
         }
+        for (const LargeObject& lo : db->large_objects().list()) {
+            if (!snapshot.contains(catalog::large_object_key(lo.id))) {
+                replication_->set(catalog::large_object_key(lo.id),
+                                  nlohmann::json{{"db", db->id()},
+                                                 {"name", lo.name},
+                                                 {"size", lo.size},
+                                                 {"sha256", lo.sha256}});
+            }
+        }
     }
 }
 
@@ -247,6 +256,13 @@ void Node::reconcile_from_replication() {
     std::map<std::string, std::pair<std::string, std::string>> tables;  // id -> (db, name)
     struct RowEntry { std::string table_id; nlohmann::json data; };
     std::map<std::string, RowEntry> rows;                     // id -> entry
+    struct LargeObjectEntry {
+        std::string database_id;
+        std::string name;
+        std::uintmax_t size;
+        std::string sha256;
+    };
+    std::map<std::string, LargeObjectEntry> large_objects;    // id -> entry
 
     for (const auto& [key, value] : snapshot.items()) {
         if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
@@ -266,6 +282,15 @@ void Node::reconcile_from_replication() {
             rows.emplace(std::move(row_id),
                          RowEntry{value["tbl"].get<std::string>(),
                                   value["data"]});
+        } else if (std::string lo_id =
+                       catalog::id_after(key, catalog::kLargeObjectPrefix);
+                   !lo_id.empty() && value.is_object() && value.contains("db")) {
+            large_objects.emplace(
+                std::move(lo_id),
+                LargeObjectEntry{value.value("db", std::string{}),
+                                 value.value("name", std::string{}),
+                                 value.value("size", std::uintmax_t{0}),
+                                 value.value("sha256", std::string{})});
         }
     }
 
@@ -287,6 +312,16 @@ void Node::reconcile_from_replication() {
             const auto it = tables.find(table_id);
             if (it == tables.end() || it->second.first != db_id) {
                 db->materialize_drop_table(table_id);
+            }
+        }
+        std::vector<std::string> local_lo_ids;
+        for (const LargeObject& lo : db->large_objects().list()) {
+            local_lo_ids.push_back(lo.id);
+        }
+        for (const std::string& lo_id : local_lo_ids) {
+            const auto it = large_objects.find(lo_id);
+            if (it == large_objects.end() || it->second.database_id != db_id) {
+                db->large_objects().materialize_unlink(lo_id);
             }
         }
     }
@@ -316,6 +351,16 @@ void Node::reconcile_from_replication() {
             return nullptr;
         }();
         if (db_table) db_table->materialize_row(id, std::move(entry.data));
+    }
+    for (const auto& [id, entry] : large_objects) {
+        auto db = find_database_by_id(entry.database_id);
+        if (!db) continue;
+        LargeObject object;
+        object.id = id;
+        object.name = entry.name;
+        object.size = entry.size;
+        object.sha256 = entry.sha256;
+        db->large_objects().materialize_object(std::move(object));
     }
 }
 

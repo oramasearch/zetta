@@ -8,36 +8,58 @@
 
 namespace zetta {
 
-// Metadata for one stored file ("large object", after Postgres' LO API).
+class ReplicationManager;
+
+// Metadata for one stored file ("large object", after Postgres' LO API). This
+// metadata is what replicates (in the CRDT); the body transfers separately and
+// is verified against `size` + `sha256`.
 struct LargeObject {
-    std::string id;        // UUIDv4; also its folder name on disk
-    std::string name;      // original filename
-    std::uintmax_t size;   // bytes
+    std::string id;            // UUIDv4; also its folder name on disk
+    std::string name;          // original filename
+    std::uintmax_t size = 0;   // bytes
+    std::string sha256;        // lowercase-hex SHA-256 of the body
+    bool body_present = true;  // is the body on disk here yet? (false until synced)
 };
 
 // Stores arbitrary files as binary blobs in a directory, one folder per object
-// (named by a UUID) holding `blob` (raw bytes) + `meta.json`. This is zetta's
-// analog of Postgres' large object API; a Database owns one.
+// (named by a UUID) holding `blob` (raw bytes) + `meta.json`. zetta's analog of
+// Postgres' large object API; a Database owns one.
 //
-// (Whole-file in memory for now — import/read/export load the full blob; a
-// streaming/chunked path can come later.)
+// With a ReplicationManager, the object's **metadata** (id, name, size, sha256)
+// is captured into the replicated CRDT on import; the body is transferred
+// peer-to-peer by the cluster. `materialize_object` is the reverse path used by
+// reconciliation to register metadata that arrived from a peer (the body may
+// still be syncing — `body_present` is false until it lands).
 class LargeObjectStore {
 public:
-    explicit LargeObjectStore(std::filesystem::path dir);
+    explicit LargeObjectStore(std::filesystem::path dir,
+                              std::string database_id = {},
+                              ReplicationManager* replication = nullptr);
 
     // Import a file as a new large object (analogous to lo_import). Returns the
     // assigned metadata, or nullopt if the source can't be read / written.
     std::optional<LargeObject> import_file(const std::filesystem::path& src);
 
-    // Write a stored object's bytes to `dst` (lo_export). False if id unknown
-    // or the write fails.
+    // Register metadata for a replicated object (from a peer), without capturing
+    // it again. The body may not be here yet. Returns the registered object.
+    LargeObject materialize_object(LargeObject object);
+    // Remove a replicated object locally (a peer unlinked it), without capturing.
+    bool materialize_unlink(const std::string& id);
+
+    // Write a stored object's bytes to `dst` (lo_export). False if id unknown,
+    // the body isn't present, or the write fails.
     bool export_file(const std::string& id,
                      const std::filesystem::path& dst) const;
 
-    // Read a stored object's raw bytes (lo_read). Nullopt if id unknown.
+    // Read a stored object's raw bytes (lo_read). Nullopt if id unknown or the
+    // body isn't present locally yet.
     std::optional<std::string> read(const std::string& id) const;
 
-    // Delete a stored object (lo_unlink). True if one was removed.
+    // Whether this object's body is on disk here.
+    bool has_body(const std::string& id) const;
+
+    // Delete a stored object (lo_unlink) + remove it from the CRDT. True if one
+    // was removed.
     bool unlink(const std::string& id);
 
     // All objects, sorted by name.
@@ -48,8 +70,12 @@ private:
     void load();
     const LargeObject* find(const std::string& id) const;
     std::filesystem::path object_dir(const std::string& id) const;
+    void write_meta(const LargeObject& object) const;
+    void sort_objects();
 
     std::filesystem::path dir_;
+    std::string database_id_;          // for the CRDT `lo:` value's `db` field
+    ReplicationManager* replication_;  // null = not replicated
     std::vector<LargeObject> objects_;
 };
 

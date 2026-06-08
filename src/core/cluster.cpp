@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -26,6 +28,7 @@
 
 #include <boost/capy.hpp>
 
+#include "zetta/blob_store.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/runtime/net.hpp"
 
@@ -53,6 +56,7 @@ struct Cluster::State {
     std::thread network_thread;
     std::uint16_t bound_port = 0;
     ReplicationManager* replication = nullptr;  // gossip target (optional)
+    BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
 
@@ -107,9 +111,11 @@ bool parse_host_port(const std::string& text, net::ipv4_address& address,
     return true;
 }
 
-// Cap on a single line, generous enough for a gossiped (base64) document blob
-// but bounded so a misbehaving peer can't make us buffer without limit.
-constexpr std::size_t kMaxLineBytes = 8 * 1024 * 1024;
+// Cap on a single line, generous enough for a gossiped (base64) document blob or
+// a transferred large-object body, but bounded so a misbehaving peer can't make
+// us buffer without limit. base64 inflates ~4/3, so this admits ~48 MiB bodies;
+// larger objects would need chunked transfer (a future step).
+constexpr std::size_t kMaxLineBytes = 64 * 1024 * 1024;
 
 // Read one '\n'-terminated line (without the newline). Empty optional on
 // EOF/error or if the line exceeds kMaxLineBytes.
@@ -219,6 +225,20 @@ std::vector<std::byte> base64_decode(std::string_view text) {
     return out;
 }
 
+std::string base64_encode_bytes(const std::string& data) {
+    return base64_encode(std::span<const std::byte>(
+        reinterpret_cast<const std::byte*>(data.data()), data.size()));
+}
+
+std::string base64_decode_to_string(std::string_view text) {
+    const std::vector<std::byte> bytes = base64_decode(text);
+    std::string out(bytes.size(), '\0');
+    for (std::size_t i = 0; i < bytes.size(); ++i) {
+        out[i] = static_cast<char>(bytes[i]);
+    }
+    return out;
+}
+
 std::string sync_line(const ReplicationManager& replication) {
     return std::string(kProtocol) + " SYNC " +
            base64_encode(replication.save());
@@ -230,9 +250,28 @@ std::string status_line(const ReplicationManager& replication) {
            replication.version();
 }
 
-// Apply one gossip line to our state. `peer_node_id` is who sent it.
+std::string loreq_line(const std::string& id) {
+    return std::string(kProtocol) + " LOREQ " + id;
+}
+std::string lores_line(const std::string& id, const std::string& body) {
+    return std::string(kProtocol) + " LORES " + id + " " +
+           base64_encode_bytes(body);
+}
+
+// Per-connection state shared by the read pump and the write pump. Both run on
+// the single io_context thread (cooperative, never truly concurrent), so the
+// queue needs no lock. The reader queues large-object responses (LORES) here;
+// the writer drains them alongside its periodic gossip.
+struct GossipLink {
+    std::shared_ptr<net::tcp_socket> socket;
+    bool alive = true;
+    std::deque<std::string> outbound;
+};
+
+// Apply one gossip line to our state. `peer_node_id` is who sent it; replies
+// (LORES for a LOREQ) are queued on `link` for the writer to send.
 void apply_gossip(Cluster::State* self, const std::string& line,
-                  const std::string& peer_node_id) {
+                  const std::string& peer_node_id, GossipLink& link) {
     std::istringstream parser(line);
     std::string protocol, verb;
     parser >> protocol >> verb;
@@ -249,24 +288,61 @@ void apply_gossip(Cluster::State* self, const std::string& line,
         parser >> entries >> version;
         self->update_peer_status(peer_node_id, entries, std::move(version),
                                  std::chrono::steady_clock::now());
+    } else if (verb == "LOREQ") {
+        std::string id;
+        parser >> id;
+        if (self->blobs && !id.empty()) {
+            if (auto body = self->blobs->read_blob(id)) {
+                link.outbound.push_back(lores_line(id, *body));
+            }
+        }
+    } else if (verb == "LORES") {
+        std::string id, encoded;
+        parser >> id >> encoded;
+        if (self->blobs && !id.empty() && !encoded.empty()) {
+            self->blobs->store_blob(id, base64_decode_to_string(encoded));
+        }
     }
 }
 
-// Periodically push our replicated document + status to a peer until the link
+// Periodically push our replicated document + status to a peer, drain queued
+// large-object responses, and request the bodies we're missing — until the link
 // dies. Runs alongside the read pump (one outstanding write, one read — the
 // full-duplex pattern a socket allows).
 capy::task<> gossip_writer(Cluster::State* self,
-                           std::shared_ptr<net::tcp_socket> socket,
-                           std::shared_ptr<std::atomic<bool>> alive) {
+                           std::shared_ptr<GossipLink> link) {
     using namespace std::chrono_literals;
+    using Clock = std::chrono::steady_clock;
     net::timer timer(self->io_context);
-    while (alive->load()) {
-        if (self->replication) {
-            if (!co_await write_line(*socket, sync_line(*self->replication))) {
-                break;
+    std::map<std::string, Clock::time_point> requested;  // body request cooldown
+    while (link->alive) {
+        // Send any large-object bodies a peer asked us for.
+        while (!link->outbound.empty()) {
+            std::string line = std::move(link->outbound.front());
+            link->outbound.pop_front();
+            if (!co_await write_line(*link->socket, std::move(line))) {
+                co_return;
             }
-            if (!co_await write_line(*socket, status_line(*self->replication))) {
-                break;
+        }
+        if (self->replication) {
+            if (!co_await write_line(*link->socket,
+                                     sync_line(*self->replication)) ||
+                !co_await write_line(*link->socket,
+                                     status_line(*self->replication))) {
+                co_return;
+            }
+        }
+        // Request bodies we lack, but don't re-ask the same peer too often (a
+        // transfer in flight shouldn't trigger duplicate sends).
+        if (self->blobs) {
+            const Clock::time_point now = Clock::now();
+            for (const std::string& id : self->blobs->missing_blobs()) {
+                const auto it = requested.find(id);
+                if (it != requested.end() && now - it->second < 2s) continue;
+                requested[id] = now;
+                if (!co_await write_line(*link->socket, loreq_line(id))) {
+                    co_return;
+                }
             }
         }
         timer.expires_after(500ms);
@@ -300,26 +376,27 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     }
     const bool added = self->add_peer(peer.node_id, peer.address);
 
-    // Share the socket between this read pump and the gossip write pump, and a
-    // liveness flag so the writer stops once the connection drops.
-    auto shared_socket =
-        std::make_shared<net::tcp_socket>(std::move(socket));
-    auto alive = std::make_shared<std::atomic<bool>>(true);
-    if (self->replication) {
+    // Per-connection link shared between this read pump and the gossip write
+    // pump (both on the io thread). The writer handles periodic gossip, queued
+    // large-object responses, and body requests.
+    auto link = std::make_shared<GossipLink>();
+    link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
+    if (self->replication || self->blobs) {
         capy::run_async(self->io_context.get_executor())(
-            gossip_writer(self, shared_socket, alive));
+            gossip_writer(self, link));
     }
 
-    // Read pump: merge gossiped state and record peer status until disconnect.
+    // Read pump: merge gossiped state, record peer status, serve/receive
+    // large-object bodies, until disconnect.
     for (;;) {
-        std::optional<std::string> line = co_await read_line(*shared_socket);
+        std::optional<std::string> line = co_await read_line(*link->socket);
         if (!line) break;  // peer disconnected
-        apply_gossip(self, *line, peer.node_id);
+        apply_gossip(self, *line, peer.node_id, *link);
     }
 
-    alive->store(false);
+    link->alive = false;
     if (added) self->remove_peer(peer.node_id);
-    shared_socket->close();
+    link->socket->close();
 }
 
 capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
@@ -399,12 +476,13 @@ std::string to_string(ClusterRole role) {
 }
 
 Cluster::Cluster(std::string node_id, ClusterConfig config,
-                 ReplicationManager* replication)
+                 ReplicationManager* replication, BlobStore* blobs)
     : state_(std::make_unique<State>()),
       node_id_(std::move(node_id)),
       config_(std::move(config)),
       role_(ClusterRole::Follower) {
     state_->replication = replication;
+    state_->blobs = blobs;
 }
 
 Cluster::~Cluster() { stop(); }
