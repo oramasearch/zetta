@@ -9,6 +9,7 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Subsystem | Key files | Doc | Seam / invariant |
 |---|---|---|---|
 | Run modes / wiring | `src/main.cpp`, `include/zetta/headless.hpp`, `src/core/headless.cpp` | architecture.md | main builds `ReplicationManager` → `Node` → `ReplicatedBlobStore` → `Cluster`, then dispatches headed (`gui::App`) or headless (`run_headless`). One UUID = node id = actor id. |
+| Integrity | `Node::check_integrity()` → `IntegrityReport` (node.hpp), `sha256.hpp` | storage.md | Preflight on `start()` (default; `--no-preflight`): re-hash local LO bodies vs recorded sha256, flag dangling catalog refs. `report.ok()`. |
 | Data model | `node`, `database`, `table` (`.hpp`/`src/core/*.cpp`) | architecture.md, storage.md | `Node`→`Database`→`Table`→`StorageEngine`. shared_ptr handles, empty on miss. UUIDv4 folder = id; name in `*.json`. |
 | Storage engine | `include/zetta/storage/{engine,jsonl_store,json_store}.hpp`, `src/core/jsonl_store.cpp` | storage.md | `StorageEngine` interface: `add(id,doc)`/`contains`/`size`/`at`/`id_at`. Rows carry a UUID (the CRDT key). JSONL line = `{"_zid":id,"doc":row}`. |
 | Large objects | `large_object.hpp`, `src/core/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/replicated_blob_store.cpp`, `sha256.hpp` | large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer seam. |
@@ -83,6 +84,12 @@ tests: short `ClusterConfig` timeouts + patient polling.
   **single** io_context thread (cooperative, never parallel), so per-connection
   state (`GossipLink`) needs no lock. Cross-thread state (`State::peers`) is
   mutex-guarded. The network thread must not touch the `Node` tree.
+- **Line framing** — `read_line` carries a **persistent** per-connection buffer;
+  one `read_some` routinely returns several `\n`-delimited lines coalesced
+  (Nagle/MTU on a real link), so leftover bytes after the first newline MUST be
+  kept for the next call. Dropping them silently loses every line after the first
+  — a bug that only shows up cross-machine (loopback delivers each line in its
+  own read). Don't reintroduce a fresh-buffer-per-call `read_line`.
 - **Keepalive needs traffic** — the idle-timeout watchdog only runs when the
   writer runs (i.e. `replication`/`blobs` wired). Gossip every ~0.5s keeps a
   healthy link's `last_activity` fresh; silence past the timeout drops it.

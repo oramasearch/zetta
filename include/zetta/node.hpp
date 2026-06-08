@@ -19,6 +19,29 @@ class ReplicationManager;
 // storage + query engine.
 struct NodeConfig {
     std::string data_dir = "./zetta-data";  // database directory on disk
+    bool preflight = true;  // run an integrity check on start() (--no-preflight)
+};
+
+// Result of the startup integrity ("preflight") check — a snapshot of how sound
+// the on-disk + replicated state is. Counts plus the specific problems found.
+struct IntegrityReport {
+    std::size_t databases = 0;
+    std::size_t tables = 0;
+    std::size_t rows = 0;
+    std::size_t large_objects = 0;
+    std::size_t large_object_bodies_present = 0;
+    std::size_t large_object_bodies_missing = 0;  // metadata here, body not (yet)
+    std::size_t corrupt_large_objects = 0;         // on-disk body != recorded sha256
+    std::size_t dangling_tables = 0;               // table -> missing database
+    std::size_t dangling_rows = 0;                 // row -> missing table
+    std::size_t dangling_large_objects = 0;        // large object -> missing database
+
+    // A "good state": no corruption and no dangling references. (A missing body
+    // is informational — it may simply be awaiting transfer from a peer.)
+    bool ok() const {
+        return corrupt_large_objects == 0 && dangling_tables == 0 &&
+               dangling_rows == 0 && dangling_large_objects == 0;
+    }
 };
 
 // A single zetta database node — the headless core.
@@ -72,6 +95,12 @@ public:
     // One-line, human-readable status for logs and the UI status bar.
     std::string status_line() const;
 
+    // Scan the data for integrity problems (corrupt large-object bodies, dangling
+    // references) without changing anything. Run automatically on start() unless
+    // NodeConfig::preflight is false; the last result is kept here.
+    IntegrityReport check_integrity() const;
+    const IntegrityReport& integrity() const { return integrity_; }
+
 private:
     using Clock = std::chrono::steady_clock;
 
@@ -93,6 +122,7 @@ private:
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
     std::string last_seen_version_;    // CRDT version last reconciled/persisted
+    IntegrityReport integrity_;        // last preflight result
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;

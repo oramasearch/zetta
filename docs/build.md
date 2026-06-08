@@ -60,8 +60,15 @@ later builds are fast. `build/` is git-ignored.
 ./build/bin/zetta --listen 127.0.0.1:7777 # restrict to loopback (default is 0.0.0.0:7777, all interfaces)
 ./build/bin/zetta --port-range 16       # ports to try from --listen, for several nodes/host
 ./build/bin/zetta --peer HOST:PORT      # join another node (repeatable; all peers equal)
+./build/bin/zetta --log-cluster         # log gossip events to stderr (debugging)
+./build/bin/zetta --no-preflight        # skip the startup integrity check
 ./build/bin/zetta --help
 ```
+
+On startup a node runs a **preflight integrity check** by default (disable with
+`--no-preflight`): it re-hashes each local large-object body against its recorded
+SHA-256 and looks for dangling references, logging a `preflight:` summary. See
+[storage.md](storage.md).
 
 On startup a node prints its id, the address(es) it's reachable at, and the
 command to add another node — see [cluster.md](cluster.md).

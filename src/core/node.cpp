@@ -1,6 +1,7 @@
 #include "zetta/node.hpp"
 
 #include "zetta/replication.hpp"
+#include "zetta/sha256.hpp"
 #include "zetta/uuid.hpp"
 #include "zetta/version.hpp"
 
@@ -12,7 +13,9 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <system_error>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -39,6 +42,24 @@ bool Node::start() {
     }
     std::printf("zetta %s: node started (data_dir=%s, %zu databases)\n",
                 kVersion, config_.data_dir.c_str(), databases_.size());
+    if (config_.preflight) {
+        integrity_ = check_integrity();
+        std::printf(
+            "zetta: preflight: %zu databases, %zu tables, %zu rows, %zu large "
+            "objects (%zu present, %zu awaiting body) — %s\n",
+            integrity_.databases, integrity_.tables, integrity_.rows,
+            integrity_.large_objects, integrity_.large_object_bodies_present,
+            integrity_.large_object_bodies_missing,
+            integrity_.ok() ? "OK" : "ISSUES FOUND");
+        if (!integrity_.ok()) {
+            std::printf(
+                "zetta: preflight WARN: %zu corrupt large object(s), %zu "
+                "dangling table(s), %zu dangling row(s), %zu dangling large "
+                "object(s)\n",
+                integrity_.corrupt_large_objects, integrity_.dangling_tables,
+                integrity_.dangling_rows, integrity_.dangling_large_objects);
+        }
+    }
     std::fflush(stdout);
     return true;
 }
@@ -364,6 +385,69 @@ void Node::reconcile_from_replication() {
         object.sha256 = entry.sha256;
         db->large_objects().materialize_object(std::move(object));
     }
+}
+
+IntegrityReport Node::check_integrity() const {
+    IntegrityReport report;
+    for (const auto& db : databases_) {
+        ++report.databases;
+        for (const auto& table : db->tables()) {
+            ++report.tables;
+            report.rows += table->row_count();
+        }
+        for (const LargeObject& object : db->large_objects().list()) {
+            ++report.large_objects;
+            if (!object.body_present) {
+                ++report.large_object_bodies_missing;
+                continue;
+            }
+            ++report.large_object_bodies_present;
+            // Re-hash the on-disk body and compare to the recorded digest.
+            const std::optional<std::string> body =
+                db->large_objects().read(object.id);
+            if (!body || (!object.sha256.empty() &&
+                          sha256_hex(*body) != object.sha256)) {
+                ++report.corrupt_large_objects;
+            }
+        }
+    }
+
+    // Dangling references in the replicated catalog: a table/large object whose
+    // database is gone, or a row whose table is gone (orphaned keys the
+    // reconciler ignores but that shouldn't accumulate).
+    if (replication_) {
+        const nlohmann::json snapshot = replication_->snapshot();
+        std::unordered_set<std::string> database_ids;
+        std::unordered_set<std::string> table_ids;
+        for (const auto& [key, value] : snapshot.items()) {
+            if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
+                !id.empty()) {
+                database_ids.insert(std::move(id));
+            } else if (std::string table_id =
+                           catalog::id_after(key, catalog::kTablePrefix);
+                       !table_id.empty()) {
+                table_ids.insert(std::move(table_id));
+            }
+        }
+        const auto parent_missing = [](const nlohmann::json& value,
+                                       const char* field,
+                                       const std::unordered_set<std::string>& set) {
+            return value.is_object() && value.contains(field) &&
+                   !set.contains(value[field].get<std::string>());
+        };
+        for (const auto& [key, value] : snapshot.items()) {
+            if (!catalog::id_after(key, catalog::kTablePrefix).empty()) {
+                if (parent_missing(value, "db", database_ids)) ++report.dangling_tables;
+            } else if (!catalog::id_after(key, catalog::kRowPrefix).empty()) {
+                if (parent_missing(value, "tbl", table_ids)) ++report.dangling_rows;
+            } else if (!catalog::id_after(key, catalog::kLargeObjectPrefix).empty()) {
+                if (parent_missing(value, "db", database_ids)) {
+                    ++report.dangling_large_objects;
+                }
+            }
+        }
+    }
+    return report;
 }
 
 std::string Node::status_line() const {

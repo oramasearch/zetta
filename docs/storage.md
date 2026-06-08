@@ -57,6 +57,24 @@ replicated row exactly once, and `id_at(i)` enumerates rows to replicate them.
 To add an engine, implement `StorageEngine` (`name`, `add`, `contains`, `size`,
 `at`, `id_at`) and construct it where a `Table` builds its store.
 
+## Preflight integrity check
+
+On `start()` a node runs a **preflight integrity check** by default (turn off with
+`NodeConfig::preflight = false` / `--no-preflight`) and logs a `preflight:`
+summary. `Node::check_integrity()` is read-only and reports an `IntegrityReport`:
+
+- **Corrupt large-object bodies** — each local body is re-hashed and compared to
+  the SHA-256 recorded in its metadata; a mismatch means on-disk corruption.
+- **Large-object bodies awaiting transfer** — metadata is present but the body
+  isn't here yet (informational — it may still be syncing from a peer).
+- **Dangling references** in the replicated catalog — a row whose table is gone,
+  a table/large object whose database is gone (orphaned keys the reconciler
+  ignores but that shouldn't pile up).
+
+`report.ok()` is true when there's no corruption and no dangling references
+(missing bodies don't count). The last report is kept on the node
+(`Node::integrity()`) for future surfacing (e.g. a `system.integrity` table).
+
 ## Limits / future
 
 - All records are loaded into memory on open; streaming/lazy reads can come

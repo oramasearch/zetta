@@ -59,11 +59,16 @@ ownership is via `shared_ptr` so lookups hand back a safe handle, never a raw
 pointer.
 
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
-rebuilds the in-memory tree by scanning it. Two storage engines exist behind
-the `StorageEngine` seam: `zetta::JsonlStore` (the default tables use — JSON
-Lines on disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a
-future `:memory:` mode). **New engines implement `StorageEngine`; query/indexes
-land behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
+rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
+check** by default (`Node::check_integrity()` → `IntegrityReport`, logged as
+`preflight:`; disable with `--no-preflight`): it re-hashes each local
+large-object body against its recorded SHA-256 and flags dangling references
+(row→missing table, table/LO→missing database). `report.ok()` = no corruption +
+no dangling. See `docs/storage.md`. Two storage engines exist behind the
+`StorageEngine` seam: `zetta::JsonlStore` (the default tables use — JSON Lines on
+disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a future
+`:memory:` mode). **New engines implement `StorageEngine`; query/indexes land
+behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
 
 ### Async runtime (`zetta::runtime`)
 
