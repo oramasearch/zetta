@@ -99,7 +99,9 @@ void Node::load_databases() {
 }
 
 std::shared_ptr<Database> Node::create_database(std::string name) {
-    if (name.empty() || find_database(name)) return nullptr;
+    // "system" is reserved for the virtual system database (computed system
+    // tables like system.zetta_nodes); never a real on-disk database.
+    if (name.empty() || name == "system" || find_database(name)) return nullptr;
     const std::string id = new_uuid();
     if (replication_) {
         replication_->set(catalog::database_key(id),

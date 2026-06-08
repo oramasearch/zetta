@@ -12,7 +12,7 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Data model | `node`, `database`, `table` (`.hpp`/`src/core/*.cpp`) | architecture.md, storage.md | `Node`→`Database`→`Table`→`StorageEngine`. shared_ptr handles, empty on miss. UUIDv4 folder = id; name in `*.json`. |
 | Storage engine | `include/zetta/storage/{engine,jsonl_store,json_store}.hpp`, `src/core/jsonl_store.cpp` | storage.md | `StorageEngine` interface: `add(id,doc)`/`contains`/`size`/`at`/`id_at`. Rows carry a UUID (the CRDT key). JSONL line = `{"_zid":id,"doc":row}`. |
 | Large objects | `large_object.hpp`, `src/core/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/replicated_blob_store.cpp`, `sha256.hpp` | large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer seam. |
-| Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. `zetta_nodes` system table matched by reserved name. |
+| Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. Virtual read-only **`system`** database holds computed system tables (`system.zetta_nodes`); `system` is reserved. |
 | Import | `import.hpp`, `src/core/import.cpp` | large-objects.md | `.json`/`.jsonl` → rows via `Table::add_row` (so it replicates). |
 | Cluster | `cluster.hpp`, `src/core/cluster.cpp` (the one Corosio user) | cluster.md | Equal peers over TCP; line protocol `HELLO/SYNC/STATUS/LOREQ/LORES`. Self-healing (keepalive + reconnect + replace-by-address). `nodes()` = status view. |
 | Replication (CRDT) | `replication.hpp`, `src/core/replication.cpp` (the one automerge-cpp user), `src/core/catalog.hpp` (internal key scheme) | replication.md | `ReplicationManager`: `set`/`remove`/`snapshot`/`save`/`merge`/`entry_count`/`version`. Document = source of truth. Thread-safe (mutex). |
@@ -100,7 +100,7 @@ tests: short `ClusterConfig` timeouts + patient polling.
 
 - **architecture.md** — node, run modes, data model, module map.
 - **storage.md** — on-disk layout, JSONL `_zid`/`doc` line format, engine seam.
-- **query.md** — dialect-agnostic layer, Postgres subset, `zetta_nodes` system table.
+- **query.md** — dialect-agnostic layer, Postgres subset, the `system` database (`system.zetta_nodes`).
 - **large-objects.md** — LO API, metadata-in-CRDT + body-P2P-with-hash, import.
 - **runtime.md** — `zetta::runtime` async seam + migration plan.
 - **cluster.md** — equal peers, reachable-address banner, self-healing links, status view.

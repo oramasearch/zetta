@@ -57,9 +57,9 @@ codebase map, how-to recipes, and gotchas, see **[reference.md](reference.md)**.
   leader. (See `docs/replication.md` → Consistency model.)
 - **Pluggable seams — extend, don't special-case:** storage formats implement
   `StorageEngine`; query inputs are dialect-agnostic (parse to the generic
-  `zetta::query` AST; the `Executor` is dialect-neutral — system tables like
-  `zetta_nodes` are matched there by reserved name, not by dialect). Add a
-  dialect/engine by implementing the interface, not by branching the executor.
+  `zetta::query` AST; the `Executor` is dialect-neutral — the virtual read-only
+  `system` database, e.g. `system.zetta_nodes`, is resolved there, not in a
+  dialect). Add a dialect/engine by implementing the interface, not the executor.
   (To add a whole new input *language*, see the **new-input** skill.)
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking goes through `zetta::runtime::net`

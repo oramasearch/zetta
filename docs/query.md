@@ -57,27 +57,32 @@ optional leading `-`, `true` / `false` / `null`.
 - `WHERE` supports a single `column = value` equality.
 - Statements run in order; the first failure stops the batch and is reported.
 
-## System tables
+## The `system` database
 
-`zetta_nodes` is a read-only system table — like Postgres' `pg_stat_replication`
-— exposing cluster membership + [replication](replication.md) status. It's
-available whenever the `QueryService` was given a `Cluster` (the headed UI wires
-this; without a cluster, selecting it returns a clear error).
+System info lives in a virtual database named **`system`** (à la Postgres'
+`pg_catalog`): a reserved, **read-only** namespace whose tables are *computed at
+query time* — not stored, not replicated (each node's view is its own). `system`
+can't be created, dropped, or written to, and no real database may be named
+`system`.
+
+Its first table is **`zetta_nodes`** — cluster membership + [replication](replication.md)
+status — available whenever the `QueryService` was given a `Cluster` (the headed
+UI wires this; without a cluster, selecting it returns a clear error):
 
 ```sql
-SELECT * FROM zetta_nodes;
-SELECT node_id, address, in_sync FROM zetta_nodes WHERE is_self = false;
+SELECT * FROM system.zetta_nodes;
+SELECT node_id, address, in_sync FROM system.zetta_nodes WHERE is_self = false;
+SELECT * FROM zetta_nodes;   -- bare name still resolves (back-compat alias)
 ```
 
 Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
 `version`, `in_sync`, `last_sync_seconds`. `SELECT *`, projection, and a single
 `WHERE` equality all work, exactly as for a regular table — the executor just
-sources the rows from `Cluster::nodes()` instead of a storage engine. (The name
-is reserved: it's matched before any database lookup.)
+sources the rows from `Cluster::nodes()` instead of a storage engine.
 
-A second system table, **`zetta_leadership`** (which exclusive resource is held by
-which node, with lease/timeout), is **planned, not built** — see
-[replication.md](replication.md) → *Consistency model*.
+Future system tables slot into the same database — notably **`system.zetta_leadership`**
+(which exclusive resource is held by which node, with lease/timeout), which is
+**planned, not built** (see [replication.md](replication.md) → *Consistency model*).
 
 ## Timing
 

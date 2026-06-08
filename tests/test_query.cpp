@@ -200,22 +200,31 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
     cluster.start();
 
     QueryService svc{node, &cluster};
-    auto sel = svc.run("SELECT * FROM zetta_nodes;", "");
+    // It lives in the `system` database.
+    auto sel = svc.run("SELECT * FROM system.zetta_nodes;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     ASSERT_EQ(sel.rows.size(), 1u);  // just this node
     EXPECT_EQ(sel.rows[0]["node_id"].get<std::string>(), node_id);
     EXPECT_TRUE(sel.rows[0]["is_self"].get<bool>());
     EXPECT_EQ(sel.rows[0]["entries"].get<int>(), 1);
 
+    // The bare name still resolves (back-compat alias).
+    EXPECT_TRUE(svc.run("SELECT * FROM zetta_nodes;", "").ok());
+
     // WHERE + projection work over the system table too.
     auto projected = svc.run(
-        "SELECT node_id, address FROM zetta_nodes WHERE node_id = '" + node_id +
-            "';",
+        "SELECT node_id, address FROM system.zetta_nodes WHERE node_id = '" +
+            node_id + "';",
         "");
     ASSERT_TRUE(projected.ok()) << projected.error;
     ASSERT_EQ(projected.rows.size(), 1u);
     EXPECT_TRUE(projected.rows[0].contains("address"));
     EXPECT_FALSE(projected.rows[0].contains("role"));
+
+    // Unknown system table and writes to `system` are rejected.
+    EXPECT_FALSE(svc.run("SELECT * FROM system.nope;", "").ok());
+    EXPECT_FALSE(svc.run("CREATE DATABASE system;", "").ok());
+    EXPECT_FALSE(svc.run("CREATE TABLE system.t (a int);", "").ok());
 
     cluster.stop();
     node.stop();

@@ -60,7 +60,7 @@ follows). [Large objects](docs/large-objects.md) replicate too — their metadat
 (size + SHA-256) in the CRDT, the file bodies transferred peer-to-peer and
 verified against the hash. You can see **all nodes and their replication status** (entries,
 version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,
-the headless heartbeat log, or SQL — `SELECT * FROM zetta_nodes;`. See
+the headless heartbeat log, or SQL — `SELECT * FROM system.zetta_nodes;`. See
 [docs/cluster.md](docs/cluster.md) and [docs/replication.md](docs/replication.md).
 zetta is **multi-leader** (no global election); leadership applies only to future
 exclusive structures (locks) — see the consistency model in the replication doc.

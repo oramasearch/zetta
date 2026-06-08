@@ -30,7 +30,7 @@ sequences, and other single-writer resources where "two holders at once" is
 incorrect. Those are the exception, not the rule, and they get a scoped
 mechanism rather than making the whole system single-leader:
 
-- **A replicated `zetta_leadership` system table** (planned — not built yet)
+- **A replicated `system.zetta_leadership` table** (planned — not built yet)
   tracks, per exclusive resource, the current holder and a **lease with a
   timeout**. Leadership is acquired by *ascension*: if a resource is unheld or
   its lease has expired, a node claims it; concurrent claims are resolved
@@ -115,7 +115,7 @@ replication status. It surfaces three ways:
 - **Headed** — the Cluster panel's *Nodes & replication* table (id, address,
   role, entries, version, in-sync/syncing + age).
 - **Headless** — the heartbeat logs a per-node table whenever it changes.
-- **SQL** — `SELECT * FROM zetta_nodes;` (see [query.md](query.md)).
+- **SQL** — `SELECT * FROM system.zetta_nodes;` (see [query.md](query.md)).
 
 ## Data replication: CRDT is the source of truth, disk follows
 

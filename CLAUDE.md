@@ -133,7 +133,7 @@ is required.** Because the base is a CRDT, every node is a writer and merges
 converge conflict-free — there is **no global leader / no global election** (the
 cluster is equal peers). A leader is needed only for **exclusive** structures
 (locks, sequences, single-writer resources), which get a scoped, planned
-mechanism: a replicated **`zetta_leadership` system table** holding, per resource,
+mechanism: a replicated **`system.zetta_leadership`** table holding, per resource,
 the holder + a **lease with a timeout** — leadership by *ascension* (claim if
 unheld/expired; deterministic tiebreak on concurrent claims; renew before
 expiry). **Raft is a future option scoped to just those exclusive structures**,
@@ -222,11 +222,13 @@ frontend; `QueryService` is the parse+execute facade the UI calls. Supporting
 another database format = writing another `Dialect` that targets the same AST —
 **never** add dialect specifics to the executor. Supported today: basic DDL
 (CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT + single
-`WHERE` equality). The executor also serves the read-only **`zetta_nodes`**
-system table (cluster membership + replication status, à la
-`pg_stat_replication`) when a `Cluster*` is wired into the `Executor`/
-`QueryService` — a reserved table name, not a dialect quirk. Full detail in
-[docs/query.md](docs/query.md).
+`WHERE` equality). The executor also serves a virtual, read-only **`system`**
+database (à la `pg_catalog`) whose tables are computed at query time — first
+**`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
+wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves).
+`system` is reserved (can't be created/dropped/written; no real db may be named
+it) and is where future system tables (e.g. `system.zetta_leadership`) live. Full
+detail in [docs/query.md](docs/query.md).
 
 ## Tech stack
 

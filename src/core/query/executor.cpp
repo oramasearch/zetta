@@ -16,9 +16,20 @@
 namespace zetta::query {
 namespace {
 
-// The system table exposing cluster membership + replication status, à la
-// Postgres' pg_stat_replication. SELECT-only; backed by Cluster::nodes().
+// The virtual `system` database holds read-only system tables (à la Postgres'
+// pg_catalog). Its tables are computed at query time, not stored/replicated.
+// First table: `zetta_nodes` — cluster membership + replication status, backed
+// by Cluster::nodes(). `SELECT * FROM system.zetta_nodes` (the bare name still
+// works for back-compat). Future: system.zetta_leadership, etc.
+constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
+
+// The system-table name a TableRef refers to, or empty if it's a normal table.
+std::string system_table_of(const TableRef& ref) {
+    if (ref.database == kSystemDatabase) return ref.table;            // system.<t>
+    if (ref.database.empty() && ref.table == kNodesTable) return ref.table;  // bare alias
+    return {};
+}
 
 template <class... Ts>
 struct overloaded : Ts... {
@@ -108,6 +119,9 @@ QueryResult Executor::execute(const Statement& stmt,
     return std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
+                if (s.name == kSystemDatabase) {
+                    return error("\"system\" is a reserved (virtual) database");
+                }
                 if (!node_.create_database(s.name)) {
                     return error("database \"" + s.name +
                                  "\" already exists or the name is invalid");
@@ -115,6 +129,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE DATABASE"};
             },
             [&](const DropDatabaseStmt& s) -> QueryResult {
+                if (s.name == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
                 if (!node_.drop_database(s.name)) {
                     return error("database \"" + s.name + "\" does not exist");
                 }
@@ -122,6 +139,9 @@ QueryResult Executor::execute(const Statement& stmt,
             },
             [&](const CreateTableStmt& s) -> QueryResult {
                 const std::string name = db_name(s.table);
+                if (name == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
                 if (name.empty()) {
                     return error("no database selected — qualify as db.table or "
                                  "select a database");
@@ -137,6 +157,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "CREATE TABLE"};
             },
             [&](const DropTableStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +
@@ -148,6 +171,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "DROP TABLE"};
             },
             [&](const InsertStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +
@@ -179,11 +205,16 @@ QueryResult Executor::execute(const Statement& stmt,
                 return {.message = "INSERT 0 " + std::to_string(inserted)};
             },
             [&](const SelectStmt& s) -> QueryResult {
-                // System table: cluster membership + replication status.
-                if (s.table.database.empty() && s.table.table == kNodesTable) {
+                // Virtual `system` database (computed, read-only).
+                if (const std::string sys = system_table_of(s.table);
+                    !sys.empty()) {
+                    if (sys != kNodesTable) {
+                        return error("no such system table \"" + sys +
+                                     "\" (try system.zetta_nodes)");
+                    }
                     if (!cluster_) {
-                        return error(
-                            "\"zetta_nodes\" is unavailable here (no cluster)");
+                        return error("system.zetta_nodes is unavailable here "
+                                     "(no cluster)");
                     }
                     return select_over_rows(s, cluster_node_rows(*cluster_));
                 }
