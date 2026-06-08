@@ -139,22 +139,27 @@ bool parse_host_port(const std::string& text, net::ipv4_address& address,
 // larger objects would need chunked transfer (a future step).
 constexpr std::size_t kMaxLineBytes = 64 * 1024 * 1024;
 
-// Read one '\n'-terminated line (without the newline). Empty optional on
-// EOF/error or if the line exceeds kMaxLineBytes.
-capy::task<std::optional<std::string>> read_line(net::tcp_socket& socket) {
-    std::string accumulated;
-    char buffer[4096];
+// Read one '\n'-terminated line (without the newline) from the stream, using a
+// PERSISTENT `pending` buffer that carries bytes past the newline to the next
+// call. This is essential: one `read_some` routinely returns several lines
+// coalesced (Nagle, MTU batching on a real link), and dropping the remainder
+// would silently lose every line after the first — exactly the framing bug that
+// stalled cross-machine gossip. Empty optional on EOF/error or overflow.
+capy::task<std::optional<std::string>> read_line(net::tcp_socket& socket,
+                                                 std::string& pending) {
     for (;;) {
+        if (const auto newline = pending.find('\n');
+            newline != std::string::npos) {
+            std::string line = pending.substr(0, newline);
+            pending.erase(0, newline + 1);  // keep everything after the '\n'
+            co_return line;
+        }
+        if (pending.size() > kMaxLineBytes) co_return std::nullopt;
+        char buffer[4096];
         auto [ec, n] = co_await socket.read_some(
             net::mutable_buffer(buffer, sizeof buffer));
         if (ec || n == 0) co_return std::nullopt;
-        accumulated.append(buffer, n);
-        if (const auto newline = accumulated.find('\n');
-            newline != std::string::npos) {
-            accumulated.resize(newline);
-            co_return accumulated;
-        }
-        if (accumulated.size() > kMaxLineBytes) co_return std::nullopt;
+        pending.append(buffer, n);
     }
 }
 
@@ -400,12 +405,15 @@ capy::task<> gossip_writer(Cluster::State* self,
 capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                                 std::string my_node_id,
                                 std::string my_listen_address, bool initiate) {
+    // One read buffer for the whole connection — the handshake read and the
+    // read pump must share it, or bytes the peer sent right after HELLO are lost.
+    std::string pending;
     std::optional<std::string> their_hello;
     if (initiate) {
         co_await write_line(socket, hello_line(my_node_id, my_listen_address));
-        their_hello = co_await read_line(socket);
+        their_hello = co_await read_line(socket, pending);
     } else {
-        their_hello = co_await read_line(socket);
+        their_hello = co_await read_line(socket, pending);
         co_await write_line(socket, hello_line(my_node_id, my_listen_address));
     }
     if (!their_hello) {
@@ -436,7 +444,8 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // large-object bodies, until disconnect (or the writer's keepalive closes
     // the socket, which surfaces here as a read error).
     for (;;) {
-        std::optional<std::string> line = co_await read_line(*link->socket);
+        std::optional<std::string> line =
+            co_await read_line(*link->socket, pending);
         if (!line) break;  // peer disconnected / link timed out
         link->last_activity = std::chrono::steady_clock::now();
         apply_gossip(self, *line, peer.node_id, *link);
