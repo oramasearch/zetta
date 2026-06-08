@@ -75,6 +75,10 @@ Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
 sources the rows from `Cluster::nodes()` instead of a storage engine. (The name
 is reserved: it's matched before any database lookup.)
 
+A second system table, **`zetta_leadership`** (which exclusive resource is held by
+which node, with lease/timeout), is **planned, not built** — see
+[replication.md](replication.md) → *Consistency model*.
+
 ## Timing
 
 `QueryService::Outcome::elapsed` is the wall-clock time of the whole parse +

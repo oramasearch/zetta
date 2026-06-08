@@ -79,13 +79,22 @@ is wired in, peers gossip their documents and status over the connection (see
   the host's first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
 - `node-id` is a UUIDv4 generated per process.
 
+## Leadership
+
+zetta is **multi-leader by default** — the CRDT data plane needs no leader, so
+the cluster stays equal peers with no global election. Leadership applies only to
+**exclusive** structures (locks, etc.) via a planned, replicated `zetta_leadership`
+table (lease + timeout + ascension), with Raft as a future option scoped to those
+structures. So `ClusterRole` (currently always `Follower`) is **per-resource**
+leadership, not a node-wide title. This is documented design only — see
+[replication.md](replication.md) → *Consistency model*.
+
 ## Limits / future
 
-- **Equal peers + membership + replication gossip.** Leader election and failover
-  are the next step; `ClusterRole` exists for that future (currently always
-  `Follower`).
+- **Equal peers + membership + replication gossip.** No global leader by design
+  (multi-leader CRDT); per-resource leadership for exclusive structures is the
+  planned next concern (above).
 - Replication gossips a per-node schema snapshot today; streaming live `Node`
-  mutations into the replicated document is the next replication step (see
-  [replication.md](replication.md)). No consensus (it's CRDT convergence, not
-  Raft/Paxos) — by design.
+  DDL + row mutations into the replicated document (CRDT as source of truth, disk
+  as projection) is the active replication build — see [replication.md](replication.md).
 - Plaintext TCP (Corosio supports TLS; not wired yet).

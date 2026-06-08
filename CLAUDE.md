@@ -123,6 +123,23 @@ bespoke sync path.
 > live `Node` mutations (DDL + rows) and the node list through replication so the
 > document is the one source of truth. Move things *toward* this rule, never away.
 
+**Consistency model: multi-leader by default; leadership only where exclusivity
+is required.** Because the base is a CRDT, every node is a writer and merges
+converge conflict-free — there is **no global leader / no global election** (the
+cluster is equal peers). A leader is needed only for **exclusive** structures
+(locks, sequences, single-writer resources), which get a scoped, planned
+mechanism: a replicated **`zetta_leadership` system table** holding, per resource,
+the holder + a **lease with a timeout** — leadership by *ascension* (claim if
+unheld/expired; deterministic tiebreak on concurrent claims; renew before
+expiry). **Raft is a future option scoped to just those exclusive structures**,
+never the whole DB. So `ClusterRole` is really **per-resource** leadership, not a
+node-wide title. **Leadership is documented design only — not built yet**
+(`docs/replication.md` → *Consistency model*). The active build is the
+multi-leader data plane: **the CRDT document is the source of truth for data
+(DDL + rows); the on-disk store + in-memory tree are a materialized projection,
+and the document is persisted (`save()`/`merge()`) so it survives restart.** See
+`docs/replication.md` → *Data replication*.
+
 A node's replicated state (DDL/metadata/rows) is an **Automerge CRDT**
 (`modules/automerge-cpp`, from-scratch C++23, no Rust). `zetta::ReplicationManager`
 exposes only JSON + bytes (`set`/`snapshot`/`save`/`merge`, plus `entry_count`/
