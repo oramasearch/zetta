@@ -61,6 +61,7 @@ void print_usage(const char* argv0) {
         "  --port-range N      Ports to try from --listen, for several nodes\n"
         "                      per host (default: %u)\n"
         "  --peer HOST:PORT    A node to connect to (repeatable; all equal)\n"
+        "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  -h, --help          Show this help\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
@@ -114,6 +115,8 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--peer");
             if (!v) break;
             o.cluster.seeds.emplace_back(v);
+        } else if (arg == "--log-cluster") {
+            o.cluster.log_events = true;
         } else if (arg == "-h" || arg == "--help") {
             o.show_help = true;
         } else {

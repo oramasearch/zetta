@@ -68,6 +68,10 @@ struct ClusterConfig {
     // Re-dial seeds that aren't currently connected, this often, so a dropped
     // link re-establishes itself.
     unsigned reconnect_interval_seconds = 3;
+    // Log every cluster event (handshake, peer add/remove, STATUS sent/received,
+    // body requests/transfers, keepalive, reconnect) to stderr — for debugging
+    // gossip/convergence issues. Off by default; enable with `--log-cluster`.
+    bool log_events = false;
 };
 
 // Cluster membership over TCP. Every node is an equal peer: it listens for

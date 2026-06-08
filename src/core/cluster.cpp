@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <map>
 #include <memory>
@@ -59,6 +60,7 @@ struct Cluster::State {
     BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
     std::chrono::steady_clock::duration idle_timeout{};
     std::chrono::steady_clock::duration reconnect_interval{};
+    bool log_events = false;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
 
@@ -106,6 +108,16 @@ struct Cluster::State {
 namespace {
 
 constexpr std::string_view kProtocol = "ZETTA/1";
+
+// Diagnostic logging (gated by --log-cluster), to stderr.
+void log_event(const Cluster::State* self, const std::string& message) {
+    if (!self->log_events) return;
+    std::fprintf(stderr, "cluster: %s\n", message.c_str());
+    std::fflush(stderr);
+}
+
+// First UUID segment, for compact logs.
+std::string short_id(const std::string& id) { return id.substr(0, 8); }
 
 bool parse_host_port(const std::string& text, net::ipv4_address& address,
                      std::uint16_t& port) {
@@ -297,21 +309,32 @@ void apply_gossip(Cluster::State* self, const std::string& line,
         std::size_t entries = 0;
         std::string version;
         parser >> entries >> version;
+        log_event(self, "<- STATUS from " + short_id(peer_node_id) +
+                            " entries=" + std::to_string(entries) + " ver=" +
+                            version);
         self->update_peer_status(peer_node_id, entries, std::move(version),
                                  std::chrono::steady_clock::now());
     } else if (verb == "LOREQ") {
         std::string id;
         parser >> id;
         if (self->blobs && !id.empty()) {
-            if (auto body = self->blobs->read_blob(id)) {
-                link.outbound.push_back(lores_line(id, *body));
-            }
+            auto body = self->blobs->read_blob(id);
+            log_event(self, "<- LOREQ " + short_id(id) + " from " +
+                                short_id(peer_node_id) +
+                                (body ? " (serving " + std::to_string(body->size()) +
+                                            "B)"
+                                      : " (we don't have it)"));
+            if (body) link.outbound.push_back(lores_line(id, *body));
         }
     } else if (verb == "LORES") {
         std::string id, encoded;
         parser >> id >> encoded;
         if (self->blobs && !id.empty() && !encoded.empty()) {
-            self->blobs->store_blob(id, base64_decode_to_string(encoded));
+            const std::string body = base64_decode_to_string(encoded);
+            const bool ok = self->blobs->store_blob(id, body);
+            log_event(self, "<- LORES " + short_id(id) + " (" +
+                                std::to_string(body.size()) + "B) -> " +
+                                (ok ? "stored" : "REJECTED (hash/size)"));
         }
     }
 }
@@ -331,6 +354,7 @@ capy::task<> gossip_writer(Cluster::State* self,
         // silence means the link died (e.g. a silent TCP drop). Close it —
         // that unblocks the read pump, which removes the peer.
         if (Clock::now() - link->last_activity > self->idle_timeout) {
+            log_event(self, "keepalive timeout — dropping idle peer connection");
             link->socket->close();
             co_return;
         }
@@ -358,6 +382,7 @@ capy::task<> gossip_writer(Cluster::State* self,
                 const auto it = requested.find(id);
                 if (it != requested.end() && now - it->second < 2s) continue;
                 requested[id] = now;
+                log_event(self, "-> LOREQ " + short_id(id));
                 if (!co_await write_line(*link->socket, loreq_line(id))) {
                     co_return;
                 }
@@ -393,6 +418,8 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         co_return;
     }
     self->add_peer(peer.node_id, peer.address);
+    log_event(self, std::string("+ peer ") + short_id(peer.node_id) + " @ " +
+                        peer.address + (initiate ? " (dialed)" : " (accepted)"));
 
     // Per-connection link shared between this read pump and the gossip write
     // pump (both on the io thread). The writer handles periodic gossip, queued
@@ -417,6 +444,8 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
 
     link->alive = false;
     self->remove_peer(peer.node_id);
+    log_event(self, std::string("- peer ") + short_id(peer.node_id) +
+                        " (connection closed)");
     link->socket->close();
 }
 
@@ -462,6 +491,7 @@ capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds
             net::ipv4_address address;
             std::uint16_t port = 0;
             if (parse_host_port(seed, address, port)) {
+                log_event(self, "redial " + seed + " (not connected)");
                 capy::run_async(self->io_context.get_executor())(dial_seed(
                     self, address, port, my_node_id, my_listen_address));
             }
@@ -534,6 +564,7 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
         std::chrono::seconds(config_.peer_idle_timeout_seconds);
     state_->reconnect_interval =
         std::chrono::seconds(config_.reconnect_interval_seconds);
+    state_->log_events = config_.log_events;
 }
 
 Cluster::~Cluster() { stop(); }
