@@ -1,6 +1,9 @@
 #include "zetta/database.hpp"
 
+#include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
+
+#include "catalog.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -12,11 +15,13 @@
 namespace zetta {
 namespace fs = std::filesystem;
 
-Database::Database(std::string id, std::string name, fs::path dir)
+Database::Database(std::string id, std::string name, fs::path dir,
+                   ReplicationManager* replication)
     : id_(std::move(id)),
       name_(std::move(name)),
       dir_(std::move(dir)),
-      large_objects_(dir_ / "large_objects") {}
+      large_objects_(dir_ / "large_objects"),
+      replication_(replication) {}
 
 void Database::set_name(std::string name) {
     name_ = std::move(name);
@@ -42,7 +47,7 @@ void Database::load() {
         if (meta.is_discarded() || !meta.contains("name")) continue;
         tables_.push_back(std::make_shared<Table>(
             entry.path().filename().string(),
-            meta["name"].get<std::string>(), entry.path()));
+            meta["name"].get<std::string>(), entry.path(), replication_));
     }
     // Stable order for the UI (directory iteration order is unspecified).
     std::sort(tables_.begin(), tables_.end(),
@@ -52,11 +57,22 @@ void Database::load() {
 std::shared_ptr<Table> Database::create_table(std::string name) {
     if (name.empty() || find_table(name)) return nullptr;
     const std::string id = new_uuid();
+    if (replication_) {
+        replication_->set(catalog::table_key(id),
+                          nlohmann::json{{"db", id_}, {"name", name}});
+    }
+    return materialize_table(id, std::move(name));
+}
+
+std::shared_ptr<Table> Database::materialize_table(std::string id,
+                                                   std::string name) {
+    if (auto existing = find_table_by_id(id)) return existing;
     const fs::path table_dir = dir_ / id;
     std::error_code ec;
     fs::create_directories(table_dir, ec);
     if (ec) return nullptr;
-    auto table = std::make_shared<Table>(id, std::move(name), table_dir);
+    auto table = std::make_shared<Table>(std::move(id), std::move(name),
+                                         table_dir, replication_);
     table->persist_meta();
     tables_.push_back(table);
     return table;
@@ -69,10 +85,29 @@ std::shared_ptr<Table> Database::find_table(const std::string& name) const {
     return nullptr;
 }
 
+std::shared_ptr<Table> Database::find_table_by_id(const std::string& id) const {
+    for (const auto& t : tables_) {
+        if (t->id() == id) return t;
+    }
+    return nullptr;
+}
+
 bool Database::drop_table(const std::string& name) {
     const auto it = std::find_if(
         tables_.begin(), tables_.end(),
         [&](const std::shared_ptr<Table>& t) { return t->name() == name; });
+    if (it == tables_.end()) return false;
+    if (replication_) replication_->remove(catalog::table_key((*it)->id()));
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    tables_.erase(it);
+    return true;
+}
+
+bool Database::materialize_drop_table(const std::string& id) {
+    const auto it = std::find_if(
+        tables_.begin(), tables_.end(),
+        [&](const std::shared_ptr<Table>& t) { return t->id() == id; });
     if (it == tables_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);

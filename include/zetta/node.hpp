@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -10,6 +11,8 @@
 #include "zetta/database.hpp"
 
 namespace zetta {
+
+class ReplicationManager;
 
 // Where a node's persistent state lives and how it presents itself. More
 // fields (listen address, replication peers, cache sizes) land alongside the
@@ -22,26 +25,27 @@ struct NodeConfig {
 //
 // A Node owns the database lifecycle and knows nothing about any UI: the GUI
 // (zetta::gui::App) is a thin renderer driven by a Node, and headless mode
-// (zetta::run_headless) drives the same Node with no renderer at all. Keeping
-// SDL/ImGui out of this type is deliberate — a node must run on a server with
-// no display.
+// (zetta::run_headless) drives the same Node with no renderer at all.
 //
-// The storage + query engine doesn't exist yet, so today a Node is a
-// lifecycle skeleton (start/stop + a heartbeat tick) that gives both run
-// modes a real object to drive. Build the engine out behind this interface.
+// Replication: when constructed with a ReplicationManager, the **CRDT document
+// is the source of truth** and the on-disk store + this in-memory tree are a
+// projection of it. Local DDL/row mutations are captured into the document; on
+// each tick the node reconciles the projection to match the document (applying
+// changes merged from peers) and persists the document to disk. With no
+// ReplicationManager (the default), a Node is a standalone local store.
 class Node {
 public:
-    explicit Node(NodeConfig config);
+    explicit Node(NodeConfig config, ReplicationManager* replication = nullptr);
 
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
 
-    // Bring the node up (open data_dir, recover, bind listeners). Returns
-    // false without changing state if already running.
+    // Bring the node up (open data_dir, load the replicated document, reconcile).
+    // Returns false without changing state if already running.
     bool start();
 
-    // Advance background work. Cheap and non-blocking — safe to call every UI
-    // frame (headed) or on a fixed cadence (headless). No-op when stopped.
+    // Advance background work, including reconciling the local projection with
+    // the replicated document when it has changed. Cheap and non-blocking.
     void tick();
 
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
@@ -73,8 +77,22 @@ private:
 
     // Rebuild databases_ by scanning config_.data_dir. Called from start().
     void load_databases();
+    std::shared_ptr<Database> find_database_by_id(const std::string& id) const;
+
+    // --- replication (only when replication_ != nullptr) -------------------
+    std::filesystem::path replication_path() const;
+    void load_replication();           // read the persisted CRDT document
+    void persist_replication() const;  // write the CRDT document to disk
+    void migrate_to_replication();     // capture local-only data into the CRDT
+    void reconcile_from_replication(); // apply the CRDT document to the projection
+    // Materialize (no capture) — used by reconciliation:
+    std::shared_ptr<Database> materialize_database(std::string id,
+                                                   std::string name);
+    bool materialize_drop_database(const std::string& id);
 
     NodeConfig config_;
+    ReplicationManager* replication_;  // null = standalone (not replicated)
+    std::string last_seen_version_;    // CRDT version last reconciled/persisted
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;

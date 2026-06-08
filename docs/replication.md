@@ -97,9 +97,10 @@ The [cluster](cluster.md) carries replication. When a node is built with a
   whether it's **in sync** (its version equals ours) and how long ago it last
   synced.
 
-Each node seeds its own entry — `node_id → { address, databases }` — so it writes
-only its own key; the merge unions every node's entry into one shared map and the
-documents converge to the same `version()`.
+Each node seeds its own membership entry — `node:<node_id> → { address }` — under
+its own key, so the merge unions every node's entry conflict-free. The database
+catalog (DDL + rows) lives under separate keys (see *Data replication* below);
+once two nodes have exchanged everything, their documents share a `version()`.
 
 ## Seeing it: all nodes + replication status
 
@@ -111,10 +112,11 @@ replication status. It surfaces three ways:
 - **Headless** — the heartbeat logs a per-node table whenever it changes.
 - **SQL** — `SELECT * FROM zetta_nodes;` (see [query.md](query.md)).
 
-## Data replication: CRDT is the source of truth, disk follows (design)
+## Data replication: CRDT is the source of truth, disk follows
 
-This is the active build — making real database data (DDL **and** rows) replicate
-so every node converges on the same data, in memory and **on disk**.
+Real database data (DDL **and** rows) replicates: every node converges on the
+same data, in memory and **on disk**. (Done + tested — see
+`tests/test_data_replication.cpp`.)
 
 **The CRDT document is authoritative; the on-disk store + in-memory `Node` tree
 are a materialized *projection* of it.** Concretely:
@@ -146,11 +148,14 @@ are a materialized *projection* of it.** Concretely:
 
 ## Status / next steps
 
-- **Done + tested:** the CRDT core — `set`/`snapshot`/`save`/`merge`, distinct
-  per-node actor ids, conflict-free convergence (`tests/test_replication.cpp`);
-  and **gossip over the cluster** — peers exchange documents and converge
-  automatically, with per-node status in `nodes()` (`tests/test_cluster.cpp`).
-- **In progress:** the data-replication design above (DDL + rows → CRDT → every
-  node's disk, persisted).
+- **Done + tested:** the CRDT core (`tests/test_replication.cpp`); **gossip over
+  the cluster** with per-node status in `nodes()` (`tests/test_cluster.cpp`); and
+  **data replication** — DDL + rows captured into the document, reconciled onto
+  every node's disk, and persisted across restart (`tests/test_data_replication.cpp`).
 - **Documented, not built:** the leadership / `zetta_leadership` table and Raft
   (see *Consistency model* above) — design only for now.
+- **Known limits (v1):** the whole document is re-saved on each change and
+  reconcile rescans on each version bump (fine for modest data; incremental
+  save / per-table versioning can come later). Row ordering across nodes is by
+  arrival, not a global sequence. Dropping a table/database leaves its child
+  row/table keys as harmless orphans in the document (reconcile ignores them).

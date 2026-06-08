@@ -52,14 +52,16 @@ zetta --peer 127.0.0.1:7777          # second node on this host (auto-binds 7778
 zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachable)
 ```
 
-State replicates between nodes as an [Automerge](docs/replication.md) CRDT
-(replicate-to-all policy; each node has a UUIDv4 actor id). Peers gossip their
-state and converge conflict-free. You can see **all nodes and their replication
-status** (entries, version, in-sync/syncing) three ways: the headed **Cluster**
-panel's Nodes table, the headless heartbeat log, or SQL —
-`SELECT * FROM zetta_nodes;`. See [docs/cluster.md](docs/cluster.md) and
-[docs/replication.md](docs/replication.md). Membership + replication for now —
-**leader election and failover are the planned next step**.
+Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
+(replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
+and rows created on any node converge onto every node — in memory and on disk**,
+conflict-free, with no leader (the CRDT document is the source of truth; disk
+follows). You can see **all nodes and their replication status** (entries,
+version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,
+the headless heartbeat log, or SQL — `SELECT * FROM zetta_nodes;`. See
+[docs/cluster.md](docs/cluster.md) and [docs/replication.md](docs/replication.md).
+zetta is **multi-leader** (no global election); leadership applies only to future
+exclusive structures (locks) — see the consistency model in the replication doc.
 
 The first configure clones SDL3, Dear ImGui, and GoogleTest via CMake
 `FetchContent` (a few minutes); the Capy/Corosio coroutine stack and

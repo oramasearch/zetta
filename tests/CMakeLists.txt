@@ -25,6 +25,7 @@ add_executable(zetta-tests
   test_runtime.cpp
   test_cluster.cpp
   test_replication.cpp
+  test_data_replication.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_26)

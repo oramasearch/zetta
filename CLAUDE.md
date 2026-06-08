@@ -117,11 +117,11 @@ way around. New replicated state = a new key/shape in the document, replicated b
 the existing gossip; new "kinds of agreement" = a new `ReplicationPolicy`, never a
 bespoke sync path.
 
-> Current reality vs. the rule: today schemas are *seeded* into the document at
-> startup and membership is still tracked in the `Cluster` peer table separately.
-> That gap is **migration debt, not the design** — the direction is to route
-> live `Node` mutations (DDL + rows) and the node list through replication so the
-> document is the one source of truth. Move things *toward* this rule, never away.
+> Current reality vs. the rule: DDL + rows now flow through replication (the CRDT
+> is the source of truth; disk is its projection). The one remaining gap is
+> **cluster membership**, still tracked in the `Cluster` peer table separately —
+> **migration debt, not the design**: route the node list through replication
+> too. Move things *toward* this rule, never away.
 
 **Consistency model: multi-leader by default; leadership only where exclusivity
 is required.** Because the base is a CRDT, every node is a writer and merges
@@ -153,30 +153,40 @@ cluster (the `Cluster` takes a `ReplicationManager*`; per-connection `SYNC`/
 **conflict-free**. `version()` fingerprints the Automerge heads, so two nodes are
 "in sync" exactly when their versions match. Each node's **UUIDv4 is its actor
 id** (16 bytes; distinct ids make concurrent edits merge without dropping
-changes) — the same UUID as its cluster node id, and the key under which it seeds
-its own `{address, databases}` entry (so the merge unions all nodes). Policies
-plug in via `ReplicationPolicy`; the first is `ReplicateToAllNodes` (full copy on
-every node). Done + tested: the CRDT core **and** cluster gossip + per-node
-status; **next** is streaming live `Node` mutations into the document (today it
-seeds a schema snapshot at startup). See [docs/replication.md](docs/replication.md).
+changes) — the same UUID as its cluster node id. The document uses **flat keys**
+(`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
+`row:<uuid>` — each row owns its key by UUID so concurrent edits never collide.
+`Node` is the integration point: it **captures** local DDL/row mutations into the
+document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
+**reconciles** the on-disk projection from the document on each `tick()` (so peer
+changes land on disk), and **persists** it to `data_dir/replication.automerge`.
+Policies plug in via `ReplicationPolicy`; the first is `ReplicateToAllNodes`
+(full copy on every node). Done + tested: CRDT core, cluster gossip + per-node
+status, **and full DDL+row data replication to disk** (`tests/test_data_replication.cpp`).
+See [docs/replication.md](docs/replication.md).
 
 ### On-disk layout
 
 ```
 data_dir/
+  replication.automerge      ← the replicated CRDT document (source of truth)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
       table.json             ← { id, name }
-      000000.jsonl           ← records 0..9999      (one JSON doc per line)
-      000001.jsonl           ← records 10000..19999
+      000000.jsonl           ← rows 0..9999    ({ "_zid": row-uuid, "doc": row })
+      000001.jsonl           ← rows 10000..19999
       ...                    ← JsonlStore::kRecordsPerChunk = 10k per chunk
 ```
 
 The folder name *is* the id; the human name lives only in `database.json` /
-`table.json` (so rename rewrites that file, never moves the folder). `add_row`
-appends a line to the active chunk immediately (append-open per record — simple
-and crash-resilient; can hold the stream open later). `data_dir` defaults to
+`table.json` (so rename rewrites that file, never moves the folder). Each JSONL
+line is `{ "_zid": <row-uuid>, "doc": <row> }` — `_zid` is the row's CRDT key
+(same id on every node); `doc` is what `SELECT` returns. (Legacy bare-row lines
+are still read, with a fresh id assigned.) When replicated, the folder tree is a
+projection of `replication.automerge`; standalone nodes read/write it directly.
+`add_row` appends a line to the active chunk immediately (append-open per row —
+simple and crash-resilient; can hold the stream open later). `data_dir` defaults to
 `./zetta-data` and is git-ignored.
 
 ### Files: large objects + import
@@ -280,7 +290,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
 src/core/                   zetta-core impl
-  node.cpp                  + load_databases() (scan data_dir on start)
+  catalog.hpp               flat-key scheme for the replicated catalog (internal)
+  node.cpp                  load_databases() + replication capture/reconcile/persist
   database.cpp
   table.cpp
   jsonl_store.cpp

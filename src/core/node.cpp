@@ -1,21 +1,28 @@
 #include "zetta/node.hpp"
 
+#include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
 #include "zetta/version.hpp"
 
+#include "catalog.hpp"
+
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 namespace zetta {
 namespace fs = std::filesystem;
 
-Node::Node(NodeConfig config) : config_(std::move(config)) {}
+Node::Node(NodeConfig config, ReplicationManager* replication)
+    : config_(std::move(config)), replication_(replication) {}
 
 bool Node::start() {
     if (running_) return false;
@@ -23,7 +30,13 @@ bool Node::start() {
     started_at_ = Clock::now();
     ticks_ = 0;
     load_databases();
-    // TODO(engine): recover the WAL, bind listeners.
+    if (replication_) {
+        load_replication();         // bring in the persisted CRDT document
+        migrate_to_replication();   // capture any local-only data into it
+        reconcile_from_replication();  // materialize anything only in the document
+        persist_replication();
+        last_seen_version_ = replication_->version();
+    }
     std::printf("zetta %s: node started (data_dir=%s, %zu databases)\n",
                 kVersion, config_.data_dir.c_str(), databases_.size());
     std::fflush(stdout);
@@ -33,12 +46,23 @@ bool Node::start() {
 void Node::tick() {
     if (!running_) return;
     ++ticks_;
-    // TODO(engine): drive background compaction / flush / client I/O here.
+    // The CRDT is the source of truth; when it has advanced (a local capture or
+    // a peer's gossip merged in on the network thread), reconcile the on-disk
+    // projection to match it and persist. Reconcile only materializes (never
+    // captures), so it doesn't move the version — no feedback loop.
+    if (replication_) {
+        std::string version = replication_->version();
+        if (version != last_seen_version_) {
+            reconcile_from_replication();
+            persist_replication();
+            last_seen_version_ = std::move(version);
+        }
+    }
 }
 
 void Node::stop() {
     if (!running_) return;
-    // Records are already flushed to disk on add; nothing buffered to lose.
+    if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");
     std::fflush(stdout);
@@ -65,7 +89,7 @@ void Node::load_databases() {
         if (meta.is_discarded() || !meta.contains("name")) continue;
         auto db = std::make_shared<Database>(
             entry.path().filename().string(),
-            meta["name"].get<std::string>(), entry.path());
+            meta["name"].get<std::string>(), entry.path(), replication_);
         db->load();
         databases_.push_back(std::move(db));
     }
@@ -77,11 +101,22 @@ void Node::load_databases() {
 std::shared_ptr<Database> Node::create_database(std::string name) {
     if (name.empty() || find_database(name)) return nullptr;
     const std::string id = new_uuid();
+    if (replication_) {
+        replication_->set(catalog::database_key(id),
+                          nlohmann::json{{"name", name}});
+    }
+    return materialize_database(id, std::move(name));
+}
+
+std::shared_ptr<Database> Node::materialize_database(std::string id,
+                                                     std::string name) {
+    if (auto existing = find_database_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto db = std::make_shared<Database>(id, std::move(name), dir);
+    auto db = std::make_shared<Database>(std::move(id), std::move(name), dir,
+                                         replication_);
     db->persist_meta();
     databases_.push_back(db);
     return db;
@@ -94,10 +129,25 @@ std::shared_ptr<Database> Node::find_database(const std::string& name) const {
     return nullptr;
 }
 
+std::shared_ptr<Database> Node::find_database_by_id(
+    const std::string& id) const {
+    for (const auto& db : databases_) {
+        if (db->id() == id) return db;
+    }
+    return nullptr;
+}
+
 bool Node::drop_database(const std::string& name) {
+    auto db = find_database(name);
+    if (!db) return false;
+    if (replication_) replication_->remove(catalog::database_key(db->id()));
+    return materialize_drop_database(db->id());
+}
+
+bool Node::materialize_drop_database(const std::string& id) {
     const auto it = std::find_if(
         databases_.begin(), databases_.end(),
-        [&](const std::shared_ptr<Database>& d) { return d->name() == name; });
+        [&](const std::shared_ptr<Database>& d) { return d->id() == id; });
     if (it == databases_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -109,6 +159,10 @@ bool Node::rename_database(const std::string& from, const std::string& to) {
     if (to.empty() || find_database(to)) return false;  // empty or clashes
     auto db = find_database(from);
     if (!db) return false;
+    if (replication_) {
+        replication_->set(catalog::database_key(db->id()),
+                          nlohmann::json{{"name", to}});
+    }
     db->set_name(to);
     return true;
 }
@@ -118,6 +172,151 @@ std::vector<std::string> Node::database_names() const {
     names.reserve(databases_.size());
     for (const auto& db : databases_) names.push_back(db->name());
     return names;
+}
+
+// ----- replication: persistence ---------------------------------------------
+
+fs::path Node::replication_path() const {
+    return fs::path(config_.data_dir) / "replication.automerge";
+}
+
+void Node::load_replication() {
+    std::error_code ec;
+    const fs::path path = replication_path();
+    if (!fs::exists(path, ec)) return;
+    std::ifstream in(path, std::ios::binary);
+    const std::vector<char> raw((std::istreambuf_iterator<char>(in)),
+                                std::istreambuf_iterator<char>());
+    if (raw.empty()) return;
+    std::vector<std::byte> bytes(raw.size());
+    for (std::size_t i = 0; i < raw.size(); ++i) {
+        bytes[i] = static_cast<std::byte>(raw[i]);
+    }
+    replication_->merge(bytes);
+}
+
+void Node::persist_replication() const {
+    const std::vector<std::byte> bytes = replication_->save();
+    const fs::path path = replication_path();
+    const fs::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        out.write(reinterpret_cast<const char*>(bytes.data()),
+                  static_cast<std::streamsize>(bytes.size()));
+    }
+    std::error_code ec;
+    fs::rename(tmp, path, ec);  // atomic replace
+}
+
+// ----- replication: capture local-only data ---------------------------------
+
+void Node::migrate_to_replication() {
+    const nlohmann::json snapshot = replication_->snapshot();
+    for (const auto& db : databases_) {
+        if (!snapshot.contains(catalog::database_key(db->id()))) {
+            replication_->set(catalog::database_key(db->id()),
+                              nlohmann::json{{"name", db->name()}});
+        }
+        for (const auto& table : db->tables()) {
+            if (!snapshot.contains(catalog::table_key(table->id()))) {
+                replication_->set(
+                    catalog::table_key(table->id()),
+                    nlohmann::json{{"db", db->id()}, {"name", table->name()}});
+            }
+            const StorageEngine& store = table->store();
+            for (std::size_t i = 0; i < store.size(); ++i) {
+                const std::string& row_id = store.id_at(i);
+                if (!snapshot.contains(catalog::row_key(row_id))) {
+                    replication_->set(
+                        catalog::row_key(row_id),
+                        nlohmann::json{{"tbl", table->id()},
+                                       {"data", store.at(i)}});
+                }
+            }
+        }
+    }
+}
+
+// ----- replication: apply the document to the local projection --------------
+
+void Node::reconcile_from_replication() {
+    const nlohmann::json snapshot = replication_->snapshot();
+
+    // Decode the flat catalog keys into desired databases / tables / rows.
+    std::map<std::string, std::string> databases;             // id -> name
+    std::map<std::string, std::pair<std::string, std::string>> tables;  // id -> (db, name)
+    struct RowEntry { std::string table_id; nlohmann::json data; };
+    std::map<std::string, RowEntry> rows;                     // id -> entry
+
+    for (const auto& [key, value] : snapshot.items()) {
+        if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
+            !id.empty() && value.is_object() && value.contains("name")) {
+            databases.emplace(std::move(id), value["name"].get<std::string>());
+        } else if (std::string table_id =
+                       catalog::id_after(key, catalog::kTablePrefix);
+                   !table_id.empty() && value.is_object() &&
+                   value.contains("db") && value.contains("name")) {
+            tables.emplace(std::move(table_id),
+                           std::pair{value["db"].get<std::string>(),
+                                     value["name"].get<std::string>()});
+        } else if (std::string row_id =
+                       catalog::id_after(key, catalog::kRowPrefix);
+                   !row_id.empty() && value.is_object() &&
+                   value.contains("tbl") && value.contains("data")) {
+            rows.emplace(std::move(row_id),
+                         RowEntry{value["tbl"].get<std::string>(),
+                                  value["data"]});
+        }
+    }
+
+    // Removals first (a peer dropped a database/table). Snapshot ids up front so
+    // we don't mutate while iterating.
+    std::vector<std::string> local_db_ids;
+    for (const auto& db : databases_) local_db_ids.push_back(db->id());
+    for (const std::string& db_id : local_db_ids) {
+        if (!databases.contains(db_id)) {
+            materialize_drop_database(db_id);
+            continue;
+        }
+        auto db = find_database_by_id(db_id);
+        std::vector<std::string> local_table_ids;
+        for (const auto& table : db->tables()) {
+            local_table_ids.push_back(table->id());
+        }
+        for (const std::string& table_id : local_table_ids) {
+            const auto it = tables.find(table_id);
+            if (it == tables.end() || it->second.first != db_id) {
+                db->materialize_drop_table(table_id);
+            }
+        }
+    }
+
+    // Additions / renames.
+    for (const auto& [id, name] : databases) {
+        auto db = find_database_by_id(id);
+        if (!db) {
+            materialize_database(id, name);
+        } else if (db->name() != name) {
+            db->set_name(name);  // a peer renamed it (no re-capture)
+        }
+    }
+    for (const auto& [id, db_and_name] : tables) {
+        auto db = find_database_by_id(db_and_name.first);
+        if (db && !db->find_table_by_id(id)) {
+            db->materialize_table(id, db_and_name.second);
+        }
+    }
+    for (auto& [id, entry] : rows) {
+        auto db_table = [&]() -> std::shared_ptr<Table> {
+            for (const auto& db : databases_) {
+                if (auto table = db->find_table_by_id(entry.table_id)) {
+                    return table;
+                }
+            }
+            return nullptr;
+        }();
+        if (db_table) db_table->materialize_row(id, std::move(entry.data));
+    }
 }
 
 std::string Node::status_line() const {

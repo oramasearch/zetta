@@ -43,6 +43,13 @@ void ReplicationManager::set(const std::string& key,
     });
 }
 
+void ReplicationManager::remove(const std::string& key) {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    state_->document.transact([&](am::Transaction& transaction) {
+        transaction.delete_key(am::root, key);
+    });
+}
+
 nlohmann::json ReplicationManager::snapshot() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     nlohmann::json result = nlohmann::json::object();

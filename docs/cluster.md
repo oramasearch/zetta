@@ -96,7 +96,9 @@ of roles, not a node-wide title. This is documented design only — see
 - **Equal peers + membership + replication gossip.** No global leader by design
   (multi-leader CRDT); per-resource leadership for exclusive structures is the
   planned next concern (above).
-- Replication gossips a per-node schema snapshot today; streaming live `Node`
-  DDL + row mutations into the replicated document (CRDT as source of truth, disk
-  as projection) is the active replication build — see [replication.md](replication.md).
+- Replication carries the full database (DDL + rows): the CRDT document is the
+  source of truth and every node's disk is a projection of it — see
+  [replication.md](replication.md). Cluster **membership** is still a separate
+  peer table (not yet replicated); that's the remaining "everything is
+  replicated" gap.
 - Plaintext TCP (Corosio supports TLS; not wired yet).

@@ -20,30 +20,36 @@ TEST(JsonlStore, AddSizeAndRead) {
     EXPECT_EQ(store.size(), 0u);
     EXPECT_STREQ(store.name(), "jsonl");
 
-    store.add(json{{"a", 1}});
-    store.add(json{{"b", 2}});
+    store.add("id-a", json{{"a", 1}});
+    store.add("id-b", json{{"b", 2}});
     ASSERT_EQ(store.size(), 2u);
     EXPECT_EQ(store.at(0)["a"].get<int>(), 1);
     EXPECT_EQ(store.at(1)["b"].get<int>(), 2);
+    // Rows carry their id (the CRDT key) for idempotent reconciliation.
+    EXPECT_EQ(store.id_at(0), "id-a");
+    EXPECT_TRUE(store.contains("id-b"));
+    EXPECT_FALSE(store.contains("id-missing"));
 }
 
 TEST(JsonlStore, PersistsAndReloads) {
     TempDir tmp;
     {
         JsonlStore store{tmp.path()};
-        store.add(json{{"x", "hello"}});
-        store.add(json{{"y", 42}});
+        store.add("rx", json{{"x", "hello"}});
+        store.add("ry", json{{"y", 42}});
     }
     JsonlStore reloaded{tmp.path()};
     ASSERT_EQ(reloaded.size(), 2u);
     EXPECT_EQ(reloaded.at(0)["x"].get<std::string>(), "hello");
     EXPECT_EQ(reloaded.at(1)["y"].get<int>(), 42);
+    EXPECT_TRUE(reloaded.contains("rx"));  // ids survive a reload
+    EXPECT_EQ(reloaded.id_at(1), "ry");
 }
 
 TEST(JsonlStore, ChunksEveryTenThousandRecords) {
     TempDir tmp;
     JsonlStore store{tmp.path()};
-    for (int i = 0; i < 10001; ++i) store.add(json{{"i", i}});
+    for (int i = 0; i < 10001; ++i) store.add(std::to_string(i), json{{"i", i}});
 
     EXPECT_EQ(store.size(), 10001u);
     EXPECT_TRUE(fs::exists(tmp.path() / "000000.jsonl"));
@@ -61,7 +67,7 @@ TEST(JsonlStore, SkipsCorruptLinesOnLoad) {
     TempDir tmp;
     {
         JsonlStore store{tmp.path()};
-        store.add(json{{"ok", 1}});
+        store.add("ok", json{{"ok", 1}});
     }
     {
         std::ofstream out(tmp.path() / "000000.jsonl", std::ios::app);

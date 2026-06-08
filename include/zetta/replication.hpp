@@ -45,6 +45,10 @@ public:
     // may be any JSON (stored as a JSON string inside the CRDT).
     void set(const std::string& key, const nlohmann::json& value);
 
+    // Remove a top-level key (a local change). No-op if absent. Removal merges
+    // conflict-free like any other change.
+    void remove(const std::string& key);
+
     // The merged document as JSON.
     nlohmann::json snapshot() const;
 
