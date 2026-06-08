@@ -10,8 +10,11 @@ namespace zetta {
 
 class ReplicationManager;
 
-// Elected at runtime. Leader election + failover are planned; until then every
-// node stays a Follower and all nodes are treated as equals.
+// zetta is multi-leader by default (the CRDT data plane needs no leader).
+// Leadership applies only to exclusive resources (locks, sequences, …), and is
+// per-(node, resource): a node holds zero to many roles at once. This single
+// value is a placeholder for that future per-resource set — today always
+// Follower. See docs/replication.md → Consistency model.
 enum class ClusterRole { Follower, Candidate, Leader };
 
 // Human-readable role name ("follower" / "candidate" / "leader").

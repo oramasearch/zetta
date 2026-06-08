@@ -132,8 +132,11 @@ mechanism: a replicated **`zetta_leadership` system table** holding, per resourc
 the holder + a **lease with a timeout** — leadership by *ascension* (claim if
 unheld/expired; deterministic tiebreak on concurrent claims; renew before
 expiry). **Raft is a future option scoped to just those exclusive structures**,
-never the whole DB. So `ClusterRole` is really **per-resource** leadership, not a
-node-wide title. **Leadership is documented design only — not built yet**
+never the whole DB. Leadership is **per-(node, resource)**: a node holds **zero to
+many** roles at once (leader for one resource, follower for another), so
+`ClusterRole` (a single value today, always `Follower`) is a placeholder for a
+future *set* of roles, not a node-wide title. **Leadership is documented design
+only — not built yet**
 (`docs/replication.md` → *Consistency model*). The active build is the
 multi-leader data plane: **the CRDT document is the source of truth for data
 (DDL + rows); the on-disk store + in-memory tree are a materialized projection,

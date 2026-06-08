@@ -85,8 +85,10 @@ zetta is **multi-leader by default** — the CRDT data plane needs no leader, so
 the cluster stays equal peers with no global election. Leadership applies only to
 **exclusive** structures (locks, etc.) via a planned, replicated `zetta_leadership`
 table (lease + timeout + ascension), with Raft as a future option scoped to those
-structures. So `ClusterRole` (currently always `Follower`) is **per-resource**
-leadership, not a node-wide title. This is documented design only — see
+structures. Leadership is **per-(node, resource)**: a node holds **zero to many**
+roles at once (leader for one resource, follower for another), so `ClusterRole`
+(currently a single value, always `Follower`) is a placeholder for a future *set*
+of roles, not a node-wide title. This is documented design only — see
 [replication.md](replication.md) → *Consistency model*.
 
 ## Limits / future

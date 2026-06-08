@@ -44,9 +44,11 @@ mechanism rather than making the whole system single-leader:
   The CRDT data plane stays multi-leader; only the few exclusive resources pay
   the consensus cost.
 
-So `ClusterRole` (today always `Follower`) is best understood as **per-resource
-leadership**, not a node-wide title — a node can be the leader for resource A
-and a follower for resource B at the same time.
+So leadership is **per-(node, resource)**, never a single node-wide title: a node
+holds **zero to many** leadership roles at once — leader for resource A, follower
+for B, uninvolved in C — all simultaneously. `ClusterRole` (today a single value,
+always `Follower`) is therefore a placeholder; the real shape is a *set* of roles
+the node currently holds, keyed by resource.
 
 > **Status:** leadership is **documented design only** for now. Nothing in this
 > section is implemented yet; it's recorded so the build stays pointed the right
