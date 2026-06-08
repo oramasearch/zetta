@@ -163,7 +163,10 @@ cluster (the `Cluster` takes a `ReplicationManager*`; per-connection `SYNC`/
 **conflict-free**. `version()` fingerprints the Automerge heads, so two nodes are
 "in sync" exactly when their versions match. Each node's **UUIDv4 is its actor
 id** (16 bytes; distinct ids make concurrent edits merge without dropping
-changes) — the same UUID as its cluster node id. The document uses **flat keys**
+changes) — the same UUID as its cluster node id, **persisted in
+`data_dir/node_id`** so it's stable across restarts (a fresh id each run would
+fragment the change history and accumulate `node:` keys). The document uses
+**flat keys**
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
 `row:<uuid>` — each row owns its key by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
@@ -179,6 +182,7 @@ See [docs/replication.md](docs/replication.md).
 
 ```
 data_dir/
+  node_id                    ← this node's stable UUID (cluster id + actor id)
   replication.automerge      ← the replicated CRDT document (source of truth)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }

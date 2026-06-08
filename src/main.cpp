@@ -19,6 +19,8 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <system_error>
 
@@ -131,6 +133,29 @@ Options parse_args(int argc, char** argv) {
     return o;
 }
 
+// A node's identity (its cluster node id and replication actor id) must be STABLE
+// across restarts: a fresh id each run would fragment the Automerge change
+// history across many actors and leave a stale `node:` membership key behind
+// every time. So persist it in `data_dir/node_id` and reuse it.
+std::string load_or_create_node_id(const std::string& data_dir) {
+    namespace fs = std::filesystem;
+    const fs::path path = fs::path(data_dir) / "node_id";
+    std::error_code ec;
+    fs::create_directories(data_dir, ec);
+    if (std::ifstream in(path); in) {
+        std::string id;
+        std::getline(in, id);
+        while (!id.empty() && (id.back() == '\n' || id.back() == '\r' ||
+                               id.back() == ' ')) {
+            id.pop_back();
+        }
+        if (!id.empty()) return id;
+    }
+    const std::string id = zetta::new_uuid();
+    std::ofstream(path, std::ios::trunc) << id << '\n';
+    return id;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -145,10 +170,12 @@ int main(int argc, char** argv) {
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a
-    // node's changes are attributed to it and merge conflict-free. Replication
-    // is the source of truth for data; it must outlive the Node (which captures
-    // into and reconciles from it) and the Cluster (whose thread gossips it).
-    const std::string node_id = zetta::new_uuid();
+    // node's changes are attributed to it and merge conflict-free. It's stable
+    // across restarts (persisted in data_dir/node_id) so the change history
+    // doesn't fragment and membership keys don't accumulate. Replication is the
+    // source of truth for data; it must outlive the Node (which captures into and
+    // reconciles from it) and the Cluster (whose thread gossips it).
+    const std::string node_id = load_or_create_node_id(opts.node.data_dir);
     zetta::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);

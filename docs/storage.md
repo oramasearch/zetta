@@ -7,6 +7,7 @@ overridable with `--data-dir`):
 
 ```
 data_dir/
+  node_id                    this node's stable UUID (cluster id + actor id)
   replication.automerge      the replicated CRDT document (source of truth)
   <db-uuid>/                 one folder per database (UUIDv4 = its id)
     database.json            { "id": "...", "name": "..." }

@@ -68,6 +68,13 @@ ids are what make concurrent edits merge conflict-free — two documents sharing
 an actor id would collide on the same actor+sequence and silently drop changes.
 The node's UUID is also its cluster node id: one identity per node.
 
+It is **stable across restarts** — persisted in `data_dir/node_id` and reused
+(`load_or_create_node_id` in `src/main.cpp`). A fresh id each run would fragment
+the Automerge change history across many actors and leave a stale `node:`
+membership key behind every restart, growing the document for no reason. (Copying
+a node's `data_dir` to another machine would duplicate the id — delete `node_id`
+there to re-issue one.)
+
 ## API (a facade over Automerge)
 
 `zetta::ReplicationManager` (`include/zetta/replication.hpp`) exposes only JSON +
@@ -165,6 +172,13 @@ are a materialized *projection* of it.** Concretely:
   (see *Consistency model* above) — design only for now.
 - **Known limits (v1):** the whole document is re-saved on each change and
   reconcile rescans on each version bump (fine for modest data; incremental
-  save / per-table versioning can come later). Row ordering across nodes is by
-  arrival, not a global sequence. Dropping a table/database leaves its child
-  row/table keys as harmless orphans in the document (reconcile ignores them).
+  save / per-table versioning can come later). **The document keeps full change
+  history** (a CRDT keeps it so merges stay conflict-free), so `save()` grows
+  with every change — it does *not* grow while idle, but a write-heavy or
+  long-lived document will accumulate. **History compaction** (dropping changes
+  all peers already have) is the future mitigation; for now, deleting
+  `replication.automerge` and restarting rebuilds a clean, minimal document from
+  the on-disk data (the `migrate` step re-captures it). Row ordering across nodes
+  is by arrival, not a global sequence. Dropping a table/database leaves its
+  child row/table keys as harmless orphans in the document (reconcile ignores
+  them; the preflight check counts them — see [storage.md](storage.md)).
