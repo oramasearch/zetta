@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -136,6 +137,65 @@ TEST(Cluster, PeersConnectAsEquals) {
 
     second.stop();
     first.stop();
+}
+
+TEST(Cluster, RemovesDeadPeerAndReconnects) {
+    // Fast timeouts so the test doesn't wait on the 6s default.
+    const std::string id_a = zetta::new_uuid();
+    ReplicationManager repl_a{id_a};
+    ClusterConfig cfg_a;
+    cfg_a.listen_host = "127.0.0.1";
+    cfg_a.listen_port = 42300;
+    cfg_a.port_range = 1;
+    cfg_a.peer_idle_timeout_seconds = 1;
+    cfg_a.reconnect_interval_seconds = 1;
+    Cluster a{id_a, cfg_a, &repl_a};
+    a.start();
+    sleep_ms(100);
+
+    const auto make_peer = [](const std::string& id, ReplicationManager& repl) {
+        ClusterConfig cfg;
+        cfg.listen_host = "127.0.0.1";
+        cfg.listen_port = 42301;
+        cfg.port_range = 1;
+        cfg.seeds = {"127.0.0.1:42300"};
+        cfg.peer_idle_timeout_seconds = 1;
+        cfg.reconnect_interval_seconds = 1;
+        return std::make_unique<Cluster>(id, cfg, &repl);
+    };
+
+    const std::string id_b1 = zetta::new_uuid();
+    ReplicationManager repl_b1{id_b1};
+    auto b = make_peer(id_b1, repl_b1);
+    b->start();
+
+    const auto wait_for = [](auto predicate) {
+        for (int attempt = 0; attempt < 200; ++attempt) {
+            if (predicate()) return true;
+            sleep_ms(25);
+        }
+        return false;
+    };
+
+    ASSERT_TRUE(wait_for([&] { return a.peer_count() == 1 && b->peer_count() == 1; }));
+    EXPECT_EQ(a.peers().front().node_id, id_b1);
+
+    // Peer goes away → the survivor drops it.
+    b->stop();
+    b.reset();
+    EXPECT_TRUE(wait_for([&] { return a.peer_count() == 0; }));
+
+    // A fresh node at the same address (new id) reconnects and replaces it —
+    // no ghost entry left behind.
+    const std::string id_b2 = zetta::new_uuid();
+    ReplicationManager repl_b2{id_b2};
+    auto b2 = make_peer(id_b2, repl_b2);
+    b2->start();
+    ASSERT_TRUE(wait_for([&] { return a.peer_count() == 1 && b2->peer_count() == 1; }));
+    EXPECT_EQ(a.peers().front().node_id, id_b2);  // the new node, not a ghost
+
+    b2->stop();
+    a.stop();
 }
 
 TEST(Cluster, GossipsReplicationStatusBetweenNodes) {

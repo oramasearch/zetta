@@ -57,24 +57,34 @@ struct Cluster::State {
     std::uint16_t bound_port = 0;
     ReplicationManager* replication = nullptr;  // gossip target (optional)
     BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
+    std::chrono::steady_clock::duration idle_timeout{};
+    std::chrono::steady_clock::duration reconnect_interval{};
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
 
-    // Add a peer unless one with the same node_id is already present. Returns
-    // whether it was newly added (so the matching disconnect removes it once).
-    bool add_peer(std::string node_id, std::string address) {
+    // Record a peer. One entry per listen address: a node that restarts reuses
+    // its address with a fresh node id, so a new HELLO from a known address
+    // evicts the stale entry (and any same-id entry from a prior connection).
+    void add_peer(std::string node_id, std::string address) {
         const std::lock_guard<std::mutex> lock(mutex);
-        for (const PeerRecord& existing : peers) {
-            if (existing.node_id == node_id) return false;
-        }
+        std::erase_if(peers, [&](const PeerRecord& p) {
+            return p.node_id == node_id || p.address == address;
+        });
         peers.push_back(PeerRecord{.node_id = std::move(node_id),
                                    .address = std::move(address)});
-        return true;
     }
     void remove_peer(const std::string& node_id) {
         const std::lock_guard<std::mutex> lock(mutex);
         std::erase_if(peers,
                       [&](const PeerRecord& p) { return p.node_id == node_id; });
+    }
+    // Listen addresses of currently-connected peers (for the reconnect loop).
+    std::vector<std::string> connected_addresses() const {
+        const std::lock_guard<std::mutex> lock(mutex);
+        std::vector<std::string> addresses;
+        addresses.reserve(peers.size());
+        for (const PeerRecord& peer : peers) addresses.push_back(peer.address);
+        return addresses;
     }
     // Record a peer's reported replication status (entries + version) and stamp
     // the sync time. No-op if the peer has since disconnected.
@@ -266,6 +276,7 @@ struct GossipLink {
     std::shared_ptr<net::tcp_socket> socket;
     bool alive = true;
     std::deque<std::string> outbound;
+    std::chrono::steady_clock::time_point last_activity{};  // last line received
 };
 
 // Apply one gossip line to our state. `peer_node_id` is who sent it; replies
@@ -316,6 +327,13 @@ capy::task<> gossip_writer(Cluster::State* self,
     net::timer timer(self->io_context);
     std::map<std::string, Clock::time_point> requested;  // body request cooldown
     while (link->alive) {
+        // Keepalive: a healthy peer gossips to us every ~0.5s, so prolonged
+        // silence means the link died (e.g. a silent TCP drop). Close it —
+        // that unblocks the read pump, which removes the peer.
+        if (Clock::now() - link->last_activity > self->idle_timeout) {
+            link->socket->close();
+            co_return;
+        }
         // Send any large-object bodies a peer asked us for.
         while (!link->outbound.empty()) {
             std::string line = std::move(link->outbound.front());
@@ -374,28 +392,31 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         socket.close();  // malformed, or we dialed ourselves
         co_return;
     }
-    const bool added = self->add_peer(peer.node_id, peer.address);
+    self->add_peer(peer.node_id, peer.address);
 
     // Per-connection link shared between this read pump and the gossip write
     // pump (both on the io thread). The writer handles periodic gossip, queued
-    // large-object responses, and body requests.
+    // large-object responses, body requests, and the keepalive timeout.
     auto link = std::make_shared<GossipLink>();
     link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
+    link->last_activity = std::chrono::steady_clock::now();
     if (self->replication || self->blobs) {
         capy::run_async(self->io_context.get_executor())(
             gossip_writer(self, link));
     }
 
     // Read pump: merge gossiped state, record peer status, serve/receive
-    // large-object bodies, until disconnect.
+    // large-object bodies, until disconnect (or the writer's keepalive closes
+    // the socket, which surfaces here as a read error).
     for (;;) {
         std::optional<std::string> line = co_await read_line(*link->socket);
-        if (!line) break;  // peer disconnected
+        if (!line) break;  // peer disconnected / link timed out
+        link->last_activity = std::chrono::steady_clock::now();
         apply_gossip(self, *line, peer.node_id, *link);
     }
 
     link->alive = false;
-    if (added) self->remove_peer(peer.node_id);
+    self->remove_peer(peer.node_id);
     link->socket->close();
 }
 
@@ -420,6 +441,32 @@ capy::task<> dial_seed(Cluster::State* self, net::ipv4_address address,
     }
     co_await handshake_and_hold(self, std::move(socket), my_node_id,
                                 my_listen_address, /*initiate=*/true);
+}
+
+// Periodically re-dial any seed we're not currently connected to, so a dropped
+// link re-establishes itself (the keepalive on the other side clears the stale
+// entry; this side reconnects). Runs for the cluster's lifetime.
+capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds,
+                            std::string my_node_id,
+                            std::string my_listen_address) {
+    net::timer timer(self->io_context);
+    for (;;) {
+        timer.expires_after(self->reconnect_interval);
+        [[maybe_unused]] const auto wait_result = co_await timer.wait();
+        const std::vector<std::string> connected = self->connected_addresses();
+        for (const std::string& seed : seeds) {
+            if (std::find(connected.begin(), connected.end(), seed) !=
+                connected.end()) {
+                continue;  // already connected to this seed
+            }
+            net::ipv4_address address;
+            std::uint16_t port = 0;
+            if (parse_host_port(seed, address, port)) {
+                capy::run_async(self->io_context.get_executor())(dial_seed(
+                    self, address, port, my_node_id, my_listen_address));
+            }
+        }
+    }
 }
 
 // True for the IPv4 loopback range (127.0.0.0/8).
@@ -483,6 +530,10 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
       role_(ClusterRole::Follower) {
     state_->replication = replication;
     state_->blobs = blobs;
+    state_->idle_timeout =
+        std::chrono::seconds(config_.peer_idle_timeout_seconds);
+    state_->reconnect_interval =
+        std::chrono::seconds(config_.reconnect_interval_seconds);
 }
 
 Cluster::~Cluster() { stop(); }
@@ -521,6 +572,11 @@ void Cluster::start() {
             capy::run_async(state_->io_context.get_executor())(
                 dial_seed(state_.get(), address, port, node_id_, my_listen));
         }
+    }
+    // Keep re-dialing seeds that drop, so the cluster self-heals.
+    if (!config_.seeds.empty()) {
+        capy::run_async(state_->io_context.get_executor())(
+            reconnect_loop(state_.get(), config_.seeds, node_id_, my_listen));
     }
 
     state_->network_thread = std::thread([this] { state_->io_context.run(); });

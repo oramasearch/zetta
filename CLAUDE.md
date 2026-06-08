@@ -89,7 +89,12 @@ can share a host (e.g. NUMA). On startup (both modes) a node prints its id, the
 address(es) it's reachable at, and the join command — a wildcard bind expands to
 the host's real LAN IPs (`Cluster::listen_addresses()`), since `0.0.0.0` itself
 isn't dial-able; the same reachable address is what it advertises in the
-handshake. `zetta::Cluster` runs networking on a background thread via
+handshake. Links **self-heal**: gossip flows every ~0.5s, so a peer silent past
+`peer_idle_timeout_seconds` (default 6) is dropped (clears half-open connections
+with no clean EOF), nodes re-dial disconnected `--peer`s every
+`reconnect_interval_seconds` (default 3), and peers are keyed by listen address
+so a restarted node (new id, same address) **replaces** its stale entry instead
+of leaving a ghost. `zetta::Cluster` runs networking on a background thread via
 **Corosio**, behind the `zetta::runtime::net` seam (adapter:
 `src/core/cluster.cpp`; public API exposes no backend types). The headed Cluster
 panel shows the node id, every reachable listen address, peers, and the

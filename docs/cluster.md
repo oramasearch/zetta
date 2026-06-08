@@ -73,11 +73,21 @@ is wired in, peers gossip their documents and status over the connection (see
 - **Symmetric handshake** (line protocol): each side sends
   `ZETTA/1 HELLO <node-id> <listen-addr>` and records the other; the dialer
   speaks first, the acceptor replies. The connection stays open; dropping it
-  removes the peer. Peers are de-duplicated by node id.
+  removes the peer. Peers are keyed by **listen address** — one entry per
+  address — so a node that restarts (new id, same address) **replaces** its
+  stale entry instead of leaving a ghost.
 - The advertised `<listen-addr>` is a **reachable** address, never the bare
   wildcard — a `0.0.0.0` bind advertises (and `peer_command()`/the banner show)
   the host's first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
 - `node-id` is a UUIDv4 generated per process.
+- **Self-healing links.** Gossip flows every ~0.5s, so silence means the link
+  died: a peer that sends nothing for `peer_idle_timeout_seconds` (default 6) is
+  dropped — this clears half-open connections that never produce a clean EOF (a
+  silent TCP drop across machines). And every `reconnect_interval_seconds`
+  (default 3) a node re-dials any `--peer` it isn't currently connected to, so a
+  dropped link re-establishes itself. Between the two, a restarted or
+  briefly-partitioned peer reconnects and the stale entry is replaced — no
+  stuck `syncing`/`no status` ghost.
 
 ## Leadership
 

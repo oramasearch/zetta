@@ -62,6 +62,12 @@ struct ClusterConfig {
     // Other nodes (host:port) to dial. All peers are equal — a seed is just
     // somewhere to start; the handshake is symmetric.
     std::vector<std::string> seeds;
+    // Drop a peer that has sent nothing for this long (gossip flows every ~0.5s,
+    // so silence means the link died — clears it so a fresh one can replace it).
+    unsigned peer_idle_timeout_seconds = 6;
+    // Re-dial seeds that aren't currently connected, this often, so a dropped
+    // link re-establishes itself.
+    unsigned reconnect_interval_seconds = 3;
 };
 
 // Cluster membership over TCP. Every node is an equal peer: it listens for

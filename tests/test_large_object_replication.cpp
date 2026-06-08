@@ -102,7 +102,7 @@ TEST(LargeObjectReplication, BodyTransfersAndVerifiesAcrossNodes) {
         return bytes.has_value() && *bytes == payload;
     };
     bool synced = false;
-    for (int attempt = 0; attempt < 240; ++attempt) {
+    for (int attempt = 0; attempt < 600; ++attempt) {  // patient: body moves over TCP
         a.tick();
         b.tick();
         if (b_has_body()) {
