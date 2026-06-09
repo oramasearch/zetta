@@ -466,3 +466,5 @@ Project skills live in `.claude/skills/` (committed, shared):
   table).
 - **skill-writer** — author new skills.
 - **perplexity** — generate a long Perplexity deep-dive query from a topic.
+- **github-ops** — manage issues/PRs/CI for `homer6/zetta` via `gh` (the backlog
+  lives in GitHub issues; priority `p1`–`p4` + area labels).
