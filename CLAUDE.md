@@ -1,6 +1,13 @@
 # zetta — Claude rules
 
-**zetta is a database.** A *zetta node* is one running instance of it. A node
+> **`zetta` is the codename/binary for the product *Orama Zetta*** — not "just a database."
+> Read **[`docs/orama-zetta.md`](docs/orama-zetta.md)** first for what we're building and the
+> working decisions: naming (Orama Zetta; "ZettaDB" retired), value-first messaging,
+> use-case-driven development, the churn use case (UC-1), and backlog grooming.
+> Source of truth is the wtm `ORAMA-ZETTA` blueprint (epic
+> [`#279`](https://github.com/oramasearch/zetta/issues/279)). This file below is the engineering rules for the codebase.
+
+**Technically, a zetta node is a database.** A *zetta node* is one running instance of it. A node
 can run in two modes:
 
 - **headed** (default) — the node plus an SDL3 + Dear ImGui UI rendering it.
