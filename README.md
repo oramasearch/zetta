@@ -1,8 +1,19 @@
 # zetta
 
-A database. A *zetta node* is one running instance; it runs **headed** (default
-— with an SDL3 + Dear ImGui UI) or **headless** (no UI, for servers with no
-display). C++26, macOS-first, single statically-linked binary.
+**zetta** is the **ZettaDB engine** — the database + compute substrate that a
+cluster of nodes runs. A *zetta node* is one running instance; it runs **headed**
+(default — with an SDL3 + Dear ImGui UI) or **headless** (no UI, for servers with
+no display). C++26, macOS-first, single statically-linked binary.
+
+> **This repo is the engine — not the product.** **Orama Zetta** is the product built
+> on top of zetta: a desktop GUI **control plane** that turns a plain-language problem
+> — or an artifact you already have, like an n8n workflow — into a correct, deployable
+> data + AI **execution graph**, provisions ZettaDB nodes, **orchestrates** the
+> infrastructure they run on (local → private k8s → cloud), runs the workflows, and
+> learns from your data. The Orama Zetta desktop is primarily an
+> **orchestrator/coordinator**; it **may** *also* join the cluster as a zetta node —
+> to pull or hold data locally when a workflow needs it — but it doesn't have to.
+> zetta (here) is just the engine those nodes run.
 
 Data is organized as databases → tables → JSON rows, persisted to disk. Query it
 with basic Postgres-flavored SQL (DDL + INSERT/SELECT); the query engine is
@@ -22,7 +33,7 @@ troubleshooting — are in **[docs/build.md](docs/build.md)**. The short version
 
 ```bash
 # Clone with submodules (or run the submodule step in an existing checkout):
-git clone --recurse-submodules git@github.com:homer6/zetta.git
+git clone --recurse-submodules git@github.com:oramasearch/zetta.git
 #   …existing checkout: git submodule update --init --recursive
 
 ./scripts/install-deps.sh                # system tools (macOS / Ubuntu)
