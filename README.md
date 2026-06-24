@@ -1,30 +1,31 @@
 # Orama Zetta
 
-**Orama Zetta is a database — and much more.** At its core it's a fast, equal-peer,
-**CRDT-replicated** store; as a **product** it helps teams accelerate their
-**engineering velocity** and **intelligence velocity** — collapsing the path from
-*intent* to a correct, deployed, running data + AI system. *The data engineer, the
-AI engineer, and the platform engineer — in a bottle.* Describe a problem in plain
-language (or hand over an artifact you already have — an n8n workflow, a SQL script,
-a notebook) and Orama Zetta architects a correct execution graph, deploys the
-database + the workflow onto infrastructure **you** control, runs it, and **learns
-from your data**. Tagline: **Intelligence Velocity for Big Thinkers.**
+**Orama Zetta turns a question into running, deployed intelligence.** Describe a data
+or AI problem in plain language — or hand over an artifact you already have (an n8n
+workflow, a SQL script, a notebook) — and Orama Zetta architects a correct pipeline,
+deploys it onto infrastructure **you** control (your k8s / cloud / on-prem), runs it,
+and **learns from your data**. *The data engineer, the AI engineer, and the platform
+engineer — in a bottle.* It compresses the path from **intent → deployed, correct
+intelligence** from quarters to hours — **Intelligence Velocity for Big Thinkers.**
 
 > *Zetta*, as in *zettabyte* — one billion terabytes. We build for the ceiling, so
 > your scale is free headroom: solve very large data problems and the small ones come
 > for free.
 
-This repo **is** Orama Zetta. A *zetta node* is one running instance; it runs
-**headed** (default — an SDL3 + Dear ImGui desktop UI, so the desktop is itself a
-cluster member) or **headless** (no UI, for servers with no display). C++26,
-macOS-first, single statically-linked binary. (`zetta` is the binary + codename;
-**Orama Zetta** is the product name — the older name *"ZettaDB"* is retired.)
-
 **Full vision + blueprint:** the [Orama Zetta docs site](https://github.com/oramasearch/zetta-docs)
-— strategy, architecture, domain model, roadmap. **In this repo today:** the database
-core documented below (CRDT cluster, JSONL storage, large objects, a Postgres-SQL
-subset). The broader product surface — GUI control plane, one-button deploy onto
-k8s/cloud, tiered storage, compute-near-data, the learning loop — is in flight.
+— strategy, architecture, domain model, roadmap.
+
+## Under the hood
+
+This repo is Orama Zetta's core. Today that's a fast, equal-peer **CRDT-replicated**
+store with clustering — JSONL on-disk storage, large objects, and a Postgres-SQL
+subset. A *zetta node* is one running instance; it runs **headed** (default — an SDL3
++ Dear ImGui desktop UI, so the desktop is itself a cluster member) or **headless**
+(no UI, for servers with no display). C++26, macOS-first, single statically-linked
+binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name — the
+older name *"ZettaDB"* is retired.) The broader product surface — GUI control plane,
+one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning
+loop — is in flight.
 
 Data is organized as databases → tables → JSON rows, persisted to disk. Query it
 with basic Postgres-flavored SQL (DDL + INSERT/SELECT); the query engine is
