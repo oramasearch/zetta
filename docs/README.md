@@ -13,6 +13,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
 - [cluster.md](cluster.md) — clustering equal peers: running multiple nodes, the connect command, the protocol.
 - [replication.md](replication.md) — Automerge-CRDT replicated state, policies (replicate-to-all), and actor identity.
+- [validation.md](validation.md) — the `ValidationReport` correctness-gate result type (per-check results, verdict, block-deploy).
 - [build.md](build.md) — building, running, and testing.
 
 ## Research / background

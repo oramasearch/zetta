@@ -218,6 +218,7 @@ add_library(zetta-core STATIC
   src/core/uuid.cpp
   src/core/sha256.cpp
   src/core/timestamp.cpp
+  src/core/validation.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp
