@@ -19,6 +19,7 @@ add_executable(zetta-tests
   test_duration.cpp
   test_jsonl_store.cpp
   test_database.cpp
+  test_project.cpp
   test_node.cpp
   test_query.cpp
   test_large_object.cpp

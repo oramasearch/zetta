@@ -5,6 +5,7 @@ zetta is a database. A *zetta node* is one running instance; it runs **headed**
 This directory documents the system; keep it in sync as the system changes.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
+- [projects.md](projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD on a node.
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.

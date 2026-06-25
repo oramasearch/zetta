@@ -27,12 +27,13 @@ older name *"ZettaDB"* is retired.) The broader product surface — GUI control 
 one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning
 loop — is in flight.
 
-Data is organized as databases → tables → JSON rows, persisted to disk. Query it
-with basic Postgres-flavored SQL (DDL + INSERT/SELECT); the query engine is
-dialect-agnostic, so other SQL formats can be added as frontends. The async
-runtime is coroutine-native (C++ Alliance Capy/Corosio), behind the `zetta::runtime`
-seam. State replicates between nodes as an Automerge CRDT. See [docs/](docs/) for
-details.
+Data is organized as databases → tables → JSON rows, persisted to disk. A node
+also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
+(see [docs/projects.md](docs/projects.md)). Query it with basic Postgres-flavored
+SQL (DDL + INSERT/SELECT); the query engine is dialect-agnostic, so other SQL
+formats can be added as frontends. The async runtime is coroutine-native (C++
+Alliance Capy/Corosio), behind the `zetta::runtime` seam. State replicates
+between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
@@ -76,9 +77,10 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
-and rows created on any node converge onto every node — in memory and on disk**,
-conflict-free, with no leader (the CRDT document is the source of truth; disk
-follows). [Large objects](docs/large-objects.md) replicate too — their metadata
+rows, and [projects](docs/projects.md) created on any node converge onto every
+node — in memory and on disk**, conflict-free, with no leader (the CRDT document
+is the source of truth; disk follows). [Large objects](docs/large-objects.md)
+replicate too — their metadata
 (size + SHA-256) in the CRDT, the file bodies transferred peer-to-peer and
 verified against the hash. You can see **all nodes and their replication status** (entries,
 version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,

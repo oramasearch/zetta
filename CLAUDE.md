@@ -70,6 +70,14 @@ and `Database` over tables (`create`/`find`/`drop_table`, `table_names`);
 ownership is via `shared_ptr` so lookups hand back a safe handle, never a raw
 pointer.
 
+A node also owns **projects** (`zetta::Project`) — the central, user-managed **AI
+project** artifact (id + name + created/updated + owner key), a top-level entity
+with no parent (its inputs/graphs/runs attach in later slices). `Node` has the
+same CRUD shape as databases (`create`/`find`/`drop`/`rename_project`,
+`project_names`). A project is replicated state (flat key `project:<uuid>`) with
+a `<project-uuid>/project.json` on-disk projection, persisted across restart in
+both standalone and replicated nodes. See [docs/projects.md](docs/projects.md).
+
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
 check** by default (`Node::check_integrity()` → `IntegrityReport`, logged as
@@ -196,6 +204,8 @@ See [docs/replication.md](docs/replication.md).
 data_dir/
   node_id                    ← this node's stable UUID (cluster id + actor id)
   replication.automerge      ← the replicated CRDT document (source of truth)
+  <project-uuid>/            ← one folder per project (UUIDv4 = its id)
+    project.json             ← { id, name, created, updated, owner }
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -307,13 +317,15 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects
   database.hpp              zetta::Database — owns tables (disk-backed)
+  project.hpp               zetta::Project — an AI project (replicated metadata)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
+  timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -329,12 +341,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects() + replication capture/reconcile/persist
   database.cpp
+  project.cpp               zetta::Project — persist/rename project.json
   table.cpp
   jsonl_store.cpp
   uuid.cpp
   sha256.cpp                self-contained SHA-256 (no crypto dependency)
+  timestamp.cpp             zetta::now_iso8601() — UTC ISO-8601 stamp
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   cluster.cpp               cluster networking adapter (the one Corosio user)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
@@ -462,6 +476,7 @@ loop thread).
 ## Pointers
 
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
+- [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/build.md`](docs/build.md) — build, run, test.
