@@ -8,6 +8,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [projects.md](projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD on a node.
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
+- [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges and the connect→clean→model→index→serve→act taxonomy.
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
 - [cluster.md](cluster.md) — clustering equal peers: running multiple nodes, the connect command, the protocol.

@@ -223,6 +223,7 @@ add_library(zetta-core STATIC
   src/core/large_object.cpp
   src/core/replicated_blob_store.cpp
   src/core/import.cpp
+  src/core/ir/execution_graph.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
