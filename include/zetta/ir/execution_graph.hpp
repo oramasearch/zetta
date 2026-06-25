@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -15,10 +16,11 @@
 // system as a directed graph of typed steps. This is the keystone the compilers,
 // the gate, deploy, and run all build on (ENT-3 / FEAT-2).
 //
-// This slice is the data model only: build a graph in code and traverse it.
-// There is deliberately NO serialization here (the dual-form code/tabular
-// Lua/Orly/Parquet representation is a later slice) and NO semantic validation
-// (acyclicity, legal stage transitions — the gate's job, also later).
+// This header is the data model: build a graph in code and traverse it. The JSON
+// form (to_json / from_json, used to persist + replicate a graph under a Project)
+// lives next door in ir/serialization.hpp; the dual-form code/columnar
+// (Lua/Orly/Parquet) representation is still a later slice, as is semantic
+// validation (acyclicity, legal stage transitions — the gate's job).
 namespace zetta::ir {
 
 // A node's identity, unique within one ExecutionGraph. A fresh UUID by default
@@ -43,14 +45,22 @@ enum class EdgeKind {
     Control,   // ordering only: `to` runs after `from`, no data passes
 };
 
-// The lowercase canonical name of an edge kind. A display helper, not IR
-// serialization.
+// The lowercase canonical name of an edge kind. Used both as a display helper
+// and as the on-the-wire token in the JSON serialization (see serialization.hpp).
 constexpr std::string_view to_string(EdgeKind kind) {
     switch (kind) {
         case EdgeKind::DataFlow: return "data_flow";
         case EdgeKind::Control:  return "control";
     }
     return "unknown";
+}
+
+// Parse a canonical edge-kind name back to the enum; std::nullopt if unknown.
+// The inverse of to_string(EdgeKind), used when deserializing a graph.
+constexpr std::optional<EdgeKind> edge_kind_from_name(std::string_view name) {
+    if (name == to_string(EdgeKind::DataFlow)) return EdgeKind::DataFlow;
+    if (name == to_string(EdgeKind::Control)) return EdgeKind::Control;
+    return std::nullopt;
 }
 
 // A directed, typed edge between two nodes of the same graph.

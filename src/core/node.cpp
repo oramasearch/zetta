@@ -1,6 +1,8 @@
 #include "zetta/node.hpp"
 
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/serialization.hpp"
+#include "zetta/project_graph.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/sha256.hpp"
 #include "zetta/timestamp.hpp"
@@ -64,10 +66,10 @@ bool Node::start() {
             std::printf(
                 "zetta: preflight WARN: %zu corrupt large object(s), %zu "
                 "dangling table(s), %zu dangling row(s), %zu dangling large "
-                "object(s), %zu dangling input(s)\n",
+                "object(s), %zu dangling input(s), %zu dangling graph(s)\n",
                 integrity_.corrupt_large_objects, integrity_.dangling_tables,
                 integrity_.dangling_rows, integrity_.dangling_large_objects,
-                integrity_.dangling_inputs);
+                integrity_.dangling_inputs, integrity_.dangling_graphs);
         }
     }
     std::fflush(stdout);
@@ -153,7 +155,7 @@ void Node::load_projects() {
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
             meta.value("owner", std::string{}), entry.path(), replication_);
-        project->load();  // bring in this project's inputs from disk
+        project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
     // Stable order (directory iteration order is unspecified).
@@ -355,7 +357,14 @@ std::shared_ptr<Project> Node::find_project(const std::string& name) const {
 bool Node::drop_project(const std::string& name) {
     auto project = find_project(name);
     if (!project) return false;
-    if (replication_) replication_->remove(catalog::project_key(project->id()));
+    if (replication_) {
+        // Drop the project's graphs from the document too, so they don't linger
+        // as dangling `graph:` keys once their parent is gone.
+        for (const auto& graph : project->graphs()) {
+            replication_->remove(catalog::graph_key(graph->id()));
+        }
+        replication_->remove(catalog::project_key(project->id()));
+    }
     return materialize_drop_project(project->id());
 }
 
@@ -533,6 +542,12 @@ void Node::migrate_to_replication() {
             if (!snapshot.contains(catalog::input_key(input->id()))) {
                 replication_->set(catalog::input_key(input->id()),
                                   input->metadata());
+            }
+        }
+        for (const auto& graph : project->graphs()) {
+            if (!snapshot.contains(catalog::graph_key(graph->id()))) {
+                replication_->set(catalog::graph_key(graph->id()),
+                                  graph->record());
             }
         }
     }
@@ -760,6 +775,58 @@ void Node::reconcile_from_replication() {
         }
     }
 
+    // Execution graphs (under a project): graph:<id> -> { project, name,
+    // graph: {nodes, edges} }. Decode the desired set, parsing each graph
+    // against the IR schema — a graph that doesn't parse is skipped, so a
+    // malformed peer payload can't corrupt the projection — then drop / add /
+    // update the local projection to match. Runs after projects so a graph's
+    // parent already exists locally.
+    struct GraphEntry {
+        std::string project_id;
+        std::string name;
+        ir::ExecutionGraph graph;
+    };
+    std::map<std::string, GraphEntry> desired_graphs;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kGraphPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("project") ||
+            !value.contains("graph")) {
+            continue;
+        }
+        std::optional<ir::ExecutionGraph> graph =
+            ir::from_json(value["graph"]);
+        if (!graph) continue;  // boundary validation: drop a malformed graph
+        desired_graphs.emplace(
+            std::move(id),
+            GraphEntry{value.value("project", std::string{}),
+                       value.value("name", std::string{}), std::move(*graph)});
+    }
+    for (const auto& project : projects_) {
+        std::vector<std::string> local_graph_ids;
+        for (const auto& graph : project->graphs()) {
+            local_graph_ids.push_back(graph->id());
+        }
+        for (const std::string& graph_id : local_graph_ids) {
+            const auto it = desired_graphs.find(graph_id);
+            if (it == desired_graphs.end() ||
+                it->second.project_id != project->id()) {
+                project->materialize_drop_graph(graph_id);
+            }
+        }
+    }
+    for (auto& [id, entry] : desired_graphs) {
+        auto project = find_project_by_id(entry.project_id);
+        if (!project) continue;  // dangling graph (project gone) — ignore
+        auto existing = project->find_graph_by_id(id);
+        if (!existing) {
+            project->materialize_graph(id, entry.name, std::move(entry.graph));
+        } else if (existing->name() != entry.name ||
+                   ir::to_json(existing->graph()) != ir::to_json(entry.graph)) {
+            existing->set_contents(entry.name,
+                                   std::move(entry.graph));  // a peer changed it
+        }
+    }
+
     // Deployments (top-level, no parent): deployment:<id> -> { graph_name,
     // target, node, node_count, edge_count, created }. Decode the desired set,
     // then drop / add the local projection to match the document. Deployments
@@ -874,6 +941,10 @@ IntegrityReport Node::check_integrity() const {
             } else if (!catalog::id_after(key, catalog::kInputPrefix).empty()) {
                 if (parent_missing(value, "project", project_ids)) {
                     ++report.dangling_inputs;
+                }
+            } else if (!catalog::id_after(key, catalog::kGraphPrefix).empty()) {
+                if (parent_missing(value, "project", project_ids)) {
+                    ++report.dangling_graphs;
                 }
             }
         }

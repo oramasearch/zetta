@@ -214,6 +214,7 @@ add_library(zetta-core STATIC
   src/core/database.cpp
   src/core/project.cpp
   src/core/project_input.cpp
+  src/core/project_graph.cpp
   src/core/deployment_target.cpp
   src/core/deployment.cpp
   src/core/table.cpp
@@ -229,6 +230,7 @@ add_library(zetta-core STATIC
   src/core/replicated_blob_store.cpp
   src/core/import.cpp
   src/core/ir/execution_graph.cpp
+  src/core/ir/serialization.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp

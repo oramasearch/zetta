@@ -5,20 +5,26 @@ representation of a data/AI system: a directed graph of typed *steps*. It is the
 keystone the compilers, the gate, deploy, and run all build on — the artifact the
 GUI will show, validate, and deploy (ENT-3 / FEAT-2).
 
-This is the **data-model slice only**. You can build a graph in code and traverse
-it. There is deliberately:
+You can build a graph in code, traverse it, and **serialize it to/from JSON** (and
+persist it **under a Project** — see [projects.md](projects.md)). Still
+deliberately out of scope here:
 
-- **no serialization** — the dual-form *code* (Lua / Orly) + *tabular*
-  (Parquet / CSV / Automerge) representation from ADR-10 is a later slice, and
+- **no *dual-form* serialization yet** — the JSON form below is the first
+  serialized representation (it's what rides in the CRDT and lands on disk). The
+  dual-form *code* (Lua / Orly) and the *columnar* (Parquet / CSV) projections
+  from ADR-10 are a later slice.
 - **no semantic validation** — acyclicity and legal stage transitions are the
-  **gate's** job, also a later slice.
+  **gate's** job, also a later slice. (Serialization validates *structure* — see
+  below — not these *semantics*.)
 
-The model lives behind two headers and one translation unit:
+The model lives behind a few headers and translation units:
 
 ```
 include/zetta/ir/step_kind.hpp        the step-kind taxonomy (enum + name helpers)
 include/zetta/ir/execution_graph.hpp  Node, Edge, EdgeKind, ExecutionGraph
-src/core/ir/execution_graph.cpp       the implementation
+include/zetta/ir/serialization.hpp    to_json / from_json (the JSON form)
+src/core/ir/execution_graph.cpp       the graph implementation
+src/core/ir/serialization.cpp         the (de)serializer + boundary validation
 ```
 
 ## The step-kind taxonomy
@@ -44,8 +50,8 @@ increase along the pipeline (`Connect = 0` … `Act = 5`). A graph need not use
 every kind, and the ordering between specific nodes is expressed by *edges* — the
 enum only names the stages. `all_step_kinds()` walks the taxonomy in order;
 `to_string` / `step_kind_from_name` map to and from the lowercase names
-(`"connect"`, …) for labels and test output — these are naming helpers, **not**
-serialization.
+(`"connect"`, …) used for labels, test output, **and** the JSON form's `kind`
+token (see below).
 
 ## Nodes and edges
 
@@ -64,9 +70,9 @@ struct Edge { NodeId from; NodeId to; EdgeKind kind; };
 
 - **`NodeId`** is a `std::string`. `add_node` assigns a fresh UUID when you don't
   supply one, or honours an explicit id (handy for readable code/tests).
-- **`attributes`** is an in-memory `nlohmann::json` value bag — the place the
-  compiler will later anchor a node's dual-form payload. It carries no schema at
-  this slice (nothing is parsed from or written to disk yet).
+- **`attributes`** is an `nlohmann::json` value bag — the place the compiler will
+  later anchor a node's dual-form payload. It is serialized verbatim (see below)
+  but carries no schema of its own at this slice.
 - **`EdgeKind`** types the dependency: `DataFlow` (the source's output feeds the
   target's input — the common case) vs. `Control` (ordering only; the target
   runs after the source, no data passes).
@@ -112,11 +118,102 @@ The data model guards its own shape — this is *structure*, not the gate's
   an **exact duplicate** (same `from`, `to`, *and* kind); it returns `false`.
   Distinct edge kinds between the same pair, and self-edges, are allowed.
 
+## JSON serialization
+
+`include/zetta/ir/serialization.hpp` adds a canonical JSON form — the **tabular**
+half of ADR-10's dual representation, and the form used to persist and replicate
+a graph (see [projects.md](projects.md)). A graph is two arrays, `nodes` and
+`edges`:
+
+```json
+{
+  "nodes": [
+    { "id": "n-load", "kind": "connect", "name": "load_orders",
+      "attributes": { "source": "postgres", "table": "orders" } },
+    { "id": "n-clean", "kind": "clean", "name": "dedupe" }
+  ],
+  "edges": [
+    { "from": "n-load", "to": "n-clean", "kind": "data_flow" }
+  ]
+}
+```
+
+- **`kind`** is the canonical lowercase name (`to_string(StepKind)` /
+  `to_string(EdgeKind)`), never the enum's integer — so the format is stable
+  across enum reordering and is human-readable.
+- **`attributes`** is emitted only when a node carries a bag; a bare node has none
+  and round-trips back to none (an explicit empty object `{}` is distinct and is
+  preserved). An edge's **`kind`** defaults to `"data_flow"` when omitted.
+
+```cpp
+#include "zetta/ir/serialization.hpp"
+using namespace zetta::ir;
+
+const nlohmann::json document = to_json(graph);          // never fails
+std::string error;
+std::optional<ExecutionGraph> parsed = from_json(document, &error);
+if (!parsed) { /* `error` explains why, e.g. nodes[2]: unknown step kind "x" */ }
+```
+
+`to_json` then `from_json` **round-trips a graph unchanged** — same nodes, edges,
+attributes, and insertion order — and re-serializing is idempotent.
+
+### Schema validation at the boundary
+
+`from_json` is the trust boundary. It is **non-throwing** — it returns
+`std::nullopt` (and a human-readable `error`) rather than throwing, matching
+zetta's convention everywhere else (`nlohmann::json::parse(…, allow_exceptions =
+false)` + skip-on-malformed), so a bad payload is rejected cleanly instead of
+corrupting state. It enforces this JSON Schema (Draft 2020-12):
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "zetta.ir.ExecutionGraph",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "properties": {
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "name"],
+        "properties": {
+          "id":   { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["connect","clean","model","index","serve","act"] },
+          "name": { "type": "string" },
+          "attributes": { "type": "object" }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1 },
+          "to":   { "type": "string", "minLength": 1 },
+          "kind": { "enum": ["data_flow","control"] }
+        }
+      }
+    }
+  }
+}
+```
+
+Beyond the schema it also enforces the IR's own **structural** rules (the same
+ones `add_node` / `add_edge` guard): unique node ids, and no dangling or
+exact-duplicate edges. Unknown top-level / object fields are ignored
+(forward-compatible across versions). The error message names the offending
+location, e.g. `edges[1]: edge references an unknown node ("a" -> "ghost")`.
+
 ## What's next (later slices)
 
-- **Serialization** — the dual-form code (Lua/Orly) and tabular
-  (Parquet/CSV/Automerge) representations (ADR-10). When a serialized form is
-  introduced, it gets a JSON Schema validated at the boundary.
+- **Dual-form serialization** — the *code* (Lua/Orly) and *columnar*
+  (Parquet/CSV/Automerge) projections (ADR-10), on top of the JSON form above.
+  When a serialized form is introduced, it gets a JSON Schema validated at the
+  boundary.
 - **The gate** — the runner that validates a graph now exists
   (`zetta::CorrectnessGate`, [gate.md](gate.md)): it runs a set of checks over a
   graph and blocks deploy on failure. The concrete *semantic* checks — acyclicity,
@@ -126,5 +223,5 @@ The data model guards its own shape — this is *structure*, not the gate's
   its first slice: a graph can be placed onto a local target and the placement
   recorded — see [deployments.md](deployments.md).
 
-See also [architecture.md](architecture.md) and the related artifacts: ENT-3
-(`#84`), FEAT-2 (`#133`), ADR-2 (`#2`), ADR-10 (`#10`).
+See also [architecture.md](architecture.md), [projects.md](projects.md), and the
+related artifacts: ENT-3 (`#84`), FEAT-2 (`#133`), ADR-2 (`#2`), ADR-10 (`#10`).

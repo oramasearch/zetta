@@ -30,9 +30,11 @@ loop — is in flight.
 Data is organized as databases → tables → JSON rows, persisted to disk. A node
 also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
 (see [docs/projects.md](docs/projects.md)); each project owns its **inputs**
-(`zetta::ProjectInput`): raw intent/artifact payloads captured with provenance
-(see [docs/project-inputs.md](docs/project-inputs.md)). A node can also **deploy**
-a validated execution graph onto a target, recording the placement (R1 local; see
+(`zetta::ProjectInput`: raw intent/artifact payloads captured with provenance —
+see [docs/project-inputs.md](docs/project-inputs.md)) and its **execution graphs**
+(the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
+[docs/execution-graph.md](docs/execution-graph.md)). A node can also **deploy** a
+validated execution graph onto a target, recording the placement (R1 local; see
 [docs/deployments.md](docs/deployments.md)). Query it all with basic
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.

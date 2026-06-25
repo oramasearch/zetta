@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/project_graph.hpp"
 #include "zetta/project_input.hpp"
 
 namespace zetta {
@@ -59,9 +61,13 @@ public:
     // (The id is the CRDT key / folder name, so it isn't repeated here.)
     nlohmann::json metadata() const;
 
-    // (Re)load inputs by scanning dir/inputs for input folders. Called on node
-    // start so an input survives restart (standalone reads it straight off disk).
+    // (Re)load this project's inputs and graphs by scanning dir/inputs and
+    // dir/graphs. Called on node start so they survive restart (standalone reads
+    // them straight off disk); malformed graph files are skipped (boundary
+    // validation).
     void load();
+
+    // --- inputs (this project's raw intent/artifact payloads) --------------
 
     // Capture a new input with provenance: computes content_hash = sha256(payload)
     // (never trusted from the caller), stamps created_at, writes the metadata into
@@ -93,8 +99,40 @@ public:
     }
     std::size_t input_count() const { return inputs_.size(); }
 
+    // --- execution graphs (this project's ExecutionGraph IRs) --------------
+    //
+    // A project owns zero or more named graphs, persisted under dir/graphs/ and
+    // replicated as `graph:<uuid>` keys (see project_graph.hpp). The CRUD mirrors
+    // Database's table ownership: create/drop capture into the CRDT, the
+    // materialize_* variants are the reverse path used by reconciliation.
+
+    // Store a new named graph. Returns an empty handle if the name is empty or
+    // already taken. Assigns a fresh UUID and captures it into the CRDT.
+    std::shared_ptr<ProjectGraph> create_graph(std::string name,
+                                               ir::ExecutionGraph graph);
+
+    // Apply a replicated graph (a peer's, or one rebuilt from the document) with
+    // a given id, without capturing. Returns the existing handle if present.
+    std::shared_ptr<ProjectGraph> materialize_graph(std::string id,
+                                                    std::string name,
+                                                    ir::ExecutionGraph graph);
+    // Drop a graph by id without capturing (reconciliation applying a peer's
+    // drop). Returns whether one was removed.
+    bool materialize_drop_graph(const std::string& id);
+
+    std::shared_ptr<ProjectGraph> find_graph(const std::string& name) const;
+    std::shared_ptr<ProjectGraph> find_graph_by_id(const std::string& id) const;
+    bool drop_graph(const std::string& name);
+
+    std::vector<std::string> graph_names() const;
+    const std::vector<std::shared_ptr<ProjectGraph>>& graphs() const {
+        return graphs_;
+    }
+    std::size_t graph_count() const { return graphs_.size(); }
+
 private:
     std::filesystem::path inputs_dir() const { return dir_ / "inputs"; }
+    std::filesystem::path graph_file(const std::string& graph_id) const;
 
     std::string id_;
     std::string name_;
@@ -103,6 +141,7 @@ private:
     std::string owner_;
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<ProjectInput>> inputs_;
+    std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order
     ReplicationManager* replication_;  // null = not replicated
 };
 

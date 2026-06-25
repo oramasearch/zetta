@@ -5,11 +5,11 @@ zetta is a database. A *zetta node* is one running instance; it runs **headed**
 This directory documents the system; keep it in sync as the system changes.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
-- [projects.md](projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD on a node.
+- [projects.md](projects.md) — the AI project (`zetta::Project`) data model, lifecycle CRUD, and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
-- [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges and the connect→clean→model→index→serve→act taxonomy.
+- [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→clean→model→index→serve→act taxonomy, and its JSON form (`to_json`/`from_json` + schema validation).
 - [deployments.md](deployments.md) — placing a validated execution graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
