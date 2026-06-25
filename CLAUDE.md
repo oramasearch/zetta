@@ -6,7 +6,9 @@
 > use-case-driven development, **AI projects as the central item** (use cases like
 > churn are generic AI-project types; manage projects to success — most AI projects
 > fail), the first use case (**churn / UC-1**) built via a **wtm worktree plan**
-> (execution graph over its issues → parallel worktrees), and backlog grooming.
+> (execution graph over its issues → parallel worktrees), **growing the use-case
+> catalog** (the `add-use-case` skill + `adding-a-use-case` runbook → a Perplexity
+> deep-research prompt → blueprint → worktree plan), and backlog grooming.
 > Source of truth is the wtm `ORAMA-ZETTA` blueprint (epic
 > [`#279`](https://github.com/oramasearch/zetta/issues/279)). This file below is the engineering rules for the codebase.
 
