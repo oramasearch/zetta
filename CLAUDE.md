@@ -280,6 +280,24 @@ representation, ADR-10) and validation (acyclicity, legal stage transitions — 
 **gate**) are deliberately later slices. Full detail in
 [docs/execution-graph.md](docs/execution-graph.md).
 
+### Correctness gate (`zetta::CorrectnessGate`)
+
+The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
+the two slices above: register a set of **checks**, run them all over an
+`ExecutionGraph`, aggregate their outcomes into a `ValidationReport`, and **block
+deploy on any failure** — **RULE-1** (no deploy without a passing gate). A `Check`
+is the pluggable seam (`name()` + `evaluate(graph) → CheckResult`); concrete
+checks (`#309` schema/leakage/point-in-time, `#312` entity-resolution) implement
+it and plug in **without touching the gate**. `make_check(name, callable)` wraps a
+stateless callable as a `Check` (stamping the registered name onto its result so
+the two never drift). This slice ships **one trivial check** — `NonEmptyGraphCheck`
+(an empty graph has nothing to deploy → fail) — and `default_gate()` returns a gate
+pre-loaded with it. `CorrectnessGate::run` sets `block_deploy = !report.passed()`
+(baseline block-on-failure policy; verdict and block_deploy stay
+[separate](docs/validation.md) so a stricter gate can choose differently). It adds
+**no new JSON format** — the `ValidationReport` it produces is already
+schema-validated. Full detail in [docs/gate.md](docs/gate.md).
+
 ## Tech stack
 
 - **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
@@ -346,6 +364,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
   validation.hpp            zetta::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
+  gate.hpp                  zetta::CorrectnessGate — gate runner: checks → report (RULE-1)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -373,6 +392,7 @@ src/core/                   zetta-core impl
   sha256.cpp                self-contained SHA-256 (no crypto dependency)
   timestamp.cpp             zetta::now_iso8601() — UTC ISO-8601 stamp
   validation.cpp            ValidationReport verdict + JSON round-trip/validation
+  gate.cpp                  CorrectnessGate runner + NonEmptyGraphCheck + make_check
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   cluster.cpp               cluster networking adapter (the one Corosio user)
@@ -506,6 +526,7 @@ loop thread).
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
+- [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
