@@ -56,7 +56,8 @@ private:
     void apply_display_scale();
     void draw_menu_bar(bool& running);
     void draw_dashboard();
-    void draw_explorer();    // the Databases | Tables | Rows | Large Objects columns
+    void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
+    void draw_projects();    // top-level AI projects (create/select/rename/delete)
     void draw_databases();
     void draw_tables();
     void draw_rows();
@@ -79,13 +80,17 @@ private:
     // Explorer selection (held by name; re-resolved each frame so a dropped
     // database/table can't leave a dangling handle) and input fields. ImGui's
     // imgui_stdlib InputText overloads bind directly to std::string.
+    std::string selected_project_;
     std::string selected_db_;
     std::string selected_table_;
+    std::string new_project_input_;
     std::string new_db_input_;
     std::string new_table_input_;
+    std::string rename_project_input_;
     std::string rename_db_input_;
     std::string doc_input_{R"({"name": "example", "value": 1})"};
     // Per-column inline error messages.
+    std::string project_error_;
     std::string db_error_;
     std::string table_error_;
     std::string row_error_;

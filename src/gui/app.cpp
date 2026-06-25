@@ -7,6 +7,7 @@
 #include "zetta/import.hpp"
 #include "zetta/large_object.hpp"
 #include "zetta/node.hpp"
+#include "zetta/project.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/signals.hpp"
 #include "zetta/table.hpp"
@@ -204,8 +205,13 @@ void App::draw_dashboard() {
 void App::draw_explorer() {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =
-        (ImGui::GetContentRegionAvail().x - 3.0f * spacing) / 4.0f;
+        (ImGui::GetContentRegionAvail().x - 4.0f * spacing) / 5.0f;
 
+    ImGui::BeginChild("##projects", ImVec2(col_w, 0), ImGuiChildFlags_Borders);
+    draw_projects();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
     ImGui::BeginChild("##databases", ImVec2(col_w, 0), ImGuiChildFlags_Borders);
     draw_databases();
     ImGui::EndChild();
@@ -224,6 +230,81 @@ void App::draw_explorer() {
     ImGui::BeginChild("##largeobjects", ImVec2(0, 0), ImGuiChildFlags_Borders);
     draw_large_objects();
     ImGui::EndChild();
+}
+
+void App::draw_projects() {
+    ImGui::SeparatorText("Projects");
+
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool submit = ImGui::InputTextWithHint(
+        "##newproject", "new project name", &new_project_input_,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::Button("Create project") || submit) {
+        if (new_project_input_.empty()) {
+            project_error_ = "name required";
+        } else if (!node_.create_project(new_project_input_)) {
+            project_error_ = "project already exists";
+        } else {
+            selected_project_ = new_project_input_;
+            new_project_input_.clear();
+            project_error_.clear();
+        }
+    }
+    if (!project_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", project_error_.c_str());
+    }
+
+    ImGui::Separator();
+
+    for (const std::string& name : node_.project_names()) {
+        ImGui::PushID(name.c_str());
+        if (ImGui::SmallButton("x")) {
+            node_.drop_project(name);
+            if (selected_project_ == name) selected_project_.clear();
+        }
+        ImGui::SameLine();
+        if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
+            selected_project_ = name;
+        }
+        ImGui::PopID();
+    }
+
+    // Details + rename for the selected project. Re-resolved by name each frame
+    // (like the database selection) so a dropped/renamed project can't leave a
+    // dangling handle.
+    const auto project = node_.find_project(selected_project_);
+    if (!project) return;
+
+    ImGui::Separator();
+    // First UUID segment — enough to identify the project at a glance.
+    const std::string short_id =
+        project->id().substr(0, project->id().find('-'));
+    ImGui::TextDisabled("id: %s", short_id.c_str());
+    ImGui::TextDisabled("owner: %s",
+                        project->owner().empty() ? "—" : project->owner().c_str());
+    ImGui::TextDisabled("created: %s", project->created().c_str());
+    if (project->updated() != project->created()) {
+        ImGui::TextDisabled("updated: %s", project->updated().c_str());
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Rename '%s' to:", project->name().c_str());
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    const bool rename = ImGui::InputTextWithHint(
+        "##renproject", "new name", &rename_project_input_,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    if (ImGui::Button("Rename") || rename) {
+        if (rename_project_input_.empty()) {
+            project_error_ = "name required";
+        } else if (!node_.rename_project(selected_project_,
+                                         rename_project_input_)) {
+            project_error_ = "rename failed (name taken?)";
+        } else {
+            selected_project_ = rename_project_input_;
+            rename_project_input_.clear();
+            project_error_.clear();
+        }
+    }
 }
 
 void App::draw_databases() {

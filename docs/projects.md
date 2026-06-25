@@ -82,6 +82,26 @@ incomplete file (not an object, or missing a string `name`) is skipped rather
 than allowed to corrupt the in-memory tree — matching how `database.json` /
 `table.json` are read.
 
+## GUI panel
+
+In headed mode the explorer's **leftmost column is Projects** — a thin renderer
+over the `Node` project CRUD, mirroring the Databases column. It lets you:
+
+- **create** a project (name field → `create_project`; inline error on an empty
+  or duplicate name),
+- **select** one (re-resolved by name each frame, like the database selection,
+  so a dropped/renamed project never leaves a dangling handle),
+- **rename** the selected project (`rename_project`; bumps `updated`), and
+- **delete** one (`drop_project`, the `x` button).
+
+Selecting a project shows its read-only details (short id, owner, `created`, and
+`updated` when it differs). The panel holds no project state of its own — it
+reads `project_names()` / `find_project()` every frame and writes through the
+Node, so a project created/replicated elsewhere appears here, and no SDL/ImGui
+type leaks into `zetta-core` (`src/gui/app.cpp` → `App::draw_projects`). This is
+the lifecycle panel only; the full **New Project** screen (ingestion + use-case
+selection, SCR-2 #223) is separate work.
+
 ## Tests
 
 `tests/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
