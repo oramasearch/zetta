@@ -16,6 +16,11 @@
 //                          peer-to-peer and is verified against size + sha256)
 //   project:<proj_uuid> -> { name, created, updated, owner }  (an AI project;
 //                          a top-level entity with no parent — see project.hpp)
+//   input:<input_uuid> -> { project, kind, source, filename, content_hash,
+//                          size, created_by, created_at }  (a project input;
+//                          owned by a project — the raw payload body is NOT in
+//                          the document, it lives on disk like a large object;
+//                          see project_input.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -28,6 +33,7 @@ inline constexpr std::string_view kTablePrefix = "tbl:";
 inline constexpr std::string_view kRowPrefix = "row:";
 inline constexpr std::string_view kLargeObjectPrefix = "lo:";
 inline constexpr std::string_view kProjectPrefix = "project:";
+inline constexpr std::string_view kInputPrefix = "input:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -46,6 +52,9 @@ inline std::string large_object_key(const std::string& large_object_id) {
 }
 inline std::string project_key(const std::string& project_id) {
     return std::string(kProjectPrefix) + project_id;
+}
+inline std::string input_key(const std::string& input_id) {
+    return std::string(kInputPrefix) + input_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

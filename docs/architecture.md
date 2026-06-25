@@ -27,13 +27,17 @@ Node
  │    └── Table       (create / find / drop)
  │         └── rows   (JSON documents, via a StorageEngine)
  └── Project         (CRUD: create / find / drop / rename)
-                      the central AI-project artifact — see projects.md
+      │               the central AI-project artifact — see projects.md
+      └── ProjectInput (create / find / drop) — raw intent/artifact + provenance
 ```
 
 Ownership and lookups use `std::shared_ptr` handles, never raw pointers. Names
 are unique within their parent; lookups return an empty handle on a miss.
 A **project** is a top-level entity (no parent) holding id + name +
-created/updated + an owner key; see [projects.md](projects.md).
+created/updated + an owner key; see [projects.md](projects.md). A project owns
+its **inputs** (`ProjectInput`) — raw intent/artifact payloads captured with
+provenance (kind, source, content hash, created-by/at) — the same way a database
+owns its tables; see [project-inputs.md](project-inputs.md).
 
 Everything persists to disk under the node's `data_dir` and is rebuilt by
 `Node::start()` on launch. See [storage.md](storage.md).
@@ -70,7 +74,8 @@ conflict-free — see [replication.md](replication.md).
 include/zetta/            zetta-core public API (no SDL/ImGui)
   node.hpp                Node — CRUD over databases + projects
   database.hpp            Database — owns tables (disk-backed)
-  project.hpp             Project — an AI project (replicated metadata)
+  project.hpp             Project — an AI project (replicated metadata); owns inputs
+  project_input.hpp       ProjectInput — raw intent/artifact input + provenance
   table.hpp               Table — owns a storage engine (its rows)
   uuid.hpp                new_uuid() — v4 UUID for folder names
   runtime.hpp             zetta::runtime — async/coroutine seam over Capy

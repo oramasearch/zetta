@@ -72,11 +72,24 @@ pointer.
 
 A node also owns **projects** (`zetta::Project`) — the central, user-managed **AI
 project** artifact (id + name + created/updated + owner key), a top-level entity
-with no parent (its inputs/graphs/runs attach in later slices). `Node` has the
+with no parent (its graphs/runs attach in later slices). `Node` has the
 same CRUD shape as databases (`create`/`find`/`drop`/`rename_project`,
 `project_names`). A project is replicated state (flat key `project:<uuid>`) with
 a `<project-uuid>/project.json` on-disk projection, persisted across restart in
 both standalone and replicated nodes. See [docs/projects.md](docs/projects.md).
+
+A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
+payloads captured with provenance (`kind` intent|artifact, `source`
+upload|pasted, optional `filename`, `content_hash`, `created_by`, `created_at`),
+the same way a `Database` owns its tables. `Project` has `create_input`/
+`find_input`/`drop_input` (inputs are immutable provenance records — no rename).
+Each input is replicated state (flat key `input:<uuid>` carrying its parent
+`project` ref); the **metadata rides in the CRDT** but the **raw payload body
+stays on disk** (`<project>/inputs/<input-uuid>/payload`) like a large-object
+body — fingerprinted by `content_hash`, with peer-to-peer body transfer left to
+a later slice (the record replicates today; the bytes don't move yet). This is
+storage + provenance only — no parsing/compilation. See
+[docs/project-inputs.md](docs/project-inputs.md).
 
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
@@ -188,7 +201,9 @@ changes) — the same UUID as its cluster node id, **persisted in
 fragment the change history and accumulate `node:` keys). The document uses
 **flat keys**
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
-`row:<uuid>` — each row owns its key by UUID so concurrent edits never collide.
+`row:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input — metadata only;
+its payload body stays on disk) — each entity owns its key by UUID so concurrent
+edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -206,6 +221,11 @@ data_dir/
   replication.automerge      ← the replicated CRDT document (source of truth)
   <project-uuid>/            ← one folder per project (UUIDv4 = its id)
     project.json             ← { id, name, created, updated, owner }
+    inputs/
+      <input-uuid>/          ← one folder per project input (UUIDv4 = its id)
+        input.json           ← { id, project, kind, source, filename,
+                                 content_hash, size, created_by, created_at }
+        payload              ← raw bytes (NOT in the CRDT; on-disk like an LO body)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -356,7 +376,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node — the node; CRUD over databases + projects
   database.hpp              zetta::Database — owns tables (disk-backed)
-  project.hpp               zetta::Project — an AI project (replicated metadata)
+  project.hpp               zetta::Project — an AI project (replicated metadata); owns inputs
+  project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -385,7 +406,8 @@ src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects() + replication capture/reconcile/persist
   database.cpp
-  project.cpp               zetta::Project — persist/rename project.json
+  project.cpp               zetta::Project — persist/rename project.json + input CRUD
+  project_input.cpp         zetta::ProjectInput — persist input.json + payload body
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -522,6 +544,7 @@ loop thread).
 
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
+- [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).

@@ -11,7 +11,8 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Run modes / wiring | `src/main.cpp`, `include/zetta/headless.hpp`, `src/core/headless.cpp` | architecture.md | main builds `ReplicationManager` → `Node` → `ReplicatedBlobStore` → `Cluster`, then dispatches headed (`gui::App`) or headless (`run_headless`). One UUID = node id = actor id. |
 | Integrity | `Node::check_integrity()` → `IntegrityReport` (node.hpp), `sha256.hpp` | storage.md | Preflight on `start()` (default; `--no-preflight`): re-hash local LO bodies vs recorded sha256, flag dangling catalog refs. `report.ok()`. |
 | Data model | `node`, `database`, `table` (`.hpp`/`src/core/*.cpp`) | architecture.md, storage.md | `Node`→`Database`→`Table`→`StorageEngine`. shared_ptr handles, empty on miss. UUIDv4 folder = id; name in `*.json`. |
-| Projects | `project.hpp`, `src/core/project.cpp`, `timestamp.hpp` | projects.md | `Node` CRUD (`create/find/drop/rename_project`, `project_names`) mirrors databases. Top-level entity (no parent): id+name+created/updated+owner. Replicated (`project:` key) + `<uuid>/project.json` projection. |
+| Projects | `project.hpp`, `src/core/project.cpp`, `timestamp.hpp` | projects.md | `Node` CRUD (`create/find/drop/rename_project`, `project_names`) mirrors databases. Top-level entity (no parent): id+name+created/updated+owner. Owns inputs. Replicated (`project:` key) + `<uuid>/project.json` projection. |
+| Project inputs | `project_input.hpp`, `src/core/project_input.cpp`, `sha256.hpp`, `timestamp.hpp` | project-inputs.md | A `Project` owns inputs like a `Database` owns tables. `create_input/find_input/drop_input` (immutable — no rename). Metadata (`input:` key, incl. `content_hash`+`size`) replicates; **payload body does not** — on disk at `<project>/inputs/<id>/payload`, P2P transfer is a later slice. `content_hash` computed at boundary. |
 | Storage engine | `include/zetta/storage/{engine,jsonl_store,json_store}.hpp`, `src/core/jsonl_store.cpp` | storage.md | `StorageEngine` interface: `add(id,doc)`/`contains`/`size`/`at`/`id_at`. Rows carry a UUID (the CRDT key). JSONL line = `{"_zid":id,"doc":row}`. |
 | Large objects | `large_object.hpp`, `src/core/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/replicated_blob_store.cpp`, `sha256.hpp` | large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer seam. |
 | Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. Virtual read-only **`system`** database holds computed system tables (`system.zetta_nodes`); `system` is reserved. |
@@ -34,6 +35,9 @@ db:<db_uuid>    -> { name }                         a database
 tbl:<tbl_uuid>  -> { db, name }                     a table
 row:<row_uuid>  -> { tbl, data:{…} }                a row
 lo:<lo_uuid>    -> { db, name, size, sha256 }       large-object metadata (no body)
+project:<uuid>  -> { name, created, updated, owner } an AI project (top-level)
+input:<uuid>    -> { project, kind, source, filename, content_hash, size,
+                     created_by, created_at }        a project input (no body)
 ```
 
 `Node::reconcile_from_replication()` decodes these into desired state and
@@ -108,6 +112,7 @@ tests: short `ClusterConfig` timeouts + patient polling.
 
 - **architecture.md** — node, run modes, data model, module map.
 - **projects.md** — the AI project (`zetta::Project`) data model + lifecycle CRUD on a node.
+- **project-inputs.md** — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - **storage.md** — on-disk layout, JSONL `_zid`/`doc` line format, engine seam.
 - **query.md** — dialect-agnostic layer, Postgres subset, the `system` database (`system.zetta_nodes`).
 - **large-objects.md** — LO API, metadata-in-CRDT + body-P2P-with-hash, import.

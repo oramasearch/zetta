@@ -29,7 +29,9 @@ loop — is in flight.
 
 Data is organized as databases → tables → JSON rows, persisted to disk. A node
 also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
-(see [docs/projects.md](docs/projects.md)). Query it with basic Postgres-flavored
+(see [docs/projects.md](docs/projects.md)) — and each project owns its **inputs**
+(`zetta::ProjectInput`): raw intent/artifact payloads captured with provenance
+(see [docs/project-inputs.md](docs/project-inputs.md)). Query it with basic Postgres-flavored
 SQL (DDL + INSERT/SELECT); the query engine is dialect-agnostic, so other SQL
 formats can be added as frontends. The async runtime is coroutine-native (C++
 Alliance Capy/Corosio), behind the `zetta::runtime` seam. State replicates
@@ -77,7 +79,8 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
-rows, and [projects](docs/projects.md) created on any node converge onto every
+rows, [projects](docs/projects.md), and [project inputs](docs/project-inputs.md)
+created on any node converge onto every
 node — in memory and on disk**, conflict-free, with no leader (the CRDT document
 is the source of truth; disk follows). [Large objects](docs/large-objects.md)
 replicate too — their metadata

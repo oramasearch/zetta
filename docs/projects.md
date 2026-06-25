@@ -27,9 +27,11 @@ on disk yet:
 Stamps come from `zetta::now_iso8601()` (`include/zetta/timestamp.hpp`) — a
 fixed-width UTC string, so the values also order chronologically as plain text.
 
-A project's references to its inputs / execution graphs / runs are **not** part
-of this type yet; they attach in later slices (they will be id-only references,
-keeping a project lightweight).
+A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
+payloads captured with provenance — the same way a database owns its tables; see
+[project-inputs.md](project-inputs.md). Its execution graphs / runs are **not**
+part of this type yet; they attach in later slices (they will be id-only
+references, keeping a project lightweight).
 
 ## CRUD on a Node
 
