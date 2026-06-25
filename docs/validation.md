@@ -9,8 +9,9 @@ deploy; records why.*
 
 This is a **pure data model** — it holds and round-trips results and answers
 "did it pass?" / "should it block?". It does **not** run any checks and is not
-the gate itself. The gate (the runner that executes checks over a graph and
-populates a report) is a separate piece; this type is what it produces.
+the gate itself. The gate — the runner that executes checks over a graph and
+populates a report — is `zetta::CorrectnessGate` ([gate.md](gate.md)); this type
+is what it produces.
 
 ## The shape
 
@@ -80,5 +81,7 @@ The full gate runs schema/type checks, data-leakage and point-in-time checks for
 ML steps, and a correctness eval over a generated graph, then refuses to deploy
 when the report says so. This type is the result those checks aggregate into and
 the value the rest of the system (events like `GraphValidated` /
-`ValidationFailed`, the `ValidateGraph` command) carries. The checks and the
-runner land on top of it as separate work.
+`ValidationFailed`, the `ValidateGraph` command) carries. The **runner** that
+executes checks over a graph and produces this report is `zetta::CorrectnessGate`
+([gate.md](gate.md)); the concrete checks land on top of its `Check` seam as
+separate work.

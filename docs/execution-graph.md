@@ -117,8 +117,11 @@ The data model guards its own shape — this is *structure*, not the gate's
 - **Serialization** — the dual-form code (Lua/Orly) and tabular
   (Parquet/CSV/Automerge) representations (ADR-10). When a serialized form is
   introduced, it gets a JSON Schema validated at the boundary.
-- **The gate** — semantic validation: acyclicity, legal stage transitions, and
-  required-input checks.
+- **The gate** — the runner that validates a graph now exists
+  (`zetta::CorrectnessGate`, [gate.md](gate.md)): it runs a set of checks over a
+  graph and blocks deploy on failure. The concrete *semantic* checks — acyclicity,
+  legal stage transitions, required inputs — are the remaining work that plugs
+  into its `Check` seam.
 - **Compile / deploy / run** — emit a graph from intent, then deploy and execute
   it.
 
