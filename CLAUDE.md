@@ -345,6 +345,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
+  validation.hpp            zetta::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -371,6 +372,7 @@ src/core/                   zetta-core impl
   uuid.cpp
   sha256.cpp                self-contained SHA-256 (no crypto dependency)
   timestamp.cpp             zetta::now_iso8601() — UTC ISO-8601 stamp
+  validation.cpp            ValidationReport verdict + JSON round-trip/validation
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   cluster.cpp               cluster networking adapter (the one Corosio user)
@@ -503,6 +505,7 @@ loop thread).
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
+- [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
