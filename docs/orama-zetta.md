@@ -31,3 +31,4 @@ The first use case — **churn intelligence (UC-1)** — is built as a **wtm wor
 - **One-pager (product framing):** https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md
 - **Grooming epic:** https://github.com/oramasearch/zetta/issues/279
 - **2026-06-24 alignment call:** https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-24-casey-issac-steve
+- **Add a use case to the catalog:** the [adding-a-use-case runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md) + the `add-use-case` skill — generate a Perplexity Deep Research prompt → land it in the blueprint → build via a worktree plan. (Churn UC-1 is the exemplar.)
