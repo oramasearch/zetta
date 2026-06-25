@@ -213,6 +213,7 @@ add_library(zetta-core STATIC
   src/core/node.cpp
   src/core/database.cpp
   src/core/project.cpp
+  src/core/project_input.cpp
   src/core/table.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp

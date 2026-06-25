@@ -36,12 +36,14 @@ struct IntegrityReport {
     std::size_t dangling_tables = 0;               // table -> missing database
     std::size_t dangling_rows = 0;                 // row -> missing table
     std::size_t dangling_large_objects = 0;        // large object -> missing database
+    std::size_t dangling_inputs = 0;               // project input -> missing project
 
     // A "good state": no corruption and no dangling references. (A missing body
     // is informational — it may simply be awaiting transfer from a peer.)
     bool ok() const {
         return corrupt_large_objects == 0 && dangling_tables == 0 &&
-               dangling_rows == 0 && dangling_large_objects == 0;
+               dangling_rows == 0 && dangling_large_objects == 0 &&
+               dangling_inputs == 0;
     }
 };
 

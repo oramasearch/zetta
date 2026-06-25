@@ -59,9 +59,10 @@ bool Node::start() {
             std::printf(
                 "zetta: preflight WARN: %zu corrupt large object(s), %zu "
                 "dangling table(s), %zu dangling row(s), %zu dangling large "
-                "object(s)\n",
+                "object(s), %zu dangling input(s)\n",
                 integrity_.corrupt_large_objects, integrity_.dangling_tables,
-                integrity_.dangling_rows, integrity_.dangling_large_objects);
+                integrity_.dangling_rows, integrity_.dangling_large_objects,
+                integrity_.dangling_inputs);
         }
     }
     std::fflush(stdout);
@@ -141,12 +142,14 @@ void Node::load_projects() {
             !meta.contains("name") || !meta["name"].is_string()) {
             continue;
         }
-        projects_.push_back(std::make_shared<Project>(
+        auto project = std::make_shared<Project>(
             entry.path().filename().string(),
             meta["name"].get<std::string>(),
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
-            meta.value("owner", std::string{}), entry.path()));
+            meta.value("owner", std::string{}), entry.path(), replication_);
+        project->load();  // bring in this project's inputs from disk
+        projects_.push_back(std::move(project));
     }
     // Stable order (directory iteration order is unspecified).
     std::sort(projects_.begin(), projects_.end(),
@@ -268,7 +271,8 @@ std::shared_ptr<Project> Node::materialize_project(std::string id,
     auto project = std::make_shared<Project>(std::move(id), std::move(name),
                                              std::move(created),
                                              std::move(updated),
-                                             std::move(owner), dir);
+                                             std::move(owner), dir,
+                                             replication_);
     project->persist_meta();
     projects_.push_back(project);
     return project;
@@ -393,6 +397,12 @@ void Node::migrate_to_replication() {
         if (!snapshot.contains(catalog::project_key(project->id()))) {
             replication_->set(catalog::project_key(project->id()),
                               project->metadata());
+        }
+        for (const auto& input : project->inputs()) {
+            if (!snapshot.contains(catalog::input_key(input->id()))) {
+                replication_->set(catalog::input_key(input->id()),
+                                  input->metadata());
+            }
         }
     }
 }
@@ -554,6 +564,64 @@ void Node::reconcile_from_replication() {
                                   entry.owner);  // a peer changed it (no re-capture)
         }
     }
+
+    // Project inputs (owned by a project): input:<id> -> { project, kind,
+    // source, filename, content_hash, size, created_by, created_at }. Inputs are
+    // immutable provenance records (never renamed/edited), so reconcile only adds
+    // them under their owning project and drops the ones a peer removed. The
+    // payload body is not in the document and does not transfer yet.
+    struct InputEntry {
+        std::string project_id;
+        ProjectInputKind kind;
+        ProjectInputSource source;
+        std::string filename;
+        std::string content_hash;
+        std::uintmax_t size;
+        std::string created_by;
+        std::string created_at;
+    };
+    std::map<std::string, InputEntry> inputs;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kInputPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("project")) {
+            continue;
+        }
+        const auto kind = project_input_kind_from(
+            value.value("kind", std::string{}));
+        const auto source = project_input_source_from(
+            value.value("source", std::string{}));
+        if (!kind || !source) continue;  // boundary validation
+        inputs.emplace(std::move(id),
+                       InputEntry{value.value("project", std::string{}), *kind,
+                                  *source, value.value("filename", std::string{}),
+                                  value.value("content_hash", std::string{}),
+                                  value.value("size", std::uintmax_t{0}),
+                                  value.value("created_by", std::string{}),
+                                  value.value("created_at", std::string{})});
+    }
+    // Removals first (a peer dropped an input, or its project is gone).
+    for (const auto& project : projects_) {
+        std::vector<std::string> local_input_ids;
+        for (const auto& input : project->inputs()) {
+            local_input_ids.push_back(input->id());
+        }
+        for (const std::string& input_id : local_input_ids) {
+            const auto it = inputs.find(input_id);
+            if (it == inputs.end() || it->second.project_id != project->id()) {
+                project->materialize_drop_input(input_id);
+            }
+        }
+    }
+    // Additions (under the owning project, if it exists locally).
+    for (const auto& [id, entry] : inputs) {
+        auto project = find_project_by_id(entry.project_id);
+        if (project && !project->find_input(id)) {
+            project->materialize_input(id, entry.kind, entry.source,
+                                       entry.filename, entry.content_hash,
+                                       entry.size, entry.created_by,
+                                       entry.created_at);
+        }
+    }
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -588,6 +656,7 @@ IntegrityReport Node::check_integrity() const {
         const nlohmann::json snapshot = replication_->snapshot();
         std::unordered_set<std::string> database_ids;
         std::unordered_set<std::string> table_ids;
+        std::unordered_set<std::string> project_ids;
         for (const auto& [key, value] : snapshot.items()) {
             if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
                 !id.empty()) {
@@ -596,6 +665,10 @@ IntegrityReport Node::check_integrity() const {
                            catalog::id_after(key, catalog::kTablePrefix);
                        !table_id.empty()) {
                 table_ids.insert(std::move(table_id));
+            } else if (std::string project_id =
+                           catalog::id_after(key, catalog::kProjectPrefix);
+                       !project_id.empty()) {
+                project_ids.insert(std::move(project_id));
             }
         }
         const auto parent_missing = [](const nlohmann::json& value,
@@ -612,6 +685,10 @@ IntegrityReport Node::check_integrity() const {
             } else if (!catalog::id_after(key, catalog::kLargeObjectPrefix).empty()) {
                 if (parent_missing(value, "db", database_ids)) {
                     ++report.dangling_large_objects;
+                }
+            } else if (!catalog::id_after(key, catalog::kInputPrefix).empty()) {
+                if (parent_missing(value, "project", project_ids)) {
+                    ++report.dangling_inputs;
                 }
             }
         }
