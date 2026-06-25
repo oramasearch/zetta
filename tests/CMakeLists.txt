@@ -21,6 +21,7 @@ add_executable(zetta-tests
   test_database.cpp
   test_node.cpp
   test_query.cpp
+  test_execution_graph.cpp
   test_large_object.cpp
   test_import.cpp
   test_runtime.cpp

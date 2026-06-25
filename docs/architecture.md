@@ -40,6 +40,15 @@ Text → `Dialect` (parser) → generic AST (`zetta::query::Statement`) →
 `Executor` → results. The executor is dialect-neutral; new database formats are
 added by writing a `Dialect` that targets the same AST. See [query.md](query.md).
 
+## Execution graph IR
+
+The **ExecutionGraph IR** (`zetta::ir`) is the in-memory model of a data/AI
+system as a directed graph of typed steps, tagged by the
+connect→clean→model→index→serve→act taxonomy. It is the keystone the compilers,
+the gate, deploy, and run build on. This slice is the data model only (build +
+traverse); serialization and validation are later slices. See
+[execution-graph.md](execution-graph.md).
+
 ## Async runtime & cluster
 
 The coroutine / IO / networking backend (C++ Alliance Capy + Corosio, vendored
@@ -76,6 +85,8 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   query/postgres.hpp      PostgresDialect (parser)
   query/executor.hpp      Executor — runs the AST against a Node
   query/service.hpp       QueryService — parse + execute facade
+  ir/step_kind.hpp        StepKind — connect→clean→model→index→serve→act taxonomy
+  ir/execution_graph.hpp  ExecutionGraph IR — typed step nodes + edges
 src/core/                 zetta-core implementation (incl. cluster.cpp adapter)
 src/gui/                  headed UI (App), links SDL3 + ImGui
 src/main.cpp              arg parsing + mode dispatch

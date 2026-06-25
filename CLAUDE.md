@@ -251,6 +251,25 @@ wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves).
 it) and is where future system tables (e.g. `system.zetta_leadership`) live. Full
 detail in [docs/query.md](docs/query.md).
 
+### Execution graph IR (`zetta::ir`)
+
+The **ExecutionGraph IR** is the in-memory model of a data/AI system as a
+directed graph of typed **steps** — `zetta::ir::Node` (an id + a `StepKind` + a
+name + a free-form `nlohmann::json` attribute bag) joined by typed
+`zetta::ir::Edge`s (`EdgeKind::DataFlow`/`Control`). The **step-kind taxonomy**
+(`StepKind`, in `ir/step_kind.hpp`) is the fixed pipeline
+**connect→clean→model→index→serve→act**, declared in that order (so the enum
+values increase along the pipeline). `ExecutionGraph` (build with `add_node`/
+`add_edge`; traverse with `nodes_of_kind`/`edges_of_kind`/`successors`/
+`predecessors`/`find_node`) hands back nodes as `shared_ptr` handles (empty on
+miss) like the rest of zetta, and guards its **structure** (no duplicate ids, no
+dangling or duplicate edges) — but not its **semantics**. This is the keystone
+the compilers, gate, deploy, and run all build on (ENT-3/FEAT-2). This slice is
+**data model only**: serialization (the dual-form Lua/Orly + Parquet/CSV/Automerge
+representation, ADR-10) and validation (acyclicity, legal stage transitions — the
+**gate**) are deliberately later slices. Full detail in
+[docs/execution-graph.md](docs/execution-graph.md).
+
 ## Tech stack
 
 - **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
@@ -327,6 +346,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     engine.hpp              zetta::StorageEngine interface
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
+  ir/
+    step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
+    execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases() + replication capture/reconcile/persist
@@ -336,6 +358,7 @@ src/core/                   zetta-core impl
   uuid.cpp
   sha256.cpp                self-contained SHA-256 (no crypto dependency)
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
+  ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   cluster.cpp               cluster networking adapter (the one Corosio user)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
@@ -464,6 +487,7 @@ loop thread).
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
+- [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
