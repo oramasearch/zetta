@@ -30,8 +30,10 @@ Node
  │    │               the central AI-project artifact — see projects.md
  │    ├── ProjectInput (create / find / drop) — raw intent/artifact + provenance
  │    └── ProjectGraph  (create / find / drop — a named ExecutionGraph IR)
- └── Deployment      (deploy_graph / find / list)
-                      a graph placed onto a target — see deployments.md
+ ├── Deployment      (deploy_graph / find / list)
+ │                    a graph placed onto a target — see deployments.md
+ └── Run             (CRUD: create / find / drop, keyed by id)
+                      one graph execution: status/logs/outputs/lineage — see runs.md
 ```
 
 Ownership and lookups use `std::shared_ptr` handles, never raw pointers. Names
@@ -44,7 +46,10 @@ provenance (kind, source, content hash, created-by/at) — and its named
 way a database owns its tables; see [project-inputs.md](project-inputs.md) and
 [projects.md](projects.md). A **deployment** is also top-level: a validated
 [execution graph](execution-graph.md) placed onto a `DeploymentTarget` (R1
-local) and recorded; see [deployments.md](deployments.md).
+local) and recorded; see [deployments.md](deployments.md). A **run** is another
+top-level entity — the record of one execution of a deployed graph (status,
+logs, outputs, lineage), keyed by id and validated against a JSON Schema at the
+storage boundary; see [runs.md](runs.md).
 
 Everything persists to disk under the node's `data_dir` and is rebuilt by
 `Node::start()` on launch. See [storage.md](storage.md).
@@ -85,13 +90,14 @@ conflict-free — see [replication.md](replication.md).
 
 ```
 include/zetta/            zetta-core public API (no SDL/ImGui)
-  node.hpp                Node — CRUD over databases + projects + deployments
+  node.hpp                Node — CRUD over databases + projects + deployments + runs
   database.hpp            Database — owns tables (disk-backed)
   project.hpp             Project — an AI project; owns inputs + execution graphs
   project_input.hpp       ProjectInput — raw intent/artifact input + provenance
   project_graph.hpp       ProjectGraph — a named ExecutionGraph under a project
   deployment_target.hpp   DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp          Deployment — a graph placed onto a target
+  run.hpp                 Run — one graph execution (status/logs/outputs/lineage) + JSON Schema
   table.hpp               Table — owns a storage engine (its rows)
   uuid.hpp                new_uuid() — v4 UUID for folder names
   runtime.hpp             zetta::runtime — async/coroutine seam over Capy

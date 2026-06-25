@@ -28,6 +28,9 @@
 //   deployment:<dep_uuid> -> { graph_name, target: {…}, node, node_count,
 //                          edge_count, created }  (a graph placed onto a target;
 //                          a top-level entity with no parent — see deployment.hpp)
+//   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
+//                          outputs, lineage }  (one execution of a deployed
+//                          graph — a top-level entity; see run.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -43,6 +46,7 @@ inline constexpr std::string_view kProjectPrefix = "project:";
 inline constexpr std::string_view kInputPrefix = "input:";
 inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
+inline constexpr std::string_view kRunPrefix = "run:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -70,6 +74,9 @@ inline std::string graph_key(const std::string& graph_id) {
 }
 inline std::string deployment_key(const std::string& deployment_id) {
     return std::string(kDeploymentPrefix) + deployment_id;
+}
+inline std::string run_key(const std::string& run_id) {
+    return std::string(kRunPrefix) + run_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.
