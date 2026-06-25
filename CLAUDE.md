@@ -3,9 +3,9 @@
 > **`zetta` is the codename/binary for the product *Orama Zetta*** — not "just a database."
 > Read **[`docs/orama-zetta.md`](docs/orama-zetta.md)** first for what we're building and the
 > working decisions: naming (Orama Zetta; "ZettaDB" retired), value-first messaging,
-> use-case-driven development, the **AI kitchen → menu of recipes → per-customer
-> meals (data projects)** frame (churn via featurize→XGBoost→SHAP is the *first
-> recipe*, not the kitchen), data-project management, and backlog grooming.
+> use-case-driven development, **AI projects as the central item** (use cases like
+> churn are generic AI-project types; manage projects to success — most AI projects
+> fail), and backlog grooming.
 > Source of truth is the wtm `ORAMA-ZETTA` blueprint (epic
 > [`#279`](https://github.com/oramasearch/zetta/issues/279)). This file below is the engineering rules for the codebase.
 
