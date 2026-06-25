@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "zetta/database.hpp"
+#include "zetta/project.hpp"
 
 namespace zetta {
 
@@ -83,6 +84,18 @@ public:
     std::vector<std::string> database_names() const;
     std::size_t database_count() const { return databases_.size(); }
 
+    // CRUD for projects (the central, user-managed AI artifact — see
+    // project.hpp / docs/projects.md), mirroring the database CRUD shape.
+    // create stamps created/updated and takes an optional owner key;
+    // create/rename yield an empty handle / false on an empty name or a clash.
+    std::shared_ptr<Project> create_project(std::string name,
+                                            std::string owner = {});
+    std::shared_ptr<Project> find_project(const std::string& name) const;
+    bool drop_project(const std::string& name);
+    bool rename_project(const std::string& from, const std::string& to);
+    std::vector<std::string> project_names() const;
+    std::size_t project_count() const { return projects_.size(); }
+
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
@@ -108,6 +121,10 @@ private:
     void load_databases();
     std::shared_ptr<Database> find_database_by_id(const std::string& id) const;
 
+    // Rebuild projects_ by scanning config_.data_dir. Called from start().
+    void load_projects();
+    std::shared_ptr<Project> find_project_by_id(const std::string& id) const;
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -118,6 +135,12 @@ private:
     std::shared_ptr<Database> materialize_database(std::string id,
                                                    std::string name);
     bool materialize_drop_database(const std::string& id);
+    std::shared_ptr<Project> materialize_project(std::string id,
+                                                 std::string name,
+                                                 std::string created,
+                                                 std::string updated,
+                                                 std::string owner);
+    bool materialize_drop_project(const std::string& id);
 
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
@@ -127,6 +150,7 @@ private:
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;
     std::vector<std::shared_ptr<Database>> databases_;  // insertion order
+    std::vector<std::shared_ptr<Project>> projects_;    // insertion order
 };
 
 }  // namespace zetta

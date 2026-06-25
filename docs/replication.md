@@ -145,6 +145,8 @@ are a materialized *projection* of it.** Concretely:
     only. The body is **not** in the document (it would bloat every node); it
     transfers peer-to-peer and is verified against `size` + `sha256`. See
     [large-objects.md](large-objects.md).
+  - `project:<project_uuid>` → `{ name, created, updated, owner }` — an AI
+    project (a top-level entity with no parent). See [projects.md](projects.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,

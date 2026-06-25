@@ -2,6 +2,7 @@
 
 #include "zetta/replication.hpp"
 #include "zetta/sha256.hpp"
+#include "zetta/timestamp.hpp"
 #include "zetta/uuid.hpp"
 #include "zetta/version.hpp"
 
@@ -33,6 +34,7 @@ bool Node::start() {
     started_at_ = Clock::now();
     ticks_ = 0;
     load_databases();
+    load_projects();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -40,8 +42,10 @@ bool Node::start() {
         persist_replication();
         last_seen_version_ = replication_->version();
     }
-    std::printf("zetta %s: node started (data_dir=%s, %zu databases)\n",
-                kVersion, config_.data_dir.c_str(), databases_.size());
+    std::printf(
+        "zetta %s: node started (data_dir=%s, %zu databases, %zu projects)\n",
+        kVersion, config_.data_dir.c_str(), databases_.size(),
+        projects_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -117,6 +121,43 @@ void Node::load_databases() {
     // Stable order for the UI (directory iteration order is unspecified).
     std::sort(databases_.begin(), databases_.end(),
               [](const auto& a, const auto& b) { return a->name() < b->name(); });
+}
+
+void Node::load_projects() {
+    projects_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "project.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: skip anything that doesn't match the project.json
+        // shape (a name is required; the rest default if an older file omits it).
+        if (meta.is_discarded() || !meta.is_object() ||
+            !meta.contains("name") || !meta["name"].is_string()) {
+            continue;
+        }
+        projects_.push_back(std::make_shared<Project>(
+            entry.path().filename().string(),
+            meta["name"].get<std::string>(),
+            meta.value("created", std::string{}),
+            meta.value("updated", std::string{}),
+            meta.value("owner", std::string{}), entry.path()));
+    }
+    // Stable order (directory iteration order is unspecified).
+    std::sort(projects_.begin(), projects_.end(),
+              [](const auto& a, const auto& b) { return a->name() < b->name(); });
+}
+
+std::shared_ptr<Project> Node::find_project_by_id(const std::string& id) const {
+    for (const auto& project : projects_) {
+        if (project->id() == id) return project;
+    }
+    return nullptr;
 }
 
 std::shared_ptr<Database> Node::create_database(std::string name) {
@@ -197,6 +238,87 @@ std::vector<std::string> Node::database_names() const {
     return names;
 }
 
+// ----- projects (mirror the database CRUD; replicated as project:<uuid>) -----
+
+std::shared_ptr<Project> Node::create_project(std::string name,
+                                              std::string owner) {
+    if (name.empty() || find_project(name)) return nullptr;
+    const std::string id = new_uuid();
+    const std::string now = now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::project_key(id),
+                          nlohmann::json{{"name", name},
+                                         {"created", now},
+                                         {"updated", now},
+                                         {"owner", owner}});
+    }
+    return materialize_project(id, std::move(name), now, now, std::move(owner));
+}
+
+std::shared_ptr<Project> Node::materialize_project(std::string id,
+                                                   std::string name,
+                                                   std::string created,
+                                                   std::string updated,
+                                                   std::string owner) {
+    if (auto existing = find_project_by_id(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto project = std::make_shared<Project>(std::move(id), std::move(name),
+                                             std::move(created),
+                                             std::move(updated),
+                                             std::move(owner), dir);
+    project->persist_meta();
+    projects_.push_back(project);
+    return project;
+}
+
+std::shared_ptr<Project> Node::find_project(const std::string& name) const {
+    for (const auto& project : projects_) {
+        if (project->name() == name) return project;
+    }
+    return nullptr;
+}
+
+bool Node::drop_project(const std::string& name) {
+    auto project = find_project(name);
+    if (!project) return false;
+    if (replication_) replication_->remove(catalog::project_key(project->id()));
+    return materialize_drop_project(project->id());
+}
+
+bool Node::materialize_drop_project(const std::string& id) {
+    const auto it = std::find_if(
+        projects_.begin(), projects_.end(),
+        [&](const std::shared_ptr<Project>& p) { return p->id() == id; });
+    if (it == projects_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    projects_.erase(it);
+    return true;
+}
+
+bool Node::rename_project(const std::string& from, const std::string& to) {
+    if (to.empty() || find_project(to)) return false;  // empty or clashes
+    auto project = find_project(from);
+    if (!project) return false;
+    project->set_metadata(to, project->created(), now_iso8601(),
+                          project->owner());
+    if (replication_) {
+        replication_->set(catalog::project_key(project->id()),
+                          project->metadata());
+    }
+    return true;
+}
+
+std::vector<std::string> Node::project_names() const {
+    std::vector<std::string> names;
+    names.reserve(projects_.size());
+    for (const auto& project : projects_) names.push_back(project->name());
+    return names;
+}
+
 // ----- replication: persistence ---------------------------------------------
 
 fs::path Node::replication_path() const {
@@ -265,6 +387,12 @@ void Node::migrate_to_replication() {
                                                  {"size", lo.size},
                                                  {"sha256", lo.sha256}});
             }
+        }
+    }
+    for (const auto& project : projects_) {
+        if (!snapshot.contains(catalog::project_key(project->id()))) {
+            replication_->set(catalog::project_key(project->id()),
+                              project->metadata());
         }
     }
 }
@@ -385,6 +513,47 @@ void Node::reconcile_from_replication() {
         object.sha256 = entry.sha256;
         db->large_objects().materialize_object(std::move(object));
     }
+
+    // Projects (top-level, no parent): project:<id> -> { name, created,
+    // updated, owner }. Decode the desired set, then drop / add / update the
+    // local projection to match the document — no re-capture.
+    struct ProjectEntry {
+        std::string name;
+        std::string created;
+        std::string updated;
+        std::string owner;
+    };
+    std::map<std::string, ProjectEntry> projects;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kProjectPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("name")) {
+            continue;
+        }
+        projects.emplace(std::move(id),
+                         ProjectEntry{value.value("name", std::string{}),
+                                      value.value("created", std::string{}),
+                                      value.value("updated", std::string{}),
+                                      value.value("owner", std::string{})});
+    }
+    std::vector<std::string> local_project_ids;
+    for (const auto& project : projects_) {
+        local_project_ids.push_back(project->id());
+    }
+    for (const std::string& project_id : local_project_ids) {
+        if (!projects.contains(project_id)) materialize_drop_project(project_id);
+    }
+    for (const auto& [id, entry] : projects) {
+        auto project = find_project_by_id(id);
+        if (!project) {
+            materialize_project(id, entry.name, entry.created, entry.updated,
+                                entry.owner);
+        } else if (project->name() != entry.name ||
+                   project->updated() != entry.updated ||
+                   project->owner() != entry.owner) {
+            project->set_metadata(entry.name, entry.created, entry.updated,
+                                  entry.owner);  // a peer changed it (no re-capture)
+        }
+    }
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -452,12 +621,12 @@ IntegrityReport Node::check_integrity() const {
 
 std::string Node::status_line() const {
     if (!running_) return "stopped";
-    char buf[160];
+    char buf[192];
     std::snprintf(buf, sizeof(buf),
-                  "running — up %.0fs, %llu ticks, %zu databases",
+                  "running — up %.0fs, %llu ticks, %zu databases, %zu projects",
                   uptime_seconds(),
                   static_cast<unsigned long long>(ticks_),
-                  databases_.size());
+                  databases_.size(), projects_.size());
     return buf;
 }
 

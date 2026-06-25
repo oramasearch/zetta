@@ -212,10 +212,12 @@ add_library(zetta-core STATIC
   src/core/replication.cpp
   src/core/node.cpp
   src/core/database.cpp
+  src/core/project.cpp
   src/core/table.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp
   src/core/sha256.cpp
+  src/core/timestamp.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp
