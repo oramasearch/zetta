@@ -22,6 +22,10 @@ These are the locked product/process decisions (recorded as `adr` artifacts in t
 
 Source of truth is the **worktree-manager (wtm) project `ORAMA-ZETTA`** → projected to the [`zetta-docs`](https://github.com/oramasearch/zetta-docs) site + the [`oramasearch/zetta`](https://github.com/oramasearch/zetta/issues) issues. **Don't hand-edit the generated docs or issues** — edit the blueprint, then re-sync (the `zetta-sync` skill).
 
+## Building the first use case — a wtm worktree plan
+
+The first use case — **churn intelligence (UC-1)** — is built as a **wtm worktree plan**: an *execution graph over its GitHub issues*. The planner reads UC-1 + its dependency issues on [`oramasearch/zetta`](https://github.com/oramasearch/zetta/issues), uses an LLM to infer the dependency DAG (order + parallelism), and **launches worktrees layer by layer** (`create_worktree_plan` → `get_worktree_plan` → `launch_plan_layer`). This is how the blueprint reaches the actual build: groomed + prioritized issues → a worktree plan → parallel worktrees. Shipping **UC-1 (churn)** end-to-end through a worktree plan — as the first complete, managed AI project — is the proof of the whole loop.
+
 ## Links
 
 - **One-pager (product framing):** https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md
