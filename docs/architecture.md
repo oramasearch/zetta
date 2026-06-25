@@ -26,9 +26,11 @@ Node
  ├── Database        (CRUD: create / find / drop / rename)
  │    └── Table       (create / find / drop)
  │         └── rows   (JSON documents, via a StorageEngine)
- └── Project         (CRUD: create / find / drop / rename)
-      │               the central AI-project artifact — see projects.md
-      └── ProjectInput (create / find / drop) — raw intent/artifact + provenance
+ ├── Project         (CRUD: create / find / drop / rename)
+ │    │               the central AI-project artifact — see projects.md
+ │    └── ProjectInput (create / find / drop) — raw intent/artifact + provenance
+ └── Deployment      (deploy_graph / find / list)
+                      a graph placed onto a target — see deployments.md
 ```
 
 Ownership and lookups use `std::shared_ptr` handles, never raw pointers. Names
@@ -37,7 +39,9 @@ A **project** is a top-level entity (no parent) holding id + name +
 created/updated + an owner key; see [projects.md](projects.md). A project owns
 its **inputs** (`ProjectInput`) — raw intent/artifact payloads captured with
 provenance (kind, source, content hash, created-by/at) — the same way a database
-owns its tables; see [project-inputs.md](project-inputs.md).
+owns its tables; see [project-inputs.md](project-inputs.md). A **deployment** is
+also top-level: a validated [execution graph](execution-graph.md) placed onto a
+`DeploymentTarget` (R1 local) and recorded; see [deployments.md](deployments.md).
 
 Everything persists to disk under the node's `data_dir` and is rebuilt by
 `Node::start()` on launch. See [storage.md](storage.md).
@@ -57,6 +61,10 @@ the gate, deploy, and run build on. This slice is the data model only (build +
 traverse); serialization and validation are later slices. See
 [execution-graph.md](execution-graph.md).
 
+**Deploy** has its first slice: `Node::deploy_graph` places a validated graph onto
+a `DeploymentTarget` (R1 local) and records the placement (replicated + queryable).
+See [deployments.md](deployments.md).
+
 ## Async runtime & cluster
 
 The coroutine / IO / networking backend (C++ Alliance Capy + Corosio, vendored
@@ -72,10 +80,12 @@ conflict-free — see [replication.md](replication.md).
 
 ```
 include/zetta/            zetta-core public API (no SDL/ImGui)
-  node.hpp                Node — CRUD over databases + projects
+  node.hpp                Node — CRUD over databases + projects + deployments
   database.hpp            Database — owns tables (disk-backed)
   project.hpp             Project — an AI project (replicated metadata); owns inputs
   project_input.hpp       ProjectInput — raw intent/artifact input + provenance
+  deployment_target.hpp   DeploymentTarget — a placement (ENT-6; R1 local)
+  deployment.hpp          Deployment — a graph placed onto a target
   table.hpp               Table — owns a storage engine (its rows)
   uuid.hpp                new_uuid() — v4 UUID for folder names
   runtime.hpp             zetta::runtime — async/coroutine seam over Capy

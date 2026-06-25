@@ -9,6 +9,7 @@
 
 #include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
+#include "zetta/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/table.hpp"
@@ -18,11 +19,13 @@ namespace {
 
 // The virtual `system` database holds read-only system tables (à la Postgres'
 // pg_catalog). Its tables are computed at query time, not stored/replicated.
-// First table: `zetta_nodes` — cluster membership + replication status, backed
-// by Cluster::nodes(). `SELECT * FROM system.zetta_nodes` (the bare name still
-// works for back-compat). Future: system.zetta_leadership, etc.
+//  - `zetta_nodes` — cluster membership + replication status (Cluster::nodes()).
+//    `SELECT * FROM system.zetta_nodes` (the bare name still works, back-compat).
+//  - `zetta_deployments` — recorded graph→target placements (Node::deployments()).
+// Future: system.zetta_leadership, etc.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
+constexpr std::string_view kDeploymentsTable = "zetta_deployments";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -67,6 +70,27 @@ std::vector<nlohmann::json> cluster_node_rows(const Cluster& cluster) {
             (replication.known && !node.is_self)
                 ? nlohmann::json(replication.seconds_since_sync)
                 : nlohmann::json();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per recorded deployment for the zetta_deployments system table.
+// Sourced from Node::deployments() (the placements recorded by deploy_graph).
+std::vector<nlohmann::json> deployment_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& deployment : node.deployments()) {
+        const DeploymentTarget& target = deployment->target();
+        nlohmann::json row;
+        row["deployment_id"] = deployment->id();
+        row["graph_name"] = deployment->graph_name();
+        row["target_kind"] = to_string(target.kind);
+        row["binding"] = target.binding;
+        row["credentials_ref"] = target.credentials_ref;
+        row["node_id"] = deployment->node_id();
+        row["node_count"] = deployment->node_count();
+        row["edge_count"] = deployment->edge_count();
+        row["created"] = deployment->created();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -208,9 +232,13 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Virtual `system` database (computed, read-only).
                 if (const std::string sys = system_table_of(s.table);
                     !sys.empty()) {
+                    if (sys == kDeploymentsTable) {
+                        return select_over_rows(s, deployment_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
-                                     "\" (try system.zetta_nodes)");
+                                     "\" (try system.zetta_nodes or "
+                                     "system.zetta_deployments)");
                     }
                     if (!cluster_) {
                         return error("system.zetta_nodes is unavailable here "

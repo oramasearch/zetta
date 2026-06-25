@@ -13,9 +13,10 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Data model | `node`, `database`, `table` (`.hpp`/`src/core/*.cpp`) | architecture.md, storage.md | `Node`→`Database`→`Table`→`StorageEngine`. shared_ptr handles, empty on miss. UUIDv4 folder = id; name in `*.json`. |
 | Projects | `project.hpp`, `src/core/project.cpp`, `timestamp.hpp` | projects.md | `Node` CRUD (`create/find/drop/rename_project`, `project_names`) mirrors databases. Top-level entity (no parent): id+name+created/updated+owner. Owns inputs. Replicated (`project:` key) + `<uuid>/project.json` projection. |
 | Project inputs | `project_input.hpp`, `src/core/project_input.cpp`, `sha256.hpp`, `timestamp.hpp` | project-inputs.md | A `Project` owns inputs like a `Database` owns tables. `create_input/find_input/drop_input` (immutable — no rename). Metadata (`input:` key, incl. `content_hash`+`size`) replicates; **payload body does not** — on disk at `<project>/inputs/<id>/payload`, P2P transfer is a later slice. `content_hash` computed at boundary. |
+| Deployments | `deployment_target.hpp`, `deployment.hpp`, `src/core/deployment{,_target}.cpp`, `ir/execution_graph.hpp` | deployments.md | `Node::deploy_graph(graph, target, name)` places a validated graph onto a `DeploymentTarget` (ENT-6; R1 `Local` only) + `find_deployment`/`deployments`. Top-level entity: graph_name+target+node+counts+created (graph recorded as a summary). Replicated (`deployment:` key) + `<uuid>/deployment.json`. Queryable via `system.zetta_deployments`. `Node::node_id()` = actor id (or `data_dir/node_id` standalone). |
 | Storage engine | `include/zetta/storage/{engine,jsonl_store,json_store}.hpp`, `src/core/jsonl_store.cpp` | storage.md | `StorageEngine` interface: `add(id,doc)`/`contains`/`size`/`at`/`id_at`. Rows carry a UUID (the CRDT key). JSONL line = `{"_zid":id,"doc":row}`. |
 | Large objects | `large_object.hpp`, `src/core/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/replicated_blob_store.cpp`, `sha256.hpp` | large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer seam. |
-| Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. Virtual read-only **`system`** database holds computed system tables (`system.zetta_nodes`); `system` is reserved. |
+| Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. Virtual read-only **`system`** database holds computed system tables (`system.zetta_nodes`, `system.zetta_deployments`); `system` is reserved. |
 | Import | `import.hpp`, `src/core/import.cpp` | large-objects.md | `.json`/`.jsonl` → rows via `Table::add_row` (so it replicates). |
 | Cluster | `cluster.hpp`, `src/core/cluster.cpp` (the one Corosio user) | cluster.md | Equal peers over TCP; line protocol `HELLO/SYNC/STATUS/LOREQ/LORES`. Self-healing (keepalive + reconnect + replace-by-address). `nodes()` = status view. |
 | Replication (CRDT) | `replication.hpp`, `src/core/replication.cpp` (the one automerge-cpp user), `src/core/catalog.hpp` (internal key scheme) | replication.md | `ReplicationManager`: `set`/`remove`/`snapshot`/`save`/`merge`/`entry_count`/`version`. Document = source of truth. Thread-safe (mutex). |
@@ -30,14 +31,16 @@ values — each row/object owns its own key by UUID so concurrent edits never
 collide; the UUID is also the on-disk folder/row id (identical on every node):
 
 ```
-node:<node_id>  -> { address }                     cluster membership
-db:<db_uuid>    -> { name }                         a database
-tbl:<tbl_uuid>  -> { db, name }                     a table
-row:<row_uuid>  -> { tbl, data:{…} }                a row
-lo:<lo_uuid>    -> { db, name, size, sha256 }       large-object metadata (no body)
-project:<uuid>  -> { name, created, updated, owner } an AI project (top-level)
-input:<uuid>    -> { project, kind, source, filename, content_hash, size,
-                     created_by, created_at }        a project input (no body)
+node:<node_id>        -> { address }                  cluster membership
+db:<db_uuid>          -> { name }                      a database
+tbl:<tbl_uuid>        -> { db, name }                  a table
+row:<row_uuid>        -> { tbl, data:{…} }             a row
+lo:<lo_uuid>          -> { db, name, size, sha256 }    large-object metadata (no body)
+project:<proj_uuid>   -> { name, created, updated, owner }   an AI project (no parent)
+input:<input_uuid>    -> { project, kind, source, filename, content_hash, size,
+                           created_by, created_at }    a project input (no body)
+deployment:<dep_uuid> -> { graph_name, target, node, node_count, edge_count, created }
+                                                       a graph placed onto a target
 ```
 
 `Node::reconcile_from_replication()` decodes these into desired state and
@@ -113,8 +116,9 @@ tests: short `ClusterConfig` timeouts + patient polling.
 - **architecture.md** — node, run modes, data model, module map.
 - **projects.md** — the AI project (`zetta::Project`) data model + lifecycle CRUD on a node.
 - **project-inputs.md** — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
+- **deployments.md** — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable.
 - **storage.md** — on-disk layout, JSONL `_zid`/`doc` line format, engine seam.
-- **query.md** — dialect-agnostic layer, Postgres subset, the `system` database (`system.zetta_nodes`).
+- **query.md** — dialect-agnostic layer, Postgres subset, the `system` database (`system.zetta_nodes`, `system.zetta_deployments`).
 - **large-objects.md** — LO API, metadata-in-CRDT + body-P2P-with-hash, import.
 - **runtime.md** — `zetta::runtime` async seam + migration plan.
 - **cluster.md** — equal peers, reachable-address banner, self-healing links, status view.
