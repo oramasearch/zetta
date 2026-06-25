@@ -1,5 +1,6 @@
 #include "zetta/node.hpp"
 
+#include "zetta/ir/execution_graph.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/sha256.hpp"
 #include "zetta/timestamp.hpp"
@@ -16,6 +17,7 @@
 #include <map>
 #include <optional>
 #include <system_error>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -33,8 +35,10 @@ bool Node::start() {
     running_ = true;
     started_at_ = Clock::now();
     ticks_ = 0;
+    node_id_ = resolve_node_id();
     load_databases();
     load_projects();
+    load_deployments();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -43,9 +47,10 @@ bool Node::start() {
         last_seen_version_ = replication_->version();
     }
     std::printf(
-        "zetta %s: node started (data_dir=%s, %zu databases, %zu projects)\n",
+        "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
+        "%zu deployments)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
-        projects_.size());
+        projects_.size(), deployments_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -161,6 +166,68 @@ std::shared_ptr<Project> Node::find_project_by_id(const std::string& id) const {
         if (project->id() == id) return project;
     }
     return nullptr;
+}
+
+std::string Node::resolve_node_id() {
+    // When replicated, the node id IS the replication actor id (the same UUID),
+    // so the recorded placement node matches the document's actor.
+    if (replication_) return replication_->node_id();
+    // Standalone: the id is persisted in data_dir/node_id (created on first use),
+    // so it's stable across restarts — mirroring how main.cpp seeds it.
+    const fs::path path = fs::path(config_.data_dir) / "node_id";
+    std::error_code ec;
+    fs::create_directories(config_.data_dir, ec);
+    if (std::ifstream in(path); in) {
+        std::string id;
+        std::getline(in, id);
+        while (!id.empty() && (id.back() == '\n' || id.back() == '\r' ||
+                               id.back() == ' ')) {
+            id.pop_back();
+        }
+        if (!id.empty()) return id;
+    }
+    const std::string id = new_uuid();
+    std::ofstream(path, std::ios::trunc) << id << '\n';
+    return id;
+}
+
+void Node::load_deployments() {
+    deployments_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "deployment.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a deployment needs a string graph_name and a
+        // well-formed target (DeploymentTarget::from_json rejects an unknown
+        // kind). Anything malformed is skipped, never trusted into the tree.
+        if (meta.is_discarded() || !meta.is_object() ||
+            !meta.contains("graph_name") || !meta["graph_name"].is_string()) {
+            continue;
+        }
+        const std::optional<DeploymentTarget> target =
+            DeploymentTarget::from_json(
+                meta.value("target", nlohmann::json::object()));
+        if (!target) continue;
+        deployments_.push_back(std::make_shared<Deployment>(
+            entry.path().filename().string(),
+            meta["graph_name"].get<std::string>(), *target,
+            meta.value("node", std::string{}),
+            meta.value("node_count", std::size_t{0}),
+            meta.value("edge_count", std::size_t{0}),
+            meta.value("created", std::string{}), entry.path()));
+    }
+    // Stable, chronological order (id breaks ties on equal stamps).
+    std::sort(deployments_.begin(), deployments_.end(),
+              [](const auto& a, const auto& b) {
+                  return std::tie(a->created(), a->id()) <
+                         std::tie(b->created(), b->id());
+              });
 }
 
 std::shared_ptr<Database> Node::create_database(std::string name) {
@@ -323,6 +390,70 @@ std::vector<std::string> Node::project_names() const {
     return names;
 }
 
+// ----- deployments (place a graph onto a target; replicated as deployment:<id>)
+
+std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
+                                               DeploymentTarget target,
+                                               std::string graph_name) {
+    // R1 places onto the local node only; k8s/cloud targets are deferred.
+    if (!target.is_local()) return nullptr;
+    // A deployable graph must have something to place. Full semantic validation
+    // (acyclicity, legal stage transitions) is the gate — a separate slice;
+    // deploy_graph records an already-validated graph and guards the basics.
+    if (graph.empty()) return nullptr;
+
+    const std::string id = new_uuid();
+    const std::string now = now_iso8601();
+    const std::size_t node_count = graph.node_count();
+    const std::size_t edge_count = graph.edge_count();
+    if (replication_) {
+        replication_->set(catalog::deployment_key(id),
+                          nlohmann::json{{"graph_name", graph_name},
+                                         {"target", target.to_json()},
+                                         {"node", node_id_},
+                                         {"node_count", node_count},
+                                         {"edge_count", edge_count},
+                                         {"created", now}});
+    }
+    return materialize_deployment(id, std::move(graph_name), std::move(target),
+                                  node_id_, node_count, edge_count, now);
+}
+
+std::shared_ptr<Deployment> Node::materialize_deployment(
+    std::string id, std::string graph_name, DeploymentTarget target,
+    std::string node_id, std::size_t node_count, std::size_t edge_count,
+    std::string created) {
+    if (auto existing = find_deployment(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto deployment = std::make_shared<Deployment>(
+        std::move(id), std::move(graph_name), std::move(target),
+        std::move(node_id), node_count, edge_count, std::move(created), dir);
+    deployment->persist_meta();
+    deployments_.push_back(deployment);
+    return deployment;
+}
+
+std::shared_ptr<Deployment> Node::find_deployment(const std::string& id) const {
+    for (const auto& deployment : deployments_) {
+        if (deployment->id() == id) return deployment;
+    }
+    return nullptr;
+}
+
+bool Node::materialize_drop_deployment(const std::string& id) {
+    const auto it = std::find_if(
+        deployments_.begin(), deployments_.end(),
+        [&](const std::shared_ptr<Deployment>& d) { return d->id() == id; });
+    if (it == deployments_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    deployments_.erase(it);
+    return true;
+}
+
 // ----- replication: persistence ---------------------------------------------
 
 fs::path Node::replication_path() const {
@@ -403,6 +534,12 @@ void Node::migrate_to_replication() {
                 replication_->set(catalog::input_key(input->id()),
                                   input->metadata());
             }
+        }
+    }
+    for (const auto& deployment : deployments_) {
+        if (!snapshot.contains(catalog::deployment_key(deployment->id()))) {
+            replication_->set(catalog::deployment_key(deployment->id()),
+                              deployment->metadata());
         }
     }
 }
@@ -622,6 +759,54 @@ void Node::reconcile_from_replication() {
                                        entry.created_at);
         }
     }
+
+    // Deployments (top-level, no parent): deployment:<id> -> { graph_name,
+    // target, node, node_count, edge_count, created }. Decode the desired set,
+    // then drop / add the local projection to match the document. Deployments
+    // are immutable once recorded in this slice (no update branch); reconcile /
+    // self-heal that mutates them is a later task.
+    struct DeploymentEntry {
+        std::string graph_name;
+        DeploymentTarget target;
+        std::string node_id;
+        std::size_t node_count;
+        std::size_t edge_count;
+        std::string created;
+    };
+    std::map<std::string, DeploymentEntry> deployments;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kDeploymentPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("graph_name")) {
+            continue;
+        }
+        const std::optional<DeploymentTarget> target =
+            DeploymentTarget::from_json(
+                value.value("target", nlohmann::json::object()));
+        if (!target) continue;
+        deployments.emplace(
+            std::move(id),
+            DeploymentEntry{value.value("graph_name", std::string{}), *target,
+                            value.value("node", std::string{}),
+                            value.value("node_count", std::size_t{0}),
+                            value.value("edge_count", std::size_t{0}),
+                            value.value("created", std::string{})});
+    }
+    std::vector<std::string> local_deployment_ids;
+    for (const auto& deployment : deployments_) {
+        local_deployment_ids.push_back(deployment->id());
+    }
+    for (const std::string& deployment_id : local_deployment_ids) {
+        if (!deployments.contains(deployment_id)) {
+            materialize_drop_deployment(deployment_id);
+        }
+    }
+    for (const auto& [id, entry] : deployments) {
+        if (!find_deployment(id)) {
+            materialize_deployment(id, entry.graph_name, entry.target,
+                                   entry.node_id, entry.node_count,
+                                   entry.edge_count, entry.created);
+        }
+    }
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -698,12 +883,13 @@ IntegrityReport Node::check_integrity() const {
 
 std::string Node::status_line() const {
     if (!running_) return "stopped";
-    char buf[192];
-    std::snprintf(buf, sizeof(buf),
-                  "running — up %.0fs, %llu ticks, %zu databases, %zu projects",
-                  uptime_seconds(),
-                  static_cast<unsigned long long>(ticks_),
-                  databases_.size(), projects_.size());
+    char buf[224];
+    std::snprintf(
+        buf, sizeof(buf),
+        "running — up %.0fs, %llu ticks, %zu databases, %zu projects, "
+        "%zu deployments",
+        uptime_seconds(), static_cast<unsigned long long>(ticks_),
+        databases_.size(), projects_.size(), deployments_.size());
     return buf;
 }
 

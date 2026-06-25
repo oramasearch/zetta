@@ -29,11 +29,14 @@ loop — is in flight.
 
 Data is organized as databases → tables → JSON rows, persisted to disk. A node
 also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
-(see [docs/projects.md](docs/projects.md)) — and each project owns its **inputs**
+(see [docs/projects.md](docs/projects.md)); each project owns its **inputs**
 (`zetta::ProjectInput`): raw intent/artifact payloads captured with provenance
-(see [docs/project-inputs.md](docs/project-inputs.md)). Query it with basic Postgres-flavored
-SQL (DDL + INSERT/SELECT); the query engine is dialect-agnostic, so other SQL
-formats can be added as frontends. The async runtime is coroutine-native (C++
+(see [docs/project-inputs.md](docs/project-inputs.md)). A node can also **deploy**
+a validated execution graph onto a target, recording the placement (R1 local; see
+[docs/deployments.md](docs/deployments.md)). Query it all with basic
+Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
+query engine is dialect-agnostic, so other SQL formats can be added as frontends.
+The async runtime is coroutine-native (C++
 Alliance Capy/Corosio), behind the `zetta::runtime` seam. State replicates
 between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 

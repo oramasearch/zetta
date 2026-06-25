@@ -122,8 +122,9 @@ The data model guards its own shape — this is *structure*, not the gate's
   graph and blocks deploy on failure. The concrete *semantic* checks — acyclicity,
   legal stage transitions, required inputs — are the remaining work that plugs
   into its `Check` seam.
-- **Compile / deploy / run** — emit a graph from intent, then deploy and execute
-  it.
+- **Compile / run** — emit a graph from intent, then execute it. **Deploy** has
+  its first slice: a graph can be placed onto a local target and the placement
+  recorded — see [deployments.md](deployments.md).
 
 See also [architecture.md](architecture.md) and the related artifacts: ENT-3
 (`#84`), FEAT-2 (`#133`), ADR-2 (`#2`), ADR-10 (`#10`).

@@ -9,11 +9,13 @@
 #include <vector>
 
 #include "zetta/database.hpp"
+#include "zetta/deployment.hpp"
 #include "zetta/project.hpp"
 
 namespace zetta {
 
 class ReplicationManager;
+namespace ir { class ExecutionGraph; }
 
 // Where a node's persistent state lives and how it presents itself. More
 // fields (listen address, replication peers, cache sizes) land alongside the
@@ -98,6 +100,26 @@ public:
     std::vector<std::string> project_names() const;
     std::size_t project_count() const { return projects_.size(); }
 
+    // This node's id (its cluster id + replication actor id), stable across
+    // restarts (persisted in data_dir/node_id). Set by start(); empty before it.
+    const std::string& node_id() const { return node_id_; }
+
+    // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
+    // target and record it. R1 supports a **Local** target only; deploy_graph
+    // returns an empty handle for a non-local target or an empty graph. The
+    // recorded deployment is replicated + on disk and queryable via
+    // deployments() / find_deployment() (and the system.zetta_deployments SQL
+    // table). The graph is recorded as a summary (name + node/edge counts) since
+    // the IR has no serialized form yet. Reconcile/self-heal is a later slice.
+    std::shared_ptr<Deployment> deploy_graph(const ir::ExecutionGraph& graph,
+                                             DeploymentTarget target,
+                                             std::string graph_name);
+    std::shared_ptr<Deployment> find_deployment(const std::string& id) const;
+    std::vector<std::shared_ptr<Deployment>> deployments() const {
+        return deployments_;
+    }
+    std::size_t deployment_count() const { return deployments_.size(); }
+
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
@@ -127,6 +149,13 @@ private:
     void load_projects();
     std::shared_ptr<Project> find_project_by_id(const std::string& id) const;
 
+    // Rebuild deployments_ by scanning config_.data_dir. Called from start().
+    void load_deployments();
+
+    // This node's stable id: the replication actor id when replicated, else the
+    // UUID persisted in data_dir/node_id (created on first use). Set by start().
+    std::string resolve_node_id();
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -143,16 +172,23 @@ private:
                                                  std::string updated,
                                                  std::string owner);
     bool materialize_drop_project(const std::string& id);
+    std::shared_ptr<Deployment> materialize_deployment(
+        std::string id, std::string graph_name, DeploymentTarget target,
+        std::string node_id, std::size_t node_count, std::size_t edge_count,
+        std::string created);
+    bool materialize_drop_deployment(const std::string& id);
 
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
+    std::string node_id_;              // this node's stable UUID (set by start())
     std::string last_seen_version_;    // CRDT version last reconciled/persisted
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;
-    std::vector<std::shared_ptr<Database>> databases_;  // insertion order
-    std::vector<std::shared_ptr<Project>> projects_;    // insertion order
+    std::vector<std::shared_ptr<Database>> databases_;      // insertion order
+    std::vector<std::shared_ptr<Project>> projects_;        // insertion order
+    std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
 };
 
 }  // namespace zetta

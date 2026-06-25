@@ -82,6 +82,21 @@ sources the rows from `Cluster::nodes()` instead of a storage engine. The headed
 explorer also lists `system` (marked *virtual*) so its tables are browsable, not
 just queryable.
 
+A second table is **`zetta_deployments`** — the recorded graph→target
+[placements](deployments.md) (no cluster needed; it is sourced from
+`Node::deployments()`):
+
+```sql
+SELECT * FROM system.zetta_deployments;
+SELECT graph_name, node_count FROM system.zetta_deployments
+  WHERE target_kind = 'local';
+```
+
+Columns: `deployment_id`, `graph_name`, `target_kind`, `binding`,
+`credentials_ref`, `node_id`, `node_count`, `edge_count`, `created`. (Unlike
+`zetta_nodes`, there is **no** bare-name alias — use the qualified
+`system.zetta_deployments`.)
+
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).

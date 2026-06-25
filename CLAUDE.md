@@ -226,6 +226,8 @@ data_dir/
         input.json           ← { id, project, kind, source, filename,
                                  content_hash, size, created_by, created_at }
         payload              ← raw bytes (NOT in the CRDT; on-disk like an LO body)
+  <deployment-uuid>/         ← one folder per deployment (UUIDv4 = its id)
+    deployment.json          ← { id, graph_name, target, node, node_count, … }
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -276,10 +278,12 @@ another database format = writing another `Dialect` that targets the same AST �
 `WHERE` equality). The executor also serves a virtual, read-only **`system`**
 database (à la `pg_catalog`) whose tables are computed at query time — first
 **`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
-wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves).
-`system` is reserved (can't be created/dropped/written; no real db may be named
-it) and is where future system tables (e.g. `system.zetta_leadership`) live. Full
-detail in [docs/query.md](docs/query.md).
+wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
+**`system.zetta_deployments`** (recorded graph→target placements, sourced from
+`Node::deployments()`; qualified name only). `system` is reserved (can't be
+created/dropped/written; no real db may be named it) and is where future system
+tables (e.g. `system.zetta_leadership`) live. Full detail in
+[docs/query.md](docs/query.md).
 
 ### Execution graph IR (`zetta::ir`)
 
@@ -317,6 +321,31 @@ pre-loaded with it. `CorrectnessGate::run` sets `block_deploy = !report.passed()
 [separate](docs/validation.md) so a stricter gate can choose differently). It adds
 **no new JSON format** — the `ValidationReport` it produces is already
 schema-validated. Full detail in [docs/gate.md](docs/gate.md).
+
+### Deployment (place a graph onto a target)
+
+A **deployment** places a validated `ir::ExecutionGraph` onto a
+**`DeploymentTarget`** and records it — the first slice of *one-button deploy*
+(FEAT-4) + the `DeploymentTarget` entity (ENT-6). A `DeploymentTarget`
+(`include/zetta/deployment_target.hpp`) is a placement on the **dial**
+`local → kubernetes → vpc → cloud` (`DeploymentKind`, declared in that order),
+holding a Cloud Interface **binding** + a **credentials-ref**; R1 ships **`Local`
+only** (the rest are declared but not built, like `ClusterRole`), and a Local
+target has an empty binding/credentials (implicitly this node). `Node` owns
+deployments like projects: **`deploy_graph(graph, target, name)`** (empty handle
+on an empty graph or a non-local target — basic guards only; the semantic
+**correctness gate** above runs separately, not yet wired into `deploy_graph`),
+`find_deployment(id)`, `deployments()`, `deployment_count()`. A `Deployment`
+(`include/zetta/deployment.hpp`) is **replicated state** (flat key
+`deployment:<uuid>` → `{ graph_name, target, node, node_count, edge_count,
+created }`) with a `<deployment-uuid>/deployment.json` projection, persisted across
+restart and replicated to peers (recording the node it was placed on). The graph is
+recorded as a **summary** (name + node/edge counts), not the full graph — IR
+serialization is a later slice. It's queryable via the C++ API **and** the SQL
+**`system.zetta_deployments`** table. Reconcile/self-heal + k8s/cloud + the Deploy
+panel are separate tasks. `Node` learns its own id (`Node::node_id()`) from the
+`ReplicationManager` actor id, or from `data_dir/node_id` when standalone. See
+[docs/deployments.md](docs/deployments.md).
 
 ## Tech stack
 
@@ -374,10 +403,12 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project (replicated metadata); owns inputs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
+  deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
+  deployment.hpp            zetta::Deployment — a graph placed onto a target
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -404,10 +435,12 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases()/load_projects() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments() + replication capture/reconcile/persist
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
+  deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
+  deployment.cpp            zetta::Deployment — persist deployment.json
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -550,6 +583,7 @@ loop thread).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
+- [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

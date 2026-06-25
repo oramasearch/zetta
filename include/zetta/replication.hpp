@@ -41,6 +41,10 @@ public:
 
     ReplicationPolicy policy() const { return policy_; }
 
+    // This node's id — its UUIDv4 Automerge actor id (the same UUID as its
+    // cluster node id). Stable for the manager's lifetime.
+    const std::string& node_id() const { return node_id_; }
+
     // Set a top-level key in the replicated document (a local change). The value
     // may be any JSON (stored as a JSON string inside the CRDT).
     void set(const std::string& key, const nlohmann::json& value);
@@ -72,6 +76,7 @@ public:
 private:
     struct State;  // hides the Automerge backend
     std::unique_ptr<State> state_;
+    std::string node_id_;  // this node's UUID (its Automerge actor id)
     ReplicationPolicy policy_;
 };
 

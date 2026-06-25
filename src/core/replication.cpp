@@ -24,10 +24,12 @@ struct ReplicationManager::State {
 
 ReplicationManager::ReplicationManager(std::string node_id,
                                        ReplicationPolicy policy)
-    : state_(std::make_unique<State>()), policy_(policy) {
+    : state_(std::make_unique<State>()),
+      node_id_(std::move(node_id)),
+      policy_(policy) {
     // The node's UUID is its Automerge actor id (distinct per node, so
     // concurrent changes merge conflict-free).
-    state_->document.set_actor_id(am::ActorId{uuid_to_bytes(node_id)});
+    state_->document.set_actor_id(am::ActorId{uuid_to_bytes(node_id_)});
 }
 
 ReplicationManager::~ReplicationManager() = default;
