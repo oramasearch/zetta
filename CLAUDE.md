@@ -127,8 +127,14 @@ PRIVATE to zetta-core). A run is now also **produced by executing a graph** (see
 the Graph execution section below). The headed app surfaces runs in a
 **read-only Runs / Outputs / Lineage panel** (`App::draw_runs` — list of runs +
 a detail pane with the selected run's status, color-coded logs, an outputs
-table, and a lineage section with a confidence bar; the GUI slice of FEAT-5 /
-SCR-6 / CMP-4). See [docs/runs.md](docs/runs.md).
+table, a **Trained models** section, and a lineage section with a confidence bar;
+the GUI slice of FEAT-5 / SCR-6 / CMP-4). The **Trained models** section is the
+FEAT-5 "surface the trained Model + metrics + ranked drivers" slice: it resolves
+the `Model`(s) the run produced via the durable reverse link
+(`Model::run() == run id`) and renders each one's metrics (name→number, a bar for
+`[0,1]` scores) and **ranked drivers** (feature importances, strongest |influence|
+first — read tolerantly from the model's free-form `feature_schema.drivers` via
+`zetta::ranked_drivers`, so no new JSON boundary). See [docs/runs.md](docs/runs.md).
 
 A node also owns **models** (`zetta::Model`) — a **trained model** registered on
 the node (ENT-14 / FEAT-6): its metadata (`name`, `kind`, free-form
@@ -169,10 +175,19 @@ validated against a formal JSON Schema (`parse_compute_job_value`, the same
 into a terminal state (the `materialize_*`/`apply_value` reconcile paths never emit
 — a peer's action arrives already-audited). The registry is `Node::jobs()` + the
 read-only SQL **`system.zetta_jobs`** table (job id / kind / status / refs / reward
-+ observing node, computed from `Node::jobs()`). Scheduling/running a job (the
-coordinator, scheduler + collectives, the autoscaler wired to the `ScalingPolicy`
-reward model below) are separate, later slices. See
-[docs/compute-jobs.md](docs/compute-jobs.md).
++ observing node, computed from `Node::jobs()`). The headed app surfaces the
+registry in a **read-only Compute Jobs panel** (`App::draw_jobs` — list of jobs
+with a color-coded status badge + kind, and a detail pane with the selected job's
+status / refs; the GUI form of `system.zetta_jobs`, FEAT-5 / SCR). The detail pane
+also carries **per-job objective/scaling controls** (`App::draw_job_scaling_controls`)
+— a **live preview** that scores an editable `ScalingPolicy` + sample against the
+built `ScalingPolicy::evaluate()`: pick a reward objective + bounds, add/remove
+nodes, and see the resulting `ScalingDecision` (recommended nodes, scale
+up/hold/down, reward, cost-cap). It is a what-if calculator, **not** a write path —
+nothing is persisted (policy persistence + a live autoscaler are later slices).
+Scheduling/running a job (the coordinator, scheduler + collectives, the autoscaler
+wired to the `ScalingPolicy` reward model below) are separate, later slices. See
+[docs/compute-jobs.md](docs/compute-jobs.md) and [docs/jobs-panel.md](docs/jobs-panel.md).
 
 A compute job's `scaling_policy` ref points at a **`zetta::ScalingPolicy`** — the
 per-job **reward objective an autoscaler optimizes** (**ADR-29 / ENT-34**, the
@@ -1333,6 +1348,7 @@ loop thread).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
+- [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
