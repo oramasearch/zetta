@@ -22,10 +22,13 @@ What it installs (or install manually):
 - macOS for the headed UI (SDL3 uses a Metal-backed renderer); the headless core
   is portable.
 
-SDL3, Dear ImGui (+ `imgui_stdlib`), and GoogleTest are fetched via CMake
+SDL3, Dear ImGui (+ `imgui_stdlib`), GoogleTest, and the
+[json-schema-validator](https://github.com/pboettch/json-schema-validator)
+(pboettch, for the Run record's storage-boundary validation) are fetched via CMake
 `FetchContent` — no `brew install` needed for the stack. nlohmann/json comes from
-automerge-cpp's vendored copy (a submodule), not FetchContent. ccache is used as
-the compiler launcher when present.
+automerge-cpp's vendored copy (a submodule), not FetchContent; the validator
+reuses that same nlohmann/json target. ccache is used as the compiler launcher
+when present.
 
 ## Submodules
 
@@ -74,7 +77,11 @@ On startup a node prints its id, the address(es) it's reachable at, and the
 command to add another node — see [cluster.md](cluster.md).
 
 In headed mode, the **Query (postgres)** panel runs SQL against the selected
-database; the **Databases | Tables | Rows** explorer reflects changes live.
+database; the **Correctness gate** panel validates an execution graph and shows
+the per-check report + block-on-fail state (see [gate.md](gate.md)); the
+**Projects | Databases | Tables | Rows | Large Objects** explorer reflects
+changes live (the leftmost **Projects** column creates/selects/renames AI
+projects — see [projects.md](projects.md)).
 
 ## Test
 

@@ -204,6 +204,36 @@ set(AUTOMERGE_CPP_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
 set(AUTOMERGE_CPP_BUILD_FUZZ       OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/automerge-cpp EXCLUDE_FROM_ALL)
 
+# json-schema-validator (pboettch) — validates stored/replicated JSON against a
+# JSON Schema at the storage boundary (the Run record; see src/core/run.cpp). It
+# builds on nlohmann/json, so it MUST be declared AFTER automerge-cpp above (which
+# provides the `nlohmann_json::nlohmann_json` target) — that way it reuses our
+# json target instead of fetching a second, clashing copy. Used only by
+# zetta-core's adapters, so it's linked PRIVATE (stays out of the public surface).
+include(FetchContent)
+set(JSON_VALIDATOR_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(JSON_VALIDATOR_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(JSON_VALIDATOR_INSTALL        OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+  json_schema_validator
+  GIT_REPOSITORY https://github.com/pboettch/json-schema-validator.git
+  GIT_TAG        2.4.0
+  GIT_SHALLOW    TRUE
+)
+FetchContent_MakeAvailable(json_schema_validator)
+
+# Match zetta-core's libc++ ABI on the validator. zetta-core compiles with
+# -fexperimental-library (propagated PUBLIC from Boost::capy, which links
+# libc++experimental); the validator does not. A std:: exception thrown inside
+# the validator and caught in zetta-core (run.cpp) then fails its typeinfo match
+# across the experimental/non-experimental boundary and std::terminate fires.
+# Compiling the validator with the same flag keeps the exception ABI identical.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag(-fexperimental-library ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+  target_compile_options(nlohmann_json_schema_validator PRIVATE -fexperimental-library)
+endif()
+
 # -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
@@ -212,15 +242,39 @@ add_library(zetta-core STATIC
   src/core/replication.cpp
   src/core/node.cpp
   src/core/database.cpp
+  src/core/project.cpp
+  src/core/project_input.cpp
+  src/core/project_graph.cpp
+  src/core/deployment_target.cpp
+  src/core/deployment.cpp
+  src/core/deployment_controller.cpp
+  src/core/solution_catalog.cpp
+  src/core/run.cpp
+  src/core/principal.cpp
+  src/core/access_key.cpp
+  src/core/scope.cpp
+  src/core/capability.cpp
+  src/core/audit_event.cpp
   src/core/table.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp
   src/core/sha256.cpp
+  src/core/timestamp.cpp
+  src/core/validation.cpp
+  src/core/gate.cpp
+  src/core/graph_checks.cpp
+  src/core/checks/entity_resolution_check.cpp
+  src/core/executor.cpp
+  src/core/intent_compiler.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp
   src/core/replicated_blob_store.cpp
   src/core/import.cpp
+  src/core/n8n_import.cpp
+  src/core/n8n_compile.cpp
+  src/core/ir/execution_graph.cpp
+  src/core/ir/serialization.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
@@ -238,10 +292,13 @@ target_include_directories(zetta-core PUBLIC
 # storage headers include it, so consumers (the GUI) get it transitively.
 # Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
 target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json Boost::capy)
-# Corosio (networking) and automerge-cpp (the replication CRDT) are used only by
-# adapters (src/core/cluster.cpp, src/core/replication.cpp) — PRIVATE so they
-# stay out of zetta-core's public surface and the GUI.
-target_link_libraries(zetta-core PRIVATE Boost::corosio automerge-cpp::automerge-cpp)
+# Corosio (networking), automerge-cpp (the replication CRDT), and the JSON-Schema
+# validator (boundary validation in src/core/run.cpp) are used only by zetta-core's
+# adapters — PRIVATE so they stay out of zetta-core's public surface and the GUI.
+target_link_libraries(zetta-core PRIVATE
+  Boost::corosio
+  automerge-cpp::automerge-cpp
+  nlohmann_json_schema_validator)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

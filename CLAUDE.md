@@ -70,6 +70,124 @@ and `Database` over tables (`create`/`find`/`drop_table`, `table_names`);
 ownership is via `shared_ptr` so lookups hand back a safe handle, never a raw
 pointer.
 
+A node also owns **projects** (`zetta::Project`) — the central, user-managed **AI
+project** artifact (id + name + created/updated + owner key), a top-level entity
+with no parent (its runs attach in later slices). `Node` has the
+same CRUD shape as databases (`create`/`find`/`drop`/`rename_project`,
+`project_names`). A project is replicated state (flat key `project:<uuid>`) with
+a `<project-uuid>/project.json` on-disk projection, persisted across restart in
+both standalone and replicated nodes. A project **owns execution graphs**
+(`zetta::ProjectGraph` — a named, persisted `ExecutionGraph` IR; replicated key
+`graph:<uuid>`, projection `<project-uuid>/graphs/<uuid>.json`), the way a
+database owns tables, with `create_graph`/`update_graph`/`drop_graph` CRUD
+(`update_graph` rewrites the projection **and** re-captures the CRDT key, so an
+edit replicates like a create). The headed **Graph Workspace** panel
+(`App::draw_graph_workspace`) renders a project's graph as an editable node/edge
+canvas — nodes in columns by `StepKind`, edges between them — and persists edits
+back to the IR via `update_graph` (SCR-3/CMP-1, the GUI slice of FEAT-2). See
+[docs/projects.md](docs/projects.md).
+
+A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
+payloads captured with provenance (`kind` intent|artifact, `source`
+upload|pasted, optional `filename`, `content_hash`, `created_by`, `created_at`),
+the same way a `Database` owns its tables. `Project` has `create_input`/
+`find_input`/`drop_input` (inputs are immutable provenance records — no rename),
+plus `capture_intent` — the named "capture NL intent" front door that stores a
+natural-language string as an `intent`/`pasted` input and **rejects empty
+intent** (empty/whitespace-only → empty handle, nothing stored).
+Each input is replicated state (flat key `input:<uuid>` carrying its parent
+`project` ref); the **metadata rides in the CRDT** but the **raw payload body
+stays on disk** (`<project>/inputs/<input-uuid>/payload`) like a large-object
+body — fingerprinted by `content_hash`, with peer-to-peer body transfer left to
+a later slice (the record replicates today; the bytes don't move yet). This is
+storage + provenance only — no parsing/compilation. See
+[docs/project-inputs.md](docs/project-inputs.md). The headed **New Project**
+screen (`App::draw_new_project_modal`) is the GUI front door for all three at
+once — name a project, paste an NL intent, and import / drag-drop an n8n workflow
+JSON artifact — wiring `create_project` + `capture_intent` +
+`import_n8n_workflow_file` into one atomic create (the n8n artifact is staged +
+schema-validated on drop, imported on Create; SCR-2, the GUI slice of FEAT-1).
+See [docs/new-project-screen.md](docs/new-project-screen.md).
+
+A node also owns **runs** (`zetta::Run`) — the record of **one execution of a
+deployed graph**: `status` (`Pending`→`Running`→`Succeeded`|`Failed`), `logs`,
+produced `outputs` (datasets/models/indexes), and `lineage` (sources, steps,
+freshness, confidence), plus optional `project`/`graph`/`deployment` id references
+(the `deployment` ref ties a run to the placement the reconcile loop keeps alive —
+see the deployment controller below). Another
+top-level, replicated entity (flat key `run:<uuid>`, on-disk `<run-uuid>/run.json`),
+modeled like `Project` but keyed by id (runs have no human name): `create_run`/
+`find_run`/`drop_run`/`runs`, with the "update" half being mutators on the handle
+(`set_status`/`add_log`/`set_outputs`/`set_lineage`) that capture into the CRDT
+then persist. **Run is the first record validated against a formal JSON Schema**
+(draft-07) at the storage boundary — every value entering from disk or the CRDT
+passes `parse_run_value`, so malformed data is rejected with a clear reason
+instead of corrupting the tree (via `pboettch/json-schema-validator`, linked
+PRIVATE to zetta-core). A run is now also **produced by executing a graph** (see
+the Graph execution section below). The headed app surfaces runs in a
+**read-only Runs / Outputs / Lineage panel** (`App::draw_runs` — list of runs +
+a detail pane with the selected run's status, color-coded logs, an outputs
+table, and a lineage section with a confidence bar; the GUI slice of FEAT-5 /
+SCR-6 / CMP-4). See [docs/runs.md](docs/runs.md).
+
+A node also owns **principals** (`zetta::Principal`) — authenticated actors
+(user/service/node), a top-level entity with the same CRUD shape as projects
+(`create`/`find`/`drop`/`rename_principal`, `principal_names`). A principal owns
+its **access keys** (`zetta::AccessKey`) the way a `Project` owns its inputs
+(`create_key`/`find_key`/`drop_key`; keys are immutable credentials — no rename).
+A key bounds access along **two orthogonal, deny-by-default axes**: its
+**`Scope`** (`include/zetta/scope.hpp`) — *which resources*: a set of `Resource`s
+(`kind` database|project + name), or `unrestricted` for an admin key — and its
+**`CapabilitySet`** (`include/zetta/capability.hpp`) — *which rights*: a set of
+`Capability` grants (ENT-22), each a `domain` (api|data|orchestration) + `action`
+with an optional **TTL** (`expires_at`). This is the **V1 key-scoped access model
+(RULE-3 / PERM-1 / ADR-6 / ENT-22)**: a request inherits both the scope and the
+capabilities of the key it logged in with — in-scope resources are allowed and
+everything else denied, and an `Operation` (a `domain`+`action`) is allowed only
+with a matching, unexpired capability (there is no wildcard capability). The two
+axes **compose** (an operation on a resource checks both).
+`Node::authorize(key_id, resource)` and `Node::authorize(key_id, operation)` are
+the enforcement seams (an unknown/empty key denies); `zetta::authorize(key,
+resource)` and `zetta::authorize(key, operation, now)` are the pure decisions (the
+injectable `now` makes TTL deterministic; the capability deny reason distinguishes
+"never granted" from "TTL expired"). Principals + keys are replicated state (flat
+keys `principal:<uuid>` and `key:<uuid>` carrying its parent `principal` ref +
+its `scope` + `capabilities`), with `<principal-uuid>/principal.json` +
+`<principal-uuid>/keys/<key-uuid>/key.json` on-disk projections. Finer access
+tiers (team/partner/per-dataset, per-table) are deferred; granting a capability as
+a first-class command/event and approval gates are separate FEAT-9 slices (the
+audit trail itself is built — see below). See
+[docs/access-control.md](docs/access-control.md).
+
+A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
+for every **graph change / deploy / data access** (ENT-23 / FEAT-9; the audit
+half of governance, on top of the key-scoped access above). An `AuditEvent`
+(id + `action` graph_created|graph_dropped|graph_deployed|data_access + `actor` +
+`target` + `allowed` + `detail` + `time`) is a top-level, replicated entity (flat
+key `audit:<uuid>`) — but **immutable and append-only**: no mutator, no drop, so
+the set of `audit:` keys only grows and the CRDT converges trivially. `Node` owns
+the trail and **is** the `AuditSink` seam: `record_audit_event` is the append API
+(it stamps id + time, captures into the CRDT, persists), `audit_events()` lists
+them chronologically. Emission is wired at the three governed seams —
+`Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a project
+like its `ReplicationManager*`), `Node::deploy_graph`, and `Node::authorize`
+(which is therefore **non-const**: every allow/deny decision records a
+`data_access` event). The `materialize_*` reconciliation paths never emit (a
+peer's action arrives already-audited as its own replicated `audit:` event).
+It is the **second record validated against a formal JSON Schema** at the storage
+boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator),
+projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
+a folder per event. See [docs/audit-trail.md](docs/audit-trail.md).
+
+The headed **Admin & Settings** panel (`App::draw_admin`) is the **governance
+GUI** (SCR-7 / CMP-5, the GUI slice of FEAT-9): a **read-only** view of principals
++ their access keys (each key's `Scope` resources + `CapabilitySet` rights, with
+expired TTLs flagged) and the immutable audit trail (a time/action/actor/target/
+outcome/detail table). Like the Runs panel it reads already-validated in-memory
+handles, so it adds **no new JSON boundary**; mutation (issuing keys, granting
+capabilities, approval gates) is a later slice. See
+[docs/admin-panel.md](docs/admin-panel.md).
+
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
 check** by default (`Node::check_integrity()` → `IntegrityReport`, logged as
@@ -180,7 +298,12 @@ changes) — the same UUID as its cluster node id, **persisted in
 fragment the change history and accumulate `node:` keys). The document uses
 **flat keys**
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
-`row:<uuid>` — each row owns its key by UUID so concurrent edits never collide.
+`row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
+metadata only; its payload body stays on disk), `graph:<uuid>`,
+`deployment:<uuid>`, `run:<uuid>`, `principal:<uuid>` (an authenticated actor),
+`key:<uuid>` (an access key carrying its parent `principal` ref + its `scope` +
+its `capabilities`), and `audit:<uuid>` (an immutable, append-only audit event) —
+each entity owns its key by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -196,6 +319,30 @@ See [docs/replication.md](docs/replication.md).
 data_dir/
   node_id                    ← this node's stable UUID (cluster id + actor id)
   replication.automerge      ← the replicated CRDT document (source of truth)
+  <project-uuid>/            ← one folder per project (UUIDv4 = its id)
+    project.json             ← { id, name, created, updated, owner }
+    inputs/
+      <input-uuid>/          ← one folder per project input (UUIDv4 = its id)
+        input.json           ← { id, project, kind, source, filename,
+                                 content_hash, size, created_by, created_at }
+        payload              ← raw bytes (NOT in the CRDT; on-disk like an LO body)
+    graphs/                  ← this project's execution graphs
+      <graph-uuid>.json      ← { id, project, name, graph: { nodes, edges } }
+  <deployment-uuid>/         ← one folder per deployment (UUIDv4 = its id)
+    deployment.json          ← { id, graph_name, target, node, node_count, … }
+  <run-uuid>/                ← one folder per run (UUIDv4 = its id)
+    run.json                 ← { id, project, graph, status, created, updated,
+                                  logs, outputs, lineage }
+  <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
+    principal.json           ← { id, kind, name, created }
+    keys/
+      <key-uuid>/            ← one folder per access key (UUIDv4 = its id)
+        key.json             ← { id, principal, scope:{ unrestricted, grants },
+                                 capabilities:[ { domain, action, expires_at? } ],
+                                 created }
+  audit/                     ← the immutable, append-only audit trail
+    <audit-uuid>.json        ← { id, action, actor, target, allowed, detail,
+                                 time }  (one file per event, never edited)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -234,6 +381,34 @@ the window (routed by extension):
   metadata + on-disk paths (no Node access → safe on the network thread). Detail
   in [docs/large-objects.md](docs/large-objects.md).
 
+A third, **typed-artifact** ingestion path captures a file into a *project*
+(not a table or database) as a `ProjectInput`:
+- **n8n workflow import** (`zetta::import_n8n_workflow` /
+  `import_n8n_workflow_file`) — an [n8n](https://n8n.io) workflow `.json` export
+  is **schema-validated at the boundary** (it must parse *and* match
+  `n8n_workflow_schema()`: an object with a `nodes` array of node-shaped objects
+  + a `connections` object — invalid JSON and non-workflow JSON are rejected with
+  a clear reason, nothing stored), then stored **byte-for-byte** as an artifact
+  `ProjectInput` (kind=Artifact, source=Upload) so the payload round-trips for
+  later re-compilation. Computes nothing about the payload itself — it delegates
+  to `Project::create_input`, which fingerprints the raw bytes with SHA-256 at
+  the boundary. Storage + validation only (the import itself compiles nothing);
+  surfaced in the GUI through the **New Project** screen's artifact import (file
+  dialog + drag-drop), above. Detail in [docs/n8n-import.md](docs/n8n-import.md).
+- **n8n workflow compile** (`zetta::compile_n8n_workflow`,
+  `include/zetta/n8n_compile.hpp`) — the first concrete **compiler** of FEAT-2
+  (#308): map an imported n8n workflow JSON into the **ExecutionGraph IR** — each
+  n8n **node** → a typed `ir::Node` step (keyed by its unique node name, tagged
+  with a `StepKind` via the `n8n_step_kind` table — R1 covers the churn node
+  kinds), each n8n **connection** → a `DataFlow` `ir::Edge`. It re-uses the import
+  boundary schema (`validate_n8n_workflow`) then enforces the IR's graph-semantic
+  rules in code (unique node names, every connection references an existing node),
+  **non-throwing** like `ir::from_json` (`std::optional` + a path-qualified reason;
+  an unmapped node type fails rather than guessing a stage). An overload compiles
+  straight from a stored artifact `ProjectInput`. Produces the in-memory IR only —
+  persisting it as a `ProjectGraph` / GUI wiring is a later slice. Detail in
+  [docs/n8n-compile.md](docs/n8n-compile.md).
+
 ### Query layer
 
 Queries are **dialect-agnostic**: text → a `Dialect` parser → a generic,
@@ -246,10 +421,219 @@ another database format = writing another `Dialect` that targets the same AST �
 `WHERE` equality). The executor also serves a virtual, read-only **`system`**
 database (à la `pg_catalog`) whose tables are computed at query time — first
 **`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
-wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves).
-`system` is reserved (can't be created/dropped/written; no real db may be named
-it) and is where future system tables (e.g. `system.zetta_leadership`) live. Full
-detail in [docs/query.md](docs/query.md).
+wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
+**`system.zetta_deployments`** (recorded graph→target placements, sourced from
+`Node::deployments()`; qualified name only). `system` is reserved (can't be
+created/dropped/written; no real db may be named it) and is where future system
+tables (e.g. `system.zetta_leadership`) live. Full detail in
+[docs/query.md](docs/query.md).
+
+### Execution graph IR (`zetta::ir`)
+
+The **ExecutionGraph IR** is the in-memory model of a data/AI system as a
+directed graph of typed **steps** — `zetta::ir::Node` (an id + a `StepKind` + a
+name + a free-form `nlohmann::json` attribute bag) joined by typed
+`zetta::ir::Edge`s (`EdgeKind::DataFlow`/`Control`). The **step-kind taxonomy**
+(`StepKind`, in `ir/step_kind.hpp`) is the fixed pipeline
+**connect→clean→model→index→serve→act**, declared in that order (so the enum
+values increase along the pipeline). `ExecutionGraph` (build with `add_node`/
+`add_edge`; edit with `remove_node`/`remove_edge` — the inverses, where removing
+a node drops every edge incident to it so none is left dangling; traverse with
+`nodes_of_kind`/`edges_of_kind`/`successors`/`predecessors`/`find_node`) hands
+back nodes as `shared_ptr` handles (empty on miss) like the rest of zetta, and
+guards its **structure** (no duplicate ids, no dangling or duplicate edges) — but
+not its **semantics**. This is the keystone the compilers, gate, deploy, and run
+all build on (ENT-3/FEAT-2).
+
+A graph has a canonical **JSON form** (`ir/serialization.hpp`: `to_json` →
+`{ nodes:[{id,kind,name,attributes}], edges:[{from,to,kind}] }`, with `kind` the
+lowercase name not the enum int). `from_json` is the **trust boundary**: it is
+**non-throwing** (returns `std::optional` + an error string, matching zetta's
+no-exceptions convention — never `throw` across the zetta-core/`-fexperimental-library`
+seam, which can't unwind), validating the document against a JSON Schema +
+the IR's structural rules and skipping anything malformed. This JSON form is what
+persists + replicates a graph **under a Project** (`graph:<uuid>`). Still later
+slices: the dual-form Lua/Orly + Parquet/CSV representation (ADR-10) and semantic
+validation (acyclicity, legal stage transitions — the **gate**). Full detail in
+[docs/execution-graph.md](docs/execution-graph.md).
+
+### Intent compiler (NL intent → ExecutionGraph skeleton)
+
+The **intent compiler** (`include/zetta/intent_compiler.hpp`,
+`zetta::compile_intent`) turns a stored natural-language **intent** — the text
+`Project::capture_intent` recorded (FEAT-1) — into a reviewable
+`ir::ExecutionGraph` skeleton laid out over the
+`connect→clean→model→index→serve→act` taxonomy (FEAT-2 / #311). It is a
+**templated, heuristic** mapping, **not** language understanding: a transparent
+signal-word scan recognizes the **churn shape** (UC-1; `churn`/`retention`/
+`attrition`/`cancel`/`renew`/`subscriber`/`lapse`/…) and emits the full churn
+pipeline (two `connect` sources → feature `clean` → churn `model` → `index` →
+`serve` → retention `act`); any other intent falls back to a generic-but-complete
+six-stage skeleton, so an intent **always** compiles to a well-formed, editable
+graph. The output is the IR itself — named, typed, **editable** steps, **not a
+black box** — and is deterministic (same intent → identical graph). An empty /
+whitespace-only intent compiles to nothing (`std::nullopt`), mirroring
+`capture_intent`. Richer NL/LLM synthesis plugs in later behind the same
+`compile_intent` front door, the seam pattern the executor's `StepExecutor` and
+the gate's `Check` use. `Project::compile_intent_to_graph(input_id, name)` is the
+bridge from a *stored* intent input to an editable graph: it reads the input's
+payload, runs the compiler, and persists the skeleton via `create_graph` (so it
+replicates + is editable in the **Graph Workspace** exactly like any stored
+graph). It adds **no new JSON format** — the input is plain text and the output
+is the already-schema-validated IR JSON form, so the skeleton round-trips through
+`ir::from_json` and passes `default_gate()` by construction. See
+[docs/intent-compiler.md](docs/intent-compiler.md).
+
+### Correctness gate (`zetta::CorrectnessGate`)
+
+The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
+the two slices above: register a set of **checks**, run them all over an
+`ExecutionGraph`, aggregate their outcomes into a `ValidationReport`, and **block
+deploy on any failure** — **RULE-1** (no deploy without a passing gate). A `Check`
+is the pluggable seam (`name()` + `evaluate(graph) → CheckResult`); concrete
+checks implement it and plug in **without touching the gate**. `make_check(name,
+callable)` wraps a stateless callable as a `Check` (stamping the registered name
+onto its result so the two never drift). `default_gate()` ships the trivial
+`NonEmptyGraphCheck` (an empty graph has nothing to deploy → fail) **plus the
+concrete `#309` checks** — `SchemaTypeCheck` + `DataLeakageCheck`
+(`include/zetta/graph_checks.hpp`): they read documented **annotations** from each
+step's free-form `attributes` bag (`schema`/`requires` field→type profiles;
+`as_of`/`label`/`features` point-in-time metadata, validated against
+`schemas/graph_step_annotations.schema.json` at the boundary) and fail the gate
+with a clear reason when a step requires a field no upstream source provides /
+provides under a different type (**schema/type**), or when an ML feature uses data
+after the as-of cutoff or is derived from the label (**data-leakage /
+point-in-time**) — **plus** the first entity-resolution check,
+`EntityResolutionCheck` (`#312` / TC-4, below). They are **opt-in per step** — a
+graph carrying none of the annotations passes.
+`CorrectnessGate::run` sets `block_deploy = !report.passed()` (baseline
+block-on-failure policy; verdict and block_deploy stay
+[separate](docs/validation.md) so a stricter gate can choose differently). It adds
+**no new JSON format** — the `ValidationReport` it produces is already
+schema-validated. Full detail in [docs/gate.md](docs/gate.md) +
+[docs/gate-checks.md](docs/gate-checks.md).
+
+### Entity-resolution correctness eval (`zetta::EntityResolutionCheck`)
+
+The first concrete gate check (`include/zetta/checks/entity_resolution_check.hpp`,
+FEAT-3 / TC-4, `#312`) — the **make-or-break** eval. It reads each graph node that
+carries an `entity_resolution` attribute (a `{ records: [{ mention, entity,
+resolved }] }` payload) and checks that resolution was **division-correct**:
+"FedEx Freight" must land on its own CRM account without **conflating** the 5–6
+sibling FedEx subsidiaries (Ground, Express, Office, Logistics, …), which are
+separate accounts. The rule compares the partition by `resolved` against the
+partition by `entity`: **conflation** (one account holding two distinct
+entities) **fails** the gate and blocks deploy (RULE-1, naming the account +
+entities); **fragmentation** (one entity split across accounts) is the softer,
+symmetric error and **warns** (does not block); a graph with no resolution step
+passes vacuously. The payload is **schema-validated at the boundary** against
+`schemas/entity_resolution.schema.json` (embedded draft-07 copy in the `.cpp`,
+via `pboettch/json-schema-validator`, the same pattern as the Run record) so a
+malformed payload fails the check with a clear reason. Registered in
+`default_gate()` after `NonEmptyGraphCheck`. Full detail in
+[docs/entity-resolution-check.md](docs/entity-resolution-check.md).
+
+### Deployment (place a graph onto a target)
+
+A **deployment** places a validated `ir::ExecutionGraph` onto a
+**`DeploymentTarget`** and records it — the first slice of *one-button deploy*
+(FEAT-4) + the `DeploymentTarget` entity (ENT-6). A `DeploymentTarget`
+(`include/zetta/deployment_target.hpp`) is a placement on the **dial**
+`local → kubernetes → vpc → cloud` (`DeploymentKind`, declared in that order),
+holding a Cloud Interface **binding** + a **credentials-ref**; R1 ships **`Local`
+only** (the rest are declared but not built, like `ClusterRole`), and a Local
+target has an empty binding/credentials (implicitly this node). `Node` owns
+deployments like projects: **`deploy_graph(graph, target, name)`** (empty handle
+on an empty graph or a non-local target — basic guards only; the semantic
+**correctness gate** above runs separately, not yet wired into `deploy_graph`),
+`find_deployment(id)`, `deployments()`, `deployment_count()`. A `Deployment`
+(`include/zetta/deployment.hpp`) is **replicated state** (flat key
+`deployment:<uuid>` → `{ graph_name, target, node, node_count, edge_count,
+created }`) with a `<deployment-uuid>/deployment.json` projection, persisted across
+restart and replicated to peers (recording the node it was placed on). The graph is
+recorded as a **summary** (name + node/edge counts), not the full graph — IR
+serialization is a later slice. It's queryable via the C++ API **and** the SQL
+**`system.zetta_deployments`** table. k8s/cloud are separate tasks; the
+reconcile/self-heal control plane is the **deployment controller** below, and the
+**Deploy panel** below now drives deploy from the GUI. `Node` learns its own id
+(`Node::node_id()`) from the `ReplicationManager` actor id, or from
+`data_dir/node_id` when standalone. See [docs/deployments.md](docs/deployments.md).
+
+### AI Solution Library + Deploy panel (one-button deploy)
+
+The **AI Solution Library** (`zetta::SolutionCatalog`,
+`include/zetta/solution_catalog.hpp`) is a curated, schema-validated catalog of
+ready-to-deploy `ir::ExecutionGraph` **blueprints** — the GUI's source of
+deployable graphs until a graph editor lands. A `Solution` is identity +
+presentation (`id`/`name`/`summary`/`category`) + a `graph`; `SolutionCatalog`
+is an ordered, read-only library with `find(id)` (non-owning `const Solution*`).
+`SolutionCatalog::builtin()` ships five representative blueprints (churn,
+recommendations, semantic search, lead scoring, support triage) parsed once from
+embedded data. The catalog is **boundary-validated like the Run record**:
+`parse_solution_catalog` is non-throwing and layers a draft-07 **JSON Schema**
+(`schemas/solution_catalog.schema.json`, mirrored embedded in
+`src/core/solution_catalog.cpp`) for the document shape, then
+`ir::from_json` for each blueprint's graph structure, then an id-uniqueness check
+— rejecting a malformed catalog with a path-qualified reason instead of corrupting
+state.
+
+The headed **Deploy panel** (`App::draw_deploy`, `src/gui/app.cpp`) realizes
+*one-button deploy* (FEAT-4 / SCR-5 / CMP-3): pick a solution, choose a placement
+on the **dial** (R1 **Local** only — k8s/vpc/cloud shown but disabled, labelled
+"(planned)"), then the one **Deploy** button **runs the correctness gate first**
+(`default_gate().run`; RULE-1 — blocks with the failing check's reason, places
+nothing) and on a pass calls `Node::deploy_graph`. A **Deployments** table shows
+the recorded placements (`Node::deployments()`) so a deploy's status is visible.
+The panel adds no persisted state of its own — only UI selection. See
+[docs/solution-catalog.md](docs/solution-catalog.md).
+
+### Deployment controller (reconcile + self-heal)
+
+The **control plane** for local deployments (`zetta::DeploymentController`,
+`include/zetta/deployment_controller.hpp`) drives a node from *desired* state (a
+`Deployment` — "this graph should run here") toward *actual* state (a `Run` — its
+execution), and **self-heals** when the placed run is killed or fails — the
+reconcile-loop slice of FEAT-4, realizing TC-3. `Node` owns one
+(`deployment_controller()`) and drives it from **`tick()`**: each heartbeat (1)
+pulls peer changes into the on-disk projection, (2) runs `controller_.reconcile()`,
+then (3) persists if the document moved. `reconcile()` scans **this node's** local
+deployments (`target` local **and** `node_id() == self` — R1; cross-node failover
+needs leadership and is a later slice) and for each ensures a healthy run: a run
+**satisfies** its deployment unless it has **failed** (pending/running keep desired
+met; *succeeded* is terminal and not restarted), so a deployment with no run, or
+only failed runs, gets a fresh `Running` run started + logged + recorded against it.
+Steady state captures nothing (a read-only scan → no replication churn). The run↔
+deployment link is a new optional **`deployment` ref on `Run`** (set via
+`create_run(project, graph, deployment)`), part of the Run JSON Schema and
+boundary-validated like every other field. `reconcile()` returns a `ReconcileReport`
+(local/satisfied/started/healed counts); cumulative counters
+(`total_runs_started()`/`passes()`) aid observability. See
+[docs/deployment-controller.md](docs/deployment-controller.md).
+
+### Graph execution (run a graph → a Run)
+
+The **graph executor** (`include/zetta/executor.hpp`) joins the ExecutionGraph IR
+(*what* to run) and the Run record (*the result*) — an atomic slice of FEAT-5.
+`zetta::GraphExecutor` walks a graph in **dependency (topological) order**
+(`topological_order` — Kahn's over both `DataFlow` + `Control` edges; ready steps
+in insertion order, so it's deterministic; a cycle/self-edge → a cleanly Failed
+run) and drives a `Run` created on the node through `Pending → Running →
+Succeeded | Failed`, accumulating a log line per step, the typed outputs each step
+materializes, and the lineage (sources/steps/freshness/confidence). The entry
+point is **`Node::run_graph(graph, project={}, graph_id={})`** (a thin convenience
+over the standalone `GraphExecutor`, which mirrors `CorrectnessGate`). Per-step
+work is the pluggable **`StepExecutor`** seam (mirrors the gate's `Check`): the
+`DefaultStepExecutor` interprets the `connect→clean→model→index→serve→act`
+taxonomy (connect→`dataset`+a lineage source, clean→`dataset`, model→`model`,
+index→`index`, serve/act→no artifact) with **no real compute** — real
+training/indexing plugs in behind the seam without touching the orchestrator
+(same altitude as deployments recording a summary). Fail-fast: a step fails via a
+truthy `"fail"` attribute (or a custom `StepExecutor`), later steps don't run, and
+the failing step + reason land in the run's logs. It adds **no new JSON format** —
+the only artifact is a `Run`, already schema-validated at the storage boundary,
+and the executor only emits schema-legal output kinds (a restart-reload test
+proves the produced run passes `parse_run_value`). See
+[docs/execution.md](docs/execution.md).
 
 ## Tech stack
 
@@ -261,6 +645,11 @@ detail in [docs/query.md](docs/query.md).
   - **Dear ImGui** (v1.91.5) — immediate-mode GUI, SDL3 + SDL_Renderer backend
   - **nlohmann/json** (v3.11.3) — JSON documents for the storage engine
     (linked into `zetta-core`, so headless gets it too)
+  - **json-schema-validator** (pboettch, 2.4.0) — JSON-Schema boundary
+    validation (the Run record; `src/core/run.cpp`). FetchContent'd **after**
+    automerge-cpp so it reuses that nlohmann/json target; linked **PRIVATE** to
+    `zetta-core`, and compiled with `-fexperimental-library` to match
+    zetta-core's libc++ ABI (propagated from Boost::capy).
 - **ccache** used as the compiler launcher when present (auto-detected).
 
 ## Build + run
@@ -307,13 +696,36 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
+  project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
+  project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
+  project_graph.hpp         zetta::ProjectGraph — a named ExecutionGraph under a project
+  deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
+  deployment.hpp            zetta::Deployment — a graph placed onto a target
+  deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
+  solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
+  run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
+  principal.hpp             zetta::Principal — an authenticated actor; owns access keys
+  access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
+  scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
+  capability.hpp            zetta::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
+  audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
+  intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
+  executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
+  n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
+  n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
+  timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
+  validation.hpp            zetta::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
+  gate.hpp                  zetta::CorrectnessGate — gate runner: checks → report (RULE-1)
+  graph_checks.hpp          zetta::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
+  checks/
+    entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -327,15 +739,44 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     engine.hpp              zetta::StorageEngine interface
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
+  ir/
+    step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
+    execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
+    serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs() + replication capture/reconcile/persist
   database.cpp
+  project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
+  project_input.cpp         zetta::ProjectInput — persist input.json + payload body
+  project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
+  n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
+  n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
+  deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
+  deployment.cpp            zetta::Deployment — persist deployment.json
+  deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
+  solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
+  run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
+  principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
+  access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
+  scope.cpp                 zetta::Scope — permits() + JSON boundary validation
+  capability.cpp            zetta::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
+  audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
+  intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
+  executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   table.cpp
   jsonl_store.cpp
   uuid.cpp
   sha256.cpp                self-contained SHA-256 (no crypto dependency)
+  timestamp.cpp             zetta::now_iso8601() — UTC ISO-8601 stamp
+  validation.cpp            ValidationReport verdict + JSON round-trip/validation
+  gate.cpp                  CorrectnessGate runner + NonEmptyGraphCheck + make_check
+  graph_checks.cpp          SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
+  checks/
+    entity_resolution_check.cpp  EntityResolutionCheck — conflation/fragmentation + schema boundary
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
+  ir/execution_graph.cpp    ExecutionGraph IR build + traversal
+  ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   cluster.cpp               cluster networking adapter (the one Corosio user)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
@@ -462,8 +903,27 @@ loop thread).
 ## Pointers
 
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
+- [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
+- [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
+- [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
+- [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
+- [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
+- [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
+- [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
+- [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
+- [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
+- [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
+- [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
+- [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
+- [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
+- [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
+- [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
+- [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
+- [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
+- [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
+- [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

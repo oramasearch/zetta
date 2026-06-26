@@ -145,6 +145,20 @@ are a materialized *projection* of it.** Concretely:
     only. The body is **not** in the document (it would bloat every node); it
     transfers peer-to-peer and is verified against `size` + `sha256`. See
     [large-objects.md](large-objects.md).
+  - `project:<project_uuid>` → `{ name, created, updated, owner }` — an AI
+    project (a top-level entity with no parent). See [projects.md](projects.md).
+  - `graph:<graph_uuid>` → `{ project: <project_uuid>, name, graph: { nodes,
+    edges } }` — an `ExecutionGraph` IR owned by a project. The whole serialized
+    graph rides as one value (a graph is authored + stored as a unit, unlike a
+    row); the on-disk projection is `<project-uuid>/graphs/<graph-uuid>.json`. See
+    [projects.md](projects.md) and [execution-graph.md](execution-graph.md).
+  - `deployment:<deployment_uuid>` → `{ graph_name, target: {…}, node,
+    node_count, edge_count, created }` — a graph placed onto a target (a
+    top-level entity with no parent). See [deployments.md](deployments.md).
+  - `run:<run_uuid>` → `{ project, graph, status, created, updated, logs,
+    outputs, lineage }` — one execution of a deployed graph (a top-level entity).
+    The value is **validated against a JSON Schema** before it is trusted, at
+    both entry points (disk + a peer's CRDT value). See [runs.md](runs.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,

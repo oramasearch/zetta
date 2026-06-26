@@ -27,12 +27,57 @@ older name *"ZettaDB"* is retired.) The broader product surface — GUI control 
 one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning
 loop — is in flight.
 
-Data is organized as databases → tables → JSON rows, persisted to disk. Query it
-with basic Postgres-flavored SQL (DDL + INSERT/SELECT); the query engine is
-dialect-agnostic, so other SQL formats can be added as frontends. The async
-runtime is coroutine-native (C++ Alliance Capy/Corosio), behind the `zetta::runtime`
-seam. State replicates between nodes as an Automerge CRDT. See [docs/](docs/) for
-details.
+Data is organized as databases → tables → JSON rows, persisted to disk. A node
+also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
+(see [docs/projects.md](docs/projects.md)); each project owns its **inputs**
+(`zetta::ProjectInput`: raw intent/artifact payloads captured with provenance —
+see [docs/project-inputs.md](docs/project-inputs.md); an
+[n8n workflow JSON](docs/n8n-import.md) is the first typed artifact, schema-
+validated at the boundary and stored byte-for-byte, and
+[compiles](docs/n8n-compile.md) into the IR — nodes → typed steps, connections →
+edges). In headed mode the **New Project** screen is the front door for all of
+this — name a project, paste a natural-language intent, and import / drag-drop an
+n8n workflow artifact in one atomic create (see
+[docs/new-project-screen.md](docs/new-project-screen.md)). Each project also owns
+its **execution graphs**
+(the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
+[docs/execution-graph.md](docs/execution-graph.md)). A stored intent **compiles**
+into a reviewable graph skeleton — `zetta::compile_intent` turns the natural-
+language text into a templated `connect→clean→model→index→serve→act` pipeline
+(the churn shape today), editable in the workspace rather than a black box (see
+[docs/intent-compiler.md](docs/intent-compiler.md)). In headed mode the **Graph
+Workspace** panel renders a project's graph as an editable node/edge canvas
+(steps in columns by stage, edges between them) and persists edits back to the IR
+(see [docs/projects.md](docs/projects.md#graph-workspace)). A node can also **deploy** a
+validated execution graph onto a target, recording the placement (R1 local; see
+[docs/deployments.md](docs/deployments.md)) — the headed **Deploy panel** does this
+as one-button deploy: pick a blueprint from the **AI Solution Library**, choose a
+placement on the dial, pass the correctness gate, and see its status (see
+[docs/solution-catalog.md](docs/solution-catalog.md)). A **control plane**
+reconciles each local deployment desired→actual and **self-heals** a killed or
+failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
+It owns **runs** (`zetta::Run`), the
+record of one graph execution: status, logs, outputs, and lineage, validated
+against a JSON Schema at the storage boundary and viewable in the headed app's
+read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
+It can **execute** a graph step-by-step into one of those runs
+(`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
+produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
+It also owns **principals** (`zetta::Principal`) and their **access keys**
+(`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
+V1 **key-scoped access**, deny-by-default (see
+[docs/access-control.md](docs/access-control.md)) — and an immutable,
+append-only **audit trail** (`zetta::AuditEvent`) that records every graph
+change, deploy, and data-access decision, replicated and JSON-Schema validated
+(see [docs/audit-trail.md](docs/audit-trail.md)). The headed app surfaces all of
+this read-only in an **Admin & Settings** panel — principals + keys, their scope
++ capability grants, and the audit log (see
+[docs/admin-panel.md](docs/admin-panel.md)). Query it all with basic
+Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
+query engine is dialect-agnostic, so other SQL formats can be added as frontends.
+The async runtime is coroutine-native (C++
+Alliance Capy/Corosio), behind the `zetta::runtime` seam. State replicates
+between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
@@ -76,9 +121,13 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
-and rows created on any node converge onto every node — in memory and on disk**,
-conflict-free, with no leader (the CRDT document is the source of truth; disk
-follows). [Large objects](docs/large-objects.md) replicate too — their metadata
+rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
+[runs](docs/runs.md), [principals + access keys](docs/access-control.md), and the
+[audit trail](docs/audit-trail.md)
+created on any node converge onto every
+node — in memory and on disk**, conflict-free, with no leader (the CRDT document
+is the source of truth; disk follows). [Large objects](docs/large-objects.md)
+replicate too — their metadata
 (size + SHA-256) in the CRDT, the file bodies transferred peer-to-peer and
 verified against the hash. You can see **all nodes and their replication status** (entries,
 version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,

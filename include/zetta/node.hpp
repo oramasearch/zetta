@@ -8,11 +8,21 @@
 #include <string>
 #include <vector>
 
+#include "zetta/access_key.hpp"
+#include "zetta/audit_event.hpp"
 #include "zetta/database.hpp"
+#include "zetta/deployment.hpp"
+#include "zetta/deployment_controller.hpp"
+#include "zetta/principal.hpp"
+#include "zetta/project.hpp"
+#include "zetta/run.hpp"
+#include "zetta/scope.hpp"
 
 namespace zetta {
 
 class ReplicationManager;
+struct ExecutionResult;
+namespace ir { class ExecutionGraph; }
 
 // Where a node's persistent state lives and how it presents itself. More
 // fields (listen address, replication peers, cache sizes) land alongside the
@@ -35,12 +45,17 @@ struct IntegrityReport {
     std::size_t dangling_tables = 0;               // table -> missing database
     std::size_t dangling_rows = 0;                 // row -> missing table
     std::size_t dangling_large_objects = 0;        // large object -> missing database
+    std::size_t dangling_inputs = 0;               // project input -> missing project
+    std::size_t dangling_graphs = 0;               // graph -> missing project
+    std::size_t dangling_access_keys = 0;          // access key -> missing principal
 
     // A "good state": no corruption and no dangling references. (A missing body
     // is informational — it may simply be awaiting transfer from a peer.)
     bool ok() const {
         return corrupt_large_objects == 0 && dangling_tables == 0 &&
-               dangling_rows == 0 && dangling_large_objects == 0;
+               dangling_rows == 0 && dangling_large_objects == 0 &&
+               dangling_inputs == 0 && dangling_graphs == 0 &&
+               dangling_access_keys == 0;
     }
 };
 
@@ -56,7 +71,12 @@ struct IntegrityReport {
 // each tick the node reconciles the projection to match the document (applying
 // changes merged from peers) and persists the document to disk. With no
 // ReplicationManager (the default), a Node is a standalone local store.
-class Node {
+//
+// A Node is also the **audit sink** (FEAT-9): it owns the immutable, append-only
+// audit trail and records a governed action (graph change / deploy / data
+// access) as an AuditEvent. It implements AuditSink so the entities it owns (a
+// Project's graph CRUD) can append events without depending on Node directly.
+class Node : public AuditSink {
 public:
     explicit Node(NodeConfig config, ReplicationManager* replication = nullptr);
 
@@ -83,6 +103,123 @@ public:
     std::vector<std::string> database_names() const;
     std::size_t database_count() const { return databases_.size(); }
 
+    // CRUD for projects (the central, user-managed AI artifact — see
+    // project.hpp / docs/projects.md), mirroring the database CRUD shape.
+    // create stamps created/updated and takes an optional owner key;
+    // create/rename yield an empty handle / false on an empty name or a clash.
+    std::shared_ptr<Project> create_project(std::string name,
+                                            std::string owner = {});
+    std::shared_ptr<Project> find_project(const std::string& name) const;
+    bool drop_project(const std::string& name);
+    bool rename_project(const std::string& from, const std::string& to);
+    std::vector<std::string> project_names() const;
+    std::size_t project_count() const { return projects_.size(); }
+
+    // This node's id (its cluster id + replication actor id), stable across
+    // restarts (persisted in data_dir/node_id). Set by start(); empty before it.
+    const std::string& node_id() const { return node_id_; }
+
+    // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
+    // target and record it. R1 supports a **Local** target only; deploy_graph
+    // returns an empty handle for a non-local target or an empty graph. The
+    // recorded deployment is replicated + on disk and queryable via
+    // deployments() / find_deployment() (and the system.zetta_deployments SQL
+    // table). The graph is recorded as a summary (name + node/edge counts) since
+    // the IR has no serialized form yet. Reconcile/self-heal is a later slice.
+    std::shared_ptr<Deployment> deploy_graph(const ir::ExecutionGraph& graph,
+                                             DeploymentTarget target,
+                                             std::string graph_name);
+    std::shared_ptr<Deployment> find_deployment(const std::string& id) const;
+    std::vector<std::shared_ptr<Deployment>> deployments() const {
+        return deployments_;
+    }
+    std::size_t deployment_count() const { return deployments_.size(); }
+
+    // CRUD for runs (one execution of a deployed graph — see run.hpp /
+    // docs/runs.md). Runs have no human name: they are keyed by id, so find /
+    // drop take the id. create stamps created/updated, starts Pending, and takes
+    // optional project + graph + deployment references (the deployment ref ties a
+    // run to the placement the reconcile loop is keeping alive). The "update"
+    // half of the slice is the mutators on the returned Run handle (set_status /
+    // add_log / set_outputs / set_lineage), which capture into the CRDT and
+    // persist. runs() is in a stable order (created, then id).
+    std::shared_ptr<Run> create_run(std::string project = {},
+                                    std::string graph = {},
+                                    std::string deployment = {});
+    std::shared_ptr<Run> find_run(const std::string& id) const;
+    bool drop_run(const std::string& id);
+    std::vector<std::shared_ptr<Run>> runs() const { return runs_; }
+    std::size_t run_count() const { return runs_.size(); }
+
+    // CRUD for principals (authenticated actors — see principal.hpp /
+    // docs/access-control.md), mirroring the project CRUD shape. create stamps
+    // `created` and takes an optional kind (default User); create/rename yield
+    // an empty handle / false on an empty name or a clash. A principal owns its
+    // access keys (Principal::create_key); a request's reach is the scope of the
+    // key it logged in with (RULE-3).
+    std::shared_ptr<Principal> create_principal(
+        std::string name, PrincipalKind kind = PrincipalKind::User);
+    std::shared_ptr<Principal> find_principal(const std::string& name) const;
+    bool drop_principal(const std::string& name);
+    bool rename_principal(const std::string& from, const std::string& to);
+    std::vector<std::string> principal_names() const;
+    std::size_t principal_count() const { return principals_.size(); }
+
+    // Resolve the access key presented at login (by its id), or an empty handle.
+    // Keys are globally identified by UUID; this searches every principal.
+    std::shared_ptr<AccessKey> find_access_key(const std::string& key_id) const;
+
+    // The V1 key-scoped access decision (RULE-3 / PERM-1 / ADR-6): a request that
+    // logged in with `key_id` inherits that key's scope, so `resource` is allowed
+    // iff the key permits it. Deny-by-default — an unknown/empty key id denies.
+    //
+    // Every decision is recorded as a `data_access` AuditEvent (allow/deny + the
+    // reason), so authorize is the data-access seam of the audit trail (FEAT-9) —
+    // which is why it is non-const (it appends to the immutable trail).
+    AccessDecision authorize(const std::string& key_id,
+                             const Resource& resource);
+
+    // The immutable, append-only audit trail (ENT-23 / FEAT-9). Graph changes,
+    // deploys, and data-access decisions each record an AuditEvent; the events
+    // can be listed in chronological order. Events are never edited or removed.
+    // record_audit_event is the public append seam (also the AuditSink override):
+    // it stamps a fresh id + time, persists the event, captures it into the CRDT
+    // when replicated, and appends it to the trail. The (future) request path
+    // calls it to record data accesses at real read/write points.
+    void record_audit_event(AuditEventValue value) override;
+    std::vector<std::shared_ptr<AuditEvent>> audit_events() const {
+        return audit_events_;
+    }
+    std::size_t audit_event_count() const { return audit_events_.size(); }
+
+    // The capability decision (ENT-22): `operation` is allowed iff the key holds
+    // a matching, unexpired capability as of the current time. Deny-by-default —
+    // an unknown/empty key id, or no matching (live) capability, denies. The
+    // verb/right counterpart to the resource overload above; the two compose (an
+    // operation on a resource checks both).
+    AccessDecision authorize(const std::string& key_id,
+                             const Operation& operation) const;
+
+    // The control plane that reconciles local deployments desired → actual and
+    // self-heals their runs (see deployment_controller.hpp). Driven each tick();
+    // exposed so tests/UI can introspect its counters or run a pass directly.
+    DeploymentController& deployment_controller() { return controller_; }
+    const DeploymentController& deployment_controller() const {
+        return controller_;
+    }
+
+    // Execute an ExecutionGraph on this node, producing a Run (FEAT-5). A thin,
+    // discoverable entry point over the standalone GraphExecutor (executor.hpp /
+    // docs/execution.md): it creates a Run, walks the graph's steps in dependency
+    // order, accumulates per-step logs + typed outputs + lineage, and drives the
+    // Run to Succeeded (or Failed on an empty/cyclic graph or a failing step).
+    // `project` / `graph_id` label the Run. Returns the ExecutionResult (the Run
+    // handle + whether it succeeded). For a custom per-step executor, use
+    // GraphExecutor directly.
+    ExecutionResult run_graph(const ir::ExecutionGraph& graph,
+                              std::string project = {},
+                              std::string graph_id = {});
+
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
@@ -108,6 +245,29 @@ private:
     void load_databases();
     std::shared_ptr<Database> find_database_by_id(const std::string& id) const;
 
+    // Rebuild projects_ by scanning config_.data_dir. Called from start().
+    void load_projects();
+    std::shared_ptr<Project> find_project_by_id(const std::string& id) const;
+
+    // Rebuild deployments_ by scanning config_.data_dir. Called from start().
+    void load_deployments();
+
+    // This node's stable id: the replication actor id when replicated, else the
+    // UUID persisted in data_dir/node_id (created on first use). Set by start().
+    std::string resolve_node_id();
+
+    // Rebuild runs_ by scanning config_.data_dir. Called from start().
+    void load_runs();
+
+    // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
+    // start(). Malformed event files are skipped at the boundary (schema).
+    void load_audit_events();
+    std::filesystem::path audit_dir() const;
+
+    // Rebuild principals_ by scanning config_.data_dir. Called from start().
+    void load_principals();
+    std::shared_ptr<Principal> find_principal_by_id(const std::string& id) const;
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -118,15 +278,44 @@ private:
     std::shared_ptr<Database> materialize_database(std::string id,
                                                    std::string name);
     bool materialize_drop_database(const std::string& id);
+    std::shared_ptr<Project> materialize_project(std::string id,
+                                                 std::string name,
+                                                 std::string created,
+                                                 std::string updated,
+                                                 std::string owner);
+    bool materialize_drop_project(const std::string& id);
+    std::shared_ptr<Deployment> materialize_deployment(
+        std::string id, std::string graph_name, DeploymentTarget target,
+        std::string node_id, std::size_t node_count, std::size_t edge_count,
+        std::string created);
+    bool materialize_drop_deployment(const std::string& id);
+    std::shared_ptr<Run> materialize_run(std::string id, RunValue value);
+    bool materialize_drop_run(const std::string& id);
+    std::shared_ptr<Principal> materialize_principal(std::string id,
+                                                     PrincipalKind kind,
+                                                     std::string name,
+                                                     std::string created);
+    bool materialize_drop_principal(const std::string& id);
+    // Apply a replicated audit event (a peer's, or one rebuilt from the document)
+    // by id, without capturing. Append-only — there is no drop counterpart.
+    std::shared_ptr<AuditEvent> materialize_audit_event(std::string id,
+                                                        AuditEventValue value);
 
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
+    std::string node_id_;              // this node's stable UUID (set by start())
     std::string last_seen_version_;    // CRDT version last reconciled/persisted
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;
-    std::vector<std::shared_ptr<Database>> databases_;  // insertion order
+    std::vector<std::shared_ptr<Database>> databases_;      // insertion order
+    std::vector<std::shared_ptr<Project>> projects_;        // insertion order
+    std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
+    std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
+    std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
+    std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
+    DeploymentController controller_{*this};  // control plane (driven by tick())
 };
 
 }  // namespace zetta
