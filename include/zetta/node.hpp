@@ -20,6 +20,7 @@
 namespace zetta {
 
 class ReplicationManager;
+struct ExecutionResult;
 namespace ir { class ExecutionGraph; }
 
 // Where a node's persistent state lives and how it presents itself. More
@@ -175,6 +176,18 @@ public:
     const DeploymentController& deployment_controller() const {
         return controller_;
     }
+
+    // Execute an ExecutionGraph on this node, producing a Run (FEAT-5). A thin,
+    // discoverable entry point over the standalone GraphExecutor (executor.hpp /
+    // docs/execution.md): it creates a Run, walks the graph's steps in dependency
+    // order, accumulates per-step logs + typed outputs + lineage, and drives the
+    // Run to Succeeded (or Failed on an empty/cyclic graph or a failing step).
+    // `project` / `graph_id` label the Run. Returns the ExecutionResult (the Run
+    // handle + whether it succeeded). For a custom per-step executor, use
+    // GraphExecutor directly.
+    ExecutionResult run_graph(const ir::ExecutionGraph& graph,
+                              std::string project = {},
+                              std::string graph_id = {});
 
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }

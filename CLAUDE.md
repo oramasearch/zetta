@@ -117,13 +117,12 @@ then persist. **Run is the first record validated against a formal JSON Schema**
 (draft-07) at the storage boundary — every value entering from disk or the CRDT
 passes `parse_run_value`, so malformed data is rejected with a clear reason
 instead of corrupting the tree (via `pboettch/json-schema-validator`, linked
-PRIVATE to zetta-core). The headed app surfaces runs in a **read-only Runs /
-Outputs / Lineage panel** (`App::draw_runs` — list of runs + a detail pane with
-the selected run's status, color-coded logs, an outputs table, and a lineage
-section with a confidence bar; the GUI slice of FEAT-5 / SCR-6 / CMP-4).
-**Actually executing a graph (StartRun), which populates a run's
-status/logs/outputs/lineage, is still a later slice.** See
-[docs/runs.md](docs/runs.md).
+PRIVATE to zetta-core). A run is now also **produced by executing a graph** (see
+the Graph execution section below). The headed app surfaces runs in a
+**read-only Runs / Outputs / Lineage panel** (`App::draw_runs` — list of runs +
+a detail pane with the selected run's status, color-coded logs, an outputs
+table, and a lineage section with a confidence bar; the GUI slice of FEAT-5 /
+SCR-6 / CMP-4). See [docs/runs.md](docs/runs.md).
 
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
@@ -491,6 +490,31 @@ boundary-validated like every other field. `reconcile()` returns a `ReconcileRep
 (`total_runs_started()`/`passes()`) aid observability. See
 [docs/deployment-controller.md](docs/deployment-controller.md).
 
+### Graph execution (run a graph → a Run)
+
+The **graph executor** (`include/zetta/executor.hpp`) joins the ExecutionGraph IR
+(*what* to run) and the Run record (*the result*) — an atomic slice of FEAT-5.
+`zetta::GraphExecutor` walks a graph in **dependency (topological) order**
+(`topological_order` — Kahn's over both `DataFlow` + `Control` edges; ready steps
+in insertion order, so it's deterministic; a cycle/self-edge → a cleanly Failed
+run) and drives a `Run` created on the node through `Pending → Running →
+Succeeded | Failed`, accumulating a log line per step, the typed outputs each step
+materializes, and the lineage (sources/steps/freshness/confidence). The entry
+point is **`Node::run_graph(graph, project={}, graph_id={})`** (a thin convenience
+over the standalone `GraphExecutor`, which mirrors `CorrectnessGate`). Per-step
+work is the pluggable **`StepExecutor`** seam (mirrors the gate's `Check`): the
+`DefaultStepExecutor` interprets the `connect→clean→model→index→serve→act`
+taxonomy (connect→`dataset`+a lineage source, clean→`dataset`, model→`model`,
+index→`index`, serve/act→no artifact) with **no real compute** — real
+training/indexing plugs in behind the seam without touching the orchestrator
+(same altitude as deployments recording a summary). Fail-fast: a step fails via a
+truthy `"fail"` attribute (or a custom `StepExecutor`), later steps don't run, and
+the failing step + reason land in the run's logs. It adds **no new JSON format** —
+the only artifact is a `Run`, already schema-validated at the storage boundary,
+and the executor only emits schema-legal output kinds (a restart-reload test
+proves the produced run passes `parse_run_value`). See
+[docs/execution.md](docs/execution.md).
+
 ## Tech stack
 
 - **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
@@ -552,7 +576,7 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs; run_graph
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -564,6 +588,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access (RULE-3)
+  executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -608,6 +633,7 @@ src/core/                   zetta-core impl
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decision
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
+  executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -761,6 +787,7 @@ loop thread).
 - [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
+- [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

@@ -261,6 +261,7 @@ add_library(zetta-core STATIC
   src/core/gate.cpp
   src/core/graph_checks.cpp
   src/core/checks/entity_resolution_check.cpp
+  src/core/executor.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp

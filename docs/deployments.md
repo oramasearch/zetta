@@ -163,6 +163,12 @@ Deployments are queryable two ways:
   reference the stored graph by id instead of recording only a summary.
 - **The Deploy panel** — the headed UI for one-button deploy.
 
+Note: **executing** a deployed graph (running it step-by-step into a
+[Run](runs.md)) is its own slice and exists today — see
+[execution.md](execution.md). It takes the graph directly (a deployment records
+only a summary); once a deployment references a stored graph by id, a run will be
+launchable straight from a deployment record.
+
 ## Tests
 
 `tests/test_deployment.cpp` covers the `DeploymentTarget` JSON round-trip +

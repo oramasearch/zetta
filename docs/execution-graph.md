@@ -239,9 +239,10 @@ location, e.g. `edges[1]: edge references an unknown node ("a" -> "ghost")`.
   graph and blocks deploy on failure. The concrete *semantic* checks — acyclicity,
   legal stage transitions, required inputs — are the remaining work that plugs
   into its `Check` seam.
-- **Compile / run** — emit a graph from intent, then execute it. **Deploy** has
-  its first slice: a graph can be placed onto a local target and the placement
-  recorded — see [deployments.md](deployments.md).
+- **Compile** — emit a graph from intent. **Deploy** has its first slice: a graph
+  can be placed onto a local target and the placement recorded — see
+  [deployments.md](deployments.md). **Run** has its first slice too: a graph can be
+  executed step-by-step into a [Run](runs.md) — see [execution.md](execution.md).
 
 See also [architecture.md](architecture.md), [projects.md](projects.md), and the
 related artifacts: ENT-3 (`#84`), FEAT-2 (`#133`), ADR-2 (`#2`), ADR-10 (`#10`).
