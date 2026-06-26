@@ -21,6 +21,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type (per-check results, verdict, block-deploy).
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
 - [gate-checks.md](gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
+- [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fails the gate when a graph conflates separate accounts (the FedEx-Freight case).
 - [build.md](build.md) — building, running, and testing.
 
 ## Research / background
