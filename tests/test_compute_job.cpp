@@ -13,6 +13,7 @@
 #include "zetta/cluster.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/node.hpp"
+#include "zetta/query/service.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
 
@@ -25,6 +26,7 @@ using zetta::JobKind;
 using zetta::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
+using zetta::query::QueryService;
 using zetta::ReplicationManager;
 using zetta::test::TempDir;
 
@@ -321,5 +323,52 @@ TEST(ComputeJob, InvalidJobJsonOnDiskIsSkipped) {
     node.start();
     // The malformed job is skipped at the boundary, not loaded.
     EXPECT_EQ(node.job_count(), 0u);
+    node.stop();
+}
+
+// ---- queryable via the system.zetta_jobs table -----------------------------
+
+TEST(ComputeJob, QueryableViaSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    // A finished train job (with a reward / scaling-policy ref) + a queued score.
+    auto train = node.create_job(JobKind::Train, "project-uuid", "graph-1", {},
+                                 "policy-uuid");
+    ASSERT_TRUE(train);
+    train->set_status(JobStatus::Running);
+    train->set_status(JobStatus::Succeeded, "12 nodes, 4.2s");
+    auto score = node.create_job(JobKind::Score);
+    ASSERT_TRUE(score);
+
+    QueryService svc{node};  // no cluster needed: jobs come from the node
+
+    auto all = svc.run("SELECT * FROM system.zetta_jobs;", "");
+    ASSERT_TRUE(all.ok()) << all.error;
+    ASSERT_EQ(all.rows.size(), 2u);
+    // jobs() is ordered (created, then id); the train job was created first.
+    const auto& first = all.rows[0];
+    EXPECT_EQ(first["job_id"], train->id());
+    EXPECT_EQ(first["kind"], "train");
+    EXPECT_EQ(first["status"], "succeeded");
+    EXPECT_EQ(first["project"], "project-uuid");
+    EXPECT_EQ(first["graph"], "graph-1");
+    EXPECT_EQ(first["scaling_policy"], "policy-uuid");
+    EXPECT_EQ(first["detail"], "12 nodes, 4.2s");
+    EXPECT_FALSE(std::string(first["created"]).empty());
+    EXPECT_EQ(first["node"], node.node_id());  // the observing node
+
+    // Projection + WHERE equality work exactly as for a regular table.
+    auto running = svc.run(
+        "SELECT job_id, kind FROM system.zetta_jobs WHERE status = 'queued';",
+        "");
+    ASSERT_TRUE(running.ok()) << running.error;
+    ASSERT_EQ(running.rows.size(), 1u);
+    EXPECT_EQ(running.rows[0]["job_id"], score->id());
+    EXPECT_EQ(running.rows[0]["kind"], "score");
+
+    // The bare alias is reserved for zetta_nodes only; jobs is system.<table>.
+    EXPECT_FALSE(svc.run("SELECT * FROM zetta_jobs;", "").ok());
     node.stop();
 }
