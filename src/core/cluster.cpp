@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -32,6 +33,10 @@
 #include "zetta/blob_store.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/runtime/net.hpp"
+#include "zetta/signal.hpp"
+#include "zetta/uuid.hpp"
+
+#include "base64.hpp"
 
 // src/core/cluster.cpp is the networking adapter: the one .cpp allowed to use
 // the Corosio backend (via zetta::runtime::net). Cluster's public header
@@ -52,6 +57,13 @@ struct Cluster::State {
         std::chrono::steady_clock::time_point last_sync{};
     };
 
+    // An RPC awaiting its response: the promise the caller blocks on, plus the
+    // peer it was sent to (so a peer disconnect can fail it immediately).
+    struct PendingRequest {
+        std::shared_ptr<std::promise<SignalResponse>> promise;
+        std::string node_id;
+    };
+
     net::io_context io_context;
     std::optional<net::tcp_acceptor> acceptor;
     std::thread network_thread;
@@ -63,6 +75,86 @@ struct Cluster::State {
     bool log_events = false;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
+
+    // --- Signal plane -------------------------------------------------------
+    //
+    // The application's handler for incoming signals. Set on any thread, read on
+    // the network thread, so it's atomic.
+    std::atomic<SignalHandler*> signal_handler{nullptr};
+
+    // Per-peer outbound queue of wire lines waiting to be sent. Producers run on
+    // the caller's thread (request/send_event/broadcast_event) AND the network
+    // thread (queued responses + LORES); the per-link writer drains its peer's
+    // queue. Keyed by peer node id and guarded by its own mutex — the only
+    // cross-thread hand-off, so we never post coroutines across threads (the
+    // backend's frame allocator isn't thread-safe).
+    std::mutex outbox_mutex;
+    std::map<std::string, std::deque<std::string>> outbox;
+
+    // RPCs awaiting a response, keyed by correlation id.
+    std::mutex requests_mutex;
+    std::map<std::string, PendingRequest> pending_requests;
+
+    // Queue one wire line for a peer (any thread).
+    void queue_outbound(const std::string& node_id, std::string line) {
+        const std::lock_guard<std::mutex> lock(outbox_mutex);
+        outbox[node_id].push_back(std::move(line));
+    }
+    // Take (and clear) a peer's queued lines — the writer's drain (network thread).
+    std::deque<std::string> take_outbound(const std::string& node_id) {
+        const std::lock_guard<std::mutex> lock(outbox_mutex);
+        const auto it = outbox.find(node_id);
+        if (it == outbox.end()) return {};
+        return std::exchange(it->second, std::deque<std::string>{});
+    }
+    // Drop a disconnected peer's queue so it can't accumulate forever.
+    void clear_outbound(const std::string& node_id) {
+        const std::lock_guard<std::mutex> lock(outbox_mutex);
+        outbox.erase(node_id);
+    }
+
+    // Register an RPC and hand back its future.
+    std::future<SignalResponse> add_pending(const std::string& id,
+                                            const std::string& node_id) {
+        auto promise = std::make_shared<std::promise<SignalResponse>>();
+        std::future<SignalResponse> future = promise->get_future();
+        const std::lock_guard<std::mutex> lock(requests_mutex);
+        pending_requests.emplace(
+            id, PendingRequest{.promise = std::move(promise), .node_id = node_id});
+        return future;
+    }
+    // Claim an RPC's promise (whoever claims it owns the single set_value), or
+    // null if it was already claimed (timed out / failed / unknown).
+    std::shared_ptr<std::promise<SignalResponse>> take_pending(
+        const std::string& id) {
+        const std::lock_guard<std::mutex> lock(requests_mutex);
+        const auto it = pending_requests.find(id);
+        if (it == pending_requests.end()) return nullptr;
+        auto promise = it->second.promise;
+        pending_requests.erase(it);
+        return promise;
+    }
+    // Fail every RPC awaiting a peer that just disconnected (no need to wait out
+    // each timeout). set_value runs outside the lock.
+    void fail_pending_for_peer(const std::string& node_id) {
+        std::vector<std::shared_ptr<std::promise<SignalResponse>>> orphaned;
+        {
+            const std::lock_guard<std::mutex> lock(requests_mutex);
+            for (auto it = pending_requests.begin();
+                 it != pending_requests.end();) {
+                if (it->second.node_id == node_id) {
+                    orphaned.push_back(std::move(it->second.promise));
+                    it = pending_requests.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        }
+        for (auto& promise : orphaned) {
+            promise->set_value(
+                SignalResponse{.ok = false, .error = "peer disconnected"});
+        }
+    }
 
     // Record a peer. One entry per listen address: a node that restarts reuses
     // its address with a fresh node id, so a new HELLO from a known address
@@ -195,76 +287,12 @@ std::string hello_line(const std::string& node_id,
 // SYNC carries the whole document (the ReplicateToAllNodes policy); the CRDT
 // merge is conflict-free, so order and duplication don't matter.
 
-constexpr std::string_view kBase64Alphabet =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-std::string base64_encode(std::span<const std::byte> data) {
-    std::string out;
-    out.reserve((data.size() + 2) / 3 * 4);
-    std::size_t index = 0;
-    while (index + 3 <= data.size()) {
-        const std::uint32_t triple =
-            (static_cast<std::uint32_t>(data[index]) << 16) |
-            (static_cast<std::uint32_t>(data[index + 1]) << 8) |
-            static_cast<std::uint32_t>(data[index + 2]);
-        out.push_back(kBase64Alphabet[(triple >> 18) & 0x3f]);
-        out.push_back(kBase64Alphabet[(triple >> 12) & 0x3f]);
-        out.push_back(kBase64Alphabet[(triple >> 6) & 0x3f]);
-        out.push_back(kBase64Alphabet[triple & 0x3f]);
-        index += 3;
-    }
-    if (const std::size_t remaining = data.size() - index; remaining > 0) {
-        std::uint32_t triple = static_cast<std::uint32_t>(data[index]) << 16;
-        if (remaining == 2) {
-            triple |= static_cast<std::uint32_t>(data[index + 1]) << 8;
-        }
-        out.push_back(kBase64Alphabet[(triple >> 18) & 0x3f]);
-        out.push_back(kBase64Alphabet[(triple >> 12) & 0x3f]);
-        out.push_back(remaining == 2 ? kBase64Alphabet[(triple >> 6) & 0x3f]
-                                     : '=');
-        out.push_back('=');
-    }
-    return out;
-}
-
-std::vector<std::byte> base64_decode(std::string_view text) {
-    auto value_of = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
-        return -1;  // '=' padding or invalid
-    };
-    std::vector<std::byte> out;
-    std::uint32_t accumulator = 0;
-    int bits = 0;
-    for (const char c : text) {
-        const int value = value_of(c);
-        if (value < 0) continue;  // skip padding / whitespace
-        accumulator = (accumulator << 6) | static_cast<std::uint32_t>(value);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(static_cast<std::byte>((accumulator >> bits) & 0xff));
-        }
-    }
-    return out;
-}
-
-std::string base64_encode_bytes(const std::string& data) {
-    return base64_encode(std::span<const std::byte>(
-        reinterpret_cast<const std::byte*>(data.data()), data.size()));
-}
-
-std::string base64_decode_to_string(std::string_view text) {
-    const std::vector<std::byte> bytes = base64_decode(text);
-    std::string out(bytes.size(), '\0');
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        out[i] = static_cast<char>(bytes[i]);
-    }
-    return out;
-}
+// base64 lives in the shared internal header so the signal plane (signal.cpp)
+// uses the same implementation — see src/core/base64.hpp.
+using detail::base64_decode;
+using detail::base64_decode_to_string;
+using detail::base64_encode;
+using detail::base64_encode_bytes;
 
 std::string sync_line(const ReplicationManager& replication) {
     return std::string(kProtocol) + " SYNC " +
@@ -285,21 +313,77 @@ std::string lores_line(const std::string& id, const std::string& body) {
            base64_encode_bytes(body);
 }
 
-// Per-connection state shared by the read pump and the write pump. Both run on
-// the single io_context thread (cooperative, never truly concurrent), so the
-// queue needs no lock. The reader queues large-object responses (LORES) here;
-// the writer drains them alongside its periodic gossip.
+// A no-op keepalive. Membership/signal-only links carry no periodic gossip, so a
+// PING every cycle keeps the peer's idle-timeout fed (silence == a dead link).
+std::string ping_line() { return std::string(kProtocol) + " PING"; }
+
+// One signal frame: `ZETTA/1 SIGNAL <compact-json-envelope>`. The envelope is a
+// single line (compact JSON, payload base64'd inside) — see signal.cpp.
+std::string signal_line(const Signal& signal) {
+    return std::string(kProtocol) + " SIGNAL " + encode_signal(signal);
+}
+
+// Per-connection state. Both the read pump and the per-link writer run on the
+// single io_context thread (cooperative, never truly concurrent). Cross-thread
+// outbound goes through Cluster::State::outbox (keyed by peer node id), not this
+// struct, so callers on other threads never touch a link directly.
 struct GossipLink {
     std::shared_ptr<net::tcp_socket> socket;
     bool alive = true;
-    std::deque<std::string> outbound;
     std::chrono::steady_clock::time_point last_activity{};  // last line received
 };
 
-// Apply one gossip line to our state. `peer_node_id` is who sent it; replies
-// (LORES for a LOREQ) are queued on `link` for the writer to send.
+// Dispatch one received signal. `peer_node_id` is the sender. A Request is
+// answered by the registered handler and its Response queued back to the sender;
+// a Response wakes the waiting RPC; an Event/Task is delivered to the handler.
+// Runs on the network thread (the read pump).
+void handle_signal(Cluster::State* self, const std::string& envelope,
+                   const std::string& peer_node_id) {
+    std::string reason;
+    std::optional<Signal> signal = decode_signal(envelope, &reason);
+    if (!signal) {
+        log_event(self, "<- bad SIGNAL from " + short_id(peer_node_id) + ": " +
+                            reason);
+        return;
+    }
+    signal->from = peer_node_id;
+    SignalHandler* handler = self->signal_handler.load(std::memory_order_acquire);
+    switch (signal->kind) {
+        case SignalKind::Request: {
+            const SignalResponse result =
+                handler ? handler->on_request(*signal)
+                        : SignalResponse{.ok = false, .error = "no handler"};
+            Signal reply;
+            reply.kind = SignalKind::Response;
+            reply.id = signal->id;
+            reply.ok = result.ok;
+            reply.payload = result.payload;
+            reply.error = result.error;
+            self->queue_outbound(peer_node_id, signal_line(reply));
+            break;
+        }
+        case SignalKind::Response: {
+            if (auto promise = self->take_pending(signal->id)) {
+                promise->set_value(SignalResponse{.ok = signal->ok,
+                                                  .payload = signal->payload,
+                                                  .error = signal->error});
+            }
+            break;
+        }
+        case SignalKind::Event:
+            if (handler) handler->on_event(*signal);
+            break;
+        case SignalKind::Task:
+            if (handler) handler->on_task(*signal);
+            break;
+    }
+}
+
+// Apply one received line to our state. `peer_node_id` is who sent it; replies
+// (a LORES for a LOREQ, a Response for a Request) are queued on the peer's outbox
+// for its writer to send. Runs on the network thread (the read pump).
 void apply_gossip(Cluster::State* self, const std::string& line,
-                  const std::string& peer_node_id, GossipLink& link) {
+                  const std::string& peer_node_id) {
     std::istringstream parser(line);
     std::string protocol, verb;
     parser >> protocol >> verb;
@@ -329,7 +413,7 @@ void apply_gossip(Cluster::State* self, const std::string& line,
                                 (body ? " (serving " + std::to_string(body->size()) +
                                             "B)"
                                       : " (we don't have it)"));
-            if (body) link.outbound.push_back(lores_line(id, *body));
+            if (body) self->queue_outbound(peer_node_id, lores_line(id, *body));
         }
     } else if (verb == "LORES") {
         std::string id, encoded;
@@ -341,59 +425,92 @@ void apply_gossip(Cluster::State* self, const std::string& line,
                                 std::to_string(body.size()) + "B) -> " +
                                 (ok ? "stored" : "REJECTED (hash/size)"));
         }
+    } else if (verb == "SIGNAL") {
+        // The envelope is the remainder of the line: compact JSON, but it may
+        // contain spaces inside string values, so take the rest rather than a
+        // whitespace-delimited token.
+        std::string envelope;
+        std::getline(parser, envelope);
+        if (!envelope.empty() && envelope.front() == ' ') envelope.erase(0, 1);
+        handle_signal(self, envelope, peer_node_id);
     }
+    // Any other verb (e.g. PING) is a no-op — last_activity was already
+    // refreshed by the read pump, which is all a keepalive needs to do.
 }
 
-// Periodically push our replicated document + status to a peer, drain queued
-// large-object responses, and request the bodies we're missing — until the link
-// dies. Runs alongside the read pump (one outstanding write, one read — the
-// full-duplex pattern a socket allows).
-capy::task<> gossip_writer(Cluster::State* self,
-                           std::shared_ptr<GossipLink> link) {
+// How often the writer wakes to flush queued signals (RPC/events/tasks/LORES).
+// Short, so a signal leaves within a tick; the heavier gossip/keepalive runs on
+// its own ~0.5s cadence below. (A future optimization could replace the poll
+// with an explicit cross-thread wake; the backend's frame allocator isn't
+// thread-safe, so a poll keeps producers off the network thread for now.)
+constexpr std::chrono::milliseconds kOutboxPollInterval{20};
+constexpr std::chrono::milliseconds kGossipInterval{500};
+
+// Per-link output pump: flush this peer's queued signals every tick, push our
+// replicated document + status (or a PING keepalive) and request missing
+// large-object bodies every ~0.5s, and drop the link if the peer goes silent —
+// until the connection dies. Runs alongside the read pump (one outstanding
+// write, one read — the full-duplex pattern a socket allows). Always spawned
+// (the signal plane is always available), even with no replication/blobs.
+capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
+                         std::string peer_node_id) {
     using namespace std::chrono_literals;
     using Clock = std::chrono::steady_clock;
     net::timer timer(self->io_context);
     std::map<std::string, Clock::time_point> requested;  // body request cooldown
+    Clock::time_point last_gossip = Clock::now() - kGossipInterval;  // gossip now
     while (link->alive) {
-        // Keepalive: a healthy peer gossips to us every ~0.5s, so prolonged
+        // Keepalive: a healthy peer gossips/PINGs us every ~0.5s, so prolonged
         // silence means the link died (e.g. a silent TCP drop). Close it —
         // that unblocks the read pump, which removes the peer.
         if (Clock::now() - link->last_activity > self->idle_timeout) {
             log_event(self, "keepalive timeout — dropping idle peer connection");
             link->socket->close();
-            co_return;
+            break;
         }
-        // Send any large-object bodies a peer asked us for.
-        while (!link->outbound.empty()) {
-            std::string line = std::move(link->outbound.front());
-            link->outbound.pop_front();
+        // Flush queued signals (RPC requests/responses, events, tasks) and any
+        // large-object bodies a peer asked us for — promptly, every tick.
+        bool flushed = true;
+        for (std::string& line : self->take_outbound(peer_node_id)) {
             if (!co_await write_line(*link->socket, std::move(line))) {
-                co_return;
+                flushed = false;
+                break;
             }
         }
-        if (self->replication) {
-            if (!co_await write_line(*link->socket,
-                                     sync_line(*self->replication)) ||
-                !co_await write_line(*link->socket,
-                                     status_line(*self->replication))) {
-                co_return;
-            }
-        }
-        // Request bodies we lack, but don't re-ask the same peer too often (a
-        // transfer in flight shouldn't trigger duplicate sends).
-        if (self->blobs) {
-            const Clock::time_point now = Clock::now();
-            for (const std::string& id : self->blobs->missing_blobs()) {
-                const auto it = requested.find(id);
-                if (it != requested.end() && now - it->second < 2s) continue;
-                requested[id] = now;
-                log_event(self, "-> LOREQ " + short_id(id));
-                if (!co_await write_line(*link->socket, loreq_line(id))) {
-                    co_return;
+        if (!flushed) break;
+        // Periodic gossip + keepalive, every ~0.5s (not every poll tick).
+        if (Clock::now() - last_gossip >= kGossipInterval) {
+            last_gossip = Clock::now();
+            if (self->replication) {
+                if (!co_await write_line(*link->socket,
+                                         sync_line(*self->replication)) ||
+                    !co_await write_line(*link->socket,
+                                         status_line(*self->replication))) {
+                    break;
                 }
+            } else if (!co_await write_line(*link->socket, ping_line())) {
+                // No gossip to send — a PING keeps the link alive.
+                break;
+            }
+            // Request bodies we lack, but don't re-ask the same peer too often
+            // (a transfer in flight shouldn't trigger duplicate sends).
+            if (self->blobs) {
+                const Clock::time_point now = Clock::now();
+                bool requested_ok = true;
+                for (const std::string& id : self->blobs->missing_blobs()) {
+                    const auto it = requested.find(id);
+                    if (it != requested.end() && now - it->second < 2s) continue;
+                    requested[id] = now;
+                    log_event(self, "-> LOREQ " + short_id(id));
+                    if (!co_await write_line(*link->socket, loreq_line(id))) {
+                        requested_ok = false;
+                        break;
+                    }
+                }
+                if (!requested_ok) break;
             }
         }
-        timer.expires_after(500ms);
+        timer.expires_after(kOutboxPollInterval);
         [[maybe_unused]] const auto wait_result = co_await timer.wait();
     }
 }
@@ -429,30 +546,31 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     log_event(self, std::string("+ peer ") + short_id(peer.node_id) + " @ " +
                         peer.address + (initiate ? " (dialed)" : " (accepted)"));
 
-    // Per-connection link shared between this read pump and the gossip write
-    // pump (both on the io thread). The writer handles periodic gossip, queued
-    // large-object responses, body requests, and the keepalive timeout.
+    // Per-connection link shared between this read pump and the per-link write
+    // pump (both on the io thread). The writer flushes queued signals + periodic
+    // gossip + body requests and enforces the keepalive timeout. Always spawned
+    // — the signal plane needs the output pump even with no replication/blobs.
     auto link = std::make_shared<GossipLink>();
     link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
     link->last_activity = std::chrono::steady_clock::now();
-    if (self->replication || self->blobs) {
-        capy::run_async(self->io_context.get_executor())(
-            gossip_writer(self, link));
-    }
+    capy::run_async(self->io_context.get_executor())(
+        link_writer(self, link, peer.node_id));
 
     // Read pump: merge gossiped state, record peer status, serve/receive
-    // large-object bodies, until disconnect (or the writer's keepalive closes
-    // the socket, which surfaces here as a read error).
+    // large-object bodies, dispatch signals, until disconnect (or the writer's
+    // keepalive closes the socket, which surfaces here as a read error).
     for (;;) {
         std::optional<std::string> line =
             co_await read_line(*link->socket, pending);
         if (!line) break;  // peer disconnected / link timed out
         link->last_activity = std::chrono::steady_clock::now();
-        apply_gossip(self, *line, peer.node_id, *link);
+        apply_gossip(self, *line, peer.node_id);
     }
 
     link->alive = false;
     self->remove_peer(peer.node_id);
+    self->clear_outbound(peer.node_id);        // drop any lines queued for it
+    self->fail_pending_for_peer(peer.node_id);  // fail RPCs awaiting it
     log_event(self, std::string("- peer ") + short_id(peer.node_id) +
                         " (connection closed)");
     link->socket->close();
@@ -728,6 +846,99 @@ std::vector<NodeStatus> Cluster::nodes() const {
         result.push_back(std::move(node));
     }
     return result;
+}
+
+// --- Signal plane -----------------------------------------------------------
+
+namespace {
+
+// Node ids of currently-connected peers (for addressing + counts).
+std::vector<std::string> connected_node_ids(const Cluster::State& state) {
+    const std::lock_guard<std::mutex> lock(state.mutex);
+    std::vector<std::string> ids;
+    ids.reserve(state.peers.size());
+    for (const Cluster::State::PeerRecord& peer : state.peers) {
+        ids.push_back(peer.node_id);
+    }
+    return ids;
+}
+
+bool is_connected(const Cluster::State& state, const std::string& node_id) {
+    const std::lock_guard<std::mutex> lock(state.mutex);
+    for (const Cluster::State::PeerRecord& peer : state.peers) {
+        if (peer.node_id == node_id) return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+void Cluster::set_signal_handler(SignalHandler* handler) {
+    state_->signal_handler.store(handler, std::memory_order_release);
+}
+
+SignalResponse Cluster::request(const std::string& node_id,
+                                const std::string& method,
+                                const std::string& payload,
+                                std::chrono::milliseconds timeout) {
+    if (!is_connected(*state_, node_id)) {
+        return SignalResponse{.ok = false, .error = "peer not connected"};
+    }
+
+    Signal request;
+    request.kind = SignalKind::Request;
+    request.id = new_uuid();  // correlates the response back to this call
+    request.method = method;
+    request.payload = payload;
+
+    // Register the waiter BEFORE queuing, so a fast response is never missed.
+    std::future<SignalResponse> future =
+        state_->add_pending(request.id, node_id);
+    state_->queue_outbound(node_id, signal_line(request));
+
+    if (future.wait_for(timeout) == std::future_status::ready) {
+        return future.get();
+    }
+    // Timed out. Claim the slot so a late response is dropped; if claiming fails
+    // the response landed in the race window, so return it.
+    if (state_->take_pending(request.id)) {
+        return SignalResponse{.ok = false, .error = "request timed out"};
+    }
+    return future.get();
+}
+
+bool Cluster::send_event(const std::string& node_id, const std::string& method,
+                         const std::string& payload) {
+    if (!is_connected(*state_, node_id)) return false;
+    Signal event;
+    event.kind = SignalKind::Event;
+    event.method = method;
+    event.payload = payload;
+    state_->queue_outbound(node_id, signal_line(event));
+    return true;
+}
+
+std::size_t Cluster::broadcast_event(const std::string& method,
+                                     const std::string& payload) {
+    Signal event;
+    event.kind = SignalKind::Event;
+    event.method = method;
+    event.payload = payload;
+    const std::string line = signal_line(event);
+    const std::vector<std::string> ids = connected_node_ids(*state_);
+    for (const std::string& id : ids) state_->queue_outbound(id, line);
+    return ids.size();
+}
+
+bool Cluster::send_task(const std::string& node_id, const std::string& method,
+                        const std::string& payload) {
+    if (!is_connected(*state_, node_id)) return false;
+    Signal task;
+    task.kind = SignalKind::Task;
+    task.method = method;
+    task.payload = payload;
+    state_->queue_outbound(node_id, signal_line(task));
+    return true;
 }
 
 }  // namespace zetta

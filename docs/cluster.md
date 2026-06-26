@@ -80,7 +80,9 @@ is wired in, peers gossip their documents and status over the connection (see
   wildcard — a `0.0.0.0` bind advertises (and `peer_command()`/the banner show)
   the host's first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
 - `node-id` is a UUIDv4 generated per process.
-- **Self-healing links.** Gossip flows every ~0.5s, so silence means the link
+- **Self-healing links.** Each peer sends traffic every ~0.5s — replication
+  gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`
+  keepalive — so silence means the link
   died: a peer that sends nothing for `peer_idle_timeout_seconds` (default 6) is
   dropped — this clears half-open connections that never produce a clean EOF (a
   silent TCP drop across machines). And every `reconnect_interval_seconds`
@@ -88,6 +90,18 @@ is wired in, peers gossip their documents and status over the connection (see
   dropped link re-establishes itself. Between the two, a restarted or
   briefly-partitioned peer reconnects and the stale entry is replaced — no
   stuck `syncing`/`no status` ghost.
+
+## Signal plane (RPC / events / tasks)
+
+Beyond replication gossip and large-object transfer, the same peer connections
+carry a typed, **ephemeral** message layer — the **signal plane**: request/
+response RPC, fire-and-forget events (unicast or broadcast), and task envelopes,
+each addressed to a peer **by node id**. It's the substrate for distributed
+compute (collectives, work-stealing, job dispatch) and is **not** routed through
+the replicated document. The wire frame is one more line verb,
+`ZETTA/1 SIGNAL <envelope>`, where the envelope is a single-line JSON object
+validated against a JSON Schema at the boundary. Full detail in
+[signal-plane.md](signal-plane.md).
 
 ## Leadership
 

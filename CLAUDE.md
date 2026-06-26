@@ -241,6 +241,36 @@ election + failover are the planned next step** (`ClusterRole` exists for it,
 currently always `Follower`); membership + replication gossip for now. See
 [docs/cluster.md](docs/cluster.md).
 
+### Signal plane (RPC / events / tasks)
+
+The cluster transport also carries a typed, **ephemeral** message layer — the
+**signal plane** (`zetta::Signal`, `include/zetta/signal.hpp`; ADR-28 / ARC-10) —
+alongside the `SYNC`/`STATUS`/`LOREQ`/`LORES` gossip. A `Signal` is one of four
+`SignalKind`s (`request`→`response`→`event`→`task`) addressed to a peer **by node
+id**: request/response **RPC** (`Cluster::request` blocks until the peer replies,
+times out, or is unreachable), fire-and-forget **events** (`send_event` unicast /
+`broadcast_event` to all), and **task** envelopes (`send_task` — the substrate for
+job dispatch). The application plugs in a `SignalHandler` (`set_signal_handler`;
+`on_request`/`on_event`/`on_task`, each with a safe default) invoked on the
+network thread. This is the foundation for the native distributed compute pass
+(collectives, the work-stealing scheduler, the job coordinator).
+**Ephemeral — deliberately NOT routed through the CRDT document** (the one
+exception to "everything is replicated state": a signal is a *message*, not
+*state*; durable agreement still belongs in the CRDT). The wire frame is one new
+line verb, `ZETTA/1 SIGNAL <envelope>`, where the envelope is a single-line,
+compact JSON object (opaque payload base64'd inside, binary-safe) **validated at
+the boundary** against a draft-07 JSON Schema (`schemas/signal_envelope.schema.json`,
+mirrored embedded in `src/core/signal.cpp`, via the same `pboettch` validator as
+Run) plus kind-specific required-field checks in code — a malformed envelope is
+rejected with a path-qualified reason and never reaches a handler
+(`decode_signal` is non-throwing). Cross-thread sends go through a mutex-guarded
+per-peer outbox + an RPC promise map (no coroutine is posted across threads — the
+backend's frame allocator isn't thread-safe); the per-link writer flushes it on a
+short tick, and membership/signal-only links now send a `PING` keepalive (since
+they carry no periodic gossip). `encode_signal`/`decode_signal` are the
+serialization seam; the transport only adds/strips the framing. See
+[docs/signal-plane.md](docs/signal-plane.md).
+
 ### Replication (CRDT)
 
 **Core rule: EVERYTHING is replicated state.** Replication is not a feature
@@ -729,7 +759,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
-  cluster.hpp               zetta::Cluster — equal-peer membership over TCP
+  cluster.hpp               zetta::Cluster — equal-peer membership over TCP + the signal-plane API
+  signal.hpp                zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
   blob_store.hpp            zetta::BlobStore — large-object body transfer seam
   replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
@@ -777,10 +808,12 @@ src/core/                   zetta-core impl
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
-  cluster.cpp               cluster networking adapter (the one Corosio user)
+  cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
+  signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
+  base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
-  signals.cpp               SIGINT/SIGTERM stop flag
+  signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node
 src/main.cpp                arg parsing + mode dispatch
@@ -924,6 +957,7 @@ loop thread).
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
+- [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
