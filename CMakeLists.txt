@@ -239,6 +239,7 @@ endif()
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
   src/core/cluster.cpp
+  src/core/signal.cpp
   src/core/replication.cpp
   src/core/node.cpp
   src/core/database.cpp

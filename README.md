@@ -133,6 +133,13 @@ verified against the hash. You can see **all nodes and their replication status*
 version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,
 the headless heartbeat log, or SQL — `SELECT * FROM system.zetta_nodes;`. See
 [docs/cluster.md](docs/cluster.md) and [docs/replication.md](docs/replication.md).
+
+The same peer connections also carry a **[signal plane](docs/signal-plane.md)** —
+ephemeral, typed messages addressed by node id: request/response **RPC**,
+fire-and-forget **events** (unicast or broadcast), and **task** envelopes. Unlike
+replicated state, signals aren't routed through the CRDT; they're the substrate
+for distributed compute (collectives, work-stealing, job dispatch), schema-
+validated at the boundary.
 zetta is **multi-leader** (no global election); leadership applies only to future
 exclusive structures (locks) — see the consistency model in the replication doc.
 

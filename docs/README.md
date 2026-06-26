@@ -25,6 +25,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
 - [cluster.md](cluster.md) — clustering equal peers: running multiple nodes, the connect command, the protocol.
+- [signal-plane.md](signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [replication.md](replication.md) — Automerge-CRDT replicated state, policies (replicate-to-all), and actor identity.
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type (per-check results, verdict, block-deploy).
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).

@@ -1,10 +1,13 @@
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "zetta/signal.hpp"
 
 namespace zetta {
 
@@ -128,6 +131,45 @@ public:
     // state it last reported. Thread-safe. With no ReplicationManager wired in,
     // the replication fields are left unknown.
     std::vector<NodeStatus> nodes() const;
+
+    // --- Signal plane (RPC / events / tasks) --------------------------------
+    //
+    // A typed, ephemeral message layer over the same peer connections (NOT
+    // routed through the replicated document). See docs/signal-plane.md.
+
+    // Register the handler invoked for incoming requests / events / tasks. It
+    // runs on the cluster's network thread, so it must be cheap and thread-safe
+    // (offload heavy work). Pass nullptr to clear. Thread-safe; may be called
+    // before start() or at any time after. The handler must outlive the Cluster
+    // (or be cleared first).
+    void set_signal_handler(SignalHandler* handler);
+
+    // Send an RPC request to a peer (by node id) and block the calling thread
+    // until the peer's response arrives, the timeout elapses, or the peer is
+    // found unreachable. Returns ok=false with a reason on an unknown / dropped
+    // peer, a timeout, or a remote handler error. Thread-safe — but must NOT be
+    // called from the network thread (the handler thread), which would deadlock.
+    SignalResponse request(
+        const std::string& node_id, const std::string& method,
+        const std::string& payload,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5));
+
+    // Fire-and-forget an event to one peer (by node id). Returns false if not
+    // currently connected to that peer (best-effort: delivery is not
+    // guaranteed). Thread-safe.
+    bool send_event(const std::string& node_id, const std::string& method,
+                    const std::string& payload);
+
+    // Fire-and-forget an event to every connected peer. Returns the number of
+    // peers it was queued to (best-effort). Thread-safe.
+    std::size_t broadcast_event(const std::string& method,
+                                const std::string& payload);
+
+    // Fire-and-forget a task envelope to a peer (by node id) — like send_event
+    // but tagged Task, the substrate for job dispatch. Returns false if not
+    // connected. Thread-safe.
+    bool send_task(const std::string& node_id, const std::string& method,
+                   const std::string& payload);
 
     // Opaque networking state, defined in cluster.cpp — hides the Corosio
     // backend, the io_context thread, and the peer table. Public so the
