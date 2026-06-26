@@ -357,6 +357,7 @@ TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
     EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg"));
     EXPECT_TRUE(has_flag(create, "--name", "zetta-burst"));
     EXPECT_TRUE(has_flag(create, "--location", "eastus"));
+    EXPECT_TRUE(has_flag(create, "--orchestration-mode", "Flexible"));
     EXPECT_TRUE(has_flag(create, "--instance-count", "2"));
     EXPECT_TRUE(has_flag(create, "--vm-sku", "Standard_NC24ads_A100_v4"));
     EXPECT_FALSE(has_token(create, "--priority"));  // not a spot config

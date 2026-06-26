@@ -1,33 +1,12 @@
 #pragma once
 
-#include <functional>
 #include <string>
 #include <vector>
 
 #include "zetta/azure_provisioner.hpp"
+#include "zetta/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 
 namespace zetta {
-
-// The result of running one external command: its exit code and captured output.
-// stdout_text is parsed as JSON by the `az` binding; stderr_text feeds the
-// `detail` note when a command fails.
-struct CommandResult {
-    int exit_code = 0;
-    std::string stdout_text;
-    std::string stderr_text;
-};
-
-// Runs one command given its argv (program + arguments, no shell), returning its
-// captured output. Injecting this keeps the `az` binding testable without the
-// Azure CLI installed (a fake returns canned JSON) and free of shell-injection
-// risk (argv is passed directly, never concatenated into a shell string). An
-// empty CommandRunner means "use the default exec-based runner".
-using CommandRunner = std::function<CommandResult(const std::vector<std::string>&)>;
-
-// The default real command runner: execs the program in argv[0] with the given
-// arguments and captures stdout/stderr. Exposed so callers can wrap or replace
-// it; AzCliControlPlane uses it when constructed without one.
-CommandRunner default_command_runner();
 
 // AzCliControlPlane — the **reference** AzureControlPlane binding (#376): it
 // drives Azure by shelling out to the `az` CLI (no Azure C++ SDK, honoring the

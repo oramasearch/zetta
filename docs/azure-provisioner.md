@@ -133,9 +133,16 @@ instances is teardown. It builds `az vmss` argv, runs them through an injected
 
 | `AzureControlPlane` call | `az` command (shape) |
 |---|---|
-| `bring_up` | `az vmss create … --instance-count N [--vm-sku … --image … --priority Spot --eviction-policy Delete --max-price … --assign-identity … --custom-data ZETTA_SEED_PEER=…]`, then `list` |
+| `bring_up` | `az vmss create … --orchestration-mode Flexible --instance-count N [--vm-sku … --image … --priority Spot --eviction-policy Delete --max-price … --assign-identity … --custom-data ZETTA_SEED_PEER=…]`, then `list` |
 | `destroy` | `az vmss delete-instances … --instance-ids <node_id>` |
 | `list` | `az vmss list-instances … --output json` |
+
+`--orchestration-mode Flexible` is the recommended mode for self-managed scaled
+workers (independent VMs under one scale set) — the burst-cluster shape. The
+command shapes are grounded in
+[research/azure-cli-compute.md](research/azure-cli-compute.md) (the cited `az`
+guide); a true autoscaler resize on an existing pool would use
+`az vmss scale --new-capacity`.
 
 `bring_up` scales the pool then **lists** what is up and reports best-effort
 against the requested count; the stable `pool_name` makes a re-burst scale the
@@ -149,8 +156,12 @@ supplies a full cloud-init; the reference carries the seed address illustrativel
 using CommandRunner = std::function<CommandResult(const std::vector<std::string>&)>;
 ```
 
-The runner takes **argv** (program + arguments, no shell — so no shell-injection
-risk) and returns `{ exit_code, stdout_text, stderr_text }`. The default
+`CommandRunner` is **shared, vendor-neutral** infrastructure
+(`include/zetta/command_runner.hpp`) — the same exec seam the AWS / GCP CLI
+bindings will run through (see
+[cloud-provisioner-pattern.md](cloud-provisioner-pattern.md)). The runner takes
+**argv** (program + arguments, no shell — so no shell-injection risk) and returns
+`{ exit_code, stdout_text, stderr_text }`. The default
 (`default_command_runner()`) `fork`/`execvp`s the program and captures its merged
 output; a test injects a fake that asserts on the argv and returns canned JSON.
 That makes the **command construction + JSON parsing** — the parts most likely to
@@ -203,7 +214,9 @@ the reference binding:
   non-zero exit to `false`; `list` parses the instances and skips malformed
   entries, and returns empty on a command failure.
 
-See also [provisioner.md](provisioner.md) (the seam + the Local backend),
-[burst-identity.md](burst-identity.md) (the `BurstIdentityManager` the mint/revoke
-hooks bind to), and [burst-approval-gate.md](burst-approval-gate.md) (the cost-cap
-decorator that can wrap any backend).
+See also [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md) (how AWS /
+GCP mirror this as the **reference**), [provisioner.md](provisioner.md) (the seam +
+the Local backend), [burst-identity.md](burst-identity.md) (the
+`BurstIdentityManager` the mint/revoke hooks bind to), and
+[burst-approval-gate.md](burst-approval-gate.md) (the cost-cap decorator that can
+wrap any backend).
