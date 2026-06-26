@@ -88,8 +88,12 @@ schema-validated `AzureConfig` (see
 CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)); **`zetta::GcpProvisioner`**
 mirrors it on GCP — a `GcpControlPlane` seam whose reference `GcpCliControlPlane`
 drives `gcloud` (the Managed Instance Group + Spot shape), with a schema-validated
-`GcpConfig` (see [docs/gcp-provisioner.md](docs/gcp-provisioner.md)). Every vendor
-follows the same **CLI pattern** — the recipe is
+`GcpConfig` (see [docs/gcp-provisioner.md](docs/gcp-provisioner.md));
+**`zetta::OciProvisioner`** mirrors it on Oracle Cloud — an `OciControlPlane` seam
+whose reference `OciCliControlPlane` drives `oci` (the Instance Pool + preemptible
+shape), with a schema-validated `OciConfig` (see
+[docs/oci-provisioner.md](docs/oci-provisioner.md)). Every vendor follows the same
+**CLI pattern** — the recipe is
 [docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md).
 On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst

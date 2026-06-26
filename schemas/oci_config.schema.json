@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/oci_config.schema.json",
+  "title": "OciConfig",
+  "description": "Configuration for the OCI (Oracle Cloud Infrastructure) cloud-burst Provisioner backend (ARC-13 / ADR-20, #432): where on OCI to burst ephemeral compute nodes, how to size and price them, and how each node joins the cluster. Mirrors the Azure reference (azure_config.schema.json) / GCP (gcp_config.schema.json) via the CLI pattern. Mirrored by zetta::OciConfig in include/zetta/oci_provisioner.hpp and enforced by OciConfig::from_json() in src/core/oci_provisioner.cpp — keep them in sync. No cloud SDK lives behind the provisioner; this config is interpreted by an OciControlPlane (the reference OciCliControlPlane shells out to the `oci` CLI, the Instance Pool + preemptible shape). A malformed config is rejected at the boundary so a misconfigured burst fails fast instead of bringing up the wrong (or no) fleet.",
+  "type": "object",
+  "required": ["compartment_id", "availability_domain", "subnet_id"],
+  "additionalProperties": false,
+  "properties": {
+    "compartment_id": {
+      "description": "The OCI compartment OCID the burst pool is created in.",
+      "type": "string",
+      "minLength": 1
+    },
+    "availability_domain": {
+      "description": "The availability domain the instances run in (e.g. 'Uocm:PHX-AD-1').",
+      "type": "string",
+      "minLength": 1
+    },
+    "subnet_id": {
+      "description": "The subnet OCID burst nodes attach their primary VNIC to.",
+      "type": "string",
+      "minLength": 1
+    },
+    "region": {
+      "description": "The OCI region (e.g. 'us-ashburn-1'). Optional; omitted leaves the region to the CLI profile / config.",
+      "type": "string"
+    },
+    "pool_name": {
+      "description": "Display name of the burst pool (the Instance Pool). Stable so a re-burst resizes the existing pool (resolved by name) rather than creating a duplicate. Defaults to 'zetta-burst' when omitted.",
+      "type": "string"
+    },
+    "shape": {
+      "description": "The compute shape each node uses (e.g. 'VM.Standard.E5.Flex', 'VM.GPU.A10.1'). Defaults to 'VM.Standard.E5.Flex'.",
+      "type": "string"
+    },
+    "ocpus": {
+      "description": "OCPUs per node for a flexible shape (the shapeConfig). 0 omits the shapeConfig (for fixed shapes). Default 1.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_in_gbs": {
+      "description": "Memory in GB per node for a flexible shape (the shapeConfig). 0 omits it. Default 16.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "image_id": {
+      "description": "The image OCID burst nodes boot from. Empty lets the control plane / instance configuration default apply (a production deployment supplies a current platform/custom image OCID).",
+      "type": "string"
+    },
+    "spot": {
+      "description": "Burst preemptible capacity — cheaper, interruptible — rather than on-demand nodes (the instance configuration's preemptibleInstanceConfig).",
+      "type": "boolean"
+    },
+    "seed_peer": {
+      "description": "The cluster seed address (host:port) injected into each node's cloud-init (user_data) so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way.",
+      "type": "string"
+    }
+  }
+}
