@@ -30,8 +30,8 @@ This is the **first** of five issues; the rest build on it:
 
 | Issue | What it adds |
 | --- | --- |
-| **#359 (this)** | the `ComputeDevice` interface + `DeviceBuffer` memory model + `HostStubDevice` |
-| [#360](https://github.com/oramasearch/zetta/issues/360) | **`CpuDevice`** — the always-built reference backend, operators on host memory via the [`zetta::runtime`](runtime.md) thread pool |
+| **#359** | the `ComputeDevice` interface + `DeviceBuffer` memory model + `HostStubDevice` |
+| [#360](https://github.com/oramasearch/zetta/issues/360) ✅ | **`CpuDevice`** — the always-built reference backend, operators on host memory via the [`zetta::runtime`](runtime.md) thread pool ([cpu-device.md](cpu-device.md)) |
 | [#361](https://github.com/oramasearch/zetta/issues/361) | **`CudaDevice`** — the optional CUDA backend |
 | [#362](https://github.com/oramasearch/zetta/issues/362) | a **device registry** — enumerate a node's devices, report each one's capability, select a backend per op (built — see [device-registry.md](device-registry.md)) |
 | [#363](https://github.com/oramasearch/zetta/issues/363) | **CMake** — optional CUDA detection + a `zetta-compute` target housing the backends, linked without leaking CUDA headers |
@@ -187,9 +187,10 @@ RAII + move semantics, `DeviceInfo`, and that every operator reports
 
 ## What's next (later slices)
 
-- **`CpuDevice`** (#360) — the reference backend implementing every operator on
+- **`CpuDevice`** (#360) ✅ — the reference backend implementing every operator on
   host memory via the [`zetta::runtime`](runtime.md) thread pool; its results are
-  the numerical reference CUDA is checked against.
+  the numerical reference CUDA is checked against. **Built** — see
+  [cpu-device.md](cpu-device.md).
 - **`CudaDevice`** (#361) — the GPU backend, behind optional CUDA detection.
 - **Device registry** (#362) — enumerate a node's devices, report each one's
   capability ([`DeviceInfo`](#the-interface-computedevice)), and select a backend

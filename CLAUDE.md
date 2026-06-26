@@ -253,8 +253,14 @@ zetta's async / coroutine / networking layer lives behind
 `boost::capy` / `boost::corosio` directly** — so the (beta, churning) C++
 Alliance backend can be swapped, or replaced by Boost.Asio, by editing that one
 header. Backed by Capy today (`modules/capy`); Corosio (`modules/corosio`) adds
-networking. Background + migration plan:
-[docs/runtime.md](docs/runtime.md) and
+networking. The seam also exposes **`runtime::parallel_for`** — a blocking
+data-parallel primitive (`src/core/runtime.cpp`) that tiles `[0, count)` into
+contiguous chunks over one shared, process-wide thread pool and joins before
+returning, so CPU-bound code (the `CpuDevice` operators today; the job scheduler /
+collectives later) fans work across cores without naming `boost::capy`. Its tiling
+is a pure function of `count` (so multi-pass algorithms line phases up), and
+bodies **must not throw** (a throwing body aborts — zetta-core never unwinds across
+the seam). Background + migration plan: [docs/runtime.md](docs/runtime.md) and
 [docs/research/coroutines.md](docs/research/coroutines.md).
 
 ### Accelerated compute (`zetta::compute`)
@@ -284,13 +290,24 @@ returns a `zetta::compute::ComputeStatus` rather than throwing (zetta-core is
 `-fexperimental-library`; no unwinding across the seam) — `Ok` or
 `Unsupported`/`InvalidArgument`/`OutOfMemory`/`BackendError` + a reason; a backend
 that lacks an op returns `unsupported` (the status **is** the per-op capability —
-no parallel bitmask to drift). **No backend ships in this slice** and **no
-SDL/CUDA type appears in any header** (pure zetta-core, builds CPU-only). The only
-implementer today is `zetta::compute::HostStubDevice` — a host-memory transfer
-stub (real allocate + memcpy transfer, operators return `unsupported`) that lets
-the memory model round-trip in tests; it is **not** the CPU backend (the real
-operator-implementing `CpuDevice` is #360, then `CudaDevice` #361). See
-[docs/compute-device.md](docs/compute-device.md).
+no parallel bitmask to drift). **No SDL/CUDA type appears in any header** (pure
+zetta-core, builds CPU-only). Two implementers exist today.
+`zetta::compute::HostStubDevice` is a host-memory transfer stub (real allocate +
+memcpy transfer, operators return `unsupported`) that lets the memory model
+round-trip in tests — **not** a compute backend.
+`zetta::compute::CpuDevice` (`include/zetta/compute/cpu_device.hpp`, **#360**) is
+the **always-built reference backend**: it implements **every** operator on host
+memory, parallelizing the data-parallel ones
+(map/elementwise/reduce/scan/histogram/gemm/axpy/gather) across the
+`zetta::runtime` thread pool via `runtime::parallel_for`, with `sort`/`sort_by_key`
+(comparison sort) and `scatter` (write-race-free on duplicate indices) kept
+sequential. Float-only ops (sqrt/exp/log, gemm, axpy) reject integer dtypes;
+everything returns a `ComputeStatus`, never throwing across the seam. **Its results
+are the numerical reference `CudaDevice` (#361) is checked against** (correctness
+over throughput). Still later: `CudaDevice` #361, a device registry #362, and the
+CMake `zetta-compute` target #363. See
+[docs/compute-device.md](docs/compute-device.md) (interface) and
+[docs/cpu-device.md](docs/cpu-device.md) (this backend).
 
 The **`DeviceRegistry`** (`include/zetta/compute/device_registry.hpp`, #362) is the
 per-node enumeration + selection layer over that seam: backends are **registered
@@ -939,7 +956,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   checks/
     entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
   bytes.hpp / duration.hpp  human-readable size / time formatters
-  runtime.hpp               zetta::runtime — async/coroutine seam over Capy
+  runtime.hpp               zetta::runtime — async/coroutine seam over Capy (task/block_on/thread_pool + parallel_for data-parallel fan-out)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
   cluster.hpp               zetta::Cluster — equal-peer membership over TCP + the signal-plane API
   signal.hpp                zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
@@ -956,12 +973,13 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
-  compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no backend, no SDL/CUDA)
+  compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA)
     data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
     compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
     device_buffer.hpp       zetta::compute::DeviceBuffer — typed, owning, move-only device memory
     compute_device.hpp      zetta::compute::ComputeDevice — the seam: info + memory + the operator set
     host_stub_device.hpp    zetta::compute::HostStubDevice — host-memory transfer stub (ops unsupported)
+    cpu_device.hpp          zetta::compute::CpuDevice — the always-built reference backend (every op on host memory, multi-threaded; #360)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
@@ -1005,7 +1023,9 @@ src/core/                   zetta-core impl
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer
   compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported
+  compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (#360)
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (#362)
+  runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
@@ -1158,6 +1178,7 @@ loop thread).
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359).
+- [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
