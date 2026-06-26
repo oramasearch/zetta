@@ -40,10 +40,13 @@ Workspace** panel renders a project's graph as an editable node/edge canvas
 (steps in columns by stage, edges between them) and persists edits back to the IR
 (see [docs/projects.md](docs/projects.md#graph-workspace)). A node can also **deploy** a
 validated execution graph onto a target, recording the placement (R1 local; see
-[docs/deployments.md](docs/deployments.md)), and a **control plane** reconciles
-each local deployment desired→actual and **self-heals** a killed or failed run
-(see [docs/deployment-controller.md](docs/deployment-controller.md)). It owns
-**runs** (`zetta::Run`), the
+[docs/deployments.md](docs/deployments.md)) — the headed **Deploy panel** does this
+as one-button deploy: pick a blueprint from the **AI Solution Library**, choose a
+placement on the dial, pass the correctness gate, and see its status (see
+[docs/solution-catalog.md](docs/solution-catalog.md)). A **control plane**
+reconciles each local deployment desired→actual and **self-heals** a killed or
+failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
+It owns **runs** (`zetta::Run`), the
 record of one graph execution: status, logs, outputs, and lineage, validated
 against a JSON Schema at the storage boundary and viewable in the headed app's
 read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).

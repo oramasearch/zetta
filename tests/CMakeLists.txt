@@ -28,6 +28,7 @@ add_executable(zetta-tests
   test_project_graph.cpp
   test_deployment.cpp
   test_deployment_controller.cpp
+  test_solution_catalog.cpp
   test_run.cpp
   test_access_control.cpp
   test_executor.cpp
