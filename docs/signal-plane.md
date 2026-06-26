@@ -73,9 +73,11 @@ replies with a clear `"no handler"` error rather than hanging the caller.
 ### Threading model
 
 - **Handlers run on the cluster's network thread.** Keep them cheap and
-  thread-safe; offload heavy work to another executor (a later slice wires the
-  work-stealing scheduler in behind this seam). An RPC handler returns its
-  response synchronously.
+  thread-safe; offload heavy work to another executor — e.g. the
+  [work-stealing scheduler](work-stealing-scheduler.md), whose `steal` /
+  `steal_result` handlers only hand out / store task descriptors and run the
+  actual compute on its own pool. An RPC handler returns its response
+  synchronously.
 - **Senders run on the caller's thread.** `request()` blocks the calling thread
   until the response, the timeout, or a peer disconnect — so do **not** call it
   from inside a handler (the network thread), which would deadlock. The
@@ -158,9 +160,10 @@ types, like the rest of the cluster.
 - **Best-effort, at-most-once.** No retries, acks, or persistence for events/
   tasks; a signal to an offline peer is dropped. Reliable job delivery is the job
   coordinator's concern, built on top.
-- **Handlers run on the network thread.** Heavy compute must be offloaded; the
-  work-stealing scheduler will plug in behind this seam so a task envelope can be
-  dispatched without blocking the loop.
+- **Handlers run on the network thread.** Heavy compute must be offloaded — the
+  [work-stealing scheduler](work-stealing-scheduler.md) is built on this seam and
+  does exactly that: its handlers only move task descriptors, and the compute runs
+  on its own pool, off the loop.
 - **Latency.** The outbox is drained on a short poll rather than an explicit
   cross-thread wake (the backend's frame allocator isn't thread-safe). If
   latency-sensitive [collectives](collectives.md) need it, a self-pipe wake is the
@@ -172,5 +175,7 @@ types, like the rest of the cluster.
 - [collectives.md](collectives.md) — allreduce / broadcast / barrier / gather
   built on this layer, the first consumer of the signal plane.
 - [cluster.md](cluster.md) — the equal-peer transport this rides on.
+- [work-stealing-scheduler.md](work-stealing-scheduler.md) — the cross-node steal
+  protocol built on this layer (the first real consumer).
 - [replication.md](replication.md) — the *replicated* (non-ephemeral) state plane,
   for contrast.
