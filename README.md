@@ -47,6 +47,9 @@ each local deployment desired→actual and **self-heals** a killed or failed run
 record of one graph execution: status, logs, outputs, and lineage, validated
 against a JSON Schema at the storage boundary and viewable in the headed app's
 read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
+It can **execute** a graph step-by-step into one of those runs
+(`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
+produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see

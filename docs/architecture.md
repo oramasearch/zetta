@@ -80,7 +80,10 @@ semantic validation (the gate) are later slices. See
 
 **Deploy** has its first slice: `Node::deploy_graph` places a validated graph onto
 a `DeploymentTarget` (R1 local) and records the placement (replicated + queryable).
-See [deployments.md](deployments.md).
+See [deployments.md](deployments.md). **Run** has its first slice too:
+`zetta::GraphExecutor` / `Node::run_graph` executes a graph step-by-step in
+dependency order, producing a [Run](runs.md) with outputs + lineage (a pluggable
+`StepExecutor` seam for per-step work). See [execution.md](execution.md).
 
 ## Async runtime & cluster
 
@@ -105,6 +108,7 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   deployment_target.hpp   DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp          Deployment — a graph placed onto a target
   run.hpp                 Run — one graph execution (status/logs/outputs/lineage) + JSON Schema
+  executor.hpp            GraphExecutor / StepExecutor — execute a graph into a Run
   table.hpp               Table — owns a storage engine (its rows)
   uuid.hpp                new_uuid() — v4 UUID for folder names
   runtime.hpp             zetta::runtime — async/coroutine seam over Capy

@@ -1,5 +1,6 @@
 #include "zetta/node.hpp"
 
+#include "zetta/executor.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/project_graph.hpp"
@@ -712,6 +713,14 @@ AccessDecision Node::authorize(const std::string& key_id,
         return AccessDecision{false, "unknown access key — denied"};
     }
     return zetta::authorize(*key, resource);
+}
+
+ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
+                                std::string project, std::string graph_id) {
+    // Delegate to the standalone orchestrator with the default per-step executor.
+    // The Run it creates is owned by this node (replicated + persisted as usual).
+    return GraphExecutor{}.execute(*this, graph, std::move(project),
+                                   std::move(graph_id));
 }
 
 // ----- replication: persistence ---------------------------------------------

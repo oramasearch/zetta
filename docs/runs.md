@@ -8,10 +8,10 @@ monitor + lineage) and realizes the closed domain spec ENT-12.
 This page documents the **storage + data model** plus the **GUI viewer**: the
 `Run` type and its lifecycle (create / update / query) on a `Node`, and the
 read-only **Runs / Outputs / Lineage** panel that surfaces it in the headed app
-(see [GUI panel](#gui-panel)). Actually *executing* a graph (the StartRun
-command, which populates a run's status / logs / outputs / lineage) is still
-separate work — a Run created here is the artifact StartRun will write to and the
-panel reads from.
+(see [GUI panel](#gui-panel)). Actually *executing* a graph to produce a run is
+its own slice — `zetta::GraphExecutor` / `Node::run_graph`, see
+[execution.md](execution.md); a Run created here is the artifact it writes to and
+the panel reads from.
 
 ## The type
 
