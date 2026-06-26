@@ -175,4 +175,51 @@ TEST(ComputeDevice, StubReportsOperatorsUnsupported) {
     EXPECT_NE(device.reduce(zetta::compute::ReduceOp::Sum, a, out).message, "");
 }
 
+// --- CUDA backend (only built when ZETTA_WITH_CUDA is defined) ----------------
+// Guarded on the same compile definition CMake sets for a -DZETTA_ENABLE_CUDA=ON
+// build, so a CPU-only build (dev Macs, CI) compiles and runs without it. The
+// test skips at runtime when no CUDA device is present, so a toolkit-but-no-GPU
+// host still passes; it exercises the real memory round-trip + one operator when
+// a GPU is available.
+#if defined(ZETTA_WITH_CUDA)
+
+#include "zetta/compute/cuda_device.hpp"
+
+TEST(CudaDevice, RoundTripAndOperatorsWhenPresent) {
+    zetta::compute::CudaDevice device;
+
+    const auto info = device.info();
+    if (info.name == "cuda" || info.name.empty()) {
+        GTEST_SKIP() << "no CUDA device present";
+    }
+    EXPECT_EQ(info.kind, DeviceKind::Cuda);
+
+    // Host -> device -> host round-trip over real GPU memory.
+    const std::vector<float> source = {1.0f, -2.5f, 3.25f, 42.0f, 0.0f};
+    DeviceBuffer buffer = device.upload<float>(source);
+    ASSERT_FALSE(buffer.empty());
+    std::vector<float> destination(source.size(), 0.0f);
+    ASSERT_TRUE(device.download<float>(buffer, destination).ok());
+    EXPECT_EQ(destination, source);
+
+    // A real operator: out[i] = in[i] * in[i].
+    DeviceBuffer squared = device.allocate(DataType::Float32, source.size());
+    ASSERT_FALSE(squared.empty());
+    ASSERT_TRUE(device.map(zetta::compute::UnaryOp::Square, buffer, squared).ok());
+    std::vector<float> got(source.size());
+    ASSERT_TRUE(device.download<float>(squared, got).ok());
+    for (std::size_t i = 0; i < source.size(); ++i) {
+        EXPECT_FLOAT_EQ(got[i], source[i] * source[i]);
+    }
+
+    // A real reduction: sum over the inputs.
+    DeviceBuffer total = device.allocate(DataType::Float32, 1);
+    ASSERT_TRUE(device.reduce(zetta::compute::ReduceOp::Sum, buffer, total).ok());
+    std::vector<float> sum(1);
+    ASSERT_TRUE(device.download<float>(total, sum).ok());
+    EXPECT_FLOAT_EQ(sum[0], 1.0f - 2.5f + 3.25f + 42.0f + 0.0f);
+}
+
+#endif  // ZETTA_WITH_CUDA
+
 }  // namespace

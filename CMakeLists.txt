@@ -235,6 +235,75 @@ if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
 endif()
 
 # -----------------------------------------------------------------------------
+# zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
+# -----------------------------------------------------------------------------
+# The zetta::compute ComputeDevice seam (ADR-27 / ARC-9) and its backends live in
+# their own static library, linked into zetta-core like any other adapter. This is
+# where the optional CUDA backend lands: CUDA headers + kernels stay inside this
+# target's .cu translation unit and never reach zetta-core — the same discipline
+# that keeps SDL/ImGui out of zetta-core. A CPU-only configure (dev Macs, CI)
+# builds this library with the host stub only and needs no CUDA toolkit.
+
+option(ZETTA_ENABLE_CUDA
+  "Build the optional CUDA compute backend (requires the CUDA toolkit)" OFF)
+
+set(ZETTA_COMPUTE_SOURCES
+  src/core/compute/device_buffer.cpp
+  src/core/compute/host_stub_device.cpp)
+
+if(ZETTA_ENABLE_CUDA)
+  # Detect the toolkit (CUDA::cudart + the Thrust headers) and turn on the CUDA
+  # language only when the backend is requested — a CPU-only configure never
+  # touches CUDA. REQUIRED so an explicit opt-in fails loudly when the toolkit is
+  # absent, rather than silently dropping the backend.
+  find_package(CUDAToolkit REQUIRED)
+  enable_language(CUDA)
+  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/cuda_device.cu)
+  message(STATUS "CUDA compute backend: ENABLED (CUDAToolkit ${CUDAToolkit_VERSION})")
+else()
+  message(STATUS "CUDA compute backend: disabled (CPU-only build). "
+                 "Enable with -DZETTA_ENABLE_CUDA=ON on a host with the CUDA toolkit.")
+endif()
+
+add_library(zetta-compute STATIC ${ZETTA_COMPUTE_SOURCES})
+
+target_compile_features(zetta-compute PUBLIC cxx_std_26)
+target_include_directories(zetta-compute PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
+# Boost::capy is linked PUBLIC for the ABI it propagates as much as the thread
+# pool the forthcoming CpuDevice (#360) will use: it brings -fexperimental-library,
+# so this library's libc++ ABI matches zetta-core's. ComputeStatus carries a
+# std::string across the zetta-compute -> zetta-core link boundary; a mismatched
+# string ABI there is the same failure the validator note above guards against.
+target_link_libraries(zetta-compute PUBLIC Boost::capy)
+
+if(ZETTA_ENABLE_CUDA)
+  # nvcc compiles the .cu at a CUDA-supported standard (C++26 is beyond nvcc); the
+  # public compute headers it includes only need C++20 (std::span). Use the same
+  # host compiler as the rest of zetta so the host-side libc++ ABI lines up across
+  # the link boundary (override with -DCMAKE_CUDA_HOST_COMPILER=... if needed).
+  set_target_properties(zetta-compute PROPERTIES
+    CUDA_STANDARD 20
+    CUDA_STANDARD_REQUIRED ON)
+  if(NOT CMAKE_CUDA_HOST_COMPILER)
+    set_target_properties(zetta-compute PROPERTIES
+      CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
+  endif()
+  # ZETTA_WITH_CUDA is PUBLIC so consumers (the device registry #362, tests) guard
+  # their use of CudaDevice on it. cudart is PRIVATE so it links into the final
+  # binary without leaking the CUDA include directories into zetta-core (a static-
+  # library PRIVATE dependency propagates to consumers as link-only).
+  target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_CUDA=1)
+  target_link_libraries(zetta-compute PRIVATE CUDA::cudart)
+  # Match zetta-core's libc++ experimental ABI on the .cu's host compilation when
+  # the host compiler is Clang (the toolchain zetta selects).
+  if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+    target_compile_options(zetta-compute PRIVATE
+      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+  endif()
+endif()
+
+# -----------------------------------------------------------------------------
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
@@ -286,8 +355,6 @@ add_library(zetta-core STATIC
   src/core/n8n_compile.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
-  src/core/compute/device_buffer.cpp
-  src/core/compute/host_stub_device.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/runtime.cpp
@@ -307,7 +374,12 @@ target_include_directories(zetta-core PUBLIC
 # PUBLIC: zetta::Node's interface exposes nlohmann::json (add_object) and the
 # storage headers include it, so consumers (the GUI) get it transitively.
 # Boost::capy backs the zetta::runtime async seam (include/zetta/runtime.hpp), also PUBLIC.
-target_link_libraries(zetta-core PUBLIC nlohmann_json::nlohmann_json Boost::capy)
+# zetta-compute houses the zetta::compute ComputeDevice backends (its public
+# headers live in include/zetta/compute and are part of zetta-core's surface);
+# PUBLIC so consumers linking zetta-core get the backend symbols + the optional
+# ZETTA_WITH_CUDA define, while CUDA headers stay confined to that library.
+target_link_libraries(zetta-core PUBLIC
+  nlohmann_json::nlohmann_json Boost::capy zetta-compute)
 # Corosio (networking), automerge-cpp (the replication CRDT), and the JSON-Schema
 # validator (boundary validation in src/core/run.cpp) are used only by zetta-core's
 # adapters — PRIVATE so they stay out of zetta-core's public surface and the GUI.

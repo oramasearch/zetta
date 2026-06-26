@@ -10,9 +10,11 @@ whose concrete implementations are the **backends**. Consumers call the
 interface and stay unchanged when new hardware appears — **new hardware = a new
 backend, nothing else.**
 
-This page documents the **interface, the device buffer / memory model, and the
-host-memory stub** that ship in this slice ([#359](https://github.com/oramasearch/zetta/issues/359)).
-No real backend lives here.
+This page documents the **interface, the device buffer / memory model, the
+host-memory stub** ([#359](https://github.com/oramasearch/zetta/issues/359)), and
+the **`zetta-compute` build target + the optional CUDA backend**
+([#363](https://github.com/oramasearch/zetta/issues/363)). The default build is
+CPU-only; the GPU backend is opt-in.
 
 ```
 include/zetta/compute/data_type.hpp       DataType tag + byte_size / to_string / data_type_of<T>
@@ -20,21 +22,33 @@ include/zetta/compute/compute_status.hpp  ComputeStatus + ComputeStatusCode (the
 include/zetta/compute/device_buffer.hpp   DeviceBuffer — typed, owning, move-only device memory
 include/zetta/compute/compute_device.hpp  ComputeDevice — the seam: info + memory + operators
 include/zetta/compute/host_stub_device.hpp HostStubDevice — host-memory transfer stub
+include/zetta/compute/cuda_device.hpp     CudaDevice — the GPU backend (CUDA-free header)
 src/core/compute/device_buffer.cpp        buffer lifetime + ComputeDevice::make_buffer
 src/core/compute/host_stub_device.cpp     the stub implementation
+src/core/compute/cuda_device.cu           the CUDA backend (kernels; built only with CUDA)
 ```
+
+These sources build into a dedicated **`zetta-compute`** static library that
+`zetta-core` links — see [Build: `zetta-compute` + optional CUDA](#build-zetta-compute--optional-cuda)
+below.
 
 ## Where this sits in the "accel" family
 
 This is the **first** of five issues; the rest build on it:
 
-| Issue | What it adds |
-| --- | --- |
-| **#359** | the `ComputeDevice` interface + `DeviceBuffer` memory model + `HostStubDevice` |
-| [#360](https://github.com/oramasearch/zetta/issues/360) ✅ | **`CpuDevice`** — the always-built reference backend, operators on host memory via the [`zetta::runtime`](runtime.md) thread pool ([cpu-device.md](cpu-device.md)) |
-| [#361](https://github.com/oramasearch/zetta/issues/361) | **`CudaDevice`** — the optional CUDA backend |
-| [#362](https://github.com/oramasearch/zetta/issues/362) | a **device registry** — enumerate a node's devices, report each one's capability, select a backend per op (built — see [device-registry.md](device-registry.md)) |
-| [#363](https://github.com/oramasearch/zetta/issues/363) | **CMake** — optional CUDA detection + a `zetta-compute` target housing the backends, linked without leaking CUDA headers |
+| Issue | What it adds | Status |
+| --- | --- | --- |
+| **#359** | the `ComputeDevice` interface + `DeviceBuffer` memory model + `HostStubDevice` | built |
+| [#360](https://github.com/oramasearch/zetta/issues/360) | **`CpuDevice`** — the always-built reference backend, operators on host memory via the [`zetta::runtime`](runtime.md) thread pool ([cpu-device.md](cpu-device.md)) | built |
+| [#361](https://github.com/oramasearch/zetta/issues/361) | **`CudaDevice`** — the optional CUDA backend (memory model + operator kernels) | built (alongside #363) |
+| [#362](https://github.com/oramasearch/zetta/issues/362) | a **device registry** — enumerate a node's devices, report each one's capability, select a backend per op (see [device-registry.md](device-registry.md)) | built |
+| **#363** | **CMake** — the `zetta-compute` static target + optional CUDA detection, linked into `zetta-core` without leaking CUDA headers | built |
+
+> The CMake plumbing for #363 needs *something* CUDA to compile to prove the
+> guard works end to end, and #363 depends only on the interface (not on #361), so
+> `CudaDevice` and its kernels ship **together** with the build target here. #361
+> remains the home for any further GPU operators (DDF / GBDT / SHAP) layered on
+> this same seam.
 
 `HostStubDevice` is **not** the CPU backend. It is a memory/transfer stub used to
 ship and test the interface on its own; the real, operator-implementing CPU
@@ -42,12 +56,15 @@ device is `CpuDevice` (#360).
 
 ## Altitude: the interface, not the kernels
 
-This slice declares the seam and proves the **memory model** round-trips; it does
-**not** implement any operator. Every operator on `HostStubDevice` returns
-`ComputeStatus::unsupported`. Real kernels plug in behind the seam **without
-touching consumers** — exactly the shape of the gate's `Check` seam and the
-storage engine's `StorageEngine`. No SDL/CUDA type appears in any header: the
-interface is pure `zetta-core` and compiles on a CPU-only machine (dev Macs, CI).
+The interface slice declares the seam and proves the **memory model**
+round-trips; the **`HostStubDevice`** implements no operator — every operator on
+it returns `ComputeStatus::unsupported`. Real kernels plug in behind the seam
+**without touching consumers** — exactly the shape of the gate's `Check` seam and
+the storage engine's `StorageEngine` — which is precisely how the
+[`CudaDevice`](#the-cuda-backend-cudadevice) GPU kernels land. No SDL/CUDA type
+appears in any header (the CUDA backend's header is CUDA-free), and the **default
+build is CPU-only** — pure `zetta-core`, compiling on a machine with no GPU
+toolkit (dev Macs, CI).
 
 ## The memory model: `DeviceBuffer`
 
@@ -177,13 +194,81 @@ implements). A backend whose transfers/operators run asynchronously (a CUDA
 stream) implements `synchronize()` as the barrier before reading results back;
 the synchronous `HostStubDevice` makes it a no-op.
 
+## Build: `zetta-compute` + optional CUDA
+
+The compute backends build into a dedicated **`zetta-compute`** static library
+that `zetta-core` links `PUBLIC` (so anything linking `zetta-core` — the GUI, the
+tests — gets the backend symbols and the public `include/zetta/compute` headers).
+This is the same isolation pattern SDL/ImGui get: a heavy/optional dependency
+lives in its own target and **never leaks its headers into `zetta-core`**.
+
+A **CPU-only configure is the default** and needs no CUDA toolkit — it builds
+`zetta-compute` with just `device_buffer.cpp` + `host_stub_device.cpp` and is what
+dev Macs and CI run:
+
+```bash
+cmake -S . -B build -G Ninja        # CUDA compute backend: disabled (CPU-only build)
+cmake --build build
+ctest --test-dir build              # all tests green, no GPU required
+```
+
+The **CUDA backend is opt-in** behind `-DZETTA_ENABLE_CUDA=ON`:
+
+```bash
+cmake -S . -B build -G Ninja -DZETTA_ENABLE_CUDA=ON   # requires the CUDA toolkit
+```
+
+When enabled, CMake `find_package(CUDAToolkit REQUIRED)` (so a missing toolkit
+fails the configure loudly rather than silently dropping the backend),
+`enable_language(CUDA)`, adds `cuda_device.cu` to `zetta-compute`, links
+`CUDA::cudart` **`PRIVATE`** (a static-library private dependency links into the
+final binary as link-only, so the CUDA *include directories* never reach
+`zetta-core`), and sets the public `ZETTA_WITH_CUDA` compile definition.
+Consumers — the device registry (#362), the tests — guard their use of
+`CudaDevice` on `#if defined(ZETTA_WITH_CUDA)`, so a CPU-only build never names
+the symbol. The `.cu` is compiled at `CUDA_STANDARD 20` (nvcc predates C++26; the
+public compute headers only need C++20's `std::span`) using the same host
+compiler as the rest of zetta, with `-fexperimental-library` propagated to the
+host side so the libc++ string ABI matches across the link boundary (the same
+concern the json-schema-validator handles).
+
+## The CUDA backend: `CudaDevice`
+
+`CudaDevice` (`include/zetta/compute/cuda_device.hpp`) is the GPU implementation
+of the seam. Its **header is CUDA-free** — it forward-declares nothing CUDA and
+includes no `<cuda_runtime.h>`, exactly the way `src/gui/app.hpp` keeps SDL out of
+its header. All CUDA lives in `src/core/compute/cuda_device.cu`, the one
+translation unit nvcc compiles:
+
+- **Memory model** — `allocate`/`copy_from_host`/`copy_to_host`/`synchronize` over
+  the CUDA runtime (`cudaMalloc`/`cudaMemcpy`/`cudaFree`/`cudaDeviceSynchronize`);
+  buffers free themselves through `release_buffer` → `cudaFree`, so the RAII
+  `DeviceBuffer` works unchanged over VRAM.
+- **Operators** — real device work: `map`/`elementwise`/`axpy` via
+  `thrust::transform` with hand-written functors (no device lambdas, so no
+  `--extended-lambda`), `reduce`/`scan`/`sort`/`sort_by_key`/`gather`/`scatter`
+  via [Thrust](https://nvidia.github.io/cccl/thrust/) (ships with the toolkit),
+  and `histogram`/`gemm` as custom `__global__` kernels. Each call dispatches on
+  the buffer's runtime `DataType` to the matching element type.
+- **No-throw at the seam** — a Thrust/CUDA failure is caught inside the `.cu` and
+  returned as a `ComputeStatus::backend_error`, never an exception crossing into
+  `zetta-core`. A `cudaErrorMemoryAllocation` maps to `out_of_memory`.
+
+> **Verification note.** The CPU-only path (the acceptance gate — green build +
+> all tests) is verified on macOS/CI. The `.cu` requires a CUDA toolkit + NVIDIA
+> GPU to compile and run, which dev Macs don't have; validate the CUDA build on a
+> Linux CUDA host before relying on the GPU kernels.
+
 ## Tests
 
 `tests/test_compute_device.cpp` covers the `DataType` helpers, the typed
 host⇄device round-trip for floats and ints (the **acceptance test**), byte-level
 transfer validation (oversized copy, dtype/size mismatch on download), buffer
 RAII + move semantics, `DeviceInfo`, and that every operator reports
-`Unsupported` with a carried reason on the stub.
+`Unsupported` with a carried reason on the stub. A `#if defined(ZETTA_WITH_CUDA)`
+block adds a `CudaDevice` round-trip + `map`/`reduce` test that compiles only in a
+CUDA build and skips at runtime when no GPU is present (so a toolkit-but-no-GPU
+host still passes).
 
 ## What's next (later slices)
 
@@ -191,13 +276,15 @@ RAII + move semantics, `DeviceInfo`, and that every operator reports
   host memory via the [`zetta::runtime`](runtime.md) thread pool; its results are
   the numerical reference CUDA is checked against. **Built** — see
   [cpu-device.md](cpu-device.md).
-- **`CudaDevice`** (#361) — the GPU backend, behind optional CUDA detection.
 - **Device registry** (#362) — enumerate a node's devices, report each one's
   capability ([`DeviceInfo`](#the-interface-computedevice)), and select a backend
-  per operation; feeds the autoscaler/coordinator's capability model.
+  per operation (guarding `CudaDevice` selection on `ZETTA_WITH_CUDA`); feeds the
+  autoscaler/coordinator's capability model.
   **Built — see [device-registry.md](device-registry.md).**
-- **CMake `zetta-compute` target** (#363) — house the backends, link them into
-  `zetta-core` without leaking CUDA headers (mirrors how SDL/ImGui are kept out).
+
+The `zetta-compute` target + optional CUDA detection (#363) and the `CudaDevice`
+kernels (#361) are **built** — see
+[Build: `zetta-compute` + optional CUDA](#build-zetta-compute--optional-cuda).
 
 See also [runtime.md](runtime.md), [execution.md](execution.md), and
 [architecture.md](architecture.md).
