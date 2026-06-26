@@ -437,7 +437,9 @@ its replication status (entries, version, in-sync, last-sync) — surfaced in th
 headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
 currently always `Follower`); membership + replication gossip for now. See
-[docs/cluster.md](docs/cluster.md).
+[docs/cluster.md](docs/cluster.md). [docs/true-hybrid.md](docs/true-hybrid.md)
+describes how the cluster, compute, and provisioner seams compose into **true
+hybrid** — one cluster spanning every vendor and architecture.
 
 ### Signal plane (RPC / events / tasks)
 
@@ -1504,6 +1506,7 @@ loop thread).
 ## Pointers
 
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
+- [`docs/true-hybrid.md`](docs/true-hybrid.md) — **true hybrid**: one equal-peer cluster spanning heterogeneous hardware (CPU/GPU/ASIC, OS, architecture, on-prem + cloud), the seams that make it work (`ComputeDevice` backends, the device registry, the work-stealing scheduler, collectives, the cluster, the `Provisioner`), and the cost / flexibility / resilience payoff — with a built-vs-planned support matrix.
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).

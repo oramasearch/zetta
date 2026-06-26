@@ -25,7 +25,10 @@ subset. A *zetta node* is one running instance; it runs **headed** (default — 
 binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name — the
 older name *"ZettaDB"* is retired.) The broader product surface — GUI control plane,
 one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning
-loop — is in flight.
+loop — is in flight. It is designed to run as **true hybrid** — one equal-peer
+cluster spanning every vendor and architecture (CPU / GPU / ASIC, OS, on-prem +
+cloud); the seams are built, the breadth of backends is in flight (see
+[docs/true-hybrid.md](docs/true-hybrid.md)).
 
 Data is organized as databases → tables → JSON rows, persisted to disk. A node
 also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
