@@ -13,7 +13,9 @@ backends are separate, dependent slices:
 - **Cloud burst** — `AwsProvisioner` (`#377`) and `GcpProvisioner` (`#378`).
 - **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`);
   **built** — see [burst-identity.md](burst-identity.md).
-- **Large-burst cost-cap approval gate** — APR-3 (`#379`).
+- **Large-burst cost-cap approval gate** — APR-3 (`#379`), built: see
+  [burst-approval-gate.md](burst-approval-gate.md). A `Provisioner` decorator that
+  blocks an over-cap burst pending approval and audits the decision.
 
 The seam is what the **autoscaler / job coordinator** consumes to grow or shrink
 the compute fleet for a job. **No cloud SDK lives behind this header** — that is

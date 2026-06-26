@@ -80,6 +80,10 @@ On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
 node and bulk-revokes them on teardown — reusing the identity model, audited
 (see [docs/burst-identity.md](docs/burst-identity.md)).
+A **large-burst cost-cap approval gate** (`zetta::BurstApprovalGate`) decorates the
+seam: a provision burst over a configured cap is blocked pending approval and
+recorded in the audit trail, guarding against runaway burst cost (see
+[docs/burst-approval-gate.md](docs/burst-approval-gate.md)).
 It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
 unit of native distributed accelerated compute — featurize / train / explain /
 score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
