@@ -23,6 +23,7 @@ exactly like [`zetta::Project`](projects.md). Its value:
 | `id` | `std::string` | UUIDv4; also the on-disk folder name. Never changes. |
 | `project` | `std::string` | Owning project uuid. Optional (empty until wired). |
 | `graph` | `std::string` | Executed graph id (free string). Optional. |
+| `deployment` | `std::string` | Owning deployment uuid. Optional — set when the run is the execution of a deployed graph. |
 | `status` | `RunStatus` | `Pending` → `Running` → `Succeeded` \| `Failed`. |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on every change. |
@@ -37,9 +38,12 @@ lineage) or `Failed` (RunFailed; the failing step + reason live in `logs`).
 values always satisfy the schema. Stamps come from `zetta::now_iso8601()`
 (fixed-width, so they order chronologically as plain text).
 
-`project` / `graph` are **id-only references** (kept lightweight, like a
-project's future references to its inputs / graphs / runs) and are fixed at
-creation; the mutable fields change as the run progresses.
+`project` / `graph` / `deployment` are **id-only references** (kept lightweight,
+like a project's future references to its inputs / graphs / runs) and are fixed at
+creation; the mutable fields change as the run progresses. `deployment` ties a run
+to the placement the [deployment controller](deployment-controller.md) is keeping
+alive — the link the reconcile loop follows from *desired* (the deployment) to
+*actual* (this run).
 
 ## CRUD on a Node
 
@@ -49,7 +53,7 @@ artifacts), so `find` / `drop` take the id:
 
 | Method | Returns | Behavior |
 |---|---|---|
-| `create_run(project = {}, graph = {})` | `shared_ptr<Run>` | Stamps `created`/`updated`, starts `Pending`. Optional project + graph refs. |
+| `create_run(project = {}, graph = {}, deployment = {})` | `shared_ptr<Run>` | Stamps `created`/`updated`, starts `Pending`. Optional project + graph + deployment refs. |
 | `find_run(id)` | `shared_ptr<Run>` | Empty handle on miss. |
 | `drop_run(id)` | `bool` | `true` if one was removed. |
 | `runs()` | `vector<shared_ptr<Run>>` | Stable order: by `created`, then `id`. |

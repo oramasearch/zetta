@@ -14,6 +14,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→clean→model→index→serve→act taxonomy, and its JSON form (`to_json`/`from_json` + schema validation).
 - [deployments.md](deployments.md) — placing a validated execution graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
+- [deployment-controller.md](deployment-controller.md) — the control plane: reconcile a local deployment desired→actual and self-heal a killed/failed run (FEAT-4, TC-3; R1 local).
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
 - [cluster.md](cluster.md) — clustering equal peers: running multiple nodes, the connect command, the protocol.
