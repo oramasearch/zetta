@@ -10,6 +10,7 @@
 
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
+#include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
@@ -171,6 +172,26 @@ public:
     std::vector<std::shared_ptr<Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
 
+    // CRUD for compute jobs (one unit of native distributed accelerated compute —
+    // ARC-11 / ENT-31; see compute_job.hpp / docs/compute-jobs.md). Like runs,
+    // jobs have no human name: they are keyed by id, so find / drop take the id.
+    // create stamps created/updated, starts Queued, takes the job `kind` and
+    // optional project / graph / run / scaling_policy (reward) references, and
+    // **records a `job_created` audit event**. The "update" half is the mutator on
+    // the returned ComputeJob handle (set_status), which captures into the CRDT,
+    // persists, and — on the first transition into a terminal state — records a
+    // `job_finished` audit event (FEAT-9). jobs() is in a stable order (created,
+    // then id).
+    std::shared_ptr<ComputeJob> create_job(JobKind kind,
+                                           std::string project = {},
+                                           std::string graph = {},
+                                           std::string run = {},
+                                           std::string scaling_policy = {});
+    std::shared_ptr<ComputeJob> find_job(const std::string& id) const;
+    bool drop_job(const std::string& id);
+    std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
+    std::size_t job_count() const { return jobs_.size(); }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -282,6 +303,9 @@ private:
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
+    // Rebuild jobs_ by scanning config_.data_dir. Called from start().
+    void load_jobs();
+
     // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
     // start(). Malformed event files are skipped at the boundary (schema).
     void load_audit_events();
@@ -316,6 +340,9 @@ private:
     bool materialize_drop_run(const std::string& id);
     std::shared_ptr<Model> materialize_model(std::string id, ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<ComputeJob> materialize_job(std::string id,
+                                                ComputeJobValue value);
+    bool materialize_drop_job(const std::string& id);
     std::shared_ptr<Principal> materialize_principal(std::string id,
                                                      PrincipalKind kind,
                                                      std::string name,
@@ -339,6 +366,7 @@ private:
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     DeploymentController controller_{*this};  // control plane (driven by tick())

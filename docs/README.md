@@ -12,6 +12,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [new-project-screen.md](new-project-screen.md) — the headed **New Project** screen (SCR-2): name a project, paste an NL intent, and import / drop an n8n workflow artifact — all from the GUI (FEAT-1).
 - [runs.md](runs.md) — the Run (`zetta::Run`) record: status / logs / outputs / lineage, with JSON-Schema boundary validation.
 - [models.md](models.md) — the Model (`zetta::Model`) entity (ENT-14 / FEAT-6): metadata replicated as `model:<uuid>`, serialized weights as a large-object body (peer-to-peer + sha256), the `system.zetta_models` registry, JSON-Schema validated.
+- [compute-jobs.md](compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf), lifecycle + audit + JSON-Schema boundary (ARC-11 / ENT-31).
 - [access-control.md](access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [audit-trail.md](audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [admin-panel.md](admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.

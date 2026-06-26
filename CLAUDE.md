@@ -150,6 +150,27 @@ is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
 provenance + replication only — training/inference (and producing the weights) is
 a later slice. See [docs/models.md](docs/models.md).
 
+A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
+of native distributed accelerated compute** (the foundational entity of the
+accelerated-compute pass for UC-1, **ARC-11 / ENT-31**): a `kind`
+(`featurize`/`train`/`explain`/`score`/`ddf`), a lifecycle `status`
+(`Queued`→`Running`→`Succeeded`|`Failed`), optional `project`/`graph`/`run` and
+`scaling_policy` (reward) **id references** (the `ScalingPolicy` itself is a
+separate slice — referenced by id only), and an optional `detail` note. Another
+top-level, replicated entity (flat key `job:<uuid>`, on-disk `<job-uuid>/job.json`),
+**modeled exactly like `Run`** but keyed by id (jobs have no human name):
+`create_job`/`find_job`/`drop_job`/`jobs`, with the "update" half being the
+`set_status` mutator on the handle (capture into the CRDT, persist). Boundary-
+validated against a formal JSON Schema (`parse_compute_job_value`, the same
+`pboettch` validator as Run). It is **audited at create + finish** via the existing
+`AuditSink`: `Node::create_job` records a `job_created` event, and
+`ComputeJob::set_status` records a `job_finished` event on the **first** transition
+into a terminal state (the `materialize_*`/`apply_value` reconcile paths never emit
+— a peer's action arrives already-audited). Scheduling/running a job (the
+coordinator, scheduler + collectives, autoscaler, the `ScalingPolicy` model, the
+`system.zetta_jobs` table) are separate, later slices. See
+[docs/compute-jobs.md](docs/compute-jobs.md).
+
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
 (`create`/`find`/`drop`/`rename_principal`, `principal_names`). A principal owns
@@ -180,20 +201,23 @@ audit trail itself is built — see below). See
 [docs/access-control.md](docs/access-control.md).
 
 A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
-for every **graph change / deploy / data access** (ENT-23 / FEAT-9; the audit
-half of governance, on top of the key-scoped access above). An `AuditEvent`
-(id + `action` graph_created|graph_dropped|graph_deployed|data_access + `actor` +
-`target` + `allowed` + `detail` + `time`) is a top-level, replicated entity (flat
-key `audit:<uuid>`) — but **immutable and append-only**: no mutator, no drop, so
-the set of `audit:` keys only grows and the CRDT converges trivially. `Node` owns
-the trail and **is** the `AuditSink` seam: `record_audit_event` is the append API
-(it stamps id + time, captures into the CRDT, persists), `audit_events()` lists
-them chronologically. Emission is wired at the three governed seams —
-`Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a project
-like its `ReplicationManager*`), `Node::deploy_graph`, and `Node::authorize`
+for every **graph change / deploy / data access / compute-job lifecycle** event
+(ENT-23 / FEAT-9; the audit half of governance, on top of the key-scoped access
+above). An `AuditEvent` (id + `action`
+graph_created|graph_dropped|graph_deployed|data_access|job_created|job_finished +
+`actor` + `target` + `allowed` + `detail` + `time`) is a top-level, replicated
+entity (flat key `audit:<uuid>`) — but **immutable and append-only**: no mutator,
+no drop, so the set of `audit:` keys only grows and the CRDT converges trivially.
+`Node` owns the trail and **is** the `AuditSink` seam: `record_audit_event` is the
+append API (it stamps id + time, captures into the CRDT, persists),
+`audit_events()` lists them chronologically. Emission is wired at the governed
+seams — `Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a
+project like its `ReplicationManager*`), `Node::deploy_graph`, `Node::authorize`
 (which is therefore **non-const**: every allow/deny decision records a
-`data_access` event). The `materialize_*` reconciliation paths never emit (a
-peer's action arrives already-audited as its own replicated `audit:` event).
+`data_access` event), and the compute-job lifecycle (`Node::create_job` →
+`job_created`, `ComputeJob::set_status` → `job_finished` on the first terminal
+transition). The `materialize_*` reconciliation paths never emit (a peer's action
+arrives already-audited as its own replicated `audit:` event).
 It is the **second record validated against a formal JSON Schema** at the storage
 boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator),
 projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
@@ -388,6 +412,7 @@ fragment the change history and accumulate `node:` keys). The document uses
 metadata only; its payload body stays on disk), `graph:<uuid>`,
 `deployment:<uuid>`, `run:<uuid>`, `model:<uuid>` (a trained model — metadata
 only; its serialized weights body stays on disk like an `lo:` body),
+`job:<uuid>` (a compute job — ARC-11/ENT-31),
 `principal:<uuid>` (an authenticated actor), `key:<uuid>` (an access key carrying
 its parent `principal` ref + its `scope` + its `capabilities`), and
 `audit:<uuid>` (an immutable, append-only audit event) — each entity owns its key
@@ -426,6 +451,9 @@ data_dir/
                                   metrics, created, weights:{ size, sha256 } }
     weights                  ← raw serialized bytes (NOT in the CRDT; on-disk
                                  like an LO body — transfers peer-to-peer)
+  <job-uuid>/                ← one folder per compute job (UUIDv4 = its id)
+    job.json                 ← { id, kind, status, project, graph, run,
+                                  scaling_policy, created, updated, detail }
   <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
     principal.json           ← { id, kind, name, created }
     keys/
@@ -840,7 +868,7 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + principals; run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -853,6 +881,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+  compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
@@ -900,7 +929,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     host_stub_device.hpp    zetta::compute::HostStubDevice — host-memory transfer stub (ops unsupported)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
@@ -916,6 +945,7 @@ src/core/                   zetta-core impl
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+  compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -1073,6 +1103,7 @@ loop thread).
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
+- [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.

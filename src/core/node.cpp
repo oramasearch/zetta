@@ -44,6 +44,7 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_models();
+    load_jobs();
     load_principals();
     load_audit_events();
     if (replication_) {
@@ -55,10 +56,11 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu principals, %zu audit "
-        "events)\n",
+        "%zu deployments, %zu runs, %zu models, %zu jobs, %zu principals, "
+        "%zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
+        jobs_.size(),
         principals_.size(), audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
@@ -736,6 +738,112 @@ bool Node::materialize_drop_model(const std::string& id) {
     return true;
 }
 
+// ----- compute jobs (one unit of accelerated compute; replicated job:<uuid>) --
+
+void Node::load_jobs() {
+    jobs_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "job.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a job.json that fails the ComputeJob JSON Schema is
+        // rejected here (with a logged reason) rather than allowed to corrupt the
+        // in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<ComputeJobValue> value =
+            meta.is_discarded() ? std::nullopt
+                                : parse_compute_job_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid job %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON"
+                                            : error.c_str());
+            continue;
+        }
+        jobs_.push_back(std::make_shared<ComputeJob>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_, /*audit=*/this));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(jobs_.begin(), jobs_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<ComputeJob> Node::create_job(JobKind kind, std::string project,
+                                             std::string graph, std::string run,
+                                             std::string scaling_policy) {
+    const std::string id = new_uuid();
+    const std::string now = now_iso8601();
+    ComputeJobValue value;
+    value.kind = kind;
+    value.status = JobStatus::Queued;
+    value.project = std::move(project);
+    value.graph = std::move(graph);
+    value.run = std::move(run);
+    value.scaling_policy = std::move(scaling_policy);
+    value.created = now;
+    value.updated = now;
+    if (replication_) replication_->set(catalog::job_key(id), to_json(value));
+    auto job = materialize_job(id, std::move(value));
+    // Audit the create (FEAT-9): queueing a compute job is a governed action.
+    // Record it once the job is materialized; a peer's create arrives via
+    // reconcile (materialize_job) already carrying its own replicated audit event.
+    if (job) {
+        record_audit_event(
+            {AuditAction::JobCreated, {}, job->id(), true,
+             "compute job " + std::string(to_string(job->kind())) + " queued",
+             {}});
+    }
+    return job;
+}
+
+std::shared_ptr<ComputeJob> Node::materialize_job(std::string id,
+                                                  ComputeJobValue value) {
+    if (auto existing = find_job(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto job = std::make_shared<ComputeJob>(std::move(id), std::move(value), dir,
+                                            replication_, /*audit=*/this);
+    job->persist_meta();
+    jobs_.push_back(job);
+    return job;
+}
+
+std::shared_ptr<ComputeJob> Node::find_job(const std::string& id) const {
+    for (const auto& job : jobs_) {
+        if (job->id() == id) return job;
+    }
+    return nullptr;
+}
+
+bool Node::drop_job(const std::string& id) {
+    if (!find_job(id)) return false;
+    if (replication_) replication_->remove(catalog::job_key(id));
+    return materialize_drop_job(id);
+}
+
+bool Node::materialize_drop_job(const std::string& id) {
+    const auto it = std::find_if(
+        jobs_.begin(), jobs_.end(),
+        [&](const std::shared_ptr<ComputeJob>& j) { return j->id() == id; });
+    if (it == jobs_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    jobs_.erase(it);
+    return true;
+}
+
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
 bool Node::drop_principal(const std::string& name) {
@@ -1018,6 +1126,11 @@ void Node::migrate_to_replication() {
         if (!snapshot.contains(catalog::model_key(model->id()))) {
             replication_->set(catalog::model_key(model->id()),
                               model->metadata());
+        }
+    }
+    for (const auto& job : jobs_) {
+        if (!snapshot.contains(catalog::job_key(job->id()))) {
+            replication_->set(catalog::job_key(job->id()), job->metadata());
         }
     }
     for (const auto& principal : principals_) {
@@ -1407,6 +1520,35 @@ void Node::reconcile_from_replication() {
             materialize_model(id, std::move(value));
         } else if (model->metadata() != to_json(value)) {
             model->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+
+    // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
+    // validate the desired set at the boundary (a malformed CRDT value is ignored,
+    // not trusted), then drop / add / update the local projection to match — with
+    // no re-capture and no audit (apply_value / materialize_job do not write back
+    // to the CRDT, and a peer's create/finish arrives already-audited as its own
+    // replicated `audit:` event).
+    std::map<std::string, ComputeJobValue> compute_jobs;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kJobPrefix);
+        if (id.empty()) continue;
+        if (std::optional<ComputeJobValue> parsed =
+                parse_compute_job_value(value)) {
+            compute_jobs.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_job_ids;
+    for (const auto& job : jobs_) local_job_ids.push_back(job->id());
+    for (const std::string& job_id : local_job_ids) {
+        if (!compute_jobs.contains(job_id)) materialize_drop_job(job_id);
+    }
+    for (auto& [id, value] : compute_jobs) {
+        auto job = find_job(id);
+        if (!job) {
+            materialize_job(id, std::move(value));
+        } else if (job->metadata() != to_json(value)) {
+            job->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
 

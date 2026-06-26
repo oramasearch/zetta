@@ -1,8 +1,9 @@
 # Audit trail
 
 An **audit trail** records an immutable, append-only `AuditEvent` for every
-governed action — a **graph change**, a **deploy**, or a **data-access**
-decision. It is a slice of **FEAT-9 (Governed self-service)** and realizes the
+governed action — a **graph change**, a **deploy**, a **data-access** decision,
+or a **compute-job lifecycle** event. It is a slice of **FEAT-9 (Governed
+self-service)** and realizes the
 closed domain spec **ENT-23**; it relates to **CTL-5** (audit trail + approval
 gates). It builds directly on the [key-scoped access model](access-control.md)
 (`Principal` + `AccessKey`): a data-access event is exactly the outcome of a
@@ -24,7 +25,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access`. |
+| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished`. |
 | `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
 | `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
 | `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |
@@ -36,16 +37,17 @@ chronologically as plain text); the trail is kept sorted by `(time, id)`.
 
 ## What emits an event
 
-Events are emitted at the three governed seams, and **only for local user
-actions** — the reverse `materialize_*` paths used by reconciliation never emit
-(a peer's action arrives already-audited as its own replicated `audit:` event,
-so each action is recorded exactly once, on the node where it happened):
+Events are emitted at the governed seams, and **only for local user actions** —
+the reverse `materialize_*` paths used by reconciliation never emit (a peer's
+action arrives already-audited as its own replicated `audit:` event, so each
+action is recorded exactly once, on the node where it happened):
 
 | Action | Seam | Event |
 |---|---|---|
 | **Graph change** | `Project::create_graph` / `drop_graph` | `graph_created` / `graph_dropped`, `target` = graph name, `actor` = the project's owner key. |
 | **Deploy** | `Node::deploy_graph` | `graph_deployed` (on a successful placement), `target` = graph name, `detail` = node/edge counts + the placed node. |
 | **Data access** | `Node::authorize` | `data_access`, `allowed` = the decision, `target` = `kind:name`, `actor` = the login key id, `detail` = the decision's reason. |
+| **Compute job** | `Node::create_job` / `ComputeJob::set_status` | `job_created` (on create) / `job_finished` (on the first terminal transition), `target` = job id, `allowed` = success (for `job_finished`), `detail` = the job kind / note. See [compute-jobs.md](compute-jobs.md). |
 
 Because every `authorize` decision is recorded, `Node::authorize` is **non-const**
 (it appends to the trail). `zetta::authorize(const AccessKey&, const Resource&)`
