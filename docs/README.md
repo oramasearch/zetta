@@ -7,6 +7,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
 - [projects.md](projects.md) — the AI project (`zetta::Project`) data model, lifecycle CRUD, and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
+- [runs.md](runs.md) — the Run (`zetta::Run`) record: status / logs / outputs / lineage, with JSON-Schema boundary validation.
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→clean→model→index→serve→act taxonomy, and its JSON form (`to_json`/`from_json` + schema validation).

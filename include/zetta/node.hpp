@@ -11,6 +11,7 @@
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/project.hpp"
+#include "zetta/run.hpp"
 
 namespace zetta {
 
@@ -121,6 +122,20 @@ public:
     }
     std::size_t deployment_count() const { return deployments_.size(); }
 
+    // CRUD for runs (one execution of a deployed graph — see run.hpp /
+    // docs/runs.md). Runs have no human name: they are keyed by id, so find /
+    // drop take the id. create stamps created/updated, starts Pending, and takes
+    // optional project + graph references. The "update" half of the slice is the
+    // mutators on the returned Run handle (set_status / add_log / set_outputs /
+    // set_lineage), which capture into the CRDT and persist. runs() is in a
+    // stable order (created, then id).
+    std::shared_ptr<Run> create_run(std::string project = {},
+                                    std::string graph = {});
+    std::shared_ptr<Run> find_run(const std::string& id) const;
+    bool drop_run(const std::string& id);
+    std::vector<std::shared_ptr<Run>> runs() const { return runs_; }
+    std::size_t run_count() const { return runs_.size(); }
+
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
@@ -157,6 +172,9 @@ private:
     // UUID persisted in data_dir/node_id (created on first use). Set by start().
     std::string resolve_node_id();
 
+    // Rebuild runs_ by scanning config_.data_dir. Called from start().
+    void load_runs();
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -178,6 +196,8 @@ private:
         std::string node_id, std::size_t node_count, std::size_t edge_count,
         std::string created);
     bool materialize_drop_deployment(const std::string& id);
+    std::shared_ptr<Run> materialize_run(std::string id, RunValue value);
+    bool materialize_drop_run(const std::string& id);
 
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
@@ -190,6 +210,7 @@ private:
     std::vector<std::shared_ptr<Database>> databases_;      // insertion order
     std::vector<std::shared_ptr<Project>> projects_;        // insertion order
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
+    std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
 };
 
 }  // namespace zetta

@@ -94,6 +94,21 @@ a later slice (the record replicates today; the bytes don't move yet). This is
 storage + provenance only — no parsing/compilation. See
 [docs/project-inputs.md](docs/project-inputs.md).
 
+A node also owns **runs** (`zetta::Run`) — the record of **one execution of a
+deployed graph**: `status` (`Pending`→`Running`→`Succeeded`|`Failed`), `logs`,
+produced `outputs` (datasets/models/indexes), and `lineage` (sources, steps,
+freshness, confidence), plus optional `project`/`graph` id references. Another
+top-level, replicated entity (flat key `run:<uuid>`, on-disk `<run-uuid>/run.json`),
+modeled like `Project` but keyed by id (runs have no human name): `create_run`/
+`find_run`/`drop_run`/`runs`, with the "update" half being mutators on the handle
+(`set_status`/`add_log`/`set_outputs`/`set_lineage`) that capture into the CRDT
+then persist. **Run is the first record validated against a formal JSON Schema**
+(draft-07) at the storage boundary — every value entering from disk or the CRDT
+passes `parse_run_value`, so malformed data is rejected with a clear reason
+instead of corrupting the tree (via `pboettch/json-schema-validator`, linked
+PRIVATE to zetta-core). This is **storage + model only**; graph execution
+(StartRun) and the Runs panel are later slices. See [docs/runs.md](docs/runs.md).
+
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
 check** by default (`Node::check_integrity()` → `IntegrityReport`, logged as
@@ -234,6 +249,9 @@ data_dir/
       <graph-uuid>.json      ← { id, project, name, graph: { nodes, edges } }
   <deployment-uuid>/         ← one folder per deployment (UUIDv4 = its id)
     deployment.json          ← { id, graph_name, target, node, node_count, … }
+  <run-uuid>/                ← one folder per run (UUIDv4 = its id)
+    run.json                 ← { id, project, graph, status, created, updated,
+                                  logs, outputs, lineage }
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -371,6 +389,11 @@ panel are separate tasks. `Node` learns its own id (`Node::node_id()`) from the
   - **Dear ImGui** (v1.91.5) — immediate-mode GUI, SDL3 + SDL_Renderer backend
   - **nlohmann/json** (v3.11.3) — JSON documents for the storage engine
     (linked into `zetta-core`, so headless gets it too)
+  - **json-schema-validator** (pboettch, 2.4.0) — JSON-Schema boundary
+    validation (the Run record; `src/core/run.cpp`). FetchContent'd **after**
+    automerge-cpp so it reuses that nlohmann/json target; linked **PRIVATE** to
+    `zetta-core`, and compiled with `-fexperimental-library` to match
+    zetta-core's libc++ ABI (propagated from Boost::capy).
 - **ccache** used as the compiler launcher when present (auto-detected).
 
 ## Build + run
@@ -417,13 +440,14 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
   project_graph.hpp         zetta::ProjectGraph — a named ExecutionGraph under a project
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
+  run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -451,13 +475,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases()/load_projects()/load_deployments() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs() + replication capture/reconcile/persist
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
   project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
+  run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -596,6 +621,7 @@ loop thread).
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
+- [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).

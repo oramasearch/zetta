@@ -35,7 +35,10 @@ see [docs/project-inputs.md](docs/project-inputs.md)) and its **execution graphs
 (the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
 [docs/execution-graph.md](docs/execution-graph.md)). A node can also **deploy** a
 validated execution graph onto a target, recording the placement (R1 local; see
-[docs/deployments.md](docs/deployments.md)). Query it all with basic
+[docs/deployments.md](docs/deployments.md)), and owns **runs** (`zetta::Run`), the
+record of one graph execution: status, logs, outputs, and lineage, validated
+against a JSON Schema at the storage boundary (see [docs/runs.md](docs/runs.md)).
+Query it all with basic
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.
 The async runtime is coroutine-native (C++
@@ -84,8 +87,8 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
-rows, [projects](docs/projects.md), and [project inputs](docs/project-inputs.md)
-created on any node converge onto every
+rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md), and
+[runs](docs/runs.md) created on any node converge onto every
 node — in memory and on disk**, conflict-free, with no leader (the CRDT document
 is the source of truth; disk follows). [Large objects](docs/large-objects.md)
 replicate too — their metadata

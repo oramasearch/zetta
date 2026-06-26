@@ -41,6 +41,7 @@ bool Node::start() {
     load_databases();
     load_projects();
     load_deployments();
+    load_runs();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -50,9 +51,9 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments)\n",
+        "%zu deployments, %zu runs)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
-        projects_.size(), deployments_.size());
+        projects_.size(), deployments_.size(), runs_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -463,6 +464,97 @@ bool Node::materialize_drop_deployment(const std::string& id) {
     return true;
 }
 
+// ----- runs (one execution of a deployed graph; replicated as run:<uuid>) ----
+
+void Node::load_runs() {
+    runs_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "run.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a run.json that fails the Run JSON Schema is
+        // rejected here (with a logged reason) rather than allowed to corrupt
+        // the in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<RunValue> value =
+            meta.is_discarded()
+                ? std::nullopt
+                : parse_run_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid run %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON"
+                                            : error.c_str());
+            continue;
+        }
+        runs_.push_back(std::make_shared<Run>(entry.path().filename().string(),
+                                              *value, entry.path(),
+                                              replication_));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(runs_.begin(), runs_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<Run> Node::create_run(std::string project, std::string graph) {
+    const std::string id = new_uuid();
+    const std::string now = now_iso8601();
+    RunValue value;
+    value.project = std::move(project);
+    value.graph = std::move(graph);
+    value.status = RunStatus::Pending;
+    value.created = now;
+    value.updated = now;
+    if (replication_) replication_->set(catalog::run_key(id), to_json(value));
+    return materialize_run(id, std::move(value));
+}
+
+std::shared_ptr<Run> Node::materialize_run(std::string id, RunValue value) {
+    if (auto existing = find_run(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto run = std::make_shared<Run>(std::move(id), std::move(value), dir,
+                                     replication_);
+    run->persist_meta();
+    runs_.push_back(run);
+    return run;
+}
+
+std::shared_ptr<Run> Node::find_run(const std::string& id) const {
+    for (const auto& run : runs_) {
+        if (run->id() == id) return run;
+    }
+    return nullptr;
+}
+
+bool Node::drop_run(const std::string& id) {
+    if (!find_run(id)) return false;
+    if (replication_) replication_->remove(catalog::run_key(id));
+    return materialize_drop_run(id);
+}
+
+bool Node::materialize_drop_run(const std::string& id) {
+    const auto it = std::find_if(
+        runs_.begin(), runs_.end(),
+        [&](const std::shared_ptr<Run>& r) { return r->id() == id; });
+    if (it == runs_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    runs_.erase(it);
+    return true;
+}
+
 // ----- replication: persistence ---------------------------------------------
 
 fs::path Node::replication_path() const {
@@ -555,6 +647,11 @@ void Node::migrate_to_replication() {
         if (!snapshot.contains(catalog::deployment_key(deployment->id()))) {
             replication_->set(catalog::deployment_key(deployment->id()),
                               deployment->metadata());
+        }
+    }
+    for (const auto& run : runs_) {
+        if (!snapshot.contains(catalog::run_key(run->id()))) {
+            replication_->set(catalog::run_key(run->id()), run->metadata());
         }
     }
 }
@@ -874,6 +971,32 @@ void Node::reconcile_from_replication() {
                                    entry.edge_count, entry.created);
         }
     }
+
+    // Runs (top-level, no parent): run:<id> -> the run value. Decode + validate
+    // the desired set at the boundary (a malformed CRDT value is ignored, not
+    // trusted), then drop / add / update the local projection to match — with no
+    // re-capture (apply_value / materialize_run do not write back to the CRDT).
+    std::map<std::string, RunValue> runs;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kRunPrefix);
+        if (id.empty()) continue;
+        if (std::optional<RunValue> parsed = parse_run_value(value)) {
+            runs.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_run_ids;
+    for (const auto& run : runs_) local_run_ids.push_back(run->id());
+    for (const std::string& run_id : local_run_ids) {
+        if (!runs.contains(run_id)) materialize_drop_run(run_id);
+    }
+    for (auto& [id, value] : runs) {
+        auto run = find_run(id);
+        if (!run) {
+            materialize_run(id, std::move(value));
+        } else if (run->metadata() != to_json(value)) {
+            run->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -958,9 +1081,10 @@ std::string Node::status_line() const {
     std::snprintf(
         buf, sizeof(buf),
         "running — up %.0fs, %llu ticks, %zu databases, %zu projects, "
-        "%zu deployments",
+        "%zu deployments, %zu runs",
         uptime_seconds(), static_cast<unsigned long long>(ticks_),
-        databases_.size(), projects_.size(), deployments_.size());
+        databases_.size(), projects_.size(), deployments_.size(),
+        runs_.size());
     return buf;
 }
 

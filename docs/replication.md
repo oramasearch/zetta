@@ -155,6 +155,10 @@ are a materialized *projection* of it.** Concretely:
   - `deployment:<deployment_uuid>` → `{ graph_name, target: {…}, node,
     node_count, edge_count, created }` — a graph placed onto a target (a
     top-level entity with no parent). See [deployments.md](deployments.md).
+  - `run:<run_uuid>` → `{ project, graph, status, created, updated, logs,
+    outputs, lineage }` — one execution of a deployed graph (a top-level entity).
+    The value is **validated against a JSON Schema** before it is trusted, at
+    both entry points (disk + a peer's CRDT value). See [runs.md](runs.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,
