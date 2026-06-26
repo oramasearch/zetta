@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.ddf.PartitionMessage",
+  "description": "A DDF DataFrame partition shipped over the signal plane during a distributed sort's all-to-all shuffle (method ddf.shuffle), carried as the opaque payload of a signal. `tag` names the shuffle round; `from` is the sender's node id; `rows` is the partition's row count; `columns` carries the partition column-major (one entry per frame column, each with its name, dtype, and `rows` values). Validated at the boundary, exactly like the collective message.",
+  "type": "object",
+  "properties": {
+    "tag":  { "type": "string" },
+    "from": { "type": "string" },
+    "rows": { "type": "integer", "minimum": 0 },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name":  { "type": "string", "minLength": 1 },
+          "dtype": {
+            "type": "string",
+            "enum": ["float32", "float64", "int32", "int64", "uint32", "uint64", "uint8"]
+          },
+          "values": { "type": "array", "items": { "type": "number" } }
+        },
+        "required": ["name", "dtype", "values"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["tag", "rows", "columns"],
+  "additionalProperties": false
+}
