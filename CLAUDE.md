@@ -1095,6 +1095,32 @@ cited `oci` command basis is
 [docs/research/oci-cli-compute.md](docs/research/oci-cli-compute.md). See
 [docs/oci-provisioner.md](docs/oci-provisioner.md).
 
+**`zetta::K8sProvisioner`** (`include/zetta/k8s_provisioner.hpp`, **ARC-13 /
+ADR-20**, #434) is the third mirror — the same four-piece shape over **Kubernetes**.
+Unlike the cloud backends (which create VMs), it bursts **worker pods into an
+existing cluster**: the burst pool is a **Deployment** scaled to N replicas (the
+self-healing, maintain-N analog of VMSS/ASG/MIG/Instance Pool), and the cluster is
+the kubeconfig **context** (configured out-of-band, e.g. `get-credentials`). This is
+distinct from the `DeploymentTarget` k8s placement (where a *graph* runs) — this
+provisions *compute nodes*. `K8sProvisioner` is the burst orchestration
+(provision+mint / teardown+revoke, structurally identical to the siblings but
+carrying a `K8sConfig`), delegating to an injected **`K8sControlPlane`** seam with
+the same `IdentityHooks`. Its reference binding **`zetta::K8sCliControlPlane`**
+(`include/zetta/k8s_cli_control_plane.hpp`) shells out to `kubectl` through the
+**shared `CommandRunner`** — `bring_up` ensures the Deployment (`kubectl create
+deployment --image`), applies the per-pod shape (`set env ZETTA_SEED_PEER`, `set
+serviceaccount`, a spot `patch` nodeSelector), then `scale`s to N (the gate) and
+lists pods (`get pods --selector app=<name> -o json`, unwrapping the `{"items":[…]}`
+envelope at the **`ProvisionedNode` boundary**); `destroy` is `kubectl delete pod`;
+every call carries `--namespace`/`--context`. `K8sConfig` (`image` required;
+namespace, deployment name, context, service account, spot, seed peer optional; the
+`namespace` JSON key maps to the C++ `namespace_name`) carries a **validated JSON
+boundary** (`schemas/k8s_config.schema.json`). No live-cluster CI (argv + parsing
+fully faked), no persistence/replication/autoscaler wiring yet. The cited `kubectl`
+command basis is
+[docs/research/kubectl-workloads.md](docs/research/kubectl-workloads.md). See
+[docs/k8s-provisioner.md](docs/k8s-provisioner.md).
+
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
 When the cluster **bursts** compute nodes for a job, each burst node needs an
@@ -1196,6 +1222,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   gcp_cli_control_plane.hpp zetta::GcpCliControlPlane — reference GcpControlPlane binding: shells out to `gcloud` (Managed Instance Group/Spot shape) via the shared CommandRunner (#378)
   oci_provisioner.hpp       zetta::OciProvisioner/OciConfig/OciControlPlane — OCI cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #432)
   oci_cli_control_plane.hpp zetta::OciCliControlPlane — reference OciControlPlane binding: shells out to `oci` (Instance Pool/preemptible shape, OCID-resolved by name) via the shared CommandRunner (#432)
+  k8s_provisioner.hpp       zetta::K8sProvisioner/K8sConfig/K8sControlPlane — Kubernetes cloud-burst backend mirroring Azure: burst N pods into an existing cluster + mint identities + teardown/revoke behind the control-plane seam, no client lib (ARC-13/ADR-20; #434)
+  k8s_cli_control_plane.hpp zetta::K8sCliControlPlane — reference K8sControlPlane binding: shells out to `kubectl` (Deployment/scale shape) via the shared CommandRunner (#434)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
@@ -1279,6 +1307,8 @@ src/core/                   zetta-core impl
   gcp_cli_control_plane.cpp zetta::GcpCliControlPlane — `gcloud` MIG argv construction (template/create/resize/list/delete-instances) + JSON parse at the ProvisionedNode boundary (#378)
   oci_provisioner.cpp       zetta::OciProvisioner — OCI burst lifecycle (provision+mint / teardown+revoke) over the OciControlPlane seam + OciConfig JSON boundary (#432)
   oci_cli_control_plane.cpp zetta::OciCliControlPlane — `oci` Instance Pool argv (resolve-by-name/instance-config/create-or-resize/list-instances/detach) + JSON parse at the ProvisionedNode boundary (#432)
+  k8s_provisioner.cpp       zetta::K8sProvisioner — Kubernetes burst lifecycle (provision+mint / teardown+revoke) over the K8sControlPlane seam + K8sConfig JSON boundary (#434)
+  k8s_cli_control_plane.cpp zetta::K8sCliControlPlane — `kubectl` Deployment argv (create/set env+sa/patch spot/scale/get pods/delete pod) + JSON parse at the ProvisionedNode boundary (#434)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
@@ -1477,6 +1507,7 @@ loop thread).
 - [`docs/aws-provisioner.md`](docs/aws-provisioner.md) — the AWS cloud-burst Provisioner backend (`zetta::AwsProvisioner` + `AwsCliControlPlane`): burst N ephemeral AWS nodes (EC2 Auto Scaling Group / Spot shape via the `aws` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AwsConfig` — the AWS mirror of the Azure reference per the [cloud-provisioner pattern](docs/cloud-provisioner-pattern.md) (ARC-13 / ADR-20, #377).
 - [`docs/gcp-provisioner.md`](docs/gcp-provisioner.md) — the GCP cloud-burst `Provisioner` backend (`zetta::GcpProvisioner` + `GcpCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Managed Instance Group / Spot shape via the `gcloud` CLI, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `GcpControlPlane` + identity seams, schema-validated `GcpConfig` (ARC-13 / ADR-20, #378).
 - [`docs/oci-provisioner.md`](docs/oci-provisioner.md) — the OCI cloud-burst `Provisioner` backend (`zetta::OciProvisioner` + `OciCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Instance Pool / preemptible shape via the `oci` CLI, OCID-resolved by name, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `OciControlPlane` + identity seams, schema-validated `OciConfig` (ARC-13 / ADR-20, #432).
+- [`docs/k8s-provisioner.md`](docs/k8s-provisioner.md) — the Kubernetes cloud-burst `Provisioner` backend (`zetta::K8sProvisioner` + `K8sCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N worker pods into an existing cluster (a Deployment scaled via the `kubectl` CLI, no client lib), mint bulk burst identities so they join, tear down + revoke; injectable `K8sControlPlane` + identity seams, schema-validated `K8sConfig` (ARC-13 / ADR-20, #434).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
