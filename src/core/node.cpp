@@ -809,6 +809,15 @@ std::shared_ptr<AuditEvent> Node::materialize_audit_event(
     return event;
 }
 
+AccessDecision Node::authorize(const std::string& key_id,
+                               const Operation& operation) const {
+    auto key = find_access_key(key_id);
+    if (!key) {
+        return AccessDecision{false, "unknown access key — denied"};
+    }
+    return zetta::authorize(*key, operation, now_iso8601());
+}
+
 ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
                                 std::string project, std::string graph_id) {
     // Delegate to the standalone orchestrator with the default per-step executor.
@@ -1325,6 +1334,7 @@ void Node::reconcile_from_replication() {
     struct AccessKeyEntry {
         std::string principal_id;
         Scope scope;
+        CapabilitySet capabilities;
         std::string created;
     };
     std::map<std::string, AccessKeyEntry> access_keys;  // id -> entry
@@ -1336,10 +1346,17 @@ void Node::reconcile_from_replication() {
         }
         Scope scope;
         if (!scope_from_json(value["scope"], scope)) continue;  // boundary
+        // Capabilities are optional (a peer on an older shape omits them => no
+        // rights); a present-yet-malformed set is rejected rather than applied.
+        CapabilitySet capabilities;
+        if (value.contains("capabilities") &&
+            !capability_set_from_json(value["capabilities"], capabilities)) {
+            continue;
+        }
         access_keys.emplace(
             std::move(id),
             AccessKeyEntry{value.value("principal", std::string{}),
-                           std::move(scope),
+                           std::move(scope), std::move(capabilities),
                            value.value("created", std::string{})});
     }
     // Removals first (a peer dropped a key, or its principal is gone).
@@ -1361,6 +1378,7 @@ void Node::reconcile_from_replication() {
         auto principal = find_principal_by_id(entry.principal_id);
         if (principal && !principal->find_key(id)) {
             principal->materialize_key(id, std::move(entry.scope),
+                                       std::move(entry.capabilities),
                                        entry.created);
         }
     }

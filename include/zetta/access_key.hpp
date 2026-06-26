@@ -2,9 +2,11 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/capability.hpp"
 #include "zetta/scope.hpp"
 
 namespace zetta {
@@ -29,14 +31,20 @@ namespace zetta {
 //     { id, principal, scope: { unrestricted, grants: [...] }, created }
 //
 // The id is the folder name and never changes.
+//
+// A key bounds access along two orthogonal axes: its **scope** (which resources
+// it may touch — see scope.hpp) and its **capabilities** (which rights it may
+// exercise — see capability.hpp, ENT-22). Both are deny-by-default.
 class AccessKey {
 public:
     AccessKey(std::string id, std::string principal_id, Scope scope,
-              std::string created, std::filesystem::path dir);
+              CapabilitySet capabilities, std::string created,
+              std::filesystem::path dir);
 
     const std::string& id() const { return id_; }
     const std::string& principal_id() const { return principal_id_; }
     const Scope& scope() const { return scope_; }
+    const CapabilitySet& capabilities() const { return capabilities_; }
     const std::string& created() const { return created_; }
     const std::filesystem::path& dir() const { return dir_; }
 
@@ -46,8 +54,15 @@ public:
         return scope_.permits(resource);
     }
 
-    // The replicated/on-disk value shape: { principal, scope, created }. The id
-    // is the CRDT key / folder name, so it isn't repeated here.
+    // Does this key's capabilities permit `operation` as of `now`? Deny-by-default
+    // — delegates to CapabilitySet::permits (a matching, unexpired capability).
+    // The right/verb half of the access decision (ENT-22).
+    bool permits(const Operation& operation, std::string_view now) const {
+        return capabilities_.permits(operation, now);
+    }
+
+    // The replicated/on-disk value shape: { principal, scope, capabilities,
+    // created }. The id is the CRDT key / folder name, so it isn't repeated here.
     nlohmann::json metadata() const;
 
     // Write this key's metadata (id + fields) to dir/key.json.
@@ -57,6 +72,7 @@ private:
     std::string id_;
     std::string principal_id_;
     Scope scope_;
+    CapabilitySet capabilities_;
     std::string created_;
     std::filesystem::path dir_;
 };
@@ -77,5 +93,14 @@ struct AccessDecision {
 // decision over a known key; Node::authorize resolves a key id to a key (and
 // denies an unknown key) before calling this.
 AccessDecision authorize(const AccessKey& key, const Resource& resource);
+
+// The capability enforcement decision (ENT-22): `operation` is allowed iff the
+// key holds a matching, unexpired capability as of `now` (an ISO-8601 UTC stamp).
+// Deny-by-default — a key with no matching capability denies, and the reason
+// distinguishes "never granted" from "TTL expired" for the audit trail. The pure
+// decision over a known key; Node::authorize(key_id, operation) resolves the key
+// (and supplies the current time) before calling this.
+AccessDecision authorize(const AccessKey& key, const Operation& operation,
+                         std::string_view now);
 
 }  // namespace zetta
