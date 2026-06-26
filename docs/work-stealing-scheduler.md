@@ -166,15 +166,44 @@ never tasks it has itself stolen — so there is no re-steal loop. It is also th
 batches and returning them until the owner's backlog drains, while a slow node
 pulls fewer.
 
-### Robustness: leases + re-queue
+### Elastic mid-job membership (join / leave / lost-node re-exec)
 
-Each handed-out task is **leased** to the stealer with a deadline
-(`Config::steal_lease`, default 3 s). If the stealer never returns it — it died,
-or the link dropped — the owner's steal loop **re-queues** the expired
-assignment, so a local drainer or another peer finishes it and `map` never hangs
-on a lost helper (as long as *some* compute capacity remains). Completion is
-**idempotent** (a per-index `done` flag), so a slow helper's late result for an
-already-re-queued task is harmlessly ignored rather than double-counted.
+The fleet may change **while a job is running** and the job still finishes
+correctly — the property that makes mid-flight autoscaling safe (blueprint
+**ADR-29 / ARC-10**,
+[#367](https://github.com/oramasearch/zetta/issues/367)). Both directions fall
+out of the pull-based design:
+
+- **A node joins mid-job → it speeds the job up.** The steal loop re-reads
+  `cluster_.peers()` on every pass (`Config::steal_interval`, default 25 ms), so
+  a node provisioned *after* `map()` started sees the owner on its next tick and
+  begins stealing the remaining backlog — no registration handshake, no rebalance
+  step. There is nothing to re-shard because assignment is pull-based: idle nodes
+  keep pulling batches until the owner's queue drains, so a late arrival simply
+  starts pulling.
+
+- **A node leaves / fails mid-job → its in-flight tasks are re-executed.** Each
+  handed-out task is recorded in the owner's `assigned` map with the **peer id**
+  that holds it and a **lease deadline**. The owner's steal loop runs
+  `sweep_lost_assignments()` each pass, which re-queues a held task when **either**:
+  1. **the peer left the cluster** — it is no longer in `cluster_.peers()`, so it
+     can never return the task. This is the fast, *membership-driven* detection
+     path: a crashed node closes its sockets (prompt EOF → immediate removal); a
+     partitioned/silent node is dropped after `ClusterConfig::peer_idle_timeout_seconds`.
+     Re-queues on this path are counted separately in `Stats::lost_node_requeued`.
+  2. **the lease expired** (`Config::steal_lease`, default 3 s) — the backstop for
+     a helper that is *still connected* but has gone quiet (a hang), where
+     membership gives no signal.
+
+  Either way a local drainer or another peer picks the re-queued task up, so
+  `map` never strands work on a lost helper as long as *some* compute capacity
+  remains. Completion is **idempotent** (a per-index `done` flag), so if a slow
+  or briefly-partitioned helper's result arrives *after* the task was re-queued
+  and re-run, the late result is harmlessly ignored rather than double-counted.
+
+This adds **no new wire message or JSON boundary** — membership comes from the
+cluster's in-memory peer table, and the steal/offer/result messages are
+unchanged (and already schema-validated, below).
 
 A `worker_count == 0` node is a valid **pure source**: it runs no tasks itself
 and exists only to hand its work to peers (the deterministic cross-node test

@@ -1,6 +1,7 @@
 #include "zetta/compute/distributed_scheduler.hpp"
 
 #include <optional>
+#include <unordered_set>
 #include <utility>
 
 #include <nlohmann/json.hpp>
@@ -261,9 +262,9 @@ void DistributedScheduler::complete_index(Job& job, std::size_t index,
 
 void DistributedScheduler::steal_loop(std::stop_token stop_token) {
     while (!stop_token.stop_requested()) {
-        // Re-queue any tasks a dead/slow helper took but never returned, so an
-        // owned map() never hangs on a lost helper.
-        sweep_expired_assignments();
+        // Re-queue any tasks a departed/dead/slow helper took but never returned,
+        // so an owned map() never hangs on a lost helper (elastic membership).
+        sweep_lost_assignments();
 
         const bool did_work = try_steal_once();
         if (did_work) continue;  // keep pulling while a peer has work
@@ -353,8 +354,18 @@ bool DistributedScheduler::try_steal_once() {
     return false;
 }
 
-void DistributedScheduler::sweep_expired_assignments() {
+void DistributedScheduler::sweep_lost_assignments() {
     const auto now = std::chrono::steady_clock::now();
+
+    // Elastic membership: a peer that has dropped out of the cluster can no
+    // longer return the tasks it holds, so re-queue them the moment it leaves
+    // rather than waiting out its lease. The cluster detects a departed peer
+    // promptly (a closed/dead link removes it from membership), so this is the
+    // fast "lost node detected and re-stolen" path (#367); the lease deadline is
+    // the slower backstop for a peer that is still connected but silent.
+    std::unordered_set<std::string> connected;
+    for (const ClusterPeer& peer : cluster_.peers()) connected.insert(peer.node_id);
+
     std::vector<std::shared_ptr<Job>> owned;
     {
         const std::lock_guard<std::mutex> lock(jobs_mutex_);
@@ -366,9 +377,14 @@ void DistributedScheduler::sweep_expired_assignments() {
         {
             const std::lock_guard<std::mutex> lock(job->mutex);
             for (auto it = job->assigned.begin(); it != job->assigned.end();) {
-                if (it->second.deadline <= now && !job->done[it->first]) {
+                const bool departed = !connected.contains(it->second.peer);
+                const bool lease_expired = it->second.deadline <= now;
+                if ((departed || lease_expired) && !job->done[it->first]) {
                     job->pending.push_back(it->first);
                     requeued_.fetch_add(1, std::memory_order_relaxed);
+                    if (departed) {
+                        lost_node_requeued_.fetch_add(1, std::memory_order_relaxed);
+                    }
                     it = job->assigned.erase(it);
                     requeued_any = true;
                 } else {
@@ -476,6 +492,8 @@ DistributedScheduler::Stats DistributedScheduler::stats() const {
         .handed_out = handed_out_.load(std::memory_order_relaxed),
         .stolen_executed = stolen_executed_.load(std::memory_order_relaxed),
         .requeued = requeued_.load(std::memory_order_relaxed),
+        .lost_node_requeued =
+            lost_node_requeued_.load(std::memory_order_relaxed),
         .steal_requests_sent =
             steal_requests_sent_.load(std::memory_order_relaxed),
     };

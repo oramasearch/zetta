@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -159,6 +161,177 @@ TEST(DistributedScheduler, WorkIsSharedAcrossNodes) {
 
     owner.stop();
     helper.stop();
+    b.stop();
+    a.stop();
+}
+
+// --- Elastic mid-job membership (#367) ---------------------------------------
+
+// Killing a helper mid-job must not strand the tasks it holds. The owner detects
+// the departed peer via cluster membership and re-queues its in-flight tasks, so
+// a surviving worker re-executes them and map() still returns correct results. A
+// deliberately long steal lease isolates the *membership* recovery path: the
+// lease cannot fire within the test window, so the only thing that re-queues the
+// killed helper's tasks is its disappearance from the cluster.
+TEST(DistributedScheduler, KilledWorkerMidJobReexecutesAndJobCompletes) {
+    const std::string id_a = zetta::new_uuid();
+    const std::string id_b = zetta::new_uuid();
+
+    ClusterConfig config_a;
+    config_a.listen_host = "127.0.0.1";
+    config_a.listen_port = 44220;
+    config_a.port_range = 1;
+    // Drop a silent peer quickly: severing b below stops its io_context without a
+    // clean socket close, so A learns b is gone via this idle timeout rather than
+    // a prompt EOF (a real process crash closes its sockets and is detected even
+    // faster). 1 s keeps the test brisk while still exercising the membership path.
+    config_a.peer_idle_timeout_seconds = 1;
+    Cluster a{id_a, config_a};
+
+    ClusterConfig config_b;
+    config_b.listen_host = "127.0.0.1";
+    config_b.listen_port = 44221;
+    config_b.port_range = 1;
+    config_b.seeds = {"127.0.0.1:44220"};
+    Cluster b{id_b, config_b};
+
+    // Owner A keeps real workers and a 60 s lease, so within the test only
+    // membership detection (not the lease) can recover the killed helper's tasks.
+    DistributedScheduler::Config owner_config;
+    owner_config.steal_lease = std::chrono::seconds(60);
+    DistributedScheduler owner{a, /*worker_count=*/2, owner_config};
+    // A short steal RPC timeout so the helper's doomed result-shipping (to the
+    // severed owner) gives up fast at teardown instead of waiting the default.
+    DistributedScheduler::Config helper_config;
+    helper_config.steal_timeout = std::chrono::milliseconds(250);
+    DistributedScheduler helper{b, /*worker_count=*/4, helper_config};
+
+    // The owner computes normally (it must finish after the helper dies). The
+    // helper blocks inside every task it steals until released — so when we sever
+    // it, it is provably holding in-flight tasks it can never return.
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    auto holding = std::make_shared<std::atomic<int>>(0);
+    auto slow_square = [](std::string_view, std::string_view payload) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        const long value = std::stol(std::string(payload));
+        return std::to_string(value * value);
+    };
+    auto blocking_square = [release, holding](std::string_view,
+                                              std::string_view payload) {
+        holding->fetch_add(1, std::memory_order_relaxed);
+        while (!release->load(std::memory_order_acquire)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        const long value = std::stol(std::string(payload));
+        return std::to_string(value * value);
+    };
+    owner.set_executor(slow_square);
+    helper.set_executor(blocking_square);
+
+    a.start();
+    sleep_ms(100);
+    b.start();
+    ASSERT_TRUE(wait_for([&] { return a.peer_count() == 1 && b.peer_count() == 1; }));
+    owner.start();
+    helper.start();
+
+    std::vector<std::string> inputs;
+    constexpr int kTasks = 200;
+    for (int value = 0; value < kTasks; ++value) inputs.push_back(std::to_string(value));
+
+    // Run the job on a background thread so we can kill the helper mid-flight.
+    std::vector<std::string> results;
+    std::thread map_thread([&] { results = owner.map("square", inputs); });
+
+    // Wait until the helper is provably holding stolen tasks (blocked inside them).
+    ASSERT_TRUE(wait_for([&] { return holding->load() > 0; }));
+
+    // Kill the helper: sever its network so it drops out of the cluster and can
+    // never return the tasks it holds — exactly a node that failed mid-task. Its
+    // scheduler is left running but isolated.
+    b.stop();
+
+    // The owner detects the departed peer, re-queues its tasks, and its own
+    // workers finish them, so map() completes with correct results.
+    map_thread.join();
+
+    ASSERT_EQ(results.size(), inputs.size());
+    for (int value = 0; value < kTasks; ++value) {
+        EXPECT_EQ(results[value], std::to_string(value * value)) << value;
+    }
+    // Recovery came from membership detection, not the (60 s) lease backstop.
+    EXPECT_GT(owner.stats().lost_node_requeued, 0u);
+
+    *release = true;  // unblock the helper's stuck workers for a clean teardown
+    helper.stop();
+    owner.stop();
+    a.stop();
+}
+
+// Adding a worker to a running job lets it help: a node that joins mid-job starts
+// stealing and runs a real share, and the results stay correct. We assert the
+// deterministic evidence of participation (the new node stole and ran tasks, and
+// every handed-out task came back) rather than a flaky wall-clock speedup.
+TEST(DistributedScheduler, WorkerJoiningMidJobParticipatesAndJobCompletes) {
+    const std::string id_a = zetta::new_uuid();
+    const std::string id_b = zetta::new_uuid();
+
+    ClusterConfig config_a;
+    config_a.listen_host = "127.0.0.1";
+    config_a.listen_port = 44230;
+    config_a.port_range = 1;
+    Cluster a{id_a, config_a};
+
+    ClusterConfig config_b;
+    config_b.listen_host = "127.0.0.1";
+    config_b.listen_port = 44231;
+    config_b.port_range = 1;
+    config_b.seeds = {"127.0.0.1:44230"};
+    Cluster b{id_b, config_b};
+
+    DistributedScheduler owner{a, /*worker_count=*/2};
+    DistributedScheduler helper{b, /*worker_count=*/2};
+    // A slow executor + a large job, so the owner is still grinding when the
+    // helper joins and there is a backlog left to steal.
+    auto slow_square = [](std::string_view, std::string_view payload) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+        const long value = std::stol(std::string(payload));
+        return std::to_string(value * value);
+    };
+    owner.set_executor(slow_square);
+    helper.set_executor(slow_square);
+
+    // The owner starts the job alone — no peers yet.
+    a.start();
+    owner.start();
+
+    std::vector<std::string> inputs;
+    constexpr int kTasks = 300;
+    for (int value = 0; value < kTasks; ++value) inputs.push_back(std::to_string(value));
+
+    std::vector<std::string> results;
+    std::thread map_thread([&] { results = owner.map("square", inputs); });
+
+    // Bring up the helper *after* the job is already running — the autoscaling
+    // case: provision a node mid-flight and it joins the in-flight job.
+    b.start();
+    ASSERT_TRUE(wait_for([&] { return a.peer_count() == 1 && b.peer_count() == 1; }));
+    helper.start();
+
+    map_thread.join();
+
+    ASSERT_EQ(results.size(), inputs.size());
+    for (int value = 0; value < kTasks; ++value) {
+        EXPECT_EQ(results[value], std::to_string(value * value)) << value;
+    }
+    // The late-joining helper stole and ran a real share; the owner ran the rest;
+    // every task it was handed came back (no re-queue for a healthy helper).
+    EXPECT_GT(helper.stats().stolen_executed, 0u);
+    EXPECT_GT(owner.stats().local_executed, 0u);
+    EXPECT_EQ(owner.stats().handed_out, helper.stats().stolen_executed);
+
+    helper.stop();
+    owner.stop();
     b.stop();
     a.stop();
 }

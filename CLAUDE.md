@@ -448,13 +448,24 @@ idle/faster *nodes* steal pending tasks from peers over the
 local drainers and idle peers both pull from it — a peer sends a `steal` RPC, the
 owner replies with an **offer** of leased tasks, the peer runs them on its own
 pool and returns a `steal_result`. **Single-hop** (a node only hands out its own
-jobs' tasks, never re-steals), with **leases + re-queue** so a dead helper never
-hangs `map`, and **idempotent** completion so a late result is ignored. The
+jobs' tasks, never re-steals), and **idempotent** completion so a late result is
+ignored. It is **elastic mid-job** (ARC-10 / #367) — the fleet can change while a
+job runs and the job still finishes correctly: a node that **joins** mid-job
+starts stealing on its next tick (the steal loop re-reads `Cluster::peers()` each
+pass, so an autoscaled-in helper speeds an in-flight job up with no extra wiring),
+and a node that **leaves/fails** mid-job has its in-flight tasks **re-queued** —
+`sweep_lost_assignments()` recovers a held task when its peer **drops out of
+cluster membership** (the fast, *detected* path — a crash closes its sockets,
+silence is dropped after `peer_idle_timeout_seconds`; counted in
+`Stats::lost_node_requeued`) **or** when its per-task **lease** expires
+(`Config::steal_lease`, the backstop for a hung-but-connected helper) — so `map`
+never strands work on a lost helper while any compute capacity remains. The
 application supplies one **executor** (`string(method, payload)`) registered
 identically on every node; the three steal messages are **schema-validated at the
 boundary** (`schemas/steal_{request,offer,result}.schema.json`, same `pboettch`
-validator as the [signal envelope](#signal-plane-rpc--events--tasks)). It is the
-cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
+validator as the [signal envelope](#signal-plane-rpc--events--tasks)); elastic
+membership adds **no new wire message** (it reads the in-memory peer table). It is
+the cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
 signal to a fallback. Scheduling a `ComputeJob` / driving collectives is the
 **job coordinator** (#372), a later slice that submits work *through* this. See
 [docs/work-stealing-scheduler.md](docs/work-stealing-scheduler.md).
@@ -1361,7 +1372,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     cuda_device.hpp         zetta::compute::CudaDevice — the GPU backend (CUDA-free header; guarded by ZETTA_WITH_CUDA, #363)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
-    distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane (ARC-10/#366)
+    distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
 src/core/                   zetta-core impl
@@ -1426,7 +1437,7 @@ src/core/                   zetta-core impl
   compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
-  compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary (zetta-core; #366)
+  compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
   ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
@@ -1587,7 +1598,7 @@ loop thread).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/ddf.md`](docs/ddf.md) — the DDF DataFrame core (`zetta::ddf::DataFrame`): a typed, columnar, chunked frame over the storage engine, each chunk a `ComputeDevice` buffer; table→columns loader + schema inference + value/JSON boundaries — the substrate DDF ops operate on (ARC-12 / GLO-11 / ENT-33; #380).
-- [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model (ARC-10 / #366).
+- [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
