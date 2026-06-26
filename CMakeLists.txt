@@ -283,6 +283,7 @@ add_library(zetta-core STATIC
   src/core/ir/serialization.cpp
   src/core/compute/device_buffer.cpp
   src/core/compute/host_stub_device.cpp
+  src/core/compute/device_registry.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp

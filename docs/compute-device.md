@@ -33,7 +33,7 @@ This is the **first** of five issues; the rest build on it:
 | **#359 (this)** | the `ComputeDevice` interface + `DeviceBuffer` memory model + `HostStubDevice` |
 | [#360](https://github.com/oramasearch/zetta/issues/360) | **`CpuDevice`** — the always-built reference backend, operators on host memory via the [`zetta::runtime`](runtime.md) thread pool |
 | [#361](https://github.com/oramasearch/zetta/issues/361) | **`CudaDevice`** — the optional CUDA backend |
-| [#362](https://github.com/oramasearch/zetta/issues/362) | a **device registry** — enumerate a node's devices, report each one's capability, select a backend per op |
+| [#362](https://github.com/oramasearch/zetta/issues/362) | a **device registry** — enumerate a node's devices, report each one's capability, select a backend per op (built — see [device-registry.md](device-registry.md)) |
 | [#363](https://github.com/oramasearch/zetta/issues/363) | **CMake** — optional CUDA detection + a `zetta-compute` target housing the backends, linked without leaking CUDA headers |
 
 `HostStubDevice` is **not** the CPU backend. It is a memory/transfer stub used to
@@ -150,9 +150,10 @@ trust boundary.
 > **No JSON boundary here.** Unlike the [Run](runs.md) and
 > [audit](audit-trail.md) records, this slice introduces **no JSON format** — it
 > is a pure in-process C++ interface that neither stores nor parses a document,
-> so there is no schema to validate. When the registry (#362) one day serializes
-> a device's `DeviceInfo` for the coordinator, that is where a JSON Schema will
-> be added, at that boundary.
+> so there is no schema to validate. The registry slice
+> ([#362](device-registry.md)) is where a device's `DeviceInfo` is serialized for
+> the coordinator, and that is where the JSON Schema was added, at that boundary
+> (`schemas/device_registry.schema.json`).
 
 ## Using it: the host⇄device round-trip
 
@@ -193,6 +194,7 @@ RAII + move semantics, `DeviceInfo`, and that every operator reports
 - **Device registry** (#362) — enumerate a node's devices, report each one's
   capability ([`DeviceInfo`](#the-interface-computedevice)), and select a backend
   per operation; feeds the autoscaler/coordinator's capability model.
+  **Built — see [device-registry.md](device-registry.md).**
 - **CMake `zetta-compute` target** (#363) — house the backends, link them into
   `zetta-core` without leaking CUDA headers (mirrors how SDL/ImGui are kept out).
 
