@@ -330,7 +330,11 @@ memory, parallelizing the data-parallel ones
 sequential. Float-only ops (sqrt/exp/log, gemm, axpy) reject integer dtypes;
 everything returns a `ComputeStatus`, never throwing across the seam. **Its results
 are the numerical reference `zetta::compute::CudaDevice` (#361), the GPU backend,
-is checked against** (correctness over throughput).
+is checked against** (correctness over throughput) — `tests/test_cuda_device.cpp`
+is the CPU↔CUDA conformance suite (guarded on `ZETTA_WITH_CUDA`, skipped with no
+GPU) that runs every operator on both backends and asserts they agree, including
+the edge-case parity (integer-dtype rejection, safe integer divide, out-of-range
+`gather`/`scatter` rejection, deterministic duplicate-index `scatter`).
 
 The **runtime-free** compute backends (the `HostStubDevice` stub, the optional
 `CudaDevice`) plus the `DeviceBuffer` memory model build into a dedicated
@@ -342,8 +346,10 @@ which `zetta-core` owns, so it can't sink into the lower-level `zetta-compute`
 without a link cycle.) A **CPU-only configure is the default** (dev Macs, CI) and
 needs no GPU toolkit; the **CUDA backend is opt-in** behind `-DZETTA_ENABLE_CUDA=ON`,
 which `find_package(CUDAToolkit REQUIRED)`, `enable_language(CUDA)`, adds
-`src/core/compute/cuda_device.cu` (Thrust + custom `histogram`/`gemm` kernels,
-dispatched on `DataType`), links `CUDA::cudart` PRIVATE (so the CUDA include dirs
+`src/core/compute/cuda_device.cu` (Thrust + custom
+`histogram`/`gemm`/`gather`/`scatter` kernels, dispatched on `DataType`, that
+reproduce the `CpuDevice` reference's preconditions + edge cases), links
+`CUDA::cudart` PRIVATE (so the CUDA include dirs
 never reach `zetta-core`), and sets the public `ZETTA_WITH_CUDA` define consumers
 (the device registry #362, the tests) guard `CudaDevice` use on. `cuda_device.hpp`
 is CUDA-free (no `<cuda_runtime.h>`), like `src/gui/app.hpp` keeps SDL out of its
@@ -1187,7 +1193,7 @@ src/core/                   zetta-core impl
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
   compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported (→ zetta-compute)
-  compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels (→ zetta-compute; CUDA build only, #363)
+  compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels, CpuDevice-conformant (→ zetta-compute; CUDA build only, #363/#361)
   compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
