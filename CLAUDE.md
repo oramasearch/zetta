@@ -166,10 +166,11 @@ validated against a formal JSON Schema (`parse_compute_job_value`, the same
 `AuditSink`: `Node::create_job` records a `job_created` event, and
 `ComputeJob::set_status` records a `job_finished` event on the **first** transition
 into a terminal state (the `materialize_*`/`apply_value` reconcile paths never emit
-— a peer's action arrives already-audited). Scheduling/running a job (the
-coordinator, scheduler + collectives, autoscaler, the `ScalingPolicy` model, the
-`system.zetta_jobs` table) are separate, later slices. See
-[docs/compute-jobs.md](docs/compute-jobs.md).
+— a peer's action arrives already-audited). The registry is `Node::jobs()` + the
+read-only SQL **`system.zetta_jobs`** table (job id / kind / status / refs / reward
++ observing node, computed from `Node::jobs()`). Scheduling/running a job (the
+coordinator, scheduler + collectives, autoscaler, the `ScalingPolicy` model) are
+separate, later slices. See [docs/compute-jobs.md](docs/compute-jobs.md).
 
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
@@ -546,9 +547,11 @@ wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
 **`system.zetta_deployments`** (recorded graph→target placements, sourced from
 `Node::deployments()`; qualified name only) and **`system.zetta_models`** (the
 model registry — trained models + their kind / metrics / weights fingerprint,
-sourced from `Node::models()`; qualified name only). `system` is reserved (can't
-be created/dropped/written; no real db may be named it) and is where future
-system tables (e.g. `system.zetta_leadership`) live. Full detail in
+sourced from `Node::models()`; qualified name only) and **`system.zetta_jobs`**
+(the compute-job registry — one row per unit of accelerated compute + its
+lifecycle, sourced from `Node::jobs()`; qualified name only). `system` is
+reserved (can't be created/dropped/written; no real db may be named it) and is
+where future system tables (e.g. `system.zetta_leadership`) live. Full detail in
 [docs/query.md](docs/query.md).
 
 ### Execution graph IR (`zetta::ir`)

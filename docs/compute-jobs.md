@@ -9,11 +9,12 @@ realizes **ARC-11** and the entity spec **ENT-31**.
 
 This page documents the **storage + data model** only: the `ComputeJob` type and
 its lifecycle (create / update / query) on a `Node`, its persistence +
-replication, the audit events it emits, and its JSON-Schema boundary. The pieces
+replication, the audit events it emits, its JSON-Schema boundary, and the
+read-only `system.zetta_jobs` SQL registry that exposes it (below). The pieces
 that *schedule* and *run* a job onto the cluster — the job coordinator, the
-scheduler + collectives, the autoscaler, the `ScalingPolicy` reward model, and
-the `system.zetta_jobs` system table — are **separate, later slices**
-([#369](https://github.com/oramasearch/zetta/issues/369)–[#372](https://github.com/oramasearch/zetta/issues/372)).
+scheduler + collectives, the autoscaler, and the `ScalingPolicy` reward model —
+are **separate, later slices**
+([#370](https://github.com/oramasearch/zetta/issues/370)–[#372](https://github.com/oramasearch/zetta/issues/372)).
 A job created here is the durable, replicated record those slices drive.
 
 It is modeled **exactly like** [`zetta::Run`](runs.md): a top-level entity keyed
@@ -76,6 +77,37 @@ job->set_status(zetta::JobStatus::Running);
 // ... compute happens ...
 job->set_status(zetta::JobStatus::Succeeded, "12 nodes, 4.2s");
 ```
+
+## Queryable via SQL (`system.zetta_jobs`)
+
+The compute-job registry is exposed as a virtual, read-only system table —
+**`system.zetta_jobs`** — the same pattern as `system.zetta_nodes` /
+`system.zetta_deployments` / `system.zetta_models` ([query.md](query.md)). It is
+**computed at query time** from `Node::jobs()` (nothing extra is stored or
+replicated), so a `SELECT` always reflects the live set:
+
+```sql
+SELECT * FROM system.zetta_jobs;
+SELECT job_id, kind, status FROM system.zetta_jobs WHERE status = 'running';
+```
+
+| Column | Source |
+|---|---|
+| `job_id` | `id` |
+| `kind` | `kind` (lowercase wire name) |
+| `status` | `status` (lowercase wire name) |
+| `project` / `graph` / `run` | the optional id references |
+| `scaling_policy` | the optional reward-model reference |
+| `created` / `updated` / `detail` | as stored |
+| `node` | the **observing** node (`Node::node_id()`) |
+
+`SELECT *`, projection, and a single `WHERE` equality work exactly as for a
+regular table. Qualified name only (no bare alias), like
+`system.zetta_deployments`. The `node` column is the node whose replicated view
+the rows are read from — jobs replicate, so every node lists the same set;
+recording which node actually *runs* a job is a later slice (the scheduler), so
+until then `node` answers "which node's registry you queried", not a placement
+assignment.
 
 ## Audit (create / finish)
 
