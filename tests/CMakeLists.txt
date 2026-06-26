@@ -52,6 +52,7 @@ add_executable(zetta-tests
   test_execution_graph.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
+  test_cuda_device.cpp
   test_device_registry.cpp
   test_large_object.cpp
   test_import.cpp

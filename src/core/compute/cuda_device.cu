@@ -12,10 +12,8 @@
 #include <thrust/device_ptr.h>
 #include <thrust/execution_policy.h>
 #include <thrust/functional.h>
-#include <thrust/gather.h>
 #include <thrust/reduce.h>
 #include <thrust/scan.h>
-#include <thrust/scatter.h>
 #include <thrust/sort.h>
 #include <thrust/transform.h>
 
@@ -27,11 +25,21 @@
 //
 // The memory model is the CUDA runtime (cudaMalloc/cudaMemcpy/cudaFree). The
 // operator set runs real device work: map/elementwise/axpy via thrust::transform
-// with hand-written functors (no device lambdas, so no --extended-lambda), reduce/
-// scan/sort/sort_by_key/gather/scatter via Thrust, and histogram/gemm as custom
-// kernels. Each call dispatches on the buffer's runtime DataType to the matching
-// element type, and is wrapped so a Thrust/CUDA failure becomes a ComputeStatus
-// rather than an exception crossing the seam (zetta-core is no-throw at the seam).
+// with hand-written functors (no device lambdas, so no --extended-lambda),
+// reduce/scan/sort/sort_by_key via Thrust, and histogram/gemm/gather/scatter as
+// custom __global__ kernels. Each call dispatches on the buffer's runtime DataType
+// to the matching element type, and is wrapped so a Thrust/CUDA failure becomes a
+// ComputeStatus rather than an exception crossing the seam (zetta-core is no-throw
+// at the seam).
+//
+// The CPU reference backend (CpuDevice, #360) defines the contract these kernels
+// reproduce: the same per-operator preconditions (empty-buffer / dtype / size
+// guards, float-only math for sqrt/exp/log/gemm/axpy, integer-divide-by-zero
+// safety) and the same edge-case behavior (out-of-range gather/scatter rejected
+// with InvalidArgument; duplicate-index scatter resolved last-writer-wins by input
+// order). tests/test_cuda_device.cpp checks every operator against CpuDevice on
+// identical inputs — the "matches the CPU reference within tolerance" acceptance
+// criterion of #361.
 namespace zetta::compute {
 
 #if defined(ZETTA_WITH_CUDA)
@@ -39,6 +47,19 @@ namespace zetta::compute {
 namespace {
 
 constexpr unsigned kBlockSize = 256;
+
+// dtype classification, mirroring CpuDevice so the two backends accept/reject the
+// same inputs (the seam's whole point is interchangeability — see #361).
+constexpr bool is_floating(DataType dtype) {
+    return dtype == DataType::Float32 || dtype == DataType::Float64;
+}
+
+// Math defined only over the reals — integer dtypes are rejected up front, exactly
+// as CpuDevice::map / gemm / axpy do.
+constexpr bool unary_requires_float(UnaryOp op) {
+    return op == UnaryOp::SquareRoot || op == UnaryOp::Exponential ||
+           op == UnaryOp::Logarithm;
+}
 
 // Map a CUDA runtime error to a ComputeStatus (out_of_memory for allocation
 // failures, backend_error otherwise). cudaSuccess maps to success().
@@ -146,7 +167,14 @@ __host__ __device__ Element apply_binary(BinaryOp op, Element a, Element b) {
         case BinaryOp::Add:      return static_cast<Element>(a + b);
         case BinaryOp::Subtract: return static_cast<Element>(a - b);
         case BinaryOp::Multiply: return static_cast<Element>(a * b);
-        case BinaryOp::Divide:   return static_cast<Element>(a / b);
+        case BinaryOp::Divide:
+            if constexpr (std::is_integral_v<Element>) {
+                // Integer divide-by-zero is UB on the device; the CPU reference
+                // returns 0 so a stray zero divisor can't fault a kernel. Match it.
+                return b == Element{0} ? Element{0} : static_cast<Element>(a / b);
+            } else {
+                return static_cast<Element>(a / b);  // IEEE: yields inf / nan
+            }
         case BinaryOp::Maximum:  return a > b ? a : b;
         case BinaryOp::Minimum:  return a < b ? a : b;
     }
@@ -244,6 +272,68 @@ __global__ void gemm_kernel(const Element* a, const Element* b, Element* c,
     c[row * cols + col] = static_cast<Element>(alpha * accumulator + beta * current);
 }
 
+// Is `raw` a valid 0-based index into `bound` elements? Signed negatives and any
+// value >= bound are out of range — the same test CpuDevice's gather/scatter run.
+template <class Index>
+__host__ __device__ inline bool index_in_range(Index raw, std::size_t bound) {
+    if constexpr (std::is_signed_v<Index>) {
+        if (raw < 0) return false;
+    }
+    return static_cast<unsigned long long>(raw) < bound;
+}
+
+// gather: output[i] = input[indices[i]]. Bounds-checks each index against
+// input_count and flags (rather than reads out of bounds) on a violation, so an
+// out-of-range index becomes an InvalidArgument like the CPU reference instead of
+// undefined device memory access (thrust::gather does no bounds check).
+template <class Element, class Index>
+__global__ void gather_kernel(const Element* input, std::size_t input_count,
+                              const Index* indices, std::size_t count,
+                              Element* output, int* out_of_range) {
+    std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const Index raw = indices[i];
+    if (!index_in_range<Index>(raw, input_count)) {
+        *out_of_range = 1;
+        return;
+    }
+    output[i] = input[static_cast<std::size_t>(raw)];
+}
+
+// scatter pass 1: for each input i with a valid target indices[i], record the
+// largest contributing i per output slot via atomicMax. "Largest i wins" makes a
+// duplicate-index scatter resolve last-writer-wins by input order — deterministic,
+// matching CpuDevice's sequential scatter (thrust::scatter races on duplicates).
+// winner holds i+1 (0 means "no writer"); an out-of-range index flags instead.
+template <class Index>
+__global__ void scatter_winner_kernel(const Index* indices, std::size_t count,
+                                      std::size_t output_count,
+                                      unsigned long long* winner,
+                                      int* out_of_range) {
+    std::size_t i = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    const Index raw = indices[i];
+    if (!index_in_range<Index>(raw, output_count)) {
+        *out_of_range = 1;
+        return;
+    }
+    atomicMax(&winner[static_cast<std::size_t>(raw)],
+              static_cast<unsigned long long>(i) + 1ull);
+}
+
+// scatter pass 2: each written output slot takes the value of its winning input.
+// Slots with no writer keep their prior contents, exactly as the CPU reference
+// leaves unscattered positions untouched.
+template <class Element>
+__global__ void scatter_apply_kernel(const Element* input,
+                                     const unsigned long long* winner,
+                                     Element* output, std::size_t output_count) {
+    std::size_t slot = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (slot >= output_count) return;
+    const unsigned long long w = winner[slot];
+    if (w != 0ull) output[slot] = input[static_cast<std::size_t>(w - 1ull)];
+}
+
 }  // namespace
 
 CudaDevice::CudaDevice(int device_index) noexcept : device_index_(device_index) {}
@@ -314,10 +404,17 @@ ComputeStatus CudaDevice::synchronize() {
 
 ComputeStatus CudaDevice::map(UnaryOp op, const DeviceBuffer& input,
                               DeviceBuffer& output) {
+    if (input.empty() || output.empty()) {
+        return ComputeStatus::invalid_argument("map: empty buffer");
+    }
     if (input.dtype() != output.dtype() ||
         input.element_count() != output.element_count()) {
         return ComputeStatus::invalid_argument(
             "map: input and output must share dtype and element count");
+    }
+    if (unary_requires_float(op) && !is_floating(input.dtype())) {
+        return ComputeStatus::invalid_argument(
+            "map: sqrt/exp/log require a floating-point dtype");
     }
     if (cudaSetDevice(device_index_) != cudaSuccess) {
         return ComputeStatus::backend_error("map: cudaSetDevice failed");
@@ -338,6 +435,9 @@ ComputeStatus CudaDevice::map(UnaryOp op, const DeviceBuffer& input,
 ComputeStatus CudaDevice::elementwise(BinaryOp op, const DeviceBuffer& lhs,
                                       const DeviceBuffer& rhs,
                                       DeviceBuffer& output) {
+    if (lhs.empty() || rhs.empty() || output.empty()) {
+        return ComputeStatus::invalid_argument("elementwise: empty buffer");
+    }
     if (lhs.dtype() != rhs.dtype() || lhs.dtype() != output.dtype() ||
         lhs.element_count() != rhs.element_count() ||
         lhs.element_count() != output.element_count()) {
@@ -364,6 +464,9 @@ ComputeStatus CudaDevice::elementwise(BinaryOp op, const DeviceBuffer& lhs,
 
 ComputeStatus CudaDevice::reduce(ReduceOp op, const DeviceBuffer& input,
                                  DeviceBuffer& output) {
+    if (input.empty() || output.empty()) {
+        return ComputeStatus::invalid_argument("reduce: empty buffer");
+    }
     if (input.dtype() != output.dtype() || output.element_count() < 1) {
         return ComputeStatus::invalid_argument(
             "reduce: output must share dtype and hold at least one element");
@@ -407,6 +510,9 @@ ComputeStatus CudaDevice::reduce(ReduceOp op, const DeviceBuffer& input,
 
 ComputeStatus CudaDevice::scan(ReduceOp op, ScanInclusivity inclusivity,
                                const DeviceBuffer& input, DeviceBuffer& output) {
+    if (input.empty() || output.empty()) {
+        return ComputeStatus::invalid_argument("scan: empty buffer");
+    }
     if (input.dtype() != output.dtype() ||
         input.element_count() != output.element_count()) {
         return ComputeStatus::invalid_argument(
@@ -471,9 +577,15 @@ ComputeStatus CudaDevice::scan(ReduceOp op, ScanInclusivity inclusivity,
 ComputeStatus CudaDevice::histogram(const DeviceBuffer& input,
                                     std::size_t bin_count, double range_min,
                                     double range_max, DeviceBuffer& output_counts) {
-    if (bin_count == 0 || output_counts.element_count() < bin_count) {
+    if (input.empty() || output_counts.empty()) {
+        return ComputeStatus::invalid_argument("histogram: empty buffer");
+    }
+    if (bin_count == 0) {
+        return ComputeStatus::invalid_argument("histogram: bin_count must be > 0");
+    }
+    if (output_counts.element_count() != bin_count) {
         return ComputeStatus::invalid_argument(
-            "histogram: output_counts must hold at least bin_count elements");
+            "histogram: output_counts size must equal bin_count");
     }
     if (range_max <= range_min) {
         return ComputeStatus::invalid_argument(
@@ -508,14 +620,21 @@ ComputeStatus CudaDevice::histogram(const DeviceBuffer& input,
 
 ComputeStatus CudaDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
                                const DeviceBuffer& b, DeviceBuffer& c) {
+    if (a.empty() || b.empty() || c.empty()) {
+        return ComputeStatus::invalid_argument("gemm: empty buffer");
+    }
     if (a.dtype() != b.dtype() || a.dtype() != c.dtype()) {
         return ComputeStatus::invalid_argument("gemm: operands must share dtype");
     }
-    if (a.element_count() < params.rows * params.inner ||
-        b.element_count() < params.inner * params.cols ||
-        c.element_count() < params.rows * params.cols) {
+    if (!is_floating(c.dtype())) {
         return ComputeStatus::invalid_argument(
-            "gemm: a/b/c are too small for the requested shape");
+            "gemm: requires a floating-point dtype");
+    }
+    if (a.element_count() != params.rows * params.inner ||
+        b.element_count() != params.inner * params.cols ||
+        c.element_count() != params.rows * params.cols) {
+        return ComputeStatus::invalid_argument(
+            "gemm: a/b/c sizes must match the requested shape");
     }
     if (cudaSetDevice(device_index_) != cudaSuccess) {
         return ComputeStatus::backend_error("gemm: cudaSetDevice failed");
@@ -541,9 +660,16 @@ ComputeStatus CudaDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
 
 ComputeStatus CudaDevice::axpy(double alpha, const DeviceBuffer& x,
                                DeviceBuffer& y) {
+    if (x.empty() || y.empty()) {
+        return ComputeStatus::invalid_argument("axpy: empty buffer");
+    }
     if (x.dtype() != y.dtype() || x.element_count() != y.element_count()) {
         return ComputeStatus::invalid_argument(
             "axpy: x and y must share dtype and element count");
+    }
+    if (!is_floating(x.dtype())) {
+        return ComputeStatus::invalid_argument(
+            "axpy: requires a floating-point dtype");
     }
     if (cudaSetDevice(device_index_) != cudaSuccess) {
         return ComputeStatus::backend_error("axpy: cudaSetDevice failed");
@@ -562,6 +688,9 @@ ComputeStatus CudaDevice::axpy(double alpha, const DeviceBuffer& x,
 }
 
 ComputeStatus CudaDevice::sort(DeviceBuffer& keys, SortOrder order) {
+    if (keys.empty()) {
+        return ComputeStatus::invalid_argument("sort: empty buffer");
+    }
     if (cudaSetDevice(device_index_) != cudaSuccess) {
         return ComputeStatus::backend_error("sort: cudaSetDevice failed");
     }
@@ -583,6 +712,9 @@ ComputeStatus CudaDevice::sort(DeviceBuffer& keys, SortOrder order) {
 
 ComputeStatus CudaDevice::sort_by_key(DeviceBuffer& keys, DeviceBuffer& values,
                                       SortOrder order) {
+    if (keys.empty() || values.empty()) {
+        return ComputeStatus::invalid_argument("sort_by_key: empty buffer");
+    }
     if (keys.element_count() != values.element_count()) {
         return ComputeStatus::invalid_argument(
             "sort_by_key: keys and values must share element count");
@@ -615,6 +747,9 @@ ComputeStatus CudaDevice::sort_by_key(DeviceBuffer& keys, DeviceBuffer& values,
 ComputeStatus CudaDevice::gather(const DeviceBuffer& input,
                                  const DeviceBuffer& indices,
                                  DeviceBuffer& output) {
+    if (input.empty() || indices.empty() || output.empty()) {
+        return ComputeStatus::invalid_argument("gather: empty buffer");
+    }
     if (input.dtype() != output.dtype() ||
         indices.element_count() != output.element_count()) {
         return ComputeStatus::invalid_argument(
@@ -623,26 +758,60 @@ ComputeStatus CudaDevice::gather(const DeviceBuffer& input,
     if (cudaSetDevice(device_index_) != cudaSuccess) {
         return ComputeStatus::backend_error("gather: cudaSetDevice failed");
     }
-    try {
-        return dispatch_dtype(input.dtype(), [&]<class Element>() -> ComputeStatus {
-            return dispatch_integer_dtype(
-                indices.dtype(), [&]<class Index>() -> ComputeStatus {
-                    auto map_first = device_begin<Index>(indices);
-                    auto map_last = map_first + indices.element_count();
-                    thrust::gather(thrust::device, map_first, map_last,
-                                   device_begin<Element>(input),
-                                   device_begin<Element>(output));
-                    return after_kernel("gather");
-                });
-        });
-    } catch (const std::exception& error) {
-        return ComputeStatus::backend_error(std::string{"gather: "} + error.what());
+
+    // A custom bounds-checking kernel (thrust::gather does none) flags an
+    // out-of-range index in a one-int device cell, so it becomes InvalidArgument
+    // like the CPU reference rather than an undefined out-of-bounds device read.
+    const std::size_t count = indices.element_count();
+    int* out_of_range = nullptr;
+    if (ComputeStatus alloc =
+            from_cuda(cudaMalloc(&out_of_range, sizeof(int)), "gather: alloc flag");
+        !alloc.ok()) {
+        return alloc;
     }
+    ComputeStatus status =
+        from_cuda(cudaMemset(out_of_range, 0, sizeof(int)), "gather: clear flag");
+    if (status.ok()) {
+        const unsigned blocks =
+            static_cast<unsigned>((count + kBlockSize - 1) / kBlockSize);
+        try {
+            status =
+                dispatch_dtype(input.dtype(), [&]<class Element>() -> ComputeStatus {
+                    return dispatch_integer_dtype(
+                        indices.dtype(), [&]<class Index>() -> ComputeStatus {
+                            gather_kernel<Element, Index><<<blocks, kBlockSize>>>(
+                                static_cast<const Element*>(input.handle()),
+                                input.element_count(),
+                                static_cast<const Index*>(indices.handle()), count,
+                                static_cast<Element*>(output.handle()),
+                                out_of_range);
+                            return after_kernel("gather");
+                        });
+                });
+        } catch (const std::exception& error) {
+            status =
+                ComputeStatus::backend_error(std::string{"gather: "} + error.what());
+        }
+    }
+    if (status.ok()) {
+        int flagged = 0;
+        status = from_cuda(cudaMemcpy(&flagged, out_of_range, sizeof(int),
+                                      cudaMemcpyDeviceToHost),
+                           "gather: read flag");
+        if (status.ok() && flagged != 0) {
+            status = ComputeStatus::invalid_argument("gather: index out of range");
+        }
+    }
+    cudaFree(out_of_range);
+    return status;
 }
 
 ComputeStatus CudaDevice::scatter(const DeviceBuffer& input,
                                   const DeviceBuffer& indices,
                                   DeviceBuffer& output) {
+    if (input.empty() || indices.empty() || output.empty()) {
+        return ComputeStatus::invalid_argument("scatter: empty buffer");
+    }
     if (input.dtype() != output.dtype() ||
         input.element_count() != indices.element_count()) {
         return ComputeStatus::invalid_argument(
@@ -651,22 +820,77 @@ ComputeStatus CudaDevice::scatter(const DeviceBuffer& input,
     if (cudaSetDevice(device_index_) != cudaSuccess) {
         return ComputeStatus::backend_error("scatter: cudaSetDevice failed");
     }
-    try {
-        return dispatch_dtype(input.dtype(), [&]<class Element>() -> ComputeStatus {
-            return dispatch_integer_dtype(
-                indices.dtype(), [&]<class Index>() -> ComputeStatus {
-                    auto input_first = device_begin<Element>(input);
-                    auto input_last = input_first + input.element_count();
-                    thrust::scatter(thrust::device, input_first, input_last,
-                                    device_begin<Index>(indices),
-                                    device_begin<Element>(output));
-                    return after_kernel("scatter");
-                });
-        });
-    } catch (const std::exception& error) {
-        return ComputeStatus::backend_error(std::string{"scatter: "} +
-                                            error.what());
+
+    // thrust::scatter neither bounds-checks nor resolves duplicate indices
+    // deterministically. A two-pass kernel does both: pass 1 records, per output
+    // slot, the largest contributing input index via atomicMax (last-writer-wins
+    // by input order, matching the CPU reference) and flags any out-of-range
+    // index; pass 2 writes each winning value. winner holds i+1 (0 = no writer).
+    const std::size_t count = input.element_count();
+    const std::size_t output_count = output.element_count();
+    unsigned long long* winner = nullptr;
+    if (ComputeStatus alloc =
+            from_cuda(cudaMalloc(&winner, output_count * sizeof(unsigned long long)),
+                      "scatter: alloc winners");
+        !alloc.ok()) {
+        return alloc;
     }
+    int* out_of_range = nullptr;
+    ComputeStatus status =
+        from_cuda(cudaMalloc(&out_of_range, sizeof(int)), "scatter: alloc flag");
+    if (status.ok()) {
+        status = from_cuda(
+            cudaMemset(winner, 0, output_count * sizeof(unsigned long long)),
+            "scatter: clear winners");
+    }
+    if (status.ok()) {
+        status = from_cuda(cudaMemset(out_of_range, 0, sizeof(int)),
+                           "scatter: clear flag");
+    }
+    if (status.ok()) {
+        const unsigned in_blocks =
+            static_cast<unsigned>((count + kBlockSize - 1) / kBlockSize);
+        try {
+            status = dispatch_integer_dtype(
+                indices.dtype(), [&]<class Index>() -> ComputeStatus {
+                    scatter_winner_kernel<Index><<<in_blocks, kBlockSize>>>(
+                        static_cast<const Index*>(indices.handle()), count,
+                        output_count, winner, out_of_range);
+                    return after_kernel("scatter: index pass");
+                });
+        } catch (const std::exception& error) {
+            status = ComputeStatus::backend_error(std::string{"scatter: "} +
+                                                  error.what());
+        }
+    }
+    if (status.ok()) {
+        int flagged = 0;
+        status = from_cuda(cudaMemcpy(&flagged, out_of_range, sizeof(int),
+                                      cudaMemcpyDeviceToHost),
+                           "scatter: read flag");
+        if (status.ok() && flagged != 0) {
+            status = ComputeStatus::invalid_argument("scatter: index out of range");
+        }
+    }
+    if (status.ok()) {
+        const unsigned out_blocks =
+            static_cast<unsigned>((output_count + kBlockSize - 1) / kBlockSize);
+        try {
+            status =
+                dispatch_dtype(input.dtype(), [&]<class Element>() -> ComputeStatus {
+                    scatter_apply_kernel<Element><<<out_blocks, kBlockSize>>>(
+                        static_cast<const Element*>(input.handle()), winner,
+                        static_cast<Element*>(output.handle()), output_count);
+                    return after_kernel("scatter: apply pass");
+                });
+        } catch (const std::exception& error) {
+            status = ComputeStatus::backend_error(std::string{"scatter: "} +
+                                                  error.what());
+        }
+    }
+    cudaFree(winner);
+    cudaFree(out_of_range);
+    return status;
 }
 
 void CudaDevice::release_buffer(void* handle) noexcept { cudaFree(handle); }
