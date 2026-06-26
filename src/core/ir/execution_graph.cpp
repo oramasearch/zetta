@@ -1,6 +1,7 @@
 #include "zetta/ir/execution_graph.hpp"
 
 #include <utility>
+#include <vector>
 
 #include "zetta/uuid.hpp"
 
@@ -33,6 +34,29 @@ bool ExecutionGraph::add_edge(const NodeId& from, const NodeId& to,
     }
     edges_.push_back(Edge{from, to, kind});
     return true;
+}
+
+bool ExecutionGraph::remove_node(const NodeId& id) {
+    const auto found = index_.find(id);
+    if (found == index_.end()) return false;  // no such node
+    index_.erase(found);
+    std::erase_if(nodes_, [&](const std::shared_ptr<Node>& node) {
+        return node->id == id;
+    });
+    // Drop every edge touching the removed node so none is left dangling.
+    std::erase_if(edges_, [&](const Edge& edge) {
+        return edge.from == id || edge.to == id;
+    });
+    return true;
+}
+
+bool ExecutionGraph::remove_edge(const NodeId& from, const NodeId& to,
+                                 EdgeKind kind) {
+    const std::size_t before = edges_.size();
+    std::erase_if(edges_, [&](const Edge& edge) {
+        return edge.from == from && edge.to == to && edge.kind == kind;
+    });
+    return edges_.size() != before;
 }
 
 std::shared_ptr<Node> ExecutionGraph::find_node(const NodeId& id) const {

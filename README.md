@@ -35,7 +35,10 @@ see [docs/project-inputs.md](docs/project-inputs.md); an
 [n8n workflow JSON](docs/n8n-import.md) is the first typed artifact, schema-
 validated at the boundary and stored byte-for-byte) and its **execution graphs**
 (the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
-[docs/execution-graph.md](docs/execution-graph.md)). A node can also **deploy** a
+[docs/execution-graph.md](docs/execution-graph.md)). In headed mode the **Graph
+Workspace** panel renders a project's graph as an editable node/edge canvas
+(steps in columns by stage, edges between them) and persists edits back to the IR
+(see [docs/projects.md](docs/projects.md#graph-workspace)). A node can also **deploy** a
 validated execution graph onto a target, recording the placement (R1 local; see
 [docs/deployments.md](docs/deployments.md)), and a **control plane** reconciles
 each local deployment desired→actual and **self-heals** a killed or failed run

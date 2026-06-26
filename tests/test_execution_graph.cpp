@@ -161,6 +161,65 @@ TEST(ExecutionGraph, AddEdgeRejectsExactDuplicatesButAllowsDistinctKinds) {
     EXPECT_EQ(graph.edge_count(), 2u);
 }
 
+// ---- edits: removing nodes and edges ---------------------------------------
+
+TEST(ExecutionGraph, RemoveEdgeDropsOnlyTheExactEdge) {
+    ExecutionGraph graph;
+    auto a = graph.add_node(StepKind::Connect, "a");
+    auto b = graph.add_node(StepKind::Clean, "b");
+    graph.add_edge(a->id, b->id, EdgeKind::DataFlow);
+    graph.add_edge(a->id, b->id, EdgeKind::Control);
+
+    // A different kind on the same pair is left alone.
+    EXPECT_TRUE(graph.remove_edge(a->id, b->id, EdgeKind::DataFlow));
+    EXPECT_EQ(graph.edge_count(), 1u);
+    EXPECT_EQ(graph.edges()[0].kind, EdgeKind::Control);
+    // The nodes are untouched (remove_edge is the inverse of add_edge only).
+    EXPECT_TRUE(graph.has_node(a->id));
+    EXPECT_TRUE(graph.has_node(b->id));
+
+    // Removing a non-existent edge is a no-op false.
+    EXPECT_FALSE(graph.remove_edge(a->id, b->id, EdgeKind::DataFlow));
+    EXPECT_FALSE(graph.remove_edge(b->id, a->id, EdgeKind::Control));
+}
+
+TEST(ExecutionGraph, RemoveNodeDropsTheNodeAndItsIncidentEdges) {
+    ExecutionGraph graph;
+    auto a = graph.add_node(StepKind::Connect, "a");
+    auto b = graph.add_node(StepKind::Clean, "b");
+    auto c = graph.add_node(StepKind::Model, "c");
+    graph.add_edge(a->id, b->id);  // a → b
+    graph.add_edge(b->id, c->id);  // b → c (incident to b)
+    graph.add_edge(a->id, c->id);  // a → c (survives)
+
+    EXPECT_TRUE(graph.remove_node(b->id));
+    EXPECT_FALSE(graph.has_node(b->id));
+    EXPECT_FALSE(graph.find_node(b->id));
+    EXPECT_EQ(graph.node_count(), 2u);
+
+    // Both edges touching b are gone; the a → c edge remains (no dangling edge).
+    EXPECT_EQ(graph.edge_count(), 1u);
+    EXPECT_EQ(graph.edges()[0].from, a->id);
+    EXPECT_EQ(graph.edges()[0].to, c->id);
+    EXPECT_TRUE(graph.edges_into(c->id).size() == 1u);
+
+    // Survivors keep insertion order; removing a missing node is false.
+    ASSERT_EQ(graph.nodes().size(), 2u);
+    EXPECT_EQ(graph.nodes()[0]->name, "a");
+    EXPECT_EQ(graph.nodes()[1]->name, "c");
+    EXPECT_FALSE(graph.remove_node("ghost"));
+}
+
+TEST(ExecutionGraph, RemovedIdCanBeReused) {
+    ExecutionGraph graph;
+    ASSERT_TRUE(graph.add_node(StepKind::Connect, "first", {}, "n1"));
+    EXPECT_TRUE(graph.remove_node("n1"));
+    // The id index released the slot, so the same id is free again.
+    auto again = graph.add_node(StepKind::Clean, "second", {}, "n1");
+    ASSERT_TRUE(again);
+    EXPECT_EQ(graph.find_node("n1")->name, "second");
+}
+
 // ---- traversal by step kind / edge kind ------------------------------------
 
 TEST(ExecutionGraph, TraversesNodesByStepKind) {

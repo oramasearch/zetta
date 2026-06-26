@@ -91,6 +91,19 @@ public:
     bool add_edge(const NodeId& from, const NodeId& to,
                   EdgeKind kind = EdgeKind::DataFlow);
 
+    // --- edit (remove) -----------------------------------------------------
+
+    // Remove the node with this id and every edge incident to it (so removing a
+    // node never leaves a dangling edge — the inverse guarantee of add_edge).
+    // Returns false if there is no such node. Insertion order is preserved for
+    // the survivors.
+    bool remove_node(const NodeId& id);
+
+    // Remove the exact edge `from`→`to` of this kind. Returns false if no such
+    // edge exists. The endpoints are left untouched (the inverse of add_edge).
+    bool remove_edge(const NodeId& from, const NodeId& to,
+                     EdgeKind kind = EdgeKind::DataFlow);
+
     // --- lookup ------------------------------------------------------------
 
     // The node with this id, or an empty handle if there is none.

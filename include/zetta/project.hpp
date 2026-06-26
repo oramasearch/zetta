@@ -121,6 +121,18 @@ public:
     std::shared_ptr<ProjectGraph> create_graph(std::string name,
                                                ir::ExecutionGraph graph);
 
+    // Replace the contents of an existing graph (found by its current `name`)
+    // with `graph`, optionally renaming it to `new_name` (empty = keep the
+    // name). Rewrites the on-disk projection AND captures the new value into the
+    // CRDT (`graph:<id>`), so an edit replicates exactly like a create — this is
+    // the "persist an edit back to the IR" path used by the Graph Workspace.
+    // Returns the (same-id) handle, or an empty handle if no graph by `name`
+    // exists, `new_name` is empty-after-trim, or `new_name` collides with a
+    // different graph in this project.
+    std::shared_ptr<ProjectGraph> update_graph(const std::string& name,
+                                               ir::ExecutionGraph graph,
+                                               std::string new_name = {});
+
     // Apply a replicated graph (a peer's, or one rebuilt from the document) with
     // a given id, without capturing. Returns the existing handle if present.
     std::shared_ptr<ProjectGraph> materialize_graph(std::string id,

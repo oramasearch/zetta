@@ -8,6 +8,7 @@
 #include "zetta/import.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
+#include "zetta/ir/step_kind.hpp"
 #include "zetta/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/project.hpp"
@@ -31,6 +32,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cfloat>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <cstdio>
@@ -38,6 +40,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include "zetta_font_embedded.hpp"
@@ -100,6 +103,21 @@ ImVec4 status_color(CheckStatus status) {
     }
     return kFailColor;
 }
+
+// "unsaved edits" / dirty marker colour (soft amber).
+constexpr ImVec4 kUnsavedColor{0.9f, 0.7f, 0.3f, 1.0f};
+
+// Graph-workspace canvas palette (ImU32, for the window draw list). Nodes are
+// boxes laid out in columns by StepKind; edges are lines drawn underneath them.
+constexpr ImU32 kCanvasHeaderColor = IM_COL32(150, 160, 180, 255);
+constexpr ImU32 kNodeFill = IM_COL32(45, 55, 70, 255);
+constexpr ImU32 kNodeFillHover = IM_COL32(60, 72, 92, 255);
+constexpr ImU32 kNodeFillSelected = IM_COL32(48, 86, 130, 255);
+constexpr ImU32 kNodeBorder = IM_COL32(120, 130, 150, 255);
+constexpr ImU32 kNodeBorderSelected = IM_COL32(120, 180, 255, 255);
+constexpr ImU32 kNodeTextColor = IM_COL32(230, 230, 235, 255);
+constexpr ImU32 kDataEdgeColor = IM_COL32(150, 160, 180, 210);
+constexpr ImU32 kControlEdgeColor = IM_COL32(200, 160, 110, 210);
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -1094,6 +1112,436 @@ void App::draw_runs() {
     ImGui::EndChild();
 }
 
+void App::open_graph(const ProjectGraph& stored) {
+    // A fresh working copy: edits apply here and only land in the IR on Save, so
+    // an edit is a deliberate, atomic act (and Revert is just "drop this copy").
+    editing_graph_ = std::make_unique<ir::ExecutionGraph>(stored.graph());
+    selected_graph_ = stored.name();
+    graph_loaded_id_ = stored.id();
+    graph_dirty_ = false;
+    selected_node_id_.clear();
+    graph_error_.clear();
+    rename_graph_input_ = stored.name();
+    rename_node_input_.clear();
+    add_node_name_input_.clear();
+    add_edge_from_.clear();
+    add_edge_to_.clear();
+}
+
+void App::draw_graph_workspace() {
+    if (!ImGui::CollapsingHeader("Graph Workspace",
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    // The workspace edits the *currently selected* project's graphs (the same
+    // selection the explorer's Projects column drives). Re-resolved by name each
+    // frame so a dropped/renamed project never leaves a dangling handle.
+    const auto project = node_.find_project(selected_project_);
+    if (!project) {
+        editing_graph_.reset();
+        graph_panel_project_.clear();
+        selected_graph_.clear();
+        ImGui::TextDisabled("Select a project to view its execution graphs.");
+        return;
+    }
+
+    // When the selected project changes, drop any open working copy so we never
+    // show one project's graph under another.
+    if (graph_panel_project_ != project->id()) {
+        graph_panel_project_ = project->id();
+        editing_graph_.reset();
+        selected_graph_.clear();
+        graph_loaded_id_.clear();
+        selected_node_id_.clear();
+        graph_dirty_ = false;
+        graph_error_.clear();
+    }
+
+    // --- graph list + create ----------------------------------------------
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    const bool submit = ImGui::InputTextWithHint(
+        "##newgraph", "new graph name", &new_graph_input_,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ImGui::Button("New graph") || submit) {
+        if (new_graph_input_.empty()) {
+            graph_error_ = "graph name required";
+        } else if (auto created =
+                       project->create_graph(new_graph_input_, ir::ExecutionGraph{})) {
+            open_graph(*created);
+            new_graph_input_.clear();
+        } else {
+            graph_error_ = "a graph by that name already exists";
+        }
+    }
+
+    const std::vector<std::string> names = project->graph_names();
+    if (names.empty()) {
+        ImGui::TextDisabled("(this project has no graphs yet)");
+    }
+    for (const std::string& name : names) {
+        ImGui::PushID(name.c_str());
+        if (ImGui::SmallButton("x")) {
+            project->drop_graph(name);
+            if (selected_graph_ == name) {
+                editing_graph_.reset();
+                selected_graph_.clear();
+                graph_loaded_id_.clear();
+                selected_node_id_.clear();
+                graph_dirty_ = false;
+            }
+            ImGui::PopID();
+            continue;  // this name is gone; don't draw a selectable for it
+        }
+        ImGui::SameLine();
+        const bool is_open = editing_graph_ && selected_graph_ == name;
+        if (ImGui::Selectable(name.c_str(), is_open)) {
+            const auto stored = project->find_graph(name);
+            // Re-clicking the open graph keeps unsaved edits; opening a
+            // different one loads a fresh working copy (discarding edits).
+            if (stored && stored->id() != graph_loaded_id_) open_graph(*stored);
+        }
+        ImGui::PopID();
+    }
+
+    if (!editing_graph_) {
+        if (!graph_error_.empty()) {
+            ImGui::TextColored(kErrorColor, "%s", graph_error_.c_str());
+        }
+        ImGui::TextDisabled("Select or create a graph to view and edit it.");
+        return;
+    }
+
+    ImGui::Separator();
+    draw_graph_canvas();
+    draw_graph_editor(*project);
+}
+
+void App::draw_graph_canvas() {
+    ir::ExecutionGraph& graph = *editing_graph_;
+
+    const float font = ImGui::GetFontSize();
+    const float node_w = font * 9.0f;
+    const float node_h = font * 2.4f;
+    const float col_gap = font * 3.0f;
+    const float row_gap = font * 0.9f;
+    const float header_h = font * 1.8f;
+    const float pad = font * 0.6f;
+    const float rounding = font * 0.3f;
+
+    if (ImGui::BeginChild("##graph_canvas", ImVec2(0, font * 18.0f),
+                          ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_HorizontalScrollbar)) {
+        if (graph.empty()) {
+            ImGui::TextDisabled("(empty graph — add a step below)");
+        } else {
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+
+            // Pass 1: place each node in its StepKind column and remember its
+            // rect + center (so edges can be drawn between centers underneath).
+            struct Placed {
+                ImVec2 top_left;
+                ImVec2 bottom_right;
+                std::shared_ptr<ir::Node> node;
+            };
+            std::vector<Placed> placed;
+            std::unordered_map<std::string, ImVec2> center_of;
+            float content_right = origin.x;
+            float content_bottom = origin.y;
+
+            const auto kinds = ir::all_step_kinds();
+            for (std::size_t column = 0; column < kinds.size(); ++column) {
+                const float x =
+                    origin.x + static_cast<float>(column) * (node_w + col_gap);
+                const std::string header{ir::to_string(kinds[column])};
+                draw->AddText(ImVec2(x, origin.y), kCanvasHeaderColor,
+                              header.c_str());
+                float y = origin.y + header_h;
+                for (const auto& node : graph.nodes_of_kind(kinds[column])) {
+                    const ImVec2 top_left(x, y);
+                    const ImVec2 bottom_right(x + node_w, y + node_h);
+                    placed.push_back({top_left, bottom_right, node});
+                    center_of[node->id] =
+                        ImVec2(x + node_w * 0.5f, y + node_h * 0.5f);
+                    y += node_h + row_gap;
+                    content_bottom = std::max(content_bottom, y);
+                }
+                content_right = std::max(content_right, x + node_w);
+            }
+
+            // Pass 2: edges, clipped to each box's border with an arrowhead at
+            // the `to` end so direction reads even when an edge points backward.
+            const ImVec2 half(node_w * 0.5f, node_h * 0.5f);
+            const auto border_point = [&](ImVec2 center, ImVec2 toward) {
+                const ImVec2 d(toward.x - center.x, toward.y - center.y);
+                if (d.x == 0.0f && d.y == 0.0f) return center;
+                const float scale_x =
+                    d.x != 0.0f ? half.x / std::abs(d.x) : FLT_MAX;
+                const float scale_y =
+                    d.y != 0.0f ? half.y / std::abs(d.y) : FLT_MAX;
+                const float scale = std::min(scale_x, scale_y);
+                return ImVec2(center.x + d.x * scale, center.y + d.y * scale);
+            };
+            for (const ir::Edge& edge : graph.edges()) {
+                const auto from = center_of.find(edge.from);
+                const auto to = center_of.find(edge.to);
+                if (from == center_of.end() || to == center_of.end()) continue;
+                const ImU32 color = edge.kind == ir::EdgeKind::Control
+                                        ? kControlEdgeColor
+                                        : kDataEdgeColor;
+                const ImVec2 start = border_point(from->second, to->second);
+                const ImVec2 end = border_point(to->second, from->second);
+                draw->AddLine(start, end, color, font * 0.1f);
+                ImVec2 dir(end.x - start.x, end.y - start.y);
+                const float length =
+                    std::sqrt(dir.x * dir.x + dir.y * dir.y);
+                if (length > 0.001f) {
+                    dir.x /= length;
+                    dir.y /= length;
+                    const ImVec2 normal(-dir.y, dir.x);
+                    const float head = font * 0.55f;
+                    const ImVec2 base(end.x - dir.x * head, end.y - dir.y * head);
+                    draw->AddTriangleFilled(
+                        end,
+                        ImVec2(base.x + normal.x * head * 0.5f,
+                               base.y + normal.y * head * 0.5f),
+                        ImVec2(base.x - normal.x * head * 0.5f,
+                               base.y - normal.y * head * 0.5f),
+                        color);
+                }
+            }
+
+            // Pass 3: node boxes + click-to-select (invisible buttons hit-test).
+            for (const Placed& item : placed) {
+                ImGui::SetCursorScreenPos(item.top_left);
+                ImGui::InvisibleButton(item.node->id.c_str(),
+                                       ImVec2(node_w, node_h));
+                const bool hovered = ImGui::IsItemHovered();
+                if (ImGui::IsItemClicked()) {
+                    selected_node_id_ = item.node->id;
+                    rename_node_input_ = item.node->name;
+                }
+                const bool selected = item.node->id == selected_node_id_;
+                const ImU32 fill = selected ? kNodeFillSelected
+                                            : (hovered ? kNodeFillHover : kNodeFill);
+                draw->AddRectFilled(item.top_left, item.bottom_right, fill,
+                                    rounding);
+                draw->AddRect(item.top_left, item.bottom_right,
+                              selected ? kNodeBorderSelected : kNodeBorder,
+                              rounding, 0, selected ? 2.0f : 1.0f);
+                draw->PushClipRect(item.top_left, item.bottom_right, true);
+                draw->AddText(
+                    ImVec2(item.top_left.x + pad,
+                           item.top_left.y + (node_h - font) * 0.5f),
+                    kNodeTextColor, item.node->name.c_str());
+                draw->PopClipRect();
+            }
+
+            // Reserve the laid-out area so the child scrolls to fit it.
+            ImGui::SetCursorScreenPos(origin);
+            ImGui::Dummy(ImVec2(content_right - origin.x + col_gap,
+                                content_bottom - origin.y + row_gap));
+        }
+    }
+    ImGui::EndChild();
+}
+
+void App::draw_graph_editor(Project& project) {
+    ir::ExecutionGraph& graph = *editing_graph_;
+    const float font = ImGui::GetFontSize();
+
+    // --- summary, rename, save / revert -----------------------------------
+    ImGui::Text("%zu step(s), %zu edge(s)", graph.node_count(),
+                graph.edge_count());
+    if (graph_dirty_) {
+        ImGui::SameLine();
+        ImGui::TextColored(kUnsavedColor, "● unsaved edits");
+    }
+
+    ImGui::SetNextItemWidth(font * 12.0f);
+    ImGui::InputTextWithHint("##rengraph", "graph name", &rename_graph_input_);
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        // Persist the working copy back to the IR (disk + CRDT) via update_graph.
+        // A name change in the field becomes a rename in the same call.
+        std::string new_name = rename_graph_input_ == selected_graph_
+                                   ? std::string{}
+                                   : rename_graph_input_;
+        if (auto updated =
+                project.update_graph(selected_graph_, graph, std::move(new_name))) {
+            selected_graph_ = updated->name();
+            graph_loaded_id_ = updated->id();
+            rename_graph_input_ = updated->name();
+            graph_dirty_ = false;
+            graph_error_.clear();
+            io_status_ = "Saved graph '" + updated->name() + "' (" +
+                         std::to_string(updated->graph().node_count()) +
+                         " steps, " +
+                         std::to_string(updated->graph().edge_count()) +
+                         " edges)";
+        } else {
+            graph_error_ = "save failed — name empty or already taken";
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Revert")) {
+        if (const auto stored = project.find_graph_by_id(graph_loaded_id_)) {
+            open_graph(*stored);
+        } else {
+            editing_graph_.reset();
+            selected_graph_.clear();
+            graph_loaded_id_.clear();
+        }
+    }
+    if (!graph_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", graph_error_.c_str());
+    }
+    if (!editing_graph_) return;  // Revert may have closed the graph
+
+    // --- add a step --------------------------------------------------------
+    ImGui::SeparatorText("Add a step");
+    ImGui::SetNextItemWidth(font * 10.0f);
+    ImGui::InputTextWithHint("##nodename", "step name", &add_node_name_input_);
+    ImGui::SameLine();
+    const auto kinds = ir::all_step_kinds();
+    ImGui::SetNextItemWidth(font * 7.0f);
+    if (ImGui::BeginCombo("##nodekind",
+                          std::string{ir::to_string(kinds[add_node_kind_])}
+                              .c_str())) {
+        for (std::size_t i = 0; i < kinds.size(); ++i) {
+            const std::string label{ir::to_string(kinds[i])};
+            if (ImGui::Selectable(label.c_str(),
+                                  static_cast<int>(i) == add_node_kind_)) {
+                add_node_kind_ = static_cast<int>(i);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add step")) {
+        if (add_node_name_input_.empty()) {
+            graph_error_ = "step name required";
+        } else if (auto added = graph.add_node(kinds[add_node_kind_],
+                                               add_node_name_input_)) {
+            selected_node_id_ = added->id;
+            rename_node_input_ = added->name;
+            add_node_name_input_.clear();
+            graph_dirty_ = true;
+            graph_error_.clear();
+        } else {
+            graph_error_ = "could not add step";
+        }
+    }
+
+    // A picker over the graph's nodes, labelled "<name> [<kind>]".
+    const auto node_label = [](const ir::Node& node) {
+        return node.name + "  [" + std::string{ir::to_string(node.kind)} + "]";
+    };
+    const auto node_picker = [&](const char* combo_id, const char* placeholder,
+                                 std::string& selection) {
+        const auto current = graph.find_node(selection);
+        const std::string preview =
+            current ? node_label(*current) : std::string{placeholder};
+        ImGui::SetNextItemWidth(font * 11.0f);
+        if (ImGui::BeginCombo(combo_id, preview.c_str())) {
+            for (const auto& node : graph.nodes()) {
+                if (ImGui::Selectable(node_label(*node).c_str(),
+                                      node->id == selection)) {
+                    selection = node->id;
+                }
+            }
+            ImGui::EndCombo();
+        }
+    };
+
+    // --- add an edge -------------------------------------------------------
+    ImGui::SeparatorText("Add an edge");
+    if (graph.node_count() < 1) {
+        ImGui::TextDisabled("Add steps first.");
+    } else {
+        node_picker("##edgefrom", "(from)", add_edge_from_);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("→");
+        ImGui::SameLine();
+        node_picker("##edgeto", "(to)", add_edge_to_);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(font * 7.0f);
+        const char* edge_kind_names[] = {"data_flow", "control"};
+        ImGui::Combo("##edgekind", &add_edge_kind_, edge_kind_names, 2);
+        ImGui::SameLine();
+        if (ImGui::Button("Add edge")) {
+            const ir::EdgeKind kind = add_edge_kind_ == 1
+                                          ? ir::EdgeKind::Control
+                                          : ir::EdgeKind::DataFlow;
+            if (graph.add_edge(add_edge_from_, add_edge_to_, kind)) {
+                graph_dirty_ = true;
+                graph_error_.clear();
+            } else {
+                graph_error_ =
+                    "edge rejected — unknown step or duplicate edge";
+            }
+        }
+    }
+
+    // Existing edges, each with a delete button (remove_edge is the inverse).
+    if (!graph.edges().empty()) {
+        int remove_at = -1;
+        for (std::size_t i = 0; i < graph.edges().size(); ++i) {
+            const ir::Edge& edge = graph.edges()[i];
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::SmallButton("x")) remove_at = static_cast<int>(i);
+            ImGui::SameLine();
+            const auto from = graph.find_node(edge.from);
+            const auto to = graph.find_node(edge.to);
+            ImGui::TextDisabled(
+                "%s → %s  (%s)",
+                from ? from->name.c_str() : edge.from.c_str(),
+                to ? to->name.c_str() : edge.to.c_str(),
+                std::string{ir::to_string(edge.kind)}.c_str());
+            ImGui::PopID();
+        }
+        if (remove_at >= 0) {
+            const ir::Edge edge = graph.edges()[remove_at];
+            graph.remove_edge(edge.from, edge.to, edge.kind);
+            graph_dirty_ = true;
+        }
+    }
+
+    // --- selected step -----------------------------------------------------
+    ImGui::SeparatorText("Selected step");
+    const auto selected = graph.find_node(selected_node_id_);
+    if (!selected) {
+        ImGui::TextDisabled("Click a step in the canvas to select it.");
+    } else {
+        const std::string short_id =
+            selected_node_id_.substr(0, selected_node_id_.find('-'));
+        ImGui::TextDisabled("id: %s   kind: %s", short_id.c_str(),
+                            std::string{ir::to_string(selected->kind)}.c_str());
+        ImGui::SetNextItemWidth(font * 12.0f);
+        const bool rename = ImGui::InputTextWithHint(
+            "##rennode", "step name", &rename_node_input_,
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::Button("Rename step") || rename) {
+            if (rename_node_input_.empty()) {
+                graph_error_ = "step name required";
+            } else {
+                selected->name = rename_node_input_;  // mutate the working copy
+                graph_dirty_ = true;
+                graph_error_.clear();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete step")) {
+            graph.remove_node(selected_node_id_);
+            selected_node_id_.clear();
+            graph_dirty_ = true;
+        }
+    }
+}
+
 void App::run() {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -1153,6 +1601,7 @@ void App::run() {
         draw_gate();
         draw_cluster();
         draw_runs();
+        draw_graph_workspace();
         ImGui::Separator();
         draw_explorer();
 
