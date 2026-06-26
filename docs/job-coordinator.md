@@ -13,11 +13,14 @@ the three pieces the compute pass for UC-1 churn was built from:
 | [collectives](collectives.md) | combine per-node partials at a **round boundary** (allreduce / broadcast / barrier / gather) | [#365](https://github.com/oramasearch/zetta/issues/365) |
 | [`ComputeJob`](compute-jobs.md) | the durable, replicated **lifecycle** record (`Queued → Running → Succeeded \| Failed`) | [#371-ish, ARC-11/ENT-31](https://github.com/oramasearch/zetta/issues/372) |
 
-The future algorithms — DDF, GBDT, SHAP — don't touch the scheduler or
+The compute algorithms — DDF, GBDT, SHAP — don't touch the scheduler or
 collectives directly. They hand the coordinator a **job body** and run it; the
 coordinator drives the lifecycle and hands the body a small **work surface**
 (`JobRound`) onto the scheduler + collectives. New algorithm = a new job body, not
-a new orchestrator.
+a new orchestrator. The first such consumer is the DDF
+[groupby-aggregation op](ddf-ops.md) (`zetta::ddf::run_group_by_job`, #387): an
+SPMD job body that computes each node's local partial and `gather`s them to the
+root.
 
 ```
 include/zetta/compute/job_coordinator.hpp   JobCoordinator + JobRound
@@ -185,6 +188,8 @@ single-node cluster degenerating cleanly, and a failing job body marking the job
 
 ## See also
 
+- [ddf-ops.md](ddf-ops.md) — the first consumer: the DDF groupby-aggregation op
+  run as a distributed `ComputeJob` through this coordinator.
 - [work-stealing-scheduler.md](work-stealing-scheduler.md) — the scheduler the
   coordinator submits tasks through (local + cross-node).
 - [collectives.md](collectives.md) — the round-boundary combine.
