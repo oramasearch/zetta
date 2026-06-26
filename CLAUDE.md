@@ -298,6 +298,21 @@ the window (routed by extension):
   metadata + on-disk paths (no Node access → safe on the network thread). Detail
   in [docs/large-objects.md](docs/large-objects.md).
 
+A third, **typed-artifact** ingestion path captures a file into a *project*
+(not a table or database) as a `ProjectInput`:
+- **n8n workflow import** (`zetta::import_n8n_workflow` /
+  `import_n8n_workflow_file`) — an [n8n](https://n8n.io) workflow `.json` export
+  is **schema-validated at the boundary** (it must parse *and* match
+  `n8n_workflow_schema()`: an object with a `nodes` array of node-shaped objects
+  + a `connections` object — invalid JSON and non-workflow JSON are rejected with
+  a clear reason, nothing stored), then stored **byte-for-byte** as an artifact
+  `ProjectInput` (kind=Artifact, source=Upload) so the payload round-trips for
+  later re-compilation. Computes nothing about the payload itself — it delegates
+  to `Project::create_input`, which fingerprints the raw bytes with SHA-256 at
+  the boundary. Storage + validation only (no compile to an ExecutionGraph yet);
+  API-level today (not yet wired into the GUI file dialog). Detail in
+  [docs/n8n-import.md](docs/n8n-import.md).
+
 ### Query layer
 
 Queries are **dialect-agnostic**: text → a `Dialect` parser → a generic,
@@ -469,6 +484,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
+  n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -499,6 +515,7 @@ src/core/                   zetta-core impl
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
   project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
+  n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
@@ -641,6 +658,7 @@ loop thread).
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
+- [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.

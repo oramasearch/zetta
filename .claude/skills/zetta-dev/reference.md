@@ -19,6 +19,7 @@ break. `CLAUDE.md` and `docs/*.md` remain authoritative for behavior.
 | Large objects | `large_object.hpp`, `src/core/large_object.cpp`, `blob_store.hpp`, `replicated_blob_store.hpp`, `src/core/replicated_blob_store.cpp`, `sha256.hpp` | large-objects.md | Metadata (`lo:` key, incl. `size`+`sha256`) replicates in the CRDT; **body does not** — it transfers P2P and is verified against the hash. `BlobStore` is the transfer seam. |
 | Query layer | `include/zetta/query/{ast,dialect,executor,postgres,service}.hpp`, `src/core/query/*.cpp` | query.md | text → `Dialect.parse()` → generic `Statement` variant → `Executor`(Node). Executor is dialect-neutral. Virtual read-only **`system`** database holds computed system tables (`system.zetta_nodes`, `system.zetta_deployments`); `system` is reserved. |
 | Import | `import.hpp`, `src/core/import.cpp` | large-objects.md | `.json`/`.jsonl` → rows via `Table::add_row` (so it replicates). |
+| n8n import | `n8n_import.hpp`, `src/core/n8n_import.cpp`, `project.hpp` (`create_input`) | n8n-import.md | `import_n8n_workflow`/`import_n8n_workflow_file` → artifact `ProjectInput`. **Schema-validated at boundary** (`validate_n8n_workflow`/`n8n_workflow_schema`, draft-07: requires `nodes` array of `{name,type}` objects + `connections` object; extras allowed) via pboettch/json-schema-validator (model on run.cpp). Stores raw bytes byte-for-byte (round-trips); SHA-256 via `create_input`. Storage+validation only — no compile yet; not GUI-wired. |
 | Cluster | `cluster.hpp`, `src/core/cluster.cpp` (the one Corosio user) | cluster.md | Equal peers over TCP; line protocol `HELLO/SYNC/STATUS/LOREQ/LORES`. Self-healing (keepalive + reconnect + replace-by-address). `nodes()` = status view. |
 | Replication (CRDT) | `replication.hpp`, `src/core/replication.cpp` (the one automerge-cpp user), `src/core/catalog.hpp` (internal key scheme) | replication.md | `ReplicationManager`: `set`/`remove`/`snapshot`/`save`/`merge`/`entry_count`/`version`. Document = source of truth. Thread-safe (mutex). |
 | Async/net seams | `runtime.hpp`, `runtime/net.hpp` | runtime.md, research/coroutines.md | `zetta::runtime` (Capy) + `zetta::runtime::net` (Corosio). Backend names confined to adapters. |
@@ -123,6 +124,7 @@ tests: short `ClusterConfig` timeouts + patient polling.
 - **architecture.md** — node, run modes, data model, module map.
 - **projects.md** — the AI project (`zetta::Project`) data model + lifecycle CRUD on a node.
 - **project-inputs.md** — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
+- **n8n-import.md** — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - **deployments.md** — placing a validated graph onto a `DeploymentTarget` (R1 local), recorded + queryable.
 - **runs.md** — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema boundary validation.
 - **storage.md** — on-disk layout, JSONL `_zid`/`doc` line format, engine seam.
