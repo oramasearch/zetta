@@ -130,6 +130,26 @@ a detail pane with the selected run's status, color-coded logs, an outputs
 table, and a lineage section with a confidence bar; the GUI slice of FEAT-5 /
 SCR-6 / CMP-4). See [docs/runs.md](docs/runs.md).
 
+A node also owns **models** (`zetta::Model`) — a **trained model** registered on
+the node (ENT-14 / FEAT-6): its metadata (`name`, `kind`, free-form
+`feature_schema` + `metrics`, `created`) plus a fingerprint of its serialized
+**weights**. Another top-level entity keyed by id (like `Run`): `create_model`
+(requires a non-empty `kind`) / `find_model` / `drop_model` / `models`, with
+`set_weights`/`set_metrics` mutators on the handle that capture into the CRDT then
+persist. The model is **split like a large object**: the **metadata rides in the
+CRDT** (flat key `model:<uuid>` carrying `weights:{size,sha256}`) while the
+**serialized weights body stays off the CRDT** — it lives on disk
+(`<model-uuid>/weights`) and **transfers peer-to-peer over the existing
+large-object body seam** (`BlobStore`/`ReplicatedBlobStore`, the `LOREQ`/`LORES`
+exchange), verified against `size` + `sha256` before being written. `Model` is
+validated against a formal **JSON Schema** at the storage boundary like `Run`
+(`parse_model_value`; `kind` required, `metrics` numeric, `weights` carries both
+size + hash), and the preflight integrity check counts model weights (present /
+awaiting body / corrupt) the same way it does large-object bodies. The registry
+is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
+provenance + replication only — training/inference (and producing the weights) is
+a later slice. See [docs/models.md](docs/models.md).
+
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
 (`create`/`find`/`drop`/`rename_principal`, `principal_names`). A principal owns
@@ -300,10 +320,12 @@ fragment the change history and accumulate `node:` keys). The document uses
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
-`deployment:<uuid>`, `run:<uuid>`, `principal:<uuid>` (an authenticated actor),
-`key:<uuid>` (an access key carrying its parent `principal` ref + its `scope` +
-its `capabilities`), and `audit:<uuid>` (an immutable, append-only audit event) —
-each entity owns its key by UUID so concurrent edits never collide.
+`deployment:<uuid>`, `run:<uuid>`, `model:<uuid>` (a trained model — metadata
+only; its serialized weights body stays on disk like an `lo:` body),
+`principal:<uuid>` (an authenticated actor), `key:<uuid>` (an access key carrying
+its parent `principal` ref + its `scope` + its `capabilities`), and
+`audit:<uuid>` (an immutable, append-only audit event) — each entity owns its key
+by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -333,6 +355,11 @@ data_dir/
   <run-uuid>/                ← one folder per run (UUIDv4 = its id)
     run.json                 ← { id, project, graph, status, created, updated,
                                   logs, outputs, lineage }
+  <model-uuid>/              ← one folder per model (UUIDv4 = its id)
+    model.json               ← { id, name, kind, project, run, feature_schema,
+                                  metrics, created, weights:{ size, sha256 } }
+    weights                  ← raw serialized bytes (NOT in the CRDT; on-disk
+                                 like an LO body — transfers peer-to-peer)
   <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
     principal.json           ← { id, kind, name, created }
     keys/
@@ -423,9 +450,11 @@ database (à la `pg_catalog`) whose tables are computed at query time — first
 **`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
 wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
 **`system.zetta_deployments`** (recorded graph→target placements, sourced from
-`Node::deployments()`; qualified name only). `system` is reserved (can't be
-created/dropped/written; no real db may be named it) and is where future system
-tables (e.g. `system.zetta_leadership`) live. Full detail in
+`Node::deployments()`; qualified name only) and **`system.zetta_models`** (the
+model registry — trained models + their kind / metrics / weights fingerprint,
+sourced from `Node::models()`; qualified name only). `system` is reserved (can't
+be created/dropped/written; no real db may be named it) and is where future
+system tables (e.g. `system.zetta_leadership`) live. Full detail in
 [docs/query.md](docs/query.md).
 
 ### Execution graph IR (`zetta::ir`)
@@ -696,7 +725,7 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + principals; run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -706,6 +735,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
+  model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
@@ -757,6 +787,7 @@ src/core/                   zetta-core impl
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
+  model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -909,6 +940,7 @@ loop thread).
 - [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
+- [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.

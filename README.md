@@ -63,6 +63,11 @@ read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
 It can **execute** a graph step-by-step into one of those runs
 (`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
 produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
+It owns **models** (`zetta::Model`) — trained models registered on the node:
+metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
+serialized **weights** stored as a large-object body that transfers peer-to-peer
+and is SHA-256-verified; a `system.zetta_models` registry table lists them (see
+[docs/models.md](docs/models.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
@@ -122,7 +127,8 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
 rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
-[runs](docs/runs.md), [principals + access keys](docs/access-control.md), and the
+[runs](docs/runs.md), [models](docs/models.md),
+[principals + access keys](docs/access-control.md), and the
 [audit trail](docs/audit-trail.md)
 created on any node converge onto every
 node — in memory and on disk**, conflict-free, with no leader (the CRDT document

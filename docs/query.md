@@ -97,6 +97,20 @@ Columns: `deployment_id`, `graph_name`, `target_kind`, `binding`,
 `zetta_nodes`, there is **no** bare-name alias — use the qualified
 `system.zetta_deployments`.)
 
+A third table is **`zetta_models`** — the [model registry](models.md) (no
+cluster needed; sourced from `Node::models()`):
+
+```sql
+SELECT * FROM system.zetta_models;
+SELECT model_id, kind FROM system.zetta_models WHERE kind = 'classifier';
+```
+
+Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
+`metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
+`weights_present`. The serialized weights body itself isn't in the registry (it's
+a large binary on the body seam); its fingerprint and local presence are.
+Qualified name only (no bare alias), like `system.zetta_deployments`.
+
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).

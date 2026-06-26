@@ -31,6 +31,12 @@
 //   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
 //                          outputs, lineage }  (one execution of a deployed
 //                          graph — a top-level entity; see run.hpp)
+//   model:<model_uuid> -> { name, kind, project, run, feature_schema, metrics,
+//                          created, weights:{ size, sha256 } }  (a trained model
+//                          — a top-level entity; the serialized weights body is
+//                          NOT in the document — like a large object it lives on
+//                          disk and transfers peer-to-peer, verified against
+//                          weights.size + weights.sha256; see model.hpp)
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
@@ -60,6 +66,7 @@ inline constexpr std::string_view kInputPrefix = "input:";
 inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
+inline constexpr std::string_view kModelPrefix = "model:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
@@ -93,6 +100,9 @@ inline std::string deployment_key(const std::string& deployment_id) {
 }
 inline std::string run_key(const std::string& run_id) {
     return std::string(kRunPrefix) + run_id;
+}
+inline std::string model_key(const std::string& model_id) {
+    return std::string(kModelPrefix) + model_id;
 }
 inline std::string principal_key(const std::string& principal_id) {
     return std::string(kPrincipalPrefix) + principal_id;
