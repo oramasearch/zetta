@@ -1,0 +1,27 @@
+{"event_id":"evt_0001","account_id":"acct_fedex_freight","event_ts":"2026-02-12T15:04:00Z","event_type":"comms","channel":"crm","mention":"FedEx Freight","value":0}
+{"event_id":"evt_0002","account_id":"acct_fedex_freight","event_ts":"2026-01-28T09:30:00Z","event_type":"comms","channel":"email","mention":"Fedex Freight","value":0}
+{"event_id":"evt_0003","account_id":"acct_fedex_ground","event_ts":"2026-02-20T11:00:00Z","event_type":"comms","channel":"crm","mention":"FedEx Ground","value":0}
+{"event_id":"evt_0004","account_id":"acct_fedex_express","event_ts":"2026-02-05T16:45:00Z","event_type":"comms","channel":"crm","mention":"FedEx Express","value":0}
+{"event_id":"evt_0005","account_id":"acct_fedex_office","event_ts":"2026-01-15T10:10:00Z","event_type":"comms","channel":"crm","mention":"FedEx Office","value":0}
+{"event_id":"evt_0006","account_id":"acct_fedex_logistics","event_ts":"2026-02-18T13:20:00Z","event_type":"comms","channel":"crm","mention":"FedEx Logistics","value":0}
+{"event_id":"evt_0007","account_id":"acct_fedex_services","event_ts":"2026-02-22T08:05:00Z","event_type":"comms","channel":"crm","mention":"FedEx Services","value":0}
+{"event_id":"evt_0008","account_id":"acct_umbrella","event_ts":"2026-02-10T14:00:00Z","event_type":"comms","channel":"crm","mention":"Umbrella Logistics","value":0}
+{"event_id":"evt_0009","account_id":"acct_fedex_freight","event_ts":"2026-02-26T08:00:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0010","account_id":"acct_fedex_freight","event_ts":"2026-02-01T08:00:00Z","event_type":"feature_use","channel":"app","mention":"","value":7}
+{"event_id":"evt_0011","account_id":"acct_fedex_ground","event_ts":"2026-02-27T09:00:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0012","account_id":"acct_fedex_express","event_ts":"2026-02-28T07:30:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0013","account_id":"acct_fedex_logistics","event_ts":"2026-02-19T09:15:00Z","event_type":"feature_use","channel":"app","mention":"","value":3}
+{"event_id":"evt_0014","account_id":"acct_initech","event_ts":"2026-02-25T12:00:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0015","account_id":"acct_umbrella","event_ts":"2026-02-24T10:30:00Z","event_type":"feature_use","channel":"app","mention":"","value":5}
+{"event_id":"evt_0016","account_id":"acct_globex","event_ts":"2026-01-30T11:00:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0017","account_id":"acct_fedex_office","event_ts":"2026-02-14T03:00:00Z","event_type":"payment_failed","channel":"billing","mention":"","value":4200}
+{"event_id":"evt_0018","account_id":"acct_fedex_office","event_ts":"2026-02-21T03:00:00Z","event_type":"payment_failed","channel":"billing","mention":"","value":4200}
+{"event_id":"evt_0019","account_id":"acct_globex","event_ts":"2026-02-09T22:00:00Z","event_type":"support_ticket","channel":"web","mention":"","value":3}
+{"event_id":"evt_0020","account_id":"acct_globex","event_ts":"2026-02-16T03:00:00Z","event_type":"payment_failed","channel":"billing","mention":"","value":11000}
+{"event_id":"evt_0021","account_id":"acct_hooli","event_ts":"2026-02-02T18:00:00Z","event_type":"support_ticket","channel":"web","mention":"","value":2}
+{"event_id":"evt_0022","account_id":"acct_hooli","event_ts":"2026-01-10T18:00:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0023","account_id":"acct_fedex_services","event_ts":"2026-02-11T17:00:00Z","event_type":"support_ticket","channel":"web","mention":"","value":1}
+{"event_id":"evt_0024","account_id":"acct_fedex_ground","event_ts":"2026-01-22T13:00:00Z","event_type":"csm_contact","channel":"phone","mention":"","value":0}
+{"event_id":"evt_0025","account_id":"acct_fedex_freight","event_ts":"2026-03-15T08:00:00Z","event_type":"login","channel":"app","mention":"","value":1}
+{"event_id":"evt_0026","account_id":"acct_fedex_office","event_ts":"2026-04-05T03:00:00Z","event_type":"payment_failed","channel":"billing","mention":"","value":4200}
+{"event_id":"evt_0027","account_id":"acct_globex","event_ts":"2026-03-20T09:00:00Z","event_type":"support_ticket","channel":"web","mention":"","value":3}

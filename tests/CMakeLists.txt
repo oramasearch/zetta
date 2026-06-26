@@ -40,6 +40,7 @@ add_executable(zetta-tests
   test_execution_graph.cpp
   test_large_object.cpp
   test_import.cpp
+  test_churn_dataset.cpp
   test_n8n_import.cpp
   test_n8n_compile.cpp
   test_runtime.cpp

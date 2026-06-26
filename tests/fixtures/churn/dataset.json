@@ -1,0 +1,10 @@
+{
+  "name": "synthetic-churn-uc1",
+  "description": "Small synthetic B2B-SaaS churn dataset for UC-1 native tests. No real customer data, no foreign runtime. Includes the FedEx entity-resolution case (TC-4): FedEx Freight + 5 sibling subsidiaries as separate accounts.",
+  "entity_field": "account_id",
+  "time_field": "event_ts",
+  "label_field": "churned",
+  "as_of_date": "2026-03-01",
+  "churn_horizon_days": 90,
+  "label_definition": "churned == true iff the account canceled / did not renew within churn_horizon_days after as_of_date (churn_date falls in (as_of, as_of+H])."
+}
