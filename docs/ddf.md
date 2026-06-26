@@ -155,13 +155,17 @@ compose them: the **[distributed sort](ddf-distributed-sort.md)**
 (`zetta::ddf::DistributedSorter` — sample-partition + local sort + merge across the
 cluster; #385) and the **[distributed equi-join](ddf-join.md)**
 (`zetta::ddf::distributed_join` — repartition two frames by key via collectives, then a
-local hash / sort-merge join per shard; #382).
+local hash / sort-merge join per shard; #382). The
+**[distributed groupby-aggregate](ddf-groupby.md)** (`zetta::ddf::group_by` /
+`distributed_group_by` — count / sum / min / max / mean grouped by a key column, with
+per-node partials combined across the cluster via gather / merge / broadcast over the
+[collectives](collectives.md); #383) rounds out the built aggregation ops.
 
 ## What's next
 
-Still ahead: groupby-aggregate and as-of windowing for the churn featurization
-pipeline, built the same way on the [`ComputeDevice`](compute-device.md) operator set,
-plus the [`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them.
+Still ahead: as-of windowing for the churn featurization pipeline, built the same way
+on the [`ComputeDevice`](compute-device.md) operator set, plus the
+[`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them.
 
 See also [compute-device.md](compute-device.md) (the device seam),
 [cpu-device.md](cpu-device.md) (the reference backend), [storage.md](storage.md)

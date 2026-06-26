@@ -57,6 +57,7 @@ add_executable(zetta-tests
   test_ddf_join.cpp
   test_data_frame_ops.cpp
   test_distributed_sort.cpp
+  test_group_by.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
   test_cuda_device.cpp
