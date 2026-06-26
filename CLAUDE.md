@@ -289,9 +289,27 @@ SDL/CUDA type appears in any header** (pure zetta-core, builds CPU-only). The on
 implementer today is `zetta::compute::HostStubDevice` — a host-memory transfer
 stub (real allocate + memcpy transfer, operators return `unsupported`) that lets
 the memory model round-trip in tests; it is **not** the CPU backend (the real
-operator-implementing `CpuDevice` is #360, then `CudaDevice` #361, a device
-registry #362, and the CMake `zetta-compute` target #363). See
+operator-implementing `CpuDevice` is #360, then `CudaDevice` #361). See
 [docs/compute-device.md](docs/compute-device.md).
+
+The **`DeviceRegistry`** (`include/zetta/compute/device_registry.hpp`, #362) is the
+per-node enumeration + selection layer over that seam: backends are **registered
+into** it (`add`/`find`/`has`/`at`/`devices`/`device_infos`), it **reports** each
+device's `DeviceInfo` capability (and serializes the coordinator-facing report via
+`to_json`), and it **selects** a backend per unit of work
+(`select(DeviceRequest)` — accelerator-first by default, falling back to the CPU,
+with `require_kind` + `min_memory_bytes` filters; `is_accelerator(kind)` is every
+kind but `Cpu`). It is a **container + selector**, not a backend factory — it does
+**not** manufacture `CpuDevice`/`CudaDevice` (those are #360/#361, and CUDA must
+not leak into zetta-core), so the **"CPU always, CUDA if built+present"**
+enumeration is the job of the future `zetta-compute` assembly (#363) that `add`s
+the concrete backends. The new JSON boundary — a device's `DeviceInfo` serialized
+for the coordinator — is **boundary-validated** (`device_info_from_json`/
+`parse_device_report`, non-throwing, mirroring `schemas/device_registry.schema.json`,
+the same hand-written pattern as `NodeCapability`); the `DeviceInfo` JSON form lives
+in the registry module so the pure `ComputeDevice` seam header stays JSON-free. No
+`Node`/SQL wiring in this slice (a standalone seam, like `Provisioner`). See
+[docs/device-registry.md](docs/device-registry.md).
 
 ### Cluster (equal peers)
 
@@ -944,6 +962,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     device_buffer.hpp       zetta::compute::DeviceBuffer — typed, owning, move-only device memory
     compute_device.hpp      zetta::compute::ComputeDevice — the seam: info + memory + the operator set
     host_stub_device.hpp    zetta::compute::HostStubDevice — host-memory transfer stub (ops unsupported)
+    device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -986,6 +1005,7 @@ src/core/                   zetta-core impl
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer
   compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported
+  compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (#362)
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
@@ -1138,6 +1158,7 @@ loop thread).
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359).
+- [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).

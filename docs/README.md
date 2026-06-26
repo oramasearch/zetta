@@ -27,6 +27,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [provisioner.md](provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / tear down / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — plus the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; teardown is a no-op; #374).
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [compute-device.md](compute-device.md) — the `zetta::compute::ComputeDevice` operator interface + typed device-buffer / memory model + the host-memory stub (ADR-27 / ARC-9, accelerated compute; #359).
+- [device-registry.md](device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, and select a backend per op (CPU-first / GPU-when-present) (ARC-9, #362).
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
 - [cluster.md](cluster.md) — clustering equal peers: running multiple nodes, the connect command, the protocol.
 - [signal-plane.md](signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
