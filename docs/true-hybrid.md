@@ -13,12 +13,40 @@ what is built today versus declared/planned** — the rest of `docs/` is a
 description of shipped code, and this page holds to the same bar. Each capability
 links to its own page.
 
-> Why it matters: heterogeneous fleets are the normal case, not the exception — a
-> few GPU boxes next to a rack of CPU servers, an on-prem cluster that bursts into
-> a cloud, an Apple-silicon laptop joined to x86 Linux peers. A system that
-> demands a uniform fleet either leaves that hardware idle or refuses to use it.
-> True hybrid is how Orama Zetta **squeezes the most out of what you already
-> have.**
+Heterogeneous fleets are the normal case, not the exception — a few GPU boxes next
+to a rack of CPU servers, an on-prem cluster that bursts into a cloud, an
+Apple-silicon laptop joined to x86 Linux peers. A system that demands a uniform
+fleet either leaves that hardware idle or refuses to use it.
+
+---
+
+## Why it matters: cost, flexibility, resilience
+
+True hybrid is what gives an operator the **ultimate control over cost,
+flexibility, and resilience** — because the cluster is never bound to one vendor's
+hardware, prices, or availability.
+
+- **Cost.** Run each workload on the cheapest hardware that fits, and spend the
+  capacity you already own or have idle before renting more. The
+  [work-stealing scheduler](#squeeze-the-most-out-of-what-you-have-the-work-stealing-scheduler)
+  keeps every machine busy at its own rate, and the
+  [`Provisioner`](#grow-the-fleet-the-provisioner-seam) seam bursts into a cloud
+  **only when needed** (under a cost cap). No premium for standardizing on a single
+  vendor's stack. This is how true hybrid **squeezes the most out of what you
+  already have.**
+- **Flexibility.** Mix any vendor, architecture, and cloud in one cluster, and
+  adopt new silicon as **a backend, not a re-architecture** — the
+  [`ComputeDevice`](#the-seam-that-makes-it-work-computedevice) seam means a new
+  GPU or ASIC is additive. Place each workload where it belongs instead of forcing
+  the whole system onto one platform's terms.
+- **Resilience.** The cluster is **not susceptible to a single vendor's outages or
+  degradations.** Because nodes are
+  [equal peers that self-heal](#equal-peers-no-leader-the-cluster--crdt) and the
+  scheduler **leases and re-queues** stolen work (a dead or slow helper never hangs
+  a job), an outage or slowdown in one cloud, region, or GPU vendor does not take
+  the cluster down — healthy nodes pick up the pending work and the CRDT converges
+  on whatever is still up. Spread a job across two clouds and a rack of your own
+  metal, and any one of them can fail without stopping it.
 
 ---
 
