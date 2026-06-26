@@ -159,6 +159,12 @@ are a materialized *projection* of it.** Concretely:
     outputs, lineage }` — one execution of a deployed graph (a top-level entity).
     The value is **validated against a JSON Schema** before it is trusted, at
     both entry points (disk + a peer's CRDT value). See [runs.md](runs.md).
+  - `model:<model_uuid>` → `{ name, kind, project, run, feature_schema, metrics,
+    created, weights: { size, sha256 } }` — a trained model (a top-level entity).
+    Like a large object, only the **metadata** rides in the document; the
+    serialized **weights body** stays on disk and transfers peer-to-peer over the
+    LO body seam, verified against `weights.size` + `weights.sha256`. The value is
+    **JSON-Schema validated** at both entry points. See [models.md](models.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,

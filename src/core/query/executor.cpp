@@ -22,10 +22,13 @@ namespace {
 //  - `zetta_nodes` — cluster membership + replication status (Cluster::nodes()).
 //    `SELECT * FROM system.zetta_nodes` (the bare name still works, back-compat).
 //  - `zetta_deployments` — recorded graph→target placements (Node::deployments()).
+//  - `zetta_models` — the model registry (Node::models()): trained models +
+//    their kind / metrics / weights fingerprint.
 // Future: system.zetta_leadership, etc.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
 constexpr std::string_view kDeploymentsTable = "zetta_deployments";
+constexpr std::string_view kModelsTable = "zetta_models";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -91,6 +94,37 @@ std::vector<nlohmann::json> deployment_rows(const Node& node) {
         row["node_count"] = deployment->node_count();
         row["edge_count"] = deployment->edge_count();
         row["created"] = deployment->created();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per registered model for the zetta_models system table — the
+// model registry. Sourced from Node::models(). The serialized weights body is
+// not in the registry (it's a large binary that moves over the body seam); its
+// fingerprint (size + sha256) and presence are, so the registry shows what is
+// trained and whether its weights have landed here.
+std::vector<nlohmann::json> model_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& model : node.models()) {
+        nlohmann::json row;
+        row["model_id"] = model->id();
+        row["name"] = model->name();
+        row["kind"] = model->kind();
+        row["project"] = model->project();
+        row["run"] = model->run();
+        row["feature_schema"] = model->feature_schema();
+        row["metrics"] = model->metrics();
+        row["created"] = model->created();
+        const bool has_weights = model->has_weights();
+        row["has_weights"] = has_weights;
+        row["weights_size"] =
+            has_weights ? nlohmann::json(model->weights()->size)
+                        : nlohmann::json();
+        row["weights_sha256"] =
+            has_weights ? nlohmann::json(model->weights()->sha256)
+                        : nlohmann::json();
+        row["weights_present"] = model->has_weights_body();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -235,10 +269,14 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kDeploymentsTable) {
                         return select_over_rows(s, deployment_rows(node_));
                     }
+                    if (sys == kModelsTable) {
+                        return select_over_rows(s, model_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
-                                     "\" (try system.zetta_nodes or "
-                                     "system.zetta_deployments)");
+                                     "\" (try system.zetta_nodes, "
+                                     "system.zetta_deployments, or "
+                                     "system.zetta_models)");
                     }
                     if (!cluster_) {
                         return error("system.zetta_nodes is unavailable here "
