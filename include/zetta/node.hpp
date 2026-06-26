@@ -10,9 +10,11 @@
 
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
+#include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
+#include "zetta/model.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
@@ -42,6 +44,10 @@ struct IntegrityReport {
     std::size_t large_object_bodies_present = 0;
     std::size_t large_object_bodies_missing = 0;  // metadata here, body not (yet)
     std::size_t corrupt_large_objects = 0;         // on-disk body != recorded sha256
+    std::size_t models = 0;
+    std::size_t model_weights_present = 0;
+    std::size_t model_weights_missing = 0;  // metadata here, weights body not (yet)
+    std::size_t corrupt_model_weights = 0;  // on-disk weights != recorded sha256
     std::size_t dangling_tables = 0;               // table -> missing database
     std::size_t dangling_rows = 0;                 // row -> missing table
     std::size_t dangling_large_objects = 0;        // large object -> missing database
@@ -52,10 +58,10 @@ struct IntegrityReport {
     // A "good state": no corruption and no dangling references. (A missing body
     // is informational — it may simply be awaiting transfer from a peer.)
     bool ok() const {
-        return corrupt_large_objects == 0 && dangling_tables == 0 &&
-               dangling_rows == 0 && dangling_large_objects == 0 &&
-               dangling_inputs == 0 && dangling_graphs == 0 &&
-               dangling_access_keys == 0;
+        return corrupt_large_objects == 0 && corrupt_model_weights == 0 &&
+               dangling_tables == 0 && dangling_rows == 0 &&
+               dangling_large_objects == 0 && dangling_inputs == 0 &&
+               dangling_graphs == 0 && dangling_access_keys == 0;
     }
 };
 
@@ -150,6 +156,41 @@ public:
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
+
+    // CRUD for models (a trained model registered on the node — see model.hpp /
+    // docs/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
+    // find / drop take the id; the registry is models() + the
+    // system.zetta_models SQL table. create stamps `created` and requires a
+    // non-empty `kind` (empty handle otherwise); the caller fills the rest of the
+    // ModelValue (name / feature_schema / metrics / project / run). Weights are
+    // attached separately via the returned Model handle's set_weights (the body
+    // is stored on disk + fingerprinted, then transfers peer-to-peer over the
+    // large-object body seam). models() is in a stable order (created, then id).
+    std::shared_ptr<Model> create_model(ModelValue value);
+    std::shared_ptr<Model> find_model(const std::string& id) const;
+    bool drop_model(const std::string& id);
+    std::vector<std::shared_ptr<Model>> models() const { return models_; }
+    std::size_t model_count() const { return models_.size(); }
+
+    // CRUD for compute jobs (one unit of native distributed accelerated compute —
+    // ARC-11 / ENT-31; see compute_job.hpp / docs/compute-jobs.md). Like runs,
+    // jobs have no human name: they are keyed by id, so find / drop take the id.
+    // create stamps created/updated, starts Queued, takes the job `kind` and
+    // optional project / graph / run / scaling_policy (reward) references, and
+    // **records a `job_created` audit event**. The "update" half is the mutator on
+    // the returned ComputeJob handle (set_status), which captures into the CRDT,
+    // persists, and — on the first transition into a terminal state — records a
+    // `job_finished` audit event (FEAT-9). jobs() is in a stable order (created,
+    // then id).
+    std::shared_ptr<ComputeJob> create_job(JobKind kind,
+                                           std::string project = {},
+                                           std::string graph = {},
+                                           std::string run = {},
+                                           std::string scaling_policy = {});
+    std::shared_ptr<ComputeJob> find_job(const std::string& id) const;
+    bool drop_job(const std::string& id);
+    std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
+    std::size_t job_count() const { return jobs_.size(); }
 
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
@@ -259,6 +300,12 @@ private:
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
 
+    // Rebuild models_ by scanning config_.data_dir. Called from start().
+    void load_models();
+
+    // Rebuild jobs_ by scanning config_.data_dir. Called from start().
+    void load_jobs();
+
     // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
     // start(). Malformed event files are skipped at the boundary (schema).
     void load_audit_events();
@@ -291,6 +338,11 @@ private:
     bool materialize_drop_deployment(const std::string& id);
     std::shared_ptr<Run> materialize_run(std::string id, RunValue value);
     bool materialize_drop_run(const std::string& id);
+    std::shared_ptr<Model> materialize_model(std::string id, ModelValue value);
+    bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<ComputeJob> materialize_job(std::string id,
+                                                ComputeJobValue value);
+    bool materialize_drop_job(const std::string& id);
     std::shared_ptr<Principal> materialize_principal(std::string id,
                                                      PrincipalKind kind,
                                                      std::string name,
@@ -313,6 +365,8 @@ private:
     std::vector<std::shared_ptr<Project>> projects_;        // insertion order
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
+    std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     DeploymentController controller_{*this};  // control plane (driven by tick())

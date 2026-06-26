@@ -63,6 +63,36 @@ read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
 It can **execute** a graph step-by-step into one of those runs
 (`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
 produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
+It owns **models** (`zetta::Model`) — trained models registered on the node:
+metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
+serialized **weights** stored as a large-object body that transfers peer-to-peer
+and is SHA-256-verified; a `system.zetta_models` registry table lists them (see
+[docs/models.md](docs/models.md)).
+The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
+(`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
+distributed accelerated compute pass: provision N nodes against a capability spec,
+tear them down, and list them — the abstraction the autoscaler consumes and the
+Local / cloud backends implement. The first backend, **`zetta::LocalProvisioner`**
+(given hardware), uses the nodes already in the cluster best-effort — it adds no
+capacity and its teardown is a no-op (see
+[docs/provisioner.md](docs/provisioner.md)).
+On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
+bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
+node and bulk-revokes them on teardown — reusing the identity model, audited
+(see [docs/burst-identity.md](docs/burst-identity.md)).
+A **large-burst cost-cap approval gate** (`zetta::BurstApprovalGate`) decorates the
+seam: a provision burst over a configured cap is blocked pending approval and
+recorded in the audit trail, guarding against runaway burst cost (see
+[docs/burst-approval-gate.md](docs/burst-approval-gate.md)).
+It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
+unit of native distributed accelerated compute — featurize / train / explain /
+score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
+audited at create + finish and JSON-Schema validated (see
+[docs/compute-jobs.md](docs/compute-jobs.md)). A job carries a **`ScalingPolicy`**
+(`zetta::ScalingPolicy`) — the per-job autoscaler reward objective (minimize cost
+/ runtime-latency target / data shape) inside bounds (min/max nodes, cost cap),
+with an `evaluate()` over (progress, elapsed, cost) samples (see
+[docs/scaling-policy.md](docs/scaling-policy.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
@@ -76,8 +106,22 @@ this read-only in an **Admin & Settings** panel — principals + keys, their sco
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.
 The async runtime is coroutine-native (C++
-Alliance Capy/Corosio), behind the `zetta::runtime` seam. State replicates
-between nodes as an Automerge CRDT. See [docs/](docs/) for details.
+Alliance Capy/Corosio), behind the `zetta::runtime` seam (which also exposes a
+`parallel_for` data-parallel primitive over a shared thread pool). Heavy numeric
+work targets the `zetta::compute::ComputeDevice` seam — a typed device-buffer
+memory model plus a coarse-grained operator set (map/reduce/scan, histogram,
+gemm/axpy, sort, gather/scatter) that CPU and (optional) CUDA backends implement,
+so new hardware is a new backend and consumers are unchanged. The backends build
+into a `zetta-compute` library; the default build is CPU-only (no GPU toolkit
+needed), with the CUDA backend opt-in behind `-DZETTA_ENABLE_CUDA=ON` (see
+[docs/compute-device.md](docs/compute-device.md)). The always-built reference
+backend is `zetta::compute::CpuDevice`, which runs every operator on host memory,
+multi-threaded via `runtime::parallel_for` (see
+[docs/cpu-device.md](docs/cpu-device.md)); a per-node
+`zetta::compute::DeviceRegistry` enumerates those backends, reports each one's
+capability, and selects one per op — GPU when present, else CPU (see
+[docs/device-registry.md](docs/device-registry.md)). State replicates between
+nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
@@ -122,7 +166,9 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
 rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
-[runs](docs/runs.md), [principals + access keys](docs/access-control.md), and the
+[runs](docs/runs.md), [models](docs/models.md),
+[compute jobs](docs/compute-jobs.md),
+[principals + access keys](docs/access-control.md), and the
 [audit trail](docs/audit-trail.md)
 created on any node converge onto every
 node — in memory and on disk**, conflict-free, with no leader (the CRDT document
@@ -133,6 +179,16 @@ verified against the hash. You can see **all nodes and their replication status*
 version, in-sync/syncing) three ways: the headed **Cluster** panel's Nodes table,
 the headless heartbeat log, or SQL — `SELECT * FROM system.zetta_nodes;`. See
 [docs/cluster.md](docs/cluster.md) and [docs/replication.md](docs/replication.md).
+
+The same peer connections also carry a **[signal plane](docs/signal-plane.md)** —
+ephemeral, typed messages addressed by node id: request/response **RPC**,
+fire-and-forget **events** (unicast or broadcast), and **task** envelopes. Unlike
+replicated state, signals aren't routed through the CRDT; they're the substrate
+for distributed compute (collectives, work-stealing, job dispatch), schema-
+validated at the boundary. On top of it ride
+**[collectives](docs/collectives.md)** — `allreduce` / `broadcast` / `barrier` /
+`gather` for combining per-node compute partials, deterministic regardless of node
+order.
 zetta is **multi-leader** (no global election); leadership applies only to future
 exclusive structures (locks) — see the consistency model in the replication doc.
 

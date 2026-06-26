@@ -1,0 +1,11 @@
+account_id,name,brand,entity,plan_tier,industry,region,mrr,seats,tenure_days,renewal_date,churned,churn_date
+acct_fedex_freight,FedEx Freight,FedEx,fedex_freight,enterprise,logistics,us,14000,320,1180,2026-05-15,false,
+acct_fedex_ground,FedEx Ground,FedEx,fedex_ground,enterprise,logistics,us,16000,410,1500,2026-08-01,false,
+acct_fedex_express,FedEx Express,FedEx,fedex_express,enterprise,logistics,us,22000,600,2100,2026-09-10,false,
+acct_fedex_office,FedEx Office,FedEx,fedex_office,business,retail,us,4200,60,540,2026-04-01,true,2026-04-10
+acct_fedex_logistics,FedEx Logistics,FedEx,fedex_logistics,enterprise,logistics,eu,9000,150,800,2026-07-20,false,
+acct_fedex_services,FedEx Services,FedEx,fedex_services,business,logistics,us,3000,40,300,2026-06-05,false,
+acct_globex,Globex Corporation,Globex,globex,enterprise,manufacturing,us,11000,220,1000,2026-04-20,true,2026-05-02
+acct_initech,Initech,Initech,initech,business,software,us,5000,80,650,2026-10-01,false,
+acct_umbrella,Umbrella Logistics,Umbrella,umbrella,business,logistics,eu,6000,95,720,2026-08-15,false,
+acct_hooli,Hooli,Hooli,hooli,starter,software,us,1200,15,180,2026-03-25,true,2026-03-20

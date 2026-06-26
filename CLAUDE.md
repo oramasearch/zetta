@@ -130,6 +130,68 @@ a detail pane with the selected run's status, color-coded logs, an outputs
 table, and a lineage section with a confidence bar; the GUI slice of FEAT-5 /
 SCR-6 / CMP-4). See [docs/runs.md](docs/runs.md).
 
+A node also owns **models** (`zetta::Model`) — a **trained model** registered on
+the node (ENT-14 / FEAT-6): its metadata (`name`, `kind`, free-form
+`feature_schema` + `metrics`, `created`) plus a fingerprint of its serialized
+**weights**. Another top-level entity keyed by id (like `Run`): `create_model`
+(requires a non-empty `kind`) / `find_model` / `drop_model` / `models`, with
+`set_weights`/`set_metrics` mutators on the handle that capture into the CRDT then
+persist. The model is **split like a large object**: the **metadata rides in the
+CRDT** (flat key `model:<uuid>` carrying `weights:{size,sha256}`) while the
+**serialized weights body stays off the CRDT** — it lives on disk
+(`<model-uuid>/weights`) and **transfers peer-to-peer over the existing
+large-object body seam** (`BlobStore`/`ReplicatedBlobStore`, the `LOREQ`/`LORES`
+exchange), verified against `size` + `sha256` before being written. `Model` is
+validated against a formal **JSON Schema** at the storage boundary like `Run`
+(`parse_model_value`; `kind` required, `metrics` numeric, `weights` carries both
+size + hash), and the preflight integrity check counts model weights (present /
+awaiting body / corrupt) the same way it does large-object bodies. The registry
+is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
+provenance + replication only — training/inference (and producing the weights) is
+a later slice. See [docs/models.md](docs/models.md).
+
+A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
+of native distributed accelerated compute** (the foundational entity of the
+accelerated-compute pass for UC-1, **ARC-11 / ENT-31**): a `kind`
+(`featurize`/`train`/`explain`/`score`/`ddf`), a lifecycle `status`
+(`Queued`→`Running`→`Succeeded`|`Failed`), optional `project`/`graph`/`run` and
+`scaling_policy` (reward) **id references** (the `ScalingPolicy` value type is
+built — see below — but a job references it by id only; persisting/replicating
+policies as their own entity is a later slice), and an optional `detail` note. Another
+top-level, replicated entity (flat key `job:<uuid>`, on-disk `<job-uuid>/job.json`),
+**modeled exactly like `Run`** but keyed by id (jobs have no human name):
+`create_job`/`find_job`/`drop_job`/`jobs`, with the "update" half being the
+`set_status` mutator on the handle (capture into the CRDT, persist). Boundary-
+validated against a formal JSON Schema (`parse_compute_job_value`, the same
+`pboettch` validator as Run). It is **audited at create + finish** via the existing
+`AuditSink`: `Node::create_job` records a `job_created` event, and
+`ComputeJob::set_status` records a `job_finished` event on the **first** transition
+into a terminal state (the `materialize_*`/`apply_value` reconcile paths never emit
+— a peer's action arrives already-audited). The registry is `Node::jobs()` + the
+read-only SQL **`system.zetta_jobs`** table (job id / kind / status / refs / reward
++ observing node, computed from `Node::jobs()`). Scheduling/running a job (the
+coordinator, scheduler + collectives, the autoscaler wired to the `ScalingPolicy`
+reward model below) are separate, later slices. See
+[docs/compute-jobs.md](docs/compute-jobs.md).
+
+A compute job's `scaling_policy` ref points at a **`zetta::ScalingPolicy`** — the
+per-job **reward objective an autoscaler optimizes** (**ADR-29 / ENT-34**, the
+same accelerated-compute pass). A policy picks one `ScalingObjective` —
+`minimize_cost`, `runtime_target` (finish by `target_seconds`, runtime/latency),
+or `data_shape` (size the fleet to the work) — inside hard `ScalingBounds` (a
+`min_nodes`/`max_nodes` envelope + a `cost_cap`). It is a **pure value type +
+boundary validation** modeled like the sibling `NodeCapability`/`ProvisionedNode`
+value types (a `to_json` / non-throwing `from_json` boundary that **mirrors**
+`schemas/scaling_policy.schema.json`, **not** the `pboettch` path — that is for
+top-level replicated entities), **plus** the objective evaluation:
+`evaluate(ScalingSample{progress, elapsed, cost, nodes})` is a pure, deterministic
+function returning a `ScalingDecision` (`reward` — higher is better, the
+autoscaler maximizes it; `recommended_nodes` clamped to the bounds; a
+`scale_up`/`hold`/`scale_down` `action`; `within_cost_cap`; a reason). The cost
+cap is a **hard constraint** — a breach sheds the fleet to `min_nodes` regardless
+of objective. No autoscaler loop, no replication, no `Node` CRUD in this slice —
+those are later. See [docs/scaling-policy.md](docs/scaling-policy.md).
+
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
 (`create`/`find`/`drop`/`rename_principal`, `principal_names`). A principal owns
@@ -160,20 +222,28 @@ audit trail itself is built — see below). See
 [docs/access-control.md](docs/access-control.md).
 
 A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
-for every **graph change / deploy / data access** (ENT-23 / FEAT-9; the audit
-half of governance, on top of the key-scoped access above). An `AuditEvent`
-(id + `action` graph_created|graph_dropped|graph_deployed|data_access + `actor` +
-`target` + `allowed` + `detail` + `time`) is a top-level, replicated entity (flat
-key `audit:<uuid>`) — but **immutable and append-only**: no mutator, no drop, so
-the set of `audit:` keys only grows and the CRDT converges trivially. `Node` owns
-the trail and **is** the `AuditSink` seam: `record_audit_event` is the append API
-(it stamps id + time, captures into the CRDT, persists), `audit_events()` lists
-them chronologically. Emission is wired at the three governed seams —
-`Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a project
-like its `ReplicationManager*`), `Node::deploy_graph`, and `Node::authorize`
+for every **graph change / deploy / data access / compute-job lifecycle /
+access-key issue+revoke / provision-burst approval** event
+(ENT-23 / FEAT-9; the audit half of governance, on top of the key-scoped access
+above). An `AuditEvent` (id + `action`
+graph_created|graph_dropped|graph_deployed|data_access|job_created|job_finished|key_issued|key_revoked|provision_requested +
+`actor` + `target` + `allowed` + `detail` + `time`) is a top-level, replicated
+entity (flat key `audit:<uuid>`) — but **immutable and append-only**: no mutator,
+no drop, so the set of `audit:` keys only grows and the CRDT converges trivially.
+`Node` owns the trail and **is** the `AuditSink` seam: `record_audit_event` is the
+append API (it stamps id + time, captures into the CRDT, persists),
+`audit_events()` lists them chronologically. Emission is wired at the governed
+seams — `Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a
+project like its `ReplicationManager*`), `Node::deploy_graph`, `Node::authorize`
 (which is therefore **non-const**: every allow/deny decision records a
-`data_access` event). The `materialize_*` reconciliation paths never emit (a
-peer's action arrives already-audited as its own replicated `audit:` event).
+`data_access` event), the compute-job lifecycle (`Node::create_job` →
+`job_created`, `ComputeJob::set_status` → `job_finished` on the first terminal
+transition), the burst-identity lifecycle (`BurstIdentityManager::mint` →
+`key_issued`, `revoke` → `key_revoked`; see below), plus the **provision-burst
+approval gate** (`BurstApprovalGate::provision` → `provision_requested`, recorded
+only when a burst exceeds the cost cap — see the Provisioning section). The
+`materialize_*` reconciliation paths never emit (a peer's action arrives
+already-audited as its own replicated `audit:` event).
 It is the **second record validated against a formal JSON Schema** at the storage
 boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator),
 projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
@@ -208,9 +278,137 @@ zetta's async / coroutine / networking layer lives behind
 `boost::capy` / `boost::corosio` directly** — so the (beta, churning) C++
 Alliance backend can be swapped, or replaced by Boost.Asio, by editing that one
 header. Backed by Capy today (`modules/capy`); Corosio (`modules/corosio`) adds
-networking. Background + migration plan:
-[docs/runtime.md](docs/runtime.md) and
+networking. The seam also exposes **`runtime::parallel_for`** — a blocking
+data-parallel primitive (`src/core/runtime.cpp`) that tiles `[0, count)` into
+contiguous chunks over one shared, process-wide thread pool and joins before
+returning, so CPU-bound code (the `CpuDevice` operators today; the job scheduler /
+collectives later) fans work across cores without naming `boost::capy`. Its tiling
+is a pure function of `count` (so multi-pass algorithms line phases up), and
+bodies **must not throw** (a throwing body aborts — zetta-core never unwinds across
+the seam). Background + migration plan: [docs/runtime.md](docs/runtime.md) and
 [docs/research/coroutines.md](docs/research/coroutines.md).
+
+### Accelerated compute (`zetta::compute`)
+
+The **`ComputeDevice` interface** (`include/zetta/compute/compute_device.hpp`,
+namespace `zetta::compute`) is the seam every heavy compute operator targets —
+the operator-level accelerator interface of **ADR-27 / ARC-9** (the native
+distributed accelerated-compute pass for UC-1 churn, #359). Same shape as zetta's
+other seams (`StepExecutor`, `Check`, `StorageEngine`): a **pure-virtual base
+class** whose concrete implementations are the **backends**, so consumers call
+the interface and stay unchanged when new hardware appears (**new hardware = a new
+backend, nothing else**). It has two halves. (1) A **memory model**: a
+`zetta::compute::DeviceBuffer` is a **typed, owning, move-only** handle to a
+region of device memory (host RAM for a CPU device, GPU VRAM for a CUDA device) —
+a `unique_ptr` for device memory that frees itself through its owning device
+(`make_buffer`/`release_buffer`; the opaque storage handle is the one allowed raw
+pointer, a C-API resource handle, fully RAII-encapsulated). A buffer carries a
+runtime `DataType` tag (`Float32`/`Int32`/… — virtuals can't be templated, so a
+buffer is *typed* without templating the interface; backends dispatch kernels on
+the tag), and the device offers explicit host⇄device transfer
+(`copy_from_host`/`copy_to_host`, with typed `upload<T>`/`download<T>` helpers)
+plus `synchronize()`. (2) An **operator set** declared at the largest grain that
+still lets the cluster coordinator distribute work: **map/elementwise,
+reduce/scan, histogram, gemm/axpy, sort/sort_by_key, gather/scatter** (DDF and
+GBDT/SHAP ops are added by their own issues against this interface). Every call
+returns a `zetta::compute::ComputeStatus` rather than throwing (zetta-core is
+`-fexperimental-library`; no unwinding across the seam) — `Ok` or
+`Unsupported`/`InvalidArgument`/`OutOfMemory`/`BackendError` + a reason; a backend
+that lacks an op returns `unsupported` (the status **is** the per-op capability —
+no parallel bitmask to drift). **No SDL/CUDA type appears in any header** and the
+**default build is CPU-only** (no GPU toolkit needed); a CUDA backend ships behind
+a build guard, not in the public surface. The implementers today:
+`zetta::compute::HostStubDevice` is a host-memory transfer stub (real allocate +
+memcpy transfer, operators return `unsupported`) that lets the memory model
+round-trip in tests — **not** a compute backend.
+`zetta::compute::CpuDevice` (`include/zetta/compute/cpu_device.hpp`, **#360**) is
+the **always-built reference backend**: it implements **every** operator on host
+memory, parallelizing the data-parallel ones
+(map/elementwise/reduce/scan/histogram/gemm/axpy/gather) across the
+`zetta::runtime` thread pool via `runtime::parallel_for`, with `sort`/`sort_by_key`
+(comparison sort) and `scatter` (write-race-free on duplicate indices) kept
+sequential. Float-only ops (sqrt/exp/log, gemm, axpy) reject integer dtypes;
+everything returns a `ComputeStatus`, never throwing across the seam. **Its results
+are the numerical reference `zetta::compute::CudaDevice` (#361), the GPU backend,
+is checked against** (correctness over throughput).
+
+The **runtime-free** compute backends (the `HostStubDevice` stub, the optional
+`CudaDevice`) plus the `DeviceBuffer` memory model build into a dedicated
+**`zetta-compute`** static library linked PUBLIC into `zetta-core` (the build slice
+of this pass, **#363**) — the same isolation SDL/ImGui get: a heavy/optional
+dependency lives in its own target and **never leaks its headers into
+`zetta-core`**. (`CpuDevice` stays in `zetta-core`: it depends on `zetta::runtime`,
+which `zetta-core` owns, so it can't sink into the lower-level `zetta-compute`
+without a link cycle.) A **CPU-only configure is the default** (dev Macs, CI) and
+needs no GPU toolkit; the **CUDA backend is opt-in** behind `-DZETTA_ENABLE_CUDA=ON`,
+which `find_package(CUDAToolkit REQUIRED)`, `enable_language(CUDA)`, adds
+`src/core/compute/cuda_device.cu` (Thrust + custom `histogram`/`gemm` kernels,
+dispatched on `DataType`), links `CUDA::cudart` PRIVATE (so the CUDA include dirs
+never reach `zetta-core`), and sets the public `ZETTA_WITH_CUDA` define consumers
+(the device registry #362, the tests) guard `CudaDevice` use on. `cuda_device.hpp`
+is CUDA-free (no `<cuda_runtime.h>`), like `src/gui/app.hpp` keeps SDL out of its
+header. The CPU-only path is what's verified on macOS/CI; the `.cu` needs a CUDA
+toolkit + GPU (a Linux host) to compile/run. See
+[docs/compute-device.md](docs/compute-device.md) (interface + build) and
+[docs/cpu-device.md](docs/cpu-device.md) (the CPU backend).
+
+The **`DeviceRegistry`** (`include/zetta/compute/device_registry.hpp`, #362) is the
+per-node enumeration + selection layer over that seam: backends are **registered
+into** it (`add`/`find`/`has`/`at`/`devices`/`device_infos`), it **reports** each
+device's `DeviceInfo` capability (and serializes the coordinator-facing report via
+`to_json`), and it **selects** a backend per unit of work
+(`select(DeviceRequest)` — accelerator-first by default, falling back to the CPU,
+with `require_kind` + `min_memory_bytes` filters; `is_accelerator(kind)` is every
+kind but `Cpu`). It is a **container + selector**, not a backend factory — it does
+**not** manufacture `CpuDevice`/`CudaDevice` (those are #360/#361, and CUDA must
+not leak into zetta-core), so the **"CPU always, CUDA if built+present"**
+enumeration is the job of the future `zetta-compute` assembly (#363) that `add`s
+the concrete backends. The new JSON boundary — a device's `DeviceInfo` serialized
+for the coordinator — is **boundary-validated** (`device_info_from_json`/
+`parse_device_report`, non-throwing, mirroring `schemas/device_registry.schema.json`,
+the same hand-written pattern as `NodeCapability`); the `DeviceInfo` JSON form lives
+in the registry module so the pure `ComputeDevice` seam header stays JSON-free. No
+`Node`/SQL wiring in this slice (a standalone seam, like `Provisioner`). See
+[docs/device-registry.md](docs/device-registry.md).
+
+### Work-stealing scheduler (`zetta::compute`)
+
+The **work-stealing scheduler** is the task pool the native distributed compute
+pass runs on (**ARC-10**, #366): a job is split into many small tasks; idle/faster
+workers **steal** pending tasks from busy ones, so the work self-balances with
+**no fixed per-worker capability model** — a faster worker (or GPU node) naturally
+processes more, a slower one fewer (the "fluid, heterogeneity-tolerant" split).
+The **local** half is `zetta::compute::WorkStealingScheduler`
+(`include/zetta/compute/work_stealing_scheduler.hpp`): a fixed pool of worker
+threads, **each owning a deque** of pending tasks, with stealing between them — the
+owner pushes/pops its deque's **back** (LIFO locality), a thief takes a victim's
+**front** (FIFO, least contention), made legible with a per-deque mutex rather
+than a lock-free structure. `submit(task)` fire-and-forgets a unit of work;
+`parallel_map(inputs, fn)` runs `fn` over N inputs across the pool and returns the
+results **in order**, blocking until all complete (so call it off-worker). It is a
+deliberate **sibling to `zetta::runtime::thread_pool`** (the Capy seam), which
+schedules off a single shared queue and so has no observable per-worker steal to
+test or reason about; task bodies may still use `zetta::runtime` coroutines. A
+zero-worker pool is valid (a pure task *sink*); `stats()` exposes per-worker
+counts + a steal count, `current_worker_index()` tells a task which worker it is
+on. The **cross-node** half is `zetta::compute::DistributedScheduler`
+(`include/zetta/compute/distributed_scheduler.hpp`), built on the local one:
+idle/faster *nodes* steal pending tasks from peers over the
+[signal plane](#signal-plane-rpc--events--tasks). The node that calls
+`map(method, inputs)` **owns** the job (the authoritative pending queue); its
+local drainers and idle peers both pull from it — a peer sends a `steal` RPC, the
+owner replies with an **offer** of leased tasks, the peer runs them on its own
+pool and returns a `steal_result`. **Single-hop** (a node only hands out its own
+jobs' tasks, never re-steals), with **leases + re-queue** so a dead helper never
+hangs `map`, and **idempotent** completion so a late result is ignored. The
+application supplies one **executor** (`string(method, payload)`) registered
+identically on every node; the three steal messages are **schema-validated at the
+boundary** (`schemas/steal_{request,offer,result}.schema.json`, same `pboettch`
+validator as the [signal envelope](#signal-plane-rpc--events--tasks)). It is the
+cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
+signal to a fallback. Scheduling a `ComputeJob` / driving collectives is the
+**job coordinator** (#372), a later slice that submits work *through* this. See
+[docs/work-stealing-scheduler.md](docs/work-stealing-scheduler.md).
 
 ### Cluster (equal peers)
 
@@ -240,6 +438,69 @@ headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
 currently always `Follower`); membership + replication gossip for now. See
 [docs/cluster.md](docs/cluster.md).
+
+### Signal plane (RPC / events / tasks)
+
+The cluster transport also carries a typed, **ephemeral** message layer — the
+**signal plane** (`zetta::Signal`, `include/zetta/signal.hpp`; ADR-28 / ARC-10) —
+alongside the `SYNC`/`STATUS`/`LOREQ`/`LORES` gossip. A `Signal` is one of four
+`SignalKind`s (`request`→`response`→`event`→`task`) addressed to a peer **by node
+id**: request/response **RPC** (`Cluster::request` blocks until the peer replies,
+times out, or is unreachable), fire-and-forget **events** (`send_event` unicast /
+`broadcast_event` to all), and **task** envelopes (`send_task` — the substrate for
+job dispatch). The application plugs in a `SignalHandler` (`set_signal_handler`;
+`on_request`/`on_event`/`on_task`, each with a safe default) invoked on the
+network thread. This is the foundation for the native distributed compute pass
+(collectives, the work-stealing scheduler, the job coordinator).
+**Ephemeral — deliberately NOT routed through the CRDT document** (the one
+exception to "everything is replicated state": a signal is a *message*, not
+*state*; durable agreement still belongs in the CRDT). The wire frame is one new
+line verb, `ZETTA/1 SIGNAL <envelope>`, where the envelope is a single-line,
+compact JSON object (opaque payload base64'd inside, binary-safe) **validated at
+the boundary** against a draft-07 JSON Schema (`schemas/signal_envelope.schema.json`,
+mirrored embedded in `src/core/signal.cpp`, via the same `pboettch` validator as
+Run) plus kind-specific required-field checks in code — a malformed envelope is
+rejected with a path-qualified reason and never reaches a handler
+(`decode_signal` is non-throwing). Cross-thread sends go through a mutex-guarded
+per-peer outbox + an RPC promise map (no coroutine is posted across threads — the
+backend's frame allocator isn't thread-safe); the per-link writer flushes it on a
+short tick, and membership/signal-only links now send a `PING` keepalive (since
+they carry no periodic gossip). `encode_signal`/`decode_signal` are the
+serialization seam; the transport only adds/strips the framing. See
+[docs/signal-plane.md](docs/signal-plane.md).
+
+### Collectives (allreduce / broadcast / barrier / gather)
+
+**Collective communication** over the signal plane (`zetta::Collectives`,
+`include/zetta/collectives.hpp`; ADR-28 / ARC-10, #365) — the primitive the
+native distributed accelerated-compute pass for UC-1 churn uses to **combine
+per-node compute partials** (gradient histograms, partial aggregates) across the
+cluster. Four MPI-style collectives: **`allreduce`** (every node contributes a
+vector → every node gets their elementwise reduction — sum/product/min/max),
+**`broadcast`** (the root's vector → every node), **`barrier`** (all block until
+all arrive, then proceed), and **`gather`** (every node contributes → the **root**
+gets all of them ordered; classic MPI gather, result only at root). It rides
+entirely on the signal plane's RPC (`Cluster::request`) — no new wire verb, no new
+transport — and is **ephemeral** like every signal. **Deterministic, independent
+of node order**: the participants are this node + connected peers, the *root* is
+the **lexicographically-smallest node id** (leaderless — every node computes the
+same root, no election), and the root **reduces once in node-id order and pushes
+the single result to everyone**, so every node ends with bit-identical bytes even
+though floating-point addition isn't associative. The round is a **star** (a
+depth-1 tree: root gathers from all, broadcasts the result; a k-ary tree / ring is
+a later optimization behind the same API), driven from the calling application
+thread (which blocks until the round completes / times out) while the
+`SignalHandler` (`on_request`, on the network thread) only records an
+arrival/result and wakes the waiter — **never blocking**, honoring the signal
+plane's contract. `Collectives` registers itself as the cluster's signal handler
+(forwarding non-collective signals to an optional `delegate`). The two RPC methods
+(`collective.contribute` / `collective.result`) carry a `zetta::CollectiveMessage`
+payload, **boundary-validated** against a draft-07 JSON Schema
+(`schemas/collective_message.schema.json`, mirrored embedded in
+`src/core/collectives.cpp`, the same `pboettch` validator as the signal envelope);
+`encode_collective_message`/`decode_collective_message` are the serialization seam.
+Assumes a **fully-connected** membership (a partitioned cluster times out the
+round). See [docs/collectives.md](docs/collectives.md).
 
 ### Replication (CRDT)
 
@@ -300,10 +561,13 @@ fragment the change history and accumulate `node:` keys). The document uses
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
-`deployment:<uuid>`, `run:<uuid>`, `principal:<uuid>` (an authenticated actor),
-`key:<uuid>` (an access key carrying its parent `principal` ref + its `scope` +
-its `capabilities`), and `audit:<uuid>` (an immutable, append-only audit event) —
-each entity owns its key by UUID so concurrent edits never collide.
+`deployment:<uuid>`, `run:<uuid>`, `model:<uuid>` (a trained model — metadata
+only; its serialized weights body stays on disk like an `lo:` body),
+`job:<uuid>` (a compute job — ARC-11/ENT-31),
+`principal:<uuid>` (an authenticated actor), `key:<uuid>` (an access key carrying
+its parent `principal` ref + its `scope` + its `capabilities`), and
+`audit:<uuid>` (an immutable, append-only audit event) — each entity owns its key
+by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -333,6 +597,14 @@ data_dir/
   <run-uuid>/                ← one folder per run (UUIDv4 = its id)
     run.json                 ← { id, project, graph, status, created, updated,
                                   logs, outputs, lineage }
+  <model-uuid>/              ← one folder per model (UUIDv4 = its id)
+    model.json               ← { id, name, kind, project, run, feature_schema,
+                                  metrics, created, weights:{ size, sha256 } }
+    weights                  ← raw serialized bytes (NOT in the CRDT; on-disk
+                                 like an LO body — transfers peer-to-peer)
+  <job-uuid>/                ← one folder per compute job (UUIDv4 = its id)
+    job.json                 ← { id, kind, status, project, graph, run,
+                                  scaling_policy, created, updated, detail }
   <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
     principal.json           ← { id, kind, name, created }
     keys/
@@ -423,9 +695,13 @@ database (à la `pg_catalog`) whose tables are computed at query time — first
 **`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
 wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
 **`system.zetta_deployments`** (recorded graph→target placements, sourced from
-`Node::deployments()`; qualified name only). `system` is reserved (can't be
-created/dropped/written; no real db may be named it) and is where future system
-tables (e.g. `system.zetta_leadership`) live. Full detail in
+`Node::deployments()`; qualified name only) and **`system.zetta_models`** (the
+model registry — trained models + their kind / metrics / weights fingerprint,
+sourced from `Node::models()`; qualified name only) and **`system.zetta_jobs`**
+(the compute-job registry — one row per unit of accelerated compute + its
+lifecycle, sourced from `Node::jobs()`; qualified name only). `system` is
+reserved (can't be created/dropped/written; no real db may be named it) and is
+where future system tables (e.g. `system.zetta_leadership`) live. Full detail in
 [docs/query.md](docs/query.md).
 
 ### Execution graph IR (`zetta::ir`)
@@ -533,6 +809,30 @@ malformed payload fails the check with a clear reason. Registered in
 `default_gate()` after `NonEmptyGraphCheck`. Full detail in
 [docs/entity-resolution-check.md](docs/entity-resolution-check.md).
 
+### Synthetic churn dataset (UC-1 fixture) + loader
+
+The **synthetic churn dataset** (`zetta::ChurnDataset`,
+`include/zetta/churn_dataset.hpp`) is the **root task of FEAT-6** ("learns from
+your data") for **UC-1 churn** (#402; supports TC-4): a small, committed,
+synthetic (non-customer) churn dataset — **accounts** + **comms/usage events** —
+plus a tiny C++ loader, the substrate the later featurization/training/oracle/
+end-to-end tests build on. **No foreign runtime (ADR-17):** the data is checked
+in under `tests/fixtures/churn/` (`dataset.json` manifest + `accounts.{jsonl,csv}`
++ `events.{jsonl,csv}`); the generator that authored it is **not** a
+repo/build/CI dependency. It carries an **`as_of_date`** (`t0`) + a
+**`churn_horizon_days`** (so featurization windows to `event_ts <= t0` and a few
+events deliberately sit **after** `t0` — the leakage trap), a per-account churn
+label, and the make-or-break **FedEx entity-resolution case** (FedEx Freight + 5
+sibling subsidiaries as **separate accounts**). `load_churn_dataset(dir, format)`
+is **non-throwing** and **schema-validates every record at the boundary** (three
+draft-07 schemas — `schemas/churn_{dataset,account,event}.schema.json`, embedded
+in the `.cpp` like the Run record); `ChurnDataFormat` is `{ Jsonl (canonical),
+Csv (a flat sibling), Parquet (planned — an honest seam that errors until an
+Arrow/parquet-cpp dependency lands) }`. `entity_resolution_attribute(dataset)`
+builds the division-correct `entity_resolution` payload from the comms mentions,
+ready to feed `EntityResolutionCheck` (TC-4); the JSONL also imports straight into
+a zetta table via `import_records`. See [docs/churn-dataset.md](docs/churn-dataset.md).
+
 ### Deployment (place a graph onto a target)
 
 A **deployment** places a validated `ir::ExecutionGraph` onto a
@@ -635,6 +935,83 @@ and the executor only emits schema-legal output kinds (a restart-reload test
 proves the produced run passes `parse_run_value`). See
 [docs/execution.md](docs/execution.md).
 
+### Provisioning (node capability model + the `Provisioner` seam)
+
+The **`Provisioner`** seam (`include/zetta/provisioner.hpp`) and the **node
+capability model** (`include/zetta/node_capability.hpp`) open the **native
+distributed accelerated compute** pass for UC-1 churn (ARC-13 / ENT-32). A
+**`zetta::NodeCapability`** describes one node's compute resources — `cores`
+(CPU), `memory_bytes`, and a `Gpu` (`GpuKind` none/cuda/rocm/metal +
+`throughput_tflops` + optional `model`) — used **both** as the capability a node
+reports and as the per-node floor a provision spec asks for; `satisfies()` is the
+meet-or-exceed comparison (cores ≥, memory ≥, and a matching-kind GPU at ≥ the
+requested throughput when a GPU is required). It is **distinct from**
+`zetta::Capability` (an access-control *right*, not *compute*) and feeds the
+per-node device registry (#362). The **`Provisioner`** interface is the abstract
+seam both the Local (given-hardware, #374) and cloud-burst (AWS #377 / GCP #378)
+backends implement and the autoscaler/job coordinator consumes:
+`provision(request)` brings up `count` nodes meeting a `spec` **best-effort**
+(may return fewer), `teardown(node_id)` releases one **idempotently** (unknown id
+→ no-op), and `provisioned()` lists what is up. `ProvisionedNode`
+(`{ node_id, address, capability }`) and `NodeCapability` carry a
+**validated JSON boundary** (non-throwing `from_json`, mirroring
+`schemas/node_capability.schema.json`, the `DeploymentTarget` pattern). **No
+cloud SDK lives behind the seam.** The first concrete backend is
+**`zetta::LocalProvisioner`** (`include/zetta/local_provisioner.hpp`, #374) — the
+**given-hardware** path: it does **not** stand up VMs but reports/uses the nodes
+**already in the cluster**, best-effort. It reads the live fleet through an
+injected **fleet source** (a `std::function<std::vector<ProvisionedNode>()>`
+re-consulted each call, so it reflects self-healing membership) rather than owning
+a `Cluster`, keeping it in zetta-core and unit-testable; production wiring binds
+the source to `Cluster::nodes()` + each node's reported capability once capability
+reporting lands (a later slice — `NodeStatus` carries none today). `provision`
+selects up to `count` existing nodes that `satisfies` the spec (best-effort: fewer
++ a `detail` note when short — given hardware can't add capacity; a no-floor spec
+returns the current cluster nodes); `teardown` is a **no-op returning false**
+(given hardware isn't ours to release); `provisioned` lists the whole cluster.
+The cloud-burst backends (AWS #377 / GCP #378) are still later slices; the
+autoscaler/job coordinator that consumes the seam is unbuilt, and nothing here
+persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
+
+The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
+consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
+guarding **RSK-9** "runaway burst cost"; #379). It is a `Provisioner` **decorator**
+(it *is* a `Provisioner` that wraps another), so it drops in transparently
+wherever the autoscaler holds a `Provisioner&`. A provision request **within** a
+configured `BurstCap` (two independent, optional axes — `max_nodes` and `max_cost`,
+0 = unlimited) passes straight through; a request **over** the cap consults a
+`BurstApprover` (deny-by-default — no approver wired ⇒ blocked), **records the
+decision in the audit trail** (a new `provision_requested` `AuditAction`), and
+either delegates (approved) or returns a blocked, unsatisfied result **without
+touching the inner backend** (so nothing comes up, no cost is incurred). `teardown`
+/ `provisioned` are not gated (they reduce/report cost). Cost is a pluggable
+`CostEstimator`; the default (`default_burst_cost`) is coarse relative compute
+units (`count × (cores + gpu tflops)`, so GPU bursts weigh heavily) — real cloud
+pricing plugs in with the cloud backends. `BurstCap` carries a **validated JSON
+boundary** (`schemas/burst_cap.schema.json`) like the other provisioner DTOs. The
+gate audits only the **exception** (an over-cap burst), not every small provision.
+See [docs/burst-approval-gate.md](docs/burst-approval-gate.md).
+
+### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
+
+When the cluster **bursts** compute nodes for a job, each burst node needs an
+identity to authenticate. The **`BurstIdentityManager`**
+(`include/zetta/burst_identity.hpp`) mints those **in bulk on provision** and
+**revokes them in bulk on teardown**, **reusing** the existing identity model
+(`Principal` + `AccessKey`, #304) — no new identity system (ARC-13; mitigates
+RSK-9, #375). `mint(job_id, nodes, scope, capabilities)` creates one **service**
+`Principal` + one `AccessKey` per `ProvisionedNode` — scoped to the job (pass a
+`Scope` naming its project) and short-lived (TTL the capabilities) — and returns a
+`BurstIdentity` (`{ node_id, principal_id, key_id }`) per node; `revoke(job_id)`
+bulk-drops them. The job↔identity link is **derived, not a parallel copy of
+state**: the service principal is named `burst/<job-id>/<node-id>`, so `minted()`
+and `revoke()` reconstruct the set from the node's replicated principals (it
+survives restart). Both edges are **audited** via the Node's `AuditSink` —
+`key_issued` per mint, `key_revoked` per revoke (the two new `AuditAction`s above).
+Both are **idempotent** (re-mint returns the existing identity; revoke of an
+unknown job is a no-op). Pairs with the `Provisioner` seam; getting the key onto
+the burst node is a later slice. See [docs/burst-identity.md](docs/burst-identity.md).
+
 ## Tech stack
 
 - **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
@@ -691,12 +1068,12 @@ Building tests is on by default; turn off with `-DZETTA_BUILD_TESTS=OFF`.
 ## Code layout
 
 ```
-CMakeLists.txt              build graph: imgui lib, zetta-core lib, zetta exe
+CMakeLists.txt              build graph: imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + principals; run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -704,8 +1081,16 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
+  node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
+  provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
+  local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
+  burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
+  scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
+  burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
+  model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+  compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
@@ -716,6 +1101,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
+  churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
   n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
   n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
@@ -727,9 +1113,11 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   checks/
     entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
   bytes.hpp / duration.hpp  human-readable size / time formatters
-  runtime.hpp               zetta::runtime — async/coroutine seam over Capy
+  runtime.hpp               zetta::runtime — async/coroutine seam over Capy (task/block_on/thread_pool + parallel_for data-parallel fan-out)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
-  cluster.hpp               zetta::Cluster — equal-peer membership over TCP
+  cluster.hpp               zetta::Cluster — equal-peer membership over TCP + the signal-plane API
+  signal.hpp                zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
+  collectives.hpp           zetta::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365)
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
   blob_store.hpp            zetta::BlobStore — large-object body transfer seam
   replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
@@ -743,20 +1131,40 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
+  compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA in headers)
+    data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
+    compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
+    device_buffer.hpp       zetta::compute::DeviceBuffer — typed, owning, move-only device memory
+    compute_device.hpp      zetta::compute::ComputeDevice — the seam: info + memory + the operator set
+    host_stub_device.hpp    zetta::compute::HostStubDevice — host-memory transfer stub (ops unsupported)
+    cpu_device.hpp          zetta::compute::CpuDevice — the always-built reference backend (every op on host memory, multi-threaded; #360)
+    cuda_device.hpp         zetta::compute::CudaDevice — the GPU backend (CUDA-free header; guarded by ZETTA_WITH_CUDA, #363)
+    device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
+    work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
+    distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane (ARC-10/#366)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
   project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
+  churn_dataset.cpp         load_churn_dataset — JSONL/CSV churn fixture reader + 3 embedded draft-07 schemas (boundary validation)
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
+  node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
+  provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
+  local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
+  burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
+  scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
+  burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
+  model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+  compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -777,10 +1185,21 @@ src/core/                   zetta-core impl
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
-  cluster.cpp               cluster networking adapter (the one Corosio user)
+  compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
+  compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported (→ zetta-compute)
+  compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels (→ zetta-compute; CUDA build only, #363)
+  compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
+  compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
+  compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
+  compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary (zetta-core; #366)
+  runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
+  cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
+  signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
+  collectives.cpp           zetta::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
+  base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
-  signals.cpp               SIGINT/SIGTERM stop flag
+  signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node
 src/main.cpp                arg parsing + mode dispatch
@@ -909,6 +1328,8 @@ loop thread).
 - [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
+- [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
+- [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
@@ -920,10 +1341,21 @@ loop thread).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
 - [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
+- [`docs/churn-dataset.md`](docs/churn-dataset.md) — the synthetic UC-1 churn dataset fixture + loader (`zetta::ChurnDataset` / `load_churn_dataset`, FEAT-6 / #402): committed accounts + comms/events (JSONL/CSV), the FedEx entity-resolution case, schema-validated, no foreign runtime.
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
+- [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
+- [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
+- [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
+- [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model (ARC-10 / #366).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
+- [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
+- [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
+- [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
+- [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
+- [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
+- [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "zetta/cluster.hpp"
+#include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/node.hpp"
@@ -22,10 +23,16 @@ namespace {
 //  - `zetta_nodes` — cluster membership + replication status (Cluster::nodes()).
 //    `SELECT * FROM system.zetta_nodes` (the bare name still works, back-compat).
 //  - `zetta_deployments` — recorded graph→target placements (Node::deployments()).
+//  - `zetta_models` — the model registry (Node::models()): trained models +
+//    their kind / metrics / weights fingerprint.
+//  - `zetta_jobs` — the compute-job registry (Node::jobs()): one row per unit of
+//    native distributed accelerated compute + its lifecycle (ARC-11 / ENT-31).
 // Future: system.zetta_leadership, etc.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
 constexpr std::string_view kDeploymentsTable = "zetta_deployments";
+constexpr std::string_view kModelsTable = "zetta_models";
+constexpr std::string_view kJobsTable = "zetta_jobs";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -91,6 +98,65 @@ std::vector<nlohmann::json> deployment_rows(const Node& node) {
         row["node_count"] = deployment->node_count();
         row["edge_count"] = deployment->edge_count();
         row["created"] = deployment->created();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per registered model for the zetta_models system table — the
+// model registry. Sourced from Node::models(). The serialized weights body is
+// not in the registry (it's a large binary that moves over the body seam); its
+// fingerprint (size + sha256) and presence are, so the registry shows what is
+// trained and whether its weights have landed here.
+std::vector<nlohmann::json> model_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& model : node.models()) {
+        nlohmann::json row;
+        row["model_id"] = model->id();
+        row["name"] = model->name();
+        row["kind"] = model->kind();
+        row["project"] = model->project();
+        row["run"] = model->run();
+        row["feature_schema"] = model->feature_schema();
+        row["metrics"] = model->metrics();
+        row["created"] = model->created();
+        const bool has_weights = model->has_weights();
+        row["has_weights"] = has_weights;
+        row["weights_size"] =
+            has_weights ? nlohmann::json(model->weights()->size)
+                        : nlohmann::json();
+        row["weights_sha256"] =
+            has_weights ? nlohmann::json(model->weights()->sha256)
+                        : nlohmann::json();
+        row["weights_present"] = model->has_weights_body();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per compute job for the zetta_jobs system table — the compute-job
+// registry (ARC-11 / ENT-31). Sourced from Node::jobs() (every job replicates, so
+// each node sees the same set). Exposes the job's identity + lifecycle (id / kind
+// / status / created / updated / detail) and its optional id references (project /
+// graph / run / scaling_policy — the reward model). `node` is the **observing**
+// node — the node whose replicated view these rows are read from; per-job
+// scheduler placement (which node actually runs a job) is a later slice, so until
+// then this is "which node's registry you queried", not a recorded assignment.
+std::vector<nlohmann::json> compute_job_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& job : node.jobs()) {
+        nlohmann::json row;
+        row["job_id"] = job->id();
+        row["kind"] = to_string(job->kind());
+        row["status"] = to_string(job->status());
+        row["project"] = job->project();
+        row["graph"] = job->graph();
+        row["run"] = job->run();
+        row["scaling_policy"] = job->scaling_policy();
+        row["created"] = job->created();
+        row["updated"] = job->updated();
+        row["detail"] = job->detail();
+        row["node"] = node.node_id();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -235,10 +301,18 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kDeploymentsTable) {
                         return select_over_rows(s, deployment_rows(node_));
                     }
+                    if (sys == kModelsTable) {
+                        return select_over_rows(s, model_rows(node_));
+                    }
+                    if (sys == kJobsTable) {
+                        return select_over_rows(s, compute_job_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
-                                     "\" (try system.zetta_nodes or "
-                                     "system.zetta_deployments)");
+                                     "\" (try system.zetta_nodes, "
+                                     "system.zetta_deployments, "
+                                     "system.zetta_models, or "
+                                     "system.zetta_jobs)");
                     }
                     if (!cluster_) {
                         return error("system.zetta_nodes is unavailable here "

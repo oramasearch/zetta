@@ -28,8 +28,15 @@ add_executable(zetta-tests
   test_project_graph.cpp
   test_deployment.cpp
   test_deployment_controller.cpp
+  test_provisioner.cpp
+  test_local_provisioner.cpp
+  test_burst_identity.cpp
+  test_scaling_policy.cpp
+  test_burst_approval_gate.cpp
   test_solution_catalog.cpp
   test_run.cpp
+  test_model.cpp
+  test_compute_job.cpp
   test_access_control.cpp
   test_executor.cpp
   test_audit.cpp
@@ -37,12 +44,20 @@ add_executable(zetta-tests
   test_node.cpp
   test_query.cpp
   test_execution_graph.cpp
+  test_compute_device.cpp
+  test_cpu_device.cpp
+  test_device_registry.cpp
   test_large_object.cpp
   test_import.cpp
+  test_churn_dataset.cpp
   test_n8n_import.cpp
   test_n8n_compile.cpp
   test_runtime.cpp
+  test_work_stealing_scheduler.cpp
+  test_distributed_scheduler.cpp
   test_cluster.cpp
+  test_signal.cpp
+  test_collectives.cpp
   test_replication.cpp
   test_data_replication.cpp
   test_large_object_replication.cpp

@@ -96,6 +96,14 @@ of equal peers over TCP via `zetta::Cluster` — see [cluster.md](cluster.md).
 as an Automerge CRDT (`modules/automerge-cpp`) and merges peers' state
 conflict-free — see [replication.md](replication.md).
 
+**Accelerated compute** (`zetta::compute::ComputeDevice`) is the seam every heavy
+numeric operator targets — a typed device-buffer memory model plus a
+coarse-grained operator set (map/elementwise, reduce/scan, histogram, gemm/axpy,
+sort, gather/scatter) that CPU and (optional) CUDA backends implement, the same
+pure-virtual seam pattern as `StepExecutor` / `StorageEngine`. No backend or
+SDL/CUDA type lives in zetta-core; new hardware is a new backend, consumers
+unchanged — see [compute-device.md](compute-device.md).
+
 ## Module map
 
 ```
@@ -131,6 +139,9 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   ir/step_kind.hpp        StepKind — connect→clean→model→index→serve→act taxonomy
   ir/execution_graph.hpp  ExecutionGraph IR — typed step nodes + edges
   ir/serialization.hpp    to_json/from_json — the IR's JSON form + validation
+  compute/compute_device.hpp  ComputeDevice — the accelerator seam (memory + operators)
+  compute/device_buffer.hpp   DeviceBuffer — typed, owning, move-only device memory
+  compute/host_stub_device.hpp HostStubDevice — host-memory transfer stub (no backend)
 src/core/                 zetta-core implementation (incl. cluster.cpp adapter)
 src/gui/                  headed UI (App), links SDL3 + ImGui
 src/main.cpp              arg parsing + mode dispatch

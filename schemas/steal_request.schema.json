@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealRequest",
+  "description": "A work-stealing request sent by an idle node to a peer over the signal plane (method \"steal\"): give me up to `count` pending tasks. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many pending tasks the requester is willing to take."
+    }
+  },
+  "required": ["count"],
+  "additionalProperties": false
+}

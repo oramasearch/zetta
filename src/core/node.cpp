@@ -43,6 +43,8 @@ bool Node::start() {
     load_projects();
     load_deployments();
     load_runs();
+    load_models();
+    load_jobs();
     load_principals();
     load_audit_events();
     if (replication_) {
@@ -54,26 +56,31 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu principals, %zu audit events)\n",
+        "%zu deployments, %zu runs, %zu models, %zu jobs, %zu principals, "
+        "%zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
-        projects_.size(), deployments_.size(), runs_.size(),
+        projects_.size(), deployments_.size(), runs_.size(), models_.size(),
+        jobs_.size(),
         principals_.size(), audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
             "zetta: preflight: %zu databases, %zu tables, %zu rows, %zu large "
-            "objects (%zu present, %zu awaiting body) — %s\n",
+            "objects (%zu present, %zu awaiting body), %zu models (%zu weights "
+            "present, %zu awaiting body) — %s\n",
             integrity_.databases, integrity_.tables, integrity_.rows,
             integrity_.large_objects, integrity_.large_object_bodies_present,
-            integrity_.large_object_bodies_missing,
+            integrity_.large_object_bodies_missing, integrity_.models,
+            integrity_.model_weights_present, integrity_.model_weights_missing,
             integrity_.ok() ? "OK" : "ISSUES FOUND");
         if (!integrity_.ok()) {
             std::printf(
                 "zetta: preflight WARN: %zu corrupt large object(s), %zu "
-                "dangling table(s), %zu dangling row(s), %zu dangling large "
-                "object(s), %zu dangling input(s), %zu dangling graph(s), %zu "
-                "dangling access key(s)\n",
-                integrity_.corrupt_large_objects, integrity_.dangling_tables,
+                "corrupt model weight(s), %zu dangling table(s), %zu dangling "
+                "row(s), %zu dangling large object(s), %zu dangling input(s), "
+                "%zu dangling graph(s), %zu dangling access key(s)\n",
+                integrity_.corrupt_large_objects,
+                integrity_.corrupt_model_weights, integrity_.dangling_tables,
                 integrity_.dangling_rows, integrity_.dangling_large_objects,
                 integrity_.dangling_inputs, integrity_.dangling_graphs,
                 integrity_.dangling_access_keys);
@@ -647,6 +654,196 @@ std::shared_ptr<Run> Node::find_run(const std::string& id) const {
     return nullptr;
 }
 
+// ----- models (a registered trained model; replicated as model:<uuid>) -------
+
+void Node::load_models() {
+    models_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "model.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a model.json that fails the Model JSON Schema is
+        // rejected here (with a logged reason) rather than allowed to corrupt the
+        // in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<ModelValue> value =
+            meta.is_discarded() ? std::nullopt : parse_model_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid model %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        models_.push_back(std::make_shared<Model>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(models_.begin(), models_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<Model> Node::create_model(ModelValue value) {
+    if (value.kind.empty()) return nullptr;  // basic guard (kind is required)
+    const std::string id = new_uuid();
+    value.created = now_iso8601();
+    value.weights.reset();  // weights are attached separately via set_weights
+    if (replication_) replication_->set(catalog::model_key(id), to_json(value));
+    return materialize_model(id, std::move(value));
+}
+
+std::shared_ptr<Model> Node::materialize_model(std::string id, ModelValue value) {
+    if (auto existing = find_model(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto model = std::make_shared<Model>(std::move(id), std::move(value), dir,
+                                         replication_);
+    model->persist_meta();
+    models_.push_back(model);
+    return model;
+}
+
+std::shared_ptr<Model> Node::find_model(const std::string& id) const {
+    for (const auto& model : models_) {
+        if (model->id() == id) return model;
+    }
+    return nullptr;
+}
+
+bool Node::drop_model(const std::string& id) {
+    if (!find_model(id)) return false;
+    if (replication_) replication_->remove(catalog::model_key(id));
+    return materialize_drop_model(id);
+}
+
+bool Node::materialize_drop_model(const std::string& id) {
+    const auto it = std::find_if(
+        models_.begin(), models_.end(),
+        [&](const std::shared_ptr<Model>& m) { return m->id() == id; });
+    if (it == models_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    models_.erase(it);
+    return true;
+}
+
+// ----- compute jobs (one unit of accelerated compute; replicated job:<uuid>) --
+
+void Node::load_jobs() {
+    jobs_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "job.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a job.json that fails the ComputeJob JSON Schema is
+        // rejected here (with a logged reason) rather than allowed to corrupt the
+        // in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<ComputeJobValue> value =
+            meta.is_discarded() ? std::nullopt
+                                : parse_compute_job_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid job %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON"
+                                            : error.c_str());
+            continue;
+        }
+        jobs_.push_back(std::make_shared<ComputeJob>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_, /*audit=*/this));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(jobs_.begin(), jobs_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<ComputeJob> Node::create_job(JobKind kind, std::string project,
+                                             std::string graph, std::string run,
+                                             std::string scaling_policy) {
+    const std::string id = new_uuid();
+    const std::string now = now_iso8601();
+    ComputeJobValue value;
+    value.kind = kind;
+    value.status = JobStatus::Queued;
+    value.project = std::move(project);
+    value.graph = std::move(graph);
+    value.run = std::move(run);
+    value.scaling_policy = std::move(scaling_policy);
+    value.created = now;
+    value.updated = now;
+    if (replication_) replication_->set(catalog::job_key(id), to_json(value));
+    auto job = materialize_job(id, std::move(value));
+    // Audit the create (FEAT-9): queueing a compute job is a governed action.
+    // Record it once the job is materialized; a peer's create arrives via
+    // reconcile (materialize_job) already carrying its own replicated audit event.
+    if (job) {
+        record_audit_event(
+            {AuditAction::JobCreated, {}, job->id(), true,
+             "compute job " + std::string(to_string(job->kind())) + " queued",
+             {}});
+    }
+    return job;
+}
+
+std::shared_ptr<ComputeJob> Node::materialize_job(std::string id,
+                                                  ComputeJobValue value) {
+    if (auto existing = find_job(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto job = std::make_shared<ComputeJob>(std::move(id), std::move(value), dir,
+                                            replication_, /*audit=*/this);
+    job->persist_meta();
+    jobs_.push_back(job);
+    return job;
+}
+
+std::shared_ptr<ComputeJob> Node::find_job(const std::string& id) const {
+    for (const auto& job : jobs_) {
+        if (job->id() == id) return job;
+    }
+    return nullptr;
+}
+
+bool Node::drop_job(const std::string& id) {
+    if (!find_job(id)) return false;
+    if (replication_) replication_->remove(catalog::job_key(id));
+    return materialize_drop_job(id);
+}
+
+bool Node::materialize_drop_job(const std::string& id) {
+    const auto it = std::find_if(
+        jobs_.begin(), jobs_.end(),
+        [&](const std::shared_ptr<ComputeJob>& j) { return j->id() == id; });
+    if (it == jobs_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    jobs_.erase(it);
+    return true;
+}
+
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
 bool Node::drop_principal(const std::string& name) {
@@ -923,6 +1120,17 @@ void Node::migrate_to_replication() {
     for (const auto& run : runs_) {
         if (!snapshot.contains(catalog::run_key(run->id()))) {
             replication_->set(catalog::run_key(run->id()), run->metadata());
+        }
+    }
+    for (const auto& model : models_) {
+        if (!snapshot.contains(catalog::model_key(model->id()))) {
+            replication_->set(catalog::model_key(model->id()),
+                              model->metadata());
+        }
+    }
+    for (const auto& job : jobs_) {
+        if (!snapshot.contains(catalog::job_key(job->id()))) {
+            replication_->set(catalog::job_key(job->id()), job->metadata());
         }
     }
     for (const auto& principal : principals_) {
@@ -1287,6 +1495,63 @@ void Node::reconcile_from_replication() {
         }
     }
 
+    // Models (top-level, no parent): model:<id> -> the model value. Decode +
+    // validate the desired set at the boundary (a malformed CRDT value is
+    // ignored, not trusted), then drop / add / update the local projection to
+    // match — with no re-capture. apply_value updates only the metadata; the
+    // serialized weights body is NOT in the document and arrives separately over
+    // the large-object body seam (the blob store requests it when missing).
+    std::map<std::string, ModelValue> models;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kModelPrefix);
+        if (id.empty()) continue;
+        if (std::optional<ModelValue> parsed = parse_model_value(value)) {
+            models.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_model_ids;
+    for (const auto& model : models_) local_model_ids.push_back(model->id());
+    for (const std::string& model_id : local_model_ids) {
+        if (!models.contains(model_id)) materialize_drop_model(model_id);
+    }
+    for (auto& [id, value] : models) {
+        auto model = find_model(id);
+        if (!model) {
+            materialize_model(id, std::move(value));
+        } else if (model->metadata() != to_json(value)) {
+            model->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+
+    // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
+    // validate the desired set at the boundary (a malformed CRDT value is ignored,
+    // not trusted), then drop / add / update the local projection to match — with
+    // no re-capture and no audit (apply_value / materialize_job do not write back
+    // to the CRDT, and a peer's create/finish arrives already-audited as its own
+    // replicated `audit:` event).
+    std::map<std::string, ComputeJobValue> compute_jobs;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kJobPrefix);
+        if (id.empty()) continue;
+        if (std::optional<ComputeJobValue> parsed =
+                parse_compute_job_value(value)) {
+            compute_jobs.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_job_ids;
+    for (const auto& job : jobs_) local_job_ids.push_back(job->id());
+    for (const std::string& job_id : local_job_ids) {
+        if (!compute_jobs.contains(job_id)) materialize_drop_job(job_id);
+    }
+    for (auto& [id, value] : compute_jobs) {
+        auto job = find_job(id);
+        if (!job) {
+            materialize_job(id, std::move(value));
+        } else if (job->metadata() != to_json(value)) {
+            job->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+
     // Principals (top-level, no parent): principal:<id> -> { kind, name,
     // created }. Decode the desired set, then drop / add / update the local
     // projection to match the document — no re-capture.
@@ -1429,6 +1694,27 @@ IntegrityReport Node::check_integrity() const {
         }
     }
 
+    // Model weights ride the same large-object body contract: the metadata
+    // (size + sha256) replicates, the body lives on disk and transfers
+    // peer-to-peer. A model that has weights metadata but no body yet is awaiting
+    // transfer (informational); a present body that no longer hashes to the
+    // recorded digest is corruption.
+    for (const auto& model : models_) {
+        ++report.models;
+        if (!model->has_weights()) continue;
+        if (!model->has_weights_body()) {
+            ++report.model_weights_missing;
+            continue;
+        }
+        ++report.model_weights_present;
+        const std::optional<std::string> body = model->read_weights();
+        const ModelWeights& weights = *model->weights();
+        if (!body || (!weights.sha256.empty() &&
+                      sha256_hex(*body) != weights.sha256)) {
+            ++report.corrupt_model_weights;
+        }
+    }
+
     // Dangling references in the replicated catalog: a table/large object whose
     // database is gone, or a row whose table is gone (orphaned keys the
     // reconciler ignores but that shouldn't accumulate).
@@ -1492,14 +1778,16 @@ IntegrityReport Node::check_integrity() const {
 
 std::string Node::status_line() const {
     if (!running_) return "stopped";
-    char buf[288];
+    char buf[320];
     std::snprintf(
         buf, sizeof(buf),
         "running — up %.0fs, %llu ticks, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu principals, %zu audit events",
+        "%zu deployments, %zu runs, %zu models, %zu principals, %zu audit "
+        "events",
         uptime_seconds(), static_cast<unsigned long long>(ticks_),
         databases_.size(), projects_.size(), deployments_.size(),
-        runs_.size(), principals_.size(), audit_events_.size());
+        runs_.size(), models_.size(), principals_.size(),
+        audit_events_.size());
     return buf;
 }
 

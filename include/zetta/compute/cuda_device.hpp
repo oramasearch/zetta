@@ -1,0 +1,80 @@
+#pragma once
+
+#include <cstddef>
+
+#include "zetta/compute/compute_device.hpp"
+
+// The CUDA ComputeDevice backend — the GPU implementation of the operator seam
+// (compute_device.hpp). It allocates buffers in GPU VRAM, transfers host<->device
+// over the CUDA runtime, and runs the declared operator set on the device.
+//
+// This header is **CUDA-free**: it includes no <cuda_runtime.h> and exposes no
+// CUDA type, exactly the way src/gui/app.hpp forward-declares SDL types so the
+// heavy headers stay in one .cu. All CUDA headers and kernels live in
+// src/core/compute/cuda_device.cu, compiled into the zetta-compute static library
+// only when the CUDA toolkit is detected; CUDA never leaks into zetta-core (the
+// same discipline that keeps SDL/ImGui out of zetta-core).
+//
+// The class is only declared in a CUDA-enabled build (the `ZETTA_WITH_CUDA`
+// compile definition, set by CMake when ZETTA_ENABLE_CUDA is on). In a CPU-only
+// build the symbol is not compiled or linked, so a consumer that names CudaDevice
+// without guarding on `ZETTA_WITH_CUDA` gets a clear compile error rather than a
+// cryptic link error. The device registry (#362) selects it behind that guard.
+namespace zetta::compute {
+
+#if defined(ZETTA_WITH_CUDA)
+
+class CudaDevice final : public ComputeDevice {
+public:
+    // Drive CUDA device ordinal `device_index` (0 = the first GPU). The device is
+    // selected (cudaSetDevice) before each operation, so several CudaDevice
+    // instances over distinct ordinals can coexist on a multi-GPU node.
+    explicit CudaDevice(int device_index = 0) noexcept;
+
+    DeviceInfo info() const override;
+
+    DeviceBuffer allocate(DataType dtype, std::size_t element_count) override;
+
+    ComputeStatus copy_from_host(const void* host_source,
+                                 DeviceBuffer& destination,
+                                 std::size_t byte_count) override;
+
+    ComputeStatus copy_to_host(const DeviceBuffer& source,
+                               void* host_destination,
+                               std::size_t byte_count) const override;
+
+    ComputeStatus synchronize() override;
+
+    ComputeStatus map(UnaryOp op, const DeviceBuffer& input,
+                      DeviceBuffer& output) override;
+    ComputeStatus elementwise(BinaryOp op, const DeviceBuffer& lhs,
+                              const DeviceBuffer& rhs,
+                              DeviceBuffer& output) override;
+    ComputeStatus reduce(ReduceOp op, const DeviceBuffer& input,
+                         DeviceBuffer& output) override;
+    ComputeStatus scan(ReduceOp op, ScanInclusivity inclusivity,
+                       const DeviceBuffer& input, DeviceBuffer& output) override;
+    ComputeStatus histogram(const DeviceBuffer& input, std::size_t bin_count,
+                            double range_min, double range_max,
+                            DeviceBuffer& output_counts) override;
+    ComputeStatus gemm(const GemmParams& params, const DeviceBuffer& a,
+                       const DeviceBuffer& b, DeviceBuffer& c) override;
+    ComputeStatus axpy(double alpha, const DeviceBuffer& x,
+                       DeviceBuffer& y) override;
+    ComputeStatus sort(DeviceBuffer& keys, SortOrder order) override;
+    ComputeStatus sort_by_key(DeviceBuffer& keys, DeviceBuffer& values,
+                              SortOrder order) override;
+    ComputeStatus gather(const DeviceBuffer& input, const DeviceBuffer& indices,
+                         DeviceBuffer& output) override;
+    ComputeStatus scatter(const DeviceBuffer& input, const DeviceBuffer& indices,
+                          DeviceBuffer& output) override;
+
+private:
+    void release_buffer(void* handle) noexcept override;
+
+    int device_index_ = 0;
+};
+
+#endif  // ZETTA_WITH_CUDA
+
+}  // namespace zetta::compute

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <functional>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -42,5 +44,40 @@ Value block_on(task<Value> coroutine) {
         [&](Value value) { result.emplace(std::move(value)); })(std::move(coroutine));
     return std::move(*result);
 }
+
+// --- Data parallelism: parallel_for over the shared runtime thread pool -------
+//
+// A blocking data-parallel primitive for CPU-bound work — the seam's answer to
+// "spread this loop across cores" without any caller naming `boost::capy`. The
+// heavy compute backend (zetta::compute::CpuDevice) and, later, the scheduler /
+// collectives are its consumers. It fans out onto one shared, process-wide
+// thread pool (the runtime thread pool) and joins before returning.
+
+// The number of contiguous chunks parallel_for splits `count` items into. It is
+// a pure function of `count` and the pool's worker count, so two calls with the
+// same `count` see an identical (chunk_index -> [begin, end)) tiling — a
+// guarantee multi-pass algorithms (e.g. a parallel prefix scan) rely on to line
+// up their phases. Returns 0 for count == 0, and 1 for any count small enough
+// that parallelism is not worth the dispatch (the body then runs inline).
+std::size_t parallel_chunks(std::size_t count) noexcept;
+
+// Run `body(chunk_index, begin, end)` over the parallel_chunks(count) disjoint
+// contiguous sub-ranges that tile [0, count), concurrently on the shared runtime
+// thread pool, and block until every sub-range has completed. The body is called
+// once per chunk with a half-open range and the chunk's index in
+// [0, parallel_chunks(count)); it should loop over [begin, end) itself (chunked,
+// not per-element dispatch — the grain stays cache-friendly and the pool overhead
+// is amortized). When there is a single chunk the body runs inline on the calling
+// thread with no pool dispatch.
+//
+// `body` must not throw. zetta-core compiles with -fexperimental-library and must
+// never unwind across a seam (the same discipline that makes compute operators
+// return ComputeStatus rather than throwing), so a body that raises an exception
+// is a contract violation and aborts the process rather than unwinding into the
+// coroutine backend.
+void parallel_for(
+    std::size_t count,
+    const std::function<void(std::size_t chunk_index, std::size_t begin,
+                             std::size_t end)>& body);
 
 }  // namespace zetta::runtime

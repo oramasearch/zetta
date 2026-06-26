@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/scaling_policy.schema.json",
+  "title": "ScalingPolicy",
+  "description": "The job objective / reward model (ENT-34, ADR-29; part of the native distributed accelerated compute pass for UC-1 churn — ARC-11 / #264). A per-job reward objective an autoscaler optimizes — minimize cost, hit a runtime/latency target, or size the fleet to the data shape — inside hard bounds (a min/max node envelope and a cost cap). A pure value type carried on a ComputeJob by id (scaling_policy in compute_job.schema.json). Mirrored by zetta::ScalingPolicy in include/zetta/scaling_policy.hpp and enforced by ScalingPolicy::from_json() in src/core/scaling_policy.cpp — keep them in sync. A malformed policy is rejected at the boundary so the autoscaler never silently widens what it will do.",
+  "type": "object",
+  "required": ["objective", "bounds"],
+  "additionalProperties": false,
+  "properties": {
+    "objective": {
+      "description": "What the autoscaler optimizes. Append-only enum (the lowercase name is the stored identifier).",
+      "type": "string",
+      "enum": ["minimize_cost", "runtime_target", "data_shape"]
+    },
+    "bounds": {
+      "description": "The hard envelope the autoscaler stays inside, whatever the objective wants.",
+      "$ref": "#/$defs/bounds"
+    },
+    "target_seconds": {
+      "description": "The runtime/latency target in seconds for the 'runtime_target' objective — the wall-clock the autoscaler sizes the fleet to hit. Required (> 0) when objective is 'runtime_target'; omitted/0 (unset) otherwise.",
+      "type": "number",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "bounds": {
+      "description": "The min/max node envelope and the cost cap. A job needs at least one node, so min_nodes >= 1 and max_nodes >= min_nodes. cost_cap is a spend ceiling in abstract cost units (e.g. node-seconds or dollars); 0 (or omitted) means unlimited.",
+      "type": "object",
+      "required": ["min_nodes", "max_nodes"],
+      "additionalProperties": false,
+      "properties": {
+        "min_nodes": {
+          "description": "Floor on the node count (>= 1).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_nodes": {
+          "description": "Ceiling on the node count (>= min_nodes).",
+          "type": "integer",
+          "minimum": 1
+        },
+        "cost_cap": {
+          "description": "Spend ceiling in abstract cost units. 0 (or omitted) means unlimited. Breaching it sheds the fleet back to min_nodes regardless of objective.",
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

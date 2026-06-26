@@ -97,6 +97,38 @@ Columns: `deployment_id`, `graph_name`, `target_kind`, `binding`,
 `zetta_nodes`, there is **no** bare-name alias — use the qualified
 `system.zetta_deployments`.)
 
+A third table is **`zetta_models`** — the [model registry](models.md) (no
+cluster needed; sourced from `Node::models()`):
+
+```sql
+SELECT * FROM system.zetta_models;
+SELECT model_id, kind FROM system.zetta_models WHERE kind = 'classifier';
+```
+
+Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
+`metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
+`weights_present`. The serialized weights body itself isn't in the registry (it's
+a large binary on the body seam); its fingerprint and local presence are.
+Qualified name only (no bare alias), like `system.zetta_deployments`.
+
+A fourth table is **`zetta_jobs`** — the [compute-job registry](compute-jobs.md)
+(no cluster needed; sourced from `Node::jobs()`): one row per unit of native
+distributed accelerated compute (ARC-11 / ENT-31) and its lifecycle:
+
+```sql
+SELECT * FROM system.zetta_jobs;
+SELECT job_id, kind, status FROM system.zetta_jobs WHERE status = 'running';
+```
+
+Columns: `job_id`, `kind`, `status`, `project`, `graph`, `run`,
+`scaling_policy`, `created`, `updated`, `detail`, `node`. `scaling_policy` is the
+optional reward-model reference. `node` is the **observing** node — the node
+whose replicated view these rows are read from (jobs replicate, so every node
+lists the same set); recording which node actually *runs* a job is a later
+slice (the scheduler), so until then `node` is "which node's registry you
+queried", not a placement assignment. Qualified name only (no bare alias), like
+`system.zetta_deployments`.
+
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).

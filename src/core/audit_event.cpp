@@ -26,7 +26,10 @@ const nlohmann::json& schema_document() {
         "id":      { "type": "string" },
         "action":  { "type": "string",
                      "enum": ["graph_created", "graph_dropped",
-                              "graph_deployed", "data_access"] },
+                              "graph_deployed", "data_access",
+                              "job_created", "job_finished",
+                              "key_issued", "key_revoked",
+                              "provision_requested"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -72,6 +75,11 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::GraphDropped:  return "graph_dropped";
         case AuditAction::GraphDeployed: return "graph_deployed";
         case AuditAction::DataAccess:    return "data_access";
+        case AuditAction::JobCreated:    return "job_created";
+        case AuditAction::JobFinished:   return "job_finished";
+        case AuditAction::KeyIssued:     return "key_issued";
+        case AuditAction::KeyRevoked:    return "key_revoked";
+        case AuditAction::ProvisionRequested: return "provision_requested";
     }
     return "data_access";
 }
@@ -81,6 +89,11 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "graph_dropped")  return AuditAction::GraphDropped;
     if (name == "graph_deployed") return AuditAction::GraphDeployed;
     if (name == "data_access")    return AuditAction::DataAccess;
+    if (name == "job_created")    return AuditAction::JobCreated;
+    if (name == "job_finished")   return AuditAction::JobFinished;
+    if (name == "key_issued")     return AuditAction::KeyIssued;
+    if (name == "key_revoked")    return AuditAction::KeyRevoked;
+    if (name == "provision_requested") return AuditAction::ProvisionRequested;
     return std::nullopt;
 }
 
