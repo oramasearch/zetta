@@ -12,6 +12,7 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/large_object.hpp"
+#include "zetta/n8n_import.hpp"
 #include "zetta/node.hpp"
 #include "zetta/project.hpp"
 #include "zetta/project_graph.hpp"
@@ -40,6 +41,8 @@
 #include <cstddef>
 #include <filesystem>
 #include <cstdio>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -376,6 +379,10 @@ void App::draw_menu_bar(bool& running) {
     if (!ImGui::BeginMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("New Project...")) {
+            new_project_modal_requested_ = true;
+        }
+        ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Cmd+Q")) running = false;
         ImGui::EndMenu();
     }
@@ -434,20 +441,11 @@ void App::draw_explorer() {
 void App::draw_projects() {
     ImGui::SeparatorText("Projects");
 
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    const bool submit = ImGui::InputTextWithHint(
-        "##newproject", "new project name", &new_project_input_,
-        ImGuiInputTextFlags_EnterReturnsTrue);
-    if (ImGui::Button("Create project") || submit) {
-        if (new_project_input_.empty()) {
-            project_error_ = "name required";
-        } else if (!node_.create_project(new_project_input_)) {
-            project_error_ = "project already exists";
-        } else {
-            selected_project_ = new_project_input_;
-            new_project_input_.clear();
-            project_error_.clear();
-        }
+    // The full create flow — name + NL intent + n8n artifact import — lives in
+    // the New Project modal (SCR-2); this button is its front door. Rename /
+    // select / delete for existing projects stay inline below.
+    if (ImGui::Button("New Project...")) {
+        new_project_modal_requested_ = true;
     }
     if (!project_error_.empty()) {
         ImGui::TextColored(kErrorColor, "%s", project_error_.c_str());
@@ -957,6 +955,13 @@ void App::on_open_large_object(void* userdata, const char* const* files, int) {
     }
 }
 
+void App::on_open_n8n(void* userdata, const char* const* files, int) {
+    if (files && files[0]) {
+        static_cast<App*>(userdata)->enqueue_file(files[0],
+                                                  FileIntent::N8nArtifact);
+    }
+}
+
 void App::handle_incoming_files() {
     std::vector<IncomingFile> files;
     {
@@ -967,6 +972,13 @@ void App::handle_incoming_files() {
     for (const IncomingFile& f : files) {
         const std::filesystem::path path = f.path;
         FileIntent intent = f.intent;
+        // An n8n artifact is staged for the New Project dialog, not ingested:
+        // validate it and remember the path so Create can import it into the
+        // new project (see stage_n8n_artifact / draw_new_project_modal).
+        if (intent == FileIntent::N8nArtifact) {
+            stage_n8n_artifact(f.path);
+            continue;
+        }
         if (intent == FileIntent::Auto) {
             std::string ext = path.extension().string();
             for (char& c : ext) {
@@ -1000,6 +1012,183 @@ void App::handle_incoming_files() {
                             : "Store failed: " + path.string();
         }
     }
+}
+
+void App::stage_n8n_artifact(const std::string& path) {
+    const std::filesystem::path file = path;
+    new_project_artifact_path_ = path;
+    new_project_artifact_name_ = file.filename().string();
+
+    std::ifstream in(file, std::ios::binary);
+    if (!in) {
+        new_project_artifact_valid_ = false;
+        new_project_artifact_status_ = "cannot open file";
+        return;
+    }
+    const std::string content((std::istreambuf_iterator<char>(in)),
+                              std::istreambuf_iterator<char>());
+
+    // Validate against the n8n workflow schema at the staging boundary so the
+    // user gets fail-fast feedback here; import_n8n_workflow_file re-validates at
+    // the real storage boundary on Create. (No new format is introduced — this
+    // reuses the existing n8n_workflow_schema.)
+    std::string error;
+    if (!validate_n8n_workflow(content, &error)) {
+        new_project_artifact_valid_ = false;
+        new_project_artifact_status_ = error;
+        return;
+    }
+    new_project_artifact_valid_ = true;
+    const auto document =
+        nlohmann::json::parse(content, nullptr, /*allow_exceptions=*/false);
+    const std::size_t node_count =
+        (!document.is_discarded() && document.contains("nodes") &&
+         document["nodes"].is_array())
+            ? document["nodes"].size()
+            : 0;
+    new_project_artifact_status_ =
+        "valid n8n workflow — " + std::to_string(node_count) + " node(s)";
+}
+
+void App::reset_new_project_form() {
+    new_project_name_.clear();
+    new_project_intent_.clear();
+    new_project_artifact_path_.clear();
+    new_project_artifact_name_.clear();
+    new_project_artifact_status_.clear();
+    new_project_artifact_valid_ = false;
+    new_project_error_.clear();
+}
+
+void App::draw_new_project_modal() {
+    if (new_project_modal_requested_) {
+        ImGui::OpenPopup("New Project");
+        new_project_modal_requested_ = false;
+        new_project_error_.clear();
+    }
+
+    // Centre the dialog on first appearance; let it auto-size to its content.
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 32.0f, 0.0f),
+                             ImGuiCond_Appearing);
+
+    bool stay_open = true;  // the window's close (x) button toggles this
+    if (!ImGui::BeginPopupModal("New Project", &stay_open,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        new_project_modal_open_ = false;
+        return;
+    }
+    // Mirror the open state so run() routes file drops to the n8n staging area
+    // while this dialog is up (see the drop handling in run()).
+    new_project_modal_open_ = true;
+
+    ImGui::TextDisabled(
+        "Name the project, describe what it should do, and optionally import an "
+        "n8n workflow as a starting artifact.");
+    ImGui::Spacing();
+
+    // 1) Name (required).
+    ImGui::TextUnformatted("Name");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##np_name", "e.g. churn-risk", &new_project_name_);
+
+    // 2) Natural-language intent (optional — captured via Project::capture_intent,
+    //    which itself rejects empty/whitespace-only text).
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Intent");
+    ImGui::InputTextMultiline("##np_intent", &new_project_intent_,
+                              ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 4.0f));
+    ImGui::TextDisabled(
+        "Optional. e.g. \"Score every active account for churn risk and tell me "
+        "why.\"");
+
+    // 3) n8n workflow artifact (optional). Import via the native dialog or by
+    //    dropping a .json on this dialog; staged + validated, imported on Create.
+    ImGui::Spacing();
+    ImGui::TextUnformatted("n8n workflow (artifact)");
+    if (ImGui::Button("Import n8n workflow...")) {
+        static const SDL_DialogFileFilter filters[] = {
+            {"n8n workflow (JSON)", "json"}, {"All files", "*"}};
+        SDL_ShowOpenFileDialog(&App::on_open_n8n, this, window_, filters, 2,
+                               nullptr, false);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("or drop a workflow .json on this dialog");
+
+    ImGui::BeginChild("##np_dropzone",
+                      ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 2.4f),
+                      ImGuiChildFlags_Borders);
+    if (new_project_artifact_path_.empty()) {
+        ImGui::TextDisabled("(no workflow staged)");
+        ImGui::TextDisabled("Drop an n8n workflow JSON here, or use the button.");
+    } else {
+        ImGui::TextUnformatted(new_project_artifact_name_.c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton("clear")) {
+            new_project_artifact_path_.clear();
+            new_project_artifact_name_.clear();
+            new_project_artifact_status_.clear();
+            new_project_artifact_valid_ = false;
+        }
+        if (!new_project_artifact_status_.empty()) {
+            ImGui::TextColored(
+                new_project_artifact_valid_ ? kSuccessColor : kErrorColor, "%s",
+                new_project_artifact_status_.c_str());
+        }
+    }
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (!new_project_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", new_project_error_.c_str());
+    }
+
+    // Create runs the whole flow atomically. A staged-but-invalid artifact
+    // blocks the create so the project is never built with a broken artifact.
+    const bool artifact_blocks =
+        !new_project_artifact_path_.empty() && !new_project_artifact_valid_;
+    if (ImGui::Button("Create Project")) {
+        if (new_project_name_.empty()) {
+            new_project_error_ = "name required";
+        } else if (artifact_blocks) {
+            new_project_error_ =
+                "the staged n8n file is not a valid workflow — fix or clear it";
+        } else if (auto project = node_.create_project(new_project_name_)) {
+            std::string summary = "Created project '" + project->name() + "'";
+            if (project->capture_intent(new_project_intent_)) {
+                summary += " + intent";
+            }
+            if (!new_project_artifact_path_.empty()) {
+                const N8nImportResult imported = import_n8n_workflow_file(
+                    *project, new_project_artifact_path_);
+                summary += imported.ok()
+                               ? " + n8n artifact (" + new_project_artifact_name_ +
+                                     ")"
+                               : " (artifact import failed: " + imported.error +
+                                     ")";
+            }
+            selected_project_ = project->name();
+            io_status_ = summary;
+            reset_new_project_form();
+            ImGui::CloseCurrentPopup();
+        } else {
+            new_project_error_ = "a project by that name already exists";
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+        reset_new_project_form();
+        ImGui::CloseCurrentPopup();
+    }
+
+    if (!stay_open) {  // window close (x)
+        reset_new_project_form();
+        ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::EndPopup();
 }
 
 void App::draw_deploy() {
@@ -1731,7 +1920,13 @@ void App::run() {
                 apply_display_scale();
             } else if (event.type == SDL_EVENT_DROP_FILE) {
                 if (event.drop.data) {
-                    enqueue_file(event.drop.data, FileIntent::Auto);
+                    // While the New Project dialog is up, a dropped file is its
+                    // n8n artifact (the rest of the UI is blocked by the modal);
+                    // otherwise it routes by extension as before.
+                    enqueue_file(event.drop.data,
+                                 new_project_modal_open_
+                                     ? FileIntent::N8nArtifact
+                                     : FileIntent::Auto);
                 }
             }
         } while (SDL_PollEvent(&event));
@@ -1763,6 +1958,10 @@ void App::run() {
         draw_graph_workspace();
         ImGui::Separator();
         draw_explorer();
+
+        // The New Project dialog (SCR-2) is a modal over the root window; it must
+        // be issued every frame so ImGui keeps it alive while it's open.
+        draw_new_project_modal();
 
         ImGui::End();
 

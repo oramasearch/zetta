@@ -101,7 +101,13 @@ stays on disk** (`<project>/inputs/<input-uuid>/payload`) like a large-object
 body — fingerprinted by `content_hash`, with peer-to-peer body transfer left to
 a later slice (the record replicates today; the bytes don't move yet). This is
 storage + provenance only — no parsing/compilation. See
-[docs/project-inputs.md](docs/project-inputs.md).
+[docs/project-inputs.md](docs/project-inputs.md). The headed **New Project**
+screen (`App::draw_new_project_modal`) is the GUI front door for all three at
+once — name a project, paste an NL intent, and import / drag-drop an n8n workflow
+JSON artifact — wiring `create_project` + `capture_intent` +
+`import_n8n_workflow_file` into one atomic create (the n8n artifact is staged +
+schema-validated on drop, imported on Create; SCR-2, the GUI slice of FEAT-1).
+See [docs/new-project-screen.md](docs/new-project-screen.md).
 
 A node also owns **runs** (`zetta::Run`) — the record of **one execution of a
 deployed graph**: `status` (`Pending`→`Running`→`Succeeded`|`Failed`), `logs`,
@@ -366,8 +372,8 @@ A third, **typed-artifact** ingestion path captures a file into a *project*
   later re-compilation. Computes nothing about the payload itself — it delegates
   to `Project::create_input`, which fingerprints the raw bytes with SHA-256 at
   the boundary. Storage + validation only (no compile to an ExecutionGraph yet);
-  API-level today (not yet wired into the GUI file dialog). Detail in
-  [docs/n8n-import.md](docs/n8n-import.md).
+  surfaced in the GUI through the **New Project** screen's artifact import (file
+  dialog + drag-drop), above. Detail in [docs/n8n-import.md](docs/n8n-import.md).
 
 ### Query layer
 
@@ -833,6 +839,7 @@ loop thread).
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
+- [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope`, deny-by-default authorization (RULE-3).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.

@@ -50,8 +50,10 @@ private:
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
     // routes by extension: .json/.jsonl import as rows, anything else stores as
-    // a large object.
-    enum class FileIntent { Auto, Records, LargeObject };
+    // a large object. N8nArtifact stages a workflow JSON for the New Project
+    // dialog (validated on stage, imported into the new project only on Create)
+    // instead of ingesting it immediately.
+    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact };
     struct IncomingFile {
         std::string path;
         FileIntent intent;
@@ -74,6 +76,18 @@ private:
     void draw_cluster();     // role, listen address, peers, join command
     void draw_runs();        // run status/logs + outputs + lineage (one selected run)
 
+    // New Project flow (SCR-2 / FEAT-1): a modal to name a project, paste an NL
+    // intent, and import / drop an n8n workflow JSON as a starting artifact —
+    // wiring the GUI to Node::create_project + Project::capture_intent +
+    // import_n8n_workflow_file. Drawn each frame inside the root window.
+    void draw_new_project_modal();
+    // Stage a dropped/picked n8n workflow file for the New Project dialog:
+    // validate it against the n8n schema and record the result, without storing
+    // anything yet (the import happens on Create). Runs on the main thread.
+    void stage_n8n_artifact(const std::string& path);
+    // Clear the New Project form (name, intent, staged artifact, error).
+    void reset_new_project_form();
+
     // Graph Workspace (SCR-3 / CMP-1): view + edit the selected project's
     // ExecutionGraph IR as a node/edge canvas; edits persist back to the IR.
     void draw_graph_workspace();
@@ -89,6 +103,7 @@ private:
     void enqueue_file(std::string path, FileIntent intent);
     static void on_open_records(void* userdata, const char* const* files, int filter);
     static void on_open_large_object(void* userdata, const char* const* files, int filter);
+    static void on_open_n8n(void* userdata, const char* const* files, int filter);
 
     Node& node_;
     Cluster& cluster_;
@@ -104,7 +119,6 @@ private:
     std::string selected_db_;
     std::string selected_table_;
     std::string selected_run_;  // run id; re-resolved each frame like the others
-    std::string new_project_input_;
     std::string new_db_input_;
     std::string new_table_input_;
     std::string rename_project_input_;
@@ -115,6 +129,25 @@ private:
     std::string db_error_;
     std::string table_error_;
     std::string row_error_;
+
+    // New Project modal (SCR-2 / FEAT-1): the full "name + paste intent + import
+    // n8n artifact" front door, opened from the Projects column or File menu.
+    // `new_project_modal_requested_` asks to open it on the next frame;
+    // `new_project_modal_open_` mirrors whether it is currently visible and
+    // drives file-drop routing in run() (a drop while it's open stages the n8n
+    // artifact instead of importing rows into the selected table). The artifact
+    // is *staged* (path + validation result) and imported into the project only
+    // on Create, so the project is built atomically and an invalid workflow
+    // never leaves a half-built project behind.
+    bool new_project_modal_requested_ = false;
+    bool new_project_modal_open_ = false;
+    std::string new_project_name_;
+    std::string new_project_intent_;
+    std::string new_project_artifact_path_;    // staged n8n file ("" = none)
+    std::string new_project_artifact_name_;    // its display filename
+    std::string new_project_artifact_status_;  // staging/validation result line
+    bool new_project_artifact_valid_ = false;  // staged file passed n8n validation
+    std::string new_project_error_;            // inline create error
 
     // Query panel: the SQL being composed, the dialect runner, and the last
     // result (rows pre-dumped to strings for display, plus status/error).

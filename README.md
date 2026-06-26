@@ -33,7 +33,11 @@ also owns **AI projects** (`zetta::Project`) — the central, user-managed artif
 (`zetta::ProjectInput`: raw intent/artifact payloads captured with provenance —
 see [docs/project-inputs.md](docs/project-inputs.md); an
 [n8n workflow JSON](docs/n8n-import.md) is the first typed artifact, schema-
-validated at the boundary and stored byte-for-byte) and its **execution graphs**
+validated at the boundary and stored byte-for-byte). In headed mode the
+**New Project** screen is the front door for all of this — name a project, paste a
+natural-language intent, and import / drag-drop an n8n workflow artifact in one
+atomic create (see [docs/new-project-screen.md](docs/new-project-screen.md)). Each
+project also owns its **execution graphs**
 (the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
 [docs/execution-graph.md](docs/execution-graph.md)). In headed mode the **Graph
 Workspace** panel renders a project's graph as an editable node/edge canvas
