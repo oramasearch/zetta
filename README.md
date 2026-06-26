@@ -73,6 +73,11 @@ The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model
 distributed accelerated compute pass: provision N nodes against a capability spec,
 tear them down, and list them — the abstraction the autoscaler consumes and the
 Local / cloud backends implement (see [docs/provisioner.md](docs/provisioner.md)).
+It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
+unit of native distributed accelerated compute — featurize / train / explain /
+score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
+audited at create + finish and JSON-Schema validated (see
+[docs/compute-jobs.md](docs/compute-jobs.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
@@ -138,6 +143,7 @@ Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
 rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
 [runs](docs/runs.md), [models](docs/models.md),
+[compute jobs](docs/compute-jobs.md),
 [principals + access keys](docs/access-control.md), and the
 [audit trail](docs/audit-trail.md)
 created on any node converge onto every

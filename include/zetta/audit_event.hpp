@@ -17,6 +17,8 @@ enum class AuditAction {
     GraphDropped,   // a graph was removed from a project  (graph change)
     GraphDeployed,  // a graph was placed onto a target    (deploy)
     DataAccess,     // a request was authorized against a key's scope (data access)
+    JobCreated,     // a compute job was queued            (compute, ARC-11)
+    JobFinished,    // a compute job reached a terminal state (Succeeded / Failed)
 };
 
 // The canonical lowercase wire name of an action, and the inverse. These are the
