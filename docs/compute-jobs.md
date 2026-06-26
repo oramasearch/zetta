@@ -14,11 +14,12 @@ read-only `system.zetta_jobs` SQL registry that exposes it (below). The
 [work-stealing scheduler](work-stealing-scheduler.md) that *runs* a job's tasks
 across cores + nodes is built ([#366](https://github.com/oramasearch/zetta/issues/366)),
 as is the [`ScalingPolicy`](scaling-policy.md) reward model the autoscaler reads
-(built in [#370](https://github.com/oramasearch/zetta/issues/370)); the remaining
-pieces that *schedule* a job onto it — the job coordinator, collectives, and the
-autoscaler — are **separate, later slices**
-([#371](https://github.com/oramasearch/zetta/issues/371)–[#372](https://github.com/oramasearch/zetta/issues/372)).
-A job created here is the durable, replicated record those slices drive.
+(built in [#370](https://github.com/oramasearch/zetta/issues/370)). The
+[job coordinator](job-coordinator.md) that *schedules* a job onto the scheduler +
+collectives and drives its lifecycle is also built
+([#372](https://github.com/oramasearch/zetta/issues/372)); the **autoscaler** that
+sizes the fleet from a job's `ScalingPolicy` is the remaining, later slice. A job
+created here is the durable, replicated record the coordinator drives.
 
 It is modeled **exactly like** [`zetta::Run`](runs.md): a top-level entity keyed
 by id, a flat CRDT key + on-disk JSON projection, mutators on the handle, and

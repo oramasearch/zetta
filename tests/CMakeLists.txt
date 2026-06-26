@@ -63,6 +63,7 @@ add_executable(zetta-tests
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp
+  test_job_coordinator.cpp
   test_cluster.cpp
   test_signal.cpp
   test_collectives.cpp

@@ -467,8 +467,40 @@ validator as the [signal envelope](#signal-plane-rpc--events--tasks)); elastic
 membership adds **no new wire message** (it reads the in-memory peer table). It is
 the cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
 signal to a fallback. Scheduling a `ComputeJob` / driving collectives is the
-**job coordinator** (#372), a later slice that submits work *through* this. See
+**job coordinator** (#372, below), which submits work *through* this. See
 [docs/work-stealing-scheduler.md](docs/work-stealing-scheduler.md).
+
+### Job coordinator (`zetta::compute`)
+
+The **job coordinator** (`zetta::compute::JobCoordinator`,
+`include/zetta/compute/job_coordinator.hpp`; **ARC-11**, #372) is the **single
+entry the native distributed accelerated-compute algorithms (DDF / GBDT / SHAP)
+submit work through** — it joins the three pieces of the compute pass: the
+[work-stealing scheduler](#work-stealing-scheduler-zettacompute) (split a job into
+tasks, run across cores + nodes), [collectives](#collectives-allreduce--broadcast--barrier--gather)
+(combine per-node partials at a round boundary), and the
+[`ComputeJob`](#compute-jobs) lifecycle record. An algorithm hands the coordinator
+a **job body** (`std::function<Outcome(JobRound&)>`); `run(job, body)` sets the job
+**Running**, runs the body, then sets the terminal status from the body's `Outcome`
+(Succeeded with a `detail` summary, or Failed with the reason) — so a job is never
+left stuck in `Running`, and the terminal transition emits the `job_finished`
+audit through the job's `AuditSink`. The body sees only a **`JobRound`** work
+surface: `parallel_map` (intra-node data parallelism on the local pool — the
+per-node partial), `map` (cross-node dynamic task stealing for not-pre-sharded
+work), the four collectives (`allreduce`/`broadcast`/`barrier`/`gather` at round
+boundaries), and topology (`participants`/`node_id`/`is_root`). The model is
+**SPMD** (every node runs the same body against its own shard; the collective
+combines partials), the way distributed GBDT/SHAP run; `map` is the owner-centric
+alternative for embarrassingly-parallel work. The coordinator **owns** a
+`Collectives` + a `DistributedScheduler` and wires the **shared signal-handler
+chain** (`steal` → scheduler, `collective.*` → collectives, else → an optional app
+fallback) — member declaration order makes construction register it and
+destruction unwind it cleanly, which is why it owns (not references) those pieces.
+It introduces **no new JSON format** — `map` rides the schema-validated steal
+messages, the collectives ride the schema-validated `CollectiveMessage`, and the
+job record is schema-validated at its own boundary. The autoscaler that sizes the
+fleet from a job's `ScalingPolicy` is the remaining, later slice. See
+[docs/job-coordinator.md](docs/job-coordinator.md).
 
 ### Cluster (equal peers)
 
@@ -1031,8 +1063,8 @@ selects up to `count` existing nodes that `satisfies` the spec (best-effort: few
 + a `detail` note when short — given hardware can't add capacity; a no-floor spec
 returns the current cluster nodes); `teardown` is a **no-op returning false**
 (given hardware isn't ours to release); `provisioned` lists the whole cluster.
-The autoscaler/job coordinator that consumes the seam is unbuilt, and nothing
-here persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
+The autoscaler that consumes the seam is unbuilt, and nothing here
+persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
 consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
@@ -1373,6 +1405,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
     distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
+    job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
 src/core/                   zetta-core impl
@@ -1438,6 +1471,7 @@ src/core/                   zetta-core impl
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
   compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
+  compute/job_coordinator.cpp  JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
   ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
@@ -1599,6 +1633,7 @@ loop thread).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/ddf.md`](docs/ddf.md) — the DDF DataFrame core (`zetta::ddf::DataFrame`): a typed, columnar, chunked frame over the storage engine, each chunk a `ComputeDevice` buffer; table→columns loader + schema inference + value/JSON boundaries — the substrate DDF ops operate on (ARC-12 / GLO-11 / ENT-33; #380).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
+- [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
