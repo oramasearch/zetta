@@ -30,6 +30,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
 - [gate-checks.md](gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
 - [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fails the gate when a graph conflates separate accounts (the FedEx-Freight case).
+- [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn dataset fixture + loader (`zetta::ChurnDataset` / `load_churn_dataset`, FEAT-6 / #402): committed accounts + events, the FedEx entity-resolution case, schema-validated, no foreign runtime.
 - [build.md](build.md) — building, running, and testing.
 
 ## Research / background

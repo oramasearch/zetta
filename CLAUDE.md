@@ -533,6 +533,30 @@ malformed payload fails the check with a clear reason. Registered in
 `default_gate()` after `NonEmptyGraphCheck`. Full detail in
 [docs/entity-resolution-check.md](docs/entity-resolution-check.md).
 
+### Synthetic churn dataset (UC-1 fixture) + loader
+
+The **synthetic churn dataset** (`zetta::ChurnDataset`,
+`include/zetta/churn_dataset.hpp`) is the **root task of FEAT-6** ("learns from
+your data") for **UC-1 churn** (#402; supports TC-4): a small, committed,
+synthetic (non-customer) churn dataset — **accounts** + **comms/usage events** —
+plus a tiny C++ loader, the substrate the later featurization/training/oracle/
+end-to-end tests build on. **No foreign runtime (ADR-17):** the data is checked
+in under `tests/fixtures/churn/` (`dataset.json` manifest + `accounts.{jsonl,csv}`
++ `events.{jsonl,csv}`); the generator that authored it is **not** a
+repo/build/CI dependency. It carries an **`as_of_date`** (`t0`) + a
+**`churn_horizon_days`** (so featurization windows to `event_ts <= t0` and a few
+events deliberately sit **after** `t0` — the leakage trap), a per-account churn
+label, and the make-or-break **FedEx entity-resolution case** (FedEx Freight + 5
+sibling subsidiaries as **separate accounts**). `load_churn_dataset(dir, format)`
+is **non-throwing** and **schema-validates every record at the boundary** (three
+draft-07 schemas — `schemas/churn_{dataset,account,event}.schema.json`, embedded
+in the `.cpp` like the Run record); `ChurnDataFormat` is `{ Jsonl (canonical),
+Csv (a flat sibling), Parquet (planned — an honest seam that errors until an
+Arrow/parquet-cpp dependency lands) }`. `entity_resolution_attribute(dataset)`
+builds the division-correct `entity_resolution` payload from the comms mentions,
+ready to feed `EntityResolutionCheck` (TC-4); the JSONL also imports straight into
+a zetta table via `import_records`. See [docs/churn-dataset.md](docs/churn-dataset.md).
+
 ### Deployment (place a graph onto a target)
 
 A **deployment** places a validated `ir::ExecutionGraph` onto a
@@ -716,6 +740,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
+  churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
   n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
   n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
@@ -750,6 +775,7 @@ src/core/                   zetta-core impl
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
   project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
+  churn_dataset.cpp         load_churn_dataset — JSONL/CSV churn fixture reader + 3 embedded draft-07 schemas (boundary validation)
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
@@ -920,6 +946,7 @@ loop thread).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
 - [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
+- [`docs/churn-dataset.md`](docs/churn-dataset.md) — the synthetic UC-1 churn dataset fixture + loader (`zetta::ChurnDataset` / `load_churn_dataset`, FEAT-6 / #402): committed accounts + comms/events (JSONL/CSV), the FedEx entity-resolution case, schema-validated, no foreign runtime.
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
