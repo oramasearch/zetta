@@ -46,9 +46,13 @@ This is the **first** of five issues; the rest build on it:
 
 > The CMake plumbing for #363 needs *something* CUDA to compile to prove the
 > guard works end to end, and #363 depends only on the interface (not on #361), so
-> `CudaDevice` and its kernels ship **together** with the build target here. #361
-> remains the home for any further GPU operators (DDF / GBDT / SHAP) layered on
-> this same seam.
+> `CudaDevice` and its kernels first shipped **together** with the build target.
+> #361 then brought those kernels into **conformance with the `CpuDevice`
+> reference** — matching its per-operator preconditions and edge cases
+> (integer-dtype rejection, safe integer divide, bounds-checked `gather`/`scatter`,
+> deterministic duplicate-index `scatter`) — and added the CPU↔CUDA conformance
+> suite (`tests/test_cuda_device.cpp`). It remains the home for any further GPU
+> operators (DDF / GBDT / SHAP) layered on this same seam.
 
 `HostStubDevice` is **not** the CPU backend. It is a memory/transfer stub used to
 ship and test the interface on its own; the real, operator-implementing CPU
@@ -246,10 +250,20 @@ translation unit nvcc compiles:
   `DeviceBuffer` works unchanged over VRAM.
 - **Operators** — real device work: `map`/`elementwise`/`axpy` via
   `thrust::transform` with hand-written functors (no device lambdas, so no
-  `--extended-lambda`), `reduce`/`scan`/`sort`/`sort_by_key`/`gather`/`scatter`
-  via [Thrust](https://nvidia.github.io/cccl/thrust/) (ships with the toolkit),
-  and `histogram`/`gemm` as custom `__global__` kernels. Each call dispatches on
-  the buffer's runtime `DataType` to the matching element type.
+  `--extended-lambda`), `reduce`/`scan`/`sort`/`sort_by_key` via
+  [Thrust](https://nvidia.github.io/cccl/thrust/) (ships with the toolkit), and
+  `histogram`/`gemm`/`gather`/`scatter` as custom `__global__` kernels. Each call
+  dispatches on the buffer's runtime `DataType` to the matching element type.
+- **Conforms to the CPU reference** — `CpuDevice` (#360) is the contract, so the
+  CUDA operators reproduce its preconditions *and* edge cases, not just the happy
+  path: empty-buffer / dtype / exact-size guards; `sqrt`/`exp`/`log`, `gemm`, and
+  `axpy` reject integer dtypes; integer `Divide` by zero returns `0` (rather than
+  faulting the kernel); `gather`/`scatter` **bounds-check** every index and reject
+  an out-of-range one with `InvalidArgument` (custom kernels — `thrust::gather`/
+  `thrust::scatter` do no bounds check); and a **duplicate-index `scatter`** is
+  resolved deterministically *last-writer-wins by input order* (a two-pass
+  `atomicMax` kernel, matching the CPU reference's sequential scatter, where
+  `thrust::scatter` would race).
 - **No-throw at the seam** — a Thrust/CUDA failure is caught inside the `.cu` and
   returned as a `ComputeStatus::backend_error`, never an exception crossing into
   `zetta-core`. A `cudaErrorMemoryAllocation` maps to `out_of_memory`.
@@ -257,7 +271,9 @@ translation unit nvcc compiles:
 > **Verification note.** The CPU-only path (the acceptance gate — green build +
 > all tests) is verified on macOS/CI. The `.cu` requires a CUDA toolkit + NVIDIA
 > GPU to compile and run, which dev Macs don't have; validate the CUDA build on a
-> Linux CUDA host before relying on the GPU kernels.
+> Linux CUDA host before relying on the GPU kernels. The CPU↔CUDA conformance
+> suite (`tests/test_cuda_device.cpp`, below) is the harness that proves the
+> "matches the CPU reference" criterion when run there.
 
 ## Tests
 
@@ -269,6 +285,18 @@ RAII + move semantics, `DeviceInfo`, and that every operator reports
 block adds a `CudaDevice` round-trip + `map`/`reduce` test that compiles only in a
 CUDA build and skips at runtime when no GPU is present (so a toolkit-but-no-GPU
 host still passes).
+
+`tests/test_cpu_device.cpp` asserts the exact per-operator results that are the
+**numerical reference** — `CudaDevice` is checked against these.
+`tests/test_cuda_device.cpp` is the **CPU↔CUDA conformance suite** (the acceptance
+test of #361): for every operator it runs identical inputs through both
+`CpuDevice` and `CudaDevice` and asserts they agree (bit-identical for integer
+ops, within tolerance for floating-point), plus the edge-case parity that
+distinguishes a correct backend from one that only computes the happy path —
+integer-dtype rejection, integer-divide-by-zero safety, out-of-range
+`gather`/`scatter` rejection, and deterministic duplicate-index `scatter`. Its
+whole body is guarded on `ZETTA_WITH_CUDA` (an empty translation unit in a
+CPU-only build) and every case skips at runtime when no GPU is present.
 
 ## What's next (later slices)
 

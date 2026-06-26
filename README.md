@@ -25,7 +25,10 @@ subset. A *zetta node* is one running instance; it runs **headed** (default — 
 binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name — the
 older name *"ZettaDB"* is retired.) The broader product surface — GUI control plane,
 one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning
-loop — is in flight.
+loop — is in flight. It is designed to run as **true hybrid** — one equal-peer
+cluster spanning every vendor and architecture (CPU / GPU / ASIC, OS, on-prem +
+cloud); the seams are built, the breadth of backends is in flight (see
+[docs/true-hybrid.md](docs/true-hybrid.md)).
 
 Data is organized as databases → tables → JSON rows, persisted to disk. A node
 also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
@@ -59,7 +62,9 @@ failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
 It owns **runs** (`zetta::Run`), the
 record of one graph execution: status, logs, outputs, and lineage, validated
 against a JSON Schema at the storage boundary and viewable in the headed app's
-read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
+read-only **Runs / Outputs / Lineage** panel — which also surfaces the trained
+**Model** a run produced, its metrics, and its ranked feature drivers (see
+[docs/runs.md](docs/runs.md)).
 It can **execute** a graph step-by-step into one of those runs
 (`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
 produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
@@ -76,6 +81,33 @@ Local / cloud backends implement. The first backend, **`zetta::LocalProvisioner`
 (given hardware), uses the nodes already in the cluster best-effort — it adds no
 capacity and its teardown is a no-op (see
 [docs/provisioner.md](docs/provisioner.md)).
+The first **cloud** backend, **`zetta::AzureProvisioner`** (the reference cloud
+burst; AWS / GCP mirror it), bursts N ephemeral Azure nodes, mints bulk burst
+identities so they join the cluster, runs cluster-parallel, and tears them down —
+behind an injectable control-plane seam with **no cloud SDK** (the reference
+`AzCliControlPlane` borrows the VMSS / Spot shape via the `az` CLI), driven by a
+schema-validated `AzureConfig` (see
+[docs/azure-provisioner.md](docs/azure-provisioner.md)). **`zetta::AwsProvisioner`**
+(`#377`) mirrors it for AWS — the same control-plane seam + identity hooks, with an
+`AwsCliControlPlane` driving the EC2 Auto Scaling Group / Spot shape via the `aws`
+CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)); **`zetta::GcpProvisioner`**
+mirrors it on GCP — a `GcpControlPlane` seam whose reference `GcpCliControlPlane`
+drives `gcloud` (the Managed Instance Group + Spot shape), with a schema-validated
+`GcpConfig` (see [docs/gcp-provisioner.md](docs/gcp-provisioner.md));
+**`zetta::OciProvisioner`** mirrors it on Oracle Cloud — an `OciControlPlane` seam
+whose reference `OciCliControlPlane` drives `oci` (the Instance Pool + preemptible
+shape), with a schema-validated `OciConfig` (see
+[docs/oci-provisioner.md](docs/oci-provisioner.md)); **`zetta::K8sProvisioner`**
+mirrors it on Kubernetes — a `K8sControlPlane` seam whose reference
+`K8sCliControlPlane` drives `kubectl` to burst worker pods into an existing cluster
+(a Deployment scaled to N), with a schema-validated `K8sConfig` (see
+[docs/k8s-provisioner.md](docs/k8s-provisioner.md)); and
+**`zetta::BareMetalProvisioner`** mirrors it on the local host — a
+`BareMetalControlPlane` seam whose reference `BareMetalCliControlPlane` drives
+`docker` / `podman` to burst local worker containers, with a schema-validated
+`BareMetalConfig` (see [docs/bare-metal-provisioner.md](docs/bare-metal-provisioner.md)).
+Every vendor follows the same **CLI pattern** — the recipe is
+[docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md).
 On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
 node and bulk-revokes them on teardown — reusing the identity model, audited
@@ -87,12 +119,14 @@ recorded in the audit trail, guarding against runaway burst cost (see
 It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
 unit of native distributed accelerated compute — featurize / train / explain /
 score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
-audited at create + finish and JSON-Schema validated (see
-[docs/compute-jobs.md](docs/compute-jobs.md)). A job carries a **`ScalingPolicy`**
+audited at create + finish and JSON-Schema validated; the headed app surfaces the
+live registry in a read-only **Compute Jobs** panel with per-job objective/scaling
+controls (see [docs/compute-jobs.md](docs/compute-jobs.md) and
+[docs/jobs-panel.md](docs/jobs-panel.md)). A job carries a **`ScalingPolicy`**
 (`zetta::ScalingPolicy`) — the per-job autoscaler reward objective (minimize cost
 / runtime-latency target / data shape) inside bounds (min/max nodes, cost cap),
-with an `evaluate()` over (progress, elapsed, cost) samples (see
-[docs/scaling-policy.md](docs/scaling-policy.md)).
+with an `evaluate()` over (progress, elapsed, cost) samples that the Jobs panel
+previews live (see [docs/scaling-policy.md](docs/scaling-policy.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
@@ -120,8 +154,11 @@ multi-threaded via `runtime::parallel_for` (see
 [docs/cpu-device.md](docs/cpu-device.md)); a per-node
 `zetta::compute::DeviceRegistry` enumerates those backends, reports each one's
 capability, and selects one per op — GPU when present, else CPU (see
-[docs/device-registry.md](docs/device-registry.md)). State replicates between
-nodes as an Automerge CRDT. See [docs/](docs/) for details.
+[docs/device-registry.md](docs/device-registry.md)). On top of that seam, the
+**DDF (distributed dataframe) core** (`zetta::ddf::DataFrame`) reads a table's rows
+into typed, chunked numeric columns — each chunk a `ComputeDevice` buffer — so those
+operators run directly over a table's data (see [docs/ddf.md](docs/ddf.md)). State
+replicates between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
@@ -188,7 +225,12 @@ for distributed compute (collectives, work-stealing, job dispatch), schema-
 validated at the boundary. On top of it ride
 **[collectives](docs/collectives.md)** — `allreduce` / `broadcast` / `barrier` /
 `gather` for combining per-node compute partials, deterministic regardless of node
-order.
+order — and the **[work-stealing scheduler](docs/work-stealing-scheduler.md)**
+(idle/faster workers and nodes steal pending tasks). The
+**[job coordinator](docs/job-coordinator.md)** ties the two together: it is the
+single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — splitting
+a [compute job](docs/compute-jobs.md) into tasks on the scheduler, driving
+collectives at round boundaries, and driving the job's lifecycle.
 zetta is **multi-leader** (no global election); leadership applies only to future
 exclusive structures (locks) — see the consistency model in the replication doc.
 

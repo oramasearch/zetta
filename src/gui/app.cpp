@@ -5,6 +5,7 @@
 #include "zetta/bytes.hpp"
 #include "zetta/capability.hpp"
 #include "zetta/cluster.hpp"
+#include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_target.hpp"
@@ -15,6 +16,7 @@
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/large_object.hpp"
+#include "zetta/model.hpp"
 #include "zetta/n8n_import.hpp"
 #include "zetta/node.hpp"
 #include "zetta/principal.hpp"
@@ -22,6 +24,7 @@
 #include "zetta/project_graph.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/run.hpp"
+#include "zetta/scaling_policy.hpp"
 #include "zetta/scope.hpp"
 #include "zetta/signals.hpp"
 #include "zetta/solution_catalog.hpp"
@@ -161,6 +164,29 @@ ImVec4 run_status_color(RunStatus status) {
     return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
 }
 
+// A compute job's status, color-coded along its lifecycle: queued (neutral) →
+// running (amber) → succeeded (green) | failed (red). Same palette as runs.
+ImVec4 job_status_color(JobStatus status) {
+    switch (status) {
+        case JobStatus::Queued:    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+        case JobStatus::Running:   return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
+        case JobStatus::Succeeded: return ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
+        case JobStatus::Failed:    return kErrorColor;
+    }
+    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+}
+
+// A scaling action's color: scale-up green (more capacity), hold neutral,
+// scale-down amber (shedding nodes). A quick read of the autoscaler's intent.
+ImVec4 scaling_action_color(ScalingAction action) {
+    switch (action) {
+        case ScalingAction::ScaleUp:   return kSuccessColor;
+        case ScalingAction::Hold:      return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+        case ScalingAction::ScaleDown: return kWarnColor;
+    }
+    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+}
+
 // A log line's severity color — error red, warn amber, anything else neutral.
 ImVec4 log_level_color(const std::string& level) {
     if (level == "error") return kErrorColor;
@@ -178,9 +204,95 @@ std::string join_refs(const std::vector<std::string>& refs) {
     return joined;
 }
 
-// Render the full detail of one run: identity + status, logs, outputs, lineage.
-// A pure view over the (already schema-validated) Run handle — no mutation.
-void render_run_detail(const Run& run) {
+// Render one trained model produced by a run: its identity + weights fingerprint,
+// its evaluation metrics (name→number), and its ranked feature drivers (the
+// SHAP-style explainability surface). A pure view over an already-validated Model
+// handle; metrics/drivers come from the model's free-form (already schema-
+// validated) fields, so no new JSON boundary is introduced.
+void render_model_card(const Model& model) {
+    const std::string short_id = model.id().substr(0, model.id().find('-'));
+    ImGui::SeparatorText(
+        (model.name().empty() ? ("model " + short_id) : model.name()).c_str());
+    ImGui::TextDisabled("kind: %s  ·  id: %s", model.kind().c_str(),
+                        short_id.c_str());
+    if (model.has_weights()) {
+        ImGui::TextDisabled(
+            "weights: %s%s", format_bytes(model.weights()->size).c_str(),
+            model.has_weights_body() ? "" : " (awaiting body transfer)");
+    } else {
+        ImGui::TextDisabled("weights: (not yet attached)");
+    }
+
+    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
+                                        ImGuiTableFlags_RowBg |
+                                        ImGuiTableFlags_SizingStretchProp;
+
+    // Metrics — the evaluation scores (auc / f1 / …). A flat name→number map; a
+    // value in [0, 1] also gets a bar so a score reads at a glance.
+    ImGui::TextDisabled("Metrics");
+    if (!model.metrics().is_object() || model.metrics().empty()) {
+        ImGui::TextDisabled("(no metrics recorded)");
+    } else if (ImGui::BeginTable("##model_metrics", 2, table_flags)) {
+        ImGui::TableSetupColumn("Metric");
+        ImGui::TableSetupColumn("Value");
+        ImGui::TableHeadersRow();
+        for (const auto& [name, value] : model.metrics().items()) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            const double number = value.is_number() ? value.get<double>() : 0.0;
+            if (number >= 0.0 && number <= 1.0) {
+                ImGui::ProgressBar(static_cast<float>(number), ImVec2(-FLT_MIN, 0));
+            } else {
+                ImGui::Text("%.4g", number);
+            }
+        }
+        ImGui::EndTable();
+    }
+
+    // Ranked drivers — the feature importances, strongest |influence| first. An
+    // optional explainability annotation in the model's feature_schema; absent
+    // until an Explain job records it.
+    ImGui::TextDisabled("Ranked drivers");
+    const std::vector<ModelDriver> drivers = model.drivers();
+    if (drivers.empty()) {
+        ImGui::TextDisabled("(no ranked drivers recorded)");
+    } else {
+        // Normalize the bars against the strongest |importance| so the ranking
+        // reads visually; a leading "+/-" keeps the sign (push up vs. down).
+        const double top = std::abs(drivers.front().importance);
+        if (ImGui::BeginTable("##model_drivers", 3, table_flags)) {
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed);
+            ImGui::TableSetupColumn("Feature");
+            ImGui::TableSetupColumn("Importance");
+            ImGui::TableHeadersRow();
+            int rank = 0;
+            for (const ModelDriver& driver : drivers) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::Text("%d", ++rank);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(driver.feature.c_str());
+                ImGui::TableSetColumnIndex(2);
+                const float fraction =
+                    top > 0.0 ? static_cast<float>(std::abs(driver.importance) / top)
+                              : 0.0f;
+                char overlay[32];
+                std::snprintf(overlay, sizeof(overlay), "%+.3f", driver.importance);
+                ImGui::ProgressBar(fraction, ImVec2(-FLT_MIN, 0), overlay);
+            }
+            ImGui::EndTable();
+        }
+    }
+}
+
+// Render the full detail of one run: identity + status, logs, outputs, the
+// trained model(s) it produced (metrics + ranked drivers), and lineage. A pure
+// view over the (already schema-validated) Run handle — no mutation. `models` are
+// the node's models whose producing-run ref is this run (resolved by the caller).
+void render_run_detail(const Run& run,
+                       const std::vector<std::shared_ptr<Model>>& models) {
     ImGui::Text("Run %s", run.id().c_str());
     ImGui::SameLine();
     ImGui::TextColored(run_status_color(run.status()), "[%s]",
@@ -235,6 +347,20 @@ void render_run_detail(const Run& run) {
             ImGui::TextUnformatted(output.ref.c_str());
         }
         ImGui::EndTable();
+    }
+
+    // Trained models — the model(s) this run produced, with their metrics and
+    // ranked drivers (the FEAT-5 "surface the trained Model + metrics + ranked
+    // drivers" slice). Linked by the Model's producing-run ref (Model::run() ==
+    // this run's id), the durable edge — the executor's logical model output ref
+    // is just a placeholder handle in R1.
+    if (!models.empty()) {
+        ImGui::SeparatorText("Trained models");
+        for (const std::shared_ptr<Model>& model : models) {
+            ImGui::PushID(model->id().c_str());
+            render_model_card(*model);
+            ImGui::PopID();
+        }
     }
 
     // Lineage — where the results came from (sources, steps), how fresh, and how
@@ -1585,10 +1711,228 @@ void App::draw_runs() {
     ImGui::BeginChild("##run_detail", ImVec2(0, panel_h),
                       ImGuiChildFlags_Borders);
     if (const auto run = node_.find_run(selected_run_)) {
-        render_run_detail(*run);
+        // Resolve the trained model(s) this run produced via the durable reverse
+        // link (Model::run() == run id), so the detail pane can surface their
+        // metrics + ranked drivers alongside the run's outputs.
+        std::vector<std::shared_ptr<Model>> run_models;
+        for (const std::shared_ptr<Model>& model : node_.models()) {
+            if (model->run() == run->id()) run_models.push_back(model);
+        }
+        render_run_detail(*run, run_models);
     } else {
         ImGui::TextDisabled(
-            "Select a run to view its status, logs, outputs, and lineage.");
+            "Select a run to view its status, logs, outputs, models, and "
+            "lineage.");
+    }
+    ImGui::EndChild();
+}
+
+void App::reset_scaling_controls() {
+    scaling_objective_ = 0;          // minimize_cost
+    scaling_min_nodes_ = 1;
+    scaling_max_nodes_ = 8;
+    scaling_cost_cap_ = 0.0;
+    scaling_target_seconds_ = 600.0;
+    scaling_nodes_ = 2;
+    scaling_progress_ = 0.4;
+    scaling_elapsed_ = 120.0;
+    scaling_cost_ = 50.0;
+}
+
+void App::draw_job_scaling_controls() {
+    // Per-job objective/scaling controls — a LIVE PREVIEW over the built
+    // ScalingPolicy::evaluate(). It is a "what-if" calculator, not a write path:
+    // ScalingPolicy is not persisted and the autoscaler is unbuilt (both later
+    // slices), so this scores an editable policy + sample with the real, pure
+    // evaluate() and shows the resulting decision — set the reward objective +
+    // bounds, add/remove nodes, watch the recommendation move. Nothing here
+    // mutates the job.
+    ImGui::SeparatorText("Objective & scaling (preview)");
+    ImGui::TextDisabled(
+        "Score a reward objective against a sample — no autoscaler is wired yet, "
+        "so this previews ScalingPolicy::evaluate(); it doesn't change the job.");
+
+    // 1) Objective — "set the reward". The three reward models the autoscaler can
+    //    optimize, in declaration order (the combo index maps to ScalingObjective).
+    static constexpr std::array<ScalingObjective, 3> kObjectives{
+        ScalingObjective::MinimizeCost, ScalingObjective::RuntimeTarget,
+        ScalingObjective::DataShape};
+    if (scaling_objective_ < 0 ||
+        scaling_objective_ >= static_cast<int>(kObjectives.size())) {
+        scaling_objective_ = 0;
+    }
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo(
+            "Reward objective",
+            std::string(to_string(kObjectives[scaling_objective_])).c_str())) {
+        for (int index = 0; index < static_cast<int>(kObjectives.size());
+             ++index) {
+            const bool is_selected = index == scaling_objective_;
+            if (ImGui::Selectable(
+                    std::string(to_string(kObjectives[index])).c_str(),
+                    is_selected)) {
+                scaling_objective_ = index;
+            }
+            if (is_selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    const ScalingObjective objective = kObjectives[scaling_objective_];
+
+    // 2) Bounds — the hard envelope the autoscaler must stay inside (min/max node
+    //    count + a cost cap; 0 = unlimited). A runtime target only matters for the
+    //    RuntimeTarget objective, so it is shown only then.
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Min nodes", &scaling_min_nodes_);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Max nodes", &scaling_max_nodes_);
+    if (scaling_min_nodes_ < 1) scaling_min_nodes_ = 1;
+    if (scaling_max_nodes_ < scaling_min_nodes_) {
+        scaling_max_nodes_ = scaling_min_nodes_;
+    }
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputDouble("Cost cap (0 = unlimited)", &scaling_cost_cap_, 0.0, 0.0,
+                       "%.1f");
+    if (scaling_cost_cap_ < 0.0) scaling_cost_cap_ = 0.0;
+    if (objective == ScalingObjective::RuntimeTarget) {
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::InputDouble("Target seconds", &scaling_target_seconds_, 0.0, 0.0,
+                           "%.1f");
+        if (scaling_target_seconds_ < 0.0) scaling_target_seconds_ = 0.0;
+    }
+
+    // 3) Sample — the live signals the autoscaler scores (progress, elapsed,
+    //    cost) plus the current allocation. "Add/remove nodes" are the +/- buttons
+    //    that move the sample's node count within the bounds.
+    ImGui::Spacing();
+    ImGui::TextDisabled("Allocated nodes");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("- node") && scaling_nodes_ > 0) --scaling_nodes_;
+    ImGui::SameLine();
+    ImGui::Text("%d", scaling_nodes_);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ node")) ++scaling_nodes_;
+    if (scaling_nodes_ < 0) scaling_nodes_ = 0;
+
+    ImGui::SetNextItemWidth(220.0f);
+    float progress = static_cast<float>(scaling_progress_);
+    if (ImGui::SliderFloat("Progress", &progress, 0.0f, 1.0f, "%.2f")) {
+        scaling_progress_ = progress;
+    }
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputDouble("Elapsed seconds", &scaling_elapsed_, 0.0, 0.0, "%.1f");
+    if (scaling_elapsed_ < 0.0) scaling_elapsed_ = 0.0;
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputDouble("Accrued cost", &scaling_cost_, 0.0, 0.0, "%.1f");
+    if (scaling_cost_ < 0.0) scaling_cost_ = 0.0;
+
+    // 4) Score it — the real, pure decision. reward (higher is better),
+    //    recommended node count, the scale up/hold/down action relative to the
+    //    sample, whether the cost cap holds, and the human-readable reason.
+    ScalingPolicy policy;
+    policy.objective = objective;
+    policy.bounds.min_nodes = static_cast<std::uint32_t>(scaling_min_nodes_);
+    policy.bounds.max_nodes = static_cast<std::uint32_t>(scaling_max_nodes_);
+    policy.bounds.cost_cap = scaling_cost_cap_;
+    policy.target_seconds = scaling_target_seconds_;
+    const ScalingSample sample{scaling_progress_, scaling_elapsed_, scaling_cost_,
+                               static_cast<std::uint32_t>(scaling_nodes_)};
+    const ScalingDecision decision = policy.evaluate(sample);
+
+    ImGui::SeparatorText("Decision");
+    ImGui::Text("recommended nodes: %u", decision.recommended_nodes);
+    ImGui::SameLine();
+    ImGui::TextColored(scaling_action_color(decision.action), "(%s)",
+                       std::string(to_string(decision.action)).c_str());
+    ImGui::Text("reward: %.4g", decision.reward);
+    if (!decision.within_cost_cap) {
+        ImGui::SameLine();
+        ImGui::TextColored(kErrorColor, "  cost cap breached");
+    }
+    ImGui::TextWrapped("%s", decision.reason.c_str());
+}
+
+void App::draw_jobs() {
+    if (!ImGui::CollapsingHeader("Compute Jobs",
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    // The GUI form of system.zetta_jobs: the live compute-job registry (one row
+    // per unit of native distributed accelerated compute — featurize / train /
+    // explain / score / a DDF op — with its lifecycle status). Read-only over the
+    // replicated, already-validated ComputeJob handles, like the Runs panel —
+    // creating/scheduling a job is a later slice. The detail pane adds the per-job
+    // objective/scaling preview (draw_job_scaling_controls).
+    const std::vector<std::shared_ptr<ComputeJob>> jobs = node_.jobs();
+    ImGui::TextDisabled("%zu job(s)", jobs.size());
+
+    const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
+    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 22.0f;
+
+    // Left: the job list. Jobs have no human name, so each row is a color-coded
+    // status badge plus the kind and the first UUID segment.
+    ImGui::BeginChild("##job_list", ImVec2(list_w, panel_h),
+                      ImGuiChildFlags_Borders);
+    if (jobs.empty()) ImGui::TextDisabled("(no jobs)");
+    for (const std::shared_ptr<ComputeJob>& job : jobs) {
+        ImGui::PushID(job->id().c_str());
+        ImGui::TextColored(job_status_color(job->status()), "%-9s",
+                           std::string(to_string(job->status())).c_str());
+        ImGui::SameLine();
+        const std::string short_id = job->id().substr(0, job->id().find('-'));
+        const std::string label =
+            std::string(to_string(job->kind())) + " · " + short_id;
+        if (ImGui::Selectable(label.c_str(), selected_job_ == job->id())) {
+            selected_job_ = job->id();
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // Right: the selected job's detail + the objective/scaling preview.
+    ImGui::SameLine();
+    ImGui::BeginChild("##job_detail", ImVec2(0, panel_h),
+                      ImGuiChildFlags_Borders);
+    if (const std::shared_ptr<ComputeJob> job = node_.find_job(selected_job_)) {
+        // Reset the scaling controls whenever the selection changes, so they
+        // start from sensible defaults per job rather than leaking the previous
+        // job's edits.
+        if (scaling_loaded_job_ != job->id()) {
+            reset_scaling_controls();
+            scaling_loaded_job_ = job->id();
+        }
+
+        ImGui::Text("Job %s", job->id().c_str());
+        ImGui::SameLine();
+        ImGui::TextColored(job_status_color(job->status()), "[%s]",
+                           std::string(to_string(job->status())).c_str());
+        ImGui::TextDisabled("kind: %s",
+                            std::string(to_string(job->kind())).c_str());
+        ImGui::TextDisabled("created: %s", job->created().c_str());
+        if (job->updated() != job->created()) {
+            ImGui::TextDisabled("updated: %s", job->updated().c_str());
+        }
+        if (!job->detail().empty()) {
+            ImGui::TextWrapped("detail: %s", job->detail().c_str());
+        }
+
+        // Id references — the job's place in the pipeline (project / graph / run /
+        // scaling-policy reward). Shown only when set.
+        const auto ref_line = [](const char* label, const std::string& value) {
+            if (!value.empty()) ImGui::TextDisabled("%s: %s", label, value.c_str());
+        };
+        ref_line("project", job->project());
+        ref_line("graph", job->graph());
+        ref_line("run", job->run());
+        ref_line("scaling_policy", job->scaling_policy());
+
+        draw_job_scaling_controls();
+    } else {
+        ImGui::TextDisabled(
+            "Select a job to view its status, references, and scaling controls.");
     }
     ImGui::EndChild();
 }
@@ -2148,6 +2492,7 @@ void App::run() {
         draw_deploy();
         draw_cluster();
         draw_runs();
+        draw_jobs();
         draw_admin();
         draw_graph_workspace();
         ImGui::Separator();

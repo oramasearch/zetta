@@ -42,9 +42,21 @@ namespace zetta::compute {
 // from it (RPC `steal` → an offer), run them, and return the results (RPC
 // `steal_result`). Stealing is **single-hop** — a node only hands out tasks from
 // jobs it owns, never tasks it has itself stolen — so there is no re-steal loop.
-// A peer that takes tasks but never returns them (it died, or the link dropped)
-// has its assignment **re-queued** after a lease, so `map` never hangs on a lost
-// helper as long as *some* compute capacity remains.
+//
+// **Elastic mid-job membership (ARC-10 / #367).** The fleet may change while a
+// job runs and the job still finishes correctly:
+//   * A node that **joins** mid-job starts stealing on its next steal tick —
+//     `try_steal_once` re-reads `cluster_.peers()` each pass, so a freshly
+//     provisioned helper speeds an in-flight job up with no extra wiring.
+//   * A node that **leaves / fails** mid-job is **detected via cluster
+//     membership** — when a peer holding leased tasks drops out of
+//     `cluster_.peers()`, the owner re-queues its in-flight tasks *immediately*
+//     so a local drainer or another peer re-executes them. The per-assignment
+//     **lease** (`Config::steal_lease`) is the backstop for a helper that is
+//     still connected but silent (a hang). Either way `map` never strands work
+//     on a lost helper as long as *some* compute capacity remains, and
+//     idempotent completion makes a re-run harmless if a slow helper's result
+//     arrives late.
 //
 // All the application supplies is one **executor** — `string(method, payload)` —
 // registered identically on every node, so a stolen task runs the same wherever
@@ -110,13 +122,19 @@ public:
         std::size_t local_executed = 0;       // tasks run locally for own jobs
         std::size_t handed_out = 0;           // tasks given to peers (as owner)
         std::size_t stolen_executed = 0;      // tasks run after stealing
-        std::size_t requeued = 0;             // expired assignments re-queued
+        std::size_t requeued = 0;             // lost assignments re-queued (total)
+        std::size_t lost_node_requeued = 0;   // re-queued because the peer left
+                                              // membership (a subset of requeued;
+                                              // the lease covers the rest)
         std::size_t steal_requests_sent = 0;  // steal RPCs sent
     };
     Stats stats() const;
 
-    // The local pool, exposed for observability (e.g. per-worker steal counts).
+    // The local pool, exposed for observability (e.g. per-worker steal counts)
+    // and so a consumer (the job coordinator) can run intra-node data-parallel
+    // work on the same pool the cross-node steal protocol drains — no second pool.
     const WorkStealingScheduler& local() const { return local_; }
+    WorkStealingScheduler& local() { return local_; }
 
     // SignalHandler — steal / steal_result are handled here; the rest is
     // forwarded to the fallback (if any).
@@ -127,7 +145,8 @@ public:
 private:
     // One owned map() in flight. The pending deque is the authoritative source of
     // not-yet-started work — local drainers and remote stealers both draw from
-    // it; `assigned` tracks tasks out at a peer (with a lease for re-queue).
+    // it; `assigned` tracks tasks out at a peer (with a lease for re-queue, and
+    // the peer id so a departed peer's tasks can be re-queued on sight).
     struct Job {
         std::string method;
         std::vector<std::string> inputs;
@@ -135,8 +154,8 @@ private:
         std::vector<char> done;             // per-index completion (idempotency)
         std::deque<std::size_t> pending;
         struct Assignment {
-            std::string peer;
-            std::chrono::steady_clock::time_point deadline;
+            std::string peer;  // which peer holds it (for membership re-queue)
+            std::chrono::steady_clock::time_point deadline;  // lease backstop
         };
         std::unordered_map<std::size_t, Assignment> assigned;
         std::size_t completed = 0;
@@ -150,7 +169,10 @@ private:
 
     void steal_loop(std::stop_token stop_token);
     bool try_steal_once();
-    void sweep_expired_assignments();
+    // Re-queue any leased task whose peer has left the cluster (detected via
+    // membership) or whose lease has expired (the backstop), so a lost helper
+    // never strands a job. Runs each steal-loop pass.
+    void sweep_lost_assignments();
 
     SignalResponse handle_steal(const Signal& request);
     SignalResponse handle_steal_result(const Signal& request);
@@ -175,6 +197,7 @@ private:
     std::atomic<std::size_t> handed_out_{0};
     std::atomic<std::size_t> stolen_executed_{0};
     std::atomic<std::size_t> requeued_{0};
+    std::atomic<std::size_t> lost_node_requeued_{0};
     std::atomic<std::size_t> steal_requests_sent_{0};
 };
 

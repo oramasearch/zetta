@@ -322,6 +322,19 @@ add_library(zetta-core STATIC
   src/core/node_capability.cpp
   src/core/provisioner.cpp
   src/core/local_provisioner.cpp
+  src/core/command_runner.cpp
+  src/core/azure_provisioner.cpp
+  src/core/azure_cli_control_plane.cpp
+  src/core/aws_provisioner.cpp
+  src/core/aws_cli_control_plane.cpp
+  src/core/gcp_provisioner.cpp
+  src/core/gcp_cli_control_plane.cpp
+  src/core/oci_provisioner.cpp
+  src/core/oci_cli_control_plane.cpp
+  src/core/k8s_provisioner.cpp
+  src/core/k8s_cli_control_plane.cpp
+  src/core/bare_metal_provisioner.cpp
+  src/core/bare_metal_cli_control_plane.cpp
   src/core/burst_identity.cpp
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
@@ -355,10 +368,12 @@ add_library(zetta-core STATIC
   src/core/n8n_compile.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
+  src/core/ddf/data_frame.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp
   src/core/compute/distributed_scheduler.cpp
+  src/core/compute/job_coordinator.cpp
   src/core/runtime.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp

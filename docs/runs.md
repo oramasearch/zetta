@@ -157,12 +157,41 @@ on the right" shape:
     run surface here);
   - **Outputs** — the produced datasets / models / indexes in a `Kind / Name /
     Ref` table;
+  - **Trained models** — the model(s) this run produced, with their metrics and
+    ranked drivers (see below); shown only when the run has produced a model;
   - **Lineage** — `sources` and `steps` as joined refs, `freshness`, and
     `confidence` rendered as a 0..1 progress bar.
 
-The panel reads already-validated `Run` handles in memory, so it introduces **no
-new JSON boundary** — the schema validation above (`parse_run_value`) has already
-run when the record entered from disk or the CRDT.
+### Trained models / metrics / ranked drivers
+
+The FEAT-5 "surface the trained **Model** + metrics + ranked drivers" slice. For
+the selected run, the detail pane resolves the [`Model`](models.md)(s) the run
+produced and renders each (`render_model_card`):
+
+- **identity + weights** — the model's name / kind / short id, and its weights
+  fingerprint (`size`, flagged when the body is still in flight to this node);
+- **Metrics** — the model's evaluation scores (`metrics`, a flat `name → number`
+  map, e.g. `auc` / `f1`) in a `Metric / Value` table; a value in `[0, 1]` is drawn
+  as a bar so a score reads at a glance;
+- **Ranked drivers** — the model's feature importances, **strongest |influence|
+  first**, each as a normalized bar with its signed value (`+/-`, since a feature
+  can push a prediction up or down). Read from the model's free-form
+  `feature_schema.drivers` via [`zetta::ranked_drivers`](models.md#ranked-drivers-explainability);
+  absent until an `Explain` job records them ("(no ranked drivers recorded)").
+
+The run↔model link is the **durable reverse edge** — a model whose producing-run
+ref (`Model::run()`) is this run's id — not the executor's logical model `output.ref`
+(a placeholder handle in R1). `draw_runs` filters `node_.models()` by that ref and
+passes the matches to the detail renderer.
+
+The panel reads already-validated `Run` **and** `Model` handles in memory, so it
+introduces **no new JSON boundary** — `parse_run_value` / `parse_model_value` have
+already run when each record entered from disk or the CRDT, and the ranked drivers
+are read *tolerantly* from the already-validated, free-form `feature_schema` (not a
+second validation gate).
+
+The sibling FEAT-5 GUI slice — the live **Compute Jobs** panel + per-job
+objective/scaling controls — is the [Jobs panel](jobs-panel.md).
 
 ## Tests
 

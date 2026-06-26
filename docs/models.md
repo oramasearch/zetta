@@ -124,6 +124,36 @@ in-memory tree. The schema is exposed via `model_value_schema()`;
 `validate_model_value` / `parse_model_value` are the entry points (via
 `pboettch/json-schema-validator`, linked PRIVATE to `zetta-core`).
 
+## Ranked drivers (explainability)
+
+A model can carry an optional **explainability** annotation — its **ranked feature
+drivers** (the SHAP-style "which features drove the prediction, and how strongly").
+Because it is an optional, free-form signal an `Explain`
+[compute job](compute-jobs.md) (or any producer) records, it lives **inside the
+already-free-form `feature_schema`** rather than as a new top-level field — so it
+adds **no new JSON boundary** to the Model record:
+
+```json
+"feature_schema": {
+  "tenure_months": "number",
+  "drivers": [
+    { "feature": "support_tickets",  "importance": -0.41 },
+    { "feature": "monthly_charges",  "importance":  0.27 }
+  ]
+}
+```
+
+`zetta::ranked_drivers(const nlohmann::json& feature_schema)` (and the convenience
+`Model::drivers()`) reads that optional `drivers` array **defensively** — keeping
+only well-shaped `{ feature: string, importance: number }` entries, silently
+skipping anything else — and returns them as `ModelDriver{ feature, importance }`
+sorted by **|importance| descending** (strongest influence first; the sign is kept,
+since a feature can push a prediction either way). It is **tolerant reading of
+trusted data, not a second validation gate**: `feature_schema` was already
+schema-validated as an object by `parse_model_value` when the model entered. With
+no `drivers` key (the common case) it returns an empty list. This is what the
+[Runs panel](runs.md#trained-models--metrics--ranked-drivers) renders.
+
 ## Integrity (preflight)
 
 `Node::check_integrity()` (run on `start()` unless `--no-preflight`) extends to

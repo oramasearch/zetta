@@ -74,8 +74,19 @@ private:
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     void draw_cluster();     // role, listen address, peers, join command
-    void draw_runs();        // run status/logs + outputs + lineage (one selected run)
+    void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
+    void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
+
+    // Per-job objective/scaling controls inside the Jobs panel (FEAT-5 / SCR):
+    // a live preview that scores a ScalingPolicy against an editable sample via
+    // the built ScalingPolicy::evaluate() — set the reward objective + bounds and
+    // add/remove nodes, see the resulting ScalingDecision. A preview only: policy
+    // persistence + the live autoscaler are later slices, so nothing is written.
+    void draw_job_scaling_controls();
+    // Reset the scaling-control fields to sensible defaults (called when the
+    // selected job changes, tracked via scaling_loaded_job_).
+    void reset_scaling_controls();
 
     // New Project flow (SCR-2 / FEAT-1): a modal to name a project, paste an NL
     // intent, and import / drop an n8n workflow JSON as a starting artifact —
@@ -120,6 +131,7 @@ private:
     std::string selected_db_;
     std::string selected_table_;
     std::string selected_run_;  // run id; re-resolved each frame like the others
+    std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
     std::string new_db_input_;
     std::string new_table_input_;
@@ -182,6 +194,23 @@ private:
     int deploy_placement_ = 0;       // DeploymentKind index; 0 = Local
     std::string deploy_status_;      // last deploy result (success or error)
     bool deploy_failed_ = false;     // colour deploy_status_ red vs. green
+
+    // Jobs panel — per-job objective/scaling controls (a live preview over the
+    // built ScalingPolicy::evaluate(); see draw_job_scaling_controls). These hold
+    // the in-flight policy + sample for the selected job; they are reset when the
+    // selection changes (scaling_loaded_job_ tracks which job they belong to).
+    // Nothing here is persisted — policy storage + the autoscaler are later
+    // slices — so the controls are a "what-if" calculator, not a write path.
+    std::string scaling_loaded_job_;     // job id the controls below belong to
+    int scaling_objective_ = 0;          // ScalingObjective index (0 = minimize_cost)
+    int scaling_min_nodes_ = 1;          // bounds floor (>= 1)
+    int scaling_max_nodes_ = 8;          // bounds ceiling (>= min)
+    double scaling_cost_cap_ = 0.0;      // spend ceiling; 0 = unlimited
+    double scaling_target_seconds_ = 600.0;  // RuntimeTarget objective target
+    int scaling_nodes_ = 2;              // sample: nodes currently allocated
+    double scaling_progress_ = 0.4;      // sample: fraction complete [0, 1]
+    double scaling_elapsed_ = 120.0;     // sample: elapsed seconds
+    double scaling_cost_ = 50.0;         // sample: accumulated cost
 
     // File ingestion (drag-and-drop + native dialog) and its last status line.
     std::mutex incoming_mutex_;

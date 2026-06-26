@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/azure_config.schema.json",
+  "title": "AzureConfig",
+  "description": "Configuration for the reference cloud-burst Provisioner backend (ARC-13 / ADR-20, #376): where on Azure to burst ephemeral compute nodes, how to size and price them, and how each node joins the cluster. Mirrored by zetta::AzureConfig in include/zetta/azure_provisioner.hpp and enforced by AzureConfig::from_json() in src/core/azure_provisioner.cpp — keep them in sync. No cloud SDK lives behind the provisioner; this config is interpreted by an AzureControlPlane (the reference AzCliControlPlane shells out to the `az` CLI). A malformed config is rejected at the boundary so a misconfigured burst fails fast instead of bringing up the wrong (or unbounded) fleet.",
+  "type": "object",
+  "required": ["subscription_id", "resource_group", "location"],
+  "additionalProperties": false,
+  "properties": {
+    "subscription_id": {
+      "description": "The Azure subscription the burst pool is created in.",
+      "type": "string",
+      "minLength": 1
+    },
+    "resource_group": {
+      "description": "The resource group that owns the burst pool — the unit deleted on full teardown (stable name → idempotent create/delete).",
+      "type": "string",
+      "minLength": 1
+    },
+    "location": {
+      "description": "The Azure region the nodes burst into (e.g. 'eastus', 'westeurope').",
+      "type": "string",
+      "minLength": 1
+    },
+    "pool_name": {
+      "description": "Name of the burst pool (VMSS / Batch pool). Stable so create + delete are idempotent. Defaults to 'zetta-burst' when omitted.",
+      "type": "string"
+    },
+    "vm_size": {
+      "description": "The Azure VM SKU each node uses (e.g. 'Standard_NC24ads_A100_v4'). Empty lets the control plane map the requested NodeCapability spec to a SKU.",
+      "type": "string"
+    },
+    "image": {
+      "description": "The VM image reference burst nodes boot from (e.g. 'Ubuntu2204'). Empty uses the control plane's default image.",
+      "type": "string"
+    },
+    "spot": {
+      "description": "Burst Spot / low-priority capacity (cheaper, evictable) rather than regular on-demand nodes.",
+      "type": "boolean"
+    },
+    "max_price": {
+      "description": "Spot max price per node-hour (USD). Azure's convention: -1 pays up to the standard on-demand price (never evicted on price). Applies only when spot is true.",
+      "type": "number",
+      "minimum": -1
+    },
+    "seed_peer": {
+      "description": "The cluster seed address (host:port) injected into each node's bootstrap so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way.",
+      "type": "string"
+    },
+    "managed_identity": {
+      "description": "Optional user-assigned managed identity resource id granted to burst nodes (the cloud-native side of the per-node burst identity).",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Optional Azure AD tenant id, when the credential needs it explicitly.",
+      "type": "string"
+    }
+  }
+}

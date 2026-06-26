@@ -30,6 +30,12 @@ add_executable(zetta-tests
   test_deployment_controller.cpp
   test_provisioner.cpp
   test_local_provisioner.cpp
+  test_azure_provisioner.cpp
+  test_aws_provisioner.cpp
+  test_gcp_provisioner.cpp
+  test_oci_provisioner.cpp
+  test_k8s_provisioner.cpp
+  test_bare_metal_provisioner.cpp
   test_burst_identity.cpp
   test_scaling_policy.cpp
   test_burst_approval_gate.cpp
@@ -44,8 +50,10 @@ add_executable(zetta-tests
   test_node.cpp
   test_query.cpp
   test_execution_graph.cpp
+  test_data_frame.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
+  test_cuda_device.cpp
   test_device_registry.cpp
   test_large_object.cpp
   test_import.cpp
@@ -55,6 +63,7 @@ add_executable(zetta-tests
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp
+  test_job_coordinator.cpp
   test_cluster.cpp
   test_signal.cpp
   test_collectives.cpp

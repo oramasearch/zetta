@@ -127,8 +127,14 @@ PRIVATE to zetta-core). A run is now also **produced by executing a graph** (see
 the Graph execution section below). The headed app surfaces runs in a
 **read-only Runs / Outputs / Lineage panel** (`App::draw_runs` — list of runs +
 a detail pane with the selected run's status, color-coded logs, an outputs
-table, and a lineage section with a confidence bar; the GUI slice of FEAT-5 /
-SCR-6 / CMP-4). See [docs/runs.md](docs/runs.md).
+table, a **Trained models** section, and a lineage section with a confidence bar;
+the GUI slice of FEAT-5 / SCR-6 / CMP-4). The **Trained models** section is the
+FEAT-5 "surface the trained Model + metrics + ranked drivers" slice: it resolves
+the `Model`(s) the run produced via the durable reverse link
+(`Model::run() == run id`) and renders each one's metrics (name→number, a bar for
+`[0,1]` scores) and **ranked drivers** (feature importances, strongest |influence|
+first — read tolerantly from the model's free-form `feature_schema.drivers` via
+`zetta::ranked_drivers`, so no new JSON boundary). See [docs/runs.md](docs/runs.md).
 
 A node also owns **models** (`zetta::Model`) — a **trained model** registered on
 the node (ENT-14 / FEAT-6): its metadata (`name`, `kind`, free-form
@@ -169,10 +175,19 @@ validated against a formal JSON Schema (`parse_compute_job_value`, the same
 into a terminal state (the `materialize_*`/`apply_value` reconcile paths never emit
 — a peer's action arrives already-audited). The registry is `Node::jobs()` + the
 read-only SQL **`system.zetta_jobs`** table (job id / kind / status / refs / reward
-+ observing node, computed from `Node::jobs()`). Scheduling/running a job (the
-coordinator, scheduler + collectives, the autoscaler wired to the `ScalingPolicy`
-reward model below) are separate, later slices. See
-[docs/compute-jobs.md](docs/compute-jobs.md).
++ observing node, computed from `Node::jobs()`). The headed app surfaces the
+registry in a **read-only Compute Jobs panel** (`App::draw_jobs` — list of jobs
+with a color-coded status badge + kind, and a detail pane with the selected job's
+status / refs; the GUI form of `system.zetta_jobs`, FEAT-5 / SCR). The detail pane
+also carries **per-job objective/scaling controls** (`App::draw_job_scaling_controls`)
+— a **live preview** that scores an editable `ScalingPolicy` + sample against the
+built `ScalingPolicy::evaluate()`: pick a reward objective + bounds, add/remove
+nodes, and see the resulting `ScalingDecision` (recommended nodes, scale
+up/hold/down, reward, cost-cap). It is a what-if calculator, **not** a write path —
+nothing is persisted (policy persistence + a live autoscaler are later slices).
+Scheduling/running a job (the coordinator, scheduler + collectives, the autoscaler
+wired to the `ScalingPolicy` reward model below) are separate, later slices. See
+[docs/compute-jobs.md](docs/compute-jobs.md) and [docs/jobs-panel.md](docs/jobs-panel.md).
 
 A compute job's `scaling_policy` ref points at a **`zetta::ScalingPolicy`** — the
 per-job **reward objective an autoscaler optimizes** (**ADR-29 / ENT-34**, the
@@ -330,7 +345,11 @@ memory, parallelizing the data-parallel ones
 sequential. Float-only ops (sqrt/exp/log, gemm, axpy) reject integer dtypes;
 everything returns a `ComputeStatus`, never throwing across the seam. **Its results
 are the numerical reference `zetta::compute::CudaDevice` (#361), the GPU backend,
-is checked against** (correctness over throughput).
+is checked against** (correctness over throughput) — `tests/test_cuda_device.cpp`
+is the CPU↔CUDA conformance suite (guarded on `ZETTA_WITH_CUDA`, skipped with no
+GPU) that runs every operator on both backends and asserts they agree, including
+the edge-case parity (integer-dtype rejection, safe integer divide, out-of-range
+`gather`/`scatter` rejection, deterministic duplicate-index `scatter`).
 
 The **runtime-free** compute backends (the `HostStubDevice` stub, the optional
 `CudaDevice`) plus the `DeviceBuffer` memory model build into a dedicated
@@ -342,8 +361,10 @@ which `zetta-core` owns, so it can't sink into the lower-level `zetta-compute`
 without a link cycle.) A **CPU-only configure is the default** (dev Macs, CI) and
 needs no GPU toolkit; the **CUDA backend is opt-in** behind `-DZETTA_ENABLE_CUDA=ON`,
 which `find_package(CUDAToolkit REQUIRED)`, `enable_language(CUDA)`, adds
-`src/core/compute/cuda_device.cu` (Thrust + custom `histogram`/`gemm` kernels,
-dispatched on `DataType`), links `CUDA::cudart` PRIVATE (so the CUDA include dirs
+`src/core/compute/cuda_device.cu` (Thrust + custom
+`histogram`/`gemm`/`gather`/`scatter` kernels, dispatched on `DataType`, that
+reproduce the `CpuDevice` reference's preconditions + edge cases), links
+`CUDA::cudart` PRIVATE (so the CUDA include dirs
 never reach `zetta-core`), and sets the public `ZETTA_WITH_CUDA` define consumers
 (the device registry #362, the tests) guard `CudaDevice` use on. `cuda_device.hpp`
 is CUDA-free (no `<cuda_runtime.h>`), like `src/gui/app.hpp` keeps SDL out of its
@@ -370,6 +391,34 @@ the same hand-written pattern as `NodeCapability`); the `DeviceInfo` JSON form l
 in the registry module so the pure `ComputeDevice` seam header stays JSON-free. No
 `Node`/SQL wiring in this slice (a standalone seam, like `Provisioner`). See
 [docs/device-registry.md](docs/device-registry.md).
+
+### DDF DataFrame (`zetta::ddf`)
+
+The **DDF (distributed dataframe) core** (`include/zetta/ddf/data_frame.hpp`,
+namespace `zetta::ddf`; **ARC-12 / GLO-11 / ENT-33**, #380) is a typed, columnar
+`DataFrame` over the existing storage engine — the **substrate every DDF op operates
+on**. A table is untyped JSON rows (`JsonlStore`'s `{_zid, doc}`); the DataFrame
+reads a table's rows into typed **numeric** columns (the `zetta::compute::DataType`
+set — float/int/uint only; non-numeric fields aren't selected), **chunked** by row
+range, with each chunk a `zetta::compute::DeviceBuffer` on a `ComputeDevice` — so the
+existing CPU/CUDA operators run directly over a frame's columns. A `Column` is a
+sequence of row-aligned chunks and **every column in a frame shares the same chunk
+layout** (chunk `i` = the same rows across columns — what DDF ops rely on); the
+default `kDefaultChunkRows = 10'000` matches `JsonlStore::kRecordsPerChunk`.
+`DataFrame`/`Column` are **move-only** (they own device memory via `DeviceBuffer`).
+`load_data_frame(store, schema, device, chunk_rows=…)` is the loader (non-throwing —
+returns a `DataFrameResult{frame, ComputeStatus}`; the value conversion is a
+**boundary**: missing field / non-number / real-into-int / negative-into-unsigned /
+out-of-range → `InvalidArgument`, a float column widens integer JSON); `infer_schema`
+picks the dense numeric fields (Int64 if all-integer, else Float64) for
+"just load the table"; `to_host<T>` reads a column back (the round-trip, mirroring
+`ComputeDevice::download`). The schema config `DataFrameSchema` carries a
+**validated JSON boundary** (`to_json`/`from_json` mirroring
+`schemas/data_frame_schema.schema.json`, the hand-written non-throwing pattern of
+`DeviceInfo`, **not** the `pboettch` path). It lives in **zetta-core** (it bridges
+the storage engine + `zetta::compute`), like `CpuDevice`. No `Node`/SQL/replication
+wiring in this slice — DDF *ops* and the `ComputeJob` `ddf` kind are later issues.
+See [docs/ddf.md](docs/ddf.md).
 
 ### Work-stealing scheduler (`zetta::compute`)
 
@@ -399,16 +448,59 @@ idle/faster *nodes* steal pending tasks from peers over the
 local drainers and idle peers both pull from it — a peer sends a `steal` RPC, the
 owner replies with an **offer** of leased tasks, the peer runs them on its own
 pool and returns a `steal_result`. **Single-hop** (a node only hands out its own
-jobs' tasks, never re-steals), with **leases + re-queue** so a dead helper never
-hangs `map`, and **idempotent** completion so a late result is ignored. The
+jobs' tasks, never re-steals), and **idempotent** completion so a late result is
+ignored. It is **elastic mid-job** (ARC-10 / #367) — the fleet can change while a
+job runs and the job still finishes correctly: a node that **joins** mid-job
+starts stealing on its next tick (the steal loop re-reads `Cluster::peers()` each
+pass, so an autoscaled-in helper speeds an in-flight job up with no extra wiring),
+and a node that **leaves/fails** mid-job has its in-flight tasks **re-queued** —
+`sweep_lost_assignments()` recovers a held task when its peer **drops out of
+cluster membership** (the fast, *detected* path — a crash closes its sockets,
+silence is dropped after `peer_idle_timeout_seconds`; counted in
+`Stats::lost_node_requeued`) **or** when its per-task **lease** expires
+(`Config::steal_lease`, the backstop for a hung-but-connected helper) — so `map`
+never strands work on a lost helper while any compute capacity remains. The
 application supplies one **executor** (`string(method, payload)`) registered
 identically on every node; the three steal messages are **schema-validated at the
 boundary** (`schemas/steal_{request,offer,result}.schema.json`, same `pboettch`
-validator as the [signal envelope](#signal-plane-rpc--events--tasks)). It is the
-cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
+validator as the [signal envelope](#signal-plane-rpc--events--tasks)); elastic
+membership adds **no new wire message** (it reads the in-memory peer table). It is
+the cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
 signal to a fallback. Scheduling a `ComputeJob` / driving collectives is the
-**job coordinator** (#372), a later slice that submits work *through* this. See
+**job coordinator** (#372, below), which submits work *through* this. See
 [docs/work-stealing-scheduler.md](docs/work-stealing-scheduler.md).
+
+### Job coordinator (`zetta::compute`)
+
+The **job coordinator** (`zetta::compute::JobCoordinator`,
+`include/zetta/compute/job_coordinator.hpp`; **ARC-11**, #372) is the **single
+entry the native distributed accelerated-compute algorithms (DDF / GBDT / SHAP)
+submit work through** — it joins the three pieces of the compute pass: the
+[work-stealing scheduler](#work-stealing-scheduler-zettacompute) (split a job into
+tasks, run across cores + nodes), [collectives](#collectives-allreduce--broadcast--barrier--gather)
+(combine per-node partials at a round boundary), and the
+[`ComputeJob`](#compute-jobs) lifecycle record. An algorithm hands the coordinator
+a **job body** (`std::function<Outcome(JobRound&)>`); `run(job, body)` sets the job
+**Running**, runs the body, then sets the terminal status from the body's `Outcome`
+(Succeeded with a `detail` summary, or Failed with the reason) — so a job is never
+left stuck in `Running`, and the terminal transition emits the `job_finished`
+audit through the job's `AuditSink`. The body sees only a **`JobRound`** work
+surface: `parallel_map` (intra-node data parallelism on the local pool — the
+per-node partial), `map` (cross-node dynamic task stealing for not-pre-sharded
+work), the four collectives (`allreduce`/`broadcast`/`barrier`/`gather` at round
+boundaries), and topology (`participants`/`node_id`/`is_root`). The model is
+**SPMD** (every node runs the same body against its own shard; the collective
+combines partials), the way distributed GBDT/SHAP run; `map` is the owner-centric
+alternative for embarrassingly-parallel work. The coordinator **owns** a
+`Collectives` + a `DistributedScheduler` and wires the **shared signal-handler
+chain** (`steal` → scheduler, `collective.*` → collectives, else → an optional app
+fallback) — member declaration order makes construction register it and
+destruction unwind it cleanly, which is why it owns (not references) those pieces.
+It introduces **no new JSON format** — `map` rides the schema-validated steal
+messages, the collectives ride the schema-validated `CollectiveMessage`, and the
+job record is schema-validated at its own boundary. The autoscaler that sizes the
+fleet from a job's `ScalingPolicy` is the remaining, later slice. See
+[docs/job-coordinator.md](docs/job-coordinator.md).
 
 ### Cluster (equal peers)
 
@@ -437,7 +529,9 @@ its replication status (entries, version, in-sync, last-sync) — surfaced in th
 headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
 currently always `Follower`); membership + replication gossip for now. See
-[docs/cluster.md](docs/cluster.md).
+[docs/cluster.md](docs/cluster.md). [docs/true-hybrid.md](docs/true-hybrid.md)
+describes how the cluster, compute, and provisioner seams compose into **true
+hybrid** — one cluster spanning every vendor and architecture.
 
 ### Signal plane (RPC / events / tasks)
 
@@ -969,8 +1063,7 @@ selects up to `count` existing nodes that `satisfies` the spec (best-effort: few
 + a `detail` note when short — given hardware can't add capacity; a no-floor spec
 returns the current cluster nodes); `teardown` is a **no-op returning false**
 (given hardware isn't ours to release); `provisioned` lists the whole cluster.
-The cloud-burst backends (AWS #377 / GCP #378) are still later slices; the
-autoscaler/job coordinator that consumes the seam is unbuilt, and nothing here
+The autoscaler that consumes the seam is unbuilt, and nothing here
 persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
@@ -991,6 +1084,163 @@ pricing plugs in with the cloud backends. `BurstCap` carries a **validated JSON
 boundary** (`schemas/burst_cap.schema.json`) like the other provisioner DTOs. The
 gate audits only the **exception** (an over-cap burst), not every small provision.
 See [docs/burst-approval-gate.md](docs/burst-approval-gate.md).
+
+The first concrete **cloud** backend is the **`zetta::AzureProvisioner`**
+(`include/zetta/azure_provisioner.hpp`) — the **reference** cloud-burst backend
+(**ARC-13 / ADR-20**, #376; AWS #377 / GCP #378 **mirror** its shape). It realizes
+the burst lifecycle: **provision** N ephemeral Azure nodes → **mint** bulk burst
+identities so they can join the cluster → run cluster-parallel → **tear down** +
+**revoke**. It owns the orchestration but **none of the Azure mechanics**,
+delegating those to an injected **`AzureControlPlane`** seam (`bring_up`/`destroy`/
+`list`) — so it stays in `zetta-core` with **no cloud SDK** and is fully
+unit-testable against a fake; the control plane is the **source of truth** for what
+is up (`provisioned()` + the drain check read it, no parallel fleet copy). Bulk
+identity is wired through two optional **`IdentityHooks`** callables
+(`mint`-on-provision / `revoke`-on-full-teardown) — the `FleetSource`/`CostEstimator`
+injection style, production-bound to a [`BurstIdentityManager`](docs/burst-identity.md)
+for the job, not a hard dependency. The reference `AzureControlPlane` is
+**`zetta::AzCliControlPlane`** (`include/zetta/azure_cli_control_plane.hpp`), which
+borrows the **VMSS + Spot shape** (not the SDK) by shelling out to the `az` CLI
+through the **shared `CommandRunner`** (`include/zetta/command_runner.hpp` — argv,
+no shell, testable without `az` installed; the default `fork`/`execvp`s and
+captures JSON; the same exec seam the AWS/GCP CLI bindings reuse); its `list`
+output is parsed at the **`ProvisionedNode` boundary**. `AzureConfig` (subscription
+/ resource group / region required; pool name / VM SKU / image / spot + max-price /
+seed peer / managed identity optional) carries a **validated JSON boundary**
+(`schemas/azure_config.schema.json`) like the other provisioner DTOs. No live-cloud
+CI (the acceptance is the full *shape*, verified against fakes), no
+persistence/replication, no autoscaler wiring yet. **AWS (#377) / GCP (#378) mirror
+this shape** — the recipe (the four pieces + shared infra + the lifecycle→CLI
+mapping; **CLI for now**) is [docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md);
+the cited `az` command basis is
+[docs/research/azure-cli-compute.md](docs/research/azure-cli-compute.md). See
+[docs/azure-provisioner.md](docs/azure-provisioner.md).
+
+**`zetta::AwsProvisioner`** (`include/zetta/aws_provisioner.hpp`, #377) is the
+**AWS mirror** of that reference, following the
+[cloud-provisioner pattern](docs/cloud-provisioner-pattern.md) — the four pieces
+(`AwsProvisioner` / `AwsControlPlane` seam / `AwsCliControlPlane` CLI binding /
+`AwsConfig`) plus the shared `CommandRunner` + `IdentityHooks`, all reused. The
+`AwsProvisioner` orchestration is structurally a **near-copy** of
+`AzureProvisioner` (only the config type differs): provision → `bring_up` + mint,
+teardown → `destroy` + revoke-on-drain, `provisioned` → `list`. The
+**`AwsCliControlPlane`** is the reference binding, borrowing the **EC2 Auto Scaling
+Group + Spot shape** (the AWS analog of Azure's VMSS) by shelling out to the `aws`
+CLI through the shared `CommandRunner` — `create-auto-scaling-group` /
+`set-desired-capacity` (idempotent re-burst on the stable pool name) →
+`terminate-instance-in-auto-scaling-group` → `describe-instances` (parsed at the
+`ProvisionedNode` boundary). **`AwsConfig`** (region / launch template / subnets
+required; pool name / instance-type override / spot + max-price / seed peer /
+profile optional) carries a **validated JSON boundary**
+(`schemas/aws_config.schema.json`) like the other provisioner DTOs; Spot rides on
+the ASG's mixed-instances policy and the per-node IAM instance profile + join
+bootstrap live in the launch template. Same scope caveats as Azure: no live-cloud
+CI (verified against fakes), no persistence/replication, no autoscaler wiring; the
+cited `aws` command basis is
+[docs/research/aws-cli-compute.md](docs/research/aws-cli-compute.md). See
+[docs/aws-provisioner.md](docs/aws-provisioner.md).
+
+**`zetta::GcpProvisioner`** (`include/zetta/gcp_provisioner.hpp`, **ARC-13 /
+ADR-20**, #378) is another **mirror** of that reference — the same four-piece
+shape (the [CLI pattern](docs/cloud-provisioner-pattern.md)) on GCP.
+`GcpProvisioner` is the burst orchestration (provision+mint / teardown+revoke,
+structurally identical to `AzureProvisioner` but carrying a `GcpConfig`),
+delegating to an injected **`GcpControlPlane`** seam (`bring_up`/`destroy`/`list`)
+with the same optional `IdentityHooks`. Its reference binding
+**`zetta::GcpCliControlPlane`** (`include/zetta/gcp_cli_control_plane.hpp`) borrows
+the **Managed Instance Group + Spot shape** by shelling out to `gcloud` through the
+**shared `CommandRunner`** — `bring_up` ensures an instance template (machine type
+/ image / network / service account / `--provisioning-model=SPOT` / a
+startup-script seed peer), then creates **and** resizes the MIG to N (create-or-
+resize makes a re-burst idempotent on the stable pool name) and lists its
+instances; `destroy` is `instance-groups managed delete-instances`; `list` parses
+`gcloud … --format json` at the **`ProvisionedNode` boundary** (skip-malformed).
+`GcpConfig` (`project_id` + `zone` required; pool/MIG name, instance template,
+machine type, image, network, subnetwork, service account, spot, seed peer
+optional) carries a **validated JSON boundary** (`schemas/gcp_config.schema.json`)
+like `AzureConfig`. No live-cloud CI (the `gcloud` exec is the only path CI can't
+run — argv + parsing are fully faked), no persistence/replication/autoscaler wiring
+yet. The cited `gcloud` command basis is
+[docs/research/gcp-cli-compute.md](docs/research/gcp-cli-compute.md). See
+[docs/gcp-provisioner.md](docs/gcp-provisioner.md).
+
+**`zetta::OciProvisioner`** (`include/zetta/oci_provisioner.hpp`, **ARC-13 /
+ADR-20**, #432) is another mirror — the same four-piece shape on **Oracle Cloud
+Infrastructure**. `OciProvisioner` is the burst orchestration (provision+mint /
+teardown+revoke, structurally identical to Azure/GCP but carrying an `OciConfig`),
+delegating to an injected **`OciControlPlane`** seam with the same `IdentityHooks`.
+Its reference binding **`zetta::OciCliControlPlane`**
+(`include/zetta/oci_cli_control_plane.hpp`) borrows the **Instance Pool +
+preemptible shape** by shelling out to `oci` through the **shared `CommandRunner`**.
+The OCI-specific wrinkle: OCI resources are **OCID-addressed, not name-addressed**,
+so `bring_up` first **resolves the pool's OCID from its stable display name**
+(`instance-pool list --query data[0].id --raw-output`), then create-or-resizes — an
+empty result takes the **create path** (`instance-configuration create
+--instance-details <json>` carrying the per-node shape incl. `preemptibleInstanceConfig`
+for spot + a `user_data` seed, then `instance-pool create … --size N`), a non-empty
+one the **resize path** (`instance-pool update --size N`); `destroy` is
+`instance-pool-instance detach --is-decrement-size --is-auto-terminate`; `list`
+unwraps the `{"data":[…]}` envelope at the **`ProvisionedNode` boundary**.
+`OciConfig` (`compartment_id` + `availability_domain` + `subnet_id` required;
+region, pool name, shape + ocpus/memory, image, spot, seed peer optional) carries a
+**validated JSON boundary** (`schemas/oci_config.schema.json`). No live-cloud CI
+(argv + parsing fully faked), no persistence/replication/autoscaler wiring yet. The
+cited `oci` command basis is
+[docs/research/oci-cli-compute.md](docs/research/oci-cli-compute.md). See
+[docs/oci-provisioner.md](docs/oci-provisioner.md).
+
+**`zetta::K8sProvisioner`** (`include/zetta/k8s_provisioner.hpp`, **ARC-13 /
+ADR-20**, #434) is another mirror — the same four-piece shape over **Kubernetes**.
+Unlike the cloud backends (which create VMs), it bursts **worker pods into an
+existing cluster**: the burst pool is a **Deployment** scaled to N replicas (the
+self-healing, maintain-N analog of VMSS/ASG/MIG/Instance Pool), and the cluster is
+the kubeconfig **context** (configured out-of-band, e.g. `get-credentials`). This is
+distinct from the `DeploymentTarget` k8s placement (where a *graph* runs) — this
+provisions *compute nodes*. `K8sProvisioner` is the burst orchestration
+(provision+mint / teardown+revoke, structurally identical to the siblings but
+carrying a `K8sConfig`), delegating to an injected **`K8sControlPlane`** seam with
+the same `IdentityHooks`. Its reference binding **`zetta::K8sCliControlPlane`**
+(`include/zetta/k8s_cli_control_plane.hpp`) shells out to `kubectl` through the
+**shared `CommandRunner`** — `bring_up` ensures the Deployment (`kubectl create
+deployment --image`), applies the per-pod shape (`set env ZETTA_SEED_PEER`, `set
+serviceaccount`, a spot `patch` nodeSelector), then `scale`s to N (the gate) and
+lists pods (`get pods --selector app=<name> -o json`, unwrapping the `{"items":[…]}`
+envelope at the **`ProvisionedNode` boundary**); `destroy` is `kubectl delete pod`;
+every call carries `--namespace`/`--context`. `K8sConfig` (`image` required;
+namespace, deployment name, context, service account, spot, seed peer optional; the
+`namespace` JSON key maps to the C++ `namespace_name`) carries a **validated JSON
+boundary** (`schemas/k8s_config.schema.json`). No live-cluster CI (argv + parsing
+fully faked), no persistence/replication/autoscaler wiring yet. The cited `kubectl`
+command basis is
+[docs/research/kubectl-workloads.md](docs/research/kubectl-workloads.md). See
+[docs/k8s-provisioner.md](docs/k8s-provisioner.md).
+
+**`zetta::BareMetalProvisioner`** (`include/zetta/bare_metal_provisioner.hpp`,
+**ARC-13 / ADR-20**, #436) is another mirror — the same four-piece shape over the
+**local host**. Bare metal is the local machine (not a remote cloud/cluster), and
+each worker runs as a **local container** via the host runtime (`docker`/`podman`):
+`docker run -d` starts a detached worker and **returns immediately**, which is what
+makes a long-lived worker launchable through the *synchronous* `CommandRunner`
+(fork/execvp). It is distinct from `LocalProvisioner` (#374, which only *reports*
+existing cluster nodes and never creates any) — this actually **brings up** local
+workers. `BareMetalProvisioner` is the burst orchestration (provision+mint /
+teardown+revoke, structurally identical to the siblings but carrying a
+`BareMetalConfig`), delegating to an injected **`BareMetalControlPlane`** seam with
+the same `IdentityHooks`. Its reference binding **`zetta::BareMetalCliControlPlane`**
+(`include/zetta/bare_metal_cli_control_plane.hpp`) shells out to the runtime through
+the **shared `CommandRunner`** — `bring_up` counts the labelled burst workers
+(`<runtime> ps --filter label=<pool> --format '{{json .}}'`), launches only the
+**shortfall** (`<runtime> run -d --label <pool> --name <prefix>-<uuid> [--network …
+--gpus all --env ZETTA_SEED_PEER=…] <image>`, idempotent on the label), then lists;
+`destroy` is `<runtime> rm -f <id>`; `list` parses the runtime's **NDJSON** (one JSON
+object per line) at the **`ProvisionedNode` boundary**. `BareMetalConfig` (`image`
+required; runtime docker/podman, pool label, name prefix, network, gpus, seed peer
+optional) carries a **validated JSON boundary** (`schemas/bare_metal_config.schema.json`).
+No live-runtime CI (argv + parsing fully faked), no persistence/replication/autoscaler
+wiring yet; a raw-process (systemd/launchd) variant is a possible future sibling. The
+cited command basis is
+[docs/research/baremetal-compute.md](docs/research/baremetal-compute.md). See
+[docs/bare-metal-provisioner.md](docs/bare-metal-provisioner.md).
 
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
@@ -1084,6 +1334,19 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
+  azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
+  azure_cli_control_plane.hpp zetta::AzCliControlPlane — reference AzureControlPlane binding: shells out to the `az` CLI (VMSS/Spot shape) via the shared CommandRunner (#376)
+  command_runner.hpp        zetta::CommandRunner/CommandResult/default_command_runner — shared, vendor-neutral exec seam every CLI cloud binding runs through (argv, no shell; fork/execvp; #376)
+  aws_provisioner.hpp       zetta::AwsProvisioner/AwsConfig/AwsControlPlane — AWS cloud-burst backend mirroring the Azure pattern: burst N nodes + mint identities + teardown/revoke behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #377)
+  aws_cli_control_plane.hpp zetta::AwsCliControlPlane — reference AwsControlPlane binding: shells out to the `aws` CLI (EC2 Auto Scaling Group / Spot shape) via the shared CommandRunner (#377)
+  gcp_provisioner.hpp       zetta::GcpProvisioner/GcpConfig/GcpControlPlane — GCP cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #378)
+  gcp_cli_control_plane.hpp zetta::GcpCliControlPlane — reference GcpControlPlane binding: shells out to `gcloud` (Managed Instance Group/Spot shape) via the shared CommandRunner (#378)
+  oci_provisioner.hpp       zetta::OciProvisioner/OciConfig/OciControlPlane — OCI cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #432)
+  oci_cli_control_plane.hpp zetta::OciCliControlPlane — reference OciControlPlane binding: shells out to `oci` (Instance Pool/preemptible shape, OCID-resolved by name) via the shared CommandRunner (#432)
+  k8s_provisioner.hpp       zetta::K8sProvisioner/K8sConfig/K8sControlPlane — Kubernetes cloud-burst backend mirroring Azure: burst N pods into an existing cluster + mint identities + teardown/revoke behind the control-plane seam, no client lib (ARC-13/ADR-20; #434)
+  k8s_cli_control_plane.hpp zetta::K8sCliControlPlane — reference K8sControlPlane binding: shells out to `kubectl` (Deployment/scale shape) via the shared CommandRunner (#434)
+  bare_metal_provisioner.hpp zetta::BareMetalProvisioner/BareMetalConfig/BareMetalControlPlane — bare-metal (local-host) cloud-burst backend mirroring Azure: burst N local worker containers + mint identities + teardown/revoke behind the control-plane seam, no container SDK; bursts (vs LocalProvisioner which reports) (ARC-13/ADR-20; #436)
+  bare_metal_cli_control_plane.hpp zetta::BareMetalCliControlPlane — reference BareMetalControlPlane binding: shells out to docker/podman (local-container shape, launch-the-shortfall) via the shared CommandRunner (#436)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
@@ -1141,7 +1404,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     cuda_device.hpp         zetta::compute::CudaDevice — the GPU backend (CUDA-free header; guarded by ZETTA_WITH_CUDA, #363)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
-    distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane (ARC-10/#366)
+    distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
+    job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
+  ddf/
+    data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1158,6 +1424,19 @@ src/core/                   zetta-core impl
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
+  azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
+  azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
+  command_runner.cpp        zetta::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)
+  aws_provisioner.cpp       zetta::AwsProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AwsControlPlane seam + AwsConfig JSON boundary (#377)
+  aws_cli_control_plane.cpp zetta::AwsCliControlPlane — `aws autoscaling`/`aws ec2` argv construction + JSON parsing at the ProvisionedNode boundary (#377)
+  gcp_provisioner.cpp       zetta::GcpProvisioner — GCP burst lifecycle (provision+mint / teardown+revoke) over the GcpControlPlane seam + GcpConfig JSON boundary (#378)
+  gcp_cli_control_plane.cpp zetta::GcpCliControlPlane — `gcloud` MIG argv construction (template/create/resize/list/delete-instances) + JSON parse at the ProvisionedNode boundary (#378)
+  oci_provisioner.cpp       zetta::OciProvisioner — OCI burst lifecycle (provision+mint / teardown+revoke) over the OciControlPlane seam + OciConfig JSON boundary (#432)
+  oci_cli_control_plane.cpp zetta::OciCliControlPlane — `oci` Instance Pool argv (resolve-by-name/instance-config/create-or-resize/list-instances/detach) + JSON parse at the ProvisionedNode boundary (#432)
+  k8s_provisioner.cpp       zetta::K8sProvisioner — Kubernetes burst lifecycle (provision+mint / teardown+revoke) over the K8sControlPlane seam + K8sConfig JSON boundary (#434)
+  k8s_cli_control_plane.cpp zetta::K8sCliControlPlane — `kubectl` Deployment argv (create/set env+sa/patch spot/scale/get pods/delete pod) + JSON parse at the ProvisionedNode boundary (#434)
+  bare_metal_provisioner.cpp zetta::BareMetalProvisioner — bare-metal burst lifecycle (provision+mint / teardown+revoke) over the BareMetalControlPlane seam + BareMetalConfig JSON boundary (#436)
+  bare_metal_cli_control_plane.cpp zetta::BareMetalCliControlPlane — docker/podman argv (ps --filter label/run -d shortfall/rm -f) + NDJSON parse at the ProvisionedNode boundary (#436)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
@@ -1187,11 +1466,13 @@ src/core/                   zetta-core impl
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
   compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported (→ zetta-compute)
-  compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels (→ zetta-compute; CUDA build only, #363)
+  compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels, CpuDevice-conformant (→ zetta-compute; CUDA build only, #363/#361)
   compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
-  compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary (zetta-core; #366)
+  compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
+  compute/job_coordinator.cpp  JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
+  ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1322,6 +1603,7 @@ loop thread).
 ## Pointers
 
 - [`docs/architecture.md`](docs/architecture.md) — node, run modes, data model, module map.
+- [`docs/true-hybrid.md`](docs/true-hybrid.md) — **true hybrid**: one equal-peer cluster spanning heterogeneous hardware (CPU/GPU/ASIC, OS, architecture, on-prem + cloud), the seams that make it work (`ComputeDevice` backends, the device registry, the work-stealing scheduler, collectives, the cluster, the `Provisioner`), and the cost / flexibility / resilience payoff — with a built-vs-planned support matrix.
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
@@ -1333,6 +1615,7 @@ loop thread).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
+- [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
@@ -1348,14 +1631,23 @@ loop thread).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
-- [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model (ARC-10 / #366).
+- [`docs/ddf.md`](docs/ddf.md) — the DDF DataFrame core (`zetta::ddf::DataFrame`): a typed, columnar, chunked frame over the storage engine, each chunk a `ComputeDevice` buffer; table→columns loader + schema inference + value/JSON boundaries — the substrate DDF ops operate on (ARC-12 / GLO-11 / ENT-33; #380).
+- [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
+- [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
+- [`docs/aws-provisioner.md`](docs/aws-provisioner.md) — the AWS cloud-burst Provisioner backend (`zetta::AwsProvisioner` + `AwsCliControlPlane`): burst N ephemeral AWS nodes (EC2 Auto Scaling Group / Spot shape via the `aws` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AwsConfig` — the AWS mirror of the Azure reference per the [cloud-provisioner pattern](docs/cloud-provisioner-pattern.md) (ARC-13 / ADR-20, #377).
+- [`docs/gcp-provisioner.md`](docs/gcp-provisioner.md) — the GCP cloud-burst `Provisioner` backend (`zetta::GcpProvisioner` + `GcpCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Managed Instance Group / Spot shape via the `gcloud` CLI, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `GcpControlPlane` + identity seams, schema-validated `GcpConfig` (ARC-13 / ADR-20, #378).
+- [`docs/oci-provisioner.md`](docs/oci-provisioner.md) — the OCI cloud-burst `Provisioner` backend (`zetta::OciProvisioner` + `OciCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Instance Pool / preemptible shape via the `oci` CLI, OCID-resolved by name, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `OciControlPlane` + identity seams, schema-validated `OciConfig` (ARC-13 / ADR-20, #432).
+- [`docs/k8s-provisioner.md`](docs/k8s-provisioner.md) — the Kubernetes cloud-burst `Provisioner` backend (`zetta::K8sProvisioner` + `K8sCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N worker pods into an existing cluster (a Deployment scaled via the `kubectl` CLI, no client lib), mint bulk burst identities so they join, tear down + revoke; injectable `K8sControlPlane` + identity seams, schema-validated `K8sConfig` (ARC-13 / ADR-20, #434).
+- [`docs/bare-metal-provisioner.md`](docs/bare-metal-provisioner.md) — the bare-metal (local-host) cloud-burst `Provisioner` backend (`zetta::BareMetalProvisioner` + `BareMetalCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N local worker containers via the host runtime (`docker`/`podman`, no container SDK), mint bulk burst identities so they join, tear down + revoke; injectable `BareMetalControlPlane` + identity seams, schema-validated `BareMetalConfig`; complements `LocalProvisioner` by bursting (vs reporting) local nodes (ARC-13 / ADR-20, #436).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
+- [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
+- [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
