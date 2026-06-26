@@ -69,7 +69,10 @@ V1 **key-scoped access**, deny-by-default (see
 [docs/access-control.md](docs/access-control.md)) — and an immutable,
 append-only **audit trail** (`zetta::AuditEvent`) that records every graph
 change, deploy, and data-access decision, replicated and JSON-Schema validated
-(see [docs/audit-trail.md](docs/audit-trail.md)). Query it all with basic
+(see [docs/audit-trail.md](docs/audit-trail.md)). The headed app surfaces all of
+this read-only in an **Admin & Settings** panel — principals + keys, their scope
++ capability grants, and the audit log (see
+[docs/admin-panel.md](docs/admin-panel.md)). Query it all with basic
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.
 The async runtime is coroutine-native (C++
