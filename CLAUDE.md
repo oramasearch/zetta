@@ -371,6 +371,34 @@ in the registry module so the pure `ComputeDevice` seam header stays JSON-free. 
 `Node`/SQL wiring in this slice (a standalone seam, like `Provisioner`). See
 [docs/device-registry.md](docs/device-registry.md).
 
+### DDF DataFrame (`zetta::ddf`)
+
+The **DDF (distributed dataframe) core** (`include/zetta/ddf/data_frame.hpp`,
+namespace `zetta::ddf`; **ARC-12 / GLO-11 / ENT-33**, #380) is a typed, columnar
+`DataFrame` over the existing storage engine — the **substrate every DDF op operates
+on**. A table is untyped JSON rows (`JsonlStore`'s `{_zid, doc}`); the DataFrame
+reads a table's rows into typed **numeric** columns (the `zetta::compute::DataType`
+set — float/int/uint only; non-numeric fields aren't selected), **chunked** by row
+range, with each chunk a `zetta::compute::DeviceBuffer` on a `ComputeDevice` — so the
+existing CPU/CUDA operators run directly over a frame's columns. A `Column` is a
+sequence of row-aligned chunks and **every column in a frame shares the same chunk
+layout** (chunk `i` = the same rows across columns — what DDF ops rely on); the
+default `kDefaultChunkRows = 10'000` matches `JsonlStore::kRecordsPerChunk`.
+`DataFrame`/`Column` are **move-only** (they own device memory via `DeviceBuffer`).
+`load_data_frame(store, schema, device, chunk_rows=…)` is the loader (non-throwing —
+returns a `DataFrameResult{frame, ComputeStatus}`; the value conversion is a
+**boundary**: missing field / non-number / real-into-int / negative-into-unsigned /
+out-of-range → `InvalidArgument`, a float column widens integer JSON); `infer_schema`
+picks the dense numeric fields (Int64 if all-integer, else Float64) for
+"just load the table"; `to_host<T>` reads a column back (the round-trip, mirroring
+`ComputeDevice::download`). The schema config `DataFrameSchema` carries a
+**validated JSON boundary** (`to_json`/`from_json` mirroring
+`schemas/data_frame_schema.schema.json`, the hand-written non-throwing pattern of
+`DeviceInfo`, **not** the `pboettch` path). It lives in **zetta-core** (it bridges
+the storage engine + `zetta::compute`), like `CpuDevice`. No `Node`/SQL/replication
+wiring in this slice — DDF *ops* and the `ComputeJob` `ddf` kind are later issues.
+See [docs/ddf.md](docs/ddf.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1142,6 +1170,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
     distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane (ARC-10/#366)
+  ddf/
+    data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1192,6 +1222,7 @@ src/core/                   zetta-core impl
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
   compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary (zetta-core; #366)
+  ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1348,6 +1379,7 @@ loop thread).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
+- [`docs/ddf.md`](docs/ddf.md) — the DDF DataFrame core (`zetta::ddf::DataFrame`): a typed, columnar, chunked frame over the storage engine, each chunk a `ComputeDevice` buffer; table→columns loader + schema inference + value/JSON boundaries — the substrate DDF ops operate on (ARC-12 / GLO-11 / ENT-33; #380).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model (ARC-10 / #366).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).

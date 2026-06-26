@@ -355,6 +355,7 @@ add_library(zetta-core STATIC
   src/core/n8n_compile.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
+  src/core/ddf/data_frame.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp
