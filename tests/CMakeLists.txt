@@ -32,6 +32,10 @@ add_executable(zetta-tests
   test_local_provisioner.cpp
   test_azure_provisioner.cpp
   test_aws_provisioner.cpp
+  test_gcp_provisioner.cpp
+  test_oci_provisioner.cpp
+  test_k8s_provisioner.cpp
+  test_bare_metal_provisioner.cpp
   test_burst_identity.cpp
   test_scaling_policy.cpp
   test_burst_approval_gate.cpp

@@ -85,8 +85,23 @@ schema-validated `AzureConfig` (see
 [docs/azure-provisioner.md](docs/azure-provisioner.md)). **`zetta::AwsProvisioner`**
 (`#377`) mirrors it for AWS — the same control-plane seam + identity hooks, with an
 `AwsCliControlPlane` driving the EC2 Auto Scaling Group / Spot shape via the `aws`
-CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)). AWS / GCP follow the
-same **CLI pattern** — the recipe is
+CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)); **`zetta::GcpProvisioner`**
+mirrors it on GCP — a `GcpControlPlane` seam whose reference `GcpCliControlPlane`
+drives `gcloud` (the Managed Instance Group + Spot shape), with a schema-validated
+`GcpConfig` (see [docs/gcp-provisioner.md](docs/gcp-provisioner.md));
+**`zetta::OciProvisioner`** mirrors it on Oracle Cloud — an `OciControlPlane` seam
+whose reference `OciCliControlPlane` drives `oci` (the Instance Pool + preemptible
+shape), with a schema-validated `OciConfig` (see
+[docs/oci-provisioner.md](docs/oci-provisioner.md)); **`zetta::K8sProvisioner`**
+mirrors it on Kubernetes — a `K8sControlPlane` seam whose reference
+`K8sCliControlPlane` drives `kubectl` to burst worker pods into an existing cluster
+(a Deployment scaled to N), with a schema-validated `K8sConfig` (see
+[docs/k8s-provisioner.md](docs/k8s-provisioner.md)); and
+**`zetta::BareMetalProvisioner`** mirrors it on the local host — a
+`BareMetalControlPlane` seam whose reference `BareMetalCliControlPlane` drives
+`docker` / `podman` to burst local worker containers, with a schema-validated
+`BareMetalConfig` (see [docs/bare-metal-provisioner.md](docs/bare-metal-provisioner.md)).
+Every vendor follows the same **CLI pattern** — the recipe is
 [docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md).
 On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
