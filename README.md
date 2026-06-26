@@ -41,7 +41,10 @@ validated execution graph onto a target, recording the placement (R1 local; see
 record of one graph execution: status, logs, outputs, and lineage, validated
 against a JSON Schema at the storage boundary and viewable in the headed app's
 read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
-Query it all with basic
+It also owns **principals** (`zetta::Principal`) and their **access keys**
+(`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
+V1 **key-scoped access**, deny-by-default (see
+[docs/access-control.md](docs/access-control.md)). Query it all with basic
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.
 The async runtime is coroutine-native (C++
@@ -90,8 +93,9 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
-rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md), and
-[runs](docs/runs.md) created on any node converge onto every
+rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
+[runs](docs/runs.md), and [principals + access keys](docs/access-control.md)
+created on any node converge onto every
 node — in memory and on disk**, conflict-free, with no leader (the CRDT document
 is the source of truth; disk follows). [Large objects](docs/large-objects.md)
 replicate too — their metadata
