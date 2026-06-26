@@ -161,11 +161,32 @@ seam ([provisioner.md](provisioner.md), ARC-13) brings up nodes meeting a
 approval ([burst-approval-gate.md](burst-approval-gate.md)) and bulk burst
 identities ([burst-identity.md](burst-identity.md)) layered on.
 
+The **given-hardware** backend is built: `LocalProvisioner` (#374) uses the nodes
+already in the cluster — bare metal, your own machines — best-effort.
+
+The **cloud-burst** backends follow **one shared pattern** rather than a bespoke
+integration per cloud (the cloud-burst CLI pattern,
+[cloud-provisioner-pattern.md](cloud-provisioner-pattern.md), landing with the
+provisioner work below). Each is a thin `<Vendor>Provisioner` over a
+`<Vendor>ControlPlane` seam whose reference binding **drives the vendor CLI**
+(`az` / `aws` / `gcloud`) through a shared `CommandRunner` — **no cloud SDK in
+`zetta-core`** — and parses the result back at the `ProvisionedNode` boundary,
+correlating each cloud instance to the zetta cluster node it joins as. The CLI is a
+deliberate *first* transport: swapping it for a REST/API binding is a new
+control-plane implementation and nothing else. **Azure is the reference backend**
+([azure-provisioner.md](azure-provisioner.md), ADR-20 / #376); **AWS (#377) and GCP
+(#378) mirror it**, and a new cloud (e.g. Oracle) is the same recipe — one CLI
+binding + one config + a near-copy of the provisioner. Burst pools are idempotent
+(VM Scale Set / Auto Scaling Group / Managed Instance Group) and Spot/preemptible
+aware, which feeds the resilience story above — a reclaimed node is reflected on
+the next `provisioned()` read.
+
 | Target | Status |
 | --- | --- |
-| **Bare metal / given hardware** | **built** — `LocalProvisioner` uses the nodes already in the cluster, best-effort (#374) |
-| AWS / GCP / Azure cloud-burst | **planned / in progress** — concrete `Provisioner` backends (#377 / #378 / #376) behind the same seam |
-| Other clouds (e.g. Oracle Cloud) | **planned** — a new `Provisioner` backend, nothing else changes |
+| **Bare metal / given hardware** | **built** — `LocalProvisioner`, uses the existing cluster nodes (#374) |
+| **Azure cloud-burst** | **reference backend, in progress** — the CLI pattern the other clouds mirror (#376) |
+| **AWS / GCP cloud-burst** | **in progress** — mirror the Azure reference over the same `CommandRunner` (#377 / #378) |
+| Other clouds (e.g. Oracle Cloud) | **planned** — the same CLI pattern, a new binding |
 
 Placement of a validated graph onto a target rides the **`DeploymentTarget`** dial
 `local → kubernetes → vpc → cloud` ([deployments.md](deployments.md)); **R1 ships
@@ -182,14 +203,15 @@ Placement of a validated graph onto a target rides the **`DeploymentTarget`** di
 | **Operating system** | macOS (macOS-first), Linux | Windows |
 | **Cluster** | equal-peer, self-healing, CRDT-replicated | leadership-by-lease for exclusive structures |
 | **Scheduling** | local + cross-node work-stealing; collectives | k-ary/ring collective topologies |
-| **Fleet / cloud** | bare-metal / given-hardware (`LocalProvisioner`) | AWS / GCP / Azure cloud-burst; k8s / vpc / cloud deployment targets |
+| **Fleet / cloud** | bare-metal / given-hardware (`LocalProvisioner`) | cloud-burst via one shared CLI pattern — Azure reference (#376), AWS/GCP mirroring (#377/#378); k8s / vpc / cloud deployment targets |
 
 The honest summary: the **seams that make true hybrid possible are built** — the
 compute-device abstraction, the per-node registry + capability model, the
 heterogeneity-tolerant work-stealing scheduler, deterministic collectives, the
 equal-peer CRDT cluster, and the provisioner seam with a working given-hardware
-backend. The **breadth of concrete backends and cloud-burst providers is landing
-behind those seams**, each as "a new backend, nothing else."
+backend plus a shared CLI pattern the cloud-burst backends follow. The **breadth of
+concrete backends and cloud-burst providers is landing behind those seams**, each as
+"a new backend, nothing else."
 
 ## See also
 
@@ -200,4 +222,5 @@ behind those seams**, each as "a new backend, nothing else."
 - [collectives.md](collectives.md) — combining partials deterministically.
 - [cluster.md](cluster.md) / [replication.md](replication.md) — equal peers + CRDT.
 - [provisioner.md](provisioner.md) — the fleet/capability model + the `Provisioner` seam.
+- [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md) / [azure-provisioner.md](azure-provisioner.md) — the shared cloud-burst CLI pattern + the reference Azure backend (land on `dev` with the cloud-burst provisioner work, #376–#378).
 - [deployments.md](deployments.md) — the placement dial (`local → kubernetes → vpc → cloud`).
