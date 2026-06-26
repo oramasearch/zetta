@@ -32,6 +32,8 @@ Today the seam exposes:
 | `task<T>` (default `task<>`) | `boost::capy::task<T>` | a coroutine returning `T` |
 | `thread_pool` | `boost::capy::thread_pool` | worker threads + an executor |
 | `block_on(task)` / `block_on(task<T>)` | Capy blocking runner | synchronous bridge: run a task to completion from non-coroutine code (e.g. `main()`, tests) and get its result |
+| `parallel_for(count, body)` | Capy `thread_pool` + `run_async` | blocking data-parallel fan-out: split `[0, count)` into chunks, run each on the shared pool, join before returning |
+| `parallel_chunks(count)` | — | the number of chunks `parallel_for` would tile `count` into (for sizing per-chunk state) |
 
 ```cpp
 #include "zetta/runtime.hpp"
@@ -43,6 +45,44 @@ int main() {
     int answer = zetta::runtime::block_on(outer());   // 42
 }
 ```
+
+## Data parallelism: `parallel_for`
+
+For CPU-bound work that wants to spread a loop across cores, the seam exposes a
+blocking data-parallel primitive so callers never name `boost::capy` to fan work
+out. It runs over one **shared, process-wide thread pool** (created on first use,
+one worker per hardware thread) and **joins before returning** — `parallel_for`
+is synchronous: the calling thread blocks until every chunk has run.
+
+```cpp
+#include "zetta/runtime.hpp"
+
+// Square a large array across all cores.
+zetta::runtime::parallel_for(values.size(),
+    [&](std::size_t /*chunk*/, std::size_t begin, std::size_t end) {
+        for (std::size_t i = begin; i < end; ++i) values[i] *= values[i];
+    });
+```
+
+- `parallel_for(count, body)` tiles `[0, count)` into `parallel_chunks(count)`
+  disjoint, contiguous sub-ranges and calls `body(chunk_index, begin, end)` once
+  per chunk on a pool worker. The body loops over `[begin, end)` itself — the
+  grain stays cache-friendly and the pool overhead is amortized.
+- The tiling is a **pure function of `count`** (and the worker count), so two
+  calls with the same `count` see an identical `chunk_index → [begin, end)`
+  mapping — multi-pass algorithms (e.g. a parallel prefix scan) rely on this to
+  line their phases up.
+- Small ranges (below a grain threshold) run **inline** on the calling thread as
+  a single chunk, with no pool dispatch.
+- `body` **must not throw**: zetta-core compiles with `-fexperimental-library`
+  and must never unwind across a seam (the same discipline behind
+  [`ComputeStatus`](compute-device.md#error-model-computestatus)). A throwing body
+  is a contract violation and aborts the process rather than unwinding into the
+  coroutine backend.
+
+The first consumer is the CPU compute backend
+([`zetta::compute::CpuDevice`](cpu-device.md)); the work-stealing job scheduler and
+collectives of the accelerated-compute pass will build on the same primitive.
 
 ## Migration plan
 
