@@ -371,6 +371,33 @@ in the registry module so the pure `ComputeDevice` seam header stays JSON-free. 
 `Node`/SQL wiring in this slice (a standalone seam, like `Provisioner`). See
 [docs/device-registry.md](docs/device-registry.md).
 
+### Work-stealing scheduler (`zetta::compute`)
+
+The **work-stealing scheduler** is the task pool the native distributed compute
+pass runs on (**ARC-10**, #366): a job is split into many small tasks; idle/faster
+workers **steal** pending tasks from busy ones, so the work self-balances with
+**no fixed per-worker capability model** — a faster worker (or GPU node) naturally
+processes more, a slower one fewer (the "fluid, heterogeneity-tolerant" split).
+The **local** half is `zetta::compute::WorkStealingScheduler`
+(`include/zetta/compute/work_stealing_scheduler.hpp`): a fixed pool of worker
+threads, **each owning a deque** of pending tasks, with stealing between them — the
+owner pushes/pops its deque's **back** (LIFO locality), a thief takes a victim's
+**front** (FIFO, least contention), made legible with a per-deque mutex rather
+than a lock-free structure. `submit(task)` fire-and-forgets a unit of work;
+`parallel_map(inputs, fn)` runs `fn` over N inputs across the pool and returns the
+results **in order**, blocking until all complete (so call it off-worker). It is a
+deliberate **sibling to `zetta::runtime::thread_pool`** (the Capy seam), which
+schedules off a single shared queue and so has no observable per-worker steal to
+test or reason about; task bodies may still use `zetta::runtime` coroutines. A
+zero-worker pool is valid (a pure task *sink*); `stats()` exposes per-worker
+counts + a steal count, `current_worker_index()` tells a task which worker it is
+on. The **cross-node** half — idle/faster *nodes* stealing pending tasks from
+peers over the [signal plane](#signal-plane-rpc--events--tasks) — is
+`zetta::compute::DistributedScheduler`, built on the local one. Scheduling a
+`ComputeJob` / driving collectives is the **job coordinator** (#372), a later
+slice that submits work *through* this. See
+[docs/work-stealing-scheduler.md](docs/work-stealing-scheduler.md).
+
 ### Cluster (equal peers)
 
 Nodes form a cluster of **equal peers** over TCP — no configured leader. Each
@@ -1101,6 +1128,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     cpu_device.hpp          zetta::compute::CpuDevice — the always-built reference backend (every op on host memory, multi-threaded; #360)
     cuda_device.hpp         zetta::compute::CudaDevice — the GPU backend (CUDA-free header; guarded by ZETTA_WITH_CUDA, #363)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
+    work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1149,6 +1177,7 @@ src/core/                   zetta-core impl
   compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels (→ zetta-compute; CUDA build only, #363)
   compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
+  compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1305,6 +1334,7 @@ loop thread).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
+- [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model (ARC-10 / #366).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
