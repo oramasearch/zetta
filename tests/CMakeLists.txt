@@ -51,6 +51,7 @@ add_executable(zetta-tests
   test_runtime.cpp
   test_cluster.cpp
   test_signal.cpp
+  test_collectives.cpp
   test_replication.cpp
   test_data_replication.cpp
   test_large_object_replication.cpp

@@ -163,12 +163,14 @@ types, like the rest of the cluster.
   dispatched without blocking the loop.
 - **Latency.** The outbox is drained on a short poll rather than an explicit
   cross-thread wake (the backend's frame allocator isn't thread-safe). If
-  latency-sensitive collectives need it, a self-pipe wake is the natural next
-  step.
+  latency-sensitive [collectives](collectives.md) need it, a self-pipe wake is the
+  natural next step.
 - **Plaintext.** Same as the rest of the transport — TLS isn't wired yet.
 
 ## See also
 
+- [collectives.md](collectives.md) — allreduce / broadcast / barrier / gather
+  built on this layer, the first consumer of the signal plane.
 - [cluster.md](cluster.md) — the equal-peer transport this rides on.
 - [replication.md](replication.md) — the *replicated* (non-ephemeral) state plane,
   for contrast.

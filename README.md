@@ -167,7 +167,10 @@ ephemeral, typed messages addressed by node id: request/response **RPC**,
 fire-and-forget **events** (unicast or broadcast), and **task** envelopes. Unlike
 replicated state, signals aren't routed through the CRDT; they're the substrate
 for distributed compute (collectives, work-stealing, job dispatch), schema-
-validated at the boundary.
+validated at the boundary. On top of it ride
+**[collectives](docs/collectives.md)** — `allreduce` / `broadcast` / `barrier` /
+`gather` for combining per-node compute partials, deterministic regardless of node
+order.
 zetta is **multi-leader** (no global election); leadership applies only to future
 exclusive structures (locks) — see the consistency model in the replication doc.
 
