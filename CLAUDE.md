@@ -1071,7 +1071,7 @@ yet. The cited `gcloud` command basis is
 [docs/gcp-provisioner.md](docs/gcp-provisioner.md).
 
 **`zetta::OciProvisioner`** (`include/zetta/oci_provisioner.hpp`, **ARC-13 /
-ADR-20**, #432) is the second mirror — the same four-piece shape on **Oracle Cloud
+ADR-20**, #432) is another mirror — the same four-piece shape on **Oracle Cloud
 Infrastructure**. `OciProvisioner` is the burst orchestration (provision+mint /
 teardown+revoke, structurally identical to Azure/GCP but carrying an `OciConfig`),
 delegating to an injected **`OciControlPlane`** seam with the same `IdentityHooks`.
@@ -1096,7 +1096,7 @@ cited `oci` command basis is
 [docs/oci-provisioner.md](docs/oci-provisioner.md).
 
 **`zetta::K8sProvisioner`** (`include/zetta/k8s_provisioner.hpp`, **ARC-13 /
-ADR-20**, #434) is the third mirror — the same four-piece shape over **Kubernetes**.
+ADR-20**, #434) is another mirror — the same four-piece shape over **Kubernetes**.
 Unlike the cloud backends (which create VMs), it bursts **worker pods into an
 existing cluster**: the burst pool is a **Deployment** scaled to N replicas (the
 self-healing, maintain-N analog of VMSS/ASG/MIG/Instance Pool), and the cluster is
@@ -1120,6 +1120,33 @@ fully faked), no persistence/replication/autoscaler wiring yet. The cited `kubec
 command basis is
 [docs/research/kubectl-workloads.md](docs/research/kubectl-workloads.md). See
 [docs/k8s-provisioner.md](docs/k8s-provisioner.md).
+
+**`zetta::BareMetalProvisioner`** (`include/zetta/bare_metal_provisioner.hpp`,
+**ARC-13 / ADR-20**, #436) is another mirror — the same four-piece shape over the
+**local host**. Bare metal is the local machine (not a remote cloud/cluster), and
+each worker runs as a **local container** via the host runtime (`docker`/`podman`):
+`docker run -d` starts a detached worker and **returns immediately**, which is what
+makes a long-lived worker launchable through the *synchronous* `CommandRunner`
+(fork/execvp). It is distinct from `LocalProvisioner` (#374, which only *reports*
+existing cluster nodes and never creates any) — this actually **brings up** local
+workers. `BareMetalProvisioner` is the burst orchestration (provision+mint /
+teardown+revoke, structurally identical to the siblings but carrying a
+`BareMetalConfig`), delegating to an injected **`BareMetalControlPlane`** seam with
+the same `IdentityHooks`. Its reference binding **`zetta::BareMetalCliControlPlane`**
+(`include/zetta/bare_metal_cli_control_plane.hpp`) shells out to the runtime through
+the **shared `CommandRunner`** — `bring_up` counts the labelled burst workers
+(`<runtime> ps --filter label=<pool> --format '{{json .}}'`), launches only the
+**shortfall** (`<runtime> run -d --label <pool> --name <prefix>-<uuid> [--network …
+--gpus all --env ZETTA_SEED_PEER=…] <image>`, idempotent on the label), then lists;
+`destroy` is `<runtime> rm -f <id>`; `list` parses the runtime's **NDJSON** (one JSON
+object per line) at the **`ProvisionedNode` boundary**. `BareMetalConfig` (`image`
+required; runtime docker/podman, pool label, name prefix, network, gpus, seed peer
+optional) carries a **validated JSON boundary** (`schemas/bare_metal_config.schema.json`).
+No live-runtime CI (argv + parsing fully faked), no persistence/replication/autoscaler
+wiring yet; a raw-process (systemd/launchd) variant is a possible future sibling. The
+cited command basis is
+[docs/research/baremetal-compute.md](docs/research/baremetal-compute.md). See
+[docs/bare-metal-provisioner.md](docs/bare-metal-provisioner.md).
 
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
@@ -1224,6 +1251,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   oci_cli_control_plane.hpp zetta::OciCliControlPlane — reference OciControlPlane binding: shells out to `oci` (Instance Pool/preemptible shape, OCID-resolved by name) via the shared CommandRunner (#432)
   k8s_provisioner.hpp       zetta::K8sProvisioner/K8sConfig/K8sControlPlane — Kubernetes cloud-burst backend mirroring Azure: burst N pods into an existing cluster + mint identities + teardown/revoke behind the control-plane seam, no client lib (ARC-13/ADR-20; #434)
   k8s_cli_control_plane.hpp zetta::K8sCliControlPlane — reference K8sControlPlane binding: shells out to `kubectl` (Deployment/scale shape) via the shared CommandRunner (#434)
+  bare_metal_provisioner.hpp zetta::BareMetalProvisioner/BareMetalConfig/BareMetalControlPlane — bare-metal (local-host) cloud-burst backend mirroring Azure: burst N local worker containers + mint identities + teardown/revoke behind the control-plane seam, no container SDK; bursts (vs LocalProvisioner which reports) (ARC-13/ADR-20; #436)
+  bare_metal_cli_control_plane.hpp zetta::BareMetalCliControlPlane — reference BareMetalControlPlane binding: shells out to docker/podman (local-container shape, launch-the-shortfall) via the shared CommandRunner (#436)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
@@ -1309,6 +1338,8 @@ src/core/                   zetta-core impl
   oci_cli_control_plane.cpp zetta::OciCliControlPlane — `oci` Instance Pool argv (resolve-by-name/instance-config/create-or-resize/list-instances/detach) + JSON parse at the ProvisionedNode boundary (#432)
   k8s_provisioner.cpp       zetta::K8sProvisioner — Kubernetes burst lifecycle (provision+mint / teardown+revoke) over the K8sControlPlane seam + K8sConfig JSON boundary (#434)
   k8s_cli_control_plane.cpp zetta::K8sCliControlPlane — `kubectl` Deployment argv (create/set env+sa/patch spot/scale/get pods/delete pod) + JSON parse at the ProvisionedNode boundary (#434)
+  bare_metal_provisioner.cpp zetta::BareMetalProvisioner — bare-metal burst lifecycle (provision+mint / teardown+revoke) over the BareMetalControlPlane seam + BareMetalConfig JSON boundary (#436)
+  bare_metal_cli_control_plane.cpp zetta::BareMetalCliControlPlane — docker/podman argv (ps --filter label/run -d shortfall/rm -f) + NDJSON parse at the ProvisionedNode boundary (#436)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
@@ -1508,6 +1539,7 @@ loop thread).
 - [`docs/gcp-provisioner.md`](docs/gcp-provisioner.md) — the GCP cloud-burst `Provisioner` backend (`zetta::GcpProvisioner` + `GcpCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Managed Instance Group / Spot shape via the `gcloud` CLI, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `GcpControlPlane` + identity seams, schema-validated `GcpConfig` (ARC-13 / ADR-20, #378).
 - [`docs/oci-provisioner.md`](docs/oci-provisioner.md) — the OCI cloud-burst `Provisioner` backend (`zetta::OciProvisioner` + `OciCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Instance Pool / preemptible shape via the `oci` CLI, OCID-resolved by name, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `OciControlPlane` + identity seams, schema-validated `OciConfig` (ARC-13 / ADR-20, #432).
 - [`docs/k8s-provisioner.md`](docs/k8s-provisioner.md) — the Kubernetes cloud-burst `Provisioner` backend (`zetta::K8sProvisioner` + `K8sCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N worker pods into an existing cluster (a Deployment scaled via the `kubectl` CLI, no client lib), mint bulk burst identities so they join, tear down + revoke; injectable `K8sControlPlane` + identity seams, schema-validated `K8sConfig` (ARC-13 / ADR-20, #434).
+- [`docs/bare-metal-provisioner.md`](docs/bare-metal-provisioner.md) — the bare-metal (local-host) cloud-burst `Provisioner` backend (`zetta::BareMetalProvisioner` + `BareMetalCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N local worker containers via the host runtime (`docker`/`podman`, no container SDK), mint bulk burst identities so they join, tear down + revoke; injectable `BareMetalControlPlane` + identity seams, schema-validated `BareMetalConfig`; complements `LocalProvisioner` by bursting (vs reporting) local nodes (ARC-13 / ADR-20, #436).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).

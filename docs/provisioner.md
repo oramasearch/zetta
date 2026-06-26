@@ -14,8 +14,9 @@ backends are separate, dependent slices:
   **Built** — see [azure-provisioner.md](azure-provisioner.md). `AwsProvisioner`
   (`#377`, [aws-provisioner.md](aws-provisioner.md)), `GcpProvisioner` (`#378`,
   [gcp-provisioner.md](gcp-provisioner.md)), `OciProvisioner` (`#432`,
-  [oci-provisioner.md](oci-provisioner.md)), and `K8sProvisioner` (`#434`,
-  [k8s-provisioner.md](k8s-provisioner.md)) **mirror** it via the
+  [oci-provisioner.md](oci-provisioner.md)), `K8sProvisioner` (`#434`,
+  [k8s-provisioner.md](k8s-provisioner.md)), and `BareMetalProvisioner` (`#436`,
+  [bare-metal-provisioner.md](bare-metal-provisioner.md)) **mirror** it via the
   [cloud-provisioner pattern](cloud-provisioner-pattern.md).
 - **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`);
   **built** — see [burst-identity.md](burst-identity.md).
@@ -142,7 +143,7 @@ This slice is the backend + a unit test only — it is not yet wired into the
 replicated state and **no** new JSON format (it reuses the validated
 `ProvisionedNode` boundary below).
 
-## The cloud-burst backends (`AzureProvisioner` reference, `GcpProvisioner`, `OciProvisioner`, `K8sProvisioner`, …)
+## The cloud-burst backends (`AzureProvisioner` reference, `AwsProvisioner`, `GcpProvisioner`, `OciProvisioner`, `K8sProvisioner`, `BareMetalProvisioner`)
 
 Where `LocalProvisioner` *reports* given hardware, the **cloud-burst** backends
 **own** the nodes they bring up: `provision` bursts them + mints bulk identities
@@ -152,8 +153,10 @@ so they join, `teardown` releases one + bulk-revokes when the pool drains, and
 `<Vendor>ControlPlane` seam, whose reference binding shells out to the vendor CLI
 through the shared [`CommandRunner`](../include/zetta/command_runner.hpp) (no cloud
 SDK / client lib in `zetta-core`). [`AzureProvisioner`](azure-provisioner.md)
-(`#376`) is the **reference**; the mirrors so far are:
+(`#376`) is the **reference**; the mirrors are:
 
+- [`zetta::AwsProvisioner`](aws-provisioner.md) (`#377`) — an `AwsCliControlPlane`
+  `aws` binding (the EC2 Auto Scaling Group + Spot shape) + a validated `AwsConfig`.
 - [`zetta::GcpProvisioner`](gcp-provisioner.md) (`#378`) — a `GcpCliControlPlane`
   `gcloud` binding (the Managed Instance Group + Spot shape) + a validated `GcpConfig`.
 - [`zetta::OciProvisioner`](oci-provisioner.md) (`#432`) — an `OciCliControlPlane`
@@ -163,11 +166,18 @@ SDK / client lib in `zetta-core`). [`AzureProvisioner`](azure-provisioner.md)
   ARC-13 / ADR-20, `#434`) — a `K8sCliControlPlane` `kubectl` binding that bursts
   worker pods into an **existing cluster** (a Deployment scaled to N) + a validated
   `K8sConfig`.
+- [`zetta::BareMetalProvisioner`](bare-metal-provisioner.md)
+  (`include/zetta/bare_metal_provisioner.hpp`, ARC-13 / ADR-20, `#436`) — a
+  `BareMetalCliControlPlane` binding that bursts **local worker containers** on the
+  host via its runtime (`docker` / `podman`) + a validated `BareMetalConfig`. Unlike
+  the given-hardware `LocalProvisioner` (which only *reports*), it actually brings up
+  local nodes.
 
 The recipe every vendor copies is
 [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md); full detail in
 [gcp-provisioner.md](gcp-provisioner.md), [oci-provisioner.md](oci-provisioner.md),
-and [k8s-provisioner.md](k8s-provisioner.md).
+[k8s-provisioner.md](k8s-provisioner.md), and
+[bare-metal-provisioner.md](bare-metal-provisioner.md).
 
 ## JSON boundary + schema
 
