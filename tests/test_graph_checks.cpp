@@ -272,12 +272,13 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
-TEST(GraphChecksThroughGate, DefaultGateShipsTheThreeChecks) {
+TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
     const CorrectnessGate gate = zetta::default_gate();
-    ASSERT_EQ(gate.check_count(), 3u);
+    ASSERT_EQ(gate.check_count(), 4u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
     EXPECT_EQ(gate.checks()[2]->name(), "data_leakage");
+    EXPECT_EQ(gate.checks()[3]->name(), "entity_resolution");
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
