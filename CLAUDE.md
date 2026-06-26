@@ -155,8 +155,9 @@ of native distributed accelerated compute** (the foundational entity of the
 accelerated-compute pass for UC-1, **ARC-11 / ENT-31**): a `kind`
 (`featurize`/`train`/`explain`/`score`/`ddf`), a lifecycle `status`
 (`Queued`→`Running`→`Succeeded`|`Failed`), optional `project`/`graph`/`run` and
-`scaling_policy` (reward) **id references** (the `ScalingPolicy` itself is a
-separate slice — referenced by id only), and an optional `detail` note. Another
+`scaling_policy` (reward) **id references** (the `ScalingPolicy` value type is
+built — see below — but a job references it by id only; persisting/replicating
+policies as their own entity is a later slice), and an optional `detail` note. Another
 top-level, replicated entity (flat key `job:<uuid>`, on-disk `<job-uuid>/job.json`),
 **modeled exactly like `Run`** but keyed by id (jobs have no human name):
 `create_job`/`find_job`/`drop_job`/`jobs`, with the "update" half being the
@@ -169,8 +170,27 @@ into a terminal state (the `materialize_*`/`apply_value` reconcile paths never e
 — a peer's action arrives already-audited). The registry is `Node::jobs()` + the
 read-only SQL **`system.zetta_jobs`** table (job id / kind / status / refs / reward
 + observing node, computed from `Node::jobs()`). Scheduling/running a job (the
-coordinator, scheduler + collectives, autoscaler, the `ScalingPolicy` model) are
-separate, later slices. See [docs/compute-jobs.md](docs/compute-jobs.md).
+coordinator, scheduler + collectives, the autoscaler wired to the `ScalingPolicy`
+reward model below) are separate, later slices. See
+[docs/compute-jobs.md](docs/compute-jobs.md).
+
+A compute job's `scaling_policy` ref points at a **`zetta::ScalingPolicy`** — the
+per-job **reward objective an autoscaler optimizes** (**ADR-29 / ENT-34**, the
+same accelerated-compute pass). A policy picks one `ScalingObjective` —
+`minimize_cost`, `runtime_target` (finish by `target_seconds`, runtime/latency),
+or `data_shape` (size the fleet to the work) — inside hard `ScalingBounds` (a
+`min_nodes`/`max_nodes` envelope + a `cost_cap`). It is a **pure value type +
+boundary validation** modeled like the sibling `NodeCapability`/`ProvisionedNode`
+value types (a `to_json` / non-throwing `from_json` boundary that **mirrors**
+`schemas/scaling_policy.schema.json`, **not** the `pboettch` path — that is for
+top-level replicated entities), **plus** the objective evaluation:
+`evaluate(ScalingSample{progress, elapsed, cost, nodes})` is a pure, deterministic
+function returning a `ScalingDecision` (`reward` — higher is better, the
+autoscaler maximizes it; `recommended_nodes` clamped to the bounds; a
+`scale_up`/`hold`/`scale_down` `action`; `within_cost_cap`; a reason). The cost
+cap is a **hard constraint** — a breach sheds the fleet to `min_nodes` regardless
+of objective. No autoscaler loop, no replication, no `Node` CRUD in this slice —
+those are later. See [docs/scaling-policy.md](docs/scaling-policy.md).
 
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
@@ -987,6 +1007,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
+  scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
@@ -1056,6 +1077,7 @@ src/core/                   zetta-core impl
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
+  scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
@@ -1245,6 +1267,7 @@ loop thread).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
+- [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
