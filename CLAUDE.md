@@ -1044,6 +1044,31 @@ yet. The cited `gcloud` command basis is
 [docs/research/gcp-cli-compute.md](docs/research/gcp-cli-compute.md). See
 [docs/gcp-provisioner.md](docs/gcp-provisioner.md).
 
+**`zetta::OciProvisioner`** (`include/zetta/oci_provisioner.hpp`, **ARC-13 /
+ADR-20**, #432) is the second mirror — the same four-piece shape on **Oracle Cloud
+Infrastructure**. `OciProvisioner` is the burst orchestration (provision+mint /
+teardown+revoke, structurally identical to Azure/GCP but carrying an `OciConfig`),
+delegating to an injected **`OciControlPlane`** seam with the same `IdentityHooks`.
+Its reference binding **`zetta::OciCliControlPlane`**
+(`include/zetta/oci_cli_control_plane.hpp`) borrows the **Instance Pool +
+preemptible shape** by shelling out to `oci` through the **shared `CommandRunner`**.
+The OCI-specific wrinkle: OCI resources are **OCID-addressed, not name-addressed**,
+so `bring_up` first **resolves the pool's OCID from its stable display name**
+(`instance-pool list --query data[0].id --raw-output`), then create-or-resizes — an
+empty result takes the **create path** (`instance-configuration create
+--instance-details <json>` carrying the per-node shape incl. `preemptibleInstanceConfig`
+for spot + a `user_data` seed, then `instance-pool create … --size N`), a non-empty
+one the **resize path** (`instance-pool update --size N`); `destroy` is
+`instance-pool-instance detach --is-decrement-size --is-auto-terminate`; `list`
+unwraps the `{"data":[…]}` envelope at the **`ProvisionedNode` boundary**.
+`OciConfig` (`compartment_id` + `availability_domain` + `subnet_id` required;
+region, pool name, shape + ocpus/memory, image, spot, seed peer optional) carries a
+**validated JSON boundary** (`schemas/oci_config.schema.json`). No live-cloud CI
+(argv + parsing fully faked), no persistence/replication/autoscaler wiring yet. The
+cited `oci` command basis is
+[docs/research/oci-cli-compute.md](docs/research/oci-cli-compute.md). See
+[docs/oci-provisioner.md](docs/oci-provisioner.md).
+
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
 When the cluster **bursts** compute nodes for a job, each burst node needs an
@@ -1141,6 +1166,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   command_runner.hpp        zetta::CommandRunner/CommandResult/default_command_runner — shared, vendor-neutral exec seam every CLI cloud binding runs through (argv, no shell; fork/execvp; #376)
   gcp_provisioner.hpp       zetta::GcpProvisioner/GcpConfig/GcpControlPlane — GCP cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #378)
   gcp_cli_control_plane.hpp zetta::GcpCliControlPlane — reference GcpControlPlane binding: shells out to `gcloud` (Managed Instance Group/Spot shape) via the shared CommandRunner (#378)
+  oci_provisioner.hpp       zetta::OciProvisioner/OciConfig/OciControlPlane — OCI cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #432)
+  oci_cli_control_plane.hpp zetta::OciCliControlPlane — reference OciControlPlane binding: shells out to `oci` (Instance Pool/preemptible shape, OCID-resolved by name) via the shared CommandRunner (#432)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
@@ -1220,6 +1247,8 @@ src/core/                   zetta-core impl
   command_runner.cpp        zetta::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)
   gcp_provisioner.cpp       zetta::GcpProvisioner — GCP burst lifecycle (provision+mint / teardown+revoke) over the GcpControlPlane seam + GcpConfig JSON boundary (#378)
   gcp_cli_control_plane.cpp zetta::GcpCliControlPlane — `gcloud` MIG argv construction (template/create/resize/list/delete-instances) + JSON parse at the ProvisionedNode boundary (#378)
+  oci_provisioner.cpp       zetta::OciProvisioner — OCI burst lifecycle (provision+mint / teardown+revoke) over the OciControlPlane seam + OciConfig JSON boundary (#432)
+  oci_cli_control_plane.cpp zetta::OciCliControlPlane — `oci` Instance Pool argv (resolve-by-name/instance-config/create-or-resize/list-instances/detach) + JSON parse at the ProvisionedNode boundary (#432)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
@@ -1416,6 +1445,7 @@ loop thread).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
 - [`docs/gcp-provisioner.md`](docs/gcp-provisioner.md) — the GCP cloud-burst `Provisioner` backend (`zetta::GcpProvisioner` + `GcpCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Managed Instance Group / Spot shape via the `gcloud` CLI, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `GcpControlPlane` + identity seams, schema-validated `GcpConfig` (ARC-13 / ADR-20, #378).
+- [`docs/oci-provisioner.md`](docs/oci-provisioner.md) — the OCI cloud-burst `Provisioner` backend (`zetta::OciProvisioner` + `OciCliControlPlane`), mirroring the Azure reference via the [CLI pattern](docs/cloud-provisioner-pattern.md): burst N nodes (Instance Pool / preemptible shape via the `oci` CLI, OCID-resolved by name, no cloud SDK), mint bulk burst identities so they join, tear down + revoke; injectable `OciControlPlane` + identity seams, schema-validated `OciConfig` (ARC-13 / ADR-20, #432).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
