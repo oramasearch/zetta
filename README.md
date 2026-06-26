@@ -225,7 +225,12 @@ for distributed compute (collectives, work-stealing, job dispatch), schema-
 validated at the boundary. On top of it ride
 **[collectives](docs/collectives.md)** — `allreduce` / `broadcast` / `barrier` /
 `gather` for combining per-node compute partials, deterministic regardless of node
-order.
+order — and the **[work-stealing scheduler](docs/work-stealing-scheduler.md)**
+(idle/faster workers and nodes steal pending tasks). The
+**[job coordinator](docs/job-coordinator.md)** ties the two together: it is the
+single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — splitting
+a [compute job](docs/compute-jobs.md) into tasks on the scheduler, driving
+collectives at round boundaries, and driving the job's lifecycle.
 zetta is **multi-leader** (no global election); leadership applies only to future
 exclusive structures (locks) — see the consistency model in the replication doc.
 

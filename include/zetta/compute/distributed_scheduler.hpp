@@ -130,8 +130,11 @@ public:
     };
     Stats stats() const;
 
-    // The local pool, exposed for observability (e.g. per-worker steal counts).
+    // The local pool, exposed for observability (e.g. per-worker steal counts)
+    // and so a consumer (the job coordinator) can run intra-node data-parallel
+    // work on the same pool the cross-node steal protocol drains — no second pool.
     const WorkStealingScheduler& local() const { return local_; }
+    WorkStealingScheduler& local() { return local_; }
 
     // SignalHandler — steal / steal_result are handled here; the rest is
     // forwarded to the fallback (if any).

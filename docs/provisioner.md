@@ -139,7 +139,7 @@ as thread-safe as the source it is given.
 | `provisioned()` | The current cluster fleet — everything it "has up", which is the **whole cluster**, since it never creates or destroys nodes. |
 
 This slice is the backend + a unit test only — it is not yet wired into the
-(unbuilt) autoscaler / job coordinator, and it adds **no** new persisted or
+(unbuilt) autoscaler, and it adds **no** new persisted or
 replicated state and **no** new JSON format (it reuses the validated
 `ProvisionedNode` boundary below).
 

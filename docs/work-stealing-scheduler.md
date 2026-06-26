@@ -19,9 +19,9 @@ It has two halves, layered:
 
 The cross-node layer is built **on** the local one and reuses it as its
 execution engine. It does **not** schedule a `ComputeJob` or run an algorithm —
-that is the [job coordinator](compute-jobs.md)
-([#372](https://github.com/oramasearch/zetta/issues/372)), a later slice that
-*submits work through* this scheduler.
+that is the [job coordinator](job-coordinator.md)
+([#372](https://github.com/oramasearch/zetta/issues/372)), which *submits work
+through* this scheduler and drives collectives at round boundaries.
 
 ```
 include/zetta/compute/work_stealing_scheduler.hpp   WorkStealingScheduler — local pool
@@ -226,8 +226,10 @@ job's state. Each task's raw payload is base64-encoded inside the JSON
 
 The cluster has a single `set_signal_handler` slot. `DistributedScheduler` takes
 it (to field `steal` / `steal_result`) and forwards **every other** signal to a
-`set_fallback_handler(...)` delegate, so it can coexist with another consumer
-until the cluster grows a method router (a later slice — the job coordinator).
+`set_fallback_handler(...)` delegate, so it can coexist with another consumer —
+this is exactly how the [job coordinator](job-coordinator.md) chains it ahead of
+the collectives (`steal` → scheduler, `collective.*` → collectives, else →
+fallback). A first-class cluster method router is a later slice.
 
 ## Threading model
 
@@ -251,9 +253,9 @@ until the cluster grows a method router (a later slice — the job coordinator).
 - **No priorities / fairness classes.** Every task is equal; a scheduling-group
   model (à la Seastar) is a later option if foreground/background isolation is
   needed.
-- The [job coordinator](compute-jobs.md) (#372) — splitting a `ComputeJob` into
-  tasks, driving collectives at round boundaries, updating job status — is the
-  consumer built on top of this, not part of it.
+- The [job coordinator](job-coordinator.md) (#372) — splitting a `ComputeJob`
+  into tasks, driving collectives at round boundaries, updating job status — is
+  the consumer **built on top of** this, not part of it.
 
 ## See also
 
