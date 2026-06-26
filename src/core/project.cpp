@@ -168,6 +168,18 @@ std::shared_ptr<ProjectInput> Project::create_input(ProjectInputKind kind,
     return input;
 }
 
+std::shared_ptr<ProjectInput> Project::capture_intent(std::string text,
+                                                      std::string created_by) {
+    // Reject empty / whitespace-only intent: it carries no meaning, so we store
+    // nothing (no folder, no CRDT key) and hand back an empty handle. An intent
+    // is pasted/typed text, so it has no original filename.
+    if (text.find_first_not_of(" \t\r\n\f\v") == std::string::npos) {
+        return nullptr;
+    }
+    return create_input(ProjectInputKind::Intent, ProjectInputSource::Pasted,
+                        std::move(text), /*filename=*/{}, std::move(created_by));
+}
+
 std::shared_ptr<ProjectInput> Project::materialize_input(
     std::string id, ProjectInputKind kind, ProjectInputSource source,
     std::string filename, std::string content_hash, std::uintmax_t size,

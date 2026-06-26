@@ -108,6 +108,60 @@ TEST(ProjectInput, CreateFetchDropWithProvenance) {
     node.stop();
 }
 
+TEST(ProjectInput, CaptureIntentStoresWithProvenance) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    auto project = node.create_project("churn");
+    ASSERT_TRUE(project);
+    EXPECT_EQ(project->input_count(), 0u);
+
+    // Capture a natural-language intent: kind=intent, source=pasted, no filename.
+    auto intent = project->capture_intent(kIntent, "user:steve");
+    ASSERT_TRUE(intent);
+    EXPECT_EQ(intent->kind(), ProjectInputKind::Intent);
+    EXPECT_EQ(intent->source(), ProjectInputSource::Pasted);
+    EXPECT_TRUE(intent->filename().empty());
+    EXPECT_EQ(intent->created_by(), "user:steve");
+    EXPECT_EQ(intent->project_id(), project->id());
+    // content_hash is computed at the boundary, never trusted from the caller.
+    EXPECT_EQ(intent->content_hash(), zetta::sha256_hex(kIntent));
+    EXPECT_EQ(intent->size(), std::string(kIntent).size());
+    EXPECT_TRUE(looks_like_iso8601(intent->created_at()));
+
+    // Retrievable with provenance, and the raw intent text round-trips off disk.
+    EXPECT_EQ(project->input_count(), 1u);
+    auto fetched = project->find_input(intent->id());
+    ASSERT_TRUE(fetched);
+    EXPECT_EQ(fetched->kind(), ProjectInputKind::Intent);
+    ASSERT_TRUE(fetched->read_payload().has_value());
+    EXPECT_EQ(*fetched->read_payload(), kIntent);
+
+    node.stop();
+}
+
+TEST(ProjectInput, CaptureIntentRejectsEmpty) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    auto project = node.create_project("churn");
+    ASSERT_TRUE(project);
+
+    // Empty / whitespace-only intent carries no meaning: rejected, nothing stored.
+    EXPECT_FALSE(project->capture_intent(""));
+    EXPECT_FALSE(project->capture_intent("   \t\r\n  "));
+    EXPECT_EQ(project->input_count(), 0u);
+
+    // A real intent is still accepted afterward (rejection left no debris).
+    auto intent = project->capture_intent(kIntent, "user:steve");
+    ASSERT_TRUE(intent);
+    EXPECT_EQ(project->input_count(), 1u);
+
+    node.stop();
+}
+
 TEST(ProjectInput, PersistsAcrossRestartViaDisk) {
     TempDir tmp;
     std::string project_id;
