@@ -64,6 +64,7 @@ private:
     void draw_large_objects();
     void draw_query();       // the SQL text area + results
     void draw_cluster();     // role, listen address, peers, join command
+    void draw_runs();        // run status/logs + outputs + lineage (one selected run)
 
     void handle_incoming_files();  // drain + route the queue (main thread)
     void enqueue_file(std::string path, FileIntent intent);
@@ -83,6 +84,7 @@ private:
     std::string selected_project_;
     std::string selected_db_;
     std::string selected_table_;
+    std::string selected_run_;  // run id; re-resolved each frame like the others
     std::string new_project_input_;
     std::string new_db_input_;
     std::string new_table_input_;

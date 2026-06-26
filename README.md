@@ -37,7 +37,8 @@ see [docs/project-inputs.md](docs/project-inputs.md)) and its **execution graphs
 validated execution graph onto a target, recording the placement (R1 local; see
 [docs/deployments.md](docs/deployments.md)), and owns **runs** (`zetta::Run`), the
 record of one graph execution: status, logs, outputs, and lineage, validated
-against a JSON Schema at the storage boundary (see [docs/runs.md](docs/runs.md)).
+against a JSON Schema at the storage boundary and viewable in the headed app's
+read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
 Query it all with basic
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.

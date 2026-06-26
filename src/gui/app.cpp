@@ -9,6 +9,7 @@
 #include "zetta/node.hpp"
 #include "zetta/project.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/run.hpp"
 #include "zetta/signals.hpp"
 #include "zetta/table.hpp"
 #include "zetta/version.hpp"
@@ -54,6 +55,120 @@ float ui_content_scale(SDL_Window* window) {
 float ui_pixel_density(SDL_Window* window) {
     const float d = SDL_GetWindowPixelDensity(window);
     return d > 0.0f ? d : 1.0f;
+}
+
+// A run's status, color-coded along its lifecycle: pending (neutral) → running
+// (amber) → succeeded (green) | failed (red). Same palette as the cluster panel.
+ImVec4 run_status_color(RunStatus status) {
+    switch (status) {
+        case RunStatus::Pending:   return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+        case RunStatus::Running:   return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
+        case RunStatus::Succeeded: return ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
+        case RunStatus::Failed:    return kErrorColor;
+    }
+    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+}
+
+// A log line's severity color — error red, warn amber, anything else neutral.
+ImVec4 log_level_color(const std::string& level) {
+    if (level == "error") return kErrorColor;
+    if (level == "warn")  return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
+    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+}
+
+// Join lineage refs (sources / steps) for a single wrapped line.
+std::string join_refs(const std::vector<std::string>& refs) {
+    std::string joined;
+    for (std::size_t i = 0; i < refs.size(); ++i) {
+        if (i) joined += ", ";
+        joined += refs[i];
+    }
+    return joined;
+}
+
+// Render the full detail of one run: identity + status, logs, outputs, lineage.
+// A pure view over the (already schema-validated) Run handle — no mutation.
+void render_run_detail(const Run& run) {
+    ImGui::Text("Run %s", run.id().c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(run_status_color(run.status()), "[%s]",
+                       std::string(to_string(run.status())).c_str());
+    if (!run.project().empty()) {
+        ImGui::TextDisabled("project: %s", run.project().c_str());
+    }
+    if (!run.graph().empty()) {
+        ImGui::TextDisabled("graph: %s", run.graph().c_str());
+    }
+    ImGui::TextDisabled("created: %s", run.created().c_str());
+    if (run.updated() != run.created()) {
+        ImGui::TextDisabled("updated: %s", run.updated().c_str());
+    }
+
+    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
+                                        ImGuiTableFlags_RowBg |
+                                        ImGuiTableFlags_SizingStretchProp;
+
+    // Logs — time + level (color-coded) + message; the failing step + reason of
+    // a failed run live here.
+    ImGui::SeparatorText("Logs");
+    if (run.logs().empty()) {
+        ImGui::TextDisabled("(no log entries)");
+    } else {
+        for (const RunLogEntry& entry : run.logs()) {
+            ImGui::TextDisabled("%s", entry.time.c_str());
+            ImGui::SameLine();
+            ImGui::TextColored(log_level_color(entry.level), "%-5s",
+                               entry.level.c_str());
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", entry.message.c_str());
+        }
+    }
+
+    // Outputs — the produced datasets / models / indexes.
+    ImGui::SeparatorText("Outputs");
+    if (run.outputs().empty()) {
+        ImGui::TextDisabled("(no outputs)");
+    } else if (ImGui::BeginTable("##run_outputs", 3, table_flags)) {
+        ImGui::TableSetupColumn("Kind");
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("Ref");
+        ImGui::TableHeadersRow();
+        for (const RunOutput& output : run.outputs()) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(output.kind.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(output.name.c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextUnformatted(output.ref.c_str());
+        }
+        ImGui::EndTable();
+    }
+
+    // Lineage — where the results came from (sources, steps), how fresh, and how
+    // confident (a 0..1 score, shown as a bar).
+    ImGui::SeparatorText("Lineage");
+    const RunLineage& lineage = run.lineage();
+    const bool has_lineage = !lineage.sources.empty() || !lineage.steps.empty() ||
+                             !lineage.freshness.empty() || lineage.confidence != 0.0;
+    if (!has_lineage) {
+        ImGui::TextDisabled("(no lineage)");
+        return;
+    }
+    ImGui::TextDisabled("sources:");
+    ImGui::SameLine();
+    ImGui::TextWrapped("%s", lineage.sources.empty()
+                                 ? "—"
+                                 : join_refs(lineage.sources).c_str());
+    ImGui::TextDisabled("steps:");
+    ImGui::SameLine();
+    ImGui::TextWrapped(
+        "%s", lineage.steps.empty() ? "—" : join_refs(lineage.steps).c_str());
+    ImGui::TextDisabled("freshness: %s",
+                        lineage.freshness.empty() ? "—" : lineage.freshness.c_str());
+    ImGui::TextDisabled("confidence:");
+    ImGui::SameLine();
+    ImGui::ProgressBar(static_cast<float>(lineage.confidence), ImVec2(-FLT_MIN, 0));
 }
 
 }  // namespace
@@ -757,6 +872,53 @@ void App::draw_cluster() {
     }
 }
 
+void App::draw_runs() {
+    if (!ImGui::CollapsingHeader("Runs / Outputs / Lineage",
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+
+    // A run is the record of one execution of a deployed graph (status / logs /
+    // outputs / lineage). This panel is a read-only viewer: runs arrive via the
+    // API, tests, or replication from a peer (executing a graph — StartRun — is
+    // a later slice). Held by id and re-resolved each frame, like the explorer.
+    const std::vector<std::shared_ptr<Run>> runs = node_.runs();
+    ImGui::TextDisabled("%zu run(s)", runs.size());
+
+    const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
+    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 14.0f;
+
+    // Left: the run list. Runs have no human name, so each row is a status badge
+    // plus the first segment of the UUID — enough to tell them apart.
+    ImGui::BeginChild("##run_list", ImVec2(list_w, panel_h),
+                      ImGuiChildFlags_Borders);
+    if (runs.empty()) ImGui::TextDisabled("(no runs)");
+    for (const std::shared_ptr<Run>& run : runs) {
+        ImGui::PushID(run->id().c_str());
+        ImGui::TextColored(run_status_color(run->status()), "%-9s",
+                           std::string(to_string(run->status())).c_str());
+        ImGui::SameLine();
+        const std::string short_id = run->id().substr(0, run->id().find('-'));
+        if (ImGui::Selectable(short_id.c_str(), selected_run_ == run->id())) {
+            selected_run_ = run->id();
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // Right: the selected run's status / logs / outputs / lineage.
+    ImGui::SameLine();
+    ImGui::BeginChild("##run_detail", ImVec2(0, panel_h),
+                      ImGuiChildFlags_Borders);
+    if (const auto run = node_.find_run(selected_run_)) {
+        render_run_detail(*run);
+    } else {
+        ImGui::TextDisabled(
+            "Select a run to view its status, logs, outputs, and lineage.");
+    }
+    ImGui::EndChild();
+}
+
 void App::run() {
     ImGuiIO& io = ImGui::GetIO();
 
@@ -814,6 +976,7 @@ void App::run() {
         draw_dashboard();
         draw_query();
         draw_cluster();
+        draw_runs();
         ImGui::Separator();
         draw_explorer();
 

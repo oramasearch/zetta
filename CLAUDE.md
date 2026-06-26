@@ -106,8 +106,13 @@ then persist. **Run is the first record validated against a formal JSON Schema**
 (draft-07) at the storage boundary — every value entering from disk or the CRDT
 passes `parse_run_value`, so malformed data is rejected with a clear reason
 instead of corrupting the tree (via `pboettch/json-schema-validator`, linked
-PRIVATE to zetta-core). This is **storage + model only**; graph execution
-(StartRun) and the Runs panel are later slices. See [docs/runs.md](docs/runs.md).
+PRIVATE to zetta-core). The headed app surfaces runs in a **read-only Runs /
+Outputs / Lineage panel** (`App::draw_runs` — list of runs + a detail pane with
+the selected run's status, color-coded logs, an outputs table, and a lineage
+section with a confidence bar; the GUI slice of FEAT-5 / SCR-6 / CMP-4).
+**Actually executing a graph (StartRun), which populates a run's
+status/logs/outputs/lineage, is still a later slice.** See
+[docs/runs.md](docs/runs.md).
 
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
