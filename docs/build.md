@@ -77,9 +77,11 @@ On startup a node prints its id, the address(es) it's reachable at, and the
 command to add another node — see [cluster.md](cluster.md).
 
 In headed mode, the **Query (postgres)** panel runs SQL against the selected
-database; the **Projects | Databases | Tables | Rows | Large Objects** explorer
-reflects changes live (the leftmost **Projects** column creates/selects/renames
-AI projects — see [projects.md](projects.md)).
+database; the **Correctness gate** panel validates an execution graph and shows
+the per-check report + block-on-fail state (see [gate.md](gate.md)); the
+**Projects | Databases | Tables | Rows | Large Objects** explorer reflects
+changes live (the leftmost **Projects** column creates/selects/renames AI
+projects — see [projects.md](projects.md)).
 
 ## Test
 

@@ -4,14 +4,19 @@
 #include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
 #include "zetta/duration.hpp"
+#include "zetta/gate.hpp"
 #include "zetta/import.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/serialization.hpp"
 #include "zetta/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/project.hpp"
+#include "zetta/project_graph.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/run.hpp"
 #include "zetta/signals.hpp"
 #include "zetta/table.hpp"
+#include "zetta/validation.hpp"
 #include "zetta/version.hpp"
 
 #include <SDL3/SDL.h>
@@ -31,6 +36,7 @@
 #include <cstdio>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -44,6 +50,56 @@ constexpr float kBaseFontPixels = 15.0f;
 
 // Inline-error text colour (soft red).
 constexpr ImVec4 kErrorColor{1.0f, 0.4f, 0.4f, 1.0f};
+
+// Correctness-gate status colours: green pass, amber warn, red fail. The amber
+// matches the "syncing" colour used in the cluster panel.
+constexpr ImVec4 kPassColor{0.4f, 0.8f, 0.4f, 1.0f};
+constexpr ImVec4 kWarnColor{0.9f, 0.7f, 0.3f, 1.0f};
+constexpr ImVec4 kFailColor{0.95f, 0.4f, 0.4f, 1.0f};
+
+// A small, valid execution graph (the IR's canonical JSON form) prefilled into
+// the gate panel so the passing path is one click away — a churn-flavoured
+// connect→clean→model→serve pipeline.
+constexpr const char* kExampleGraphJson = R"({
+  "nodes": [
+    { "id": "load",  "kind": "connect", "name": "load_customers" },
+    { "id": "clean", "kind": "clean",   "name": "dedupe" },
+    { "id": "churn", "kind": "model",   "name": "churn_model" },
+    { "id": "serve", "kind": "serve",   "name": "expose_scores" }
+  ],
+  "edges": [
+    { "from": "load",  "to": "clean" },
+    { "from": "clean", "to": "churn" },
+    { "from": "churn", "to": "serve" }
+  ]
+})";
+
+// An empty graph (the IR's canonical JSON form) — fails NonEmptyGraphCheck, so
+// it demonstrates the deploy-blocking path.
+constexpr const char* kEmptyGraphJson = R"({
+  "nodes": [],
+  "edges": []
+})";
+
+// The gate status as an uppercase badge ("PASS" / "WARN" / "FAIL").
+std::string status_badge(CheckStatus status) {
+    std::string text = to_string(status);
+    for (char& character : text) {
+        character =
+            static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    }
+    return text;
+}
+
+// The text colour for a check status.
+ImVec4 status_color(CheckStatus status) {
+    switch (status) {
+        case CheckStatus::Pass: return kPassColor;
+        case CheckStatus::Warn: return kWarnColor;
+        case CheckStatus::Fail: return kFailColor;
+    }
+    return kFailColor;
+}
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -176,7 +232,8 @@ void render_run_detail(const Run& run) {
 App::App(Node& node, Cluster& cluster)
     : node_(node),
       cluster_(cluster),
-      query_(std::make_unique<query::QueryService>(node, &cluster)) {}
+      query_(std::make_unique<query::QueryService>(node, &cluster)),
+      gate_graph_input_(kExampleGraphJson) {}
 
 App::~App() {
     if (initialized_) {
@@ -704,6 +761,124 @@ void App::draw_query() {
     ImGui::EndChild();
 }
 
+void App::draw_gate() {
+    if (!ImGui::CollapsingHeader("Correctness gate",
+                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::TextDisabled(
+        "Validate an execution graph before deploy. RULE-1: no deploy without a "
+        "passing gate.");
+
+    // Graph source. Fill a preset, load a stored graph from the selected
+    // project, or edit the IR JSON directly below. ir::from_json validates the
+    // document at the boundary, so a malformed graph is rejected with a reason.
+    if (ImGui::SmallButton("Passing example")) {
+        gate_graph_input_ = kExampleGraphJson;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Empty (fails)")) {
+        gate_graph_input_ = kEmptyGraphJson;
+    }
+
+    // Load a graph from the selected project's stored graphs (the real
+    // ProjectGraph data path), when the project has any.
+    if (const auto project = node_.find_project(selected_project_)) {
+        const std::vector<std::string> graph_names = project->graph_names();
+        if (!graph_names.empty()) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+            if (ImGui::BeginCombo("##loadgraph", "Load from project…")) {
+                for (const std::string& name : graph_names) {
+                    if (ImGui::Selectable(name.c_str())) {
+                        if (const auto graph = project->find_graph(name)) {
+                            gate_graph_input_ =
+                                ir::to_json(graph->graph()).dump(2);
+                        }
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+    }
+
+    ImGui::InputTextMultiline("##gategraph", &gate_graph_input_,
+                              ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8));
+
+    if (ImGui::Button("Run gate")) {
+        gate_error_.clear();
+        gate_report_.reset();
+        // Parse + validate at the boundary without exceptions: a malformed
+        // document yields a reason we show inline, never a thrown stack trace.
+        auto document = nlohmann::json::parse(gate_graph_input_, nullptr,
+                                              /*allow_exceptions=*/false);
+        if (document.is_discarded()) {
+            gate_error_ = "invalid JSON — could not parse the graph";
+        } else {
+            std::string parse_error;
+            std::optional<ir::ExecutionGraph> graph =
+                ir::from_json(document, &parse_error);
+            if (!graph) {
+                gate_error_ = "invalid graph: " + parse_error;
+            } else {
+                gate_report_ = std::make_unique<ValidationReport>(
+                    default_gate().run(*graph));
+            }
+        }
+    }
+
+    if (!gate_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", gate_error_.c_str());
+    }
+
+    if (!gate_report_) return;
+    const ValidationReport& report = *gate_report_;
+
+    // The block-on-fail banner is the headline state this panel exists to show.
+    ImGui::Spacing();
+    if (report.block_deploy) {
+        std::size_t failures = 0;
+        for (const CheckResult& check : report.checks) {
+            if (check.status == CheckStatus::Fail) ++failures;
+        }
+        ImGui::TextColored(kFailColor,
+                           "Deploy blocked — %zu check(s) failed (verdict: %s)",
+                           failures, to_string(report.verdict()).c_str());
+    } else {
+        ImGui::TextColored(kPassColor,
+                           "Deploy allowed — gate passed (verdict: %s)",
+                           to_string(report.verdict()).c_str());
+    }
+
+    // Per-check results: the check, its pass/warn/fail status, and the
+    // human-readable reason (never a stack trace).
+    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
+                                        ImGuiTableFlags_RowBg |
+                                        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("gate_checks", 3, table_flags)) {
+        ImGui::TableSetupColumn("Check", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch,
+                                0.15f);
+        ImGui::TableSetupColumn("Reason", ImGuiTableColumnFlags_WidthStretch,
+                                0.55f);
+        ImGui::TableHeadersRow();
+        for (const CheckResult& check : report.checks) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(check.name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextColored(status_color(check.status), "%s",
+                               status_badge(check.status).c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextWrapped("%s", check.reason.c_str());
+        }
+        ImGui::EndTable();
+    }
+    if (report.checks.empty()) {
+        ImGui::TextDisabled("(the gate ran no checks)");
+    }
+}
+
 void App::draw_large_objects() {
     ImGui::SeparatorText("Large Objects");
     const auto db = node_.find_database(selected_db_);
@@ -975,6 +1150,7 @@ void App::run() {
         draw_menu_bar(running);
         draw_dashboard();
         draw_query();
+        draw_gate();
         draw_cluster();
         draw_runs();
         ImGui::Separator();
