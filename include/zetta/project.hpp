@@ -79,6 +79,16 @@ public:
                                                std::string payload,
                                                std::string filename = {},
                                                std::string created_by = {});
+    // Capture a natural-language **intent** string as an input — the FEAT-1
+    // "capture NL intent" entry point (#307). A thin, well-named wrapper over
+    // create_input that fixes the provenance for typed/pasted intent text
+    // (kind=Intent, source=Pasted, no filename) and **rejects empty intent**: an
+    // intent that is empty or only whitespace carries no meaning, so it stores
+    // nothing (no folder, no CRDT key) and returns an empty handle. `created_by`
+    // is the actor/user key. This is storage + provenance only — the text is not
+    // parsed or compiled here (that is a later FEAT-1 slice).
+    std::shared_ptr<ProjectInput> capture_intent(std::string text,
+                                                 std::string created_by = {});
     // Apply a replicated input (from a peer) by id, without capturing. The
     // payload body may not be here yet (body transfer is a later slice). Returns
     // the existing handle if already present.

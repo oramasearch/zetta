@@ -65,9 +65,34 @@ project->create_input(zetta::ProjectInputKind::Artifact,
 boundary integrity), stamps `created_at`, writes the metadata into the CRDT and
 the payload body to disk, and returns a `shared_ptr<ProjectInput>` handle.
 
+### Capturing a natural-language intent
+
+The most common way a project starts is the user typing what they want. That has
+a dedicated front door, `capture_intent` — the "capture NL intent" slice of
+FEAT-1:
+
+```cpp
+auto project = node.create_project("churn");
+
+auto intent = project->capture_intent(
+    "score every active account for churn risk and tell me why",
+    /*created_by=*/"user:steve");
+// intent->kind()   == ProjectInputKind::Intent
+// intent->source() == ProjectInputSource::Pasted   (typed/pasted, no filename)
+```
+
+`capture_intent(text, created_by = {})` is a thin, well-named wrapper over
+`create_input` that fixes the provenance for typed/pasted intent text
+(`kind=Intent`, `source=Pasted`, no `filename`) and **rejects empty intent**: a
+`text` that is empty or only whitespace carries no meaning, so it stores nothing
+(no folder, no CRDT key) and returns an **empty handle**. The text is stored
+verbatim as the payload body — this is storage + provenance only, with no parsing
+or compilation (that is a later FEAT-1 slice).
+
 | Method (on `Project`) | Returns | Behavior |
 |---|---|---|
 | `create_input(kind, source, payload, filename = {}, created_by = {})` | `shared_ptr<ProjectInput>` | Captures + persists; empty handle only if the folder can't be created. |
+| `capture_intent(text, created_by = {})` | `shared_ptr<ProjectInput>` | Captures `text` as an `Intent`/`Pasted` input; **empty handle if `text` is empty/whitespace-only** (nothing stored). |
 | `find_input(id)` | `shared_ptr<ProjectInput>` | Empty handle on miss (lookups are by id). |
 | `drop_input(id)` | `bool` | `true` if one was removed (deletes folder + CRDT key). |
 | `inputs()` / `input_count()` | list / `size_t` | Inputs sorted oldest-first by `created_at`. |
@@ -131,7 +156,9 @@ simply be awaiting transfer.)
 ## Tests
 
 `tests/test_project_input.cpp` covers create/fetch/drop with provenance
-(computed `content_hash`, payload round-trip), survival across a restart (both
-disk-only and CRDT-only), replication of an input record + a drop to a connected
-peer (and that the body does **not** transfer yet), and boundary validation
-(a malformed `input.json` is skipped on load).
+(computed `content_hash`, payload round-trip), `capture_intent` (an
+intent/pasted input retrievable with provenance, plus empty/whitespace-only
+intent rejected with nothing stored), survival across a restart (both disk-only
+and CRDT-only), replication of an input record + a drop to a connected peer (and
+that the body does **not** transfer yet), and boundary validation (a malformed
+`input.json` is skipped on load).

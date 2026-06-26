@@ -85,7 +85,10 @@ A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
 payloads captured with provenance (`kind` intent|artifact, `source`
 upload|pasted, optional `filename`, `content_hash`, `created_by`, `created_at`),
 the same way a `Database` owns its tables. `Project` has `create_input`/
-`find_input`/`drop_input` (inputs are immutable provenance records — no rename).
+`find_input`/`drop_input` (inputs are immutable provenance records — no rename),
+plus `capture_intent` — the named "capture NL intent" front door that stores a
+natural-language string as an `intent`/`pasted` input and **rejects empty
+intent** (empty/whitespace-only → empty handle, nothing stored).
 Each input is replicated state (flat key `input:<uuid>` carrying its parent
 `project` ref); the **metadata rides in the CRDT** but the **raw payload body
 stays on disk** (`<project>/inputs/<input-uuid>/payload`) like a large-object
