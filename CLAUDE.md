@@ -383,9 +383,22 @@ A third, **typed-artifact** ingestion path captures a file into a *project*
   `ProjectInput` (kind=Artifact, source=Upload) so the payload round-trips for
   later re-compilation. Computes nothing about the payload itself — it delegates
   to `Project::create_input`, which fingerprints the raw bytes with SHA-256 at
-  the boundary. Storage + validation only (no compile to an ExecutionGraph yet);
+  the boundary. Storage + validation only (the import itself compiles nothing);
   surfaced in the GUI through the **New Project** screen's artifact import (file
   dialog + drag-drop), above. Detail in [docs/n8n-import.md](docs/n8n-import.md).
+- **n8n workflow compile** (`zetta::compile_n8n_workflow`,
+  `include/zetta/n8n_compile.hpp`) — the first concrete **compiler** of FEAT-2
+  (#308): map an imported n8n workflow JSON into the **ExecutionGraph IR** — each
+  n8n **node** → a typed `ir::Node` step (keyed by its unique node name, tagged
+  with a `StepKind` via the `n8n_step_kind` table — R1 covers the churn node
+  kinds), each n8n **connection** → a `DataFlow` `ir::Edge`. It re-uses the import
+  boundary schema (`validate_n8n_workflow`) then enforces the IR's graph-semantic
+  rules in code (unique node names, every connection references an existing node),
+  **non-throwing** like `ir::from_json` (`std::optional` + a path-qualified reason;
+  an unmapped node type fails rather than guessing a stage). An overload compiles
+  straight from a stored artifact `ProjectInput`. Produces the in-memory IR only —
+  persisting it as a `ProjectGraph` / GUI wiring is a later slice. Detail in
+  [docs/n8n-compile.md](docs/n8n-compile.md).
 
 ### Query layer
 
@@ -667,6 +680,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
+  n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -700,6 +714,7 @@ src/core/                   zetta-core impl
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
   project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
+  n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
@@ -853,6 +868,7 @@ loop thread).
 - [`docs/projects.md`](docs/projects.md) — the AI project (`zetta::Project`) data model + lifecycle CRUD.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
+- [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).

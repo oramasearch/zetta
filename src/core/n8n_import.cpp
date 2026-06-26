@@ -78,6 +78,18 @@ public:
     std::string reason;
 };
 
+// Schema-check an already-parsed document. Factored out so both the public
+// string entry point (which parses first) reuses one validation path.
+bool validate_against_schema(const nlohmann::json& document, std::string* error) {
+    collecting_error_handler handler;
+    schema_validator().validate(document, handler);
+    if (handler.failed) {
+        if (error) *error = "not an n8n workflow: " + handler.reason;
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
 
 const nlohmann::json& n8n_workflow_schema() { return schema_document(); }
@@ -89,13 +101,7 @@ bool validate_n8n_workflow(const std::string& content, std::string* error) {
         if (error) *error = "invalid JSON";
         return false;
     }
-    collecting_error_handler handler;
-    schema_validator().validate(document, handler);
-    if (handler.failed) {
-        if (error) *error = "not an n8n workflow: " + handler.reason;
-        return false;
-    }
-    return true;
+    return validate_against_schema(document, error);
 }
 
 N8nImportResult import_n8n_workflow(Project& project, std::string content,
