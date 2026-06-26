@@ -75,6 +75,7 @@ private:
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     void draw_cluster();     // role, listen address, peers, join command
     void draw_runs();        // run status/logs + outputs + lineage (one selected run)
+    void draw_admin();       // principals + keys (scope + grants) + the audit log
 
     // New Project flow (SCR-2 / FEAT-1): a modal to name a project, paste an NL
     // intent, and import / drop an n8n workflow JSON as a starting artifact —
@@ -119,6 +120,7 @@ private:
     std::string selected_db_;
     std::string selected_table_;
     std::string selected_run_;  // run id; re-resolved each frame like the others
+    std::string selected_principal_;  // principal name; re-resolved each frame
     std::string new_db_input_;
     std::string new_table_input_;
     std::string rename_project_input_;

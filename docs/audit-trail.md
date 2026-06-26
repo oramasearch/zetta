@@ -143,8 +143,10 @@ This is the audit half of FEAT-9, on top of the
 [key-scoped access model](access-control.md). The pieces still ahead: **approval
 gates** (block a risky action pending sign-off), threading the login key through
 the **request path** (so every query / mutation is authorized and audited, not
-just the `authorize` seam), and surfacing the trail in the **GUI** and as a
-**`system.zetta_audit`** SQL table (the trail is queryable via the C++ API today).
+just the `authorize` seam), and a **`system.zetta_audit`** SQL table (the trail is
+queryable via the C++ API today). The trail is now surfaced in the **GUI**: the
+headed [Admin & Settings panel](admin-panel.md) (SCR-7 / CMP-5) renders it as a
+read-only table.
 
 ## Pointers
 
@@ -156,6 +158,8 @@ just the `authorize` seam), and surfacing the trail in the **GUI** and as a
   emission seams (`deploy_graph`, `authorize`).
 - [access-control.md](access-control.md) — the `Principal` + `AccessKey` model a
   `data_access` event records the decision of.
+- [admin-panel.md](admin-panel.md) — the headed **Admin & Settings panel** that
+  renders this trail (and principals/keys/grants) read-only.
 - [runs.md](runs.md) — the sibling immutable record whose JSON-Schema boundary
   validation this mirrors.
 - [replication.md](replication.md) — the CRDT model these events replicate through.

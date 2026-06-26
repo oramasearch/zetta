@@ -179,6 +179,15 @@ boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator)
 projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
 a folder per event. See [docs/audit-trail.md](docs/audit-trail.md).
 
+The headed **Admin & Settings** panel (`App::draw_admin`) is the **governance
+GUI** (SCR-7 / CMP-5, the GUI slice of FEAT-9): a **read-only** view of principals
++ their access keys (each key's `Scope` resources + `CapabilitySet` rights, with
+expired TTLs flagged) and the immutable audit trail (a time/action/actor/target/
+outcome/detail table). Like the Runs panel it reads already-validated in-memory
+handles, so it adds **no new JSON boundary**; mutation (issuing keys, granting
+capabilities, approval gates) is a later slice. See
+[docs/admin-panel.md](docs/admin-panel.md).
+
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
 check** by default (`Node::check_integrity()` → `IntegrityReport`, logged as
@@ -902,6 +911,7 @@ loop thread).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
+- [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).

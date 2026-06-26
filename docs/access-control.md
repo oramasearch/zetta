@@ -234,7 +234,10 @@ are their own slice, as is **granting a capability** as a first-class
 command/event (ENT-22 → `GrantCapability` / `CapabilityGranted`). The finer
 access **tiers** (team / partner / per-dataset) extend `ResourceKind` and
 `Scope`, and new rights extend `CapabilityDomain` / the open action taxonomy,
-without changing this seam.
+without changing this seam. Principals + keys + their scope/capability grants are
+now surfaced read-only in the headed [Admin & Settings panel](admin-panel.md)
+(SCR-7 / CMP-5); issuing keys and granting capabilities from the GUI is a later
+slice.
 
 ## Pointers
 
@@ -248,6 +251,8 @@ without changing this seam.
   TTL'd).
 - `include/zetta/node.hpp` — principal CRUD + `Node::authorize` (resource +
   operation overloads) / `find_access_key`.
+- [admin-panel.md](admin-panel.md) — the headed **Admin & Settings panel** that
+  renders principals/keys + scope/capability grants (and the audit log) read-only.
 - [replication.md](replication.md) — the CRDT model these entities replicate through.
 - [projects.md](projects.md) — the sibling top-level entity whose
   capture/reconcile path this mirrors.
