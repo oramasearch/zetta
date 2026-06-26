@@ -11,7 +11,8 @@ backends are separate, dependent slices:
   nodes, best-effort (`#374`). **Built** — see
   [The Local backend](#the-local-backend-localprovisioner) below.
 - **Cloud burst** — `AwsProvisioner` (`#377`) and `GcpProvisioner` (`#378`).
-- **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`).
+- **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`);
+  **built** — see [burst-identity.md](burst-identity.md).
 - **Large-burst cost-cap approval gate** — APR-3 (`#379`).
 
 The seam is what the **autoscaler / job coordinator** consumes to grow or shrink

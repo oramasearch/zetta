@@ -19,6 +19,8 @@ enum class AuditAction {
     DataAccess,     // a request was authorized against a key's scope (data access)
     JobCreated,     // a compute job was queued            (compute, ARC-11)
     JobFinished,    // a compute job reached a terminal state (Succeeded / Failed)
+    KeyIssued,      // an access key was issued (e.g. a burst node's identity, ARC-13)
+    KeyRevoked,     // an access key was revoked (e.g. on burst teardown)
 };
 
 // The canonical lowercase wire name of an action, and the inverse. These are the

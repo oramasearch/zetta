@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.com/zetta/schemas/audit_event.schema.json",
   "title": "zetta.AuditEvent",
-  "description": "An immutable, append-only audit record (ENT-23 / FEAT-9): one governed action — a graph change, a deploy, a data-access decision, or a compute-job lifecycle event. The id is the CRDT key / on-disk file name and is optional in the value shape that rides in the document; it is present in the on-disk projection (audit/<uuid>.json). This file mirrors the inline schema in src/core/audit_event.cpp — keep the two in sync.",
+  "description": "An immutable, append-only audit record (ENT-23 / FEAT-9): one governed action — a graph change, a deploy, a data-access decision, a compute-job lifecycle event, or an access-key issue/revoke (e.g. a burst node's identity, ARC-13). The id is the CRDT key / on-disk file name and is optional in the value shape that rides in the document; it is present in the on-disk projection (audit/<uuid>.json). This file mirrors the inline schema in src/core/audit_event.cpp — keep the two in sync.",
   "type": "object",
   "properties": {
     "id": {
@@ -12,7 +12,7 @@
     "action": {
       "type": "string",
       "description": "The governed action this event records.",
-      "enum": ["graph_created", "graph_dropped", "graph_deployed", "data_access", "job_created", "job_finished"]
+      "enum": ["graph_created", "graph_dropped", "graph_deployed", "data_access", "job_created", "job_finished", "key_issued", "key_revoked"]
     },
     "actor": {
       "type": "string",

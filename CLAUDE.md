@@ -202,10 +202,11 @@ audit trail itself is built — see below). See
 [docs/access-control.md](docs/access-control.md).
 
 A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
-for every **graph change / deploy / data access / compute-job lifecycle** event
+for every **graph change / deploy / data access / compute-job lifecycle /
+access-key issue+revoke** event
 (ENT-23 / FEAT-9; the audit half of governance, on top of the key-scoped access
 above). An `AuditEvent` (id + `action`
-graph_created|graph_dropped|graph_deployed|data_access|job_created|job_finished +
+graph_created|graph_dropped|graph_deployed|data_access|job_created|job_finished|key_issued|key_revoked +
 `actor` + `target` + `allowed` + `detail` + `time`) is a top-level, replicated
 entity (flat key `audit:<uuid>`) — but **immutable and append-only**: no mutator,
 no drop, so the set of `audit:` keys only grows and the CRDT converges trivially.
@@ -215,10 +216,12 @@ append API (it stamps id + time, captures into the CRDT, persists),
 seams — `Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a
 project like its `ReplicationManager*`), `Node::deploy_graph`, `Node::authorize`
 (which is therefore **non-const**: every allow/deny decision records a
-`data_access` event), and the compute-job lifecycle (`Node::create_job` →
+`data_access` event), the compute-job lifecycle (`Node::create_job` →
 `job_created`, `ComputeJob::set_status` → `job_finished` on the first terminal
-transition). The `materialize_*` reconciliation paths never emit (a peer's action
-arrives already-audited as its own replicated `audit:` event).
+transition), and the burst-identity lifecycle (`BurstIdentityManager::mint` →
+`key_issued`, `revoke` → `key_revoked`; see below). The `materialize_*`
+reconciliation paths never emit (a peer's action arrives already-audited as its
+own replicated `audit:` event).
 It is the **second record validated against a formal JSON Schema** at the storage
 boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator),
 projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
@@ -874,6 +877,26 @@ The cloud-burst backends (AWS #377 / GCP #378) are still later slices; the
 autoscaler/job coordinator that consumes the seam is unbuilt, and nothing here
 persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
+### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
+
+When the cluster **bursts** compute nodes for a job, each burst node needs an
+identity to authenticate. The **`BurstIdentityManager`**
+(`include/zetta/burst_identity.hpp`) mints those **in bulk on provision** and
+**revokes them in bulk on teardown**, **reusing** the existing identity model
+(`Principal` + `AccessKey`, #304) — no new identity system (ARC-13; mitigates
+RSK-9, #375). `mint(job_id, nodes, scope, capabilities)` creates one **service**
+`Principal` + one `AccessKey` per `ProvisionedNode` — scoped to the job (pass a
+`Scope` naming its project) and short-lived (TTL the capabilities) — and returns a
+`BurstIdentity` (`{ node_id, principal_id, key_id }`) per node; `revoke(job_id)`
+bulk-drops them. The job↔identity link is **derived, not a parallel copy of
+state**: the service principal is named `burst/<job-id>/<node-id>`, so `minted()`
+and `revoke()` reconstruct the set from the node's replicated principals (it
+survives restart). Both edges are **audited** via the Node's `AuditSink` —
+`key_issued` per mint, `key_revoked` per revoke (the two new `AuditAction`s above).
+Both are **idempotent** (re-mint returns the existing identity; revoke of an
+unknown job is a no-op). Pairs with the `Provisioner` seam; getting the key onto
+the burst node is a later slice. See [docs/burst-identity.md](docs/burst-identity.md).
+
 ## Tech stack
 
 - **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
@@ -946,6 +969,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
+  burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
@@ -1013,6 +1037,7 @@ src/core/                   zetta-core impl
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
+  burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
@@ -1198,6 +1223,7 @@ loop thread).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
+- [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

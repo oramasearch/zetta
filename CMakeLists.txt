@@ -253,6 +253,7 @@ add_library(zetta-core STATIC
   src/core/node_capability.cpp
   src/core/provisioner.cpp
   src/core/local_provisioner.cpp
+  src/core/burst_identity.cpp
   src/core/solution_catalog.cpp
   src/core/run.cpp
   src/core/model.cpp
