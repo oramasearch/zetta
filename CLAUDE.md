@@ -405,14 +405,35 @@ step's free-form `attributes` bag (`schema`/`requires` field→type profiles;
 with a clear reason when a step requires a field no upstream source provides /
 provides under a different type (**schema/type**), or when an ML feature uses data
 after the as-of cutoff or is derived from the label (**data-leakage /
-point-in-time**). They are **opt-in per step** — a graph carrying none of the
-annotations passes. `#312` entity-resolution lands the same way.
+point-in-time**) — **plus** the first entity-resolution check,
+`EntityResolutionCheck` (`#312` / TC-4, below). They are **opt-in per step** — a
+graph carrying none of the annotations passes.
 `CorrectnessGate::run` sets `block_deploy = !report.passed()` (baseline
 block-on-failure policy; verdict and block_deploy stay
 [separate](docs/validation.md) so a stricter gate can choose differently). It adds
 **no new JSON format** — the `ValidationReport` it produces is already
 schema-validated. Full detail in [docs/gate.md](docs/gate.md) +
 [docs/gate-checks.md](docs/gate-checks.md).
+
+### Entity-resolution correctness eval (`zetta::EntityResolutionCheck`)
+
+The first concrete gate check (`include/zetta/checks/entity_resolution_check.hpp`,
+FEAT-3 / TC-4, `#312`) — the **make-or-break** eval. It reads each graph node that
+carries an `entity_resolution` attribute (a `{ records: [{ mention, entity,
+resolved }] }` payload) and checks that resolution was **division-correct**:
+"FedEx Freight" must land on its own CRM account without **conflating** the 5–6
+sibling FedEx subsidiaries (Ground, Express, Office, Logistics, …), which are
+separate accounts. The rule compares the partition by `resolved` against the
+partition by `entity`: **conflation** (one account holding two distinct
+entities) **fails** the gate and blocks deploy (RULE-1, naming the account +
+entities); **fragmentation** (one entity split across accounts) is the softer,
+symmetric error and **warns** (does not block); a graph with no resolution step
+passes vacuously. The payload is **schema-validated at the boundary** against
+`schemas/entity_resolution.schema.json` (embedded draft-07 copy in the `.cpp`,
+via `pboettch/json-schema-validator`, the same pattern as the Run record) so a
+malformed payload fails the check with a clear reason. Registered in
+`default_gate()` after `NonEmptyGraphCheck`. Full detail in
+[docs/entity-resolution-check.md](docs/entity-resolution-check.md).
 
 ### Deployment (place a graph onto a target)
 
@@ -545,6 +566,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   validation.hpp            zetta::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
   gate.hpp                  zetta::CorrectnessGate — gate runner: checks → report (RULE-1)
   graph_checks.hpp          zetta::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
+  checks/
+    entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -585,6 +608,8 @@ src/core/                   zetta-core impl
   validation.cpp            ValidationReport verdict + JSON round-trip/validation
   gate.cpp                  CorrectnessGate runner + NonEmptyGraphCheck + make_check
   graph_checks.cpp          SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
+  checks/
+    entity_resolution_check.cpp  EntityResolutionCheck — conflation/fragmentation + schema boundary
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
@@ -725,6 +750,7 @@ loop thread).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
+- [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/build.md`](docs/build.md) — build, run, test.

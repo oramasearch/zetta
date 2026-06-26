@@ -3,6 +3,7 @@
 #include <string>
 #include <utility>
 
+#include "zetta/checks/entity_resolution_check.hpp"
 #include "zetta/graph_checks.hpp"
 
 namespace zetta {
@@ -76,6 +77,10 @@ CorrectnessGate default_gate() {
     // annotations passes them), so they are safe to ship in the baseline gate.
     gate.add_check(std::make_shared<SchemaTypeCheck>());
     gate.add_check(std::make_shared<DataLeakageCheck>());
+    // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
+    // pass) on graphs without an entity-resolution step, so it is safe in the
+    // baseline gate; it blocks deploy only when a step conflates accounts.
+    gate.add_check(std::make_shared<EntityResolutionCheck>());
     return gate;
 }
 

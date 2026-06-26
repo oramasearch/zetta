@@ -17,9 +17,10 @@
 //
 // The checks themselves are pluggable (the Check seam below). This file declares
 // the runner plus the trivial NonEmptyGraphCheck; the concrete correctness checks
-// (#309 schema/type + data-leakage / point-in-time — see graph_checks.hpp; #312
-// entity-resolution) implement Check and plug in separately without touching the
-// gate. default_gate() registers the trivial check and the #309 checks.
+// implement Check and plug in separately without touching the gate. default_gate()
+// registers the trivial check, the #309 schema/type + data-leakage / point-in-time
+// checks (see graph_checks.hpp), and the #312 entity-resolution eval (TC-4 —
+// EntityResolutionCheck, in checks/).
 namespace zetta {
 
 // One named correctness check: it inspects an ExecutionGraph and reports a single

@@ -12,10 +12,12 @@ and the [ValidationReport](validation.md) it produces (`zetta::ValidationReport`
 The IR is *what* it validates; the report is *what it returns*; this is the part
 that does the running.
 
-The gate ships the trivial `NonEmptyGraphCheck` plus the concrete schema/type and
-data-leakage / point-in-time checks (`#309`) — see
-[gate-checks.md](gate-checks.md). They implement the same `Check` seam and plug in
-without touching the gate; entity-resolution (`#312`) lands the same way.
+The gate ships the trivial `NonEmptyGraphCheck` so the path works end to end,
+plus the concrete schema/type and data-leakage / point-in-time checks (`#309` —
+see [gate-checks.md](gate-checks.md)) and the
+[`EntityResolutionCheck`](entity-resolution-check.md) (`#312` / TC-4). They all
+implement the same `Check` seam and plug in without touching the gate;
+`default_gate()` registers each.
 
 ## The shape
 
@@ -75,12 +77,13 @@ signed-off override (allow a failure through) is a future policy that sets
 `block_deploy` differently over the same report — the report shape already
 supports it.
 
-`default_gate()` returns a gate pre-loaded with `NonEmptyGraphCheck` **and** the
-concrete `#309` checks (`SchemaTypeCheck`, `DataLeakageCheck` — see
-[gate-checks.md](gate-checks.md)) — the baseline gate callers get for free. The
-`#309` checks are opt-in per step, so a graph that carries none of their
-annotations still passes. As further concrete checks land they are registered
-there too.
+`default_gate()` returns a gate pre-loaded with the baseline checks callers get
+for free — `NonEmptyGraphCheck`, then the concrete `#309` checks (`SchemaTypeCheck`,
+`DataLeakageCheck` — see [gate-checks.md](gate-checks.md)), then the
+[`EntityResolutionCheck`](entity-resolution-check.md) (`#312` / TC-4). The `#309`
+and entity-resolution checks are opt-in per step, so a graph that carries none of
+their annotations still passes. As further concrete checks land they are
+registered there too.
 
 ## Using it
 
@@ -151,9 +154,10 @@ The gate sits between **compile** and **deploy**: a graph is compiled from inten
 run through the gate, and deployed only if the report allows it. The events the
 rest of the system carries (`GraphValidated` / `ValidationFailed`, the
 `ValidateGraph` command) wrap the `ValidationReport` this runner produces. The
-`#309` schema/type and data-leakage / point-in-time checks already plug into this
-seam ([gate-checks.md](gate-checks.md)); entity-resolution (`#312`) and the gate's
-wiring into deploy land on top of it as separate work.
+`#309` schema/type and data-leakage / point-in-time checks
+([gate-checks.md](gate-checks.md)) and the
+[entity-resolution check](entity-resolution-check.md) (`#312`) already plug into
+this seam; the gate's wiring into deploy lands on top of it as separate work.
 
 See also [gate-checks.md](gate-checks.md) (the concrete checks),
 [validation.md](validation.md) (the result type), the
