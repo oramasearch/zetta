@@ -5,10 +5,13 @@ its status, logs, produced outputs (datasets / models / indexes), and lineage
 (sources, steps, freshness, confidence). It is the keystone of FEAT-5 (Run +
 monitor + lineage) and realizes the closed domain spec ENT-12.
 
-This page documents the **storage + data model** only: the `Run` type and its
-lifecycle (create / update / query) on a `Node`. Actually *executing* a graph
-(the StartRun command) and the Runs / Outputs / Lineage UI panel are separate
-work — a Run created here is the artifact they will write to and read from.
+This page documents the **storage + data model** plus the **GUI viewer**: the
+`Run` type and its lifecycle (create / update / query) on a `Node`, and the
+read-only **Runs / Outputs / Lineage** panel that surfaces it in the headed app
+(see [GUI panel](#gui-panel)). Actually *executing* a graph (the StartRun
+command, which populates a run's status / logs / outputs / lineage) is still
+separate work — a Run created here is the artifact StartRun will write to and the
+panel reads from.
 
 ## The type
 
@@ -123,6 +126,39 @@ nlohmann/json zetta already uses and linked **PRIVATE** to `zetta-core` (it stay
 out of the public header surface). Validation failures are routed through the
 library's error-handler callback (not exceptions), so they never cross the
 library boundary as a thrown type.
+
+## GUI panel
+
+The headed app (`src/gui/app.cpp`) shows runs in a collapsing **Runs / Outputs /
+Lineage** panel (`App::draw_runs`), the GUI slice of FEAT-5 — screen SCR-6 /
+component CMP-4. It is a **read-only viewer**: it renders whatever runs the node
+holds (created via the API / tests, or replicated from a peer), so a fresh
+standalone node simply shows "(no runs)" until something creates one. It adds no
+mutators of its own — driving a run (StartRun) is a later slice.
+
+Layout is a list + detail, mirroring the explorer's "select on the left, inspect
+on the right" shape:
+
+- **Run list** (left) — one row per `node_.runs()` entry. Runs have no human
+  name, so each row is a **color-coded status badge** (pending neutral, running
+  amber, succeeded green, failed red — the same palette as the cluster panel)
+  plus the first segment of the run's UUID. Selecting a row sets the active run
+  (held by id and re-resolved each frame, like the rest of the UI, so a dropped
+  run can't leave a dangling handle).
+- **Detail** (right) — for the selected run:
+  - **identity + status** — full id, the color-coded status, optional
+    `project` / `graph` refs, and `created` / `updated` stamps;
+  - **Logs** — each entry's time, a **severity-colored** level (error red, warn
+    amber, else neutral), and the message (the failing step + reason of a failed
+    run surface here);
+  - **Outputs** — the produced datasets / models / indexes in a `Kind / Name /
+    Ref` table;
+  - **Lineage** — `sources` and `steps` as joined refs, `freshness`, and
+    `confidence` rendered as a 0..1 progress bar.
+
+The panel reads already-validated `Run` handles in memory, so it introduces **no
+new JSON boundary** — the schema validation above (`parse_run_value`) has already
+run when the record entered from disk or the CRDT.
 
 ## Tests
 
