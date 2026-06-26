@@ -47,6 +47,22 @@ public:
     void run();
 
 private:
+    // The single active view shown in the content area. The menu bar selects
+    // which one is live, so the window shows one focused panel at a time instead
+    // of every panel stacked in one long scroll. Ordered along the product flow:
+    // your data → architect the pipeline → operate it → govern it.
+    enum class View {
+        Explorer,  // Projects | Databases | Tables | Rows | Large Objects
+        Query,     // the SQL console
+        Graph,     // the execution-graph workspace
+        Gate,      // the correctness gate
+        Deploy,    // the AI Solution Library → one-button deploy
+        Runs,      // runs / outputs / lineage
+        Jobs,      // compute jobs + scaling preview
+        Cluster,   // membership + replication
+        Admin,     // principals / keys / audit
+    };
+
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
     // routes by extension: .json/.jsonl import as rows, anything else stores as
@@ -63,6 +79,8 @@ private:
     // See app.cpp for the content-scale vs pixel-density rationale.
     void apply_display_scale();
     void draw_menu_bar(bool& running);
+    void draw_active_view();  // render whichever View is selected (the menu switcher)
+    void draw_about_modal();  // the Help → About Orama Zetta dialog
     void draw_dashboard();
     void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
     void draw_projects();    // top-level AI projects (create/select/rename/delete)
@@ -123,6 +141,13 @@ private:
     SDL_Renderer* renderer_ = nullptr;
     bool initialized_ = false;
     bool show_demo_ = false;
+
+    // Which panel the content area is showing (set from the menu bar). Defaults
+    // to the data Explorer — the "home" view.
+    View active_view_ = View::Explorer;
+    // Asks draw_about_modal() to open the About popup on the next frame (set from
+    // the Help menu), mirroring the New Project modal's request flag.
+    bool about_requested_ = false;
 
     // Explorer selection (held by name; re-resolved each frame so a dropped
     // database/table can't leave a dangling handle) and input fields. ImGui's

@@ -555,7 +555,7 @@ bool App::init() {
         if (win_h < 600) win_h = 600;
     }
 
-    const std::string title = std::string{"zetta "} + kVersion;
+    const std::string title = std::string{"Orama Zetta "} + kVersion;
     window_ = SDL_CreateWindow(
         title.c_str(), win_w, win_h,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -638,6 +638,14 @@ void App::apply_display_scale() {
 void App::draw_menu_bar(bool& running) {
     if (!ImGui::BeginMenuBar()) return;
 
+    // A menu entry that selects a view: a checkmark marks the live one, and
+    // choosing it makes that view the content area's sole panel.
+    const auto view_item = [&](const char* label, View view) {
+        if (ImGui::MenuItem(label, nullptr, active_view_ == view)) {
+            active_view_ = view;
+        }
+    };
+
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("New Project...")) {
             new_project_modal_requested_ = true;
@@ -646,16 +654,107 @@ void App::draw_menu_bar(bool& running) {
         if (ImGui::MenuItem("Quit", "Cmd+Q")) running = false;
         ImGui::EndMenu();
     }
+    // The views, grouped along the product flow: your data → architect the
+    // pipeline → operate it → govern it.
+    if (ImGui::BeginMenu("Data")) {
+        view_item("Explorer", View::Explorer);
+        view_item("SQL Query", View::Query);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Pipeline")) {
+        view_item("Graph Workspace", View::Graph);
+        view_item("Correctness Gate", View::Gate);
+        view_item("Deploy", View::Deploy);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Operations")) {
+        view_item("Runs", View::Runs);
+        view_item("Compute Jobs", View::Jobs);
+        view_item("Cluster", View::Cluster);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Governance")) {
+        view_item("Admin & Audit", View::Admin);
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("ImGui demo window", nullptr, &show_demo_);
+        ImGui::MenuItem("ImGui Demo Window", nullptr, &show_demo_);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
-        ImGui::MenuItem("About zetta");
+        if (ImGui::MenuItem("About Orama Zetta")) about_requested_ = true;
         ImGui::EndMenu();
     }
 
     ImGui::EndMenuBar();
+}
+
+// The content-area switcher: render whichever view the menu bar selected. Each
+// draw_* leads with a SeparatorText title, so the active panel is self-labelled.
+void App::draw_active_view() {
+    switch (active_view_) {
+        case View::Explorer: draw_explorer();        break;
+        case View::Query:    draw_query();           break;
+        case View::Graph:    draw_graph_workspace(); break;
+        case View::Gate:     draw_gate();            break;
+        case View::Deploy:   draw_deploy();          break;
+        case View::Runs:     draw_runs();            break;
+        case View::Jobs:     draw_jobs();            break;
+        case View::Cluster:  draw_cluster();         break;
+        case View::Admin:    draw_admin();           break;
+    }
+}
+
+void App::draw_about_modal() {
+    if (about_requested_) {
+        ImGui::OpenPopup("About Orama Zetta");
+        about_requested_ = false;
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0.0f),
+                             ImGuiCond_Appearing);
+
+    bool stay_open = true;
+    if (!ImGui::BeginPopupModal("About Orama Zetta", &stay_open,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::Text("Orama Zetta");
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", kVersion);
+    ImGui::TextColored(ImVec4(0.55f, 0.70f, 1.0f, 1.0f),
+                       "Intelligence Velocity for Big Thinkers.");
+    ImGui::Spacing();
+    ImGui::TextWrapped(
+        "Orama Zetta turns a question into running, deployed intelligence. "
+        "Describe a data or AI problem in plain language — or hand over an "
+        "artifact you already have — and it architects a correct data + AI "
+        "pipeline, deploys it onto infrastructure you control, runs it, and "
+        "learns from your data.");
+    ImGui::Spacing();
+    ImGui::TextDisabled(
+        "\"The data engineer, the AI engineer, and the platform engineer "
+        "— in a bottle.\"");
+
+    ImGui::SeparatorText("This node");
+    ImGui::TextDisabled("id:       %s", cluster_.node_id().c_str());
+    ImGui::TextDisabled("data dir: %s", node_.config().data_dir.c_str());
+    for (const std::string& address : cluster_.listen_addresses()) {
+        ImGui::TextDisabled("listening: %s", address.c_str());
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled(
+        "\"zetta\" is the binary codename for the product Orama Zetta.");
+
+    ImGui::Spacing();
+    if (ImGui::Button("Close") || !stay_open) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
 }
 
 void App::draw_dashboard() {
@@ -669,6 +768,7 @@ void App::draw_dashboard() {
 }
 
 void App::draw_explorer() {
+    ImGui::SeparatorText("Explorer");
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =
         (ImGui::GetContentRegionAvail().x - 4.0f * spacing) / 5.0f;
@@ -979,10 +1079,7 @@ void App::draw_rows() {
 }
 
 void App::draw_query() {
-    if (!ImGui::CollapsingHeader("Query (postgres)",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("SQL Query (postgres)");
     ImGui::TextDisabled(
         "Unqualified names use the selected database (%s); use db.table to "
         "target another.",
@@ -1047,10 +1144,7 @@ void App::draw_query() {
 }
 
 void App::draw_gate() {
-    if (!ImGui::CollapsingHeader("Correctness gate",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Correctness Gate");
     ImGui::TextDisabled(
         "Validate an execution graph before deploy. RULE-1: no deploy without a "
         "passing gate.");
@@ -1452,9 +1546,7 @@ void App::draw_new_project_modal() {
 }
 
 void App::draw_deploy() {
-    if (!ImGui::CollapsingHeader("Deploy", ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Deploy");
     ImGui::TextDisabled(
         "Pick an AI solution, choose where to run it, and deploy. The "
         "correctness gate must pass first — no deploy without it.");
@@ -1601,9 +1693,7 @@ void App::draw_deploy() {
 }
 
 void App::draw_cluster() {
-    if (!ImGui::CollapsingHeader("Cluster", ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Cluster");
     ImGui::Text("Node: %s", cluster_.node_id().c_str());
     for (const std::string& address : cluster_.listen_addresses()) {
         ImGui::Text("Listening on: %s", address.c_str());
@@ -1673,10 +1763,7 @@ void App::draw_cluster() {
 }
 
 void App::draw_runs() {
-    if (!ImGui::CollapsingHeader("Runs / Outputs / Lineage",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Runs / Outputs / Lineage");
 
     // A run is the record of one execution of a deployed graph (status / logs /
     // outputs / lineage). This panel is a read-only viewer: runs arrive via the
@@ -1855,10 +1942,7 @@ void App::draw_job_scaling_controls() {
 }
 
 void App::draw_jobs() {
-    if (!ImGui::CollapsingHeader("Compute Jobs",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Compute Jobs");
 
     // The GUI form of system.zetta_jobs: the live compute-job registry (one row
     // per unit of native distributed accelerated compute — featurize / train /
@@ -1938,10 +2022,7 @@ void App::draw_jobs() {
 }
 
 void App::draw_admin() {
-    if (!ImGui::CollapsingHeader("Admin & Settings",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Admin & Audit");
 
     // The governance surface (SCR-7 / CMP-5, the GUI slice of FEAT-9): a
     // **read-only** viewer over the node's already-validated governance state —
@@ -2013,10 +2094,7 @@ void App::open_graph(const ProjectGraph& stored) {
 }
 
 void App::draw_graph_workspace() {
-    if (!ImGui::CollapsingHeader("Graph Workspace",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Graph Workspace");
 
     // The workspace edits the *currently selected* project's graphs (the same
     // selection the explorer's Projects column drives). Re-resolved by name each
@@ -2485,22 +2563,19 @@ void App::run() {
             ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar;
         ImGui::Begin("##zetta_root", nullptr, kRootFlags);
 
+        // Menu bar (selects the view) + a persistent node-status strip, then the
+        // single active view fills the rest of the window. One focused panel at a
+        // time instead of every panel stacked in one long scroll.
         draw_menu_bar(running);
         draw_dashboard();
-        draw_query();
-        draw_gate();
-        draw_deploy();
-        draw_cluster();
-        draw_runs();
-        draw_jobs();
-        draw_admin();
-        draw_graph_workspace();
         ImGui::Separator();
-        draw_explorer();
+        draw_active_view();
 
-        // The New Project dialog (SCR-2) is a modal over the root window; it must
-        // be issued every frame so ImGui keeps it alive while it's open.
+        // The New Project dialog (SCR-2) and the About dialog are modals over the
+        // root window; they must be issued every frame so ImGui keeps them alive
+        // while open.
         draw_new_project_modal();
+        draw_about_modal();
 
         ImGui::End();
 
