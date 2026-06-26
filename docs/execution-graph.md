@@ -239,8 +239,11 @@ location, e.g. `edges[1]: edge references an unknown node ("a" -> "ghost")`.
   graph and blocks deploy on failure. The concrete *semantic* checks — acyclicity,
   legal stage transitions, required inputs — are the remaining work that plugs
   into its `Check` seam.
-- **Compile** — emit a graph from intent. **Deploy** has its first slice: a graph
-  can be placed onto a local target and the placement recorded — see
+- **Compile** — emit a graph from an input. The first concrete compiler exists:
+  [`compile_n8n_workflow`](n8n-compile.md) maps an imported n8n workflow's nodes
+  into typed steps and its connections into edges (#308). Compiling from
+  natural-language intent is the remaining slice. **Deploy** has its first slice: a
+  graph can be placed onto a local target and the placement recorded — see
   [deployments.md](deployments.md). **Run** has its first slice too: a graph can be
   executed step-by-step into a [Run](runs.md) — see [execution.md](execution.md).
 

@@ -8,7 +8,8 @@ project can be (re-)compiled from them later.
 
 This is **storage + validation only** — nothing here interprets, executes, or
 compiles the workflow into an [execution graph](execution-graph.md); that is a
-later FEAT-1 slice. The importer's whole job is to accept a *valid* n8n workflow,
+separate step ([`compile_n8n_workflow`](n8n-compile.md), #308). The importer's
+whole job is to accept a *valid* n8n workflow,
 reject anything that isn't one at the boundary, and keep the payload **byte-for-
 byte** so the eventual compiler sees exactly what the user exported.
 
@@ -130,11 +131,14 @@ n8n .json file ──import_n8n_workflow_file──▶ validate (parse + schema)
                               Project::create_input(Artifact, Upload, raw bytes)
                                                │
                               ProjectInput (replicated metadata + on-disk payload)
-                                               │  (later FEAT-1 slice)
+                                               │  compile_n8n_workflow (#308)
                                                ▼
                                         compile ▶ ExecutionGraph IR
 ```
 
+The **compile** step now exists: `compile_n8n_workflow` maps the stored workflow's
+nodes into typed IR steps and its connections into edges — see
+[n8n-compile.md](n8n-compile.md).
+
 See [project-inputs.md](project-inputs.md) for the underlying input record and
-[execution-graph.md](execution-graph.md) for the IR the workflow will eventually
-compile into.
+[execution-graph.md](execution-graph.md) for the IR the workflow compiles into.

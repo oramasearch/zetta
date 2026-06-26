@@ -271,6 +271,7 @@ add_library(zetta-core STATIC
   src/core/replicated_blob_store.cpp
   src/core/import.cpp
   src/core/n8n_import.cpp
+  src/core/n8n_compile.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/query/postgres.cpp
