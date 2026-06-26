@@ -70,6 +70,7 @@ private:
     void draw_large_objects();
     void draw_query();       // the SQL text area + results
     void draw_gate();        // correctness gate: run it over a graph, show the report
+    void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     void draw_cluster();     // role, listen address, peers, join command
     void draw_runs();        // run status/logs + outputs + lineage (one selected run)
 
@@ -138,6 +139,14 @@ private:
     std::string gate_graph_input_;
     std::string gate_error_;
     std::unique_ptr<ValidationReport> gate_report_;
+
+    // Deploy panel: the selected AI Solution Library blueprint (by id), the
+    // chosen placement on the dial (R1: only Local is functional), and the last
+    // deploy action's result line.
+    std::string selected_solution_;  // catalog solution id, empty = none
+    int deploy_placement_ = 0;       // DeploymentKind index; 0 = Local
+    std::string deploy_status_;      // last deploy result (success or error)
+    bool deploy_failed_ = false;     // colour deploy_status_ red vs. green
 
     // File ingestion (drag-and-drop + native dialog) and its last status line.
     std::mutex incoming_mutex_;

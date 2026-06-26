@@ -3,6 +3,8 @@
 #include "zetta/bytes.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
+#include "zetta/deployment.hpp"
+#include "zetta/deployment_target.hpp"
 #include "zetta/duration.hpp"
 #include "zetta/gate.hpp"
 #include "zetta/import.hpp"
@@ -16,6 +18,7 @@
 #include "zetta/query/service.hpp"
 #include "zetta/run.hpp"
 #include "zetta/signals.hpp"
+#include "zetta/solution_catalog.hpp"
 #include "zetta/table.hpp"
 #include "zetta/validation.hpp"
 #include "zetta/version.hpp"
@@ -30,6 +33,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cfloat>
 #include <cmath>
@@ -42,6 +46,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "zetta_font_embedded.hpp"
 
@@ -53,6 +58,10 @@ constexpr float kBaseFontPixels = 15.0f;
 
 // Inline-error text colour (soft red).
 constexpr ImVec4 kErrorColor{1.0f, 0.4f, 0.4f, 1.0f};
+
+// Inline-success text colour (soft green) — matches the cluster panel's
+// "in sync" hue.
+constexpr ImVec4 kSuccessColor{0.4f, 0.8f, 0.4f, 1.0f};
 
 // Correctness-gate status colours: green pass, amber warn, red fail. The amber
 // matches the "syncing" colour used in the cluster panel.
@@ -993,6 +1002,155 @@ void App::handle_incoming_files() {
     }
 }
 
+void App::draw_deploy() {
+    if (!ImGui::CollapsingHeader("Deploy", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    ImGui::TextDisabled(
+        "Pick an AI solution, choose where to run it, and deploy. The "
+        "correctness gate must pass first — no deploy without it.");
+
+    const SolutionCatalog& catalog = SolutionCatalog::builtin();
+
+    // 1) Solution picker — the AI Solution Library blueprints (the GUI's source
+    //    of deployable graphs until a graph editor lands). Selection is by id.
+    const Solution* selected = catalog.find(selected_solution_);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##solution",
+                          selected ? selected->name.c_str()
+                                   : "Select an AI solution...")) {
+        for (const Solution& solution : catalog.solutions()) {
+            const bool is_selected = solution.id == selected_solution_;
+            if (ImGui::Selectable(solution.name.c_str(), is_selected)) {
+                selected_solution_ = solution.id;
+                deploy_status_.clear();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s — %s", solution.category.c_str(),
+                                  solution.summary.c_str());
+            }
+            if (is_selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    selected = catalog.find(selected_solution_);
+    if (selected) {
+        ImGui::TextDisabled("%s · %zu steps · %zu edges",
+                            selected->category.c_str(),
+                            selected->graph.node_count(),
+                            selected->graph.edge_count());
+    }
+
+    // 2) Placement dial — the local→kubernetes→vpc→cloud progression. R1 ships
+    //    Local only; the rest are shown disabled and labelled "(planned)" so the
+    //    dial communicates the roadmap without being choosable. The combo index
+    //    mirrors DeploymentKind's declaration order; deploy still guards on Local.
+    static constexpr std::array<DeploymentKind, 4> kDial{
+        DeploymentKind::Local, DeploymentKind::Kubernetes, DeploymentKind::Vpc,
+        DeploymentKind::Cloud};
+    const auto dial_label = [](DeploymentKind kind) -> std::string {
+        std::string label = to_string(kind);
+        if (!label.empty()) label[0] = static_cast<char>(std::toupper(label[0]));
+        return kind == DeploymentKind::Local ? label : label + " (planned)";
+    };
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##placement",
+                          dial_label(kDial[deploy_placement_]).c_str())) {
+        for (int index = 0; index < static_cast<int>(kDial.size()); ++index) {
+            const bool functional = kDial[index] == DeploymentKind::Local;
+            ImGui::BeginDisabled(!functional);
+            const bool is_selected = index == deploy_placement_;
+            if (ImGui::Selectable(dial_label(kDial[index]).c_str(),
+                                  is_selected)) {
+                deploy_placement_ = index;
+                deploy_status_.clear();
+            }
+            ImGui::EndDisabled();
+            if (is_selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    // 3) One-button deploy: run the correctness gate (RULE-1 — no deploy without
+    //    a passing gate), then place the blueprint onto the chosen target.
+    ImGui::BeginDisabled(selected == nullptr);
+    if (ImGui::Button("Deploy")) {
+        const ir::ExecutionGraph& graph = selected->graph;
+        const ValidationReport report = default_gate().run(graph);
+        if (report.block_deploy) {
+            std::string reason;
+            for (const CheckResult& check : report.checks) {
+                if (check.status == CheckStatus::Fail) {
+                    reason = check.name + ": " + check.reason;
+                    break;
+                }
+            }
+            deploy_failed_ = true;
+            deploy_status_ = "Gate blocked deploy — " +
+                             (reason.empty() ? "graph failed validation" : reason);
+        } else {
+            const DeploymentTarget target{kDial[deploy_placement_], {}, {}};
+            const std::shared_ptr<Deployment> deployment =
+                node_.deploy_graph(graph, target, selected->name);
+            if (deployment) {
+                deploy_failed_ = false;
+                deploy_status_ = "Deployed \"" + selected->name + "\" to " +
+                                 to_string(target.kind) + " (deployment " +
+                                 deployment->id().substr(0, 8) + ")";
+            } else {
+                deploy_failed_ = true;
+                deploy_status_ =
+                    target.is_local()
+                        ? "Deploy failed — the gate passed but placement was "
+                          "rejected"
+                        : "Deploy failed — only the local target is available "
+                          "in R1";
+            }
+        }
+    }
+    ImGui::EndDisabled();
+    if (!deploy_status_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(deploy_failed_ ? kErrorColor : kSuccessColor, "%s",
+                           deploy_status_.c_str());
+    }
+
+    // 4) Deployment status — the recorded placements (acceptance: "see its
+    //    status"). Sourced from the replicated deployments() list.
+    ImGui::SeparatorText("Deployments");
+    const std::vector<std::shared_ptr<Deployment>> deployments =
+        node_.deployments();
+    if (deployments.empty()) {
+        ImGui::TextDisabled("(none yet)");
+        return;
+    }
+    const ImGuiTableFlags table_flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("deployments", 5, table_flags)) {
+        ImGui::TableSetupColumn("Graph");
+        ImGui::TableSetupColumn("Target");
+        ImGui::TableSetupColumn("Steps");
+        ImGui::TableSetupColumn("Edges");
+        ImGui::TableSetupColumn("Created");
+        ImGui::TableHeadersRow();
+        for (const std::shared_ptr<Deployment>& deployment : deployments) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(deployment->graph_name().c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(to_string(deployment->target().kind).c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%zu", deployment->node_count());
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%zu", deployment->edge_count());
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TextUnformatted(deployment->created().c_str());
+        }
+        ImGui::EndTable();
+    }
+}
+
 void App::draw_cluster() {
     if (!ImGui::CollapsingHeader("Cluster", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
@@ -1599,6 +1757,7 @@ void App::run() {
         draw_dashboard();
         draw_query();
         draw_gate();
+        draw_deploy();
         draw_cluster();
         draw_runs();
         draw_graph_workspace();

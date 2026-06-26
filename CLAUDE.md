@@ -462,10 +462,39 @@ created }`) with a `<deployment-uuid>/deployment.json` projection, persisted acr
 restart and replicated to peers (recording the node it was placed on). The graph is
 recorded as a **summary** (name + node/edge counts), not the full graph — IR
 serialization is a later slice. It's queryable via the C++ API **and** the SQL
-**`system.zetta_deployments`** table. k8s/cloud + the Deploy panel are separate
-tasks. `Node` learns its own id (`Node::node_id()`) from the `ReplicationManager`
-actor id, or from `data_dir/node_id` when standalone. See
-[docs/deployments.md](docs/deployments.md).
+**`system.zetta_deployments`** table. k8s/cloud are separate tasks; the
+reconcile/self-heal control plane is the **deployment controller** below, and the
+**Deploy panel** below now drives deploy from the GUI. `Node` learns its own id
+(`Node::node_id()`) from the `ReplicationManager` actor id, or from
+`data_dir/node_id` when standalone. See [docs/deployments.md](docs/deployments.md).
+
+### AI Solution Library + Deploy panel (one-button deploy)
+
+The **AI Solution Library** (`zetta::SolutionCatalog`,
+`include/zetta/solution_catalog.hpp`) is a curated, schema-validated catalog of
+ready-to-deploy `ir::ExecutionGraph` **blueprints** — the GUI's source of
+deployable graphs until a graph editor lands. A `Solution` is identity +
+presentation (`id`/`name`/`summary`/`category`) + a `graph`; `SolutionCatalog`
+is an ordered, read-only library with `find(id)` (non-owning `const Solution*`).
+`SolutionCatalog::builtin()` ships five representative blueprints (churn,
+recommendations, semantic search, lead scoring, support triage) parsed once from
+embedded data. The catalog is **boundary-validated like the Run record**:
+`parse_solution_catalog` is non-throwing and layers a draft-07 **JSON Schema**
+(`schemas/solution_catalog.schema.json`, mirrored embedded in
+`src/core/solution_catalog.cpp`) for the document shape, then
+`ir::from_json` for each blueprint's graph structure, then an id-uniqueness check
+— rejecting a malformed catalog with a path-qualified reason instead of corrupting
+state.
+
+The headed **Deploy panel** (`App::draw_deploy`, `src/gui/app.cpp`) realizes
+*one-button deploy* (FEAT-4 / SCR-5 / CMP-3): pick a solution, choose a placement
+on the **dial** (R1 **Local** only — k8s/vpc/cloud shown but disabled, labelled
+"(planned)"), then the one **Deploy** button **runs the correctness gate first**
+(`default_gate().run`; RULE-1 — blocks with the failing check's reason, places
+nothing) and on a pass calls `Node::deploy_graph`. A **Deployments** table shows
+the recorded placements (`Node::deployments()`) so a deploy's status is visible.
+The panel adds no persisted state of its own — only UI selection. See
+[docs/solution-catalog.md](docs/solution-catalog.md).
 
 ### Deployment controller (reconcile + self-heal)
 
@@ -584,6 +613,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
+  solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped login credential + authorize()
@@ -629,6 +659,7 @@ src/core/                   zetta-core impl
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
+  solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decision
@@ -788,6 +819,7 @@ loop thread).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
+- [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

@@ -10,8 +10,11 @@ placement is recorded (replicated + on disk) and queryable. The reconcile/
 self-heal loop that *acts* on a deployment — driving desired → actual and
 restarting a killed/failed run — now exists as the **[deployment
 controller](deployment-controller.md)**. Kubernetes / VPC / managed-cloud
-targets, cross-node failover, and the Deploy panel remain deliberately **later
-slices** (see *What's deferred*).
+targets and cross-node failover remain deliberately **later slices** (see
+*What's deferred*). The headed **[Deploy panel](solution-catalog.md)** drives
+this slice from the GUI: one-button deploy of an AI-solution blueprint to the
+local target, gated by the [correctness gate](gate.md), with the recorded
+placements shown back.
 
 ## The target — `DeploymentTarget`
 
@@ -161,7 +164,6 @@ Deployments are queryable two ways:
   Interface bindings and provisioning (ADR-7 / ADR-15).
 - **Graph serialization** — once the IR has a serialized form, a deployment will
   reference the stored graph by id instead of recording only a summary.
-- **The Deploy panel** — the headed UI for one-button deploy.
 
 Note: **executing** a deployed graph (running it step-by-step into a
 [Run](runs.md)) is its own slice and exists today — see
