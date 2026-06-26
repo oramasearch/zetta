@@ -34,9 +34,11 @@
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
-//   key:<uuid>         -> { principal, scope, created }    (an access key;
-//                          owned by a principal — its scope is the V1 key-scoped
-//                          access model (RULE-3); see access_key.hpp)
+//   key:<uuid>         -> { principal, scope, capabilities, created }
+//                          (an access key; owned by a principal — its scope is
+//                          the V1 key-scoped access model (RULE-3) and its
+//                          capabilities are the deny-by-default rights model
+//                          (ENT-22); see access_key.hpp / capability.hpp)
 //   audit:<uuid>       -> { action, actor, target, allowed, detail, time }
 //                          (an immutable, append-only audit event — a graph
 //                          change / deploy / data-access decision; a top-level

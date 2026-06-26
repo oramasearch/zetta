@@ -253,6 +253,7 @@ add_library(zetta-core STATIC
   src/core/principal.cpp
   src/core/access_key.cpp
   src/core/scope.cpp
+  src/core/capability.cpp
   src/core/audit_event.cpp
   src/core/table.cpp
   src/core/jsonl_store.cpp

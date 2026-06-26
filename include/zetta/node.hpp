@@ -192,6 +192,14 @@ public:
     }
     std::size_t audit_event_count() const { return audit_events_.size(); }
 
+    // The capability decision (ENT-22): `operation` is allowed iff the key holds
+    // a matching, unexpired capability as of the current time. Deny-by-default —
+    // an unknown/empty key id, or no matching (live) capability, denies. The
+    // verb/right counterpart to the resource overload above; the two compose (an
+    // operation on a resource checks both).
+    AccessDecision authorize(const std::string& key_id,
+                             const Operation& operation) const;
+
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.

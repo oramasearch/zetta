@@ -8,6 +8,7 @@
 
 #include "temp_dir.hpp"
 #include "zetta/access_key.hpp"
+#include "zetta/capability.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/node.hpp"
 #include "zetta/principal.hpp"
@@ -16,10 +17,14 @@
 #include "zetta/uuid.hpp"
 
 using zetta::AccessDecision;
+using zetta::Capability;
+using zetta::CapabilityDomain;
+using zetta::CapabilitySet;
 using zetta::Cluster;
 using zetta::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
+using zetta::Operation;
 using zetta::PrincipalKind;
 using zetta::ReplicationManager;
 using zetta::Resource;
@@ -41,6 +46,16 @@ Resource database(std::string name) {
 Resource project(std::string name) {
     return Resource{ResourceKind::Project, std::move(name)};
 }
+
+Operation operation(CapabilityDomain domain, std::string action) {
+    return Operation{domain, std::move(action)};
+}
+
+// Fixed ISO-8601 UTC stamps for deterministic TTL tests (same fixed-width
+// format as zetta::now_iso8601(), so comparisons are chronological).
+constexpr std::string_view kPast = "2020-01-01T00:00:00.000Z";
+constexpr std::string_view kNow = "2026-06-25T00:00:00.000Z";
+constexpr std::string_view kFuture = "2099-01-01T00:00:00.000Z";
 
 // Tick both nodes until `done` holds (or we give up). Mirrors the project
 // replication test: capture -> cluster gossip -> peer merge -> reconcile.
@@ -92,8 +107,8 @@ TEST(Scope, UnrestrictedPermitsEverything) {
 TEST(Authorize, AllowsInScopeAndDeniesOutOfScope) {
     Scope scope;
     scope.grant(ResourceKind::Database, "churn");
-    const zetta::AccessKey key{"key-id", "principal-id", scope, "2026-01-01",
-                               TempDir{}.path()};
+    const zetta::AccessKey key{"key-id", "principal-id", scope,
+                               CapabilitySet{}, "2026-01-01", TempDir{}.path()};
 
     const AccessDecision allowed = zetta::authorize(key, database("churn"));
     EXPECT_TRUE(allowed.allowed);
@@ -141,8 +156,8 @@ TEST(Scope, RejectsMalformedJsonAtTheBoundary) {
 TEST(AccessKey, MetadataCarriesPrincipalAndScope) {
     Scope scope;
     scope.grant(ResourceKind::Project, "churn");
-    const zetta::AccessKey key{"key-id", "principal-id", scope, "2026-01-01",
-                               TempDir{}.path()};
+    const zetta::AccessKey key{"key-id", "principal-id", scope,
+                               CapabilitySet{}, "2026-01-01", TempDir{}.path()};
     const nlohmann::json meta = key.metadata();
     EXPECT_EQ(meta.at("principal"), "principal-id");
     EXPECT_EQ(meta.at("created"), "2026-01-01");
@@ -150,6 +165,198 @@ TEST(AccessKey, MetadataCarriesPrincipalAndScope) {
     Scope parsed;
     ASSERT_TRUE(zetta::scope_from_json(meta.at("scope"), parsed));
     EXPECT_EQ(parsed, scope);
+}
+
+// ----- Capability: the deny-by-default rights primitive (ENT-22) -------------
+
+TEST(Capability, DenyByDefault) {
+    const CapabilitySet capabilities;  // grants nothing
+    EXPECT_FALSE(capabilities.permits(operation(CapabilityDomain::Data, "read"),
+                                      kNow));
+    EXPECT_FALSE(capabilities.permits(operation(CapabilityDomain::Api, "query"),
+                                      kNow));
+}
+
+TEST(Capability, PermitsExactlyTheGrantedRight) {
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Data, "read")
+        .grant(CapabilityDomain::Orchestration, "start_run");
+
+    EXPECT_TRUE(capabilities.permits(operation(CapabilityDomain::Data, "read"),
+                                     kNow));
+    EXPECT_TRUE(capabilities.permits(
+        operation(CapabilityDomain::Orchestration, "start_run"), kNow));
+
+    // A different action is out of scope...
+    EXPECT_FALSE(capabilities.permits(operation(CapabilityDomain::Data, "write"),
+                                      kNow));
+    // ...and so is the same action under a different domain.
+    EXPECT_FALSE(capabilities.permits(operation(CapabilityDomain::Api, "read"),
+                                      kNow));
+}
+
+TEST(Capability, TtlBoundsTheGrant) {
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Data, "read",
+                       std::string(kFuture));            // not yet expired
+    capabilities.grant(CapabilityDomain::Api, "deploy",
+                       std::string(kPast));              // already expired
+
+    // A future-dated TTL still permits...
+    EXPECT_TRUE(capabilities.permits(operation(CapabilityDomain::Data, "read"),
+                                     kNow));
+    // ...a past-dated TTL is denied (the right elapsed).
+    EXPECT_FALSE(capabilities.permits(
+        operation(CapabilityDomain::Api, "deploy"), kNow));
+    // The expired grant is reported as a TTL miss, not a missing grant.
+    EXPECT_TRUE(capabilities.has_expired_match(
+        operation(CapabilityDomain::Api, "deploy"), kNow));
+    EXPECT_FALSE(capabilities.has_expired_match(
+        operation(CapabilityDomain::Data, "read"), kNow));
+
+    // A capability with no TTL never expires.
+    CapabilitySet forever;
+    forever.grant(CapabilityDomain::Data, "read");
+    EXPECT_TRUE(
+        forever.permits(operation(CapabilityDomain::Data, "read"), kFuture));
+}
+
+TEST(Capability, AuthorizeAllowsMatchAndDeniesOtherwise) {
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Data, "read");
+    capabilities.grant(CapabilityDomain::Api, "deploy", std::string(kPast));
+    const zetta::AccessKey key{"key-id", "principal-id", Scope{}, capabilities,
+                               "2026-01-01", TempDir{}.path()};
+
+    const AccessDecision allowed =
+        zetta::authorize(key, operation(CapabilityDomain::Data, "read"), kNow);
+    EXPECT_TRUE(allowed.allowed);
+    EXPECT_NE(allowed.reason.find("permitted"), std::string::npos);
+
+    // No matching capability at all.
+    const AccessDecision missing =
+        zetta::authorize(key, operation(CapabilityDomain::Data, "write"), kNow);
+    EXPECT_FALSE(missing.allowed);
+    EXPECT_NE(missing.reason.find("no matching capability"), std::string::npos);
+
+    // Matching capability, but its TTL has elapsed — a distinct deny reason.
+    const AccessDecision expired =
+        zetta::authorize(key, operation(CapabilityDomain::Api, "deploy"), kNow);
+    EXPECT_FALSE(expired.allowed);
+    EXPECT_NE(expired.reason.find("expired"), std::string::npos);
+}
+
+TEST(Capability, RoundTripsThroughJson) {
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Data, "read")
+        .grant(CapabilityDomain::Api, "deploy", std::string(kFuture));
+
+    const nlohmann::json document = capabilities;  // to_json ADL hook
+    ASSERT_TRUE(document.is_array());
+    // A capability with no TTL omits expires_at entirely.
+    EXPECT_FALSE(document.at(0).contains("expires_at"));
+    EXPECT_EQ(document.at(1).at("expires_at"), kFuture);
+
+    CapabilitySet parsed;
+    ASSERT_TRUE(zetta::capability_set_from_json(document, parsed));
+    EXPECT_EQ(parsed, capabilities);
+}
+
+TEST(Capability, RejectsMalformedJsonAtTheBoundary) {
+    CapabilitySet out;
+    // Not an array.
+    EXPECT_FALSE(zetta::capability_set_from_json(nlohmann::json::object(), out));
+    // An unknown domain must fail fast (never silently drop a grant).
+    EXPECT_FALSE(zetta::capability_set_from_json(
+        nlohmann::json::parse(R"([{"domain": "filesystem", "action": "read"}])"),
+        out));
+    // A missing action.
+    EXPECT_FALSE(zetta::capability_set_from_json(
+        nlohmann::json::parse(R"([{"domain": "data"}])"), out));
+    // A wrong-typed expires_at.
+    EXPECT_FALSE(zetta::capability_set_from_json(
+        nlohmann::json::parse(
+            R"([{"domain": "data", "action": "read", "expires_at": 1}])"),
+        out));
+}
+
+TEST(Capability, DomainRoundTripsThroughStrings) {
+    for (const auto domain :
+         {CapabilityDomain::Api, CapabilityDomain::Data,
+          CapabilityDomain::Orchestration}) {
+        CapabilityDomain parsed{};
+        ASSERT_TRUE(zetta::capability_domain_from_string(
+            zetta::to_string(domain), parsed));
+        EXPECT_EQ(parsed, domain);
+    }
+    CapabilityDomain ignored{};
+    EXPECT_FALSE(zetta::capability_domain_from_string("network", ignored));
+}
+
+// The acceptance test (issue #315): an operation is allowed only with a matching
+// capability and denied otherwise — checked through the node seam.
+TEST(AccessControl, OperationIsAllowedOnlyWithAMatchingCapability) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    auto pipeline = node.create_principal("pipeline", PrincipalKind::Service);
+    ASSERT_TRUE(pipeline);
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Data, "read")
+        .grant(CapabilityDomain::Orchestration, "start_run");
+    auto key = pipeline->create_key(Scope{}, capabilities);
+    ASSERT_TRUE(key);
+
+    // Allowed: the operations the key holds a capability for.
+    EXPECT_TRUE(
+        node.authorize(key->id(), operation(CapabilityDomain::Data, "read"))
+            .allowed);
+    EXPECT_TRUE(node.authorize(key->id(), operation(CapabilityDomain::Orchestration,
+                                                    "start_run"))
+                    .allowed);
+
+    // Denied: a right never granted (deny-by-default).
+    EXPECT_FALSE(
+        node.authorize(key->id(), operation(CapabilityDomain::Data, "write"))
+            .allowed);
+    EXPECT_FALSE(
+        node.authorize(key->id(), operation(CapabilityDomain::Api, "deploy"))
+            .allowed);
+
+    // Denied for an unknown / empty key id (no credential => no rights).
+    EXPECT_FALSE(node.authorize("no-such-key",
+                                operation(CapabilityDomain::Data, "read"))
+                     .allowed);
+    EXPECT_FALSE(
+        node.authorize("", operation(CapabilityDomain::Data, "read")).allowed);
+
+    node.stop();
+}
+
+TEST(AccessControl, ExpiredCapabilityIsDeniedThroughTheNode) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    auto pipeline = node.create_principal("pipeline", PrincipalKind::Service);
+    ASSERT_TRUE(pipeline);
+    CapabilitySet capabilities;
+    // A TTL already in the past relative to now_iso8601() (today is 2026).
+    capabilities.grant(CapabilityDomain::Data, "read", std::string(kPast));
+    // A TTL far in the future stays valid.
+    capabilities.grant(CapabilityDomain::Data, "write", std::string(kFuture));
+    auto key = pipeline->create_key(Scope{}, capabilities);
+    ASSERT_TRUE(key);
+
+    EXPECT_FALSE(
+        node.authorize(key->id(), operation(CapabilityDomain::Data, "read"))
+            .allowed);
+    EXPECT_TRUE(
+        node.authorize(key->id(), operation(CapabilityDomain::Data, "write"))
+            .allowed);
+
+    node.stop();
 }
 
 TEST(Principal, KindRoundTripsThroughStrings) {
@@ -317,6 +524,70 @@ TEST(AccessControl, PersistsAcrossRestartViaCRDT) {
     node.stop();
 }
 
+TEST(AccessControl, CapabilitiesPersistAcrossRestartViaDisk) {
+    TempDir tmp;
+    std::string key_id;
+    {
+        Node node{config_for(tmp)};
+        node.start();
+        auto pipeline = node.create_principal("pipeline", PrincipalKind::Service);
+        ASSERT_TRUE(pipeline);
+        CapabilitySet capabilities;
+        capabilities.grant(CapabilityDomain::Data, "read");
+        auto key = pipeline->create_key(Scope{}, std::move(capabilities));
+        ASSERT_TRUE(key);
+        key_id = key->id();
+        node.stop();
+    }
+
+    // A fresh standalone node reads the capability purely from disk; it enforces.
+    Node reloaded{config_for(tmp)};
+    reloaded.start();
+    auto key = reloaded.find_access_key(key_id);
+    ASSERT_TRUE(key);
+    ASSERT_EQ(key->capabilities().grants.size(), 1u);
+    EXPECT_TRUE(reloaded.authorize(key_id, operation(CapabilityDomain::Data,
+                                                     "read"))
+                    .allowed);
+    EXPECT_FALSE(reloaded.authorize(key_id, operation(CapabilityDomain::Data,
+                                                      "write"))
+                     .allowed);
+    reloaded.stop();
+}
+
+TEST(AccessControl, CapabilitiesPersistAcrossRestartViaCRDT) {
+    TempDir tmp;
+    const std::string node_id = zetta::new_uuid();
+    std::string key_id;
+    {
+        ReplicationManager replication{node_id};
+        Node node{config_for(tmp), &replication};
+        node.start();
+        auto pipeline = node.create_principal("pipeline", PrincipalKind::Service);
+        ASSERT_TRUE(pipeline);
+        CapabilitySet capabilities;
+        capabilities.grant(CapabilityDomain::Orchestration, "start_run");
+        auto key = pipeline->create_key(Scope{}, std::move(capabilities));
+        ASSERT_TRUE(key);
+        key_id = key->id();
+        node.tick();  // persist the CRDT document
+        node.stop();
+    }
+
+    // A brand-new ReplicationManager rebuilds the key (and its capability) from
+    // the persisted document; the right still enforces.
+    ReplicationManager replication{node_id};
+    Node node{config_for(tmp), &replication};
+    node.start();
+    EXPECT_TRUE(node.authorize(key_id, operation(CapabilityDomain::Orchestration,
+                                                 "start_run"))
+                    .allowed);
+    EXPECT_FALSE(
+        node.authorize(key_id, operation(CapabilityDomain::Data, "read"))
+            .allowed);
+    node.stop();
+}
+
 TEST(AccessControl, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
@@ -345,12 +616,14 @@ TEST(AccessControl, ReplicatesToPeer) {
     Cluster cluster_b{id_b, cfg_b, &repl_b};
     cluster_b.start();
 
-    // Create a principal + scoped key on node A only.
+    // Create a principal + scoped, capability-bearing key on node A only.
     auto principal = a.create_principal("analyst");
     ASSERT_TRUE(principal);
     Scope scope;
     scope.grant(ResourceKind::Database, "churn");
-    auto key = principal->create_key(scope);
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Data, "read");
+    auto key = principal->create_key(scope, capabilities);
     ASSERT_TRUE(key);
     const std::string key_id = key->id();
 
@@ -365,6 +638,11 @@ TEST(AccessControl, ReplicatesToPeer) {
     EXPECT_TRUE(b.find_principal("analyst"));
     EXPECT_TRUE(b.authorize(key_id, database("churn")).allowed);
     EXPECT_FALSE(b.authorize(key_id, database("fraud")).allowed);
+    // The capability replicated too: the operation decision enforces on B.
+    EXPECT_TRUE(
+        b.authorize(key_id, operation(CapabilityDomain::Data, "read")).allowed);
+    EXPECT_FALSE(
+        b.authorize(key_id, operation(CapabilityDomain::Data, "write")).allowed);
 
     // Dropping the principal on A also removes the key on B.
     ASSERT_TRUE(a.drop_principal("analyst"));

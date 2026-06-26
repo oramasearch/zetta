@@ -9,7 +9,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [n8n-import.md](n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256 + schema-validated boundary).
 - [runs.md](runs.md) — the Run (`zetta::Run`) record: status / logs / outputs / lineage, with JSON-Schema boundary validation.
-- [access-control.md](access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope`, deny-by-default authorization (RULE-3).
+- [access-control.md](access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [audit-trail.md](audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
 - [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.

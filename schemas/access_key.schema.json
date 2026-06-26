@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/access_key.schema.json",
   "title": "AccessKey",
-  "description": "An access key (ENT-21): the login credential whose scope is the V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6). The on-disk key.json projection of the replicated `key:<uuid>` CRDT value, owned by a principal. Mirrored by zetta::AccessKey in include/zetta/access_key.hpp and zetta::Scope in include/zetta/scope.hpp; enforced by scope_from_json() in src/core/scope.cpp and Principal::load() in src/core/principal.cpp — keep them in sync. A malformed scope is rejected at the boundary so access never silently widens or narrows.",
+  "description": "An access key (ENT-21): the login credential whose scope is the V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6) and whose capabilities are the deny-by-default rights model (ENT-22). The on-disk key.json projection of the replicated `key:<uuid>` CRDT value, owned by a principal. Mirrored by zetta::AccessKey in include/zetta/access_key.hpp, zetta::Scope in include/zetta/scope.hpp, and zetta::CapabilitySet in include/zetta/capability.hpp; enforced by scope_from_json()/capability_set_from_json() and Principal::load() in src/core/principal.cpp — keep them in sync. A malformed scope or capability is rejected at the boundary so access never silently widens or narrows.",
   "type": "object",
   "required": ["principal", "scope"],
   "additionalProperties": false,
@@ -16,12 +16,38 @@
       "type": "string"
     },
     "scope": { "$ref": "#/$defs/scope" },
+    "capabilities": {
+      "description": "The deny-by-default rights this key may exercise (ENT-22) — the verb/right axis, orthogonal to scope's resource axis. Optional; absent means no rights granted. An operation is permitted only by a matching, unexpired capability.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/capability" }
+    },
     "created": {
       "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
       "type": "string"
     }
   },
   "$defs": {
+    "capability": {
+      "description": "A deny-by-default grant of a specific API/data/orchestration right (ENT-22), optionally TTL'd. An operation is covered iff its (domain, action) match exactly and the capability has not expired.",
+      "type": "object",
+      "required": ["domain", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "The governance domain of the right.",
+          "type": "string",
+          "enum": ["api", "data", "orchestration"]
+        },
+        "action": {
+          "description": "The specific right within the domain (e.g. 'query', 'read', 'deploy', 'start_run'). The action taxonomy is open in V1.",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Optional TTL: the ISO-8601 UTC instant (same fixed-width format as `created`) at/after which the capability is expired. Omitted means it never expires.",
+          "type": "string"
+        }
+      }
+    },
     "scope": {
       "description": "What the key permits — deny-by-default. A resource is in scope iff `unrestricted` is true or it appears in `grants`.",
       "type": "object",

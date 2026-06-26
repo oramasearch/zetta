@@ -75,13 +75,16 @@ public:
     // so a key survives restart (standalone reads it straight off disk).
     void load();
 
-    // Issue a new access key with the given scope: stamps id + created, writes
-    // the metadata into the CRDT (`key:<uuid>`) and key.json to disk, and returns
-    // the handle. A key is immutable once created. Empty handle on disk failure.
-    std::shared_ptr<AccessKey> create_key(Scope scope);
+    // Issue a new access key with the given scope + capabilities: stamps id +
+    // created, writes the metadata into the CRDT (`key:<uuid>`) and key.json to
+    // disk, and returns the handle. Capabilities default to none (deny-by-default
+    // rights). A key is immutable once created. Empty handle on disk failure.
+    std::shared_ptr<AccessKey> create_key(Scope scope,
+                                          CapabilitySet capabilities = {});
     // Apply a replicated key (from a peer) by id, without capturing. Returns the
     // existing handle if already present.
     std::shared_ptr<AccessKey> materialize_key(std::string id, Scope scope,
+                                               CapabilitySet capabilities,
                                                std::string created);
     // Find a key by its id (UUID), or an empty handle.
     std::shared_ptr<AccessKey> find_key(const std::string& id) const;

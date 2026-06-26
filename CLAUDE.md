@@ -129,17 +129,28 @@ A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (`create`/`find`/`drop`/`rename_principal`, `principal_names`). A principal owns
 its **access keys** (`zetta::AccessKey`) the way a `Project` owns its inputs
 (`create_key`/`find_key`/`drop_key`; keys are immutable credentials — no rename).
-Each key carries a **`Scope`** (`include/zetta/scope.hpp`): a deny-by-default set
-of `Resource`s (`kind` database|project + name), or `unrestricted` for an admin
-key. This is the **V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6)**: a
-request inherits the scope of the key it logged in with — in-scope resources are
-allowed, everything else is denied. `Node::authorize(key_id, resource)` is the
-enforcement seam (an unknown/empty key denies); `zetta::authorize(key, resource)`
-is the pure decision. Principals + keys are replicated state (flat keys
-`principal:<uuid>` and `key:<uuid>` carrying its parent `principal` ref), with
-`<principal-uuid>/principal.json` + `<principal-uuid>/keys/<key-uuid>/key.json`
-on-disk projections. Finer access tiers (team/partner/per-dataset, per-table)
-are deferred; approval gates are a separate FEAT-9 slice. See
+A key bounds access along **two orthogonal, deny-by-default axes**: its
+**`Scope`** (`include/zetta/scope.hpp`) — *which resources*: a set of `Resource`s
+(`kind` database|project + name), or `unrestricted` for an admin key — and its
+**`CapabilitySet`** (`include/zetta/capability.hpp`) — *which rights*: a set of
+`Capability` grants (ENT-22), each a `domain` (api|data|orchestration) + `action`
+with an optional **TTL** (`expires_at`). This is the **V1 key-scoped access model
+(RULE-3 / PERM-1 / ADR-6 / ENT-22)**: a request inherits both the scope and the
+capabilities of the key it logged in with — in-scope resources are allowed and
+everything else denied, and an `Operation` (a `domain`+`action`) is allowed only
+with a matching, unexpired capability (there is no wildcard capability). The two
+axes **compose** (an operation on a resource checks both).
+`Node::authorize(key_id, resource)` and `Node::authorize(key_id, operation)` are
+the enforcement seams (an unknown/empty key denies); `zetta::authorize(key,
+resource)` and `zetta::authorize(key, operation, now)` are the pure decisions (the
+injectable `now` makes TTL deterministic; the capability deny reason distinguishes
+"never granted" from "TTL expired"). Principals + keys are replicated state (flat
+keys `principal:<uuid>` and `key:<uuid>` carrying its parent `principal` ref +
+its `scope` + `capabilities`), with `<principal-uuid>/principal.json` +
+`<principal-uuid>/keys/<key-uuid>/key.json` on-disk projections. Finer access
+tiers (team/partner/per-dataset, per-table) are deferred; granting a capability as
+a first-class command/event and approval gates are separate FEAT-9 slices (the
+audit trail itself is built — see below). See
 [docs/access-control.md](docs/access-control.md).
 
 A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
@@ -275,9 +286,9 @@ fragment the change history and accumulate `node:` keys). The document uses
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
 `deployment:<uuid>`, `run:<uuid>`, `principal:<uuid>` (an authenticated actor),
-`key:<uuid>` (an access key carrying its parent `principal` ref + its `scope`),
-and `audit:<uuid>` (an immutable, append-only audit event) — each entity owns its
-key by UUID so concurrent edits never collide.
+`key:<uuid>` (an access key carrying its parent `principal` ref + its `scope` +
+its `capabilities`), and `audit:<uuid>` (an immutable, append-only audit event) —
+each entity owns its key by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -312,6 +323,7 @@ data_dir/
     keys/
       <key-uuid>/            ← one folder per access key (UUIDv4 = its id)
         key.json             ← { id, principal, scope:{ unrestricted, grants },
+                                 capabilities:[ { domain, action, expires_at? } ],
                                  created }
   audit/                     ← the immutable, append-only audit trail
     <audit-uuid>.json        ← { id, action, actor, target, allowed, detail,
@@ -640,8 +652,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
-  access_key.hpp            zetta::AccessKey — a scoped login credential + authorize()
-  scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access (RULE-3)
+  access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
+  scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
+  capability.hpp            zetta::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
   audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   table.hpp                 zetta::Table — owns a storage engine (its rows)
@@ -687,8 +700,9 @@ src/core/                   zetta-core impl
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
-  access_key.cpp            zetta::AccessKey — persist key.json + authorize() decision
+  access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
+  capability.cpp            zetta::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
   audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   table.cpp
@@ -834,7 +848,7 @@ loop thread).
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
-- [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope`, deny-by-default authorization (RULE-3).
+- [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.

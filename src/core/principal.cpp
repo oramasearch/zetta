@@ -85,9 +85,18 @@ void Principal::load() {
         }
         Scope scope;
         if (!scope_from_json(meta["scope"], scope)) continue;
+        // Capabilities are optional (an older key may lack them => no rights);
+        // but a present-yet-malformed set fails fast rather than granting wrong
+        // rights, so the whole key is skipped.
+        CapabilitySet capabilities;
+        if (meta.contains("capabilities") &&
+            !capability_set_from_json(meta["capabilities"], capabilities)) {
+            continue;
+        }
         keys_.push_back(std::make_shared<AccessKey>(
             entry.path().filename().string(), id_, std::move(scope),
-            meta.value("created", std::string{}), entry.path()));
+            std::move(capabilities), meta.value("created", std::string{}),
+            entry.path()));
     }
     // Stable order: oldest key first (created is a fixed-width stamp).
     std::sort(keys_.begin(), keys_.end(), [](const auto& a, const auto& b) {
@@ -95,20 +104,24 @@ void Principal::load() {
     });
 }
 
-std::shared_ptr<AccessKey> Principal::create_key(Scope scope) {
+std::shared_ptr<AccessKey> Principal::create_key(Scope scope,
+                                                 CapabilitySet capabilities) {
     const std::string id = new_uuid();
     const std::string created = now_iso8601();
     if (replication_) {
         replication_->set(catalog::access_key_key(id),
                           nlohmann::json{{"principal", id_},
                                          {"scope", scope},
+                                         {"capabilities", capabilities},
                                          {"created", created}});
     }
-    return materialize_key(id, std::move(scope), created);
+    return materialize_key(id, std::move(scope), std::move(capabilities),
+                           created);
 }
 
 std::shared_ptr<AccessKey> Principal::materialize_key(std::string id,
                                                       Scope scope,
+                                                      CapabilitySet capabilities,
                                                       std::string created) {
     if (auto existing = find_key(id)) return existing;
     const fs::path key_dir = keys_dir() / id;
@@ -116,6 +129,7 @@ std::shared_ptr<AccessKey> Principal::materialize_key(std::string id,
     fs::create_directories(key_dir, ec);
     if (ec) return nullptr;
     auto key = std::make_shared<AccessKey>(std::move(id), id_, std::move(scope),
+                                           std::move(capabilities),
                                            std::move(created), key_dir);
     key->persist_meta();
     keys_.push_back(key);
