@@ -30,6 +30,7 @@ add_executable(zetta-tests
   test_deployment_controller.cpp
   test_provisioner.cpp
   test_local_provisioner.cpp
+  test_burst_identity.cpp
   test_solution_catalog.cpp
   test_run.cpp
   test_model.cpp

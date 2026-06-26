@@ -76,6 +76,10 @@ Local / cloud backends implement. The first backend, **`zetta::LocalProvisioner`
 (given hardware), uses the nodes already in the cluster best-effort — it adds no
 capacity and its teardown is a no-op (see
 [docs/provisioner.md](docs/provisioner.md)).
+On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
+bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
+node and bulk-revokes them on teardown — reusing the identity model, audited
+(see [docs/burst-identity.md](docs/burst-identity.md)).
 It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
 unit of native distributed accelerated compute — featurize / train / explain /
 score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
