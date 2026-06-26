@@ -313,8 +313,9 @@ returns a `zetta::compute::ComputeStatus` rather than throwing (zetta-core is
 `-fexperimental-library`; no unwinding across the seam) — `Ok` or
 `Unsupported`/`InvalidArgument`/`OutOfMemory`/`BackendError` + a reason; a backend
 that lacks an op returns `unsupported` (the status **is** the per-op capability —
-no parallel bitmask to drift). **No SDL/CUDA type appears in any header** (pure
-zetta-core, builds CPU-only). Two implementers exist today.
+no parallel bitmask to drift). **No SDL/CUDA type appears in any header** and the
+**default build is CPU-only** (no GPU toolkit needed); a CUDA backend ships behind
+a build guard, not in the public surface. The implementers today:
 `zetta::compute::HostStubDevice` is a host-memory transfer stub (real allocate +
 memcpy transfer, operators return `unsupported`) that lets the memory model
 round-trip in tests — **not** a compute backend.
@@ -326,11 +327,28 @@ memory, parallelizing the data-parallel ones
 (comparison sort) and `scatter` (write-race-free on duplicate indices) kept
 sequential. Float-only ops (sqrt/exp/log, gemm, axpy) reject integer dtypes;
 everything returns a `ComputeStatus`, never throwing across the seam. **Its results
-are the numerical reference `CudaDevice` (#361) is checked against** (correctness
-over throughput). Still later: `CudaDevice` #361, a device registry #362, and the
-CMake `zetta-compute` target #363. See
-[docs/compute-device.md](docs/compute-device.md) (interface) and
-[docs/cpu-device.md](docs/cpu-device.md) (this backend).
+are the numerical reference `zetta::compute::CudaDevice` (#361), the GPU backend,
+is checked against** (correctness over throughput).
+
+The **runtime-free** compute backends (the `HostStubDevice` stub, the optional
+`CudaDevice`) plus the `DeviceBuffer` memory model build into a dedicated
+**`zetta-compute`** static library linked PUBLIC into `zetta-core` (the build slice
+of this pass, **#363**) — the same isolation SDL/ImGui get: a heavy/optional
+dependency lives in its own target and **never leaks its headers into
+`zetta-core`**. (`CpuDevice` stays in `zetta-core`: it depends on `zetta::runtime`,
+which `zetta-core` owns, so it can't sink into the lower-level `zetta-compute`
+without a link cycle.) A **CPU-only configure is the default** (dev Macs, CI) and
+needs no GPU toolkit; the **CUDA backend is opt-in** behind `-DZETTA_ENABLE_CUDA=ON`,
+which `find_package(CUDAToolkit REQUIRED)`, `enable_language(CUDA)`, adds
+`src/core/compute/cuda_device.cu` (Thrust + custom `histogram`/`gemm` kernels,
+dispatched on `DataType`), links `CUDA::cudart` PRIVATE (so the CUDA include dirs
+never reach `zetta-core`), and sets the public `ZETTA_WITH_CUDA` define consumers
+(the device registry #362, the tests) guard `CudaDevice` use on. `cuda_device.hpp`
+is CUDA-free (no `<cuda_runtime.h>`), like `src/gui/app.hpp` keeps SDL out of its
+header. The CPU-only path is what's verified on macOS/CI; the `.cu` needs a CUDA
+toolkit + GPU (a Linux host) to compile/run. See
+[docs/compute-device.md](docs/compute-device.md) (interface + build) and
+[docs/cpu-device.md](docs/cpu-device.md) (the CPU backend).
 
 The **`DeviceRegistry`** (`include/zetta/compute/device_registry.hpp`, #362) is the
 per-node enumeration + selection layer over that seam: backends are **registered
@@ -990,7 +1008,7 @@ Building tests is on by default; turn off with `-DZETTA_BUILD_TESTS=OFF`.
 ## Code layout
 
 ```
-CMakeLists.txt              build graph: imgui lib, zetta-core lib, zetta exe
+CMakeLists.txt              build graph: imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
@@ -1052,13 +1070,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
-  compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA)
+  compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA in headers)
     data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
     compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
     device_buffer.hpp       zetta::compute::DeviceBuffer — typed, owning, move-only device memory
     compute_device.hpp      zetta::compute::ComputeDevice — the seam: info + memory + the operator set
     host_stub_device.hpp    zetta::compute::HostStubDevice — host-memory transfer stub (ops unsupported)
     cpu_device.hpp          zetta::compute::CpuDevice — the always-built reference backend (every op on host memory, multi-threaded; #360)
+    cuda_device.hpp         zetta::compute::CudaDevice — the GPU backend (CUDA-free header; guarded by ZETTA_WITH_CUDA, #363)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
@@ -1102,10 +1121,11 @@ src/core/                   zetta-core impl
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
-  compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer
-  compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported
-  compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (#360)
-  compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (#362)
+  compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
+  compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported (→ zetta-compute)
+  compute/cuda_device.cu    CudaDevice — CUDA runtime memory model + Thrust/custom operator kernels (→ zetta-compute; CUDA build only, #363)
+  compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
+  compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1259,7 +1279,7 @@ loop thread).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
-- [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359).
+- [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).

@@ -54,6 +54,24 @@ cmake --build build
 The first configure clones the deps into `build/_deps/` (a few minutes);
 later builds are fast. `build/` is git-ignored.
 
+### Optional CUDA compute backend
+
+The accelerated-compute backends build into a `zetta-compute` static library that
+`zetta-core` links. The **default build is CPU-only** and needs no GPU toolkit
+(configure logs `CUDA compute backend: disabled (CPU-only build)`). To build the
+optional CUDA backend (`zetta::compute::CudaDevice`) on a host with the CUDA
+toolkit:
+
+```bash
+cmake -S . -B build -G Ninja -DZETTA_ENABLE_CUDA=ON
+```
+
+This requires `find_package(CUDAToolkit)` to succeed (configure fails loudly
+otherwise) and compiles `src/core/compute/cuda_device.cu` with nvcc. The CUDA
+headers stay confined to that library — they never reach `zetta-core` — mirroring
+how SDL/ImGui are kept out. See [compute-device.md](compute-device.md) for the
+backend and its verification caveats.
+
 ## Run
 
 ```bash

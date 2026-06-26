@@ -107,7 +107,9 @@ Alliance Capy/Corosio), behind the `zetta::runtime` seam (which also exposes a
 work targets the `zetta::compute::ComputeDevice` seam — a typed device-buffer
 memory model plus a coarse-grained operator set (map/reduce/scan, histogram,
 gemm/axpy, sort, gather/scatter) that CPU and (optional) CUDA backends implement,
-so new hardware is a new backend and consumers are unchanged (see
+so new hardware is a new backend and consumers are unchanged. The backends build
+into a `zetta-compute` library; the default build is CPU-only (no GPU toolkit
+needed), with the CUDA backend opt-in behind `-DZETTA_ENABLE_CUDA=ON` (see
 [docs/compute-device.md](docs/compute-device.md)). The always-built reference
 backend is `zetta::compute::CpuDevice`, which runs every operator on host memory,
 multi-threaded via `runtime::parallel_for` (see
