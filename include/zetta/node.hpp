@@ -11,6 +11,7 @@
 #include "zetta/access_key.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
+#include "zetta/deployment_controller.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
@@ -130,12 +131,14 @@ public:
     // CRUD for runs (one execution of a deployed graph — see run.hpp /
     // docs/runs.md). Runs have no human name: they are keyed by id, so find /
     // drop take the id. create stamps created/updated, starts Pending, and takes
-    // optional project + graph references. The "update" half of the slice is the
-    // mutators on the returned Run handle (set_status / add_log / set_outputs /
-    // set_lineage), which capture into the CRDT and persist. runs() is in a
-    // stable order (created, then id).
+    // optional project + graph + deployment references (the deployment ref ties a
+    // run to the placement the reconcile loop is keeping alive). The "update"
+    // half of the slice is the mutators on the returned Run handle (set_status /
+    // add_log / set_outputs / set_lineage), which capture into the CRDT and
+    // persist. runs() is in a stable order (created, then id).
     std::shared_ptr<Run> create_run(std::string project = {},
-                                    std::string graph = {});
+                                    std::string graph = {},
+                                    std::string deployment = {});
     std::shared_ptr<Run> find_run(const std::string& id) const;
     bool drop_run(const std::string& id);
     std::vector<std::shared_ptr<Run>> runs() const { return runs_; }
@@ -164,6 +167,14 @@ public:
     // iff the key permits it. Deny-by-default — an unknown/empty key id denies.
     AccessDecision authorize(const std::string& key_id,
                              const Resource& resource) const;
+
+    // The control plane that reconciles local deployments desired → actual and
+    // self-heals their runs (see deployment_controller.hpp). Driven each tick();
+    // exposed so tests/UI can introspect its counters or run a pass directly.
+    DeploymentController& deployment_controller() { return controller_; }
+    const DeploymentController& deployment_controller() const {
+        return controller_;
+    }
 
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
@@ -250,6 +261,7 @@ private:
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
+    DeploymentController controller_{*this};  // control plane (driven by tick())
 };
 
 }  // namespace zetta

@@ -35,9 +35,10 @@ const nlohmann::json& schema_document() {
       "title": "zetta.Run",
       "type": "object",
       "properties": {
-        "id":      { "type": "string" },
-        "project": { "type": "string" },
-        "graph":   { "type": "string" },
+        "id":         { "type": "string" },
+        "project":    { "type": "string" },
+        "graph":      { "type": "string" },
+        "deployment": { "type": "string" },
         "status":  { "type": "string",
                      "enum": ["pending", "running", "succeeded", "failed"] },
         "created": { "type": "string" },
@@ -147,6 +148,7 @@ nlohmann::json to_json(const RunValue& value) {
     return nlohmann::json{
         {"project", value.project},
         {"graph", value.graph},
+        {"deployment", value.deployment},
         {"status", to_string(value.status)},
         {"created", value.created},
         {"updated", value.updated},
@@ -180,6 +182,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
     RunValue parsed;
     parsed.project = value.value("project", std::string{});
     parsed.graph = value.value("graph", std::string{});
+    parsed.deployment = value.value("deployment", std::string{});
     parsed.status =
         run_status_from_string(value.value("status", std::string{"pending"}))
             .value_or(RunStatus::Pending);

@@ -84,14 +84,21 @@ bool Node::start() {
 void Node::tick() {
     if (!running_) return;
     ++ticks_;
-    // The CRDT is the source of truth; when it has advanced (a local capture or
-    // a peer's gossip merged in on the network thread), reconcile the on-disk
-    // projection to match it and persist. Reconcile only materializes (never
-    // captures), so it doesn't move the version — no feedback loop.
+    // 1. Pull: the CRDT is the source of truth; when it has advanced (a local
+    //    capture or a peer's gossip merged in on the network thread), reconcile
+    //    the on-disk projection to match it. Reconcile only materializes (never
+    //    captures), so it doesn't move the version — no feedback loop.
+    if (replication_ && replication_->version() != last_seen_version_) {
+        reconcile_from_replication();
+    }
+    // 2. Control plane: drive each local deployment desired → actual, starting
+    //    or self-healing its run. May capture new runs into the document.
+    controller_.reconcile();
+    // 3. Persist if the document moved (a peer merge in step 1 or a run started
+    //    in step 2), and remember the version we have now reflected on disk.
     if (replication_) {
         std::string version = replication_->version();
         if (version != last_seen_version_) {
-            reconcile_from_replication();
             persist_replication();
             last_seen_version_ = std::move(version);
         }
@@ -590,12 +597,14 @@ void Node::load_runs() {
     });
 }
 
-std::shared_ptr<Run> Node::create_run(std::string project, std::string graph) {
+std::shared_ptr<Run> Node::create_run(std::string project, std::string graph,
+                                      std::string deployment) {
     const std::string id = new_uuid();
     const std::string now = now_iso8601();
     RunValue value;
     value.project = std::move(project);
     value.graph = std::move(graph);
+    value.deployment = std::move(deployment);
     value.status = RunStatus::Pending;
     value.created = now;
     value.updated = now;

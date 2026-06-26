@@ -6,9 +6,12 @@ and the `DeploymentTarget` domain entity (ENT-6): the orchestrator's way of
 saying *"this graph should run here"*.
 
 This slice is **R1 local only** — a graph is placed onto the local node, and the
-placement is recorded (replicated + on disk) and queryable. Kubernetes / VPC /
-managed-cloud targets, the reconcile/self-heal loop that *acts* on a deployment,
-and the Deploy panel are deliberately **later slices** (see *What's deferred*).
+placement is recorded (replicated + on disk) and queryable. The reconcile/
+self-heal loop that *acts* on a deployment — driving desired → actual and
+restarting a killed/failed run — now exists as the **[deployment
+controller](deployment-controller.md)**. Kubernetes / VPC / managed-cloud
+targets, cross-node failover, and the Deploy panel remain deliberately **later
+slices** (see *What's deferred*).
 
 ## The target — `DeploymentTarget`
 
@@ -120,9 +123,11 @@ incomplete file (not an object, missing a string `graph_name`, or an unknown
 how `project.json` / `database.json` are read.
 
 > **Which node is "local"?** Because a deployment replicates to every peer, the
-> record stores the `node` it was placed on (the originating node's id). In R1 a
-> deployment is a recorded *desired-state* fact; the reconcile/self-heal loop that
-> turns "recorded" into "running on that node" is a later task.
+> record stores the `node` it was placed on (the originating node's id). The
+> [deployment controller](deployment-controller.md) turns "recorded" into
+> "running" — but only on the node that placed it (`node == node_id()`); a peer
+> sees the record but does not act on it. Cross-node failover (a survivor adopting
+> a dead node's placements) is a later, leadership-gated task.
 
 ## Queryable
 
@@ -149,8 +154,9 @@ Deployments are queryable two ways:
 
 - **The gate** — semantic validation of the graph before placement (acyclicity,
   legal stage transitions, required inputs).
-- **Reconcile / self-heal** — a control loop that drives actual → desired and
-  recovers from node failure (FEAT-4, TC-3).
+- **Cross-node failover** — the local reconcile/self-heal loop now exists (the
+  [deployment controller](deployment-controller.md)), but a surviving node
+  *adopting* a dead node's placements needs leadership/lease and is a later slice.
 - **k8s / VPC / cloud targets** — the non-local `DeploymentKind`s + their Cloud
   Interface bindings and provisioning (ADR-7 / ADR-15).
 - **Graph serialization** — once the IR has a serialized form, a deployment will

@@ -100,7 +100,9 @@ storage + provenance only — no parsing/compilation. See
 A node also owns **runs** (`zetta::Run`) — the record of **one execution of a
 deployed graph**: `status` (`Pending`→`Running`→`Succeeded`|`Failed`), `logs`,
 produced `outputs` (datasets/models/indexes), and `lineage` (sources, steps,
-freshness, confidence), plus optional `project`/`graph` id references. Another
+freshness, confidence), plus optional `project`/`graph`/`deployment` id references
+(the `deployment` ref ties a run to the placement the reconcile loop keeps alive —
+see the deployment controller below). Another
 top-level, replicated entity (flat key `run:<uuid>`, on-disk `<run-uuid>/run.json`),
 modeled like `Project` but keyed by id (runs have no human name): `create_run`/
 `find_run`/`drop_run`/`runs`, with the "update" half being mutators on the handle
@@ -432,10 +434,33 @@ created }`) with a `<deployment-uuid>/deployment.json` projection, persisted acr
 restart and replicated to peers (recording the node it was placed on). The graph is
 recorded as a **summary** (name + node/edge counts), not the full graph — IR
 serialization is a later slice. It's queryable via the C++ API **and** the SQL
-**`system.zetta_deployments`** table. Reconcile/self-heal + k8s/cloud + the Deploy
-panel are separate tasks. `Node` learns its own id (`Node::node_id()`) from the
-`ReplicationManager` actor id, or from `data_dir/node_id` when standalone. See
+**`system.zetta_deployments`** table. k8s/cloud + the Deploy panel are separate
+tasks. `Node` learns its own id (`Node::node_id()`) from the `ReplicationManager`
+actor id, or from `data_dir/node_id` when standalone. See
 [docs/deployments.md](docs/deployments.md).
+
+### Deployment controller (reconcile + self-heal)
+
+The **control plane** for local deployments (`zetta::DeploymentController`,
+`include/zetta/deployment_controller.hpp`) drives a node from *desired* state (a
+`Deployment` — "this graph should run here") toward *actual* state (a `Run` — its
+execution), and **self-heals** when the placed run is killed or fails — the
+reconcile-loop slice of FEAT-4, realizing TC-3. `Node` owns one
+(`deployment_controller()`) and drives it from **`tick()`**: each heartbeat (1)
+pulls peer changes into the on-disk projection, (2) runs `controller_.reconcile()`,
+then (3) persists if the document moved. `reconcile()` scans **this node's** local
+deployments (`target` local **and** `node_id() == self` — R1; cross-node failover
+needs leadership and is a later slice) and for each ensures a healthy run: a run
+**satisfies** its deployment unless it has **failed** (pending/running keep desired
+met; *succeeded* is terminal and not restarted), so a deployment with no run, or
+only failed runs, gets a fresh `Running` run started + logged + recorded against it.
+Steady state captures nothing (a read-only scan → no replication churn). The run↔
+deployment link is a new optional **`deployment` ref on `Run`** (set via
+`create_run(project, graph, deployment)`), part of the Run JSON Schema and
+boundary-validated like every other field. `reconcile()` returns a `ReconcileReport`
+(local/satisfied/started/healed counts); cumulative counters
+(`total_runs_started()`/`passes()`) aid observability. See
+[docs/deployment-controller.md](docs/deployment-controller.md).
 
 ## Tech stack
 
@@ -505,6 +530,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   project_graph.hpp         zetta::ProjectGraph — a named ExecutionGraph under a project
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
+  deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped login credential + authorize()
@@ -546,6 +572,7 @@ src/core/                   zetta-core impl
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
+  deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decision
@@ -699,6 +726,7 @@ loop thread).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
+- [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

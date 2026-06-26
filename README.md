@@ -37,7 +37,10 @@ validated at the boundary and stored byte-for-byte) and its **execution graphs**
 (the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
 [docs/execution-graph.md](docs/execution-graph.md)). A node can also **deploy** a
 validated execution graph onto a target, recording the placement (R1 local; see
-[docs/deployments.md](docs/deployments.md)), and owns **runs** (`zetta::Run`), the
+[docs/deployments.md](docs/deployments.md)), and a **control plane** reconciles
+each local deployment desired→actual and **self-heals** a killed or failed run
+(see [docs/deployment-controller.md](docs/deployment-controller.md)). It owns
+**runs** (`zetta::Run`), the
 record of one graph execution: status, logs, outputs, and lineage, validated
 against a JSON Schema at the storage boundary and viewable in the headed app's
 read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).

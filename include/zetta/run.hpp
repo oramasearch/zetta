@@ -56,6 +56,10 @@ struct RunLineage {
 struct RunValue {
     std::string project;                 // owning project uuid (optional)
     std::string graph;                   // executed graph id (optional, free)
+    std::string deployment;              // owning deployment uuid (optional) —
+                                         // set when a run is the execution of a
+                                         // deployed graph (the reconcile loop ties
+                                         // a run to its deployment through this)
     RunStatus status = RunStatus::Pending;
     std::string created;                 // ISO-8601 UTC stamp at creation
     std::string updated;                 // ISO-8601 UTC stamp; bumped on change
@@ -90,8 +94,8 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
 // **replicated state** (flat key `run:<uuid>`) whose in-memory + on-disk
 // (`<run-uuid>/run.json`) forms are a projection of the Automerge CRDT document.
 //
-// The id is the folder name and never changes; `project`/`graph` are fixed at
-// creation. The mutable fields (status / logs / outputs / lineage) change as a
+// The id is the folder name and never changes; `project`/`graph`/`deployment`
+// are fixed at creation. The mutable fields (status / logs / outputs / lineage) change as a
 // run progresses: the user-facing mutators capture into the CRDT (when
 // replicated), bump `updated`, and rewrite run.json. Reconciliation uses
 // apply_value(), which updates the projection from the document with NO capture
@@ -105,6 +109,7 @@ public:
     const std::string& id() const { return id_; }
     const std::string& project() const { return value_.project; }
     const std::string& graph() const { return value_.graph; }
+    const std::string& deployment() const { return value_.deployment; }
     RunStatus status() const { return value_.status; }
     const std::string& created() const { return value_.created; }
     const std::string& updated() const { return value_.updated; }
