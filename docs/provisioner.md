@@ -12,8 +12,8 @@ backends are separate, dependent slices:
   [The Local backend](#the-local-backend-localprovisioner) below.
 - **Cloud burst** — `AzureProvisioner`, the **reference** cloud backend (`#376`).
   **Built** — see [azure-provisioner.md](azure-provisioner.md). `AwsProvisioner`
-  (`#377`, **built** — see [aws-provisioner.md](aws-provisioner.md)) and
-  `GcpProvisioner` (`#378`) mirror its shape, following the
+  (`#377`, [aws-provisioner.md](aws-provisioner.md)) and `GcpProvisioner` (`#378`,
+  [gcp-provisioner.md](gcp-provisioner.md)) **mirror** it via the
   [cloud-provisioner pattern](cloud-provisioner-pattern.md).
 - **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`);
   **built** — see [burst-identity.md](burst-identity.md).
@@ -139,6 +139,23 @@ This slice is the backend + a unit test only — it is not yet wired into the
 (unbuilt) autoscaler / job coordinator, and it adds **no** new persisted or
 replicated state and **no** new JSON format (it reuses the validated
 `ProvisionedNode` boundary below).
+
+## The cloud-burst backends (`AzureProvisioner` reference, `GcpProvisioner`, …)
+
+Where `LocalProvisioner` *reports* given hardware, the **cloud-burst** backends
+**own** the nodes they bring up: `provision` bursts them + mints bulk identities
+so they join, `teardown` releases one + bulk-revokes when the pool drains, and
+`provisioned` lists the live burst fleet. Every vendor follows **one shape** — a
+`<Vendor>Provisioner` (the burst orchestration) delegating to a
+`<Vendor>ControlPlane` seam, whose reference binding shells out to the vendor CLI
+through the shared [`CommandRunner`](../include/zetta/command_runner.hpp) (no cloud
+SDK in `zetta-core`). [`AzureProvisioner`](azure-provisioner.md) (`#376`) is the
+**reference**; [`zetta::GcpProvisioner`](gcp-provisioner.md)
+(`include/zetta/gcp_provisioner.hpp`, ARC-13 / ADR-20, `#378`) **mirrors** it with
+a `GcpControlPlane` seam + a `GcpCliControlPlane` `gcloud` binding (the Managed
+Instance Group + Spot shape) and a validated `GcpConfig`. The recipe every vendor
+copies is [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md); full GCP
+detail in [gcp-provisioner.md](gcp-provisioner.md).
 
 ## JSON boundary + schema
 

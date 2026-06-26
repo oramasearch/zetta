@@ -85,8 +85,11 @@ schema-validated `AzureConfig` (see
 [docs/azure-provisioner.md](docs/azure-provisioner.md)). **`zetta::AwsProvisioner`**
 (`#377`) mirrors it for AWS — the same control-plane seam + identity hooks, with an
 `AwsCliControlPlane` driving the EC2 Auto Scaling Group / Spot shape via the `aws`
-CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)). AWS / GCP follow the
-same **CLI pattern** — the recipe is
+CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)); **`zetta::GcpProvisioner`**
+mirrors it on GCP — a `GcpControlPlane` seam whose reference `GcpCliControlPlane`
+drives `gcloud` (the Managed Instance Group + Spot shape), with a schema-validated
+`GcpConfig` (see [docs/gcp-provisioner.md](docs/gcp-provisioner.md)). Every vendor
+follows the same **CLI pattern** — the recipe is
 [docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md).
 On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
