@@ -11,11 +11,13 @@ gates). It builds directly on the [key-scoped access model](access-control.md)
 `Node::authorize` decision.
 
 > **Scope, deliberately.** This slice is the **record** — emit + list + replicate
-> + validate. **Approval gates** (blocking a risky action pending sign-off) are a
-> separate FEAT-9 slice and are not part of this. Threading the login key through
-> the whole request path (so *every* read/write is authorized and thereby
-> audited) is also a later slice; today the data-access seam is `Node::authorize`
-> itself.
+> + validate. The first **approval gate** (blocking a risky action pending
+> sign-off) is built on top of it — the
+> [large-burst cost-cap approval gate](burst-approval-gate.md) (APR-3) records its
+> block/approve decision here as a `provision_requested` event. Threading the
+> login key through the whole request path (so *every* read/write is authorized
+> and thereby audited) is a later slice; today the data-access seam is
+> `Node::authorize` itself.
 
 ## The type
 
@@ -26,7 +28,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked`. |
+| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested`. |
 | `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
 | `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
 | `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |
@@ -50,6 +52,7 @@ action is recorded exactly once, on the node where it happened):
 | **Data access** | `Node::authorize` | `data_access`, `allowed` = the decision, `target` = `kind:name`, `actor` = the login key id, `detail` = the decision's reason. |
 | **Compute job** | `Node::create_job` / `ComputeJob::set_status` | `job_created` (on create) / `job_finished` (on the first terminal transition), `target` = job id, `allowed` = success (for `job_finished`), `detail` = the job kind / note. See [compute-jobs.md](compute-jobs.md). |
 | **Burst identity** | `BurstIdentityManager::mint` / `revoke` | `key_issued` (per minted identity) / `key_revoked` (per revoked one), `target` = the access key id, `detail` = the job + burst node. See [burst-identity.md](burst-identity.md). |
+| **Provision burst** | `BurstApprovalGate::provision` | `provision_requested`, emitted **only** when a burst exceeds the cap, `allowed` = approved (vs. blocked pending approval), `target` = the burst size, `detail` = which cap axis was exceeded + the outcome. See [burst-approval-gate.md](burst-approval-gate.md). |
 
 Because every `authorize` decision is recorded, `Node::authorize` is **non-const**
 (it appends to the trail). `zetta::authorize(const AccessKey&, const Resource&)`

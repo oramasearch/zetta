@@ -223,10 +223,10 @@ audit trail itself is built — see below). See
 
 A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
 for every **graph change / deploy / data access / compute-job lifecycle /
-access-key issue+revoke** event
+access-key issue+revoke / provision-burst approval** event
 (ENT-23 / FEAT-9; the audit half of governance, on top of the key-scoped access
 above). An `AuditEvent` (id + `action`
-graph_created|graph_dropped|graph_deployed|data_access|job_created|job_finished|key_issued|key_revoked +
+graph_created|graph_dropped|graph_deployed|data_access|job_created|job_finished|key_issued|key_revoked|provision_requested +
 `actor` + `target` + `allowed` + `detail` + `time`) is a top-level, replicated
 entity (flat key `audit:<uuid>`) — but **immutable and append-only**: no mutator,
 no drop, so the set of `audit:` keys only grows and the CRDT converges trivially.
@@ -238,10 +238,12 @@ project like its `ReplicationManager*`), `Node::deploy_graph`, `Node::authorize`
 (which is therefore **non-const**: every allow/deny decision records a
 `data_access` event), the compute-job lifecycle (`Node::create_job` →
 `job_created`, `ComputeJob::set_status` → `job_finished` on the first terminal
-transition), and the burst-identity lifecycle (`BurstIdentityManager::mint` →
-`key_issued`, `revoke` → `key_revoked`; see below). The `materialize_*`
-reconciliation paths never emit (a peer's action arrives already-audited as its
-own replicated `audit:` event).
+transition), the burst-identity lifecycle (`BurstIdentityManager::mint` →
+`key_issued`, `revoke` → `key_revoked`; see below), plus the **provision-burst
+approval gate** (`BurstApprovalGate::provision` → `provision_requested`, recorded
+only when a burst exceeds the cost cap — see the Provisioning section). The
+`materialize_*` reconciliation paths never emit (a peer's action arrives
+already-audited as its own replicated `audit:` event).
 It is the **second record validated against a formal JSON Schema** at the storage
 boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator),
 projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
@@ -914,6 +916,25 @@ The cloud-burst backends (AWS #377 / GCP #378) are still later slices; the
 autoscaler/job coordinator that consumes the seam is unbuilt, and nothing here
 persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
+The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
+consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
+guarding **RSK-9** "runaway burst cost"; #379). It is a `Provisioner` **decorator**
+(it *is* a `Provisioner` that wraps another), so it drops in transparently
+wherever the autoscaler holds a `Provisioner&`. A provision request **within** a
+configured `BurstCap` (two independent, optional axes — `max_nodes` and `max_cost`,
+0 = unlimited) passes straight through; a request **over** the cap consults a
+`BurstApprover` (deny-by-default — no approver wired ⇒ blocked), **records the
+decision in the audit trail** (a new `provision_requested` `AuditAction`), and
+either delegates (approved) or returns a blocked, unsatisfied result **without
+touching the inner backend** (so nothing comes up, no cost is incurred). `teardown`
+/ `provisioned` are not gated (they reduce/report cost). Cost is a pluggable
+`CostEstimator`; the default (`default_burst_cost`) is coarse relative compute
+units (`count × (cores + gpu tflops)`, so GPU bursts weigh heavily) — real cloud
+pricing plugs in with the cloud backends. `BurstCap` carries a **validated JSON
+boundary** (`schemas/burst_cap.schema.json`) like the other provisioner DTOs. The
+gate audits only the **exception** (an over-cap burst), not every small provision.
+See [docs/burst-approval-gate.md](docs/burst-approval-gate.md).
+
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
 When the cluster **bursts** compute nodes for a job, each burst node needs an
@@ -1008,6 +1029,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
+  burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
@@ -1078,6 +1100,7 @@ src/core/                   zetta-core impl
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
+  burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
@@ -1268,6 +1291,7 @@ loop thread).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
+- [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

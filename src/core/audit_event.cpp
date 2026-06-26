@@ -28,7 +28,8 @@ const nlohmann::json& schema_document() {
                      "enum": ["graph_created", "graph_dropped",
                               "graph_deployed", "data_access",
                               "job_created", "job_finished",
-                              "key_issued", "key_revoked"] },
+                              "key_issued", "key_revoked",
+                              "provision_requested"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -78,6 +79,7 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::JobFinished:   return "job_finished";
         case AuditAction::KeyIssued:     return "key_issued";
         case AuditAction::KeyRevoked:    return "key_revoked";
+        case AuditAction::ProvisionRequested: return "provision_requested";
     }
     return "data_access";
 }
@@ -91,6 +93,7 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "job_finished")   return AuditAction::JobFinished;
     if (name == "key_issued")     return AuditAction::KeyIssued;
     if (name == "key_revoked")    return AuditAction::KeyRevoked;
+    if (name == "provision_requested") return AuditAction::ProvisionRequested;
     return std::nullopt;
 }
 
