@@ -9,9 +9,14 @@ notebooks / schemas planned). zetta stores those raw inputs so the project can b
 (re-)compiled from them later.
 
 This page documents the **record + provenance** only — *storage, not parsing*.
-Nothing here interprets, validates, or compiles a payload; that is a later
-FEAT-1 slice. A `ProjectInput` is owned by a `Project` exactly as a `Table` is
-owned by a `Database`.
+Nothing here interprets or compiles a payload; that is a later FEAT-1 slice. A
+`ProjectInput` is owned by a `Project` exactly as a `Table` is owned by a
+`Database`.
+
+> A typed importer can validate a specific artifact format at the boundary before
+> storing it as one of these records — see [n8n-import.md](n8n-import.md) for the
+> first one (n8n workflow JSON). The record below is what every such importer
+> stores into.
 
 ## The type
 

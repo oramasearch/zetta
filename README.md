@@ -31,7 +31,9 @@ Data is organized as databases → tables → JSON rows, persisted to disk. A no
 also owns **AI projects** (`zetta::Project`) — the central, user-managed artifact
 (see [docs/projects.md](docs/projects.md)); each project owns its **inputs**
 (`zetta::ProjectInput`: raw intent/artifact payloads captured with provenance —
-see [docs/project-inputs.md](docs/project-inputs.md)) and its **execution graphs**
+see [docs/project-inputs.md](docs/project-inputs.md); an
+[n8n workflow JSON](docs/n8n-import.md) is the first typed artifact, schema-
+validated at the boundary and stored byte-for-byte) and its **execution graphs**
 (the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
 [docs/execution-graph.md](docs/execution-graph.md)). A node can also **deploy** a
 validated execution graph onto a target, recording the placement (R1 local; see
