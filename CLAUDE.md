@@ -117,6 +117,24 @@ section with a confidence bar; the GUI slice of FEAT-5 / SCR-6 / CMP-4).
 status/logs/outputs/lineage, is still a later slice.** See
 [docs/runs.md](docs/runs.md).
 
+A node also owns **principals** (`zetta::Principal`) — authenticated actors
+(user/service/node), a top-level entity with the same CRUD shape as projects
+(`create`/`find`/`drop`/`rename_principal`, `principal_names`). A principal owns
+its **access keys** (`zetta::AccessKey`) the way a `Project` owns its inputs
+(`create_key`/`find_key`/`drop_key`; keys are immutable credentials — no rename).
+Each key carries a **`Scope`** (`include/zetta/scope.hpp`): a deny-by-default set
+of `Resource`s (`kind` database|project + name), or `unrestricted` for an admin
+key. This is the **V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6)**: a
+request inherits the scope of the key it logged in with — in-scope resources are
+allowed, everything else is denied. `Node::authorize(key_id, resource)` is the
+enforcement seam (an unknown/empty key denies); `zetta::authorize(key, resource)`
+is the pure decision. Principals + keys are replicated state (flat keys
+`principal:<uuid>` and `key:<uuid>` carrying its parent `principal` ref), with
+`<principal-uuid>/principal.json` + `<principal-uuid>/keys/<key-uuid>/key.json`
+on-disk projections. Finer access tiers (team/partner/per-dataset, per-table)
+are deferred; audit + approval gates are separate FEAT-9 slices. See
+[docs/access-control.md](docs/access-control.md).
+
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
 check** by default (`Node::check_integrity()` → `IntegrityReport`, logged as
@@ -229,8 +247,9 @@ fragment the change history and accumulate `node:` keys). The document uses
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
-`deployment:<uuid>` — each entity owns its key by UUID so concurrent edits never
-collide.
+`deployment:<uuid>`, `run:<uuid>`, `principal:<uuid>` (an authenticated actor),
+and `key:<uuid>` (an access key carrying its parent `principal` ref + its
+`scope`) — each entity owns its key by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -260,6 +279,12 @@ data_dir/
   <run-uuid>/                ← one folder per run (UUIDv4 = its id)
     run.json                 ← { id, project, graph, status, created, updated,
                                   logs, outputs, lineage }
+  <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
+    principal.json           ← { id, kind, name, created }
+    keys/
+      <key-uuid>/            ← one folder per access key (UUIDv4 = its id)
+        key.json             ← { id, principal, scope:{ unrestricted, grants },
+                                 created }
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -481,6 +506,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
+  principal.hpp             zetta::Principal — an authenticated actor; owns access keys
+  access_key.hpp            zetta::AccessKey — a scoped login credential + authorize()
+  scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access (RULE-3)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -519,6 +547,9 @@ src/core/                   zetta-core impl
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
+  principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
+  access_key.cpp            zetta::AccessKey — persist key.json + authorize() decision
+  scope.cpp                 zetta::Scope — permits() + JSON boundary validation
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -660,6 +691,7 @@ loop thread).
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
+- [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope`, deny-by-default authorization (RULE-3).
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).

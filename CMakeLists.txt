@@ -248,6 +248,9 @@ add_library(zetta-core STATIC
   src/core/deployment_target.cpp
   src/core/deployment.cpp
   src/core/run.cpp
+  src/core/principal.cpp
+  src/core/access_key.cpp
+  src/core/scope.cpp
   src/core/table.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp

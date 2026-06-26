@@ -42,6 +42,7 @@ bool Node::start() {
     load_projects();
     load_deployments();
     load_runs();
+    load_principals();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -51,9 +52,10 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs)\n",
+        "%zu deployments, %zu runs, %zu principals)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
-        projects_.size(), deployments_.size(), runs_.size());
+        projects_.size(), deployments_.size(), runs_.size(),
+        principals_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -67,10 +69,12 @@ bool Node::start() {
             std::printf(
                 "zetta: preflight WARN: %zu corrupt large object(s), %zu "
                 "dangling table(s), %zu dangling row(s), %zu dangling large "
-                "object(s), %zu dangling input(s), %zu dangling graph(s)\n",
+                "object(s), %zu dangling input(s), %zu dangling graph(s), %zu "
+                "dangling access key(s)\n",
                 integrity_.corrupt_large_objects, integrity_.dangling_tables,
                 integrity_.dangling_rows, integrity_.dangling_large_objects,
-                integrity_.dangling_inputs, integrity_.dangling_graphs);
+                integrity_.dangling_inputs, integrity_.dangling_graphs,
+                integrity_.dangling_access_keys);
         }
     }
     std::fflush(stdout);
@@ -231,6 +235,47 @@ void Node::load_deployments() {
                   return std::tie(a->created(), a->id()) <
                          std::tie(b->created(), b->id());
               });
+}
+
+void Node::load_principals() {
+    principals_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "principal.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: require an object with a known kind and a name;
+        // skip anything that doesn't match the principal.json shape.
+        if (meta.is_discarded() || !meta.is_object() ||
+            !meta.contains("kind") || !meta["kind"].is_string() ||
+            !meta.contains("name") || !meta["name"].is_string()) {
+            continue;
+        }
+        const auto kind = principal_kind_from(meta["kind"].get<std::string>());
+        if (!kind) continue;
+        auto principal = std::make_shared<Principal>(
+            entry.path().filename().string(), *kind,
+            meta["name"].get<std::string>(),
+            meta.value("created", std::string{}), entry.path(), replication_);
+        principal->load();  // bring in this principal's keys from disk
+        principals_.push_back(std::move(principal));
+    }
+    // Stable order (directory iteration order is unspecified).
+    std::sort(principals_.begin(), principals_.end(),
+              [](const auto& a, const auto& b) { return a->name() < b->name(); });
+}
+
+std::shared_ptr<Principal> Node::find_principal_by_id(
+    const std::string& id) const {
+    for (const auto& principal : principals_) {
+        if (principal->id() == id) return principal;
+    }
+    return nullptr;
 }
 
 std::shared_ptr<Database> Node::create_database(std::string name) {
@@ -453,6 +498,46 @@ std::shared_ptr<Deployment> Node::find_deployment(const std::string& id) const {
     return nullptr;
 }
 
+// ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
+
+std::shared_ptr<Principal> Node::create_principal(std::string name,
+                                                  PrincipalKind kind) {
+    if (name.empty() || find_principal(name)) return nullptr;
+    const std::string id = new_uuid();
+    const std::string now = now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::principal_key(id),
+                          nlohmann::json{{"kind", to_string(kind)},
+                                         {"name", name},
+                                         {"created", now}});
+    }
+    return materialize_principal(id, kind, std::move(name), now);
+}
+
+std::shared_ptr<Principal> Node::materialize_principal(std::string id,
+                                                       PrincipalKind kind,
+                                                       std::string name,
+                                                       std::string created) {
+    if (auto existing = find_principal_by_id(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto principal = std::make_shared<Principal>(
+        std::move(id), kind, std::move(name), std::move(created), dir,
+        replication_);
+    principal->persist_meta();
+    principals_.push_back(principal);
+    return principal;
+}
+
+std::shared_ptr<Principal> Node::find_principal(const std::string& name) const {
+    for (const auto& principal : principals_) {
+        if (principal->name() == name) return principal;
+    }
+    return nullptr;
+}
+
 bool Node::materialize_drop_deployment(const std::string& id) {
     const auto it = std::find_if(
         deployments_.begin(), deployments_.end(),
@@ -538,6 +623,62 @@ std::shared_ptr<Run> Node::find_run(const std::string& id) const {
     return nullptr;
 }
 
+// ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
+
+bool Node::drop_principal(const std::string& name) {
+    auto principal = find_principal(name);
+    if (!principal) return false;
+    // Drop the principal's keys from the document too (their folders go with the
+    // principal folder below). Snapshot the ids first — drop_key mutates keys().
+    if (replication_) {
+        std::vector<std::string> key_ids;
+        for (const auto& key : principal->keys()) key_ids.push_back(key->id());
+        for (const std::string& key_id : key_ids) {
+            replication_->remove(catalog::access_key_key(key_id));
+        }
+        replication_->remove(catalog::principal_key(principal->id()));
+    }
+    return materialize_drop_principal(principal->id());
+}
+
+bool Node::materialize_drop_principal(const std::string& id) {
+    const auto it = std::find_if(
+        principals_.begin(), principals_.end(),
+        [&](const std::shared_ptr<Principal>& p) { return p->id() == id; });
+    if (it == principals_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    principals_.erase(it);
+    return true;
+}
+
+bool Node::rename_principal(const std::string& from, const std::string& to) {
+    if (to.empty() || find_principal(to)) return false;  // empty or clashes
+    auto principal = find_principal(from);
+    if (!principal) return false;
+    principal->set_metadata(principal->kind(), to, principal->created());
+    if (replication_) {
+        replication_->set(catalog::principal_key(principal->id()),
+                          principal->metadata());
+    }
+    return true;
+}
+
+std::vector<std::string> Node::principal_names() const {
+    std::vector<std::string> names;
+    names.reserve(principals_.size());
+    for (const auto& principal : principals_) names.push_back(principal->name());
+    return names;
+}
+
+std::shared_ptr<AccessKey> Node::find_access_key(
+    const std::string& key_id) const {
+    for (const auto& principal : principals_) {
+        if (auto key = principal->find_key(key_id)) return key;
+    }
+    return nullptr;
+}
+
 bool Node::drop_run(const std::string& id) {
     if (!find_run(id)) return false;
     if (replication_) replication_->remove(catalog::run_key(id));
@@ -553,6 +694,15 @@ bool Node::materialize_drop_run(const std::string& id) {
     fs::remove_all((*it)->dir(), ec);
     runs_.erase(it);
     return true;
+}
+
+AccessDecision Node::authorize(const std::string& key_id,
+                               const Resource& resource) const {
+    auto key = find_access_key(key_id);
+    if (!key) {
+        return AccessDecision{false, "unknown access key — denied"};
+    }
+    return zetta::authorize(*key, resource);
 }
 
 // ----- replication: persistence ---------------------------------------------
@@ -652,6 +802,18 @@ void Node::migrate_to_replication() {
     for (const auto& run : runs_) {
         if (!snapshot.contains(catalog::run_key(run->id()))) {
             replication_->set(catalog::run_key(run->id()), run->metadata());
+        }
+    }
+    for (const auto& principal : principals_) {
+        if (!snapshot.contains(catalog::principal_key(principal->id()))) {
+            replication_->set(catalog::principal_key(principal->id()),
+                              principal->metadata());
+        }
+        for (const auto& key : principal->keys()) {
+            if (!snapshot.contains(catalog::access_key_key(key->id()))) {
+                replication_->set(catalog::access_key_key(key->id()),
+                                  key->metadata());
+            }
         }
     }
 }
@@ -997,6 +1159,93 @@ void Node::reconcile_from_replication() {
             run->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+
+    // Principals (top-level, no parent): principal:<id> -> { kind, name,
+    // created }. Decode the desired set, then drop / add / update the local
+    // projection to match the document — no re-capture.
+    struct PrincipalEntry {
+        PrincipalKind kind;
+        std::string name;
+        std::string created;
+    };
+    std::map<std::string, PrincipalEntry> principals;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kPrincipalPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("name")) {
+            continue;
+        }
+        const auto kind = principal_kind_from(value.value("kind", std::string{}));
+        if (!kind) continue;  // boundary validation
+        principals.emplace(std::move(id),
+                           PrincipalEntry{*kind,
+                                          value.value("name", std::string{}),
+                                          value.value("created", std::string{})});
+    }
+    std::vector<std::string> local_principal_ids;
+    for (const auto& principal : principals_) {
+        local_principal_ids.push_back(principal->id());
+    }
+    for (const std::string& principal_id : local_principal_ids) {
+        if (!principals.contains(principal_id)) {
+            materialize_drop_principal(principal_id);
+        }
+    }
+    for (const auto& [id, entry] : principals) {
+        auto principal = find_principal_by_id(id);
+        if (!principal) {
+            materialize_principal(id, entry.kind, entry.name, entry.created);
+        } else if (principal->name() != entry.name ||
+                   principal->kind() != entry.kind) {
+            principal->set_metadata(entry.kind, entry.name,
+                                    entry.created);  // a peer changed it (no re-capture)
+        }
+    }
+
+    // Access keys (owned by a principal): key:<id> -> { principal, scope,
+    // created }. Keys are immutable credentials (never edited), so reconcile only
+    // adds them under their owning principal and drops the ones a peer removed.
+    struct AccessKeyEntry {
+        std::string principal_id;
+        Scope scope;
+        std::string created;
+    };
+    std::map<std::string, AccessKeyEntry> access_keys;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kAccessKeyPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("principal") ||
+            !value.contains("scope")) {
+            continue;
+        }
+        Scope scope;
+        if (!scope_from_json(value["scope"], scope)) continue;  // boundary
+        access_keys.emplace(
+            std::move(id),
+            AccessKeyEntry{value.value("principal", std::string{}),
+                           std::move(scope),
+                           value.value("created", std::string{})});
+    }
+    // Removals first (a peer dropped a key, or its principal is gone).
+    for (const auto& principal : principals_) {
+        std::vector<std::string> local_key_ids;
+        for (const auto& key : principal->keys()) {
+            local_key_ids.push_back(key->id());
+        }
+        for (const std::string& key_id : local_key_ids) {
+            const auto it = access_keys.find(key_id);
+            if (it == access_keys.end() ||
+                it->second.principal_id != principal->id()) {
+                principal->materialize_drop_key(key_id);
+            }
+        }
+    }
+    // Additions (under the owning principal, if it exists locally).
+    for (auto& [id, entry] : access_keys) {
+        auto principal = find_principal_by_id(entry.principal_id);
+        if (principal && !principal->find_key(id)) {
+            principal->materialize_key(id, std::move(entry.scope),
+                                       entry.created);
+        }
+    }
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -1032,6 +1281,7 @@ IntegrityReport Node::check_integrity() const {
         std::unordered_set<std::string> database_ids;
         std::unordered_set<std::string> table_ids;
         std::unordered_set<std::string> project_ids;
+        std::unordered_set<std::string> principal_ids;
         for (const auto& [key, value] : snapshot.items()) {
             if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
                 !id.empty()) {
@@ -1044,6 +1294,10 @@ IntegrityReport Node::check_integrity() const {
                            catalog::id_after(key, catalog::kProjectPrefix);
                        !project_id.empty()) {
                 project_ids.insert(std::move(project_id));
+            } else if (std::string principal_id =
+                           catalog::id_after(key, catalog::kPrincipalPrefix);
+                       !principal_id.empty()) {
+                principal_ids.insert(std::move(principal_id));
             }
         }
         const auto parent_missing = [](const nlohmann::json& value,
@@ -1069,6 +1323,11 @@ IntegrityReport Node::check_integrity() const {
                 if (parent_missing(value, "project", project_ids)) {
                     ++report.dangling_graphs;
                 }
+            } else if (!catalog::id_after(key, catalog::kAccessKeyPrefix)
+                            .empty()) {
+                if (parent_missing(value, "principal", principal_ids)) {
+                    ++report.dangling_access_keys;
+                }
             }
         }
     }
@@ -1081,10 +1340,10 @@ std::string Node::status_line() const {
     std::snprintf(
         buf, sizeof(buf),
         "running — up %.0fs, %llu ticks, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs",
+        "%zu deployments, %zu runs, %zu principals",
         uptime_seconds(), static_cast<unsigned long long>(ticks_),
         databases_.size(), projects_.size(), deployments_.size(),
-        runs_.size());
+        runs_.size(), principals_.size());
     return buf;
 }
 

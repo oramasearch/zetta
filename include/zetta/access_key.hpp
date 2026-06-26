@@ -1,0 +1,81 @@
+#pragma once
+
+#include <filesystem>
+#include <string>
+
+#include <nlohmann/json.hpp>
+
+#include "zetta/scope.hpp"
+
+namespace zetta {
+
+// An access key (ENT-21): the login credential whose existing data access
+// **scopes** a principal's reach. This is the V1 access model (RULE-3 / PERM-1 /
+// ADR-6): a request authenticates with a key and thereby inherits exactly the
+// key's scope — no bespoke permission model; team/partner/per-dataset tiers are
+// deferred (see docs/access-control.md).
+//
+// An AccessKey is **replicated state** owned by a Principal, the same way a
+// ProjectInput is owned by a Project: the metadata (the owning principal id, the
+// scope, the created stamp) is one flat key in the Automerge CRDT document
+// (`key:<uuid>`, see src/core/catalog.hpp), and an AccessKey is the in-memory +
+// on-disk projection of it. It carries no body — the scope is the whole record.
+//
+// A key is an **immutable credential**: created once with a fixed scope, never
+// edited (to change access, issue a new key and drop the old one). On disk it is
+// a folder named by its UUID under the principal's `keys/` directory:
+//
+//   data_dir/<principal-uuid>/keys/<key-uuid>/key.json
+//     { id, principal, scope: { unrestricted, grants: [...] }, created }
+//
+// The id is the folder name and never changes.
+class AccessKey {
+public:
+    AccessKey(std::string id, std::string principal_id, Scope scope,
+              std::string created, std::filesystem::path dir);
+
+    const std::string& id() const { return id_; }
+    const std::string& principal_id() const { return principal_id_; }
+    const Scope& scope() const { return scope_; }
+    const std::string& created() const { return created_; }
+    const std::filesystem::path& dir() const { return dir_; }
+
+    // Does this key's scope permit `resource`? Deny-by-default — delegates to
+    // Scope::permits. This is the per-key half of the RULE-3 decision.
+    bool permits(const Resource& resource) const {
+        return scope_.permits(resource);
+    }
+
+    // The replicated/on-disk value shape: { principal, scope, created }. The id
+    // is the CRDT key / folder name, so it isn't repeated here.
+    nlohmann::json metadata() const;
+
+    // Write this key's metadata (id + fields) to dir/key.json.
+    void persist_meta() const;
+
+private:
+    std::string id_;
+    std::string principal_id_;
+    Scope scope_;
+    std::string created_;
+    std::filesystem::path dir_;
+};
+
+// The outcome of an access check: allow or deny, plus a human-readable reason.
+// The reason explains *why* — fit for the audit trail FEAT-9 builds toward,
+// never a stack trace.
+struct AccessDecision {
+    bool allowed = false;
+    std::string reason;
+
+    explicit operator bool() const { return allowed; }
+};
+
+// The V1 enforcement decision (RULE-3): a request that logged in with `key`
+// inherits its scope, so `resource` is allowed iff the key's scope permits it.
+// Deny-by-default (a scope that grants nothing denies everything). The pure
+// decision over a known key; Node::authorize resolves a key id to a key (and
+// denies an unknown key) before calling this.
+AccessDecision authorize(const AccessKey& key, const Resource& resource);
+
+}  // namespace zetta

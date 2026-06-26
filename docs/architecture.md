@@ -32,8 +32,11 @@ Node
  │    └── ProjectGraph  (create / find / drop — a named ExecutionGraph IR)
  ├── Deployment      (deploy_graph / find / list)
  │                    a graph placed onto a target — see deployments.md
- └── Run             (CRUD: create / find / drop, keyed by id)
-                      one graph execution: status/logs/outputs/lineage — see runs.md
+ ├── Run             (CRUD: create / find / drop, keyed by id)
+ │                    one graph execution: status/logs/outputs/lineage — see runs.md
+ └── Principal       (CRUD: create / find / drop / rename)
+      │               an authenticated actor — see access-control.md
+      └── AccessKey   (create / find / drop) — a scoped login credential
 ```
 
 Ownership and lookups use `std::shared_ptr` handles, never raw pointers. Names
@@ -49,7 +52,11 @@ way a database owns its tables; see [project-inputs.md](project-inputs.md) and
 local) and recorded; see [deployments.md](deployments.md). A **run** is another
 top-level entity — the record of one execution of a deployed graph (status,
 logs, outputs, lineage), keyed by id and validated against a JSON Schema at the
-storage boundary; see [runs.md](runs.md).
+storage boundary; see [runs.md](runs.md). A **principal** is also a top-level
+entity — an authenticated actor (user / service / node) that owns its **access
+keys** (`AccessKey`). A key carries a **scope**, and a request inherits the scope
+of the key it logged in with: V1 **key-scoped access**, deny-by-default
+(RULE-3); see [access-control.md](access-control.md).
 
 Everything persists to disk under the node's `data_dir` and is rebuilt by
 `Node::start()` on launch. See [storage.md](storage.md).

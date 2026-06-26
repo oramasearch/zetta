@@ -8,10 +8,13 @@
 #include <string>
 #include <vector>
 
+#include "zetta/access_key.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
+#include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
+#include "zetta/scope.hpp"
 
 namespace zetta {
 
@@ -41,13 +44,15 @@ struct IntegrityReport {
     std::size_t dangling_large_objects = 0;        // large object -> missing database
     std::size_t dangling_inputs = 0;               // project input -> missing project
     std::size_t dangling_graphs = 0;               // graph -> missing project
+    std::size_t dangling_access_keys = 0;          // access key -> missing principal
 
     // A "good state": no corruption and no dangling references. (A missing body
     // is informational — it may simply be awaiting transfer from a peer.)
     bool ok() const {
         return corrupt_large_objects == 0 && dangling_tables == 0 &&
                dangling_rows == 0 && dangling_large_objects == 0 &&
-               dangling_inputs == 0 && dangling_graphs == 0;
+               dangling_inputs == 0 && dangling_graphs == 0 &&
+               dangling_access_keys == 0;
     }
 };
 
@@ -136,6 +141,30 @@ public:
     std::vector<std::shared_ptr<Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
 
+    // CRUD for principals (authenticated actors — see principal.hpp /
+    // docs/access-control.md), mirroring the project CRUD shape. create stamps
+    // `created` and takes an optional kind (default User); create/rename yield
+    // an empty handle / false on an empty name or a clash. A principal owns its
+    // access keys (Principal::create_key); a request's reach is the scope of the
+    // key it logged in with (RULE-3).
+    std::shared_ptr<Principal> create_principal(
+        std::string name, PrincipalKind kind = PrincipalKind::User);
+    std::shared_ptr<Principal> find_principal(const std::string& name) const;
+    bool drop_principal(const std::string& name);
+    bool rename_principal(const std::string& from, const std::string& to);
+    std::vector<std::string> principal_names() const;
+    std::size_t principal_count() const { return principals_.size(); }
+
+    // Resolve the access key presented at login (by its id), or an empty handle.
+    // Keys are globally identified by UUID; this searches every principal.
+    std::shared_ptr<AccessKey> find_access_key(const std::string& key_id) const;
+
+    // The V1 key-scoped access decision (RULE-3 / PERM-1 / ADR-6): a request that
+    // logged in with `key_id` inherits that key's scope, so `resource` is allowed
+    // iff the key permits it. Deny-by-default — an unknown/empty key id denies.
+    AccessDecision authorize(const std::string& key_id,
+                             const Resource& resource) const;
+
     bool running() const { return running_; }
     const NodeConfig& config() const { return config_; }
 
@@ -175,6 +204,10 @@ private:
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
 
+    // Rebuild principals_ by scanning config_.data_dir. Called from start().
+    void load_principals();
+    std::shared_ptr<Principal> find_principal_by_id(const std::string& id) const;
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -198,6 +231,11 @@ private:
     bool materialize_drop_deployment(const std::string& id);
     std::shared_ptr<Run> materialize_run(std::string id, RunValue value);
     bool materialize_drop_run(const std::string& id);
+    std::shared_ptr<Principal> materialize_principal(std::string id,
+                                                     PrincipalKind kind,
+                                                     std::string name,
+                                                     std::string created);
+    bool materialize_drop_principal(const std::string& id);
 
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
@@ -211,6 +249,7 @@ private:
     std::vector<std::shared_ptr<Project>> projects_;        // insertion order
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
+    std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
 };
 
 }  // namespace zetta

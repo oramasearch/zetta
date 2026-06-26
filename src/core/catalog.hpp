@@ -31,6 +31,12 @@
 //   run:<run_uuid>     -> { project, graph, status, created, updated, logs,
 //                          outputs, lineage }  (one execution of a deployed
 //                          graph — a top-level entity; see run.hpp)
+//   principal:<uuid>   -> { kind, name, created }          (an authenticated
+//                          actor — user/service/node; a top-level entity with
+//                          no parent — see principal.hpp)
+//   key:<uuid>         -> { principal, scope, created }    (an access key;
+//                          owned by a principal — its scope is the V1 key-scoped
+//                          access model (RULE-3); see access_key.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -47,6 +53,8 @@ inline constexpr std::string_view kInputPrefix = "input:";
 inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
+inline constexpr std::string_view kPrincipalPrefix = "principal:";
+inline constexpr std::string_view kAccessKeyPrefix = "key:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -77,6 +85,12 @@ inline std::string deployment_key(const std::string& deployment_id) {
 }
 inline std::string run_key(const std::string& run_id) {
     return std::string(kRunPrefix) + run_id;
+}
+inline std::string principal_key(const std::string& principal_id) {
+    return std::string(kPrincipalPrefix) + principal_id;
+}
+inline std::string access_key_key(const std::string& access_key_id) {
+    return std::string(kAccessKeyPrefix) + access_key_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.
