@@ -28,7 +28,8 @@ Node
  │         └── rows   (JSON documents, via a StorageEngine)
  ├── Project         (CRUD: create / find / drop / rename)
  │    │               the central AI-project artifact — see projects.md
- │    └── ProjectInput (create / find / drop) — raw intent/artifact + provenance
+ │    ├── ProjectInput (create / find / drop) — raw intent/artifact + provenance
+ │    └── ProjectGraph  (create / find / drop — a named ExecutionGraph IR)
  └── Deployment      (deploy_graph / find / list)
                       a graph placed onto a target — see deployments.md
 ```
@@ -38,10 +39,12 @@ are unique within their parent; lookups return an empty handle on a miss.
 A **project** is a top-level entity (no parent) holding id + name +
 created/updated + an owner key; see [projects.md](projects.md). A project owns
 its **inputs** (`ProjectInput`) — raw intent/artifact payloads captured with
-provenance (kind, source, content hash, created-by/at) — the same way a database
-owns its tables; see [project-inputs.md](project-inputs.md). A **deployment** is
-also top-level: a validated [execution graph](execution-graph.md) placed onto a
-`DeploymentTarget` (R1 local) and recorded; see [deployments.md](deployments.md).
+provenance (kind, source, content hash, created-by/at) — and its named
+**execution graphs** (`ProjectGraph`, persisted + replicated as JSON), the same
+way a database owns its tables; see [project-inputs.md](project-inputs.md) and
+[projects.md](projects.md). A **deployment** is also top-level: a validated
+[execution graph](execution-graph.md) placed onto a `DeploymentTarget` (R1
+local) and recorded; see [deployments.md](deployments.md).
 
 Everything persists to disk under the node's `data_dir` and is rebuilt by
 `Node::start()` on launch. See [storage.md](storage.md).
@@ -57,8 +60,10 @@ added by writing a `Dialect` that targets the same AST. See [query.md](query.md)
 The **ExecutionGraph IR** (`zetta::ir`) is the in-memory model of a data/AI
 system as a directed graph of typed steps, tagged by the
 connect→clean→model→index→serve→act taxonomy. It is the keystone the compilers,
-the gate, deploy, and run build on. This slice is the data model only (build +
-traverse); serialization and validation are later slices. See
+the gate, deploy, and run build on. It has a canonical **JSON form**
+(`to_json`/`from_json`, schema-validated at the boundary) — how a graph persists
+and replicates under a Project; the dual-form code/columnar representation and
+semantic validation (the gate) are later slices. See
 [execution-graph.md](execution-graph.md).
 
 **Deploy** has its first slice: `Node::deploy_graph` places a validated graph onto
@@ -82,8 +87,9 @@ conflict-free — see [replication.md](replication.md).
 include/zetta/            zetta-core public API (no SDL/ImGui)
   node.hpp                Node — CRUD over databases + projects + deployments
   database.hpp            Database — owns tables (disk-backed)
-  project.hpp             Project — an AI project (replicated metadata); owns inputs
+  project.hpp             Project — an AI project; owns inputs + execution graphs
   project_input.hpp       ProjectInput — raw intent/artifact input + provenance
+  project_graph.hpp       ProjectGraph — a named ExecutionGraph under a project
   deployment_target.hpp   DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp          Deployment — a graph placed onto a target
   table.hpp               Table — owns a storage engine (its rows)
@@ -107,6 +113,7 @@ include/zetta/            zetta-core public API (no SDL/ImGui)
   query/service.hpp       QueryService — parse + execute facade
   ir/step_kind.hpp        StepKind — connect→clean→model→index→serve→act taxonomy
   ir/execution_graph.hpp  ExecutionGraph IR — typed step nodes + edges
+  ir/serialization.hpp    to_json/from_json — the IR's JSON form + validation
 src/core/                 zetta-core implementation (incl. cluster.cpp adapter)
 src/gui/                  headed UI (App), links SDL3 + ImGui
 src/main.cpp              arg parsing + mode dispatch

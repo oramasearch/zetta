@@ -35,8 +35,9 @@ inline constexpr std::array<StepKind, 6> all_step_kinds() {
             StepKind::Index,   StepKind::Serve, StepKind::Act};
 }
 
-// The lowercase canonical name of a step kind ("connect", "clean", …). A
-// naming/display helper (labels, log lines, test output) — not IR serialization.
+// The lowercase canonical name of a step kind ("connect", "clean", …). Used for
+// labels, log lines, and test output — and as the `kind` token in the IR's JSON
+// form (see ir/serialization.hpp).
 constexpr std::string_view to_string(StepKind kind) {
     switch (kind) {
         case StepKind::Connect: return "connect";
@@ -50,8 +51,8 @@ constexpr std::string_view to_string(StepKind kind) {
 }
 
 // Parse a canonical step-kind name back to the enum; std::nullopt if unknown.
-// A naming helper for building graphs from named stages — not deserialization
-// of a stored graph format (this slice has no serialized form).
+// The inverse of to_string(StepKind) — used both for building graphs from named
+// stages and for deserializing the IR's JSON form (ir/serialization.hpp).
 constexpr std::optional<StepKind> step_kind_from_name(std::string_view name) {
     for (const StepKind kind : all_step_kinds()) {
         if (to_string(kind) == name) return kind;

@@ -21,6 +21,10 @@
 //                          owned by a project — the raw payload body is NOT in
 //                          the document, it lives on disk like a large object;
 //                          see project_input.hpp)
+//   graph:<graph_uuid> -> { project: <proj_uuid>, name,       (an ExecutionGraph
+//                          graph: { nodes, edges } }            IR under a project
+//                          — the whole serialized graph as one value; see
+//                          project_graph.hpp / docs/execution-graph.md)
 //   deployment:<dep_uuid> -> { graph_name, target: {…}, node, node_count,
 //                          edge_count, created }  (a graph placed onto a target;
 //                          a top-level entity with no parent — see deployment.hpp)
@@ -37,6 +41,7 @@ inline constexpr std::string_view kRowPrefix = "row:";
 inline constexpr std::string_view kLargeObjectPrefix = "lo:";
 inline constexpr std::string_view kProjectPrefix = "project:";
 inline constexpr std::string_view kInputPrefix = "input:";
+inline constexpr std::string_view kGraphPrefix = "graph:";
 inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 
 inline std::string node_key(const std::string& node_id) {
@@ -59,6 +64,9 @@ inline std::string project_key(const std::string& project_id) {
 }
 inline std::string input_key(const std::string& input_id) {
     return std::string(kInputPrefix) + input_id;
+}
+inline std::string graph_key(const std::string& graph_id) {
+    return std::string(kGraphPrefix) + graph_id;
 }
 inline std::string deployment_key(const std::string& deployment_id) {
     return std::string(kDeploymentPrefix) + deployment_id;

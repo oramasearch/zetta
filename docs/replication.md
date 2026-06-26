@@ -147,6 +147,11 @@ are a materialized *projection* of it.** Concretely:
     [large-objects.md](large-objects.md).
   - `project:<project_uuid>` → `{ name, created, updated, owner }` — an AI
     project (a top-level entity with no parent). See [projects.md](projects.md).
+  - `graph:<graph_uuid>` → `{ project: <project_uuid>, name, graph: { nodes,
+    edges } }` — an `ExecutionGraph` IR owned by a project. The whole serialized
+    graph rides as one value (a graph is authored + stored as a unit, unlike a
+    row); the on-disk projection is `<project-uuid>/graphs/<graph-uuid>.json`. See
+    [projects.md](projects.md) and [execution-graph.md](execution-graph.md).
   - `deployment:<deployment_uuid>` → `{ graph_name, target: {…}, node,
     node_count, edge_count, created }` — a graph placed onto a target (a
     top-level entity with no parent). See [deployments.md](deployments.md).

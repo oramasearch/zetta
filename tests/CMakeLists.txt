@@ -23,6 +23,7 @@ add_executable(zetta-tests
   test_database.cpp
   test_project.cpp
   test_project_input.cpp
+  test_project_graph.cpp
   test_deployment.cpp
   test_node.cpp
   test_query.cpp

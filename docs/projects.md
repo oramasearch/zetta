@@ -13,8 +13,8 @@ screen are separate work.
 
 ## The type
 
-A `Project` (`include/zetta/project.hpp`) is metadata only — it has no children
-on disk yet:
+A `Project` (`include/zetta/project.hpp`) is metadata plus the execution graphs
+it owns (see [Execution graphs](#execution-graphs) below). The metadata:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -28,10 +28,10 @@ Stamps come from `zetta::now_iso8601()` (`include/zetta/timestamp.hpp`) — a
 fixed-width UTC string, so the values also order chronologically as plain text.
 
 A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
-payloads captured with provenance — the same way a database owns its tables; see
-[project-inputs.md](project-inputs.md). Its execution graphs / runs are **not**
-part of this type yet; they attach in later slices (they will be id-only
-references, keeping a project lightweight).
+payloads captured with provenance; see [project-inputs.md](project-inputs.md) —
+and its **execution graphs** ([below](#execution-graphs)), the same way a
+database owns its tables. Its runs are **not** part of this type yet; they attach
+in later slices (id-only references, keeping a project lightweight).
 
 ## CRUD on a Node
 
@@ -66,23 +66,66 @@ a **projection** of it ([replication.md](replication.md)).
   so a peer's project (or rename/drop) materializes locally. Versions converge
   conflict-free, so a project created on one node appears on every peer.
 - **On-disk projection.** A project is a folder named by its UUID under the data
-  dir, holding `project.json` (`{ id, name, created, updated, owner }`):
+  dir, holding `project.json` (`{ id, name, created, updated, owner }`), an
+  `inputs/` subfolder for its inputs (see [project-inputs.md](project-inputs.md)),
+  and a `graphs/` subfolder for its execution graphs:
 
   ```
   data_dir/
     <project-uuid>/
       project.json
+      inputs/
+        <input-uuid>/...
+      graphs/
+        <graph-uuid>.json
   ```
 
   `Node::start()` rebuilds the in-memory list by scanning the data dir
-  (`load_projects()`) and — when replicated — reconciling from the CRDT
-  document, so a project **survives restart** in both standalone and replicated
-  nodes. The folder name *is* the id, so rename only rewrites `project.json`.
+  (`load_projects()`, which calls `Project::load()` to read each project's
+  inputs + graphs) and — when replicated — reconciling from the CRDT document, so
+  a project **survives restart** in both standalone and replicated nodes. The
+  folder name *is* the id, so rename only rewrites `project.json`.
 
 `project.json` is **validated at the boundary** on load: a malformed or
 incomplete file (not an object, or missing a string `name`) is skipped rather
 than allowed to corrupt the in-memory tree — matching how `database.json` /
 `table.json` are read.
+
+## Execution graphs
+
+A project owns zero or more **execution graphs** (`zetta::ProjectGraph`,
+`include/zetta/project_graph.hpp`) — named, persisted `ExecutionGraph` IRs (see
+[execution-graph.md](execution-graph.md)). This mirrors how a `Database` owns
+tables: the CRUD captures into the CRDT, and the `materialize_*` variants are the
+reverse path used by reconciliation.
+
+| Method (on `Project`) | Returns | Behavior |
+|---|---|---|
+| `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
+| `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
+| `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
+| `graph_names()` / `graph_count()` | `vector<string>` / `size_t` | Sorted by name / count. |
+
+A `ProjectGraph` is `id` + `project_id` + `name` + the `ir::ExecutionGraph`. It is
+**replicated state**, following the same flat-key + projection rule as everything
+else:
+
+- **Replicated state.** One flat key per graph,
+  `graph:<uuid> → { project: <proj_uuid>, name, graph: { nodes, edges } }`
+  (`src/core/catalog.hpp`). The whole graph rides as a single value (a graph is
+  authored and stored as a unit) — the serialized form is
+  [`ir::to_json`](execution-graph.md#json-serialization). On each `tick()` the
+  node reconciles, so a peer's graph (or an edit/drop) materializes locally and
+  versions converge conflict-free.
+- **On-disk projection.** `<project-uuid>/graphs/<graph-uuid>.json` holds
+  `{ id, project, name, graph }`. Dropping a project removes its folder (and so
+  its graphs) and the `graph:` keys for its graphs.
+- **Boundary validation.** Both load paths — reading a `graphs/*.json` file and
+  decoding a replicated `graph:` value — parse the graph through
+  [`ir::from_json`](execution-graph.md#schema-validation-at-the-boundary) and
+  **skip** anything that fails the schema/structure check, so a malformed payload
+  is dropped rather than allowed to corrupt the projection. The integrity
+  preflight counts a `graph:` whose project is gone as a **dangling graph**.
 
 ## GUI panel
 
@@ -108,4 +151,8 @@ selection, SCR-2 #223) is separate work.
 
 `tests/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
 survival across a restart (both disk-only and CRDT-only), and replication of a
-project + a rename to a connected peer.
+project + a rename to a connected peer. `tests/test_project_graph.cpp` does the
+same for a project's execution graphs: create/find/drop, restart via disk and via
+the CRDT, and replication of a graph to a peer (with a faithful round-trip
+checked each time). Graph (de)serialization itself is covered in
+`tests/test_execution_graph.cpp`.

@@ -72,11 +72,14 @@ pointer.
 
 A node also owns **projects** (`zetta::Project`) — the central, user-managed **AI
 project** artifact (id + name + created/updated + owner key), a top-level entity
-with no parent (its graphs/runs attach in later slices). `Node` has the
+with no parent (its runs attach in later slices). `Node` has the
 same CRUD shape as databases (`create`/`find`/`drop`/`rename_project`,
 `project_names`). A project is replicated state (flat key `project:<uuid>`) with
 a `<project-uuid>/project.json` on-disk projection, persisted across restart in
-both standalone and replicated nodes. See [docs/projects.md](docs/projects.md).
+both standalone and replicated nodes. A project **owns execution graphs**
+(`zetta::ProjectGraph` — a named, persisted `ExecutionGraph` IR; replicated key
+`graph:<uuid>`, projection `<project-uuid>/graphs/<uuid>.json`), the way a
+database owns tables. See [docs/projects.md](docs/projects.md).
 
 A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
 payloads captured with provenance (`kind` intent|artifact, `source`
@@ -201,9 +204,10 @@ changes) — the same UUID as its cluster node id, **persisted in
 fragment the change history and accumulate `node:` keys). The document uses
 **flat keys**
 (`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
-`row:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input — metadata only;
-its payload body stays on disk) — each entity owns its key by UUID so concurrent
-edits never collide.
+`row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
+metadata only; its payload body stays on disk), `graph:<uuid>`,
+`deployment:<uuid>` — each entity owns its key by UUID so concurrent edits never
+collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -226,6 +230,8 @@ data_dir/
         input.json           ← { id, project, kind, source, filename,
                                  content_hash, size, created_by, created_at }
         payload              ← raw bytes (NOT in the CRDT; on-disk like an LO body)
+    graphs/                  ← this project's execution graphs
+      <graph-uuid>.json      ← { id, project, name, graph: { nodes, edges } }
   <deployment-uuid>/         ← one folder per deployment (UUIDv4 = its id)
     deployment.json          ← { id, graph_name, target, node, node_count, … }
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
@@ -298,10 +304,18 @@ values increase along the pipeline). `ExecutionGraph` (build with `add_node`/
 `predecessors`/`find_node`) hands back nodes as `shared_ptr` handles (empty on
 miss) like the rest of zetta, and guards its **structure** (no duplicate ids, no
 dangling or duplicate edges) — but not its **semantics**. This is the keystone
-the compilers, gate, deploy, and run all build on (ENT-3/FEAT-2). This slice is
-**data model only**: serialization (the dual-form Lua/Orly + Parquet/CSV/Automerge
-representation, ADR-10) and validation (acyclicity, legal stage transitions — the
-**gate**) are deliberately later slices. Full detail in
+the compilers, gate, deploy, and run all build on (ENT-3/FEAT-2).
+
+A graph has a canonical **JSON form** (`ir/serialization.hpp`: `to_json` →
+`{ nodes:[{id,kind,name,attributes}], edges:[{from,to,kind}] }`, with `kind` the
+lowercase name not the enum int). `from_json` is the **trust boundary**: it is
+**non-throwing** (returns `std::optional` + an error string, matching zetta's
+no-exceptions convention — never `throw` across the zetta-core/`-fexperimental-library`
+seam, which can't unwind), validating the document against a JSON Schema +
+the IR's structural rules and skipping anything malformed. This JSON form is what
+persists + replicates a graph **under a Project** (`graph:<uuid>`). Still later
+slices: the dual-form Lua/Orly + Parquet/CSV representation (ADR-10) and semantic
+validation (acyclicity, legal stage transitions — the **gate**). Full detail in
 [docs/execution-graph.md](docs/execution-graph.md).
 
 ### Correctness gate (`zetta::CorrectnessGate`)
@@ -405,8 +419,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments
   database.hpp              zetta::Database — owns tables (disk-backed)
-  project.hpp               zetta::Project — an AI project (replicated metadata); owns inputs
+  project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
+  project_graph.hpp         zetta::ProjectGraph — a named ExecutionGraph under a project
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
   table.hpp                 zetta::Table — owns a storage engine (its rows)
@@ -433,12 +448,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   ir/
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
+    serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments() + replication capture/reconcile/persist
   database.cpp
-  project.cpp               zetta::Project — persist/rename project.json + input CRUD
+  project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
+  project_graph.cpp         zetta::ProjectGraph — persist a graph's json projection
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   table.cpp
@@ -450,6 +467,7 @@ src/core/                   zetta-core impl
   gate.cpp                  CorrectnessGate runner + NonEmptyGraphCheck + make_check
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
+  ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   cluster.cpp               cluster networking adapter (the one Corosio user)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
