@@ -37,6 +37,11 @@
 //   key:<uuid>         -> { principal, scope, created }    (an access key;
 //                          owned by a principal — its scope is the V1 key-scoped
 //                          access model (RULE-3); see access_key.hpp)
+//   audit:<uuid>       -> { action, actor, target, allowed, detail, time }
+//                          (an immutable, append-only audit event — a graph
+//                          change / deploy / data-access decision; a top-level
+//                          entity with no parent, never edited or removed; see
+//                          audit_event.hpp)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -55,6 +60,7 @@ inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
+inline constexpr std::string_view kAuditPrefix = "audit:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -91,6 +97,9 @@ inline std::string principal_key(const std::string& principal_id) {
 }
 inline std::string access_key_key(const std::string& access_key_id) {
     return std::string(kAccessKeyPrefix) + access_key_id;
+}
+inline std::string audit_key(const std::string& audit_id) {
+    return std::string(kAuditPrefix) + audit_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

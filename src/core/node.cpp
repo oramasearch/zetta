@@ -44,6 +44,7 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_principals();
+    load_audit_events();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
@@ -53,10 +54,10 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu principals)\n",
+        "%zu deployments, %zu runs, %zu principals, %zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(),
-        principals_.size());
+        principals_.size(), audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -167,7 +168,8 @@ void Node::load_projects() {
             meta["name"].get<std::string>(),
             meta.value("created", std::string{}),
             meta.value("updated", std::string{}),
-            meta.value("owner", std::string{}), entry.path(), replication_);
+            meta.value("owner", std::string{}), entry.path(), replication_,
+            this);
         project->load();  // bring in this project's inputs + graphs from disk
         projects_.push_back(std::move(project));
     }
@@ -395,7 +397,7 @@ std::shared_ptr<Project> Node::materialize_project(std::string id,
                                              std::move(created),
                                              std::move(updated),
                                              std::move(owner), dir,
-                                             replication_);
+                                             replication_, this);
     project->persist_meta();
     projects_.push_back(project);
     return project;
@@ -478,8 +480,20 @@ std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
                                          {"edge_count", edge_count},
                                          {"created", now}});
     }
-    return materialize_deployment(id, std::move(graph_name), std::move(target),
-                                  node_id_, node_count, edge_count, now);
+    auto deployment = materialize_deployment(id, graph_name, std::move(target),
+                                             node_id_, node_count, edge_count,
+                                             now);
+    // Audit the deploy (FEAT-9): placing a graph onto a target is a governed
+    // action. Record it once the placement is materialized.
+    if (deployment) {
+        record_audit_event(
+            {AuditAction::GraphDeployed, {}, graph_name, true,
+             "graph '" + graph_name + "' deployed (" +
+                 std::to_string(node_count) + " nodes, " +
+                 std::to_string(edge_count) + " edges) on node " + node_id_,
+             {}});
+    }
+    return deployment;
 }
 
 std::shared_ptr<Deployment> Node::materialize_deployment(
@@ -707,12 +721,92 @@ bool Node::materialize_drop_run(const std::string& id) {
 }
 
 AccessDecision Node::authorize(const std::string& key_id,
-                               const Resource& resource) const {
+                               const Resource& resource) {
     auto key = find_access_key(key_id);
-    if (!key) {
-        return AccessDecision{false, "unknown access key — denied"};
+    const AccessDecision decision =
+        key ? zetta::authorize(*key, resource)
+            : AccessDecision{false, "unknown access key — denied"};
+    // Audit the data access (FEAT-9): every authorization decision — allow or
+    // deny — is an immutable audit event. The target is the resource the request
+    // tried to reach; the detail is the decision's human-readable reason.
+    record_audit_event(
+        {AuditAction::DataAccess, key_id,
+         std::string(to_string(resource.kind)) + ":" + resource.name,
+         decision.allowed, decision.reason, {}});
+    return decision;
+}
+
+// ----- audit trail (immutable, append-only; replicated as audit:<uuid>) ------
+
+fs::path Node::audit_dir() const {
+    return fs::path(config_.data_dir) / "audit";
+}
+
+void Node::load_audit_events() {
+    audit_events_.clear();
+    const fs::path root = audit_dir();
+    std::error_code ec;
+    if (!fs::exists(root, ec)) return;
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_regular_file() ||
+            entry.path().extension() != ".json") {
+            continue;
+        }
+        std::ifstream in(entry.path());
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: an audit file that fails the AuditEvent JSON
+        // Schema is rejected here (with a logged reason) rather than allowed to
+        // corrupt the in-memory trail — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<AuditEventValue> value =
+            meta.is_discarded() ? std::nullopt
+                                : parse_audit_event_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid audit event %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON"
+                                            : error.c_str());
+            continue;
+        }
+        audit_events_.push_back(std::make_shared<AuditEvent>(
+            entry.path().stem().string(), *value, root));
     }
-    return zetta::authorize(*key, resource);
+    // Stable, chronological order (fixed-width ISO-8601 sorts as text); id breaks
+    // ties on identical stamps.
+    std::sort(audit_events_.begin(), audit_events_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->time() != b->time()) return a->time() < b->time();
+                  return a->id() < b->id();
+              });
+}
+
+void Node::record_audit_event(AuditEventValue value) {
+    // The sink owns identity + time: stamp a fresh id and the current time so the
+    // append-only contract holds regardless of what the caller passed.
+    const std::string id = new_uuid();
+    value.time = now_iso8601();
+    // CRDT first (the source of truth), then materialize the on-disk projection.
+    if (replication_) {
+        replication_->set(catalog::audit_key(id), to_json(value));
+    }
+    materialize_audit_event(id, std::move(value));
+}
+
+std::shared_ptr<AuditEvent> Node::materialize_audit_event(
+    std::string id, AuditEventValue value) {
+    for (const auto& event : audit_events_) {
+        if (event->id() == id) return event;  // already present (append-only)
+    }
+    const fs::path dir = audit_dir();
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto event = std::make_shared<AuditEvent>(std::move(id), std::move(value),
+                                              dir);
+    event->persist_meta();
+    audit_events_.push_back(event);
+    return event;
 }
 
 ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
@@ -832,6 +926,12 @@ void Node::migrate_to_replication() {
                 replication_->set(catalog::access_key_key(key->id()),
                                   key->metadata());
             }
+        }
+    }
+    for (const auto& event : audit_events_) {
+        if (!snapshot.contains(catalog::audit_key(event->id()))) {
+            replication_->set(catalog::audit_key(event->id()),
+                              event->metadata());
         }
     }
 }
@@ -1264,6 +1364,26 @@ void Node::reconcile_from_replication() {
                                        entry.created);
         }
     }
+
+    // Audit events (top-level, no parent): audit:<id> -> the event value. The
+    // trail is immutable + append-only, so reconcile only *adds* events the
+    // document has that we don't (a peer's, merged in via gossip) and never
+    // removes or edits one. Each value is validated at the boundary — a
+    // malformed CRDT value is ignored, not trusted into the trail.
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kAuditPrefix);
+        if (id.empty()) continue;
+        if (std::optional<AuditEventValue> parsed =
+                parse_audit_event_value(value)) {
+            materialize_audit_event(std::move(id), std::move(*parsed));
+        }
+    }
+    // Keep the trail in chronological order after merging peer events in.
+    std::sort(audit_events_.begin(), audit_events_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->time() != b->time()) return a->time() < b->time();
+                  return a->id() < b->id();
+              });
 }
 
 IntegrityReport Node::check_integrity() const {
@@ -1354,14 +1474,14 @@ IntegrityReport Node::check_integrity() const {
 
 std::string Node::status_line() const {
     if (!running_) return "stopped";
-    char buf[224];
+    char buf[288];
     std::snprintf(
         buf, sizeof(buf),
         "running — up %.0fs, %llu ticks, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu principals",
+        "%zu deployments, %zu runs, %zu principals, %zu audit events",
         uptime_seconds(), static_cast<unsigned long long>(ticks_),
         databases_.size(), projects_.size(), deployments_.size(),
-        runs_.size(), principals_.size());
+        runs_.size(), principals_.size(), audit_events_.size());
     return buf;
 }
 

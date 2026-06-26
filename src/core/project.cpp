@@ -22,14 +22,15 @@ namespace fs = std::filesystem;
 
 Project::Project(std::string id, std::string name, std::string created,
                  std::string updated, std::string owner, fs::path dir,
-                 ReplicationManager* replication)
+                 ReplicationManager* replication, AuditSink* audit)
     : id_(std::move(id)),
       name_(std::move(name)),
       created_(std::move(created)),
       updated_(std::move(updated)),
       owner_(std::move(owner)),
       dir_(std::move(dir)),
-      replication_(replication) {}
+      replication_(replication),
+      audit_(audit) {}
 
 void Project::set_metadata(std::string name, std::string created,
                            std::string updated, std::string owner) {
@@ -240,6 +241,15 @@ std::shared_ptr<ProjectGraph> Project::create_graph(std::string name,
         replication_->set(catalog::graph_key(graph_id), stored->record());
     }
     graphs_.push_back(stored);
+    // Audit the graph change (FEAT-9): a local create is a governed action. The
+    // sink stamps the id + time; a peer's create arrives via materialize_graph
+    // (no sink) already carrying its own replicated audit event.
+    if (audit_) {
+        audit_->record_audit_event(
+            {AuditAction::GraphCreated, owner_, stored->name(), true,
+             "graph '" + stored->name() + "' created in project '" + name_ + "'",
+             {}});
+    }
     return stored;
 }
 
@@ -303,7 +313,14 @@ bool Project::drop_graph(const std::string& name) {
     auto graph = find_graph(name);
     if (!graph) return false;
     if (replication_) replication_->remove(catalog::graph_key(graph->id()));
-    return materialize_drop_graph(graph->id());
+    const bool removed = materialize_drop_graph(graph->id());
+    // Audit the graph change (FEAT-9), once we know one was actually removed.
+    if (removed && audit_) {
+        audit_->record_audit_event(
+            {AuditAction::GraphDropped, owner_, name, true,
+             "graph '" + name + "' dropped from project '" + name_ + "'", {}});
+    }
+    return removed;
 }
 
 std::vector<std::string> Project::graph_names() const {

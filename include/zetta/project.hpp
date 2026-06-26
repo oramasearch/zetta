@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/audit_event.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/project_graph.hpp"
 #include "zetta/project_input.hpp"
@@ -39,7 +40,8 @@ class Project {
 public:
     Project(std::string id, std::string name, std::string created,
             std::string updated, std::string owner, std::filesystem::path dir,
-            ReplicationManager* replication = nullptr);
+            ReplicationManager* replication = nullptr,
+            AuditSink* audit = nullptr);
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
@@ -114,7 +116,10 @@ public:
     // A project owns zero or more named graphs, persisted under dir/graphs/ and
     // replicated as `graph:<uuid>` keys (see project_graph.hpp). The CRUD mirrors
     // Database's table ownership: create/drop capture into the CRDT, the
-    // materialize_* variants are the reverse path used by reconciliation.
+    // materialize_* variants are the reverse path used by reconciliation. A local
+    // create/drop also emits a graph-change audit event through the AuditSink
+    // (the audit trail, FEAT-9); the materialize_* paths do not (a peer's change
+    // arrives already-audited as its own replicated `audit:` event).
 
     // Store a new named graph. Returns an empty handle if the name is empty or
     // already taken. Assigns a fresh UUID and captures it into the CRDT.
@@ -165,6 +170,7 @@ private:
     std::vector<std::shared_ptr<ProjectInput>> inputs_;
     std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order
     ReplicationManager* replication_;  // null = not replicated
+    AuditSink* audit_;  // null = not audited (no node behind this project)
 };
 
 }  // namespace zetta
