@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/ddf_filter_predicate.schema.json",
+  "title": "DdfFilterPredicate",
+  "description": "A single-column row predicate for the DDF filter op (ARC-12): keep the rows of a DataFrame where `column` <comparison> `value`. Each row's value is widened to double before the comparison, so one predicate covers every numeric column dtype.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["column", "comparison", "value"],
+  "properties": {
+    "column": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The frame column whose value each row is tested on."
+    },
+    "comparison": {
+      "type": "string",
+      "enum": ["eq", "ne", "lt", "le", "gt", "ge"],
+      "description": "The comparison applied to each row's value against `value`."
+    },
+    "value": {
+      "type": "number",
+      "description": "The threshold compared against (the row's value is widened to double)."
+    }
+  }
+}

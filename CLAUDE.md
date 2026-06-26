@@ -421,24 +421,48 @@ picks the dense numeric fields (Int64 if all-integer, else Float64) for
 `schemas/data_frame_schema.schema.json`, the hand-written non-throwing pattern of
 `DeviceInfo`, **not** the `pboettch` path). It lives in **zetta-core** (it bridges
 the storage engine + `zetta::compute`), like `CpuDevice`. No `Node`/SQL/replication
-wiring in this slice — DDF *ops* and the `ComputeJob` `ddf` kind are later issues.
+wiring in this slice — the `ComputeJob` `ddf` kind is a later issue.
 See [docs/ddf.md](docs/ddf.md).
 
-The first **DDF ops** over that substrate (**ARC-12**, #385) are
-`zetta::ddf::sort` / `concat` / `slice` (`include/zetta/ddf/data_frame_ops.hpp`):
-**sort** orders a frame by a key column — the compare runs on the frame's
-`ComputeDevice` via `sort_by_key` (the device returns the permutation, so a CUDA
-frame sorts on the GPU), the rows gathered through it and re-chunked; **concat** is
-row-wise union (bag union, schema-compatible frames appended in order); **slice** is
-a contiguous row range. Each is **non-throwing** (returns a fresh, move-only
-`DataFrameResult`; the inputs are read, never mutated), staging through an internal
-type-erased `HostFrame` (`src/core/ddf/data_frame_internal.hpp`) so the orchestration
-stays dtype-generic and the device only does the compare sort. They are the
-single-node building blocks of the **distributed sort**
-(`zetta::ddf::DistributedSorter`, `include/zetta/ddf/distributed_sort.hpp`) —
-**sample-partition + local sort + merge** across the cluster (**ARC-12**, #385).
-Every node runs the same SPMD `sort(local_shard, key, order, round_tag)` against its
-own shard: local-sort, **sample** keys → [`gather`](#collectives-allreduce--broadcast--barrier--gather)
+The first **DDF ops over a frame** — `zetta::ddf::scan` / `filter` / `project`
+(`include/zetta/ddf/ops.hpp`, **ARC-12**, #381) — are the leaf of the DDF op
+algebra. They are **DDF-level free functions built on the `ComputeDevice` operator
+seam, not new methods on it** (that interface is the fixed low-level buffer-op set;
+DDF ops compose it over a `DataFrame`'s chunked columns). The heavy data movement
+runs **through the device's existing operators** so it is accelerated +
+CUDA-parityable: **`filter`** moves the surviving rows with the device **`gather`**
+op (per source chunk, then re-packs into regular output chunks), and a computed
+**`project`** column runs the device **`map`** (unary) or **`elementwise`** (binary)
+op. **`scan`** reads a table/store into a frame (the schema-less overload infers the
+schema; both thin-wrap `load_data_frame`). The one **host-side** step is evaluating
+a `filter` predicate into the selected row indices — the op set has no
+comparison/stream-compaction primitive (a deliberate scope note; a select/compare
+seam op is a separate issue), so the comparison runs host-side like the loader's
+JSON→value conversion. A **`FilterPredicate`** is a single-column comparison
+(`column <comparison> value`, each row widened to double); a **`Projection`** is an
+ordered set of output columns, each a passthrough / unary / binary `ProjectColumn`
+(built via factories). Both carry a **validated JSON boundary** (`to_json` /
+non-throwing `from_json` mirroring `schemas/ddf_filter_predicate.schema.json` /
+`schemas/ddf_projection.schema.json`, the hand-written `DataFrameSchema` pattern).
+Every op is **non-throwing** (returns a `DataFrameResult`). No `Node`/SQL/scheduling
+wiring yet — `groupby`/aggregate/featurize and the `ComputeJob` `ddf` kind are
+later issues. See [docs/ddf-ops.md](docs/ddf-ops.md).
+
+Alongside those, the frame-shaping ops `zetta::ddf::sort` / `concat` / `slice`
+(`include/zetta/ddf/data_frame_ops.hpp`; **ARC-12**, #385): **sort** orders a frame
+by a key column — the compare runs on the frame's `ComputeDevice` via `sort_by_key`
+(the device returns the permutation, so a CUDA frame sorts on the GPU), the rows
+gathered through it and re-chunked; **concat** is row-wise union (bag union,
+schema-compatible frames appended in order); **slice** is a contiguous row range.
+Each is **non-throwing** (returns a fresh, move-only `DataFrameResult`; the inputs are
+read, never mutated), staging through an internal type-erased `HostFrame`
+(`src/core/ddf/data_frame_internal.hpp`) so the orchestration stays dtype-generic and
+the device only does the compare sort. They are the single-node building blocks of the
+**distributed sort** (`zetta::ddf::DistributedSorter`,
+`include/zetta/ddf/distributed_sort.hpp`) — **sample-partition + local sort + merge**
+across the cluster (**ARC-12**, #385). Every node runs the same SPMD
+`sort(local_shard, key, order, round_tag)` against its own shard: local-sort,
+**sample** keys → [`gather`](#collectives-allreduce--broadcast--barrier--gather)
 to the root which picks `P-1` splitters → [`broadcast`](#collectives-allreduce--broadcast--barrier--gather)
 them, **partition** the sorted shard by the splitters, **all-to-all shuffle** bucket
 `b` to participant `b` over the [signal plane](#signal-plane-rpc--events--tasks)
@@ -1544,8 +1568,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
+    ops.hpp                 zetta::ddf::scan/filter/project — DDF ops over a DataFrame, built on the ComputeDevice seam (gather-based filter, map/elementwise computed columns) + FilterPredicate/Projection JSON boundaries (ARC-12; #381)
     join.hpp                zetta::ddf::distributed_join — DDF distributed inner equi-join: repartition by key via collectives (gather+broadcast) then local hash/sort-merge join per shard (ARC-12; #382)
-    data_frame_ops.hpp      zetta::ddf::sort/concat/slice — the first DDF ops: order by a key column (device sort_by_key), row-wise union, contiguous row range (ARC-12; #385)
+    data_frame_ops.hpp      zetta::ddf::sort/concat/slice — frame-shaping DDF ops: order by a key column (device sort_by_key), row-wise union, contiguous row range (ARC-12; #385)
     distributed_sort.hpp    zetta::ddf::DistributedSorter/PartitionMessage — distributed sort across the cluster (sample-partition + local sort + merge) over collectives + the signal-plane all-to-all shuffle (ARC-12; #385)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
@@ -1614,6 +1639,7 @@ src/core/                   zetta-core impl
   compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
   compute/job_coordinator.cpp  JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
   ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
+  ddf/ops.cpp               DDF scan/filter/project ops over a DataFrame (gather-based filter + repack, map/elementwise computed columns) + FilterPredicate/Projection JSON boundaries (zetta-core; #381)
   ddf/join.cpp              distributed_join + to_host_relation + hash/sort-merge join + collective repartition (gather/broadcast all-to-all) + deserialize boundary check (zetta-core; #382)
   ddf/data_frame_ops.cpp    zetta::ddf::sort/concat/slice + the internal HostFrame host-staging (data_frame_internal.hpp) shared with the distributed sort (zetta-core; #385)
   ddf/distributed_sort.cpp  zetta::ddf::DistributedSorter — sample-sort across the cluster + the ddf.shuffle all-to-all + PartitionMessage JSON-Schema boundary (zetta-core; #385)
@@ -1841,7 +1867,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/ddf.md`](docs/ddf.md) — the DDF DataFrame core (`zetta::ddf::DataFrame`): a typed, columnar, chunked frame over the storage engine, each chunk a `ComputeDevice` buffer; table→columns loader + schema inference + value/JSON boundaries — the substrate DDF ops operate on (ARC-12 / GLO-11 / ENT-33; #380).
-- [`docs/ddf-ops.md`](docs/ddf-ops.md) — the first DDF DataFrame ops (`zetta::ddf::sort` / `concat` / `slice`): order a frame by a key column (the compare runs on the device via `sort_by_key`), row-wise union, and a contiguous row range — the single-node building blocks of the distributed sort (ARC-12; #385).
+- [`docs/ddf-ops.md`](docs/ddf-ops.md) — the local DDF DataFrame ops: `zetta::ddf::scan` / `filter` / `project` (read a table into a frame, `gather`-based row filtering, `map`/`elementwise` computed columns, with schema-validated `FilterPredicate` / `Projection` JSON boundaries; #381) and `zetta::ddf::sort` / `concat` / `slice` (key-column sort via the device `sort_by_key`, row-wise union, contiguous row range — the single-node building blocks of the distributed sort; #385) (ARC-12).
 - [`docs/ddf-distributed-sort.md`](docs/ddf-distributed-sort.md) — the DDF distributed sort (`zetta::ddf::DistributedSorter`): sample-partition + local sort + merge across the cluster — splitter agreement over the [collectives](docs/collectives.md), an all-to-all row shuffle over the [signal plane](docs/signal-plane.md) (schema-validated `PartitionMessage`), returning globally range-ordered, locally-sorted partitions; a single-node cluster returns the locally-sorted shard (ARC-12; #385).
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).

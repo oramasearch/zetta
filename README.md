@@ -170,14 +170,17 @@ capability, and selects one per op — GPU when present, else CPU (see
 [docs/device-registry.md](docs/device-registry.md)). On top of that seam, the
 **DDF (distributed dataframe) core** (`zetta::ddf::DataFrame`) reads a table's rows
 into typed, chunked numeric columns — each chunk a `ComputeDevice` buffer — so those
-operators run directly over a table's data (see [docs/ddf.md](docs/ddf.md)). The first
-DDF **ops** build on it: a **distributed equi-join** (`zetta::ddf::distributed_join`)
-that repartitions two frames by key across the cluster via collectives, then runs a
-local hash / sort-merge join per shard ([docs/ddf-join.md](docs/ddf-join.md)), plus
-**sort / concat / slice** ([docs/ddf-ops.md](docs/ddf-ops.md)) and a **distributed
-sort** (sample-partition + local sort + merge across the cluster,
-[docs/ddf-distributed-sort.md](docs/ddf-distributed-sort.md)). State replicates between
-nodes as an Automerge CRDT. See [docs/](docs/) for details.
+local **DDF ops** build on it — `scan` / `filter` / `project` and `sort` / `concat` /
+`slice` ([docs/ddf-ops.md](docs/ddf-ops.md)): `gather`-based row filtering,
+`map`/`elementwise` computed columns, and key-column ordering via the device
+`sort_by_key`. Two cross-node ops compose them: a **distributed sort**
+(sample-partition + local sort + merge across the cluster,
+[docs/ddf-distributed-sort.md](docs/ddf-distributed-sort.md)) and a **distributed
+equi-join** (`zetta::ddf::distributed_join`) that repartitions two frames by key across
+the cluster via collectives, then runs a local hash / sort-merge join per shard, so a
+single-node and a multi-node join produce identical results
+([docs/ddf-join.md](docs/ddf-join.md)). State replicates between nodes as an Automerge
+CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).

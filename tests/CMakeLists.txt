@@ -53,6 +53,7 @@ add_executable(zetta-tests
   test_query.cpp
   test_execution_graph.cpp
   test_data_frame.cpp
+  test_ddf_ops.cpp
   test_ddf_join.cpp
   test_data_frame_ops.cpp
   test_distributed_sort.cpp
