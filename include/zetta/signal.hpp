@@ -57,9 +57,10 @@ struct SignalResponse {
 
 // The application's handler for incoming signals, invoked by the cluster on its
 // **network thread** — so implementations must be cheap and thread-safe; heavy
-// work should be handed off to another executor (a later slice wires the
-// work-stealing scheduler in behind this). Each method has a safe default, so a
-// handler overrides only the kinds it cares about.
+// work should be handed off to another executor (e.g. the work-stealing
+// scheduler, whose handlers only hand out / store task descriptors and run the
+// actual compute on its own pool — see docs/work-stealing-scheduler.md). Each
+// method has a safe default, so a handler overrides only the kinds it cares about.
 class SignalHandler {
 public:
     virtual ~SignalHandler() = default;

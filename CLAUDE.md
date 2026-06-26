@@ -391,11 +391,23 @@ schedules off a single shared queue and so has no observable per-worker steal to
 test or reason about; task bodies may still use `zetta::runtime` coroutines. A
 zero-worker pool is valid (a pure task *sink*); `stats()` exposes per-worker
 counts + a steal count, `current_worker_index()` tells a task which worker it is
-on. The **cross-node** half — idle/faster *nodes* stealing pending tasks from
-peers over the [signal plane](#signal-plane-rpc--events--tasks) — is
-`zetta::compute::DistributedScheduler`, built on the local one. Scheduling a
-`ComputeJob` / driving collectives is the **job coordinator** (#372), a later
-slice that submits work *through* this. See
+on. The **cross-node** half is `zetta::compute::DistributedScheduler`
+(`include/zetta/compute/distributed_scheduler.hpp`), built on the local one:
+idle/faster *nodes* steal pending tasks from peers over the
+[signal plane](#signal-plane-rpc--events--tasks). The node that calls
+`map(method, inputs)` **owns** the job (the authoritative pending queue); its
+local drainers and idle peers both pull from it — a peer sends a `steal` RPC, the
+owner replies with an **offer** of leased tasks, the peer runs them on its own
+pool and returns a `steal_result`. **Single-hop** (a node only hands out its own
+jobs' tasks, never re-steals), with **leases + re-queue** so a dead helper never
+hangs `map`, and **idempotent** completion so a late result is ignored. The
+application supplies one **executor** (`string(method, payload)`) registered
+identically on every node; the three steal messages are **schema-validated at the
+boundary** (`schemas/steal_{request,offer,result}.schema.json`, same `pboettch`
+validator as the [signal envelope](#signal-plane-rpc--events--tasks)). It is the
+cluster's `SignalHandler` for `steal`/`steal_result` and forwards every other
+signal to a fallback. Scheduling a `ComputeJob` / driving collectives is the
+**job coordinator** (#372), a later slice that submits work *through* this. See
 [docs/work-stealing-scheduler.md](docs/work-stealing-scheduler.md).
 
 ### Cluster (equal peers)
@@ -1129,6 +1141,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     cuda_device.hpp         zetta::compute::CudaDevice — the GPU backend (CUDA-free header; guarded by ZETTA_WITH_CUDA, #363)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
+    distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane (ARC-10/#366)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1178,6 +1191,7 @@ src/core/                   zetta-core impl
   compute/cpu_device.cpp    CpuDevice — every operator on host memory, multi-threaded via runtime::parallel_for (zetta-core; #360)
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (zetta-core; #362)
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
+  compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary (zetta-core; #366)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)

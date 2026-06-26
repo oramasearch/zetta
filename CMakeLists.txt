@@ -358,6 +358,7 @@ add_library(zetta-core STATIC
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp
+  src/core/compute/distributed_scheduler.cpp
   src/core/runtime.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp

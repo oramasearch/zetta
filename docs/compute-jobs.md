@@ -10,12 +10,13 @@ realizes **ARC-11** and the entity spec **ENT-31**.
 This page documents the **storage + data model** only: the `ComputeJob` type and
 its lifecycle (create / update / query) on a `Node`, its persistence +
 replication, the audit events it emits, its JSON-Schema boundary, and the
-read-only `system.zetta_jobs` SQL registry that exposes it (below). The pieces
-that *schedule* and *run* a job onto the cluster — the job coordinator, the
-scheduler + collectives, and the autoscaler (which reads the
-[`ScalingPolicy`](scaling-policy.md) reward model, built in
-[#370](https://github.com/oramasearch/zetta/issues/370)) — are **separate, later
-slices**
+read-only `system.zetta_jobs` SQL registry that exposes it (below). The
+[work-stealing scheduler](work-stealing-scheduler.md) that *runs* a job's tasks
+across cores + nodes is built ([#366](https://github.com/oramasearch/zetta/issues/366)),
+as is the [`ScalingPolicy`](scaling-policy.md) reward model the autoscaler reads
+(built in [#370](https://github.com/oramasearch/zetta/issues/370)); the remaining
+pieces that *schedule* a job onto it — the job coordinator, collectives, and the
+autoscaler — are **separate, later slices**
 ([#371](https://github.com/oramasearch/zetta/issues/371)–[#372](https://github.com/oramasearch/zetta/issues/372)).
 A job created here is the durable, replicated record those slices drive.
 
