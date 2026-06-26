@@ -2,22 +2,23 @@
 
 This is the **pattern every cloud-burst backend follows** — the shape
 [`AzureProvisioner`](azure-provisioner.md) established as the **reference**
-(ARC-13 / ADR-20, `#376`) and that [`GcpProvisioner`](gcp-provisioner.md) (`#378`)
-and [`OciProvisioner`](oci-provisioner.md) (`#432`) **mirror**, with
-`AwsProvisioner` (`#377`) to follow. Read
-[azure-provisioner.md](azure-provisioner.md) first; this page is the recipe for the
-*next* vendor.
+(ARC-13 / ADR-20, `#376`) and that [`GcpProvisioner`](gcp-provisioner.md) (`#378`),
+[`OciProvisioner`](oci-provisioner.md) (`#432`), and
+[`K8sProvisioner`](k8s-provisioner.md) (`#434`) **mirror**, with `AwsProvisioner`
+(`#377`) to follow. Read [azure-provisioner.md](azure-provisioner.md) first; this
+page is the recipe for the *next* vendor.
 
-> **We are sticking with the CLI for now.** Each backend drives its cloud by
-> shelling out to the vendor CLI (`az`, `gcloud`, `oci`, `aws`) — **no cloud SDK**
-> in `zetta-core`, honoring the seam's "no cloud SDK behind this header" rule. A
-> REST or SDK binding can replace the CLI later **without touching anything above
-> the control-plane seam** (see [Swapping the transport](#swapping-the-transport)).
+> **We are sticking with the CLI for now.** Each backend drives its target by
+> shelling out to the vendor CLI (`az`, `gcloud`, `oci`, `kubectl`, `aws`) — **no
+> cloud SDK / client library** in `zetta-core`, honoring the seam's "no cloud SDK
+> behind this header" rule. A REST or SDK binding can replace the CLI later
+> **without touching anything above the control-plane seam** (see
+> [Swapping the transport](#swapping-the-transport)).
 
 ## The four pieces (per vendor)
 
 A cloud backend is four small pieces plus the shared infrastructure below. Name
-them `<Vendor>` — `Gcp` (built), `Oci` (built), `Aws`:
+them `<Vendor>` — `Gcp` (built), `Oci` (built), `K8s` (built), `Aws`:
 
 1. **`<Vendor>Provisioner : Provisioner`** — the burst **orchestration**, copied
    structurally from `AzureProvisioner`: `provision` → `control_plane.bring_up` +
@@ -69,6 +70,22 @@ what makes create/scale/delete **idempotent**.
 | **per-node identity** | user-assigned **managed identity** (`--assign-identity`) | **service account** (instance template `--service-account`) | **instance principal** (dynamic group) / instance-config metadata | **IAM instance profile** (launch template) |
 | **eviction signal** | Scheduled Events metadata | metadata `preempted` flag | instance-metadata preemption notice | EC2 instance-metadata / Spot interruption notice |
 
+**Kubernetes** (`kubectl`, built `#434`) is the same shape over an **existing
+cluster** rather than VMs — the burst pool is a **Deployment** of worker pods (the
+kubeconfig context is the "account", set up out-of-band). The same four operations:
+
+| Operation | Kubernetes (`kubectl`) |
+|---|---|
+| **Burst pool primitive** | Deployment (scaled to N replicas) |
+| **create / scale to N** | `kubectl create deployment <name> --image <img>` then `kubectl scale deployment/<name> --replicas N` |
+| **list instances** | `kubectl get pods --selector app=<name> --output json` |
+| **destroy one** | `kubectl delete pod <pod-name>` |
+| **teardown pool** | `kubectl scale deployment/<name> --replicas 0` then `kubectl delete deployment <name>` |
+| **Spot / preemptible** | `kubectl patch deployment <name> --patch <nodeSelector>` onto a spot node pool |
+| **node join (bootstrap)** | `kubectl set env deployment/<name> ZETTA_SEED_PEER=…` |
+| **per-node identity** | **ServiceAccount** (`kubectl set serviceaccount deployment/<name> <sa>`) |
+| **eviction signal** | pod eviction / `kubectl get pods` no longer lists it |
+
 The eviction column is why `provisioned()` reads the control plane live on every
 call: a Spot/preemptible reclaim removes a node **without** a `teardown`, and the
 list must reflect that (the short-lived burst credential expires on its own — the
@@ -101,6 +118,12 @@ oci compute-management instance-pool create --compartment-id <c> --display-name 
 # non-empty -> resize path: oci compute-management instance-pool update --instance-pool-id $POOL --size <N>
 oci compute-management instance-pool list-instances --instance-pool-id <pool-ocid>
 
+# Kubernetes bring_up: ensure the Deployment, shape its pods, scale it, then list.
+kubectl create deployment <name> --image <img> --namespace <ns>
+kubectl set env deployment/<name> ZETTA_SEED_PEER=<seed> --namespace <ns>
+kubectl scale deployment/<name> --replicas <N> --namespace <ns>
+kubectl get pods --selector app=<name> --output json --namespace <ns>
+
 # AWS bring_up: ensure the ASG exists at N, then list its instances.
 aws autoscaling create-auto-scaling-group --auto-scaling-group-name <pool> \
     --launch-template LaunchTemplateName=<lt> --min-size 0 --max-size <N> \
@@ -122,10 +145,12 @@ Each binding must **project the CLI's output into the `ProvisionedNode` shape**
 (`{ node_id, address, capability }`) before parsing it with
 `ProvisionedNode::from_json` — the same way the Azure binding consumes a
 `ProvisionedNode`-shaped array. Use the CLI's own projection (`--query` for `az` /
-`aws` / `oci`, `--format` for `gcloud`) so the binding's job is just the parse +
-skip-malformed at the validated boundary (the `oci` binding also unwraps the
-`{ "data": [ … ] }` envelope the CLI returns). The `node_id` must be the **zetta
-cluster node id** the joined node reports (correlate Azure/GCE/OCI/EC2 instances to
+`aws` / `oci`, `--format` for `gcloud`, `-o jsonpath` / a go-template for `kubectl`)
+so the binding's job is just the parse + skip-malformed at the validated boundary
+(the `oci` binding unwraps the `{ "data": [ … ] }` envelope the CLI returns, and the
+`kubectl` binding the `{ "items": [ … ] }` envelope). The `node_id` must be the
+**zetta cluster node id** the joined node reports (correlate Azure/GCE/OCI/EC2
+instances or K8s pods to
 cluster members via a tag / label / instance metadata), not the raw cloud instance
 id.
 
@@ -168,8 +193,8 @@ against fakes — CI is CPU-only and macOS-first and cannot reach a live cloud. 
 **fake `CommandRunner`** makes the argv construction + JSON parsing — the parts
 most likely to drift — fully unit-tested; the only path CI cannot run is the actual
 CLI exec. A production deployment installs and authenticates the vendor CLI
-(`az login` / `gcloud auth` / `oci setup config` / `aws configure`) on the host
-that drives the burst.
+(`az login` / `gcloud auth` / `oci setup config` / `kubectl` kubeconfig /
+`aws configure`) on the host that drives the burst.
 
 ## Swapping the transport
 

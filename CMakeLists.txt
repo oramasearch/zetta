@@ -329,6 +329,8 @@ add_library(zetta-core STATIC
   src/core/gcp_cli_control_plane.cpp
   src/core/oci_provisioner.cpp
   src/core/oci_cli_control_plane.cpp
+  src/core/k8s_provisioner.cpp
+  src/core/k8s_cli_control_plane.cpp
   src/core/burst_identity.cpp
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
