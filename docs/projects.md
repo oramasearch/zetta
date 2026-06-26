@@ -102,6 +102,7 @@ reverse path used by reconciliation.
 | Method (on `Project`) | Returns | Behavior |
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
+| `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
 | `graph_names()` / `graph_count()` | `vector<string>` / `size_t` | Sorted by name / count. |
@@ -147,12 +148,46 @@ type leaks into `zetta-core` (`src/gui/app.cpp` → `App::draw_projects`). This 
 the lifecycle panel only; the full **New Project** screen (ingestion + use-case
 selection, SCR-2 #223) is separate work.
 
+## Graph Workspace
+
+The **Graph Workspace** (SCR-3 / CMP-1, the GUI slice of FEAT-2) renders the
+selected project's `ProjectGraph` as a visible, editable **node/edge canvas**
+rather than a black box, and persists edits back to the IR. It is a collapsing
+header in the headed window (`src/gui/app.cpp` → `App::draw_graph_workspace`),
+driven by the same `selected_project_` the Projects column sets.
+
+- **Pick / create / delete a graph.** It lists the project's `graph_names()`;
+  selecting one opens it, `New graph` creates an empty one via `create_graph`,
+  and the `x` button drops one via `drop_graph`.
+- **Canvas** (`App::draw_graph_canvas`). Nodes are boxes laid out in **columns by
+  `StepKind`** (connect → clean → model → index → serve → act, the canonical
+  order), with edges drawn between them — `data_flow` and `control` in different
+  colours, each with an arrowhead at the `to` end so direction reads even when an
+  edge points backward. Clicking a box selects that step.
+- **Edit** (`App::draw_graph_editor`). Add a step (name + `StepKind`), add an
+  edge (from/to pickers + `EdgeKind`), delete any edge, and rename or delete the
+  selected step — driving the IR's `add_node` / `add_edge` / `remove_edge` /
+  `remove_node` (see [execution-graph.md](execution-graph.md#editing-a-graph-remove)).
+- **Working copy + Save/Revert.** Edits apply to an in-memory *working copy* of
+  the graph, not the stored IR, so an edit is deliberate and atomic. **Save**
+  writes it back through [`Project::update_graph`](#execution-graphs) (disk + the
+  `graph:<uuid>` CRDT key, so the edit replicates), optionally renaming the graph;
+  **Revert** reloads the stored copy. The amber `● unsaved edits` marker shows
+  when the working copy differs from what's stored. Selecting a *different* graph
+  (or switching projects) discards the working copy.
+
+The panel keeps zetta's GUI rule: it is a thin renderer over the core API and no
+SDL/ImGui type leaks into `zetta-core`. Compile-from-intent (producing a graph to
+edit here) and the correctness gate are separate slices.
+
 ## Tests
 
 `tests/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
 survival across a restart (both disk-only and CRDT-only), and replication of a
 project + a rename to a connected peer. `tests/test_project_graph.cpp` does the
-same for a project's execution graphs: create/find/drop, restart via disk and via
-the CRDT, and replication of a graph to a peer (with a faithful round-trip
-checked each time). Graph (de)serialization itself is covered in
-`tests/test_execution_graph.cpp`.
+same for a project's execution graphs: create/find/drop, **`update_graph`**
+(content edits + rename guards, and that an edit re-captures the `graph:` key and
+survives restart via the CRDT), restart via disk and via the CRDT, and
+replication of a graph to a peer (with a faithful round-trip checked each time).
+Graph (de)serialization and the in-place `remove_node` / `remove_edge` edits are
+covered in `tests/test_execution_graph.cpp`.

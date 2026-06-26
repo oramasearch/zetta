@@ -79,7 +79,13 @@ a `<project-uuid>/project.json` on-disk projection, persisted across restart in
 both standalone and replicated nodes. A project **owns execution graphs**
 (`zetta::ProjectGraph` — a named, persisted `ExecutionGraph` IR; replicated key
 `graph:<uuid>`, projection `<project-uuid>/graphs/<uuid>.json`), the way a
-database owns tables. See [docs/projects.md](docs/projects.md).
+database owns tables, with `create_graph`/`update_graph`/`drop_graph` CRUD
+(`update_graph` rewrites the projection **and** re-captures the CRDT key, so an
+edit replicates like a create). The headed **Graph Workspace** panel
+(`App::draw_graph_workspace`) renders a project's graph as an editable node/edge
+canvas — nodes in columns by `StepKind`, edges between them — and persists edits
+back to the IR via `update_graph` (SCR-3/CMP-1, the GUI slice of FEAT-2). See
+[docs/projects.md](docs/projects.md).
 
 A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
 payloads captured with provenance (`kind` intent|artifact, `source`
@@ -366,11 +372,13 @@ name + a free-form `nlohmann::json` attribute bag) joined by typed
 (`StepKind`, in `ir/step_kind.hpp`) is the fixed pipeline
 **connect→clean→model→index→serve→act**, declared in that order (so the enum
 values increase along the pipeline). `ExecutionGraph` (build with `add_node`/
-`add_edge`; traverse with `nodes_of_kind`/`edges_of_kind`/`successors`/
-`predecessors`/`find_node`) hands back nodes as `shared_ptr` handles (empty on
-miss) like the rest of zetta, and guards its **structure** (no duplicate ids, no
-dangling or duplicate edges) — but not its **semantics**. This is the keystone
-the compilers, gate, deploy, and run all build on (ENT-3/FEAT-2).
+`add_edge`; edit with `remove_node`/`remove_edge` — the inverses, where removing
+a node drops every edge incident to it so none is left dangling; traverse with
+`nodes_of_kind`/`edges_of_kind`/`successors`/`predecessors`/`find_node`) hands
+back nodes as `shared_ptr` handles (empty on miss) like the rest of zetta, and
+guards its **structure** (no duplicate ids, no dangling or duplicate edges) — but
+not its **semantics**. This is the keystone the compilers, gate, deploy, and run
+all build on (ENT-3/FEAT-2).
 
 A graph has a canonical **JSON form** (`ir/serialization.hpp`: `to_json` →
 `{ nodes:[{id,kind,name,attributes}], edges:[{from,to,kind}] }`, with `kind` the

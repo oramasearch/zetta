@@ -16,6 +16,11 @@ namespace zetta {
 class Node;
 class Cluster;
 struct ValidationReport;
+class Project;
+class ProjectGraph;
+namespace ir {
+class ExecutionGraph;
+}
 namespace query {
 class QueryService;
 }
@@ -67,6 +72,17 @@ private:
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_cluster();     // role, listen address, peers, join command
     void draw_runs();        // run status/logs + outputs + lineage (one selected run)
+
+    // Graph Workspace (SCR-3 / CMP-1): view + edit the selected project's
+    // ExecutionGraph IR as a node/edge canvas; edits persist back to the IR.
+    void draw_graph_workspace();
+    // Render the working-copy graph as a canvas: nodes laid out in columns by
+    // StepKind (connect→…→act), edges drawn between them; clicking selects a node.
+    void draw_graph_canvas();
+    // The add/rename/delete controls + Save/Revert below the canvas.
+    void draw_graph_editor(Project& project);
+    // Load a fresh working copy of `stored` for editing (clears selection/dirty).
+    void open_graph(const ProjectGraph& stored);
 
     void handle_incoming_files();  // drain + route the queue (main thread)
     void enqueue_file(std::string path, FileIntent intent);
@@ -127,6 +143,28 @@ private:
     std::mutex incoming_mutex_;
     std::vector<IncomingFile> incoming_files_;
     std::string io_status_;
+
+    // Graph Workspace state. The panel edits a *working copy* of the open graph
+    // (editing_graph_) and only writes it back to the IR on Save, so an edit is
+    // a deliberate, atomic act. The copy is reloaded whenever a different graph
+    // is opened (graph_loaded_id_ tracks which one it holds) or the selected
+    // project changes (graph_panel_project_). Held by unique_ptr with the type
+    // forward-declared, like base_style_, to keep the IR header out of app.hpp.
+    std::string graph_panel_project_;  // project the open graph belongs to
+    std::string selected_graph_;       // saved name of the open graph ("" = none)
+    std::string graph_loaded_id_;      // id the working copy was loaded from
+    std::unique_ptr<ir::ExecutionGraph> editing_graph_;  // the working copy
+    bool graph_dirty_ = false;         // working copy has structural edits to save
+    std::string selected_node_id_;     // node selected in the canvas ("" = none)
+    std::string graph_error_;          // inline error for graph/list operations
+    std::string new_graph_input_;      // name field for "New graph"
+    std::string rename_graph_input_;   // name field for the open graph (rename)
+    std::string add_node_name_input_;  // name field for a new node
+    int add_node_kind_ = 0;            // StepKind index for a new node
+    std::string add_edge_from_;        // from-node id for a new edge
+    std::string add_edge_to_;          // to-node id for a new edge
+    int add_edge_kind_ = 0;            // EdgeKind index for a new edge
+    std::string rename_node_input_;    // name field for renaming the selected node
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

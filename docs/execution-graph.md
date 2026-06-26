@@ -118,6 +118,26 @@ The data model guards its own shape — this is *structure*, not the gate's
   an **exact duplicate** (same `from`, `to`, *and* kind); it returns `false`.
   Distinct edge kinds between the same pair, and self-edges, are allowed.
 
+### Editing a graph (remove)
+
+Two `remove_*` methods are the inverses of `add_node` / `add_edge`, so a graph
+can be edited in place — the IR side of the [Graph Workspace](projects.md#graph-workspace)
+panel:
+
+```cpp
+graph.remove_edge(clean->id, model->id);          // drop one exact edge (by kind)
+graph.remove_node(model->id);                      // drop the node …
+                                                   // … and every edge incident to it
+```
+
+- `remove_edge(from, to, kind)` deletes the **one exact edge** and leaves both
+  endpoints untouched; it returns `false` if there is no such edge. A different
+  `kind` on the same pair is left alone.
+- `remove_node(id)` deletes the node **and every edge incident to it** (in or
+  out), so removing a node never leaves a dangling edge — the mirror of
+  `add_edge`'s no-dangling guarantee. It returns `false` if there is no such
+  node. Survivors keep their insertion order, and the freed id can be reused.
+
 ## JSON serialization
 
 `include/zetta/ir/serialization.hpp` adds a canonical JSON form — the **tabular**

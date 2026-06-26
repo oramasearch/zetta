@@ -243,6 +243,26 @@ std::shared_ptr<ProjectGraph> Project::create_graph(std::string name,
     return stored;
 }
 
+std::shared_ptr<ProjectGraph> Project::update_graph(const std::string& name,
+                                                    ir::ExecutionGraph graph,
+                                                    std::string new_name) {
+    auto stored = find_graph(name);
+    if (!stored) return nullptr;  // no graph by that name to update
+    std::string final_name =
+        new_name.empty() ? stored->name() : std::move(new_name);
+    if (final_name.empty()) return nullptr;  // a graph must keep a name
+    if (final_name != stored->name() && find_graph(final_name)) {
+        return nullptr;  // rename would collide with another graph
+    }
+    // set_contents rewrites the on-disk projection; the CRDT set below makes the
+    // edit replicated state, same as create_graph — never persist disk-only.
+    stored->set_contents(std::move(final_name), std::move(graph));
+    if (replication_) {
+        replication_->set(catalog::graph_key(stored->id()), stored->record());
+    }
+    return stored;
+}
+
 std::shared_ptr<ProjectGraph> Project::materialize_graph(
     std::string id, std::string name, ir::ExecutionGraph graph) {
     if (auto existing = find_graph_by_id(id)) return existing;

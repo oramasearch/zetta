@@ -97,6 +97,90 @@ TEST(ProjectGraph, CreateFindDropUnderAProject) {
     node.stop();
 }
 
+TEST(ProjectGraph, UpdateGraphGuardsNameAndContents) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    auto project = node.create_project("churn");
+    ASSERT_TRUE(project);
+    auto stored = project->create_graph("pipeline", sample_graph());
+    ASSERT_TRUE(stored);
+    const std::string graph_id = stored->id();
+    project->create_graph("other", ExecutionGraph{});  // a second graph
+
+    // Updating an unknown graph fails.
+    EXPECT_FALSE(project->update_graph("nope", sample_graph()));
+
+    // Edit the contents: drop the model node (and its edges), add an index node.
+    ExecutionGraph edited = stored->graph();
+    auto model = edited.nodes_of_kind(StepKind::Model).front();
+    ASSERT_TRUE(edited.remove_node(model->id));
+    edited.add_node(StepKind::Index, "vector_index");
+    auto updated = project->update_graph("pipeline", edited);
+    ASSERT_TRUE(updated);
+    EXPECT_EQ(updated->id(), graph_id);  // same identity, new contents
+    EXPECT_EQ(updated->name(), "pipeline");
+    EXPECT_EQ(updated->graph().node_count(), 3u);  // -model +index
+    EXPECT_TRUE(updated->graph().nodes_of_kind(StepKind::Model).empty());
+    EXPECT_EQ(updated->graph().nodes_of_kind(StepKind::Index).size(), 1u);
+
+    // Renaming onto an existing graph's name is rejected.
+    EXPECT_FALSE(project->update_graph("pipeline", sample_graph(), "other"));
+    EXPECT_TRUE(project->find_graph("pipeline"));
+
+    // A real rename keeps the id and moves the handle to the new name.
+    auto renamed = project->update_graph("pipeline", sample_graph(), "flow");
+    ASSERT_TRUE(renamed);
+    EXPECT_EQ(renamed->id(), graph_id);
+    EXPECT_FALSE(project->find_graph("pipeline"));
+    EXPECT_TRUE(project->find_graph("flow"));
+
+    node.stop();
+}
+
+TEST(ProjectGraph, UpdateGraphReplicatesAndSurvivesRestartViaCRDT) {
+    TempDir tmp;
+    const std::string node_id = zetta::new_uuid();
+    nlohmann::json edited_json;
+    std::string graph_id;
+    {
+        ReplicationManager replication{node_id};
+        Node node{config_for(tmp), &replication};
+        node.start();
+        auto project = node.create_project("churn");
+        ASSERT_TRUE(project);
+        auto stored = project->create_graph("pipeline", sample_graph());
+        ASSERT_TRUE(stored);
+        graph_id = stored->id();
+
+        // Edit + persist back to the IR (disk + CRDT).
+        ExecutionGraph edited = stored->graph();
+        edited.add_node(StepKind::Serve, "predictions_api");
+        ASSERT_TRUE(project->update_graph("pipeline", edited));
+        edited_json = zetta::ir::to_json(project->find_graph("pipeline")->graph());
+
+        // The edit is captured into the CRDT under the same graph: key.
+        const nlohmann::json snapshot = replication.snapshot();
+        ASSERT_TRUE(snapshot.contains("graph:" + graph_id));
+        EXPECT_EQ(snapshot["graph:" + graph_id]["graph"], edited_json);
+
+        node.tick();  // persist the CRDT document
+        node.stop();
+    }
+
+    // A fresh ReplicationManager rebuilds the edited graph from the document.
+    ReplicationManager replication{node_id};
+    Node node{config_for(tmp), &replication};
+    node.start();
+    auto project = node.find_project("churn");
+    ASSERT_TRUE(project);
+    auto stored = project->find_graph("pipeline");
+    ASSERT_TRUE(stored);
+    EXPECT_EQ(stored->id(), graph_id);
+    EXPECT_EQ(zetta::ir::to_json(stored->graph()), edited_json);
+    node.stop();
+}
+
 TEST(ProjectGraph, PersistsAcrossRestartViaDisk) {
     TempDir tmp;
     std::string graph_id;
