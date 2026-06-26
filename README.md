@@ -81,7 +81,12 @@ this read-only in an **Admin & Settings** panel — principals + keys, their sco
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.
 The async runtime is coroutine-native (C++
-Alliance Capy/Corosio), behind the `zetta::runtime` seam. State replicates
+Alliance Capy/Corosio), behind the `zetta::runtime` seam. Heavy numeric work
+targets the `zetta::compute::ComputeDevice` seam — a typed device-buffer memory
+model plus a coarse-grained operator set (map/reduce/scan, histogram, gemm/axpy,
+sort, gather/scatter) that CPU and (optional) CUDA backends implement, so new
+hardware is a new backend and consumers are unchanged (see
+[docs/compute-device.md](docs/compute-device.md)). State replicates
 between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under

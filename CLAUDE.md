@@ -232,6 +232,42 @@ networking. Background + migration plan:
 [docs/runtime.md](docs/runtime.md) and
 [docs/research/coroutines.md](docs/research/coroutines.md).
 
+### Accelerated compute (`zetta::compute`)
+
+The **`ComputeDevice` interface** (`include/zetta/compute/compute_device.hpp`,
+namespace `zetta::compute`) is the seam every heavy compute operator targets —
+the operator-level accelerator interface of **ADR-27 / ARC-9** (the native
+distributed accelerated-compute pass for UC-1 churn, #359). Same shape as zetta's
+other seams (`StepExecutor`, `Check`, `StorageEngine`): a **pure-virtual base
+class** whose concrete implementations are the **backends**, so consumers call
+the interface and stay unchanged when new hardware appears (**new hardware = a new
+backend, nothing else**). It has two halves. (1) A **memory model**: a
+`zetta::compute::DeviceBuffer` is a **typed, owning, move-only** handle to a
+region of device memory (host RAM for a CPU device, GPU VRAM for a CUDA device) —
+a `unique_ptr` for device memory that frees itself through its owning device
+(`make_buffer`/`release_buffer`; the opaque storage handle is the one allowed raw
+pointer, a C-API resource handle, fully RAII-encapsulated). A buffer carries a
+runtime `DataType` tag (`Float32`/`Int32`/… — virtuals can't be templated, so a
+buffer is *typed* without templating the interface; backends dispatch kernels on
+the tag), and the device offers explicit host⇄device transfer
+(`copy_from_host`/`copy_to_host`, with typed `upload<T>`/`download<T>` helpers)
+plus `synchronize()`. (2) An **operator set** declared at the largest grain that
+still lets the cluster coordinator distribute work: **map/elementwise,
+reduce/scan, histogram, gemm/axpy, sort/sort_by_key, gather/scatter** (DDF and
+GBDT/SHAP ops are added by their own issues against this interface). Every call
+returns a `zetta::compute::ComputeStatus` rather than throwing (zetta-core is
+`-fexperimental-library`; no unwinding across the seam) — `Ok` or
+`Unsupported`/`InvalidArgument`/`OutOfMemory`/`BackendError` + a reason; a backend
+that lacks an op returns `unsupported` (the status **is** the per-op capability —
+no parallel bitmask to drift). **No backend ships in this slice** and **no
+SDL/CUDA type appears in any header** (pure zetta-core, builds CPU-only). The only
+implementer today is `zetta::compute::HostStubDevice` — a host-memory transfer
+stub (real allocate + memcpy transfer, operators return `unsupported`) that lets
+the memory model round-trip in tests; it is **not** the CPU backend (the real
+operator-implementing `CpuDevice` is #360, then `CudaDevice` #361, a device
+registry #362, and the CMake `zetta-compute` target #363). See
+[docs/compute-device.md](docs/compute-device.md).
+
 ### Cluster (equal peers)
 
 Nodes form a cluster of **equal peers** over TCP — no configured leader. Each
@@ -829,6 +865,12 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
+  compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no backend, no SDL/CUDA)
+    data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
+    compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
+    device_buffer.hpp       zetta::compute::DeviceBuffer — typed, owning, move-only device memory
+    compute_device.hpp      zetta::compute::ComputeDevice — the seam: info + memory + the operator set
+    host_stub_device.hpp    zetta::compute::HostStubDevice — host-memory transfer stub (ops unsupported)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs() + replication capture/reconcile/persist
@@ -865,6 +907,8 @@ src/core/                   zetta-core impl
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
+  compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer
+  compute/host_stub_device.cpp  HostStubDevice — host-memory allocate/transfer; operators unsupported
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
@@ -1015,6 +1059,7 @@ loop thread).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
+- [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/build.md`](docs/build.md) — build, run, test.
