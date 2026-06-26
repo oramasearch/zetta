@@ -340,3 +340,63 @@ TEST(Model, ReplicatesMetadataAndWeightsBodyAcrossNodes) {
     a.stop();
     b.stop();
 }
+
+// Ranked drivers (model explainability) read from the free-form feature_schema:
+// an optional `drivers` array, returned sorted by |importance| descending.
+TEST(Model, RankedDriversSortedByMagnitude) {
+    nlohmann::json feature_schema = {
+        {"drivers",
+         {{{"feature", "tenure_months"}, {"importance", 0.12}},
+          {{"feature", "support_tickets"}, {"importance", -0.41}},
+          {{"feature", "monthly_charges"}, {"importance", 0.27}}}}};
+    const auto drivers = zetta::ranked_drivers(feature_schema);
+    ASSERT_EQ(drivers.size(), 3u);
+    // Strongest |importance| first: |-0.41| > |0.27| > |0.12|. The sign is kept
+    // (a driver can push a prediction either way).
+    EXPECT_EQ(drivers[0].feature, "support_tickets");
+    EXPECT_DOUBLE_EQ(drivers[0].importance, -0.41);
+    EXPECT_EQ(drivers[1].feature, "monthly_charges");
+    EXPECT_DOUBLE_EQ(drivers[1].importance, 0.27);
+    EXPECT_EQ(drivers[2].feature, "tenure_months");
+    EXPECT_DOUBLE_EQ(drivers[2].importance, 0.12);
+}
+
+// No new JSON boundary: malformed driver entries are skipped, not rejected — the
+// feature_schema is free-form, so ranked_drivers reads it tolerantly. A schema
+// with no `drivers` key (the common case) yields an empty list.
+TEST(Model, RankedDriversToleratesMalformedAndMissing) {
+    EXPECT_TRUE(zetta::ranked_drivers(nlohmann::json::object()).empty());
+    EXPECT_TRUE(
+        zetta::ranked_drivers(nlohmann::json{{"tenure_months", "number"}}).empty());
+
+    nlohmann::json mixed = {
+        {"drivers",
+         {{{"feature", "plan"}, {"importance", 0.5}},     // valid
+          {{"feature", "no_importance"}},                  // missing importance
+          {{"importance", 0.9}},                           // missing feature
+          {{"feature", 7}, {"importance", 0.9}},           // feature not a string
+          {{"feature", "bad_imp"}, {"importance", "high"}},  // importance not a number
+          "not-an-object"}}};
+    const auto drivers = zetta::ranked_drivers(mixed);
+    ASSERT_EQ(drivers.size(), 1u);
+    EXPECT_EQ(drivers[0].feature, "plan");
+    EXPECT_DOUBLE_EQ(drivers[0].importance, 0.5);
+}
+
+// The Model handle surfaces the same ranked drivers from its feature_schema.
+TEST(Model, DriversConvenienceReadsFeatureSchema) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    ModelValue value = sample_value();
+    value.feature_schema["drivers"] = {
+        {{"feature", "monthly_charges"}, {"importance", 0.3}},
+        {{"feature", "tenure_months"}, {"importance", -0.6}}};
+    auto model = node.create_model(value);
+    ASSERT_TRUE(model);
+    const auto drivers = model->drivers();
+    ASSERT_EQ(drivers.size(), 2u);
+    EXPECT_EQ(drivers[0].feature, "tenure_months");  // |-0.6| ranks first
+    EXPECT_EQ(drivers[1].feature, "monthly_charges");
+    node.stop();
+}

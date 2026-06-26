@@ -5,10 +5,13 @@
 
 #include "catalog.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <iterator>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
@@ -199,6 +202,38 @@ void Model::capture_and_persist() {
     // CRDT first (the source of truth), then the on-disk projection.
     if (replication_) replication_->set(catalog::model_key(id_), metadata());
     persist_meta();
+}
+
+std::vector<ModelDriver> ranked_drivers(const nlohmann::json& feature_schema) {
+    std::vector<ModelDriver> drivers;
+    if (!feature_schema.is_object()) return drivers;
+    const auto it = feature_schema.find("drivers");
+    if (it == feature_schema.end() || !it->is_array()) return drivers;
+
+    // Defensive read: keep only well-shaped entries ({ feature: string,
+    // importance: number }); anything else is silently skipped (feature_schema is
+    // free-form, so we never trust its inner shape blindly — but we also never
+    // throw on it).
+    for (const nlohmann::json& entry : *it) {
+        if (!entry.is_object()) continue;
+        const auto feature = entry.find("feature");
+        const auto importance = entry.find("importance");
+        if (feature == entry.end() || !feature->is_string()) continue;
+        if (importance == entry.end() || !importance->is_number()) continue;
+        drivers.push_back(
+            ModelDriver{feature->get<std::string>(), importance->get<double>()});
+    }
+
+    // Rank by influence magnitude (|importance|) descending — strongest first —
+    // with the feature name as a stable tiebreak so the order is deterministic.
+    std::stable_sort(drivers.begin(), drivers.end(),
+                     [](const ModelDriver& lhs, const ModelDriver& rhs) {
+                         const double left = std::abs(lhs.importance);
+                         const double right = std::abs(rhs.importance);
+                         if (left != right) return left > right;
+                         return lhs.feature < rhs.feature;
+                     });
+    return drivers;
 }
 
 nlohmann::json Model::metadata() const { return to_json(value_); }

@@ -5,12 +5,34 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 namespace zetta {
 
 class ReplicationManager;
+
+// One ranked driver of a model's prediction — a feature and the magnitude of its
+// influence (an explainability signal, e.g. a SHAP importance). `importance` can
+// be signed (a feature can push a prediction up or down); drivers are ranked by
+// |importance| descending, so the strongest influences read first.
+struct ModelDriver {
+    std::string feature;     // the input feature's name
+    double importance = 0.0;  // its (possibly signed) influence on the prediction
+};
+
+// Extract a model's **ranked feature drivers** from its free-form
+// `feature_schema`. Drivers are an *optional* explainability annotation: an
+// `Explain` compute job (or any producer) may record them under
+// `feature_schema.drivers` as `[{ "feature": <string>, "importance": <number> },
+// …]`. This reads that array **defensively** — skipping anything not shaped like
+// a driver — and returns the drivers sorted by |importance| descending. It adds
+// **no new JSON boundary**: `feature_schema` is already free-form and was
+// schema-validated as an object when the model entered (parse_model_value), so
+// this is tolerant reading of trusted data, not a second validation gate. Returns
+// an empty vector when no drivers are recorded.
+std::vector<ModelDriver> ranked_drivers(const nlohmann::json& feature_schema);
 
 // Fingerprint of a model's serialized weights. The weights themselves are NOT in
 // the CRDT (they would bloat every node's document); like a large-object body
@@ -93,6 +115,13 @@ public:
     const std::string& run() const { return value_.run; }
     const nlohmann::json& feature_schema() const { return value_.feature_schema; }
     const nlohmann::json& metrics() const { return value_.metrics; }
+
+    // This model's ranked feature drivers (explainability), read from its
+    // free-form feature_schema (see ranked_drivers()). Empty when none recorded.
+    std::vector<ModelDriver> drivers() const {
+        return ranked_drivers(value_.feature_schema);
+    }
+
     const std::string& created() const { return value_.created; }
     const std::optional<ModelWeights>& weights() const { return value_.weights; }
     const ModelValue& value() const { return value_; }

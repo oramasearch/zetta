@@ -62,7 +62,9 @@ failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
 It owns **runs** (`zetta::Run`), the
 record of one graph execution: status, logs, outputs, and lineage, validated
 against a JSON Schema at the storage boundary and viewable in the headed app's
-read-only **Runs / Outputs / Lineage** panel (see [docs/runs.md](docs/runs.md)).
+read-only **Runs / Outputs / Lineage** panel — which also surfaces the trained
+**Model** a run produced, its metrics, and its ranked feature drivers (see
+[docs/runs.md](docs/runs.md)).
 It can **execute** a graph step-by-step into one of those runs
 (`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
 produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
@@ -117,12 +119,14 @@ recorded in the audit trail, guarding against runaway burst cost (see
 It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
 unit of native distributed accelerated compute — featurize / train / explain /
 score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
-audited at create + finish and JSON-Schema validated (see
-[docs/compute-jobs.md](docs/compute-jobs.md)). A job carries a **`ScalingPolicy`**
+audited at create + finish and JSON-Schema validated; the headed app surfaces the
+live registry in a read-only **Compute Jobs** panel with per-job objective/scaling
+controls (see [docs/compute-jobs.md](docs/compute-jobs.md) and
+[docs/jobs-panel.md](docs/jobs-panel.md)). A job carries a **`ScalingPolicy`**
 (`zetta::ScalingPolicy`) — the per-job autoscaler reward objective (minimize cost
 / runtime-latency target / data shape) inside bounds (min/max nodes, cost cap),
-with an `evaluate()` over (progress, elapsed, cost) samples (see
-[docs/scaling-policy.md](docs/scaling-policy.md)).
+with an `evaluate()` over (progress, elapsed, cost) samples that the Jobs panel
+previews live (see [docs/scaling-policy.md](docs/scaling-policy.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
