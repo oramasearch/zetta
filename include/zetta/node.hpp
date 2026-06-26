@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "zetta/access_key.hpp"
+#include "zetta/audit_event.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
@@ -70,7 +71,12 @@ struct IntegrityReport {
 // each tick the node reconciles the projection to match the document (applying
 // changes merged from peers) and persists the document to disk. With no
 // ReplicationManager (the default), a Node is a standalone local store.
-class Node {
+//
+// A Node is also the **audit sink** (FEAT-9): it owns the immutable, append-only
+// audit trail and records a governed action (graph change / deploy / data
+// access) as an AuditEvent. It implements AuditSink so the entities it owns (a
+// Project's graph CRUD) can append events without depending on Node directly.
+class Node : public AuditSink {
 public:
     explicit Node(NodeConfig config, ReplicationManager* replication = nullptr);
 
@@ -166,8 +172,25 @@ public:
     // The V1 key-scoped access decision (RULE-3 / PERM-1 / ADR-6): a request that
     // logged in with `key_id` inherits that key's scope, so `resource` is allowed
     // iff the key permits it. Deny-by-default — an unknown/empty key id denies.
+    //
+    // Every decision is recorded as a `data_access` AuditEvent (allow/deny + the
+    // reason), so authorize is the data-access seam of the audit trail (FEAT-9) —
+    // which is why it is non-const (it appends to the immutable trail).
     AccessDecision authorize(const std::string& key_id,
-                             const Resource& resource) const;
+                             const Resource& resource);
+
+    // The immutable, append-only audit trail (ENT-23 / FEAT-9). Graph changes,
+    // deploys, and data-access decisions each record an AuditEvent; the events
+    // can be listed in chronological order. Events are never edited or removed.
+    // record_audit_event is the public append seam (also the AuditSink override):
+    // it stamps a fresh id + time, persists the event, captures it into the CRDT
+    // when replicated, and appends it to the trail. The (future) request path
+    // calls it to record data accesses at real read/write points.
+    void record_audit_event(AuditEventValue value) override;
+    std::vector<std::shared_ptr<AuditEvent>> audit_events() const {
+        return audit_events_;
+    }
+    std::size_t audit_event_count() const { return audit_events_.size(); }
 
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
@@ -228,6 +251,11 @@ private:
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
 
+    // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
+    // start(). Malformed event files are skipped at the boundary (schema).
+    void load_audit_events();
+    std::filesystem::path audit_dir() const;
+
     // Rebuild principals_ by scanning config_.data_dir. Called from start().
     void load_principals();
     std::shared_ptr<Principal> find_principal_by_id(const std::string& id) const;
@@ -260,6 +288,10 @@ private:
                                                      std::string name,
                                                      std::string created);
     bool materialize_drop_principal(const std::string& id);
+    // Apply a replicated audit event (a peer's, or one rebuilt from the document)
+    // by id, without capturing. Append-only — there is no drop counterpart.
+    std::shared_ptr<AuditEvent> materialize_audit_event(std::string id,
+                                                        AuditEventValue value);
 
     NodeConfig config_;
     ReplicationManager* replication_;  // null = standalone (not replicated)
@@ -274,6 +306,7 @@ private:
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
+    std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     DeploymentController controller_{*this};  // control plane (driven by tick())
 };
 

@@ -141,11 +141,13 @@ sync.**
 
 ## Where it fits
 
-This is the foundation the rest of FEAT-9 builds on. A later slice threads the
-login key through the request path (the query executor, the cluster protocol) so
-every data access is checked against `Node::authorize`; the **audit trail**
-(every graph change / deploy / data access) and **approval gates** for risky
-actions are their own slices. The finer access **tiers** (team / partner /
+This is the foundation the rest of FEAT-9 builds on. The **audit trail** (every
+graph change / deploy / data access) is now built — each `Node::authorize`
+decision records an immutable `data_access` [`AuditEvent`](audit-trail.md). A
+later slice threads the login key through the request path (the query executor,
+the cluster protocol) so every data access is checked against `Node::authorize`
+(and thereby audited), not just the seam itself; **approval gates** for risky
+actions are their own slice. The finer access **tiers** (team / partner /
 per-dataset) extend `ResourceKind` and `Scope` without changing this seam.
 
 ## Pointers

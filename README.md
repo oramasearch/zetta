@@ -56,7 +56,10 @@ produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
-[docs/access-control.md](docs/access-control.md)). Query it all with basic
+[docs/access-control.md](docs/access-control.md)) — and an immutable,
+append-only **audit trail** (`zetta::AuditEvent`) that records every graph
+change, deploy, and data-access decision, replicated and JSON-Schema validated
+(see [docs/audit-trail.md](docs/audit-trail.md)). Query it all with basic
 Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
 query engine is dialect-agnostic, so other SQL formats can be added as frontends.
 The async runtime is coroutine-native (C++
@@ -106,7 +109,8 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
 rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
-[runs](docs/runs.md), and [principals + access keys](docs/access-control.md)
+[runs](docs/runs.md), [principals + access keys](docs/access-control.md), and the
+[audit trail](docs/audit-trail.md)
 created on any node converge onto every
 node — in memory and on disk**, conflict-free, with no leader (the CRDT document
 is the source of truth; disk follows). [Large objects](docs/large-objects.md)

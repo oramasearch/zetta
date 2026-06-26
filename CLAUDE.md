@@ -139,8 +139,28 @@ is the pure decision. Principals + keys are replicated state (flat keys
 `principal:<uuid>` and `key:<uuid>` carrying its parent `principal` ref), with
 `<principal-uuid>/principal.json` + `<principal-uuid>/keys/<key-uuid>/key.json`
 on-disk projections. Finer access tiers (team/partner/per-dataset, per-table)
-are deferred; audit + approval gates are separate FEAT-9 slices. See
+are deferred; approval gates are a separate FEAT-9 slice. See
 [docs/access-control.md](docs/access-control.md).
+
+A node also owns an **audit trail** — an immutable, append-only `zetta::AuditEvent`
+for every **graph change / deploy / data access** (ENT-23 / FEAT-9; the audit
+half of governance, on top of the key-scoped access above). An `AuditEvent`
+(id + `action` graph_created|graph_dropped|graph_deployed|data_access + `actor` +
+`target` + `allowed` + `detail` + `time`) is a top-level, replicated entity (flat
+key `audit:<uuid>`) — but **immutable and append-only**: no mutator, no drop, so
+the set of `audit:` keys only grows and the CRDT converges trivially. `Node` owns
+the trail and **is** the `AuditSink` seam: `record_audit_event` is the append API
+(it stamps id + time, captures into the CRDT, persists), `audit_events()` lists
+them chronologically. Emission is wired at the three governed seams —
+`Project::create_graph`/`drop_graph` (via the `AuditSink*` threaded into a project
+like its `ReplicationManager*`), `Node::deploy_graph`, and `Node::authorize`
+(which is therefore **non-const**: every allow/deny decision records a
+`data_access` event). The `materialize_*` reconciliation paths never emit (a
+peer's action arrives already-audited as its own replicated `audit:` event).
+It is the **second record validated against a formal JSON Schema** at the storage
+boundary (like Run — `parse_audit_event_value`, the same `pboettch` validator),
+projecting to a single shared `<data_dir>/audit/<uuid>.json` per event rather than
+a folder per event. See [docs/audit-trail.md](docs/audit-trail.md).
 
 **Everything persists to disk** under `config_.data_dir`, and `Node::start()`
 rebuilds the in-memory tree by scanning it, then runs a **preflight integrity
@@ -255,8 +275,9 @@ fragment the change history and accumulate `node:` keys). The document uses
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
 `deployment:<uuid>`, `run:<uuid>`, `principal:<uuid>` (an authenticated actor),
-and `key:<uuid>` (an access key carrying its parent `principal` ref + its
-`scope`) — each entity owns its key by UUID so concurrent edits never collide.
+`key:<uuid>` (an access key carrying its parent `principal` ref + its `scope`),
+and `audit:<uuid>` (an immutable, append-only audit event) — each entity owns its
+key by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
@@ -292,6 +313,9 @@ data_dir/
       <key-uuid>/            ← one folder per access key (UUIDv4 = its id)
         key.json             ← { id, principal, scope:{ unrestricted, grants },
                                  created }
+  audit/                     ← the immutable, append-only audit trail
+    <audit-uuid>.json        ← { id, action, actor, target, allowed, detail,
+                                 time }  (one file per event, never edited)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
     database.json            ← { id, name }
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
@@ -605,7 +629,7 @@ cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs; run_graph
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -618,6 +642,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access (RULE-3)
+  audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
@@ -664,6 +689,7 @@ src/core/                   zetta-core impl
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decision
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
+  audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   table.cpp
   jsonl_store.cpp
@@ -809,6 +835,7 @@ loop thread).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope`, deny-by-default authorization (RULE-3).
+- [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
