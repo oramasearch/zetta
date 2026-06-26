@@ -50,8 +50,9 @@ bool is_terminal(JobStatus status);
 // key `job:<uuid>` carries (the id is the key / folder name, so it isn't repeated
 // here). This is exactly the shape validated by the ComputeJob JSON Schema at
 // every boundary (disk + the document). The `project` / `graph` / `run` /
-// `scaling_policy` refs are optional plain ids (a ScalingPolicy is a reward model
-// — a separate entity slice; here it is only referenced by id).
+// `scaling_policy` refs are optional plain ids (the zetta::ScalingPolicy reward
+// model value type is built — see scaling_policy.hpp — but a job references it by
+// id only; persisting policies as their own replicated entity is a later slice).
 struct ComputeJobValue {
     JobKind kind = JobKind::Featurize;
     JobStatus status = JobStatus::Queued;

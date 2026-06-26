@@ -12,9 +12,11 @@ its lifecycle (create / update / query) on a `Node`, its persistence +
 replication, the audit events it emits, its JSON-Schema boundary, and the
 read-only `system.zetta_jobs` SQL registry that exposes it (below). The pieces
 that *schedule* and *run* a job onto the cluster — the job coordinator, the
-scheduler + collectives, the autoscaler, and the `ScalingPolicy` reward model —
-are **separate, later slices**
-([#370](https://github.com/oramasearch/zetta/issues/370)–[#372](https://github.com/oramasearch/zetta/issues/372)).
+scheduler + collectives, and the autoscaler (which reads the
+[`ScalingPolicy`](scaling-policy.md) reward model, built in
+[#370](https://github.com/oramasearch/zetta/issues/370)) — are **separate, later
+slices**
+([#371](https://github.com/oramasearch/zetta/issues/371)–[#372](https://github.com/oramasearch/zetta/issues/372)).
 A job created here is the durable, replicated record those slices drive.
 
 It is modeled **exactly like** [`zetta::Run`](runs.md): a top-level entity keyed
@@ -49,9 +51,10 @@ chronologically as plain text).
 
 `kind` and the four refs (`project` / `graph` / `run` / `scaling_policy`) are
 **id-only references** fixed at creation, kept lightweight exactly like a `Run`'s
-references. The `scaling_policy` ref points at a reward model that drives the
-autoscaler; the policy itself is a **separate entity** — here it is only
-referenced by id, never embedded.
+references. The `scaling_policy` ref points at a
+[`ScalingPolicy`](scaling-policy.md) reward model that drives the autoscaler; the
+policy is a **separate value type** (built in #370) — here it is only referenced
+by id, never embedded.
 
 ## CRUD on a Node
 

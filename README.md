@@ -84,7 +84,11 @@ It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
 unit of native distributed accelerated compute — featurize / train / explain /
 score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
 audited at create + finish and JSON-Schema validated (see
-[docs/compute-jobs.md](docs/compute-jobs.md)).
+[docs/compute-jobs.md](docs/compute-jobs.md)). A job carries a **`ScalingPolicy`**
+(`zetta::ScalingPolicy`) — the per-job autoscaler reward objective (minimize cost
+/ runtime-latency target / data shape) inside bounds (min/max nodes, cost cap),
+with an `evaluate()` over (progress, elapsed, cost) samples (see
+[docs/scaling-policy.md](docs/scaling-policy.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
