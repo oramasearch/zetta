@@ -76,6 +76,13 @@ Local / cloud backends implement. The first backend, **`zetta::LocalProvisioner`
 (given hardware), uses the nodes already in the cluster best-effort — it adds no
 capacity and its teardown is a no-op (see
 [docs/provisioner.md](docs/provisioner.md)).
+The first **cloud** backend, **`zetta::AzureProvisioner`** (the reference cloud
+burst; AWS / GCP mirror it), bursts N ephemeral Azure nodes, mints bulk burst
+identities so they join the cluster, runs cluster-parallel, and tears them down —
+behind an injectable control-plane seam with **no cloud SDK** (the reference
+`AzCliControlPlane` borrows the VMSS / Spot shape via the `az` CLI), driven by a
+schema-validated `AzureConfig` (see
+[docs/azure-provisioner.md](docs/azure-provisioner.md)).
 On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst
 node and bulk-revokes them on teardown — reusing the identity model, audited
