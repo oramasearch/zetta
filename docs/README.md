@@ -23,6 +23,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [deployment-controller.md](deployment-controller.md) — the control plane: reconcile a local deployment desired→actual and self-heal a killed/failed run (FEAT-4, TC-3; R1 local).
 - [execution.md](execution.md) — executing an ExecutionGraph on a node (`zetta::GraphExecutor`): walk steps in dependency order, drive a Run to Succeeded/Failed.
 - [solution-catalog.md](solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) and the headed **Deploy panel**: pick a blueprint, choose a placement on the dial, gate, and deploy (FEAT-4 / SCR-5 / CMP-3).
+- [provisioner.md](provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / tear down / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373).
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [compute-device.md](compute-device.md) — the `zetta::compute::ComputeDevice` operator interface + typed device-buffer / memory model + the host-memory stub (ADR-27 / ARC-9, accelerated compute; #359).
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio, and the migration plan.
