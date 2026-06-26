@@ -25,6 +25,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [execution.md](execution.md) — executing an ExecutionGraph on a node (`zetta::GraphExecutor`): walk steps in dependency order, drive a Run to Succeeded/Failed.
 - [solution-catalog.md](solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) and the headed **Deploy panel**: pick a blueprint, choose a placement on the dial, gate, and deploy (FEAT-4 / SCR-5 / CMP-3).
 - [provisioner.md](provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / tear down / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — plus the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; teardown is a no-op; #374).
+- [aws-provisioner.md](aws-provisioner.md) — the AWS cloud-burst backend (`zetta::AwsProvisioner` + `AwsCliControlPlane`): burst N ephemeral AWS nodes (EC2 Auto Scaling Group / Spot shape via the `aws` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AwsConfig` — the AWS mirror of the Azure reference, following the [cloud-provisioner pattern](cloud-provisioner-pattern.md) (ARC-13 / ADR-20, #377).
 - [burst-identity.md](burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision and bulk-revoke on teardown (`zetta::BurstIdentityManager`), reusing the identity model, audited (ARC-13 / RSK-9, #375).
 - [scaling-policy.md](scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [burst-approval-gate.md](burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
@@ -59,3 +60,8 @@ Long-form reference material (not descriptions of shipped code) lives in
   CLI (`az`) compute guide (VMs, VMSS, Spot, ACI, AKS, Batch, GPU/HPC), checked
   against Microsoft Learn. The cited basis for the `az vmss` command shapes the
   reference [Azure provisioner](azure-provisioner.md) uses.
+- [research/aws-cli-compute.md](research/aws-cli-compute.md) — hands-on AWS CLI
+  (`aws`) compute guide (EC2, Auto Scaling Groups, Spot, ECS/Fargate, EKS, Batch,
+  Lambda, GPU/HPC), citing the AWS CLI command reference. The cited basis for the
+  `aws autoscaling` / `aws ec2` command shapes the
+  [AWS provisioner](aws-provisioner.md) uses.

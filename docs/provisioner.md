@@ -12,7 +12,9 @@ backends are separate, dependent slices:
   [The Local backend](#the-local-backend-localprovisioner) below.
 - **Cloud burst** — `AzureProvisioner`, the **reference** cloud backend (`#376`).
   **Built** — see [azure-provisioner.md](azure-provisioner.md). `AwsProvisioner`
-  (`#377`) and `GcpProvisioner` (`#378`) mirror its shape.
+  (`#377`, **built** — see [aws-provisioner.md](aws-provisioner.md)) and
+  `GcpProvisioner` (`#378`) mirror its shape, following the
+  [cloud-provisioner pattern](cloud-provisioner-pattern.md).
 - **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`);
   **built** — see [burst-identity.md](burst-identity.md).
 - **Large-burst cost-cap approval gate** — APR-3 (`#379`), built: see
