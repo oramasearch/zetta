@@ -370,6 +370,39 @@ they carry no periodic gossip). `encode_signal`/`decode_signal` are the
 serialization seam; the transport only adds/strips the framing. See
 [docs/signal-plane.md](docs/signal-plane.md).
 
+### Collectives (allreduce / broadcast / barrier / gather)
+
+**Collective communication** over the signal plane (`zetta::Collectives`,
+`include/zetta/collectives.hpp`; ADR-28 / ARC-10, #365) — the primitive the
+native distributed accelerated-compute pass for UC-1 churn uses to **combine
+per-node compute partials** (gradient histograms, partial aggregates) across the
+cluster. Four MPI-style collectives: **`allreduce`** (every node contributes a
+vector → every node gets their elementwise reduction — sum/product/min/max),
+**`broadcast`** (the root's vector → every node), **`barrier`** (all block until
+all arrive, then proceed), and **`gather`** (every node contributes → the **root**
+gets all of them ordered; classic MPI gather, result only at root). It rides
+entirely on the signal plane's RPC (`Cluster::request`) — no new wire verb, no new
+transport — and is **ephemeral** like every signal. **Deterministic, independent
+of node order**: the participants are this node + connected peers, the *root* is
+the **lexicographically-smallest node id** (leaderless — every node computes the
+same root, no election), and the root **reduces once in node-id order and pushes
+the single result to everyone**, so every node ends with bit-identical bytes even
+though floating-point addition isn't associative. The round is a **star** (a
+depth-1 tree: root gathers from all, broadcasts the result; a k-ary tree / ring is
+a later optimization behind the same API), driven from the calling application
+thread (which blocks until the round completes / times out) while the
+`SignalHandler` (`on_request`, on the network thread) only records an
+arrival/result and wakes the waiter — **never blocking**, honoring the signal
+plane's contract. `Collectives` registers itself as the cluster's signal handler
+(forwarding non-collective signals to an optional `delegate`). The two RPC methods
+(`collective.contribute` / `collective.result`) carry a `zetta::CollectiveMessage`
+payload, **boundary-validated** against a draft-07 JSON Schema
+(`schemas/collective_message.schema.json`, mirrored embedded in
+`src/core/collectives.cpp`, the same `pboettch` validator as the signal envelope);
+`encode_collective_message`/`decode_collective_message` are the serialization seam.
+Assumes a **fully-connected** membership (a partitioned cluster times out the
+round). See [docs/collectives.md](docs/collectives.md).
+
 ### Replication (CRDT)
 
 **Core rule: EVERYTHING is replicated state.** Replication is not a feature
@@ -943,6 +976,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
   cluster.hpp               zetta::Cluster — equal-peer membership over TCP + the signal-plane API
   signal.hpp                zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
+  collectives.hpp           zetta::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365)
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
   blob_store.hpp            zetta::BlobStore — large-object body transfer seam
   replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
@@ -1008,6 +1042,7 @@ src/core/                   zetta-core impl
   compute/device_registry.cpp  DeviceRegistry — enumerate/report/select devices + DeviceInfo JSON boundary (#362)
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
+  collectives.cpp           zetta::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
@@ -1161,6 +1196,7 @@ loop thread).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
+- [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
