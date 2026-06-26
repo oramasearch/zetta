@@ -150,8 +150,11 @@ multi-threaded via `runtime::parallel_for` (see
 [docs/cpu-device.md](docs/cpu-device.md)); a per-node
 `zetta::compute::DeviceRegistry` enumerates those backends, reports each one's
 capability, and selects one per op — GPU when present, else CPU (see
-[docs/device-registry.md](docs/device-registry.md)). State replicates between
-nodes as an Automerge CRDT. See [docs/](docs/) for details.
+[docs/device-registry.md](docs/device-registry.md)). On top of that seam, the
+**DDF (distributed dataframe) core** (`zetta::ddf::DataFrame`) reads a table's rows
+into typed, chunked numeric columns — each chunk a `ComputeDevice` buffer — so those
+operators run directly over a table's data (see [docs/ddf.md](docs/ddf.md)). State
+replicates between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
