@@ -175,9 +175,13 @@ single-node cluster degenerating cleanly, and a failing job body marking the job
 - **Outputs are a `detail` summary.** A `ComputeJob` has no `outputs` field (it
   carries a `run` ref fixed at creation); richer output capture — producing a
   [`Run`](runs.md) with datasets/models and linking it back — is a later slice.
-- **No autoscaler.** Sizing the fleet from a job's [`ScalingPolicy`](scaling-policy.md)
-  reward model (the autoscaler loop) is a separate, later slice; the coordinator
-  runs against whatever cluster is present.
+- **Autoscaler not yet wired in.** Sizing the fleet from a job's
+  [`ScalingPolicy`](scaling-policy.md) reward model is the
+  [job autoscaler](job-autoscaler.md) (`#371`) — a built, tick-driven control loop.
+  Wiring its live observation source (round count / accumulated node-seconds) and
+  its `tick()` into the coordinator for a live, end-to-end autoscaled job is the
+  remaining, later slice; today the coordinator runs against whatever cluster is
+  present.
 
 ## See also
 

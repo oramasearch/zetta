@@ -338,6 +338,7 @@ add_library(zetta-core STATIC
   src/core/burst_identity.cpp
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
+  src/core/job_autoscaler.cpp
   src/core/solution_catalog.cpp
   src/core/run.cpp
   src/core/model.cpp

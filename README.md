@@ -126,7 +126,13 @@ controls (see [docs/compute-jobs.md](docs/compute-jobs.md) and
 (`zetta::ScalingPolicy`) — the per-job autoscaler reward objective (minimize cost
 / runtime-latency target / data shape) inside bounds (min/max nodes, cost cap),
 with an `evaluate()` over (progress, elapsed, cost) samples that the Jobs panel
-previews live (see [docs/scaling-policy.md](docs/scaling-policy.md)).
+previews live (see [docs/scaling-policy.md](docs/scaling-policy.md)). The
+**`JobAutoscaler`** (`zetta::JobAutoscaler`) is the control loop that acts on it:
+each tick it observes a running job's progress, scores the policy, and adds/removes
+nodes through the `Provisioner` seam within bounds — with hysteresis to avoid
+thrashing, an immediate shed on a cost-cap breach, live (elastic) membership read
+each tick, and best-effort max utilization when hardware is fixed (see
+[docs/job-autoscaler.md](docs/job-autoscaler.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
