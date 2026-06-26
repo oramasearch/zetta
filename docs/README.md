@@ -5,6 +5,7 @@ zetta is a database. A *zetta node* is one running instance; it runs **headed**
 This directory documents the system; keep it in sync as the system changes.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
+- [true-hybrid.md](true-hybrid.md) — **true hybrid**: one equal-peer cluster spanning heterogeneous hardware (CPU / GPU / ASIC, OS, architecture, on-prem + cloud) and the seams that make it work — `ComputeDevice` backends, the device registry, the heterogeneity-tolerant work-stealing scheduler, collectives, the equal-peer CRDT cluster, and the `Provisioner` seam — with a built-vs-planned support matrix.
 - [projects.md](projects.md) — the AI project (`zetta::Project`) data model, lifecycle CRUD, and the execution graphs it owns.
 - [project-inputs.md](project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [n8n-import.md](n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256 + schema-validated boundary).
