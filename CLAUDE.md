@@ -1522,6 +1522,32 @@ asset dependency.
 
 ## Conventions
 
+### Cloud providers — permission-gated (HARD RULE, all UI work)
+
+**Any UI that touches a cloud provider is permission-gated. No exceptions, ever.**
+This is a non-negotiable safety rule for *all* UI work (the SDL3 + ImGui app, any
+future control plane) — and it binds both the **product** and **Claude when
+building it**.
+
+- **Never read a cloud provider's config or credential files without asking for
+  explicit permission first** — `~/.aws/config`, `~/.aws/credentials`,
+  `~/.kube/config`, `~/.config/gcloud/**`, `~/.azure/**`, credential env vars
+  (`AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_*`), the cloud
+  instance-metadata endpoint (`169.254.169.254`), etc.
+- **Never read from or write to a cloud provider without asking for explicit
+  permission first** — any API / SDK / CLI call to AWS, Azure, GCP, Kubernetes,
+  or any other provider (`aws`, `gcloud`, `az`, `kubectl`, their SDKs, raw REST).
+  Writes (deploy, create, delete) are especially sensitive — confirm intent.
+- **Ask every time.** Consent is per-action, deny-by-default, and *not* remembered
+  across actions unless the user explicitly says so. The safe/default state reads
+  nothing and calls nothing.
+- **In the product:** gate the action behind an explicit, in-UI consent step that
+  names exactly what will be read or called (which files, which API, read vs.
+  write) *before* anything happens. No silent background reads of cloud state.
+- **For Claude:** before writing UI code that reads cloud creds/config or calls a
+  cloud, ask the developer first. When in doubt, surface what *would* be
+  read/called and ask — never touch the cloud to "just check."
+
 ### C++ conventions
 - **C++26** (`set(CMAKE_CXX_STANDARD 26)`, `cxx_std_26`). Use modern
   facilities; don't reach for older idioms when a newer one is clearer. The
