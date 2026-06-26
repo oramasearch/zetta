@@ -15,6 +15,7 @@ namespace zetta {
 
 class Node;
 class Cluster;
+struct ValidationReport;
 namespace query {
 class QueryService;
 }
@@ -63,6 +64,7 @@ private:
     void draw_rows();
     void draw_large_objects();
     void draw_query();       // the SQL text area + results
+    void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_cluster();     // role, listen address, peers, join command
 
     void handle_incoming_files();  // drain + route the queue (main thread)
@@ -109,6 +111,15 @@ private:
     std::string query_status_;
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
+
+    // Correctness-gate panel (SCR-4 / CMP-2): the execution-graph IR in its
+    // canonical JSON form to validate, an inline parse/validation error (a
+    // reason, never a stack trace), and the last ValidationReport — null until
+    // the gate is run. The graph JSON enters through ir::from_json, which
+    // validates it against the IR schema at the boundary.
+    std::string gate_graph_input_;
+    std::string gate_error_;
+    std::unique_ptr<ValidationReport> gate_report_;
 
     // File ingestion (drag-and-drop + native dialog) and its last status line.
     std::mutex incoming_mutex_;

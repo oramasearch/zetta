@@ -112,6 +112,36 @@ which already round-trips through JSON and is validated at the boundary by
 So a gate result serializes and re-parses with the existing, schema-checked path;
 there is nothing new to validate here.
 
+## GUI panel
+
+In headed mode the **Correctness gate** panel (SCR-4 / CMP-2, realizing FEAT-3 in
+the UI) runs the gate over a graph and shows the `ValidationReport` — a thin
+renderer over `default_gate().run(graph)`, no SDL/ImGui types leaking into
+`zetta-core` (`src/gui/app.cpp` → `App::draw_gate`). It lets you:
+
+- **pick a graph source** — a *Passing example* preset (a small
+  connect→clean→model→serve pipeline) or an *Empty (fails)* preset to demonstrate
+  the deploy-blocking path, **load a stored graph** from the selected project's
+  `graph_names()` (the real `ProjectGraph` data path), or edit the IR's
+  [canonical JSON form](execution-graph.md) directly in the text box;
+- **run the gate** (the *Run gate* button) — the JSON enters through
+  `ir::from_json`, which validates it against the IR schema **at the boundary**;
+  malformed JSON or an invalid graph is rejected inline with a **reason** (e.g.
+  `invalid graph: nodes[2]: unknown step kind "frobnicate"`), never a thrown
+  stack trace;
+- **read the result** — a headline **block-on-fail banner** (red *"Deploy
+  blocked — N check(s) failed"* vs. green *"Deploy allowed — gate passed"*,
+  derived from `report.block_deploy`), then a per-check table of **Check /
+  Status / Reason**, the status shown as a colour-coded `PASS` / `WARN` / `FAIL`
+  badge and the reason as the human-readable text the `CheckResult` carries.
+
+The panel holds no gate state of its own — it re-resolves the selected project by
+name each frame (so a dropped/renamed project never leaves a dangling handle) and
+keeps only the editable graph JSON, the last inline error, and the last report.
+This is the **gate's UI**, not deploy wiring: it shows the block-on-fail state but
+does not itself deploy (`deploy_graph` runs separately; wiring the gate into it is
+later work).
+
 ## Where it fits
 
 The gate sits between **compile** and **deploy**: a graph is compiled from intent,
