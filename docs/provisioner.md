@@ -10,7 +10,9 @@ backends are separate, dependent slices:
 - **Local** (given-hardware) provisioner — reports/uses the existing cluster
   nodes, best-effort (`#374`). **Built** — see
   [The Local backend](#the-local-backend-localprovisioner) below.
-- **Cloud burst** — `AwsProvisioner` (`#377`) and `GcpProvisioner` (`#378`).
+- **Cloud burst** — `AzureProvisioner`, the **reference** cloud backend (`#376`).
+  **Built** — see [azure-provisioner.md](azure-provisioner.md). `AwsProvisioner`
+  (`#377`) and `GcpProvisioner` (`#378`) mirror its shape.
 - **Bulk burst identity + teardown** — reuse `Principal`/`AccessKey` (`#375`);
   **built** — see [burst-identity.md](burst-identity.md).
 - **Large-burst cost-cap approval gate** — APR-3 (`#379`), built: see

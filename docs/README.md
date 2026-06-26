@@ -28,6 +28,8 @@ This directory documents the system; keep it in sync as the system changes.
 - [burst-identity.md](burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision and bulk-revoke on teardown (`zetta::BurstIdentityManager`), reusing the identity model, audited (ARC-13 / RSK-9, #375).
 - [scaling-policy.md](scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [burst-approval-gate.md](burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
+- [azure-provisioner.md](azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
+- [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set, AWS / GCP mirror): the four pieces (`<Vendor>Provisioner` / `<Vendor>ControlPlane` / `<Vendor>CliControlPlane` / `<Vendor>Config`), the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), and the step-by-step. **CLI for now.**
 - [large-objects.md](large-objects.md) — storing files as large objects and importing JSON/JSONL records.
 - [compute-device.md](compute-device.md) — the `zetta::compute::ComputeDevice` operator interface + typed device-buffer / memory model + the host-memory stub (ADR-27 / ARC-9, accelerated compute; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`; #363).
 - [cpu-device.md](cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for` (ADR-27 / ARC-9; #360).
@@ -53,3 +55,7 @@ Long-form reference material (not descriptions of shipped code) lives in
 - [research/coroutines.md](research/coroutines.md) — C++20/23 coroutine runtime
   design deep-dive (Boost.Asio/Cobalt, Seastar, folly::coro, stdexec) and the
   recommended path for zetta. Informs the planned coroutine adoption.
+- [research/azure-cli-compute.md](research/azure-cli-compute.md) — hands-on Azure
+  CLI (`az`) compute guide (VMs, VMSS, Spot, ACI, AKS, Batch, GPU/HPC), checked
+  against Microsoft Learn. The cited basis for the `az vmss` command shapes the
+  reference [Azure provisioner](azure-provisioner.md) uses.

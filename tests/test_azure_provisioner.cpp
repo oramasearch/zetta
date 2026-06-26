@@ -1,0 +1,472 @@
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "zetta/azure_cli_control_plane.hpp"
+#include "zetta/azure_provisioner.hpp"
+#include "zetta/node_capability.hpp"
+#include "zetta/provisioner.hpp"
+
+using zetta::AzCliControlPlane;
+using zetta::AzureConfig;
+using zetta::AzureControlPlane;
+using zetta::AzureProvisioner;
+using zetta::CommandResult;
+using zetta::CommandRunner;
+using zetta::Gpu;
+using zetta::GpuKind;
+using zetta::NodeCapability;
+using zetta::ProvisionedNode;
+using zetta::ProvisionRequest;
+using zetta::ProvisionResult;
+
+namespace {
+
+constexpr std::uint64_t kGiB = std::uint64_t{1024} * 1024 * 1024;
+
+AzureConfig sample_config() {
+    AzureConfig config;
+    config.subscription_id = "sub-123";
+    config.resource_group = "zetta-rg";
+    config.location = "eastus";
+    return config;
+}
+
+NodeCapability gpu_spec() {
+    NodeCapability capability;
+    capability.cores = 8;
+    capability.memory_bytes = 64 * kGiB;
+    capability.gpu = Gpu{GpuKind::Cuda, 312.0, "A100"};
+    return capability;
+}
+
+// A fake AzureControlPlane modelling a burst pool: bring_up scales the pool to the
+// requested count (bounded by `capacity`, to exercise best-effort), destroy
+// removes one node, list returns what is up.
+class FakeControlPlane : public AzureControlPlane {
+public:
+    std::size_t capacity = 1000;          // best-effort ceiling on pool size
+    std::vector<ProvisionedNode> pool;    // what is currently up
+    int bring_up_calls = 0;
+
+    ProvisionResult bring_up(const AzureConfig& /*config*/,
+                             const ProvisionRequest& request) override {
+        ++bring_up_calls;
+        const std::size_t target = std::min(request.count, capacity);
+        pool.clear();
+        for (std::size_t index = 0; index < target; ++index) {
+            ProvisionedNode node;
+            node.node_id = "burst-" + std::to_string(index);
+            node.address = "10.1.0." + std::to_string(index) + ":7777";
+            node.capability = request.spec;
+            pool.push_back(node);
+        }
+        ProvisionResult result;
+        result.nodes = pool;
+        result.satisfied = pool.size() >= request.count;
+        result.detail = result.satisfied ? "scaled" : "best-effort short";
+        return result;
+    }
+
+    bool destroy(const AzureConfig& /*config*/,
+                 const std::string& node_id) override {
+        const auto found = std::find_if(
+            pool.begin(), pool.end(),
+            [&](const ProvisionedNode& node) { return node.node_id == node_id; });
+        if (found == pool.end()) return false;
+        pool.erase(found);
+        return true;
+    }
+
+    std::vector<ProvisionedNode> list(const AzureConfig& /*config*/) const override {
+        return pool;
+    }
+};
+
+// Does argv contain `name` immediately followed by `value`?
+bool has_flag(const std::vector<std::string>& argv, const std::string& name,
+              const std::string& value) {
+    for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+        if (argv[index] == name && argv[index + 1] == value) return true;
+    }
+    return false;
+}
+
+bool has_token(const std::vector<std::string>& argv, const std::string& token) {
+    return std::find(argv.begin(), argv.end(), token) != argv.end();
+}
+
+}  // namespace
+
+// ---- AzureConfig JSON boundary ---------------------------------------------
+
+TEST(AzureConfig, RoundTripsMinimalConfig) {
+    const AzureConfig config = sample_config();
+    const auto parsed = AzureConfig::from_json(config.to_json());
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(*parsed, config);
+}
+
+TEST(AzureConfig, RoundTripsFullConfig) {
+    AzureConfig config = sample_config();
+    config.pool_name = "churn-burst";
+    config.vm_size = "Standard_NC24ads_A100_v4";
+    config.image = "Ubuntu2204";
+    config.spot = true;
+    config.max_price = 1.5;
+    config.seed_peer = "10.0.0.1:7777";
+    config.managed_identity = "/subscriptions/sub-123/.../burst-mi";
+    config.tenant_id = "tenant-abc";
+
+    const auto parsed = AzureConfig::from_json(config.to_json());
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(*parsed, config);
+}
+
+TEST(AzureConfig, DefaultsAreFilledIn) {
+    const AzureConfig config = sample_config();
+    EXPECT_EQ(config.pool_name, "zetta-burst");  // default name
+    EXPECT_FALSE(config.spot);
+    EXPECT_DOUBLE_EQ(config.max_price, -1.0);     // Azure: up to on-demand
+}
+
+TEST(AzureConfig, RejectsMalformedDocuments) {
+    EXPECT_FALSE(AzureConfig::from_json(nlohmann::json::array()).has_value());
+    EXPECT_FALSE(AzureConfig::from_json("not-an-object").has_value());
+
+    // Missing each required field in turn.
+    for (const char* missing : {"subscription_id", "resource_group", "location"}) {
+        nlohmann::json document = sample_config().to_json();
+        document.erase(missing);
+        EXPECT_FALSE(AzureConfig::from_json(document).has_value()) << missing;
+    }
+
+    // Empty required field.
+    nlohmann::json empty_required = sample_config().to_json();
+    empty_required["location"] = "";
+    EXPECT_FALSE(AzureConfig::from_json(empty_required).has_value());
+
+    // Wrong-typed fields.
+    nlohmann::json wrong_spot = sample_config().to_json();
+    wrong_spot["spot"] = "yes";
+    EXPECT_FALSE(AzureConfig::from_json(wrong_spot).has_value());
+
+    nlohmann::json wrong_price = sample_config().to_json();
+    wrong_price["max_price"] = "cheap";
+    EXPECT_FALSE(AzureConfig::from_json(wrong_price).has_value());
+
+    // max_price below the Azure floor of -1.
+    nlohmann::json low_price = sample_config().to_json();
+    low_price["max_price"] = -2.0;
+    EXPECT_FALSE(AzureConfig::from_json(low_price).has_value());
+}
+
+// ---- AzureProvisioner lifecycle (against a fake control plane) --------------
+
+TEST(AzureProvisioner, ProvisionBringsUpNodesAndMintsIdentities) {
+    FakeControlPlane control_plane;
+    std::vector<ProvisionedNode> minted;
+    int revoke_count = 0;
+
+    AzureProvisioner::IdentityHooks identity;
+    identity.mint = [&](const std::vector<ProvisionedNode>& nodes) { minted = nodes; };
+    identity.revoke = [&] { ++revoke_count; };
+
+    AzureProvisioner provisioner{control_plane, sample_config(), identity};
+
+    const ProvisionResult result =
+        provisioner.provision(ProvisionRequest{3, gpu_spec()});
+
+    EXPECT_TRUE(result.satisfied);
+    ASSERT_EQ(result.nodes.size(), 3u);
+    EXPECT_EQ(control_plane.bring_up_calls, 1);
+    // Identities minted for exactly the nodes that came up — so they can join.
+    EXPECT_EQ(minted, result.nodes);
+    EXPECT_EQ(revoke_count, 0);  // nothing torn down yet
+}
+
+TEST(AzureProvisioner, ProvisionIsBestEffortWhenCapacityIsShort) {
+    FakeControlPlane control_plane;
+    control_plane.capacity = 2;  // the pool can only bring up two
+    std::vector<ProvisionedNode> minted;
+
+    AzureProvisioner::IdentityHooks identity;
+    identity.mint = [&](const std::vector<ProvisionedNode>& nodes) { minted = nodes; };
+
+    AzureProvisioner provisioner{control_plane, sample_config(), identity};
+
+    const ProvisionResult result =
+        provisioner.provision(ProvisionRequest{5, gpu_spec()});
+
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_EQ(result.nodes.size(), 2u);
+    EXPECT_FALSE(result.detail.empty());
+    EXPECT_EQ(minted.size(), 2u);  // mint whatever actually came up
+}
+
+TEST(AzureProvisioner, ZeroCountIsASatisfiedNoOp) {
+    FakeControlPlane control_plane;
+    int mint_calls = 0;
+
+    AzureProvisioner::IdentityHooks identity;
+    identity.mint = [&](const std::vector<ProvisionedNode>&) { ++mint_calls; };
+
+    AzureProvisioner provisioner{control_plane, sample_config(), identity};
+
+    const ProvisionResult result =
+        provisioner.provision(ProvisionRequest{0, NodeCapability{}});
+
+    EXPECT_TRUE(result.satisfied);
+    EXPECT_TRUE(result.nodes.empty());
+    EXPECT_EQ(control_plane.bring_up_calls, 0);  // control plane untouched
+    EXPECT_EQ(mint_calls, 0);                    // identity untouched
+}
+
+TEST(AzureProvisioner, NoMintWhenNothingCameUp) {
+    FakeControlPlane control_plane;
+    control_plane.capacity = 0;  // nothing can come up
+    int mint_calls = 0;
+
+    AzureProvisioner::IdentityHooks identity;
+    identity.mint = [&](const std::vector<ProvisionedNode>&) { ++mint_calls; };
+
+    AzureProvisioner provisioner{control_plane, sample_config(), identity};
+
+    const ProvisionResult result =
+        provisioner.provision(ProvisionRequest{3, gpu_spec()});
+
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_TRUE(result.nodes.empty());
+    EXPECT_EQ(mint_calls, 0);  // nothing to mint for
+}
+
+TEST(AzureProvisioner, TeardownRevokesIdentitiesWhenPoolDrains) {
+    FakeControlPlane control_plane;
+    int revoke_count = 0;
+
+    AzureProvisioner::IdentityHooks identity;
+    identity.mint = [&](const std::vector<ProvisionedNode>&) {};
+    identity.revoke = [&] { ++revoke_count; };
+
+    AzureProvisioner provisioner{control_plane, sample_config(), identity};
+    provisioner.provision(ProvisionRequest{2, gpu_spec()});
+    ASSERT_EQ(provisioner.provisioned().size(), 2u);
+
+    // Tear down the first node — one still up, so no bulk revoke yet.
+    EXPECT_TRUE(provisioner.teardown("burst-0"));
+    EXPECT_EQ(provisioner.provisioned().size(), 1u);
+    EXPECT_EQ(revoke_count, 0);
+
+    // Tear down the last node — the pool drains, so identities are revoked once.
+    EXPECT_TRUE(provisioner.teardown("burst-1"));
+    EXPECT_TRUE(provisioner.provisioned().empty());
+    EXPECT_EQ(revoke_count, 1);
+}
+
+TEST(AzureProvisioner, TeardownOfUnknownNodeIsAnIdempotentNoOp) {
+    FakeControlPlane control_plane;
+    int revoke_count = 0;
+
+    AzureProvisioner::IdentityHooks identity;
+    identity.revoke = [&] { ++revoke_count; };
+
+    AzureProvisioner provisioner{control_plane, sample_config(), identity};
+    provisioner.provision(ProvisionRequest{1, gpu_spec()});
+
+    // An unknown id releases nothing and does not fire revoke (the pool is not
+    // empty, and no node was actually released).
+    EXPECT_FALSE(provisioner.teardown("never-existed"));
+    EXPECT_EQ(revoke_count, 0);
+    EXPECT_EQ(provisioner.provisioned().size(), 1u);
+}
+
+TEST(AzureProvisioner, ProvisionedReflectsLiveCapacity) {
+    FakeControlPlane control_plane;
+    AzureProvisioner provisioner{control_plane, sample_config()};  // no identity wired
+    provisioner.provision(ProvisionRequest{3, gpu_spec()});
+    EXPECT_EQ(provisioner.provisioned().size(), 3u);
+
+    // A Spot eviction removes a node without any teardown call — provisioned()
+    // re-reads the control plane, so it shrinks to match.
+    control_plane.pool.pop_back();
+    EXPECT_EQ(provisioner.provisioned().size(), 2u);
+}
+
+TEST(AzureProvisioner, WorksWithNoIdentityHooks) {
+    FakeControlPlane control_plane;
+    AzureProvisioner provisioner{control_plane, sample_config()};
+
+    const ProvisionResult result =
+        provisioner.provision(ProvisionRequest{2, gpu_spec()});
+    EXPECT_TRUE(result.satisfied);
+    EXPECT_EQ(result.nodes.size(), 2u);
+    EXPECT_TRUE(provisioner.teardown("burst-0"));  // drains to one, no revoke hook
+    EXPECT_TRUE(provisioner.teardown("burst-1"));  // drains to empty, still fine
+}
+
+// ---- AzCliControlPlane reference binding (against a fake command runner) ----
+
+namespace {
+
+// A canned `az vmss list-instances` output: two ProvisionedNode-shaped objects.
+std::string two_node_listing() {
+    return R"([
+      {"node_id":"vm0","address":"10.2.0.1:7777",
+       "capability":{"cores":8,"memory_bytes":68719476736,
+                     "gpu":{"kind":"cuda","throughput_tflops":312.0,"model":"A100"}}},
+      {"node_id":"vm1","address":"10.2.0.2:7777",
+       "capability":{"cores":8,"memory_bytes":68719476736,
+                     "gpu":{"kind":"cuda","throughput_tflops":312.0,"model":"A100"}}}
+    ])";
+}
+
+}  // namespace
+
+TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;  // exit_code 0 by default
+    };
+
+    AzCliControlPlane control_plane{runner};
+    AzureConfig config = sample_config();
+    config.vm_size = "Standard_NC24ads_A100_v4";
+    config.image = "Ubuntu2204";
+
+    const ProvisionResult result =
+        control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+
+    EXPECT_TRUE(result.satisfied);
+    ASSERT_EQ(result.nodes.size(), 2u);
+    EXPECT_EQ(result.nodes[0].node_id, "vm0");
+
+    // The create call carries the pool identity, location, count, and SKU/image.
+    ASSERT_FALSE(calls.empty());
+    const std::vector<std::string>& create = calls.front();
+    EXPECT_TRUE(has_token(create, "create"));
+    EXPECT_TRUE(has_flag(create, "--subscription", "sub-123"));
+    EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg"));
+    EXPECT_TRUE(has_flag(create, "--name", "zetta-burst"));
+    EXPECT_TRUE(has_flag(create, "--location", "eastus"));
+    EXPECT_TRUE(has_flag(create, "--orchestration-mode", "Flexible"));
+    EXPECT_TRUE(has_flag(create, "--instance-count", "2"));
+    EXPECT_TRUE(has_flag(create, "--vm-sku", "Standard_NC24ads_A100_v4"));
+    EXPECT_FALSE(has_token(create, "--priority"));  // not a spot config
+}
+
+TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    AzureConfig config = sample_config();
+    config.spot = true;
+    config.max_price = 1.25;
+    config.seed_peer = "10.0.0.1:7777";
+
+    control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
+
+    const std::vector<std::string>& create = calls.front();
+    EXPECT_TRUE(has_flag(create, "--priority", "Spot"));
+    EXPECT_TRUE(has_token(create, "--eviction-policy"));
+    EXPECT_TRUE(has_token(create, "--max-price"));
+    EXPECT_TRUE(has_flag(create, "--custom-data", "ZETTA_SEED_PEER=10.0.0.1:7777"));
+}
+
+TEST(AzCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    // Ask for three but the listing only reports two.
+    const ProvisionResult result =
+        control_plane.bring_up(sample_config(), ProvisionRequest{3, gpu_spec()});
+
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_EQ(result.nodes.size(), 2u);
+    EXPECT_FALSE(result.detail.empty());
+}
+
+TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        CommandResult result;
+        if (has_token(argv, "create")) {
+            result.exit_code = 1;
+            result.stderr_text = "quota exceeded";
+        }
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    const ProvisionResult result =
+        control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+
+    EXPECT_FALSE(result.satisfied);
+    EXPECT_TRUE(result.nodes.empty());
+    EXPECT_NE(result.detail.find("quota exceeded"), std::string::npos);
+}
+
+TEST(AzCliControlPlane, DestroyBuildsDeleteInstancesAndReportsOutcome) {
+    std::vector<std::string> seen;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        seen = argv;
+        CommandResult result;
+        // Fail the delete for one specific id to exercise the idempotent false.
+        if (has_flag(argv, "--instance-ids", "missing")) result.exit_code = 2;
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    EXPECT_TRUE(control_plane.destroy(sample_config(), "vm0"));
+    EXPECT_TRUE(has_token(seen, "delete-instances"));
+    EXPECT_TRUE(has_flag(seen, "--instance-ids", "vm0"));
+
+    EXPECT_FALSE(control_plane.destroy(sample_config(), "missing"));  // non-zero → false
+}
+
+TEST(AzCliControlPlane, ListParsesInstancesAndSkipsMalformed) {
+    CommandRunner runner = [&](const std::vector<std::string>&) -> CommandResult {
+        CommandResult result;
+        // One valid node, one missing node_id (rejected at the boundary).
+        result.stdout_text = R"([
+          {"node_id":"vm0","address":"10.2.0.1:7777",
+           "capability":{"cores":8,"memory_bytes":68719476736,"gpu":{"kind":"none"}}},
+          {"address":"10.2.0.2:7777",
+           "capability":{"cores":8,"memory_bytes":68719476736,"gpu":{"kind":"none"}}}
+        ])";
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    const std::vector<ProvisionedNode> nodes = control_plane.list(sample_config());
+    ASSERT_EQ(nodes.size(), 1u);  // the malformed entry is skipped
+    EXPECT_EQ(nodes.front().node_id, "vm0");
+}
+
+TEST(AzCliControlPlane, ListReturnsEmptyOnCommandFailure) {
+    CommandRunner runner = [&](const std::vector<std::string>&) -> CommandResult {
+        CommandResult result;
+        result.exit_code = 1;  // `az` failed
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    EXPECT_TRUE(control_plane.list(sample_config()).empty());
+}

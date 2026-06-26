@@ -992,6 +992,37 @@ boundary** (`schemas/burst_cap.schema.json`) like the other provisioner DTOs. Th
 gate audits only the **exception** (an over-cap burst), not every small provision.
 See [docs/burst-approval-gate.md](docs/burst-approval-gate.md).
 
+The first concrete **cloud** backend is the **`zetta::AzureProvisioner`**
+(`include/zetta/azure_provisioner.hpp`) — the **reference** cloud-burst backend
+(**ARC-13 / ADR-20**, #376; AWS #377 / GCP #378 **mirror** its shape). It realizes
+the burst lifecycle: **provision** N ephemeral Azure nodes → **mint** bulk burst
+identities so they can join the cluster → run cluster-parallel → **tear down** +
+**revoke**. It owns the orchestration but **none of the Azure mechanics**,
+delegating those to an injected **`AzureControlPlane`** seam (`bring_up`/`destroy`/
+`list`) — so it stays in `zetta-core` with **no cloud SDK** and is fully
+unit-testable against a fake; the control plane is the **source of truth** for what
+is up (`provisioned()` + the drain check read it, no parallel fleet copy). Bulk
+identity is wired through two optional **`IdentityHooks`** callables
+(`mint`-on-provision / `revoke`-on-full-teardown) — the `FleetSource`/`CostEstimator`
+injection style, production-bound to a [`BurstIdentityManager`](docs/burst-identity.md)
+for the job, not a hard dependency. The reference `AzureControlPlane` is
+**`zetta::AzCliControlPlane`** (`include/zetta/azure_cli_control_plane.hpp`), which
+borrows the **VMSS + Spot shape** (not the SDK) by shelling out to the `az` CLI
+through the **shared `CommandRunner`** (`include/zetta/command_runner.hpp` — argv,
+no shell, testable without `az` installed; the default `fork`/`execvp`s and
+captures JSON; the same exec seam the AWS/GCP CLI bindings reuse); its `list`
+output is parsed at the **`ProvisionedNode` boundary**. `AzureConfig` (subscription
+/ resource group / region required; pool name / VM SKU / image / spot + max-price /
+seed peer / managed identity optional) carries a **validated JSON boundary**
+(`schemas/azure_config.schema.json`) like the other provisioner DTOs. No live-cloud
+CI (the acceptance is the full *shape*, verified against fakes), no
+persistence/replication, no autoscaler wiring yet. **AWS (#377) / GCP (#378) mirror
+this shape** — the recipe (the four pieces + shared infra + the lifecycle→CLI
+mapping; **CLI for now**) is [docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md);
+the cited `az` command basis is
+[docs/research/azure-cli-compute.md](docs/research/azure-cli-compute.md). See
+[docs/azure-provisioner.md](docs/azure-provisioner.md).
+
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
 When the cluster **bursts** compute nodes for a job, each burst node needs an
@@ -1084,6 +1115,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
+  azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
+  azure_cli_control_plane.hpp zetta::AzCliControlPlane — reference AzureControlPlane binding: shells out to the `az` CLI (VMSS/Spot shape) via the shared CommandRunner (#376)
+  command_runner.hpp        zetta::CommandRunner/CommandResult/default_command_runner — shared, vendor-neutral exec seam every CLI cloud binding runs through (argv, no shell; fork/execvp; #376)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
@@ -1158,6 +1192,9 @@ src/core/                   zetta-core impl
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
+  azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
+  azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
+  command_runner.cpp        zetta::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
@@ -1356,6 +1393,8 @@ loop thread).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
+- [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
+- [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).

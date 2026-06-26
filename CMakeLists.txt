@@ -322,6 +322,9 @@ add_library(zetta-core STATIC
   src/core/node_capability.cpp
   src/core/provisioner.cpp
   src/core/local_provisioner.cpp
+  src/core/command_runner.cpp
+  src/core/azure_provisioner.cpp
+  src/core/azure_cli_control_plane.cpp
   src/core/burst_identity.cpp
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
