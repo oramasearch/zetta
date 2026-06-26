@@ -82,8 +82,11 @@ identities so they join the cluster, runs cluster-parallel, and tears them down 
 behind an injectable control-plane seam with **no cloud SDK** (the reference
 `AzCliControlPlane` borrows the VMSS / Spot shape via the `az` CLI), driven by a
 schema-validated `AzureConfig` (see
-[docs/azure-provisioner.md](docs/azure-provisioner.md)). AWS / GCP follow the same
-**CLI pattern** — the recipe is
+[docs/azure-provisioner.md](docs/azure-provisioner.md)). **`zetta::AwsProvisioner`**
+(`#377`) mirrors it for AWS — the same control-plane seam + identity hooks, with an
+`AwsCliControlPlane` driving the EC2 Auto Scaling Group / Spot shape via the `aws`
+CLI (see [docs/aws-provisioner.md](docs/aws-provisioner.md)). AWS / GCP follow the
+same **CLI pattern** — the recipe is
 [docs/cloud-provisioner-pattern.md](docs/cloud-provisioner-pattern.md).
 On a burst, the **`BurstIdentityManager`** (`zetta::BurstIdentityManager`)
 bulk-mints a short-lived, job-scoped service `Principal` + `AccessKey` per burst

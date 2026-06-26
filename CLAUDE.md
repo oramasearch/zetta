@@ -969,9 +969,8 @@ selects up to `count` existing nodes that `satisfies` the spec (best-effort: few
 + a `detail` note when short — given hardware can't add capacity; a no-floor spec
 returns the current cluster nodes); `teardown` is a **no-op returning false**
 (given hardware isn't ours to release); `provisioned` lists the whole cluster.
-The cloud-burst backends (AWS #377 / GCP #378) are still later slices; the
-autoscaler/job coordinator that consumes the seam is unbuilt, and nothing here
-persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
+The autoscaler/job coordinator that consumes the seam is unbuilt, and nothing
+here persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
 consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
@@ -1022,6 +1021,30 @@ mapping; **CLI for now**) is [docs/cloud-provisioner-pattern.md](docs/cloud-prov
 the cited `az` command basis is
 [docs/research/azure-cli-compute.md](docs/research/azure-cli-compute.md). See
 [docs/azure-provisioner.md](docs/azure-provisioner.md).
+
+**`zetta::AwsProvisioner`** (`include/zetta/aws_provisioner.hpp`, #377) is the
+**AWS mirror** of that reference, following the
+[cloud-provisioner pattern](docs/cloud-provisioner-pattern.md) — the four pieces
+(`AwsProvisioner` / `AwsControlPlane` seam / `AwsCliControlPlane` CLI binding /
+`AwsConfig`) plus the shared `CommandRunner` + `IdentityHooks`, all reused. The
+`AwsProvisioner` orchestration is structurally a **near-copy** of
+`AzureProvisioner` (only the config type differs): provision → `bring_up` + mint,
+teardown → `destroy` + revoke-on-drain, `provisioned` → `list`. The
+**`AwsCliControlPlane`** is the reference binding, borrowing the **EC2 Auto Scaling
+Group + Spot shape** (the AWS analog of Azure's VMSS) by shelling out to the `aws`
+CLI through the shared `CommandRunner` — `create-auto-scaling-group` /
+`set-desired-capacity` (idempotent re-burst on the stable pool name) →
+`terminate-instance-in-auto-scaling-group` → `describe-instances` (parsed at the
+`ProvisionedNode` boundary). **`AwsConfig`** (region / launch template / subnets
+required; pool name / instance-type override / spot + max-price / seed peer /
+profile optional) carries a **validated JSON boundary**
+(`schemas/aws_config.schema.json`) like the other provisioner DTOs; Spot rides on
+the ASG's mixed-instances policy and the per-node IAM instance profile + join
+bootstrap live in the launch template. Same scope caveats as Azure: no live-cloud
+CI (verified against fakes), no persistence/replication, no autoscaler wiring; the
+cited `aws` command basis is
+[docs/research/aws-cli-compute.md](docs/research/aws-cli-compute.md). See
+[docs/aws-provisioner.md](docs/aws-provisioner.md).
 
 ### Bulk burst identity + teardown (`zetta::BurstIdentityManager`)
 
@@ -1118,6 +1141,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
   azure_cli_control_plane.hpp zetta::AzCliControlPlane — reference AzureControlPlane binding: shells out to the `az` CLI (VMSS/Spot shape) via the shared CommandRunner (#376)
   command_runner.hpp        zetta::CommandRunner/CommandResult/default_command_runner — shared, vendor-neutral exec seam every CLI cloud binding runs through (argv, no shell; fork/execvp; #376)
+  aws_provisioner.hpp       zetta::AwsProvisioner/AwsConfig/AwsControlPlane — AWS cloud-burst backend mirroring the Azure pattern: burst N nodes + mint identities + teardown/revoke behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #377)
+  aws_cli_control_plane.hpp zetta::AwsCliControlPlane — reference AwsControlPlane binding: shells out to the `aws` CLI (EC2 Auto Scaling Group / Spot shape) via the shared CommandRunner (#377)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
@@ -1195,6 +1220,8 @@ src/core/                   zetta-core impl
   azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
   azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
   command_runner.cpp        zetta::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)
+  aws_provisioner.cpp       zetta::AwsProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AwsControlPlane seam + AwsConfig JSON boundary (#377)
+  aws_cli_control_plane.cpp zetta::AwsCliControlPlane — `aws autoscaling`/`aws ec2` argv construction + JSON parsing at the ProvisionedNode boundary (#377)
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
@@ -1390,6 +1417,7 @@ loop thread).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).
+- [`docs/aws-provisioner.md`](docs/aws-provisioner.md) — the AWS cloud-burst Provisioner backend (`zetta::AwsProvisioner` + `AwsCliControlPlane`): burst N ephemeral AWS nodes (EC2 Auto Scaling Group / Spot shape via the `aws` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AwsConfig` — the AWS mirror of the Azure reference per the [cloud-provisioner pattern](docs/cloud-provisioner-pattern.md) (ARC-13 / ADR-20, #377).
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
