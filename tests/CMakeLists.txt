@@ -18,6 +18,7 @@ add_executable(zetta-tests
   test_sha256.cpp
   test_validation.cpp
   test_gate.cpp
+  test_graph_checks.cpp
   test_duration.cpp
   test_jsonl_store.cpp
   test_database.cpp

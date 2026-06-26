@@ -255,6 +255,7 @@ add_library(zetta-core STATIC
   src/core/timestamp.cpp
   src/core/validation.cpp
   src/core/gate.cpp
+  src/core/graph_checks.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp

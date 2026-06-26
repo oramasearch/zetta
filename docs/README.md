@@ -18,6 +18,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [replication.md](replication.md) — Automerge-CRDT replicated state, policies (replicate-to-all), and actor identity.
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type (per-check results, verdict, block-deploy).
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
+- [gate-checks.md](gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
 - [build.md](build.md) — building, running, and testing.
 
 ## Research / background

@@ -343,16 +343,26 @@ the two slices above: register a set of **checks**, run them all over an
 `ExecutionGraph`, aggregate their outcomes into a `ValidationReport`, and **block
 deploy on any failure** — **RULE-1** (no deploy without a passing gate). A `Check`
 is the pluggable seam (`name()` + `evaluate(graph) → CheckResult`); concrete
-checks (`#309` schema/leakage/point-in-time, `#312` entity-resolution) implement
-it and plug in **without touching the gate**. `make_check(name, callable)` wraps a
-stateless callable as a `Check` (stamping the registered name onto its result so
-the two never drift). This slice ships **one trivial check** — `NonEmptyGraphCheck`
-(an empty graph has nothing to deploy → fail) — and `default_gate()` returns a gate
-pre-loaded with it. `CorrectnessGate::run` sets `block_deploy = !report.passed()`
-(baseline block-on-failure policy; verdict and block_deploy stay
+checks implement it and plug in **without touching the gate**. `make_check(name,
+callable)` wraps a stateless callable as a `Check` (stamping the registered name
+onto its result so the two never drift). `default_gate()` ships the trivial
+`NonEmptyGraphCheck` (an empty graph has nothing to deploy → fail) **plus the
+concrete `#309` checks** — `SchemaTypeCheck` + `DataLeakageCheck`
+(`include/zetta/graph_checks.hpp`): they read documented **annotations** from each
+step's free-form `attributes` bag (`schema`/`requires` field→type profiles;
+`as_of`/`label`/`features` point-in-time metadata, validated against
+`schemas/graph_step_annotations.schema.json` at the boundary) and fail the gate
+with a clear reason when a step requires a field no upstream source provides /
+provides under a different type (**schema/type**), or when an ML feature uses data
+after the as-of cutoff or is derived from the label (**data-leakage /
+point-in-time**). They are **opt-in per step** — a graph carrying none of the
+annotations passes. `#312` entity-resolution lands the same way.
+`CorrectnessGate::run` sets `block_deploy = !report.passed()` (baseline
+block-on-failure policy; verdict and block_deploy stay
 [separate](docs/validation.md) so a stricter gate can choose differently). It adds
 **no new JSON format** — the `ValidationReport` it produces is already
-schema-validated. Full detail in [docs/gate.md](docs/gate.md).
+schema-validated. Full detail in [docs/gate.md](docs/gate.md) +
+[docs/gate-checks.md](docs/gate-checks.md).
 
 ### Deployment (place a graph onto a target)
 
@@ -456,6 +466,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
   validation.hpp            zetta::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
   gate.hpp                  zetta::CorrectnessGate — gate runner: checks → report (RULE-1)
+  graph_checks.hpp          zetta::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -490,6 +501,7 @@ src/core/                   zetta-core impl
   timestamp.cpp             zetta::now_iso8601() — UTC ISO-8601 stamp
   validation.cpp            ValidationReport verdict + JSON round-trip/validation
   gate.cpp                  CorrectnessGate runner + NonEmptyGraphCheck + make_check
+  graph_checks.cpp          SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
@@ -627,6 +639,7 @@ loop thread).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
+- [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
