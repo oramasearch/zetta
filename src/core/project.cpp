@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/intent_compiler.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/project_graph.hpp"
 #include "zetta/replication.hpp"
@@ -271,6 +272,30 @@ std::shared_ptr<ProjectGraph> Project::update_graph(const std::string& name,
         replication_->set(catalog::graph_key(stored->id()), stored->record());
     }
     return stored;
+}
+
+std::shared_ptr<ProjectGraph> Project::compile_intent_to_graph(
+    const std::string& input_id, std::string name) {
+    // Resolve the stored intent input. It must exist, be an Intent (not an
+    // artifact), and have its payload body present locally (a peer may hold the
+    // metadata before body transfer — there is nothing to compile from then).
+    auto input = find_input(input_id);
+    if (!input || input->kind() != ProjectInputKind::Intent) return nullptr;
+    const std::optional<std::string> text = input->read_payload();
+    if (!text) return nullptr;  // body not present locally
+
+    // Compile through the same templated front door the API exposes. An empty
+    // intent yields no graph (compile_intent rejects it), so we hand back nothing.
+    const std::optional<CompiledIntent> compiled = compile_intent(*text);
+    if (!compiled) return nullptr;
+
+    if (name.empty()) {
+        name = std::string(to_string(compiled->shape)) + " skeleton";
+    }
+    // create_graph rejects an empty/colliding name and captures the new graph
+    // into the CRDT, so the compiled skeleton replicates + is editable in the
+    // Graph Workspace exactly like any other stored graph.
+    return create_graph(std::move(name), compiled->graph);
 }
 
 std::shared_ptr<ProjectGraph> Project::materialize_graph(

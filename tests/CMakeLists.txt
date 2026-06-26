@@ -33,6 +33,7 @@ add_executable(zetta-tests
   test_access_control.cpp
   test_executor.cpp
   test_audit.cpp
+  test_intent_compiler.cpp
   test_node.cpp
   test_query.cpp
   test_execution_graph.cpp

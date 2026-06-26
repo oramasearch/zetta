@@ -39,7 +39,11 @@ natural-language intent, and import / drag-drop an n8n workflow artifact in one
 atomic create (see [docs/new-project-screen.md](docs/new-project-screen.md)). Each
 project also owns its **execution graphs**
 (the `zetta::ir::ExecutionGraph` IR, persisted + replicated as JSON — see
-[docs/execution-graph.md](docs/execution-graph.md)). In headed mode the **Graph
+[docs/execution-graph.md](docs/execution-graph.md)). A stored intent **compiles**
+into a reviewable graph skeleton — `zetta::compile_intent` turns the natural-
+language text into a templated `connect→clean→model→index→serve→act` pipeline
+(the churn shape today), editable in the workspace rather than a black box (see
+[docs/intent-compiler.md](docs/intent-compiler.md)). In headed mode the **Graph
 Workspace** panel renders a project's graph as an editable node/edge canvas
 (steps in columns by stage, edges between them) and persists edits back to the IR
 (see [docs/projects.md](docs/projects.md#graph-workspace)). A node can also **deploy** a
