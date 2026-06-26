@@ -15,10 +15,11 @@
 // ValidationReport type (validation.hpp) was built to be produced by: it does the
 // running; ValidationReport holds the result.
 //
-// The checks themselves are pluggable (the Check seam below). This slice ships
-// one trivial check (NonEmptyGraphCheck); the concrete correctness checks
-// (#309 schema/leakage/point-in-time, #312 entity-resolution) implement Check and
-// plug in separately without touching the gate.
+// The checks themselves are pluggable (the Check seam below). This file declares
+// the runner plus the trivial NonEmptyGraphCheck; the concrete correctness checks
+// (#309 schema/type + data-leakage / point-in-time — see graph_checks.hpp; #312
+// entity-resolution) implement Check and plug in separately without touching the
+// gate. default_gate() registers the trivial check and the #309 checks.
 namespace zetta {
 
 // One named correctness check: it inspects an ExecutionGraph and reports a single
@@ -83,8 +84,11 @@ private:
     std::vector<std::shared_ptr<Check>> checks_;
 };
 
-// A gate pre-loaded with the trivial check this slice ships — the baseline gate
-// callers get for free. As concrete checks land they are registered here too.
+// The baseline gate callers get for free: the trivial NonEmptyGraphCheck plus the
+// concrete #309 checks (SchemaTypeCheck, DataLeakageCheck — see graph_checks.hpp),
+// in that order. The #309 checks are opt-in per step, so a graph that carries none
+// of their annotations still passes. As further concrete checks land (e.g. #312)
+// they are registered here too.
 CorrectnessGate default_gate();
 
 }  // namespace zetta

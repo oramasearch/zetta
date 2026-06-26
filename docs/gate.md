@@ -12,10 +12,10 @@ and the [ValidationReport](validation.md) it produces (`zetta::ValidationReport`
 The IR is *what* it validates; the report is *what it returns*; this is the part
 that does the running.
 
-This slice ships **one trivial check** so the path works end to end. The concrete
-correctness checks — schema/type, data-leakage and point-in-time (`#309`),
-entity-resolution (`#312`) — implement the same `Check` seam and plug in
-separately, without touching the gate.
+The gate ships the trivial `NonEmptyGraphCheck` plus the concrete schema/type and
+data-leakage / point-in-time checks (`#309`) — see
+[gate-checks.md](gate-checks.md). They implement the same `Check` seam and plug in
+without touching the gate; entity-resolution (`#312`) lands the same way.
 
 ## The shape
 
@@ -75,8 +75,11 @@ signed-off override (allow a failure through) is a future policy that sets
 `block_deploy` differently over the same report — the report shape already
 supports it.
 
-`default_gate()` returns a gate pre-loaded with `NonEmptyGraphCheck` — the
-baseline gate callers get for free. As concrete checks land, they are registered
+`default_gate()` returns a gate pre-loaded with `NonEmptyGraphCheck` **and** the
+concrete `#309` checks (`SchemaTypeCheck`, `DataLeakageCheck` — see
+[gate-checks.md](gate-checks.md)) — the baseline gate callers get for free. The
+`#309` checks are opt-in per step, so a graph that carries none of their
+annotations still passes. As further concrete checks land they are registered
 there too.
 
 ## Using it
@@ -148,9 +151,11 @@ The gate sits between **compile** and **deploy**: a graph is compiled from inten
 run through the gate, and deployed only if the report allows it. The events the
 rest of the system carries (`GraphValidated` / `ValidationFailed`, the
 `ValidateGraph` command) wrap the `ValidationReport` this runner produces. The
-concrete checks (`#309`, `#312`) and the gate's wiring into deploy land on top of
-this seam as separate work.
+`#309` schema/type and data-leakage / point-in-time checks already plug into this
+seam ([gate-checks.md](gate-checks.md)); entity-resolution (`#312`) and the gate's
+wiring into deploy land on top of it as separate work.
 
-See also [validation.md](validation.md) (the result type), the
+See also [gate-checks.md](gate-checks.md) (the concrete checks),
+[validation.md](validation.md) (the result type), the
 [execution-graph.md](execution-graph.md) (the graph it inspects), and the related
 artifacts: ENT-5, FEAT-3 (`#301` / `#134`), RULE-1.

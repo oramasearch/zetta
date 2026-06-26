@@ -3,6 +3,8 @@
 #include <string>
 #include <utility>
 
+#include "zetta/graph_checks.hpp"
+
 namespace zetta {
 
 namespace {
@@ -69,6 +71,11 @@ ValidationReport CorrectnessGate::run(const ir::ExecutionGraph& graph) const {
 CorrectnessGate default_gate() {
     CorrectnessGate gate;
     gate.add_check(std::make_shared<NonEmptyGraphCheck>());
+    // The concrete #309 semantic checks: schema/type then data-leakage /
+    // point-in-time. Both are opt-in per step (a graph that carries none of their
+    // annotations passes them), so they are safe to ship in the baseline gate.
+    gate.add_check(std::make_shared<SchemaTypeCheck>());
+    gate.add_check(std::make_shared<DataLeakageCheck>());
     return gate;
 }
 

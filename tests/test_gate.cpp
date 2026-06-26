@@ -73,7 +73,9 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
 
     const ValidationReport report = gate.run(empty_graph);
 
-    ASSERT_EQ(report.checks.size(), 1u);
+    // The default gate ships three checks (non_empty_graph + the #309 checks);
+    // the empty graph trips the first, and the opt-in #309 checks pass vacuously.
+    ASSERT_EQ(report.checks.size(), 3u);
     EXPECT_EQ(report.checks[0].name, "non_empty_graph");
     EXPECT_EQ(report.checks[0].status, CheckStatus::Fail);
     EXPECT_FALSE(report.checks[0].reason.empty());  // a clear reason, not blank
@@ -86,15 +88,16 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 
     const ValidationReport report = gate.run(one_step_graph());
 
-    ASSERT_EQ(report.checks.size(), 1u);
-    EXPECT_EQ(report.checks[0].status, CheckStatus::Pass);
+    // All three default checks pass an un-annotated single-step graph.
+    ASSERT_EQ(report.checks.size(), 3u);
+    EXPECT_EQ(report.verdict(), CheckStatus::Pass);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
 }
 
-TEST(CorrectnessGate, DefaultGateShipsTheTrivialCheck) {
+TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
     const CorrectnessGate gate = zetta::default_gate();
-    ASSERT_EQ(gate.check_count(), 1u);
+    ASSERT_EQ(gate.check_count(), 3u);
     EXPECT_EQ(gate.checks().front()->name(), "non_empty_graph");
 }
 
