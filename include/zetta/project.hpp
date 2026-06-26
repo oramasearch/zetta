@@ -138,6 +138,20 @@ public:
                                                ir::ExecutionGraph graph,
                                                std::string new_name = {});
 
+    // Compile a stored natural-language **intent** input into a new, editable
+    // ExecutionGraph stored under this project (FEAT-2 / #311) — the bridge from a
+    // captured intent (FEAT-1) to a reviewable graph in the Graph Workspace. Reads
+    // the intent input's payload body, runs the templated compiler
+    // (zetta::compile_intent), and persists the resulting skeleton as a named
+    // ProjectGraph (replicated + editable, exactly like create_graph). `name`
+    // defaults to "<intent-shape> skeleton" when empty. Returns an empty handle if
+    // the input id is unknown, the input is not an Intent, its body is not present
+    // locally, the intent is empty, or the (resolved) name collides with an
+    // existing graph. The intent input is left untouched (it is an immutable
+    // provenance record); the compiled graph is a fresh, separate artifact.
+    std::shared_ptr<ProjectGraph> compile_intent_to_graph(
+        const std::string& input_id, std::string name = {});
+
     // Apply a replicated graph (a peer's, or one rebuilt from the document) with
     // a given id, without capturing. Returns the existing handle if present.
     std::shared_ptr<ProjectGraph> materialize_graph(std::string id,

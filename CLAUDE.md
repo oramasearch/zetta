@@ -448,6 +448,33 @@ slices: the dual-form Lua/Orly + Parquet/CSV representation (ADR-10) and semanti
 validation (acyclicity, legal stage transitions — the **gate**). Full detail in
 [docs/execution-graph.md](docs/execution-graph.md).
 
+### Intent compiler (NL intent → ExecutionGraph skeleton)
+
+The **intent compiler** (`include/zetta/intent_compiler.hpp`,
+`zetta::compile_intent`) turns a stored natural-language **intent** — the text
+`Project::capture_intent` recorded (FEAT-1) — into a reviewable
+`ir::ExecutionGraph` skeleton laid out over the
+`connect→clean→model→index→serve→act` taxonomy (FEAT-2 / #311). It is a
+**templated, heuristic** mapping, **not** language understanding: a transparent
+signal-word scan recognizes the **churn shape** (UC-1; `churn`/`retention`/
+`attrition`/`cancel`/`renew`/`subscriber`/`lapse`/…) and emits the full churn
+pipeline (two `connect` sources → feature `clean` → churn `model` → `index` →
+`serve` → retention `act`); any other intent falls back to a generic-but-complete
+six-stage skeleton, so an intent **always** compiles to a well-formed, editable
+graph. The output is the IR itself — named, typed, **editable** steps, **not a
+black box** — and is deterministic (same intent → identical graph). An empty /
+whitespace-only intent compiles to nothing (`std::nullopt`), mirroring
+`capture_intent`. Richer NL/LLM synthesis plugs in later behind the same
+`compile_intent` front door, the seam pattern the executor's `StepExecutor` and
+the gate's `Check` use. `Project::compile_intent_to_graph(input_id, name)` is the
+bridge from a *stored* intent input to an editable graph: it reads the input's
+payload, runs the compiler, and persists the skeleton via `create_graph` (so it
+replicates + is editable in the **Graph Workspace** exactly like any stored
+graph). It adds **no new JSON format** — the input is plain text and the output
+is the already-schema-validated IR JSON form, so the skeleton round-trips through
+`ir::from_json` and passes `default_gate()` by construction. See
+[docs/intent-compiler.md](docs/intent-compiler.md).
+
 ### Correctness gate (`zetta::CorrectnessGate`)
 
 The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
@@ -675,6 +702,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
   capability.hpp            zetta::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
   audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
+  intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
@@ -725,6 +753,7 @@ src/core/                   zetta-core impl
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
   capability.cpp            zetta::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
   audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
+  intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   table.cpp
   jsonl_store.cpp
@@ -876,6 +905,7 @@ loop thread).
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
+- [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).

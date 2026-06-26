@@ -102,6 +102,7 @@ reverse path used by reconciliation.
 | Method (on `Project`) | Returns | Behavior |
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
+| `compile_intent_to_graph(input_id, name = {})` | `shared_ptr<ProjectGraph>` | Compile a stored **intent** input into a new graph via [`zetta::compile_intent`](intent-compiler.md), then store it with `create_graph` (name defaults to `"<shape> skeleton"`). Empty handle if the input is unknown / not an `Intent` / has no local body, the intent is empty, or the name collides. The bridge from a captured intent (FEAT-1) to an editable graph (FEAT-2). |
 | `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
