@@ -68,6 +68,11 @@ metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
 serialized **weights** stored as a large-object body that transfers peer-to-peer
 and is SHA-256-verified; a `system.zetta_models` registry table lists them (see
 [docs/models.md](docs/models.md)).
+The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
+(`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
+distributed accelerated compute pass: provision N nodes against a capability spec,
+tear them down, and list them — the abstraction the autoscaler consumes and the
+Local / cloud backends implement (see [docs/provisioner.md](docs/provisioner.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see

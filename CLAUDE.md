@@ -718,6 +718,31 @@ and the executor only emits schema-legal output kinds (a restart-reload test
 proves the produced run passes `parse_run_value`). See
 [docs/execution.md](docs/execution.md).
 
+### Provisioning (node capability model + the `Provisioner` seam)
+
+The **`Provisioner`** seam (`include/zetta/provisioner.hpp`) and the **node
+capability model** (`include/zetta/node_capability.hpp`) open the **native
+distributed accelerated compute** pass for UC-1 churn (ARC-13 / ENT-32). A
+**`zetta::NodeCapability`** describes one node's compute resources — `cores`
+(CPU), `memory_bytes`, and a `Gpu` (`GpuKind` none/cuda/rocm/metal +
+`throughput_tflops` + optional `model`) — used **both** as the capability a node
+reports and as the per-node floor a provision spec asks for; `satisfies()` is the
+meet-or-exceed comparison (cores ≥, memory ≥, and a matching-kind GPU at ≥ the
+requested throughput when a GPU is required). It is **distinct from**
+`zetta::Capability` (an access-control *right*, not *compute*) and feeds the
+per-node device registry (#362). The **`Provisioner`** interface is the abstract
+seam both the Local (given-hardware, #374) and cloud-burst (AWS #377 / GCP #378)
+backends implement and the autoscaler/job coordinator consumes:
+`provision(request)` brings up `count` nodes meeting a `spec` **best-effort**
+(may return fewer), `teardown(node_id)` releases one **idempotently** (unknown id
+→ no-op), and `provisioned()` lists what is up. `ProvisionedNode`
+(`{ node_id, address, capability }`) and `NodeCapability` carry a
+**validated JSON boundary** (non-throwing `from_json`, mirroring
+`schemas/node_capability.schema.json`, the `DeploymentTarget` pattern). **No
+cloud SDK lives behind the seam** — this slice is interface + value types + a
+fake-provisioner round-trip test only; persistence/replication and the concrete
+backends are later slices. See [docs/provisioner.md](docs/provisioner.md).
+
 ## Tech stack
 
 - **C++26** (`-std=c++2c`) — needs **Clang 17+** (or GCC 14+). Auto-selected:
@@ -787,6 +812,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_target.hpp     zetta::DeploymentTarget — a placement (ENT-6; R1 local)
   deployment.hpp            zetta::Deployment — a graph placed onto a target
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
+  node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
+  provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
@@ -842,6 +869,8 @@ src/core/                   zetta-core impl
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
+  node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
+  provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
@@ -1017,6 +1046,7 @@ loop thread).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
+- [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373).
 - [`docs/build.md`](docs/build.md) — build, run, test.
 - [`docs/research/`](docs/research/) — long-form research/design deep dives
   (e.g. [coroutines.md](docs/research/coroutines.md)).
