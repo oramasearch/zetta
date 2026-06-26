@@ -278,6 +278,8 @@ add_library(zetta-core STATIC
   src/core/n8n_compile.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
+  src/core/compute/device_buffer.cpp
+  src/core/compute/host_stub_device.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
