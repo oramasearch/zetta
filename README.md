@@ -72,7 +72,10 @@ The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model
 (`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
 distributed accelerated compute pass: provision N nodes against a capability spec,
 tear them down, and list them — the abstraction the autoscaler consumes and the
-Local / cloud backends implement (see [docs/provisioner.md](docs/provisioner.md)).
+Local / cloud backends implement. The first backend, **`zetta::LocalProvisioner`**
+(given hardware), uses the nodes already in the cluster best-effort — it adds no
+capacity and its teardown is a no-op (see
+[docs/provisioner.md](docs/provisioner.md)).
 It owns **compute jobs** (`zetta::ComputeJob`), the foundational record of one
 unit of native distributed accelerated compute — featurize / train / explain /
 score / a DDF op — with a lifecycle (queued → running → succeeded | failed),
