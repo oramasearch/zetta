@@ -248,96 +248,11 @@ ChurnDataset sample_churn_dataset() {
     return dataset;
 }
 
-// ----- numeric encoding (mirrors the GBDT / pipeline test suites) ------------
-
-namespace {
-
-std::int64_t day_of_year_2026(const std::string& iso) {
-    const int month = std::stoi(iso.substr(5, 2));
-    const int day = std::stoi(iso.substr(8, 2));
-    static const int before[] = {0,   0,   31,  59,  90,  120, 151,
-                                 181, 212, 243, 273, 304, 334};
-    return before[month] + day;
-}
-std::int64_t event_type_code(const std::string& type) {
-    if (type == "login") return 1;
-    if (type == "feature_use") return 2;
-    if (type == "payment_failed") return 3;
-    if (type == "support_ticket") return 4;
-    if (type == "csm_contact") return 5;
-    if (type == "comms") return 6;
-    return 0;
-}
-
-}  // namespace
-
-ChurnNumeric encode_churn(const ChurnDataset& dataset) {
-    ChurnNumeric out;
-    for (const ChurnAccount& a : dataset.accounts) {
-        const std::int64_t key =
-            static_cast<std::int64_t>(out.entity_index.size());
-        out.entity_index.emplace(a.account_id, key);
-        out.accounts.push_back({{"entity", key},
-                                {"mrr", a.mrr},
-                                {"seats", a.seats},
-                                {"tenure_days", a.tenure_days},
-                                {"churned", a.churned ? 1 : 0}});
-    }
-    for (const ChurnEvent& e : dataset.events) {
-        const auto it = out.entity_index.find(e.account_id);
-        if (it == out.entity_index.end()) continue;
-        out.events.push_back({{"entity", it->second},
-                              {"ts", day_of_year_2026(e.event_ts)},
-                              {"value", e.value},
-                              {"type", event_type_code(e.event_type)}});
-    }
-    out.as_of = day_of_year_2026(dataset.as_of_date);
-    return out;
-}
-
-ddf::DataFrameSchema churn_events_schema() {
-    ddf::DataFrameSchema schema;
-    schema.columns = {
-        ddf::ColumnSchema{.name = "entity", .dtype = compute::DataType::Int64},
-        ddf::ColumnSchema{.name = "ts", .dtype = compute::DataType::Int64},
-        ddf::ColumnSchema{.name = "value", .dtype = compute::DataType::Float64},
-        ddf::ColumnSchema{.name = "type", .dtype = compute::DataType::Int64}};
-    return schema;
-}
-
-ddf::DataFrameSchema churn_accounts_schema() {
-    ddf::DataFrameSchema schema;
-    schema.columns = {
-        ddf::ColumnSchema{.name = "entity", .dtype = compute::DataType::Int64},
-        ddf::ColumnSchema{.name = "mrr", .dtype = compute::DataType::Float64},
-        ddf::ColumnSchema{.name = "seats", .dtype = compute::DataType::Int64},
-        ddf::ColumnSchema{.name = "tenure_days", .dtype = compute::DataType::Int64},
-        ddf::ColumnSchema{.name = "churned", .dtype = compute::DataType::Int64}};
-    return schema;
-}
-
-ddf::FeaturizeSpec churn_featurize_spec(std::int64_t as_of) {
-    ddf::FeaturizeSpec spec;
-    spec.entity_column = "entity";
-    spec.time_column = "ts";
-    spec.as_of = static_cast<double>(as_of);
-    spec.event_features = {
-        ddf::WindowedFeature{.name = "failed_payments",
-                             .agg = ddf::AggregateOp::Count,
-                             .type_column = "type",
-                             .type_value = 3.0},
-        ddf::WindowedFeature{.name = "support_severity",
-                             .agg = ddf::AggregateOp::Sum,
-                             .value_column = "value",
-                             .type_column = "type",
-                             .type_value = 4.0},
-        ddf::WindowedFeature{.name = "total_events",
-                             .agg = ddf::AggregateOp::Count},
-    };
-    spec.account_features = {"mrr", "seats", "tenure_days"};
-    spec.label_column = "churned";
-    return spec;
-}
+// ----- testkit-specific encoding extras --------------------------------------
+// The churn numeric encoding + the standard pipeline schemas / featurize spec are
+// the canonical ones in churn_solution.cpp (zetta::encode_churn_dataset /
+// churn_events_schema / churn_accounts_schema / churn_featurize_spec), reused here
+// rather than copied. Only the tunable GBDT params + make_store live in the testkit.
 
 ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
                                  double learning_rate) {

@@ -41,7 +41,7 @@ struct FeatureTable {
     std::vector<double> labels;                // {0,1} per row
 };
 
-FeatureTable featurize(const ChurnNumeric& numeric) {
+FeatureTable featurize(const ChurnNumericShards& numeric) {
     const std::size_t accounts = numeric.accounts.size();
     FeatureTable table;
     table.columns.assign(feature_names().size(), std::vector<double>(accounts, 0.0));
@@ -88,7 +88,7 @@ FeatureTable dataset_table(const TestContext& context, TestResult& note_into) {
                            "); using the built-in synthetic dataset");
         }
     }
-    return featurize(encode_churn(dataset));
+    return featurize(encode_churn_dataset(dataset));
 }
 
 ml::GbdtParams params_from(const TestOptions& options) {

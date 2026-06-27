@@ -123,7 +123,7 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
 
     // Run the real pipeline behind the StepExecutor seam.
     context.emit("running featurize -> train -> explain -> rank -> playbook");
-    const ChurnNumeric numeric = encode_churn(dataset);
+    const ChurnNumericShards numeric = encode_churn_dataset(dataset);
     const JsonStore events = make_store(numeric.events);
     const JsonStore accounts = make_store(numeric.accounts);
     CpuDevice device;
