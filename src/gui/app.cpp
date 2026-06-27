@@ -238,6 +238,19 @@ void mono_line(ImVec4 color, const char* label, const std::string& value) {
     if (g_mono_font) ImGui::PopFont();
 }
 
+// The one focal action on a surface: a charcoal-filled, white-text button (the
+// design system's primary button). Everything else stays a ghost button. Coral
+// is never a button fill here (there is no "send").
+bool primary_button(const char* label) {
+    ImGui::PushStyleColor(ImGuiCol_Button, kInkPrimary);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kInkSecondary);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kInkMuted);
+    ImGui::PushStyleColor(ImGuiCol_Text, kWhite);
+    const bool clicked = ImGui::Button(label);
+    ImGui::PopStyleColor(4);
+    return clicked;
+}
+
 // Paint the ImGui style with the Orama design system (light). Flat surfaces,
 // hairline borders, modest radii, ink text on canvas. Coral is reserved for the
 // "you are here" accent (menu checkmarks, selected-graph node border, the one
@@ -986,12 +999,7 @@ void App::draw_home() {
     // Primary action — charcoal fill, white text. Per the design system, "New …"
     // is a charcoal primary action; coral stays reserved for the accent.
     ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Button, kInkPrimary);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kInkSecondary);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kInkMuted);
-    ImGui::PushStyleColor(ImGuiCol_Text, kWhite);
-    if (ImGui::Button("New project…")) new_project_modal_requested_ = true;
-    ImGui::PopStyleColor(4);
+    if (primary_button("New project…")) new_project_modal_requested_ = true;
 
     // Your projects — the central AI-project artifact. Each row opens the project
     // in the Graph workspace. Empty state is voiced, not generic.
@@ -1391,7 +1399,7 @@ void App::draw_query() {
                               ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 6));
     if (mono_font_) ImGui::PopFont();
 
-    if (ImGui::Button("Run")) {
+    if (primary_button("Run")) {
         const query::QueryService::Outcome outcome =
             query_->run(query_input_, selected_db_);
         query_status_.clear();
@@ -1490,7 +1498,7 @@ void App::draw_gate() {
     ImGui::InputTextMultiline("##gategraph", &gate_graph_input_,
                               ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8));
 
-    if (ImGui::Button("Run gate")) {
+    if (primary_button("Run gate")) {
         gate_error_.clear();
         gate_report_.reset();
         // Parse + validate at the boundary without exceptions: a malformed
@@ -1809,7 +1817,7 @@ void App::draw_new_project_modal() {
     // blocks the create so the project is never built with a broken artifact.
     const bool artifact_blocks =
         !new_project_artifact_path_.empty() && !new_project_artifact_valid_;
-    if (ImGui::Button("Create project")) {
+    if (primary_button("Create project")) {
         if (new_project_name_.empty()) {
             new_project_error_ = "name required";
         } else if (artifact_blocks) {
@@ -1921,7 +1929,7 @@ void App::draw_deploy() {
     // 3) One-button deploy: run the correctness gate (RULE-1 — no deploy without
     //    a passing gate), then place the blueprint onto the chosen target.
     ImGui::BeginDisabled(selected == nullptr);
-    if (ImGui::Button("Deploy")) {
+    if (primary_button("Deploy")) {
         const ir::ExecutionGraph& graph = selected->graph;
         const ValidationReport report = default_gate().run(graph);
         if (report.block_deploy) {
@@ -2201,7 +2209,7 @@ void App::draw_cloud() {
         ImGui::Spacing();
         const std::string allow_label =
             "Allow inspection of " + provider->name;
-        if (ImGui::Button(allow_label.c_str())) {
+        if (primary_button(allow_label.c_str())) {
             cloud_consent_provider_ = provider->id;
         }
     } else {
