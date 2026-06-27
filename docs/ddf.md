@@ -145,11 +145,12 @@ rejection of every malformed shape).
 
 ## What's next
 
-DDF **operators** over a frame's columns (featurize: join / groupby-aggregate /
-as-of windowing for the churn pipeline), built on the
+DDF **operators** over a frame's columns. The first is the **distributed equi-join**
+([ddf-join.md](ddf-join.md), #382) — repartition two frames by key via collectives,
+then a local hash / sort-merge join per shard. Still to come: groupby-aggregate and
+as-of windowing for the churn featurization pipeline, built on the
 [`ComputeDevice`](compute-device.md) operator set, plus the
-[`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them — later issues
-against this substrate.
+[`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them.
 
 See also [compute-device.md](compute-device.md) (the device seam),
 [cpu-device.md](cpu-device.md) (the reference backend), [storage.md](storage.md)

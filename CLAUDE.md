@@ -420,6 +420,37 @@ the storage engine + `zetta::compute`), like `CpuDevice`. No `Node`/SQL/replicat
 wiring in this slice — DDF *ops* and the `ComputeJob` `ddf` kind are later issues.
 See [docs/ddf.md](docs/ddf.md).
 
+The first DDF **op** is the **distributed equi-join**
+(`zetta::ddf::distributed_join`, `include/zetta/ddf/join.hpp`; **ARC-12**, #382): an
+**inner equi-join** of two `DataFrame`s on a key column, executed across the cluster.
+Each participating node holds a shard of `left` + `right` (SPMD); the join (1)
+**repartitions by key via collectives** and (2) runs a **local hash or sort-merge
+join per shard**. The cluster has no all-to-all/scatter collective, so the
+repartition is built from the ones it has
+([collectives](#collectives-allreduce--broadcast--barrier--gather)): every node
+`gather`s its rows to the root, the root concatenates, a `broadcast` hands the full
+relation back to everyone, and each node keeps only its partition
+(`std::hash(key) % participant_count`) before joining — **correct-first** (a true
+point-to-point shuffle is a later optimization behind the same API, the way
+collectives ship a star reduce before a ring/tree). Because equal keys hash to the
+same partition, every matching pair lands on exactly one node and is emitted once;
+the **global join is the union of every node's returned shard**, so a single-node and
+a multi-node run yield **identical results** (a single-node cluster keeps everything =
+the whole join). It runs through the
+[job coordinator](#job-coordinator-zettacompute)'s `JobRound` (the entry the
+DDF/GBDT/SHAP algorithms submit work through) as a `ddf` `ComputeJob`. Values ride as
+**float64** (the whole compute/collective plane is double-based — keys/payloads beyond
+2⁵³ lose precision); `to_host_relation` widens a frame's typed columns to double. It
+introduces **no new JSON format** — the repartition serializes rows into the existing,
+schema-validated `CollectiveMessage` (`vector<double>`), and `deserialize_relation`
+**range-checks the blob at the boundary** (length must be a whole number of rows) so a
+malformed/truncated broadcast fails with a clear `ComputeStatus` instead of corrupting
+state. Scope is **inner equi-join only** (left/right/full outer are later, behind the
+same entry); no `Node`/SQL/`ddf`-kind wiring (the integration test drives it through an
+existing `Ddf` job). The pure pieces (`hash_join`/`sort_merge_join`/`serialize_relation`/
+`partition_index`/`filter_partition`) are unit-tested without a cluster. See
+[docs/ddf-join.md](docs/ddf-join.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1438,6 +1469,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
+    join.hpp                zetta::ddf::distributed_join — DDF distributed inner equi-join: repartition by key via collectives (gather+broadcast) then local hash/sort-merge join per shard (ARC-12; #382)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1504,6 +1536,7 @@ src/core/                   zetta-core impl
   compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
   compute/job_coordinator.cpp  JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
   ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
+  ddf/join.cpp              distributed_join + to_host_relation + hash/sort-merge join + collective repartition (gather/broadcast all-to-all) + deserialize boundary check (zetta-core; #382)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1728,6 +1761,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
 - [`docs/ddf.md`](docs/ddf.md) — the DDF DataFrame core (`zetta::ddf::DataFrame`): a typed, columnar, chunked frame over the storage engine, each chunk a `ComputeDevice` buffer; table→columns loader + schema inference + value/JSON boundaries — the substrate DDF ops operate on (ARC-12 / GLO-11 / ENT-33; #380).
+- [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): the first DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).

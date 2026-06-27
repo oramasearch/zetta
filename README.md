@@ -164,8 +164,12 @@ capability, and selects one per op — GPU when present, else CPU (see
 [docs/device-registry.md](docs/device-registry.md)). On top of that seam, the
 **DDF (distributed dataframe) core** (`zetta::ddf::DataFrame`) reads a table's rows
 into typed, chunked numeric columns — each chunk a `ComputeDevice` buffer — so those
-operators run directly over a table's data (see [docs/ddf.md](docs/ddf.md)). State
-replicates between nodes as an Automerge CRDT. See [docs/](docs/) for details.
+operators run directly over a table's data (see [docs/ddf.md](docs/ddf.md)). The first
+DDF **op** is a **distributed equi-join** (`zetta::ddf::distributed_join`): it
+repartitions two frames by key across the cluster via collectives, then runs a local
+hash / sort-merge join per shard, so a single-node and a multi-node join produce
+identical results (see [docs/ddf-join.md](docs/ddf-join.md)). State replicates between
+nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
