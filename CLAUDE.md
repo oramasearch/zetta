@@ -1676,12 +1676,25 @@ name. "Update the docs" means *all* of the above, not just `docs/`.
   `.claude/skills/*/SKILL.md` (those *are* committed). If asked to "remember"
   something, write it to the right git-tracked doc instead — never to memory.
 
-### Idle loop
+### Idle loop + live resize
 The headed loop uses `SDL_WaitEventTimeout` (≈30fps idle cap) rather than a busy
 vsync spin — it wakes immediately on input so interaction stays full-speed but
 doesn't burn CPU on identical frames. The headless loop ticks at 10 Hz. Keep any
 background work cheap enough to run inside those cadences (or move it off the
-loop thread).
+loop thread). One frame's worth of build+present is factored into
+`App::render_frame()`; an `SDL_AddEventWatch` (`App::on_sdl_event`) calls it on
+`WINDOW_RESIZED`/`PIXEL_SIZE_CHANGED`/`EXPOSED` so the UI tracks a live resize
+drag instead of the OS stretching the last frame (macOS runs a modal runloop
+during resize that starves the normal loop). `render_frame()` has a re-entrancy
+guard; it does **not** tick the node (that stays in `run()`).
+
+### Font + text size
+The GUI font size is `kBaseFontPixels × OS-content-scale × user-text-size`. The
+user multiplier is **View → Text size** (`ui_scale_`); changing it sets
+`font_rebuild_requested_`, and `run()` rebuilds the font atlas via
+`apply_display_scale()` **between** frames (never mid-frame, while the atlas is in
+use). The atlas also rebuilds on display-scale/DPI changes. Both Geist faces +
+the whole style scale together, so text-size is effectively a UI zoom.
 
 ## Pointers
 
