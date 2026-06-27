@@ -1461,9 +1461,12 @@ holding a Cloud Interface **binding** + a **credentials-ref**; R1 ships **`Local
 only** (the rest are declared but not built, like `ClusterRole`), and a Local
 target has an empty binding/credentials (implicitly this node). `Node` owns
 deployments like projects: **`deploy_graph(graph, target, name)`** (empty handle
-on an empty graph or a non-local target — basic guards only; the semantic
-**correctness gate** above runs separately, not yet wired into `deploy_graph`),
-`find_deployment(id)`, `deployments()`, `deployment_count()`. A `Deployment`
+on an empty graph, a non-local target, **or a graph that fails the correctness
+gate** — RULE-1 is enforced at the deploy seam itself: `deploy_graph` runs
+`default_gate()` and places nothing on a failing report, recording a blocked
+`graph_deployed` audit event, so a *programmatic* deploy can't bypass the gate the
+GUI Deploy panel runs), `find_deployment(id)`, `deployments()`,
+`deployment_count()`. A `Deployment`
 (`include/zetta/deployment.hpp`) is **replicated state** (flat key
 `deployment:<uuid>` → `{ graph_name, target, node, node_count, edge_count,
 created }`) with a `<deployment-uuid>/deployment.json` projection, persisted across

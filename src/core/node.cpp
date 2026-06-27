@@ -1,6 +1,7 @@
 #include "zetta/node.hpp"
 
 #include "zetta/executor.hpp"
+#include "zetta/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/project_graph.hpp"
@@ -469,10 +470,27 @@ std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
                                                std::string graph_name) {
     // R1 places onto the local node only; k8s/cloud targets are deferred.
     if (!target.is_local()) return nullptr;
-    // A deployable graph must have something to place. Full semantic validation
-    // (acyclicity, legal stage transitions) is the gate — a separate slice;
-    // deploy_graph records an already-validated graph and guards the basics.
+    // A deployable graph must have something to place.
     if (graph.empty()) return nullptr;
+
+    // RULE-1: no deploy without a passing correctness gate. The gate runs at the
+    // deploy seam itself — so a *programmatic* deploy clears the same gate the GUI
+    // Deploy panel runs, and an ungated/failing graph can never be placed. A gate
+    // failure is a governed decision: record a blocked (allowed=false) deploy event
+    // and place nothing.
+    const ValidationReport report = default_gate().run(graph);
+    if (!report.passed()) {
+        std::string reason = "correctness gate failed";
+        for (const CheckResult& check : report.checks) {
+            if (check.status == CheckStatus::Fail) {
+                reason = "gate check '" + check.name + "' failed: " + check.reason;
+                break;
+            }
+        }
+        record_audit_event(
+            {AuditAction::GraphDeployed, {}, graph_name, false, reason, {}});
+        return nullptr;
+    }
 
     const std::string id = new_uuid();
     const std::string now = now_iso8601();

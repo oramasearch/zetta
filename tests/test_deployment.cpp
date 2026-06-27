@@ -132,6 +132,41 @@ TEST(Deployment, DeployGraphToLocalTarget) {
     node.stop();
 }
 
+// RULE-1: deploy_graph runs the correctness gate at the seam, so a programmatic
+// deploy can't bypass it. A graph that fails the gate places nothing and records a
+// blocked (allowed=false) deploy event.
+TEST(Deployment, DeployGraphIsGatedRule1) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    // A graph whose entity-resolution step conflates two distinct entities onto one
+    // account — the canonical TC-4 failure the gate must block.
+    ExecutionGraph graph;
+    nlohmann::json resolution = {
+        {"entity_resolution",
+         {{"records",
+           {{{"mention", "FedEx Freight"}, {"entity", "fedex_freight"}, {"resolved", "acct_fedex"}},
+            {{"mention", "FedEx Ground"}, {"entity", "fedex_ground"}, {"resolved", "acct_fedex"}}}}}}};
+    graph.add_node(StepKind::Clean, "resolve_accounts", resolution);
+
+    const std::size_t audit_before = node.audit_event_count();
+    auto blocked = node.deploy_graph(graph, DeploymentTarget::local(), "churn");
+    EXPECT_FALSE(blocked);                       // RULE-1: gate failure blocks deploy
+    EXPECT_EQ(node.deployment_count(), 0u);      // nothing was placed
+    ASSERT_EQ(node.audit_event_count(), audit_before + 1u);  // the blocked decision is audited
+    auto event = node.audit_events().back();
+    EXPECT_EQ(event->action(), zetta::AuditAction::GraphDeployed);
+    EXPECT_FALSE(event->allowed());
+    EXPECT_NE(event->detail().find("entity_resolution"), std::string::npos);
+
+    // A well-formed graph still deploys (the gate passes).
+    EXPECT_TRUE(node.deploy_graph(sample_graph(), DeploymentTarget::local(), "ok"));
+    EXPECT_EQ(node.deployment_count(), 1u);
+
+    node.stop();
+}
+
 // ---- queryable via the system.zetta_deployments table ----------------------
 
 TEST(Deployment, QueryableViaSystemTable) {
