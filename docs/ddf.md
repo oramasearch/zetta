@@ -145,21 +145,23 @@ rejection of every malformed shape).
 
 ## DDF operators
 
-The first ops over this substrate are built: **[sort / concat / slice](ddf-ops.md)**
-(`zetta::ddf::sort` / `concat` / `slice`) — order a frame by a key column (the
-compare runs on the device via `sort_by_key`), row-wise union, and a contiguous row
-range — and the **[distributed sort](ddf-distributed-sort.md)**
-(`zetta::ddf::DistributedSorter`) that composes them across the cluster
-(sample-partition + local sort + merge).
+The first ops over this substrate are built. The local, single-node ops live in
+**[ddf-ops.md](ddf-ops.md)**: **scan / filter / project** (`zetta::ddf::scan` /
+`filter` / `project` — read a table into a frame, `gather`-based row filtering, and
+`map`/`elementwise` computed columns; #381) and **sort / concat / slice**
+(`zetta::ddf::sort` / `concat` / `slice` — order a frame by a key column via the device
+`sort_by_key`, row-wise union, and a contiguous row range; #385). Two cross-node ops
+compose them: the **[distributed sort](ddf-distributed-sort.md)**
+(`zetta::ddf::DistributedSorter` — sample-partition + local sort + merge across the
+cluster; #385) and the **[distributed equi-join](ddf-join.md)**
+(`zetta::ddf::distributed_join` — repartition two frames by key via collectives, then a
+local hash / sort-merge join per shard; #382).
 
 ## What's next
 
-DDF **operators** over a frame's columns. The first is the **distributed equi-join**
-([ddf-join.md](ddf-join.md), #382) — repartition two frames by key via collectives,
-then a local hash / sort-merge join per shard. Still to come: groupby-aggregate and
-as-of windowing for the churn featurization pipeline, built on the
-[`ComputeDevice`](compute-device.md) operator set, plus the
-[`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them.
+Still ahead: groupby-aggregate and as-of windowing for the churn featurization
+pipeline, built the same way on the [`ComputeDevice`](compute-device.md) operator set,
+plus the [`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them.
 
 See also [compute-device.md](compute-device.md) (the device seam),
 [cpu-device.md](cpu-device.md) (the reference backend), [storage.md](storage.md)
