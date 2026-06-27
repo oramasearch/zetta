@@ -105,6 +105,13 @@ private:
     void draw_query();       // the SQL text area + results
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
+    // Run the churn solution on the REAL engine (featurize → train → explain →
+    // rank → playbook) over a built-in demo dataset, registering a real Model +
+    // jobs on the node (#398). Synchronous on the UI thread (like run_cloud_inspect):
+    // spins up an isolated single-node loopback JobCoordinator so the SPMD
+    // collectives never block on this node's real peers, runs, then tears it down.
+    // Called only from the Deploy panel's explicit "Run on real engine" action.
+    void run_churn_demo();
     void draw_cluster();     // role, listen address, peers, join command
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     // Run a provider's read-only inspect (CloudInspector) and cache the result on
@@ -271,6 +278,9 @@ private:
     int deploy_placement_ = 0;       // DeploymentKind index; 0 = Local
     std::string deploy_status_;      // last deploy result (success or error)
     bool deploy_failed_ = false;     // colour deploy_status_ red vs. green
+    // "Run on real engine" (churn) result line + its colour. Set by run_churn_demo().
+    std::string churn_run_status_;
+    bool churn_run_failed_ = false;
 
     // Jobs panel — per-job objective/scaling controls (a live preview over the
     // built ScalingPolicy::evaluate(); see draw_job_scaling_controls). These hold

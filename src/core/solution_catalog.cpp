@@ -125,6 +125,8 @@ const char* kBuiltinCatalog = R"JSON({
           { "id": "build_features", "kind": "clean", "name": "Build features" },
           { "id": "train_churn", "kind": "model", "name": "Train churn model",
             "attributes": { "algo": "xgboost", "target": "churned" } },
+          { "id": "rank_at_risk", "kind": "index", "name": "Rank at-risk accounts",
+            "attributes": { "kind": "score" } },
           { "id": "churn_api", "kind": "serve", "name": "Serve churn scores" },
           { "id": "notify_retention", "kind": "act", "name": "Notify retention" }
         ],
@@ -132,7 +134,8 @@ const char* kBuiltinCatalog = R"JSON({
           { "from": "load_customers", "to": "build_features" },
           { "from": "load_events", "to": "build_features" },
           { "from": "build_features", "to": "train_churn" },
-          { "from": "train_churn", "to": "churn_api" },
+          { "from": "train_churn", "to": "rank_at_risk" },
+          { "from": "rank_at_risk", "to": "churn_api" },
           { "from": "churn_api", "to": "notify_retention" }
         ]
       }

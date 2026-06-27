@@ -1498,6 +1498,30 @@ the recorded placements (`Node::deployments()`) so a deploy's status is visible.
 The panel adds no persisted state of its own — only UI selection. See
 [docs/solution-catalog.md](docs/solution-catalog.md).
 
+The catalog **churn** blueprint is **wired to the real engine** (`zetta::run_churn_solution`,
+`include/zetta/churn_solution.hpp`; **FEAT-4 / UC-1**, #398) — so the same graph
+that deploys also *runs* the real featurize→train→explain→rank→playbook pipeline
+rather than the stubbed `DefaultStepExecutor`. The wiring has two parts: (1) the
+catalog churn graph gained the **`index` step** so its shape
+(`connect×2→clean→model→index→serve→act`) matches the real
+[`ChurnStepExecutor`](#graph-execution-run-a-graph--a-run) pipeline (the
+`index→score/rank` stage the `act` retention-playbook step needs); and (2) the
+reusable bridge `run_churn_solution(node, coordinator, device, graph, dataset,
+options)` **encodes** a [`ChurnDataset`](#synthetic-churn-dataset-uc-1-fixture--loader)
+into numeric DDF shards (string ids / ISO dates / categorical event types → numeric
+columns), builds the standard featurize spec + GBDT params, **injects** a
+`ChurnStepExecutor`, and **executes** the graph — returning the Run plus the real
+`Model` id + ranked at-risk list + drivers + playbook. It adds **no new JSON
+format** (rides the validated `ChurnDataset` / catalog / Run / ComputeJob / GBDT
+boundaries). The Deploy panel offers a **"Run on real engine"** action
+(`App::run_churn_demo`) for the churn blueprint — synchronous on the UI thread (like
+the Cloud Inspector), over `demo_churn_dataset()` (a built-in, no-files demo
+dataset), on an **isolated single-node loopback `JobCoordinator`** so the SPMD
+collectives never block on this node's real peers; the produced Model + jobs
+register on the node (visible in the Runs/Jobs panels). Single-node here; the
+single-node == multi-node equivalence is proven in the per-op job suites. See
+[docs/churn-solution.md](docs/churn-solution.md).
+
 ### Cloud Inspector (permission-gated cloud provider inspection)
 
 The headed **Cloud Inspector** (`App::draw_cloud`, **Operations → Cloud
@@ -1963,6 +1987,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
+  churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -2077,6 +2102,7 @@ src/core/                   zetta-core impl
   intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   churn_step_executor.cpp   ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain) (#396)
+  churn_solution.cpp        run_churn_solution — the ChurnDataset→numeric encoder + standard churn pipeline config + the runner (inject ChurnStepExecutor into a GraphExecutor) + demo_churn_dataset (#398)
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -2400,6 +2426,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
+- [`docs/churn-solution.md`](docs/churn-solution.md) — wiring the catalog **churn-prediction** blueprint to the **real engine** (`zetta::run_churn_solution`, FEAT-4 / UC-1 / #398): the catalog churn graph gains the `index` step to match the real pipeline, and a reusable bridge encodes a [`ChurnDataset`](docs/churn-dataset.md) → numeric DDF shards, builds the standard featurize spec + GBDT params, injects a [`ChurnStepExecutor`](docs/churn-step-executor.md), and runs the blueprint → a real trained `Model` + ranked at-risk list + churn drivers + playbook (not the stubbed `DefaultStepExecutor`); the Deploy panel's "Run on real engine" action (`demo_churn_dataset`, isolated single-node coordinator) + the acceptance test drive it; no new JSON format.
 - [`docs/cloud-inspector.md`](docs/cloud-inspector.md) — the headed **Cloud Inspector** (`zetta::CloudProviderCatalog` + `zetta::CloudInspector` + `App::draw_cloud`): permission-gated inspection of deployment targets (local/on-prem/k8s/AWS/GCP/Azure/OCI) — a deny-by-default, ask-every-time consent gate that, on consent, runs the provider's read-only commands via the shared `CommandRunner`, parses each vendor's JSON at a validated boundary into identity/regions/nodes (no creds read), and surfaces it in the panel + `system.zetta_cloud_providers` / `system.zetta_cloud_status` (#445).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
