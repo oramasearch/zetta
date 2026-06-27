@@ -512,6 +512,35 @@ existing `Ddf` job). The pure pieces (`hash_join`/`sort_merge_join`/`serialize_r
 `partition_index`/`filter_partition`) are unit-tested without a cluster. See
 [docs/ddf-join.md](docs/ddf-join.md).
 
+Another DDF **operator** is the **distributed groupby-aggregate**
+(`zetta::ddf::group_by` / `distributed_group_by`,
+`include/zetta/ddf/group_by.hpp`; **ARC-12**, #383): groupby a numeric key column +
+aggregates (`count`/`sum`/`min`/`max`/`mean`, an **extensible** op set — add to
+`AggregateOp` + the accumulate/merge/finalize switches), **distributed** via
+partial-per-node + a cluster combine. A `GroupBySpec` (key + aggregates) carries a
+**validated JSON boundary** (`schemas/group_by_spec.schema.json`, the hand-written
+non-throwing `from_json` pattern of `DataFrameSchema`, **not** `pboettch`).
+`group_by(frame, spec)` is the single-node op; it reads the key + aggregated columns
+back through the `ComputeDevice` download seam as doubles (so it is **backend-
+agnostic** — same over a CPU or CUDA frame), groups in a `std::map` keyed by the
+numeric key (ascending → deterministic; a NaN key is rejected), and accumulates
+op-aware (mean carries a running sum + count, divided at finalize). The distributed
+half is `distributed_group_by(frame, spec, collective, tag)` — a **template** over
+any collective surface exposing `gather` + `broadcast` (both `Collectives` and the
+coordinator's `JobRound` qualify, so a SPMD job body calls it directly): each node's
+`GroupByPartial` (per group: row count + one accumulator per aggregate) serializes
+to a flat `vector<double>`, is **gathered** to the deterministic root, **merged**
+there (count/sum/mean add, min/max combine — order-independent), then the merged
+partial is **broadcast** back and every node finalizes the same result. The
+`gather → merge-at-root → broadcast` shape (not a key-aligned allreduce) is the
+natural fit for per-node group sets that differ; it introduces **no new wire
+format** (the partial rides the existing schema-validated collective payload, with
+`GroupByPartial::from_wire` the boundary that rejects a malformed/duplicate/NaN
+partial). Single- and multi-node results are identical (the acceptance test). It
+lives in **zetta-core** like the rest of `zetta::ddf`. The remaining featurize op
+(as-of windowing) + the `ddf` `ComputeJob` kind are later issues. See
+[docs/ddf-groupby.md](docs/ddf-groupby.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1572,6 +1601,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     join.hpp                zetta::ddf::distributed_join — DDF distributed inner equi-join: repartition by key via collectives (gather+broadcast) then local hash/sort-merge join per shard (ARC-12; #382)
     data_frame_ops.hpp      zetta::ddf::sort/concat/slice — frame-shaping DDF ops: order by a key column (device sort_by_key), row-wise union, contiguous row range (ARC-12; #385)
     distributed_sort.hpp    zetta::ddf::DistributedSorter/PartitionMessage — distributed sort across the cluster (sample-partition + local sort + merge) over collectives + the signal-plane all-to-all shuffle (ARC-12; #385)
+    group_by.hpp            zetta::ddf::group_by/distributed_group_by — DDF groupby-aggregate (count/sum/min/max/mean), partial-per-node + gather/merge/broadcast combine + GroupBySpec JSON boundary (ARC-12; #383)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1643,6 +1673,7 @@ src/core/                   zetta-core impl
   ddf/join.cpp              distributed_join + to_host_relation + hash/sort-merge join + collective repartition (gather/broadcast all-to-all) + deserialize boundary check (zetta-core; #382)
   ddf/data_frame_ops.cpp    zetta::ddf::sort/concat/slice + the internal HostFrame host-staging (data_frame_internal.hpp) shared with the distributed sort (zetta-core; #385)
   ddf/distributed_sort.cpp  zetta::ddf::DistributedSorter — sample-sort across the cluster + the ddf.shuffle all-to-all + PartitionMessage JSON-Schema boundary (zetta-core; #385)
+  ddf/group_by.cpp          group_by/local_partial/GroupByPartial — groupby-aggregate accumulate/merge/finalize, the partial wire form + GroupBySpec JSON boundary (zetta-core; #383)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1870,6 +1901,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-ops.md`](docs/ddf-ops.md) — the local DDF DataFrame ops: `zetta::ddf::scan` / `filter` / `project` (read a table into a frame, `gather`-based row filtering, `map`/`elementwise` computed columns, with schema-validated `FilterPredicate` / `Projection` JSON boundaries; #381) and `zetta::ddf::sort` / `concat` / `slice` (key-column sort via the device `sort_by_key`, row-wise union, contiguous row range — the single-node building blocks of the distributed sort; #385) (ARC-12).
 - [`docs/ddf-distributed-sort.md`](docs/ddf-distributed-sort.md) — the DDF distributed sort (`zetta::ddf::DistributedSorter`): sample-partition + local sort + merge across the cluster — splitter agreement over the [collectives](docs/collectives.md), an all-to-all row shuffle over the [signal plane](docs/signal-plane.md) (schema-validated `PartitionMessage`), returning globally range-ordered, locally-sorted partitions; a single-node cluster returns the locally-sorted shard (ARC-12; #385).
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
+- [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).

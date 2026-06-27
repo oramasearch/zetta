@@ -173,13 +173,16 @@ into typed, chunked numeric columns — each chunk a `ComputeDevice` buffer — 
 local **DDF ops** build on it — `scan` / `filter` / `project` and `sort` / `concat` /
 `slice` ([docs/ddf-ops.md](docs/ddf-ops.md)): `gather`-based row filtering,
 `map`/`elementwise` computed columns, and key-column ordering via the device
-`sort_by_key`. Two cross-node ops compose them: a **distributed sort**
+`sort_by_key`. Three cross-node ops compose them: a **distributed sort**
 (sample-partition + local sort + merge across the cluster,
-[docs/ddf-distributed-sort.md](docs/ddf-distributed-sort.md)) and a **distributed
+[docs/ddf-distributed-sort.md](docs/ddf-distributed-sort.md)), a **distributed
 equi-join** (`zetta::ddf::distributed_join`) that repartitions two frames by key across
-the cluster via collectives, then runs a local hash / sort-merge join per shard, so a
-single-node and a multi-node join produce identical results
-([docs/ddf-join.md](docs/ddf-join.md)). State replicates between nodes as an Automerge
+the cluster via collectives, then runs a local hash / sort-merge join per shard
+([docs/ddf-join.md](docs/ddf-join.md)), and a **distributed groupby-aggregate**
+(`zetta::ddf::distributed_group_by`, count/sum/min/max/mean) that computes a partial
+per node and combines them across the cluster via the collectives
+([docs/ddf-groupby.md](docs/ddf-groupby.md)) — single-node and multi-node runs produce
+identical results. State replicates between nodes as an Automerge
 CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
