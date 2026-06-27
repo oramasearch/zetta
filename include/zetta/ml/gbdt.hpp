@@ -85,12 +85,20 @@ struct GbdtParams {
 // x[feature] < threshold, else right (the strict `<` makes the numeric threshold
 // reproduce the training-time bin partition exactly). A leaf (feature < 0)
 // contributes `value` to the raw score.
+//
+// `cover` is the node's training **weight** — the sum of Hessians of the rows that
+// reached it at the boosting round that grew this tree (XGBoost's "cover", a global
+// quantity identical on every cluster node since it comes off the allreduced
+// histogram). It defines the background branch probabilities — `cover[child] /
+// cover[node]` — that exact path-dependent TreeSHAP integrates over to explain a
+// prediction (see tree_shap.hpp). It plays no part in `predict`.
 struct TreeNode {
     int feature = -1;       // split feature index; < 0 marks a leaf
     double threshold = 0.0; // split boundary (the left bin group's upper edge)
     int left = -1;          // child node indices (internal only)
     int right = -1;
     double value = 0.0;     // leaf raw-score contribution
+    double cover = 0.0;     // training weight (Σ Hessian) reaching this node — for SHAP
 
     bool is_leaf() const noexcept { return feature < 0; }
 };

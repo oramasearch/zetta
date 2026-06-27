@@ -149,8 +149,10 @@ auto result = zetta::ml::run_train_job(
   behind the same API.
 - **Model dedup:** the root registers one model; collapsing per-node registrations
   into one record on every node is a later slice.
-- **Explainability:** the model records gain-based drivers; SHAP-based per-prediction
-  explanation is its own (`explain`) ComputeJob slice.
+- **Explainability:** the model records gain-based drivers, and each `TreeNode` carries
+  its training **cover** (the per-node Σ-Hessian) so the trees are explainable.
+  Per-prediction SHAP attribution is the **exact TreeSHAP** slice — see
+  [tree-shap.md](tree-shap.md).
 
 ## Acceptance (in `tests/test_gbdt.cpp`)
 

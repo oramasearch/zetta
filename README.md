@@ -196,7 +196,11 @@ histogram GBDT training** (`zetta::ml::run_train_job`): gradient-boosted decisio
 trees with a binary-logistic objective whose per-feature gradient/Hessian histograms
 are allreduced across nodes each round, so single-node and multi-node grow equivalent
 trees; it runs as a recorded `train` `ComputeJob` and produces a `Model`
-([docs/gbdt.md](docs/gbdt.md)). State replicates between
+([docs/gbdt.md](docs/gbdt.md)). The trained model is then **explained** with **exact
+TreeSHAP** (`zetta::ml::run_explain_job`) — per-entity, per-feature attributions that
+reconstruct the prediction exactly (`base + Σ φ = predict_raw`), a per-entity dominant
+churn driver, and a distributed `explain` `ComputeJob` with a global driver ranking
+([docs/tree-shap.md](docs/tree-shap.md)). State replicates between
 nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under

@@ -14,13 +14,15 @@
 #include "zetta/model.hpp"
 #include "zetta/node.hpp"
 
+#include "feature_columns.hpp"
+
 namespace zetta::ml {
 
 namespace {
 
 using compute::ComputeStatus;
-using compute::DataType;
 using compute::JobRound;
+using detail::read_column_as_double;
 using Outcome = compute::JobCoordinator::Outcome;
 
 // A deterministic, spec-derived collective tag — the default round_tag. Same
@@ -34,68 +36,6 @@ std::string default_round_tag(const std::vector<std::string>& feature_columns,
         tag += column;
     }
     return tag;
-}
-
-// Read a frame column into a host double vector, widening whatever numeric dtype
-// it carries (Float64 features + an Int64/Float64 label both occur). The frame's
-// columns live on its ComputeDevice, so this is the device download seam.
-ComputeStatus read_as_double(const ddf::DataFrame& frame, const std::string& name,
-                             std::vector<double>& out) {
-    const ddf::Column* column = frame.column(name);
-    if (column == nullptr) {
-        return ComputeStatus::invalid_argument("gbdt: no column named '" + name +
-                                               "'");
-    }
-    switch (column->dtype()) {
-        case DataType::Float64:
-            return frame.to_host<double>(name, out);
-        case DataType::Float32: {
-            std::vector<float> typed;
-            const ComputeStatus status = frame.to_host<float>(name, typed);
-            if (!status.ok()) return status;
-            out.assign(typed.begin(), typed.end());
-            return ComputeStatus::success();
-        }
-        case DataType::Int64: {
-            std::vector<std::int64_t> typed;
-            const ComputeStatus status = frame.to_host<std::int64_t>(name, typed);
-            if (!status.ok()) return status;
-            out.assign(typed.begin(), typed.end());
-            return ComputeStatus::success();
-        }
-        case DataType::Int32: {
-            std::vector<std::int32_t> typed;
-            const ComputeStatus status = frame.to_host<std::int32_t>(name, typed);
-            if (!status.ok()) return status;
-            out.assign(typed.begin(), typed.end());
-            return ComputeStatus::success();
-        }
-        case DataType::UInt64: {
-            std::vector<std::uint64_t> typed;
-            const ComputeStatus status =
-                frame.to_host<std::uint64_t>(name, typed);
-            if (!status.ok()) return status;
-            out.assign(typed.begin(), typed.end());
-            return ComputeStatus::success();
-        }
-        case DataType::UInt32: {
-            std::vector<std::uint32_t> typed;
-            const ComputeStatus status =
-                frame.to_host<std::uint32_t>(name, typed);
-            if (!status.ok()) return status;
-            out.assign(typed.begin(), typed.end());
-            return ComputeStatus::success();
-        }
-        case DataType::UInt8: {
-            std::vector<std::uint8_t> typed;
-            const ComputeStatus status = frame.to_host<std::uint8_t>(name, typed);
-            if (!status.ok()) return status;
-            out.assign(typed.begin(), typed.end());
-            return ComputeStatus::success();
-        }
-    }
-    return ComputeStatus::invalid_argument("gbdt: unsupported column dtype for '" +
-                                           name + "'");
 }
 
 // Map a GBDT reduction onto the collective-plane op.
@@ -131,13 +71,13 @@ DistributedTrainResult run_train_job(
         // 1. Read this node's shard back from the device.
         std::vector<std::vector<double>> columns(feature_columns.size());
         for (std::size_t index = 0; index < feature_columns.size(); ++index) {
-            const ComputeStatus status =
-                read_as_double(features, feature_columns[index], columns[index]);
+            const ComputeStatus status = read_column_as_double(
+                features, feature_columns[index], columns[index]);
             if (!status.ok()) return {.ok = false, .detail = status.message};
         }
         std::vector<double> labels;
         if (const ComputeStatus status =
-                read_as_double(features, label_column, labels);
+                read_column_as_double(features, label_column, labels);
             !status.ok()) {
             return {.ok = false, .detail = status.message};
         }
