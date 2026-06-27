@@ -743,6 +743,40 @@ body). Its JSON boundary mirrors `schemas/calibration.schema.json` (the pboettch
 validator, like the model body it rides inside). See
 [docs/calibration.md](docs/calibration.md).
 
+### Batch scoring — rank-at-risk over a Model (`zetta::ml`)
+
+The **inference counterpart** to the GBDT trainer (`zetta::ml`,
+`include/zetta/ml/gbdt_score.hpp` + `gbdt_score_job.hpp`; **FEAT-6 / CMD-10**, #392):
+batch-score a set of entities through a trained [`GbdtModel`](docs/gbdt.md) to produce
+a **calibrated churn risk** per entity, then rank them into an **at-risk list**
+(highest risk first) — the "rank-at-risk" deliverable a retention team acts on.
+**Calibrated for free:** the model is binary-logistic (trained on log-loss, a proper
+scoring rule), so its `predict_proba` (sigmoid of the raw ensemble score) *is* a
+calibrated risk in `[0, 1]` — no Platt/isotonic step. The ranking is those
+probabilities sorted descending, ties broken by entity ascending (**deterministic**,
+input-order-independent). `score_gbdt` is the pure single-node scorer — it aligns the
+provided columns to the model's own `feature_names` **by name** (so input columns may
+be in any order / carry extras), with `predict_risk` the unranked half and a `top_k`
+cap; `load_gbdt_model` reads a registered [`Model`](docs/models.md)'s serialized
+weights body back through the **GBDT model JSON Schema boundary**
+(`GbdtModel::from_json`, the same `schemas/gbdt_model.schema.json` the trainer writes
+— re-validated because the body is read from disk / a peer). It runs as a recorded,
+audited **`score` ComputeJob** (`run_score_job`) through the
+[job coordinator](docs/job-coordinator.md) — **SPMD** like training: each node scores
+its own shard locally (the small model is identical on every node, so no model
+broadcast), the per-node `(entity, risk)` pairs are **gathered** to the root, **ranked
+on the device** via the `sort_by_key` operator (the op the device header documents as
+"sort entities by risk score, carrying their ids" — GPU when the frame lives there,
+CPU fallback — embodying the [GPU-native, CPU-fallback, distributed](#ai-compute--gpu-native-cpu-fallback-distributed-direction)
+direction), truncated to `top_k`, then **broadcast** back, so every node holds the
+**identical global at-risk list** (single-node == multi-node). The tree-predict
+numerics are the host-side reference today (device-native predict kernel deferred
+behind the same API, like the trainer's histograms). It introduces **no new JSON /
+wire format** — the pairs ride the schema-validated `CollectiveMessage` (values as
+doubles; entity keys exact ≤ 2⁵³) and the weights body its existing `GbdtModel`
+boundary. The deliverable is the in-memory ranked list (persisting scores as an
+entity / SQL + GUI is a later slice). See [docs/gbdt-score.md](docs/gbdt-score.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1887,6 +1921,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   ml/
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
     gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig (FEAT-6/ENT-14; #390/#391)
+    gbdt_score.hpp          zetta::ml — batch scoring / rank-at-risk: score_gbdt/predict_risk (calibrated risk = predict_proba, ranked desc) + load_gbdt_model (weights body read back through the GbdtModel JSON Schema boundary) (FEAT-6/CMD-10; #392)
+    gbdt_score_job.hpp      zetta::ml::run_score_job — run distributed batch scoring as a recorded `score` ComputeJob through the job coordinator: SPMD per-shard predict, gather + device sort_by_key rank + broadcast → identical global at-risk list on every node (FEAT-6/CMD-10; #392)
     calibration.hpp         zetta::ml — probability calibration: Calibrator (Platt sigmoid(a·raw+b) / isotonic PAVA step) + fit_calibrator + Brier/ECE metrics + JSON/wire boundaries; attaches to a GbdtModel (predict_proba applies it) via calibrate_model (FEAT-6; #391)
     tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
     gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
@@ -1970,8 +2006,10 @@ src/core/                   zetta-core impl
   ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
   ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast) (zetta-core; #390/#391)
+  ml/gbdt_score.cpp         zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
+  ml/gbdt_score_job.cpp     run_score_job — read device-backed columns, predict the shard, gather (entity,risk) to root, rank on the device (sort_by_key), broadcast the global at-risk list (zetta-core; #392)
+  ml/feature_columns.hpp    zetta::ml::detail::read_column_as_double — shared device-download helper (frame column → host doubles, dtype-widening) used by the train + score + explain job bodies (zetta-core internal; #392/#393)
   ml/calibration.cpp        zetta::ml — Platt (robust Newton, Lin et al. 2007) + isotonic (PAVA) fit, Calibrator apply/JSON/wire boundary, Brier/ECE metrics (zetta-core; #391)
-  ml/feature_columns.hpp    zetta::ml::detail::read_column_as_double — shared device-download helper (frame column → host doubles, dtype-widening) used by the train + explain job bodies (zetta-core internal; #393)
   ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
   ml/gbdt_explain_job.cpp   run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
@@ -2059,6 +2097,28 @@ building it**.
 - **For Claude:** before writing UI code that reads cloud creds/config or calls a
   cloud, ask the developer first. When in doubt, surface what *would* be
   read/called and ask — never touch the cloud to "just check."
+
+### AI compute — GPU-native, CPU fallback, distributed (DIRECTION)
+
+**All AI/ML compute should be GPU-native with a CPU fallback, and distributed.**
+The target for every heavy AI op (featurize / train / score / explain) is: it runs
+on the accelerator when one is present, falls back to the CPU when it is not, and
+scales across the cluster — there is no CPU-only AI path that a GPU build leaves on
+the table. The mechanism is already in the architecture: route the op **through the
+`ComputeDevice` seam** (so it executes on whatever device the data lives on — GPU on
+a CUDA frame, CPU otherwise) and through the [job coordinator](docs/job-coordinator.md)
+collectives (so it is SPMD across nodes). New hardware = a new backend, nothing else.
+
+> **Current reality vs. the rule.** Today the ML *numerics* are **host-side
+> references over device-backed data** — the [GBDT trainer](docs/gbdt.md) and the
+> [scorer](docs/gbdt-score.md) read their columns back through the device download
+> seam and compute host-side, and the device-native (GPU) kernels are the documented
+> optimization *behind the same API*. The data already lives on the device, the
+> distribution is real (allreduce / gather / broadcast), and parts are already
+> device-native (e.g. scoring ranks the at-risk list with the device `sort_by_key`
+> operator — GPU when present, CPU fallback). Move things *toward* this rule (push
+> the numerics onto device kernels), never away (never add a new AI op that bypasses
+> the `ComputeDevice` seam).
 
 ### Design system — follow it for all GUI work
 
@@ -2224,6 +2284,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
+- [`docs/gbdt-score.md`](docs/gbdt-score.md) — batch scoring / rank-at-risk over a trained `Model` (`zetta::ml::score_gbdt` + `run_score_job`): score entities through a GBDT model to a **calibrated risk** (the binary-logistic `predict_proba`) and rank them into an **at-risk list**; the distributed `score` `ComputeJob` is SPMD (per-shard predict, gather + device `sort_by_key` rank + broadcast → identical global ranking single-node == multi-node), `load_gbdt_model` re-validates the weights body at the GBDT model JSON Schema boundary; the inference counterpart to the trainer, GPU-native / CPU-fallback / distributed (FEAT-6 / CMD-10; #392).
 - [`docs/calibration.md`](docs/calibration.md) — probability calibration (`zetta::ml::Calibrator` + `fit_calibrator` + `calibrate_model`): Platt scaling + isotonic regression fit on a held-out split so the GBDT's risk scores are well-calibrated (Brier / ECE improve, AUC preserved); attaches to a `GbdtModel` (predict_proba applies it, rides inside the weights body) and wires into the distributed `train` job via a sharding-invariant content-hash held-out split, schema-validated boundary (FEAT-6; #391).
 - [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).

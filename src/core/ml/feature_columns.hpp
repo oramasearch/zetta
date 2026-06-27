@@ -8,11 +8,13 @@
 #include "zetta/compute/data_type.hpp"
 #include "zetta/ddf/data_frame.hpp"
 
-// Shared device-download helper for the ml job bodies (train + explain). A feature
-// frame's columns live on its `ComputeDevice` (a CPU or CUDA frame, e.g. the one
-// `ddf::FeatureTable::to_data_frame` materializes); reading them back as host doubles
-// is the seam both the GBDT trainer and the TreeSHAP explainer share. Internal to
-// zetta-core (impl detail, like ddf/data_frame_internal.hpp) — not a public API.
+// Shared device-download helper for the ml job bodies (train + score + explain). A
+// feature frame's columns live on its `ComputeDevice` (a CPU or CUDA frame, e.g. the
+// one `ddf::FeatureTable::to_data_frame` materializes); reading them back as host
+// doubles is the "host-side reference over device-backed data" seam the GBDT trainer
+// (gbdt_train_job.cpp), the scorer (gbdt_score_job.cpp), and the TreeSHAP explainer
+// share. Internal to zetta-core (impl detail, like ddf/data_frame_internal.hpp) — not
+// a public API.
 namespace zetta::ml::detail {
 
 // Read a frame column into a host double vector, widening whatever numeric dtype it
