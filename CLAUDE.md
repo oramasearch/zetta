@@ -611,8 +611,66 @@ the join gains outer support). The `FeaturizeSpec` carries a **validated JSON bo
 acceptance featurizes the [synthetic churn fixture](docs/churn-dataset.md) and asserts
 every feature matches a leakage-free ground truth — the deliberate post-`t0` events
 (`acct_fedex_office`'s 4th payment failure, `acct_globex`'s 2nd support ticket) never
-enter a feature. Training a `Model` from the table + SHAP explanation are later FEAT-6
-slices. See [docs/ddf-featurize.md](docs/ddf-featurize.md).
+enter a feature. Training a `Model` from the table is the **GBDT trainer**
+(`zetta::ml`, below); SHAP explanation is a later FEAT-6 slice. See
+[docs/ddf-featurize.md](docs/ddf-featurize.md).
+
+### Model training — distributed histogram GBDT (`zetta::ml`)
+
+The **GBDT trainer** (`zetta::ml`, `include/zetta/ml/gbdt.hpp`; **FEAT-6 / ENT-14**,
+#390) trains a model on the customer's own data — the differentiator of the native
+distributed accelerated-compute pass. It implements **histogram gradient-boosted
+decision trees** with a **binary logistic (log-loss)** objective: a model is a base
+score plus an ordered ensemble of small `RegressionTree`s, each boosting round
+fitting one tree to the gradient/Hessian of the log-loss (`g = p - y`, `h = p(1-p)`)
+at the current predictions. A tree is grown level by level by **binning** each
+feature's values (equal-width over globally-agreed edges) and accumulating per-bin
+sums of gradients + Hessians — the **gradient histogram** — then taking the bin
+split that maximizes the regularized gain `½[G_L²/(H_L+λ) + G_R²/(H_R+λ) - G²/(H+λ)]
+- γ`; a leaf's output is the Newton step `-G/(H+λ)` shrunk by the learning rate.
+`GbdtParams` carries the knobs (`num_trees`/`max_depth`/`max_bins`/`learning_rate`/
+λ/γ/`min_child_hessian`) behind a **validated JSON boundary** (the hand-written
+`from_json` pattern of `FeaturizeSpec`); `GbdtMetrics`/`evaluate_binary` give
+AUC/log-loss/accuracy.
+
+**Distributed by histogram allreduce.** The training rows (one per entity — the
+design matrix `X` + label `y`) are sharded across the cluster, and the trainer is
+**SPMD**: every node runs the same boosting loop over its shard, combining per-node
+statistics across the cluster each round via the round's
+[collectives](#collectives-allreduce--broadcast--barrier--gather) — global bin edges
+(`allreduce` Min/Max), the global base rate (`allreduce` Sum), and the per-level
+gradient histograms (`allreduce` Sum). Because split-finding then runs off the
+**global** histograms (identical on every node), every node grows the **same trees**
+with no further coordination, so single-node and multi-node produce equivalent
+models (bit-identical within a run; equal up to floating-point across different
+shardings). The combine is injected as an `AllReduce` callable, so the single-node
+path (identity reduction) and the distributed job share one boosting implementation.
+Like the [as-of](#ddf-dataframe-zettaddf)/[group-by](#ddf-dataframe-zettaddf) ops it
+is a **host-side reference over device-backed data** — it reads the feature columns
+back through the `ComputeDevice` download seam (so it runs the same over a CPU or
+CUDA frame) and accumulates the histograms host-side via `runtime::parallel_for`; a
+device-native weighted-histogram kernel is a later optimization behind the same API.
+Non-throwing throughout.
+
+It runs as a recorded `train` **ComputeJob** through the
+[job coordinator](#job-coordinator-zettacompute) and **produces a `Model`**:
+`zetta::ml::run_train_job` (`include/zetta/ml/gbdt_train_job.hpp`) drives `job` (kind
+`train`) through the lifecycle (so it appears in `system.zetta_jobs`), computes global
+metrics (gather the per-node `(prob, label)` pairs to the root, evaluate over the
+union, broadcast back), and on the deterministic root registers the trained model as
+a `zetta::Model` (kind `classifier`) — the GBDT weights body is the `GbdtModel` JSON
+(**boundary-validated** like the Run record via the `pboettch` draft-07 validator,
+`schemas/gbdt_model.schema.json`, because the body is read back from disk / a peer),
+attached via `set_weights` (fingerprinted + replicated peer-to-peer like any
+large-object body), with the metrics in `metrics` and the per-feature gains as the
+ranked `feature_schema.drivers` (read by `zetta::ranked_drivers`). It introduces **no
+new wire format** — the histograms ride the schema-validated `CollectiveMessage`, the
+weights body carries its own validated boundary, and the job + model records are
+validated at their own boundaries. Trained on the
+[synthetic churn fixture](docs/churn-dataset.md) (via featurization) it reaches a
+strong AUC and surfaces `failed_payments` as a churn driver. SHAP-based explanation
+(an `explain` job) and device-native histograms are later slices. See
+[docs/gbdt.md](docs/gbdt.md).
 
 ### Work-stealing scheduler (`zetta::compute`)
 
@@ -1685,6 +1743,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
     featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
+  ml/
+    gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
+    gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root) (FEAT-6/ENT-14; #390)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1761,6 +1822,8 @@ src/core/                   zetta-core impl
   ddf/group_by_job.cpp      run_group_by_job — drive the distributed groupby-aggregate as a recorded ddf ComputeJob through the coordinator (calls distributed_group_by on the JobRound) (zetta-core; #387)
   ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
   ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
+  ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
+  ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root (zetta-core; #390)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1991,6 +2054,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383) — and runs as a recorded `ddf` `ComputeJob` (`zetta::ddf::run_group_by_job`, `group_by_job.hpp`) through the [job coordinator](docs/job-coordinator.md), so it appears in `system.zetta_jobs` (FEAT-8; #387).
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
+- [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).

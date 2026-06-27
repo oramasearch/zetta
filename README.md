@@ -188,7 +188,15 @@ identical results, and which also runs as a recorded `ddf` `ComputeJob`
 (`run_group_by_job`) so it appears in `system.zetta_jobs`. A **window / as-of
 (point-in-time) aggregation** (`zetta::ddf::as_of_aggregate`) closes the set — the
 leakage-free featurization primitive that reduces, per entity, only the rows at or
-before a cutoff ([docs/ddf-as-of.md](docs/ddf-as-of.md)). State replicates between
+before a cutoff ([docs/ddf-as-of.md](docs/ddf-as-of.md)). Those ops compose into
+**point-in-time featurization** (`zetta::ddf::point_in_time_featurize`) — the churn
+`churn_features.sql` shape as a DDF graph, producing a leakage-free feature table
+([docs/ddf-featurize.md](docs/ddf-featurize.md)) — which feeds **distributed
+histogram GBDT training** (`zetta::ml::run_train_job`): gradient-boosted decision
+trees with a binary-logistic objective whose per-feature gradient/Hessian histograms
+are allreduced across nodes each round, so single-node and multi-node grow equivalent
+trees; it runs as a recorded `train` `ComputeJob` and produces a `Model`
+([docs/gbdt.md](docs/gbdt.md)). State replicates between
 nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under

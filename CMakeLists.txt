@@ -380,6 +380,8 @@ add_library(zetta-core STATIC
   src/core/ddf/group_by_job.cpp
   src/core/ddf/featurize.cpp
   src/core/ddf/featurize_job.cpp
+  src/core/ml/gbdt.cpp
+  src/core/ml/gbdt_train_job.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

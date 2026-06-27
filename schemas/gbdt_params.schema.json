@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.ml.GbdtParams",
+  "description": "Hyperparameters for histogram gradient-boosted decision tree training (binary logistic). All fields are optional; an omitted field takes its default.",
+  "type": "object",
+  "properties": {
+    "num_trees": { "type": "integer", "minimum": 1 },
+    "max_depth": { "type": "integer", "minimum": 1 },
+    "max_bins": { "type": "integer", "minimum": 2 },
+    "learning_rate": { "type": "number", "exclusiveMinimum": 0 },
+    "l2_regularization": { "type": "number", "minimum": 0 },
+    "min_split_gain": { "type": "number", "minimum": 0 },
+    "min_child_hessian": { "type": "number", "minimum": 0 }
+  },
+  "additionalProperties": false
+}
