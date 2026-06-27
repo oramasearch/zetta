@@ -10,6 +10,7 @@
 struct SDL_Window;
 struct SDL_Renderer;
 struct ImGuiStyle;
+struct ImFont;
 
 namespace zetta {
 
@@ -141,6 +142,10 @@ private:
     Cluster& cluster_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
+    // Geist Mono face for labels / counts / metrics / paths (the design system's
+    // mono role). Non-owning — the ImGui font atlas owns it; re-captured whenever
+    // the atlas is rebuilt in apply_display_scale().
+    ImFont* mono_font_ = nullptr;
     bool initialized_ = false;
     bool show_demo_ = false;
 

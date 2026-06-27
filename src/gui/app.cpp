@@ -61,26 +61,42 @@
 #include <utility>
 #include <vector>
 
-#include "zetta_font_embedded.hpp"
+#include "zetta_font_sans.hpp"
+#include "zetta_font_mono.hpp"
 
 namespace zetta::gui {
 namespace {
 
-// Base logical font size; multiplied by the OS content scale per display.
+// Base logical font size; multiplied by the OS content scale per display. The
+// Geist Mono face is built a touch smaller (kMonoScale) for the design system's
+// label / count / metric role.
 constexpr float kBaseFontPixels = 15.0f;
+constexpr float kMonoScale = 0.86f;
 
-// Inline-error text colour (soft red).
-constexpr ImVec4 kErrorColor{1.0f, 0.4f, 0.4f, 1.0f};
+// ── Orama design-system palette (light) ───────────────────────────────────
+// Exact tokens from design-system/colors_and_type.css. Coral is the brand
+// "you are here" accent — used surgically (active nav, one focal action), NEVER
+// for status. Status uses the semantic green/amber/red below. See CLAUDE.md.
+constexpr ImVec4 kCoral{0.886f, 0.329f, 0.353f, 1.0f};       // #E2545A
+constexpr ImVec4 kCoralHover{0.831f, 0.263f, 0.286f, 1.0f};  // #D44349
+constexpr ImVec4 kInkPrimary{0.110f, 0.110f, 0.102f, 1.0f};  // #1C1C1A
+constexpr ImVec4 kInkSecondary{0.267f, 0.267f, 0.255f, 1.0f};// #444441
+constexpr ImVec4 kInkMuted{0.373f, 0.373f, 0.361f, 1.0f};    // #5F5F5C
+constexpr ImVec4 kInkQuiet{0.490f, 0.490f, 0.478f, 1.0f};    // #7D7D7A
+constexpr ImVec4 kCanvas{0.980f, 0.980f, 0.973f, 1.0f};      // #FAFAF8
+constexpr ImVec4 kSidebar{0.961f, 0.957f, 0.949f, 1.0f};     // #F5F4F2
+constexpr ImVec4 kWhite{1.0f, 1.0f, 1.0f, 1.0f};             // #FFFFFF
+constexpr ImVec4 kBorder{0.878f, 0.878f, 0.878f, 1.0f};      // #E0E0E0
 
-// Inline-success text colour (soft green) — matches the cluster panel's
-// "in sync" hue.
-constexpr ImVec4 kSuccessColor{0.4f, 0.8f, 0.4f, 1.0f};
+// Semantic state palette (product only) — for status, never coral.
+constexpr ImVec4 kSuccessColor{0.059f, 0.431f, 0.337f, 1.0f};// fresh-fg #0F6E56
+constexpr ImVec4 kDotActive{0.114f, 0.620f, 0.459f, 1.0f};   // dot-active #1D9E75
+constexpr ImVec4 kWarnColor{0.522f, 0.310f, 0.043f, 1.0f};   // stale-fg #854F0B
+constexpr ImVec4 kErrorColor{0.706f, 0.137f, 0.094f, 1.0f};  // error #B42318
 
-// Correctness-gate status colours: green pass, amber warn, red fail. The amber
-// matches the "syncing" colour used in the cluster panel.
-constexpr ImVec4 kPassColor{0.4f, 0.8f, 0.4f, 1.0f};
-constexpr ImVec4 kWarnColor{0.9f, 0.7f, 0.3f, 1.0f};
-constexpr ImVec4 kFailColor{0.95f, 0.4f, 0.4f, 1.0f};
+// Correctness-gate status colours: green pass, amber warn, red fail.
+constexpr ImVec4 kPassColor = kSuccessColor;
+constexpr ImVec4 kFailColor = kErrorColor;
 
 // A small, valid execution graph (the IR's canonical JSON form) prefilled into
 // the gate panel so the passing path is one click away — a churn-flavoured
@@ -126,20 +142,22 @@ ImVec4 status_color(CheckStatus status) {
     return kFailColor;
 }
 
-// "unsaved edits" / dirty marker colour (soft amber).
-constexpr ImVec4 kUnsavedColor{0.9f, 0.7f, 0.3f, 1.0f};
+// "unsaved edits" / dirty marker colour (stale amber).
+constexpr ImVec4 kUnsavedColor = kWarnColor;
 
-// Graph-workspace canvas palette (ImU32, for the window draw list). Nodes are
-// boxes laid out in columns by StepKind; edges are lines drawn underneath them.
-constexpr ImU32 kCanvasHeaderColor = IM_COL32(150, 160, 180, 255);
-constexpr ImU32 kNodeFill = IM_COL32(45, 55, 70, 255);
-constexpr ImU32 kNodeFillHover = IM_COL32(60, 72, 92, 255);
-constexpr ImU32 kNodeFillSelected = IM_COL32(48, 86, 130, 255);
-constexpr ImU32 kNodeBorder = IM_COL32(120, 130, 150, 255);
-constexpr ImU32 kNodeBorderSelected = IM_COL32(120, 180, 255, 255);
-constexpr ImU32 kNodeTextColor = IM_COL32(230, 230, 235, 255);
-constexpr ImU32 kDataEdgeColor = IM_COL32(150, 160, 180, 210);
-constexpr ImU32 kControlEdgeColor = IM_COL32(200, 160, 110, 210);
+// Graph-workspace canvas palette (ImU32, for the window draw list) — light
+// cards on the Orama canvas. Nodes are white boxes with hairline borders laid
+// out in columns by StepKind; the selected node gets a coral border (the "you
+// are here" accent). Edges are gray lines (data) / amber (control).
+constexpr ImU32 kCanvasHeaderColor = IM_COL32(95, 95, 92, 255);      // ink-muted
+constexpr ImU32 kNodeFill = IM_COL32(255, 255, 255, 255);           // white
+constexpr ImU32 kNodeFillHover = IM_COL32(242, 242, 240, 255);      // wash
+constexpr ImU32 kNodeFillSelected = IM_COL32(247, 238, 239, 255);   // coral wash
+constexpr ImU32 kNodeBorder = IM_COL32(224, 224, 224, 255);         // border
+constexpr ImU32 kNodeBorderSelected = IM_COL32(226, 84, 90, 255);   // coral
+constexpr ImU32 kNodeTextColor = IM_COL32(28, 28, 26, 255);         // ink-primary
+constexpr ImU32 kDataEdgeColor = IM_COL32(150, 150, 146, 220);      // gray line
+constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -153,28 +171,96 @@ float ui_pixel_density(SDL_Window* window) {
     return d > 0.0f ? d : 1.0f;
 }
 
+// A black wash at the given alpha — the design system's hover/selected washes
+// and ghost-button fills (rgba(0,0,0,a)), which blend over whatever is behind.
+constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alpha); }
+
+// Paint the ImGui style with the Orama design system (light). Flat surfaces,
+// hairline borders, modest radii, ink text on canvas. Coral is reserved for the
+// "you are here" accent (menu checkmarks, selected-graph node border, the one
+// focal action); status uses the semantic green/amber/red, never coral.
+void apply_orama_theme(ImGuiStyle& style) {
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = kInkPrimary;
+    colors[ImGuiCol_TextDisabled] = kInkQuiet;
+    colors[ImGuiCol_WindowBg] = kCanvas;
+    colors[ImGuiCol_ChildBg] = kWhite;          // child panes read as cards
+    colors[ImGuiCol_PopupBg] = kWhite;
+    colors[ImGuiCol_Border] = kBorder;
+    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_FrameBg] = kWhite;          // inputs: white + hairline border
+    colors[ImGuiCol_FrameBgHovered] = wash(0.04f);
+    colors[ImGuiCol_FrameBgActive] = wash(0.06f);
+    colors[ImGuiCol_TitleBg] = kSidebar;
+    colors[ImGuiCol_TitleBgActive] = kSidebar;
+    colors[ImGuiCol_MenuBarBg] = kSidebar;
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_ScrollbarGrab] = wash(0.16f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = wash(0.24f);
+    colors[ImGuiCol_ScrollbarGrabActive] = wash(0.32f);
+    colors[ImGuiCol_CheckMark] = kCoral;        // "you are here" (active view)
+    colors[ImGuiCol_SliderGrab] = kInkMuted;
+    colors[ImGuiCol_SliderGrabActive] = kCoral;
+    // Ghost buttons: a faint wash + hairline border, ink text.
+    colors[ImGuiCol_Button] = wash(0.03f);
+    colors[ImGuiCol_ButtonHovered] = wash(0.06f);
+    colors[ImGuiCol_ButtonActive] = wash(0.10f);
+    // Selection (Selectable / MenuItem / Header): a soft wash, never a coral or
+    // charcoal fill — coral stays reserved for the accent.
+    colors[ImGuiCol_Header] = wash(0.05f);
+    colors[ImGuiCol_HeaderHovered] = wash(0.04f);
+    colors[ImGuiCol_HeaderActive] = wash(0.06f);
+    colors[ImGuiCol_Separator] = kBorder;
+    colors[ImGuiCol_SeparatorHovered] = kInkQuiet;
+    colors[ImGuiCol_SeparatorActive] = kInkMuted;
+    colors[ImGuiCol_ResizeGrip] = wash(0.06f);
+    colors[ImGuiCol_ResizeGripHovered] = wash(0.12f);
+    colors[ImGuiCol_ResizeGripActive] = wash(0.18f);
+    colors[ImGuiCol_PlotHistogram] = kInkSecondary;  // metric / confidence bars
+    colors[ImGuiCol_PlotHistogramHovered] = kInkPrimary;
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(0.886f, 0.329f, 0.353f, 0.18f);
+    colors[ImGuiCol_NavHighlight] = kCoral;
+
+    // Flat + measured: hairline borders, modest radii (design radius-8), no
+    // decorative rounding on the full-window root.
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.FrameBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.SeparatorTextBorderSize = 1.0f;
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 8.0f;
+    style.FrameRounding = 8.0f;
+    style.PopupRounding = 8.0f;
+    style.GrabRounding = 8.0f;
+    style.ScrollbarRounding = 8.0f;
+    style.TabRounding = 8.0f;
+    style.FramePadding = ImVec2(9.0f, 5.0f);
+    style.ItemSpacing = ImVec2(8.0f, 7.0f);
+}
+
 // A run's status, color-coded along its lifecycle: pending (neutral) → running
 // (amber) → succeeded (green) | failed (red). Same palette as the cluster panel.
 ImVec4 run_status_color(RunStatus status) {
     switch (status) {
-        case RunStatus::Pending:   return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-        case RunStatus::Running:   return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
-        case RunStatus::Succeeded: return ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
+        case RunStatus::Pending:   return kInkQuiet;
+        case RunStatus::Running:   return kWarnColor;
+        case RunStatus::Succeeded: return kSuccessColor;
         case RunStatus::Failed:    return kErrorColor;
     }
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    return kInkQuiet;
 }
 
 // A compute job's status, color-coded along its lifecycle: queued (neutral) →
 // running (amber) → succeeded (green) | failed (red). Same palette as runs.
 ImVec4 job_status_color(JobStatus status) {
     switch (status) {
-        case JobStatus::Queued:    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-        case JobStatus::Running:   return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
-        case JobStatus::Succeeded: return ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
+        case JobStatus::Queued:    return kInkQuiet;
+        case JobStatus::Running:   return kWarnColor;
+        case JobStatus::Succeeded: return kSuccessColor;
         case JobStatus::Failed:    return kErrorColor;
     }
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    return kInkQuiet;
 }
 
 // A scaling action's color: scale-up green (more capacity), hold neutral,
@@ -182,17 +268,17 @@ ImVec4 job_status_color(JobStatus status) {
 ImVec4 scaling_action_color(ScalingAction action) {
     switch (action) {
         case ScalingAction::ScaleUp:   return kSuccessColor;
-        case ScalingAction::Hold:      return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+        case ScalingAction::Hold:      return kInkQuiet;
         case ScalingAction::ScaleDown: return kWarnColor;
     }
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    return kInkQuiet;
 }
 
 // A log line's severity color — error red, warn amber, anything else neutral.
 ImVec4 log_level_color(const std::string& level) {
     if (level == "error") return kErrorColor;
-    if (level == "warn")  return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    if (level == "warn")  return kWarnColor;
+    return kInkQuiet;
 }
 
 // Join lineage refs (sources / steps) for a single wrapped line.
@@ -581,7 +667,8 @@ bool App::init() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
-    ImGui::StyleColorsDark();
+    ImGui::StyleColorsLight();
+    apply_orama_theme(ImGui::GetStyle());
 
     ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_);
     ImGui_ImplSDLRenderer3_Init(renderer_);
@@ -617,16 +704,38 @@ void App::apply_display_scale() {
 
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
-    ImFontConfig cfg;
-    cfg.SizePixels = kBaseFontPixels * content;
-    cfg.RasterizerDensity = density;
-    cfg.FontDataOwnedByAtlas = false;  // bytes live in the embedded header
-    cfg.OversampleH = 2;
-    cfg.OversampleV = 2;
-    io.Fonts->AddFontFromMemoryTTF(
-        const_cast<unsigned char*>(kDroidSans),
-        static_cast<int>(kDroidSans_len),
-        cfg.SizePixels, &cfg);
+
+    // Glyph coverage beyond ImGui's default Latin-1: General Punctuation (so a
+    // stray en/em-dash, bullet, or ellipsis renders instead of a "?" tofu) plus
+    // arrows. Geist covers these. Static so the pointer stays valid until Build.
+    static const ImWchar kRanges[] = {
+        0x0020, 0x00FF,  // Basic Latin + Latin-1 Supplement
+        0x2010, 0x205E,  // General Punctuation: – — ' ' " " • …
+        0x2190, 0x2199,  // Arrows
+        0,
+    };
+
+    // The embedded bytes are static (constexpr arrays), so FontDataOwnedByAtlas
+    // = false is safe — ImGui reads them at Build() and never frees them.
+    const auto add_font = [&](const unsigned char* data, unsigned length,
+                              float pixels) -> ImFont* {
+        ImFontConfig cfg;
+        cfg.SizePixels = pixels;
+        cfg.RasterizerDensity = density;
+        cfg.FontDataOwnedByAtlas = false;
+        cfg.OversampleH = 2;
+        cfg.OversampleV = 2;
+        return io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(data),
+                                              static_cast<int>(length), pixels,
+                                              &cfg, kRanges);
+    };
+
+    // Geist (sans) is the default UI face; Geist Mono (a touch smaller) is the
+    // design system's label / count / metric face, captured for PushFont.
+    add_font(kGeistSans, kGeistSans_len, kBaseFontPixels * content);
+    mono_font_ = add_font(kGeistMono, kGeistMono_len,
+                          kBaseFontPixels * kMonoScale * content);
+
     io.Fonts->Build();
     ImGui_ImplSDLRenderer3_DestroyFontsTexture();
     ImGui_ImplSDLRenderer3_CreateFontsTexture();
@@ -1287,7 +1396,7 @@ void App::draw_large_objects() {
         // so a freshly-replicated object may not have its bytes here yet.
         if (!lo.body_present) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "(syncing body)");
+            ImGui::TextColored(kWarnColor, "(syncing body)");
         }
         ImGui::PopID();
     }
@@ -1752,11 +1861,11 @@ void App::draw_cluster() {
             } else if (!node.replication.known) {
                 ImGui::TextDisabled("no status yet");
             } else if (node.replication.in_sync) {
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f),
+                ImGui::TextColored(kSuccessColor,
                                    "in sync (%.1fs)",
                                    node.replication.seconds_since_sync);
             } else {
-                ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f),
+                ImGui::TextColored(kWarnColor,
                                    "syncing (%.1fs)",
                                    node.replication.seconds_since_sync);
             }
@@ -2714,7 +2823,7 @@ void App::run() {
         SDL_SetRenderScale(renderer_,
                            io.DisplayFramebufferScale.x,
                            io.DisplayFramebufferScale.y);
-        SDL_SetRenderDrawColor(renderer_, 30, 30, 30, 255);
+        SDL_SetRenderDrawColor(renderer_, 250, 250, 248, 255);  // Orama canvas
         SDL_RenderClear(renderer_);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
         SDL_RenderPresent(renderer_);
