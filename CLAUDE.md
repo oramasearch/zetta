@@ -2161,7 +2161,11 @@ src/core/                   zetta-core impl
     harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback) + sample_churn_dataset + numeric encoding
     cases_*.cpp             the canned cases per category (compute/ddf/ml/distributed/governance/pipeline)
 src/gui/                    headed UI (links SDL3 + ImGui)
-  app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node (incl. draw_test_suite, the Test suite panel)
+  app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
+  app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
+  app_internal.hpp          shared GUI-only helpers: the Orama design tokens + wash/status_dot/eyebrow/mono_line/primary_button + extern g_mono_font (not in the public include/zetta surface)
+  app_home.cpp / app_explorer.cpp / app_pipeline.cpp / app_operations.cpp / app_governance.cpp
+                            the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464)
 src/main.cpp                arg parsing + mode dispatch
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core

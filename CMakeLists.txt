@@ -444,6 +444,11 @@ target_link_libraries(zetta-core PRIVATE
 add_executable(zetta
   src/main.cpp
   src/gui/app.cpp
+  src/gui/app_home.cpp
+  src/gui/app_explorer.cpp
+  src/gui/app_pipeline.cpp
+  src/gui/app_operations.cpp
+  src/gui/app_governance.cpp
 )
 
 target_compile_features(zetta PRIVATE cxx_std_26)
