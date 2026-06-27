@@ -12,6 +12,7 @@
 
 #include "temp_dir.hpp"
 #include "zetta/churn_dataset.hpp"
+#include "zetta/churn_solution.hpp"
 #include "zetta/churn_step_executor.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
@@ -65,105 +66,10 @@ using DataType = zetta::compute::DataType;
 using Json = nlohmann::json;
 
 // --- The churn fixture, encoded to numeric DDF input shards ------------------
-// (the same encoding the GBDT / TreeSHAP suites use — string ids / ISO dates /
-// categorical event types into the numeric columns DDF operates on).
-
-std::int64_t day_of_year_2026(const std::string& iso) {
-    const int month = std::stoi(iso.substr(5, 2));
-    const int day = std::stoi(iso.substr(8, 2));
-    static const int before[] = {0,   0,   31,  59,  90,  120, 151,
-                                 181, 212, 243, 273, 304, 334};
-    return before[month] + day;
-}
-std::int64_t event_type_code(const std::string& type) {
-    if (type == "login") return 1;
-    if (type == "feature_use") return 2;
-    if (type == "payment_failed") return 3;
-    if (type == "support_ticket") return 4;
-    if (type == "csm_contact") return 5;
-    if (type == "comms") return 6;
-    return 0;
-}
-
-struct ChurnNumeric {
-    std::vector<Json> events;
-    std::vector<Json> accounts;
-    std::int64_t as_of = 0;
-};
-
-ChurnNumeric encode_churn(const zetta::ChurnDataset& dataset) {
-    ChurnNumeric out;
-    std::map<std::string, std::int64_t> entity_index;
-    for (const zetta::ChurnAccount& account : dataset.accounts) {
-        const std::int64_t key = static_cast<std::int64_t>(entity_index.size());
-        entity_index.emplace(account.account_id, key);
-        out.accounts.push_back({{"entity", key},
-                                {"mrr", account.mrr},
-                                {"seats", account.seats},
-                                {"tenure_days", account.tenure_days},
-                                {"churned", account.churned ? 1 : 0}});
-    }
-    for (const zetta::ChurnEvent& event : dataset.events) {
-        out.events.push_back({{"entity", entity_index.at(event.account_id)},
-                              {"ts", day_of_year_2026(event.event_ts)},
-                              {"value", event.value},
-                              {"type", event_type_code(event.event_type)}});
-    }
-    out.as_of = day_of_year_2026(dataset.as_of_date);
-    return out;
-}
-
-DataFrameSchema events_schema() {
-    DataFrameSchema schema;
-    schema.columns = {ColumnSchema{.name = "entity", .dtype = DataType::Int64},
-                      ColumnSchema{.name = "ts", .dtype = DataType::Int64},
-                      ColumnSchema{.name = "value", .dtype = DataType::Float64},
-                      ColumnSchema{.name = "type", .dtype = DataType::Int64}};
-    return schema;
-}
-DataFrameSchema accounts_schema() {
-    DataFrameSchema schema;
-    schema.columns = {
-        ColumnSchema{.name = "entity", .dtype = DataType::Int64},
-        ColumnSchema{.name = "mrr", .dtype = DataType::Float64},
-        ColumnSchema{.name = "seats", .dtype = DataType::Int64},
-        ColumnSchema{.name = "tenure_days", .dtype = DataType::Int64},
-        ColumnSchema{.name = "churned", .dtype = DataType::Int64}};
-    return schema;
-}
-
-FeaturizeSpec churn_spec(std::int64_t as_of) {
-    FeaturizeSpec spec;
-    spec.entity_column = "entity";
-    spec.time_column = "ts";
-    spec.as_of = static_cast<double>(as_of);
-    spec.event_features = {
-        WindowedFeature{.name = "failed_payments",
-                        .agg = zetta::ddf::AggregateOp::Count,
-                        .type_column = "type",
-                        .type_value = 3.0},
-        WindowedFeature{.name = "support_severity",
-                        .agg = zetta::ddf::AggregateOp::Sum,
-                        .value_column = "value",
-                        .type_column = "type",
-                        .type_value = 4.0},
-        WindowedFeature{.name = "total_events",
-                        .agg = zetta::ddf::AggregateOp::Count},
-    };
-    spec.account_features = {"mrr", "seats", "tenure_days"};
-    spec.label_column = "churned";
-    return spec;
-}
-
-GbdtParams churn_params() {
-    GbdtParams params;
-    params.num_trees = 30;
-    params.max_depth = 3;
-    params.max_bins = 16;
-    params.learning_rate = 0.3;
-    params.min_child_hessian = 1e-3;
-    return params;
-}
+// The encoding + the standard featurize spec / GBDT params are the canonical
+// zetta::churn_solution.hpp surface (encode_churn_dataset, churn_events_schema /
+// churn_accounts_schema, churn_featurize_spec, default_churn_gbdt_params) — the
+// same the GBDT / TreeSHAP suites share.
 
 zetta::JsonStore make_store(const std::vector<Json>& rows) {
     zetta::JsonStore store;
@@ -221,7 +127,8 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
     const auto loaded = zetta::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
-    const ChurnNumeric numeric = encode_churn(loaded.dataset);
+    const zetta::ChurnNumericShards numeric =
+        zetta::encode_churn_dataset(loaded.dataset);
     const zetta::JsonStore events = make_store(numeric.events);
     const zetta::JsonStore accounts = make_store(numeric.accounts);
 
@@ -230,11 +137,11 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
 
     ChurnPipelineConfig config;
     config.events_store = &events;
-    config.events_schema = events_schema();
+    config.events_schema = zetta::churn_events_schema();
     config.accounts_store = &accounts;
-    config.accounts_schema = accounts_schema();
-    config.featurize = churn_spec(numeric.as_of);
-    config.params = churn_params();
+    config.accounts_schema = zetta::churn_accounts_schema();
+    config.featurize = zetta::churn_featurize_spec(numeric.as_of);
+    config.params = zetta::default_churn_gbdt_params();
     config.entity_column = "entity";
     config.model_name = "churn_model";
 
@@ -338,11 +245,11 @@ TEST(ChurnStepExecutor, FailingComputeFailsTheRun) {
 
     ChurnPipelineConfig config;
     config.events_store = &events;
-    config.events_schema = events_schema();
+    config.events_schema = zetta::churn_events_schema();
     config.accounts_store = &accounts;
-    config.accounts_schema = accounts_schema();
-    config.featurize = churn_spec(180);
-    config.params = churn_params();
+    config.accounts_schema = zetta::churn_accounts_schema();
+    config.featurize = zetta::churn_featurize_spec(180);
+    config.params = zetta::default_churn_gbdt_params();
 
     auto churn = std::make_shared<ChurnStepExecutor>(host.node, host.coordinator,
                                                      device, config);
