@@ -61,6 +61,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type (per-check results, verdict, block-deploy).
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
 - [gate-checks.md](gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
+- [entity-resolution.md](entity-resolution.md) — entity resolution in featurization (`zetta::EntityResolver`, TC-4 / #394): resolve raw comms mentions to CRM accounts division-correct ("FedEx Freight" without conflating its siblings) and emit the `entity_resolution` annotation the gate verifies — resolver produces, gate verifies.
 - [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fails the gate when a graph conflates separate accounts (the FedEx-Freight case).
 - [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn dataset fixture + loader (`zetta::ChurnDataset` / `load_churn_dataset`, FEAT-6 / #402): committed accounts + events, the FedEx entity-resolution case, schema-validated, no foreign runtime.
 - [build.md](build.md) — building, running, and testing.

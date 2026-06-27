@@ -8,6 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/entity_resolution.hpp"
+
 // The synthetic UC-1 churn dataset fixture (FEAT-6, #402) and its loader.
 //
 // A small, committed, synthetic (non-customer) churn dataset — accounts + comms/
@@ -100,16 +102,24 @@ std::string_view to_string(ChurnDataFormat format);
 ChurnDatasetResult load_churn_dataset(const std::filesystem::path& dir,
                                       ChurnDataFormat format = ChurnDataFormat::Jsonl);
 
-// Build the division-correct `entity_resolution` attribute payload from the
-// dataset's comms-event mentions:
+// Build the `entity_resolution` attribute payload by **actually resolving** the
+// dataset's comms-event mentions against the account directory:
 //
 //   { "entity_resolution": { "records": [ { mention, entity, resolved } ] } }
 //
-// with `entity` = the account's ground-truth entity and `resolved` = its
-// account_id. Attach it to an ExecutionGraph node to exercise
-// zetta::EntityResolutionCheck (TC-4); by construction it is division-correct and
-// passes the gate. Tests mutate it (point two siblings at one account) to drive
-// the conflation failure that must block deploy (RULE-1).
-nlohmann::json entity_resolution_attribute(const ChurnDataset& dataset);
+// The resolver (zetta::EntityResolver, see entity_resolution.hpp) is handed only the
+// raw `mention` string and matches it to an account; the ground-truth `entity` (the
+// account the mention truly belongs to) is held out and recorded so the gate can
+// check the resolver's choice. With the default `FullName` strategy the resolution is
+// division-correct — "FedEx Freight" and the variant "Fedex Freight" both land on
+// `acct_fedex_freight` while "FedEx Ground" stays separate — so the payload passes
+// `zetta::EntityResolutionCheck` (TC-4) because it *resolved correctly*, not by
+// construction. Passing `ResolutionStrategy::Brand` collapses every "FedEx …" mention
+// onto one brand bucket, producing the conflation the gate must fail (RULE-1) — the
+// real-resolver way to exercise the failure path. Attach the result to an
+// ExecutionGraph node to run it through the gate.
+nlohmann::json entity_resolution_attribute(
+    const ChurnDataset& dataset,
+    ResolutionStrategy strategy = ResolutionStrategy::FullName);
 
 }  // namespace zetta

@@ -20,6 +20,7 @@ add_executable(zetta-tests
   test_gate.cpp
   test_graph_checks.cpp
   test_entity_resolution_check.cpp
+  test_entity_resolution.cpp
   test_duration.cpp
   test_jsonl_store.cpp
   test_database.cpp
