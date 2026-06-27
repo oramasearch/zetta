@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -73,13 +74,13 @@ void to_json(nlohmann::json& document, const CheckResult& result);
 void to_json(nlohmann::json& document, const ValidationReport& report);
 
 // Parse a ValidationReport from JSON, validating the shape at the boundary so
-// malformed data fails fast instead of corrupting state. Returns false (leaving
-// out untouched) when the document is not an object, "checks" is missing or not
-// an array of well-formed {name, status, reason}, "block_deploy" is missing or
-// not a bool, an unknown status name appears, or a present "verdict" field
-// disagrees with the verdict computed from the checks. Mirrors
+// malformed data fails fast instead of corrupting state. Returns std::nullopt
+// when the document is not an object, "checks" is missing or not an array of
+// well-formed {name, status, reason}, "block_deploy" is missing or not a bool,
+// an unknown status name appears, or a present "verdict" field disagrees with
+// the verdict computed from the checks. Mirrors
 // schemas/validation_report.schema.json — keep the two in sync.
-bool validation_report_from_json(const nlohmann::json& document,
-                                 ValidationReport& out);
+std::optional<ValidationReport> validation_report_from_json(
+    const nlohmann::json& document);
 
 }  // namespace zetta

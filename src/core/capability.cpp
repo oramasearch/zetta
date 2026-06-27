@@ -84,42 +84,40 @@ void to_json(nlohmann::json& document, const CapabilitySet& capabilities) {
     }
 }
 
-bool capability_from_json(const nlohmann::json& document, Capability& out) {
-    if (!document.is_object()) return false;
+std::optional<Capability> capability_from_json(const nlohmann::json& document) {
+    if (!document.is_object()) return std::nullopt;
     if (!document.contains("domain") || !document["domain"].is_string()) {
-        return false;
+        return std::nullopt;
     }
     if (!document.contains("action") || !document["action"].is_string()) {
-        return false;
+        return std::nullopt;
     }
     CapabilityDomain domain{};
     if (!capability_domain_from_string(document["domain"].get<std::string>(),
                                        domain)) {
-        return false;
+        return std::nullopt;
     }
     Capability parsed;
     parsed.domain = domain;
     parsed.action = document["action"].get<std::string>();
     if (document.contains("expires_at")) {
-        if (!document["expires_at"].is_string()) return false;
+        if (!document["expires_at"].is_string()) return std::nullopt;
         parsed.expires_at = document["expires_at"].get<std::string>();
     }
-    out = std::move(parsed);
-    return true;
+    return parsed;
 }
 
-bool capability_set_from_json(const nlohmann::json& document,
-                              CapabilitySet& out) {
-    if (!document.is_array()) return false;
+std::optional<CapabilitySet> capability_set_from_json(
+    const nlohmann::json& document) {
+    if (!document.is_array()) return std::nullopt;
     CapabilitySet parsed;
     parsed.grants.reserve(document.size());
     for (const auto& entry : document) {
-        Capability capability;
-        if (!capability_from_json(entry, capability)) return false;
-        parsed.grants.push_back(std::move(capability));
+        const auto capability = capability_from_json(entry);
+        if (!capability) return std::nullopt;
+        parsed.grants.push_back(*capability);
     }
-    out = std::move(parsed);
-    return true;
+    return parsed;
 }
 
 }  // namespace zetta

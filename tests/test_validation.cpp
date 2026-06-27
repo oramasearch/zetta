@@ -52,11 +52,11 @@ TEST(ValidationReport, RoundTripsThroughJson) {
 
     const nlohmann::json document = report;  // to_json ADL hook
 
-    ValidationReport parsed;
-    ASSERT_TRUE(zetta::validation_report_from_json(document, parsed));
-    EXPECT_EQ(parsed, report);
-    EXPECT_EQ(parsed.verdict(), CheckStatus::Fail);
-    EXPECT_TRUE(parsed.block_deploy);
+    const auto parsed = zetta::validation_report_from_json(document);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(*parsed, report);
+    EXPECT_EQ(parsed->verdict(), CheckStatus::Fail);
+    EXPECT_TRUE(parsed->block_deploy);
 }
 
 TEST(ValidationReport, SerializationEmitsTheDerivedVerdict) {
@@ -75,50 +75,44 @@ TEST(ValidationReport, ParsesAReasonlessCheck) {
         "checks": [{"name": "compiles", "status": "pass"}],
         "block_deploy": false
     })");
-    ValidationReport parsed;
-    ASSERT_TRUE(zetta::validation_report_from_json(document, parsed));
-    ASSERT_EQ(parsed.checks.size(), 1u);
-    EXPECT_EQ(parsed.checks.at(0).name, "compiles");
-    EXPECT_EQ(parsed.checks.at(0).status, CheckStatus::Pass);
-    EXPECT_EQ(parsed.checks.at(0).reason, "");
+    const auto parsed = zetta::validation_report_from_json(document);
+    ASSERT_TRUE(parsed);
+    ASSERT_EQ(parsed->checks.size(), 1u);
+    EXPECT_EQ(parsed->checks.at(0).name, "compiles");
+    EXPECT_EQ(parsed->checks.at(0).status, CheckStatus::Pass);
+    EXPECT_EQ(parsed->checks.at(0).reason, "");
 }
 
 TEST(ValidationReport, RejectsMalformedJsonAtTheBoundary) {
-    ValidationReport out;
-
     // Not an object.
-    EXPECT_FALSE(zetta::validation_report_from_json(
-        nlohmann::json::array(), out));
+    EXPECT_FALSE(zetta::validation_report_from_json(nlohmann::json::array()));
 
     // Missing block_deploy.
     EXPECT_FALSE(zetta::validation_report_from_json(
-        nlohmann::json{{"checks", nlohmann::json::array()}}, out));
+        nlohmann::json{{"checks", nlohmann::json::array()}}));
 
     // block_deploy is the wrong type.
     EXPECT_FALSE(zetta::validation_report_from_json(
         nlohmann::json{{"checks", nlohmann::json::array()},
-                       {"block_deploy", "yes"}},
-        out));
+                       {"block_deploy", "yes"}}));
 
     // checks is not an array.
     EXPECT_FALSE(zetta::validation_report_from_json(
-        nlohmann::json{{"checks", 5}, {"block_deploy", false}}, out));
+        nlohmann::json{{"checks", 5}, {"block_deploy", false}}));
 
     // Unknown status name.
     EXPECT_FALSE(zetta::validation_report_from_json(
         nlohmann::json::parse(R"({
             "checks": [{"name": "x", "status": "maybe"}],
             "block_deploy": false
-        })"),
-        out));
+        })")));
 
     // A check missing its name.
     EXPECT_FALSE(zetta::validation_report_from_json(
         nlohmann::json::parse(R"({
             "checks": [{"status": "pass"}],
             "block_deploy": false
-        })"),
-        out));
+        })")));
 
     // A stated verdict that contradicts the checks.
     EXPECT_FALSE(zetta::validation_report_from_json(
@@ -126,8 +120,7 @@ TEST(ValidationReport, RejectsMalformedJsonAtTheBoundary) {
             "checks": [{"name": "x", "status": "fail"}],
             "verdict": "pass",
             "block_deploy": true
-        })"),
-        out));
+        })")));
 }
 
 TEST(ValidationStatus, StringRoundTrip) {
