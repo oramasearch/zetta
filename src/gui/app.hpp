@@ -53,6 +53,7 @@ private:
     // of every panel stacked in one long scroll. Ordered along the product flow:
     // your data → architect the pipeline → operate it → govern it.
     enum class View {
+        Home,      // project-first landing (the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
         Query,     // the SQL console
         Graph,     // the execution-graph workspace
@@ -83,6 +84,7 @@ private:
     void draw_menu_bar(bool& running);
     void draw_active_view();  // render whichever View is selected (the menu switcher)
     void draw_about_modal();  // the Help → About Orama Zetta dialog
+    void draw_home();         // project-first landing (hero + New project + projects)
     void draw_dashboard();
     void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
     void draw_projects();    // top-level AI projects (create/select/rename/delete)
@@ -150,8 +152,8 @@ private:
     bool show_demo_ = false;
 
     // Which panel the content area is showing (set from the menu bar). Defaults
-    // to the data Explorer — the "home" view.
-    View active_view_ = View::Explorer;
+    // to the project-first Home landing.
+    View active_view_ = View::Home;
     // Asks draw_about_modal() to open the About popup on the next frame (set from
     // the Help menu), mirroring the New Project modal's request flag.
     bool about_requested_ = false;

@@ -175,6 +175,55 @@ float ui_pixel_density(SDL_Window* window) {
 // and ghost-button fills (rgba(0,0,0,a)), which blend over whatever is behind.
 constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alpha); }
 
+// Compact uptime, e.g. "45s", "1m 7s", "2h 3m 0s" — for the status strip.
+std::string format_uptime(double seconds) {
+    long total = seconds > 0.0 ? static_cast<long>(seconds) : 0;
+    const long hours = total / 3600;
+    total %= 3600;
+    const long minutes = total / 60;
+    const long secs = total % 60;
+    std::string out;
+    if (hours) out += std::to_string(hours) + "h ";
+    if (hours || minutes) out += std::to_string(minutes) + "m ";
+    out += std::to_string(secs) + "s";
+    return out;
+}
+
+// "N thing" / "N things" — singular/plural by count.
+std::string plural(std::size_t count, const char* one, const char* many) {
+    return std::to_string(count) + " " + (count == 1 ? one : many);
+}
+
+std::string to_upper(std::string text) {
+    for (char& character : text) {
+        character =
+            static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    }
+    return text;
+}
+
+// Draw a small filled status dot inline (the design system's 6px indicator
+// dot), then SameLine so the caller's next item sits to its right. Green =
+// active/open, amber = locked/attention.
+void status_dot(ImVec4 color) {
+    const float size = ImGui::GetFontSize();
+    const float radius = size * 0.26f;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 center(pos.x + radius, pos.y + size * 0.5f);
+    ImGui::GetWindowDrawList()->AddCircleFilled(center, radius,
+                                                ImGui::GetColorU32(color));
+    ImGui::Dummy(ImVec2(radius * 2.0f, size));
+    ImGui::SameLine(0.0f, 7.0f);
+}
+
+// A mono uppercase eyebrow label (the design system's section-label role). Needs
+// the mono font pushed by the caller when available.
+void eyebrow(ImFont* mono, const char* text) {
+    if (mono) ImGui::PushFont(mono);
+    ImGui::TextColored(kInkMuted, "%s", text);
+    if (mono) ImGui::PopFont();
+}
+
 // Paint the ImGui style with the Orama design system (light). Flat surfaces,
 // hairline borders, modest radii, ink text on canvas. Coral is reserved for the
 // "you are here" accent (menu checkmarks, selected-graph node border, the one
@@ -757,7 +806,8 @@ void App::draw_menu_bar(bool& running) {
     };
 
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New Project...")) {
+        view_item("Home", View::Home);
+        if (ImGui::MenuItem("New project…")) {
             new_project_modal_requested_ = true;
         }
         ImGui::Separator();
@@ -768,28 +818,28 @@ void App::draw_menu_bar(bool& running) {
     // pipeline → operate it → govern it.
     if (ImGui::BeginMenu("Data")) {
         view_item("Explorer", View::Explorer);
-        view_item("SQL Query", View::Query);
+        view_item("SQL query", View::Query);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Pipeline")) {
-        view_item("Graph Workspace", View::Graph);
-        view_item("Correctness Gate", View::Gate);
+        view_item("Graph workspace", View::Graph);
+        view_item("Correctness gate", View::Gate);
         view_item("Deploy", View::Deploy);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Operations")) {
         view_item("Runs", View::Runs);
-        view_item("Compute Jobs", View::Jobs);
+        view_item("Compute jobs", View::Jobs);
         view_item("Cluster", View::Cluster);
-        view_item("Cloud Inspector", View::Cloud);
+        view_item("Cloud inspector", View::Cloud);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Governance")) {
-        view_item("Admin & Audit", View::Admin);
+        view_item("Admin & audit", View::Admin);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-        ImGui::MenuItem("ImGui Demo Window", nullptr, &show_demo_);
+        ImGui::MenuItem("ImGui demo window", nullptr, &show_demo_);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
@@ -804,6 +854,7 @@ void App::draw_menu_bar(bool& running) {
 // draw_* leads with a SeparatorText title, so the active panel is self-labelled.
 void App::draw_active_view() {
     switch (active_view_) {
+        case View::Home:     draw_home();            break;
         case View::Explorer: draw_explorer();        break;
         case View::Query:    draw_query();           break;
         case View::Graph:    draw_graph_workspace(); break;
@@ -837,19 +888,18 @@ void App::draw_about_modal() {
     ImGui::Text("Orama Zetta");
     ImGui::SameLine();
     ImGui::TextDisabled("%s", kVersion);
-    ImGui::TextColored(ImVec4(0.55f, 0.70f, 1.0f, 1.0f),
-                       "Intelligence Velocity for Big Thinkers.");
+    ImGui::TextColored(kCoral, "Intelligence Velocity for big thinkers.");
     ImGui::Spacing();
-    ImGui::TextWrapped(
+    ImGui::TextColored(kInkSecondary,
         "Orama Zetta turns a question into running, deployed intelligence. "
-        "Describe a data or AI problem in plain language — or hand over an "
-        "artifact you already have — and it architects a correct data + AI "
+        "Describe a data or AI problem in plain language, or hand over an "
+        "artifact you already have, and it architects a correct data + AI "
         "pipeline, deploys it onto infrastructure you control, runs it, and "
         "learns from your data.");
     ImGui::Spacing();
-    ImGui::TextDisabled(
-        "\"The data engineer, the AI engineer, and the platform engineer "
-        "— in a bottle.\"");
+    ImGui::TextColored(kInkMuted,
+        "\"The data engineer, the AI engineer, and the platform engineer, "
+        "in a bottle.\"");
 
     ImGui::SeparatorText("This node");
     ImGui::TextDisabled("id:       %s", cluster_.node_id().c_str());
@@ -869,12 +919,104 @@ void App::draw_about_modal() {
     ImGui::EndPopup();
 }
 
-void App::draw_dashboard() {
-    ImGui::Text("Node: %s", node_.status_line().c_str());
+void App::draw_home() {
+    // Hero — the product framing, echoing the marketing site. An eyebrow, a
+    // headline with a single coral phrase (the only coral on this screen besides
+    // the active-view checkmark), the tagline, and a short lead.
+    ImGui::Spacing();
+    eyebrow(mono_font_, "ORAMA ZETTA · AUTO-AI FOR THE ENTERPRISE");
+    ImGui::Spacing();
+    ImGui::SetWindowFontScale(1.7f);
+    ImGui::TextColored(kInkPrimary, "Production-grade AI,");
     ImGui::SameLine();
-    ImGui::TextDisabled("|  data dir: %s", node_.config().data_dir.c_str());
+    ImGui::TextColored(kCoral, "deployed in minutes.");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Spacing();
+    ImGui::TextColored(kInkSecondary, "Intelligence Velocity for big thinkers.");
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 44.0f);
+    ImGui::TextColored(kInkMuted,
+        "Describe a data or AI problem in plain language, or bring an artifact "
+        "you already have (an n8n workflow, a SQL script, a notebook), and Orama "
+        "Zetta architects a correct pipeline, deploys it onto infrastructure you "
+        "control, and runs it.");
+    ImGui::PopTextWrapPos();
+
+    // Primary action — charcoal fill, white text. Per the design system, "New …"
+    // is a charcoal primary action; coral stays reserved for the accent.
+    ImGui::Spacing();
+    ImGui::PushStyleColor(ImGuiCol_Button, kInkPrimary);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kInkSecondary);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kInkMuted);
+    ImGui::PushStyleColor(ImGuiCol_Text, kWhite);
+    if (ImGui::Button("New project…")) new_project_modal_requested_ = true;
+    ImGui::PopStyleColor(4);
+
+    // Your projects — the central AI-project artifact. Each row opens the project
+    // in the Graph workspace. Empty state is voiced, not generic.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    eyebrow(mono_font_, "YOUR PROJECTS");
+    ImGui::Spacing();
+    const std::vector<std::string> names = node_.project_names();
+    if (names.empty()) {
+        ImGui::TextColored(kInkMuted,
+            "No projects yet. Create one to turn an intent into a deployed "
+            "pipeline.");
+        return;
+    }
+    for (const std::string& name : names) {
+        const auto project = node_.find_project(name);
+        if (!project) continue;
+        ImGui::PushID(name.c_str());
+        if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
+            selected_project_ = name;
+            active_view_ = View::Graph;  // open it in the workspace
+        }
+        const std::string short_id =
+            project->id().substr(0, project->id().find('-'));
+        const std::size_t graphs = project->graph_names().size();
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextColored(kInkQuiet, "    %s · %s · created %s", short_id.c_str(),
+                           plural(graphs, "graph", "graphs").c_str(),
+                           project->created().c_str());
+        if (mono_font_) ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::PopID();
+    }
+}
+
+void App::draw_dashboard() {
+    // A quiet, mono metadata strip in the design-system grammar: middle-dot
+    // separators, tabular counts, no debug noise (uptime, not raw tick counts).
+    // Only non-zero entity counts are shown, so an idle node reads clean.
+    std::string strip = "orama zetta · running · up " +
+                        format_uptime(node_.uptime_seconds());
+    const struct {
+        std::size_t count;
+        const char* one;
+        const char* many;
+    } items[] = {
+        {node_.project_count(), "project", "projects"},
+        {node_.database_count(), "database", "databases"},
+        {node_.deployment_count(), "deployment", "deployments"},
+        {node_.run_count(), "run", "runs"},
+        {node_.model_count(), "model", "models"},
+        {node_.job_count(), "job", "jobs"},
+        {node_.principal_count(), "principal", "principals"},
+        {node_.audit_event_count(), "audit event", "audit events"},
+    };
+    for (const auto& item : items) {
+        if (item.count > 0) strip += " · " + plural(item.count, item.one, item.many);
+    }
+
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    ImGui::TextColored(kInkMuted, "%s", strip.c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(kInkQuiet, "· %s", node_.config().data_dir.c_str());
+    if (mono_font_) ImGui::PopFont();
+
     if (!io_status_.empty()) {
-        ImGui::TextDisabled("%s", io_status_.c_str());
+        ImGui::TextColored(kInkSecondary, "%s", io_status_.c_str());
     }
     ImGui::Spacing();
 }
@@ -916,7 +1058,7 @@ void App::draw_projects() {
     // The full create flow — name + NL intent + n8n artifact import — lives in
     // the New Project modal (SCR-2); this button is its front door. Rename /
     // select / delete for existing projects stay inline below.
-    if (ImGui::Button("New Project...")) {
+    if (ImGui::Button("New project…")) {
         new_project_modal_requested_ = true;
     }
     if (!project_error_.empty()) {
@@ -1162,7 +1304,7 @@ void App::draw_rows() {
         auto doc = nlohmann::json::parse(doc_input_, nullptr,
                                          /*allow_exceptions=*/false);
         if (doc.is_discarded()) {
-            row_error_ = "invalid JSON — not added";
+            row_error_ = "invalid JSON, not added";
         } else {
             table->add_row(std::move(doc));
             row_error_.clear();
@@ -1191,7 +1333,7 @@ void App::draw_rows() {
 }
 
 void App::draw_query() {
-    ImGui::SeparatorText("SQL Query (postgres)");
+    ImGui::SeparatorText("SQL query (postgres)");
     ImGui::TextDisabled(
         "Unqualified names use the selected database (%s); use db.table to "
         "target another.",
@@ -1256,7 +1398,7 @@ void App::draw_query() {
 }
 
 void App::draw_gate() {
-    ImGui::SeparatorText("Correctness Gate");
+    ImGui::SeparatorText("Correctness gate");
     ImGui::TextDisabled(
         "Validate an execution graph before deploy. RULE-1: no deploy without a "
         "passing gate.");
@@ -1304,7 +1446,7 @@ void App::draw_gate() {
         auto document = nlohmann::json::parse(gate_graph_input_, nullptr,
                                               /*allow_exceptions=*/false);
         if (document.is_discarded()) {
-            gate_error_ = "invalid JSON — could not parse the graph";
+            gate_error_ = "invalid JSON, could not parse the graph";
         } else {
             std::string parse_error;
             std::optional<ir::ExecutionGraph> graph =
@@ -1333,11 +1475,11 @@ void App::draw_gate() {
             if (check.status == CheckStatus::Fail) ++failures;
         }
         ImGui::TextColored(kFailColor,
-                           "Deploy blocked — %zu check(s) failed (verdict: %s)",
+                           "Deploy blocked: %zu check(s) failed (verdict: %s)",
                            failures, to_string(report.verdict()).c_str());
     } else {
         ImGui::TextColored(kPassColor,
-                           "Deploy allowed — gate passed (verdict: %s)",
+                           "Deploy allowed: gate passed (verdict: %s)",
                            to_string(report.verdict()).c_str());
     }
 
@@ -1371,7 +1513,7 @@ void App::draw_gate() {
 }
 
 void App::draw_large_objects() {
-    ImGui::SeparatorText("Large Objects");
+    ImGui::SeparatorText("Large objects");
     const auto db = node_.find_database(selected_db_);
     if (!db) {
         ImGui::TextDisabled("Select a database.");
@@ -1528,7 +1670,7 @@ void App::reset_new_project_form() {
 
 void App::draw_new_project_modal() {
     if (new_project_modal_requested_) {
-        ImGui::OpenPopup("New Project");
+        ImGui::OpenPopup("New project");
         new_project_modal_requested_ = false;
         new_project_error_.clear();
     }
@@ -1540,7 +1682,7 @@ void App::draw_new_project_modal() {
                              ImGuiCond_Appearing);
 
     bool stay_open = true;  // the window's close (x) button toggles this
-    if (!ImGui::BeginPopupModal("New Project", &stay_open,
+    if (!ImGui::BeginPopupModal("New project", &stay_open,
                                 ImGuiWindowFlags_AlwaysAutoResize)) {
         new_project_modal_open_ = false;
         return;
@@ -1615,7 +1757,7 @@ void App::draw_new_project_modal() {
     // blocks the create so the project is never built with a broken artifact.
     const bool artifact_blocks =
         !new_project_artifact_path_.empty() && !new_project_artifact_valid_;
-    if (ImGui::Button("Create Project")) {
+    if (ImGui::Button("Create project")) {
         if (new_project_name_.empty()) {
             new_project_error_ = "name required";
         } else if (artifact_blocks) {
@@ -1875,7 +2017,7 @@ void App::draw_cluster() {
 }
 
 void App::draw_cloud() {
-    ImGui::SeparatorText("Cloud Inspector");
+    ImGui::SeparatorText("Cloud inspector");
 
     // The GUI surface over the provider backends (local / on-prem / Kubernetes /
     // AWS / GCP / Azure / OCI). **Permission-gated, deny-by-default**: inspecting
@@ -1885,28 +2027,30 @@ void App::draw_cloud() {
     // rule). This slice wires no real reads at all: it renders the catalog
     // metadata + the consent gate; actually invoking the control planes is a
     // later slice behind this same gate. Nothing in this panel touches a cloud.
-    ImGui::TextDisabled(
-        "Inspect a deployment target. Reading a provider's config/credentials or "
-        "calling it requires your explicit permission — every time, deny by "
-        "default. Nothing is read until you allow it.");
+    ImGui::TextColored(kInkMuted,
+        "Inspect a deployment target. Reading a provider's config or credentials, "
+        "or calling it, requires your explicit permission, every time. Deny by "
+        "default: nothing is read until you allow it.");
+    ImGui::Spacing();
 
     const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
 
     const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
     const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 18.0f;
 
-    // Left: the provider list. Each row carries a lock indicator — Local is open
-    // (it reads nothing), everything else is locked behind consent.
+    // Left: the provider list, grouped under mono category eyebrows. A green dot
+    // = open (Local, reads nothing); an amber dot = locked behind consent.
     ImGui::BeginChild("##cloud_list", ImVec2(list_w, panel_h),
                       ImGuiChildFlags_Borders);
+    std::string current_category;
     for (const CloudProvider& provider : catalog.providers()) {
-        ImGui::PushID(provider.id.c_str());
-        if (provider.requires_consent()) {
-            ImGui::TextColored(kWarnColor, "[lock]");
-        } else {
-            ImGui::TextColored(kSuccessColor, "[open]");
+        if (provider.category != current_category) {
+            current_category = provider.category;
+            if (&provider != &catalog.providers().front()) ImGui::Spacing();
+            eyebrow(mono_font_, to_upper(current_category).c_str());
         }
-        ImGui::SameLine();
+        ImGui::PushID(provider.id.c_str());
+        status_dot(provider.requires_consent() ? kWarnColor : kDotActive);
         if (ImGui::Selectable(provider.name.c_str(),
                               selected_cloud_provider_ == provider.id)) {
             // Selecting a different provider resets any consent — consent never
@@ -1916,7 +2060,6 @@ void App::draw_cloud() {
             }
             selected_cloud_provider_ = provider.id;
         }
-        ImGui::TextDisabled("    %s", provider.category.c_str());
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1934,70 +2077,93 @@ void App::draw_cloud() {
 
     ImGui::Text("%s", provider->name.c_str());
     ImGui::SameLine();
-    ImGui::TextDisabled("[%s]", provider->category.c_str());
-    ImGui::TextWrapped("%s", provider->summary.c_str());
-    if (!provider->cli.empty()) {
-        ImGui::TextDisabled("CLI: %s", provider->cli.c_str());
-    }
+    ImGui::TextColored(kInkQuiet, "%s", provider->category.c_str());
+    ImGui::TextColored(kInkSecondary, "%s", provider->summary.c_str());
 
-    // Local needs no consent — it is this running node, reached in-memory. Show
-    // the node facts we already hold (no cloud access), and stop.
+    // Local needs no consent: it is this running node, reached in memory. Show
+    // the node facts we already hold (no cloud access) and stop.
     if (!provider->requires_consent()) {
-        ImGui::SeparatorText("This node");
+        ImGui::Spacing();
+        eyebrow(mono_font_, "THIS NODE");
+        ImGui::Spacing();
+        status_dot(kDotActive);
         ImGui::TextColored(kSuccessColor,
-                           "No external access — nothing to authorize.");
-        ImGui::TextDisabled("id:       %s", cluster_.node_id().c_str());
-        ImGui::TextDisabled("data dir: %s", node_.config().data_dir.c_str());
+                           "No external access. Nothing to authorize.");
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextColored(kInkSecondary, "id        %s",
+                           cluster_.node_id().c_str());
+        ImGui::TextColored(kInkSecondary, "data dir  %s",
+                           node_.config().data_dir.c_str());
         for (const std::string& address : cluster_.listen_addresses()) {
-            ImGui::TextDisabled("listening: %s", address.c_str());
+            ImGui::TextColored(kInkSecondary, "listening %s", address.c_str());
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::EndChild();
         return;
     }
 
-    // What an inspect WOULD touch — named up front so consent is informed.
-    ImGui::SeparatorText("Inspecting this would read");
+    // What an inspect WOULD touch — named up front so consent is informed. The
+    // paths + commands render in mono (they are code).
+    ImGui::Spacing();
+    eyebrow(mono_font_, "INSPECTING THIS WOULD READ");
+    if (mono_font_) ImGui::PushFont(mono_font_);
     for (const std::string& path : provider->config_paths) {
         ImGui::BulletText("%s", path.c_str());
     }
-    ImGui::SeparatorText("and run (read-only)");
+    if (mono_font_) ImGui::PopFont();
+    ImGui::Spacing();
+    eyebrow(mono_font_, "AND RUN, READ-ONLY");
+    if (mono_font_) ImGui::PushFont(mono_font_);
     for (const std::string& command : provider->inspect_commands) {
         ImGui::BulletText("%s", command.c_str());
     }
+    if (mono_font_) ImGui::PopFont();
 
-    // The consent gate — deny-by-default. Until the user explicitly allows this
-    // one inspection, nothing is read or run. (And in this slice, even after
+    // The consent gate — a tinted callout box so the permission boundary reads
+    // as a deliberate stop, deny-by-default. Until the user explicitly allows
+    // this one inspection nothing is read or run. (And in this slice, even after
     // consent, no real read happens — the result is a labelled placeholder.)
-    ImGui::SeparatorText("Permission");
+    ImGui::Spacing();
     const bool consented = cloud_consent_provider_ == provider->id;
+    // Amber (caution) wash while locked; green (success) wash once granted.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                          consented ? ImVec4(0.882f, 0.961f, 0.933f, 1.0f)
+                                    : ImVec4(0.980f, 0.933f, 0.855f, 1.0f));
+    ImGui::BeginChild("##consent", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
     if (!consented) {
-        ImGui::TextColored(kWarnColor, "Locked — permission required.");
-        ImGui::TextWrapped(
+        status_dot(kWarnColor);
+        ImGui::TextColored(kWarnColor, "Permission required");
+        ImGui::TextColored(kInkSecondary,
             "zetta will not read the files above or run the commands above until "
             "you allow it. Consent applies to this one inspection and is not "
             "remembered.");
-        const std::string allow_label = "Allow inspection of " + provider->name;
+        ImGui::Spacing();
+        const std::string allow_label =
+            "Allow inspection of " + provider->name;
         if (ImGui::Button(allow_label.c_str())) {
             cloud_consent_provider_ = provider->id;
         }
     } else {
-        ImGui::TextColored(kSuccessColor,
-                           "Permission granted for this inspection.");
-        ImGui::TextWrapped(
-            "Reading real %s state is not wired yet — this is where your "
-            "identity, regions, and clusters will appear once the read-only "
-            "inspector lands (behind this same gate). Nothing was read or "
-            "called.",
+        status_dot(kDotActive);
+        ImGui::TextColored(kSuccessColor, "Permission granted for this inspection");
+        ImGui::TextColored(kInkSecondary,
+            "Reading real %s state is not wired yet: this is where your identity, "
+            "regions, and clusters will appear once the read-only inspector lands "
+            "(behind this same gate). Nothing was read or called.",
             provider->name.c_str());
+        ImGui::Spacing();
         if (ImGui::Button("Revoke permission")) {
             cloud_consent_provider_.clear();
         }
     }
     ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
 }
 
 void App::draw_runs() {
-    ImGui::SeparatorText("Runs / Outputs / Lineage");
+    ImGui::SeparatorText("Runs / outputs / lineage");
 
     // A run is the record of one execution of a deployed graph (status / logs /
     // outputs / lineage). This panel is a read-only viewer: runs arrive via the
@@ -2176,7 +2342,7 @@ void App::draw_job_scaling_controls() {
 }
 
 void App::draw_jobs() {
-    ImGui::SeparatorText("Compute Jobs");
+    ImGui::SeparatorText("Compute jobs");
 
     // The GUI form of system.zetta_jobs: the live compute-job registry (one row
     // per unit of native distributed accelerated compute — featurize / train /
@@ -2256,7 +2422,7 @@ void App::draw_jobs() {
 }
 
 void App::draw_admin() {
-    ImGui::SeparatorText("Admin & Audit");
+    ImGui::SeparatorText("Admin & audit");
 
     // The governance surface (SCR-7 / CMP-5, the GUI slice of FEAT-9): a
     // **read-only** viewer over the node's already-validated governance state —
@@ -2328,7 +2494,7 @@ void App::open_graph(const ProjectGraph& stored) {
 }
 
 void App::draw_graph_workspace() {
-    ImGui::SeparatorText("Graph Workspace");
+    ImGui::SeparatorText("Graph workspace");
 
     // The workspace edits the *currently selected* project's graphs (the same
     // selection the explorer's Projects column drives). Re-resolved by name each

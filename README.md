@@ -20,8 +20,9 @@ intelligence** from quarters to hours — **Intelligence Velocity for Big Thinke
 This repo is Orama Zetta's core. Today that's a fast, equal-peer **CRDT-replicated**
 store with clustering — JSONL on-disk storage, large objects, and a Postgres-SQL
 subset. A *zetta node* is one running instance; it runs **headed** (default — an SDL3
-+ Dear ImGui desktop UI, so the desktop is itself a cluster member) or **headless**
-(no UI, for servers with no display). C++26, macOS-first, single statically-linked
++ Dear ImGui desktop UI styled to the **Orama design system** (light, Geist,
+coral-disciplined; opens on a project-first Home), so the desktop is itself a
+cluster member) or **headless** (no UI, for servers with no display). C++26, macOS-first, single statically-linked
 binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name — the
 older name *"ZettaDB"* is retired.) The broader product surface — GUI control plane,
 one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning

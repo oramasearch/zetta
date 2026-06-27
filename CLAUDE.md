@@ -1348,6 +1348,7 @@ Building tests is on by default; turn off with `-DZETTA_BUILD_TESTS=OFF`.
 ```
 CMakeLists.txt              build graph: imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
+assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + README
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
@@ -1539,9 +1540,20 @@ These are load-bearing and easy to break:
    logical window. The SDLRenderer3 backend does NOT set the render scale for
    us — without this line the UI paints into the top-left quadrant only.
 
-The font (DroidSans.ttf from the ImGui tree) is embedded via
-`cmake/embed_font.cmake` into `namespace zetta`, so the binary has no runtime
-asset dependency.
+The fonts — **Geist** (UI sans) + **Geist Mono** (labels / counts / metrics /
+code) — are embedded from `assets/fonts/` via `cmake/embed_font.cmake` into
+`namespace zetta` (symbols `kGeistSans` / `kGeistMono`), so the binary has no
+runtime asset dependency. `App::mono_font_` holds the mono face for `PushFont`.
+
+The GUI follows the **Orama design system** (light surfaces, ink text, Geist
+typography, coral used surgically, semantic green/amber/red for status, sentence
+case, no em-dashes). It is **not** the old dark theme — `init()` calls
+`StyleColorsLight()` then `apply_orama_theme()`, which paints the exact tokens.
+The rules + token table + component grammar live in
+[docs/design-system.md](docs/design-system.md); **read it before touching the
+GUI.** The headed app opens on a project-first **Home** landing (`App::draw_home`
+— hero + New project + your projects), with the other views reached from the menu
+bar.
 
 ## Known gaps / behavior notes
 
@@ -1577,6 +1589,21 @@ building it**.
 - **For Claude:** before writing UI code that reads cloud creds/config or calls a
   cloud, ask the developer first. When in doubt, surface what *would* be
   read/called and ask — never touch the cloud to "just check."
+
+### Design system — follow it for all GUI work
+
+The headed app follows the **Orama design system** (light surfaces, ink text,
+**Geist + Geist Mono**, coral used *surgically* as the "you are here" accent,
+semantic green/amber/red for status — never coral/blue, **sentence case**, **no
+em-dashes** in product copy — use `·`/colons). The tokens, typography/copy rules,
+coral discipline, and component grammar (cards, ghost buttons, charcoal primary
+actions, status dots, mono metadata strips, tinted callouts) — and how they map
+to `src/gui/app.cpp` (`apply_orama_theme`, `mono_font_`, the `eyebrow` /
+`status_dot` / `wash` helpers) — are documented in
+[`docs/design-system.md`](docs/design-system.md). **Read it before adding or
+changing GUI**, and run its self-check before shipping. Canonical source: the
+`orama-work` repo's `orama_design_review/design-system` + the Orama Zetta
+marketing site.
 
 ### C++ conventions
 - **C++26** (`set(CMAKE_CXX_STANDARD 26)`, `cxx_std_26`). Use modern

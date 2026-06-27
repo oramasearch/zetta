@@ -59,22 +59,26 @@ there is no untrusted input, there is no JSON schema / boundary to validate
 
 ## The headed panel (`App::draw_cloud`)
 
-`src/gui/app.cpp`, reached from **Operations → Cloud Inspector**.
+`src/gui/app.cpp`, reached from **Operations → Cloud inspector**. Built in the
+[design-system](design-system.md) grammar.
 
 A list + detail layout (like the Runs / Admin panels):
 
-- **Left** — every provider, each row tagged `[open]` (Local — reads nothing) or
-  `[lock]` (everything else — consent required). Selecting a *different* provider
-  **resets any prior consent**, so consent never carries across providers.
+- **Left** — providers grouped under mono category eyebrows (`LOCAL` / `ON-PREM`
+  / `KUBERNETES` / `MANAGED CLOUD`), each row led by a status dot: **green** =
+  open (Local, reads nothing), **amber** = locked behind consent. Selecting a
+  *different* provider **resets any prior consent**, so consent never carries
+  across providers.
 - **Right** — the selected provider's detail:
   - **Local**: no consent; shows this node's id / data dir / listen addresses
-    (held in memory — no cloud access).
-  - **Everything else**: "Inspecting this would read" (the `config_paths`) and
-    "and run (read-only)" (the `inspect_commands`), then the **consent gate**:
-    - *Locked* (deny-by-default): a button **"Allow inspection of `<name>`"**.
-      Until pressed, nothing is read or run.
-    - *Allowed*: a clearly-labelled placeholder — **no real read happens in this
-      slice** — plus a **"Revoke permission"** button.
+    (held in memory, no cloud access).
+  - **Everything else**: the `config_paths` and read-only `inspect_commands`
+    rendered in mono (they are code), then the **consent gate** as a tinted,
+    bordered callout box:
+    - *Locked* (amber wash, deny-by-default): a **"Allow inspection of `<name>`"**
+      button. Until pressed, nothing is read or run.
+    - *Granted* (green wash): a clearly-labelled placeholder — **no real read
+      happens in this slice** — plus a **"Revoke permission"** button.
 
 ## Scope of this slice
 
