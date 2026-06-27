@@ -5,6 +5,7 @@ zetta is a database. A *zetta node* is one running instance; it runs **headed**
 This directory documents the system; keep it in sync as the system changes.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
+- [code-audit.md](code-audit.md) — a living **codebase health audit**: drift from our own conventions (inconsistencies), redundancies, code smells, and a **reconciliation against the wtm `ORAMA-ZETTA` blueprint rules** (RULE-* / PERM-* / CTL-* / TB-* / NFR-*, with a compliance verdict each). The place that says "these are the rules and how we measure against them."
 - [design-system.md](design-system.md) — the **Orama design system** as it applies to the headed GUI: colour tokens, Geist typography, copy rules (sentence case, no em-dashes), the coral discipline, and the component grammar mapped to `src/gui/app.cpp`. **Read before touching the GUI.**
 - [true-hybrid.md](true-hybrid.md) — **true hybrid**: one equal-peer cluster spanning heterogeneous hardware (CPU / GPU / ASIC, OS, architecture, on-prem + cloud) and the seams that make it work — `ComputeDevice` backends, the device registry, the heterogeneity-tolerant work-stealing scheduler, collectives, the equal-peer CRDT cluster, and the `Provisioner` seam — with a built-vs-planned support matrix.
 - [projects.md](projects.md) — the AI project (`zetta::Project`) data model, lifecycle CRUD, and the execution graphs it owns.
