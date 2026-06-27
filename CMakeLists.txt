@@ -361,6 +361,7 @@ add_library(zetta-core STATIC
   src/core/checks/entity_resolution_check.cpp
   src/core/entity_resolution.cpp
   src/core/executor.cpp
+  src/core/churn_step_executor.cpp
   src/core/intent_compiler.cpp
   src/core/duration.cpp
   src/core/bytes.cpp

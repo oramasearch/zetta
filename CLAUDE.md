@@ -1525,6 +1525,34 @@ and the executor only emits schema-legal output kinds (a restart-reload test
 proves the produced run passes `parse_run_value`). See
 [docs/execution.md](docs/execution.md).
 
+The first **real** `StepExecutor` is **`zetta::ChurnStepExecutor`**
+(`include/zetta/churn_step_executor.hpp`, **#396**; FEAT-5 / FEAT-6 / UC-1) — it
+replaces `DefaultStepExecutor`'s logical-ref placeholders with actual **native
+distributed accelerated compute** for the UC-1 churn pipeline, **behind the same
+seam and without touching the orchestrator**. It interprets the same
+`connect→clean→model→index→serve→act` taxonomy as *real* work, each heavy step a
+recorded [`ComputeJob`](#job-coordinator-zettacompute): **connect→load to DDF**
+(`load_data_frame`), **clean→featurize** (`run_featurize_job`), **model→train GBDT +
+calibrate** (`run_train_job`, which **registers a real `Model`** on the node),
+**index→score/rank** (`run_score_job`, the at-risk list), **serve→explain**
+(`run_explain_job` exact TreeSHAP — the per-entity + population churn drivers), and
+**act→retention playbook** (a host-side join of the at-risk list with each entity's
+dominant SHAP driver — the one non-job step). So `run_graph`'s churn graph produces a
+`Run` whose outputs reference a **real `Model` + ranked at-risk list + drivers** (the
+acceptance). Because the seam's `run_step` is a pure-per-step function but the pipeline
+threads artifacts (feature table → model → ranked list → drivers), the executor
+**carries that state in a pImpl** (mutated through a `unique_ptr` member, so `run_step`
+stays `const`) and **holds the dependencies the seam can't supply** — the `Node`, a
+started `JobCoordinator`, a `ComputeDevice`, and this node's numeric input shards + the
+specs. One instance drives **one** execution; it is used by **injection into a
+`GraphExecutor`** (not `Node::run_graph`, which can't conjure a coordinator/data). It
+is **SPMD** — on a multi-node cluster every node runs the same graph against its shard
+and the composed jobs combine partials over the collectives, so single-node and
+multi-node produce equivalent artifacts. It adds **no new JSON format**: every JSON it
+touches rides an existing validated boundary (the Run, the ComputeJob records, the GBDT
+weights body, the FeaturizeSpec/GbdtParams). See
+[docs/churn-step-executor.md](docs/churn-step-executor.md).
+
 ### Provisioning (node capability model + the `Provisioner` seam)
 
 The **`Provisioner`** seam (`include/zetta/provisioner.hpp`) and the **node
@@ -1861,6 +1889,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
+  churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -1972,6 +2001,7 @@ src/core/                   zetta-core impl
   audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
   intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
+  churn_step_executor.cpp   ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain) (#396)
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -2273,6 +2303,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
+- [`docs/churn-step-executor.md`](docs/churn-step-executor.md) — the **real** churn StepExecutor (`zetta::ChurnStepExecutor`, #396): real native distributed accelerated compute behind the `StepExecutor` seam (orchestrator untouched) — connect→load to DDF, clean→featurize, model→train GBDT + calibrate (registers a real `Model`), index→score/rank, serve→explain (TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob`; `run_graph` over the churn graph produces a Run whose outputs reference a real `Model` + ranked at-risk list + drivers (FEAT-5 / FEAT-6 / UC-1).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).

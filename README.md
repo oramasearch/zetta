@@ -76,7 +76,13 @@ read-only **Runs / Outputs / Lineage** panel — which also surfaces the trained
 [docs/runs.md](docs/runs.md)).
 It can **execute** a graph step-by-step into one of those runs
 (`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
-produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
+produce outputs + lineage; see [docs/execution.md](docs/execution.md)). For the UC-1
+churn pipeline a **real** per-step executor (`zetta::ChurnStepExecutor`) runs actual
+native distributed accelerated compute behind that same seam — connect→load to DDF,
+clean→featurize, model→train GBDT + calibrate, index→score/rank, serve→explain
+(TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob` — so the
+run's outputs reference a real **Model** + ranked at-risk list + drivers (see
+[docs/churn-step-executor.md](docs/churn-step-executor.md)).
 It owns **models** (`zetta::Model`) — trained models registered on the node:
 metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
 serialized **weights** stored as a large-object body that transfers peer-to-peer
