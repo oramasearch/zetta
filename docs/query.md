@@ -185,6 +185,30 @@ it never triggers a cloud call** — it only reflects inspects the user already 
 (and consented to) in the Cloud Inspector panel, so it is empty until then; the
 cache is ephemeral (in-memory, not replicated). Both are qualified-name only.
 
+Four more tables surface the run + governance state as read views (RULE-7 — the
+queryable counterpart of the GUI Runs / Admin panels, so SQL and the GUI never
+diverge), each computed at query time from the live `Node` accessors:
+
+- **`system.zetta_runs`** — the run registry (`Node::runs()`): one row per graph
+  execution. Columns: `run_id`, `project`, `graph`, `deployment`, `status`,
+  `created`, `updated`, `log_count`, `output_count`, `confidence`, `freshness`.
+- **`system.zetta_principals`** — the authenticated actors (`Node::principals()`).
+  Columns: `principal_id`, `name`, `kind`, `created`, `key_count`.
+- **`system.zetta_keys`** — the access keys the principals own. Columns: `key_id`,
+  `principal_id`, `principal`, `unrestricted`, `scope`, `capabilities`, `created`.
+  `scope` + `capabilities` are readable strings (`project:churn`,
+  `orchestration:start_run`, an `@<ttl>` suffix when time-bounded); a key record
+  carries no secret material, so this exposes nothing the Admin panel doesn't.
+- **`system.zetta_audit`** — the immutable audit trail (`Node::audit_events()`).
+  Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`.
+
+```sql
+SELECT run_id, status FROM system.zetta_runs WHERE status = 'failed';
+SELECT action, actor, target FROM system.zetta_audit WHERE allowed = false;
+```
+
+All four are qualified-name only.
+
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).
