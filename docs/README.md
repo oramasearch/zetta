@@ -4,6 +4,7 @@ zetta is a database. A *zetta node* is one running instance; it runs **headed**
 (default — with an SDL3 + Dear ImGui UI) or **headless** (no UI, for servers).
 This directory documents the system; keep it in sync as the system changes.
 
+- [orama-zetta.md](orama-zetta.md) — **read first**: what Orama Zetta is and the working product decisions (naming, value-first messaging, AI projects as the central item, the use-case-driven build, the UC-1 churn use case + worktree plan, the wtm `ORAMA-ZETTA` blueprint as the source of truth).
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
 - [code-audit.md](code-audit.md) — a living **codebase health audit**: drift from our own conventions (inconsistencies), redundancies, code smells, and a **reconciliation against the wtm `ORAMA-ZETTA` blueprint rules** (RULE-* / PERM-* / CTL-* / TB-* / NFR-*, with a compliance verdict each). The place that says "these are the rules and how we measure against them."
 - [design-system.md](design-system.md) — the **Orama design system** as it applies to the headed GUI: colour tokens, Geist typography, copy rules (sentence case, no em-dashes), the coral discipline, and the component grammar mapped to `src/gui/app.cpp`. **Read before touching the GUI.**

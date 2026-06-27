@@ -145,8 +145,10 @@ The panel holds no gate state of its own — it re-resolves the selected project
 name each frame (so a dropped/renamed project never leaves a dangling handle) and
 keeps only the editable graph JSON, the last inline error, and the last report.
 This is the **gate's UI**, not deploy wiring: it shows the block-on-fail state but
-does not itself deploy (`deploy_graph` runs separately; wiring the gate into it is
-later work).
+does not itself deploy. The gate is also enforced at the engine seam itself —
+`Node::deploy_graph` runs `default_gate()` and refuses a failing graph (RULE-1), so
+a programmatic deploy can't bypass it either; the panel just surfaces the verdict
+before the user clicks Deploy.
 
 ## Where it fits
 
