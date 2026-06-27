@@ -339,6 +339,7 @@ add_library(zetta-core STATIC
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
   src/core/solution_catalog.cpp
+  src/core/cloud_provider.cpp
   src/core/run.cpp
   src/core/model.cpp
   src/core/compute_job.cpp

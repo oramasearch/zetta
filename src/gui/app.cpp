@@ -4,6 +4,7 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/capability.hpp"
+#include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
@@ -671,6 +672,7 @@ void App::draw_menu_bar(bool& running) {
         view_item("Runs", View::Runs);
         view_item("Compute Jobs", View::Jobs);
         view_item("Cluster", View::Cluster);
+        view_item("Cloud Inspector", View::Cloud);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Governance")) {
@@ -701,6 +703,7 @@ void App::draw_active_view() {
         case View::Runs:     draw_runs();            break;
         case View::Jobs:     draw_jobs();            break;
         case View::Cluster:  draw_cluster();         break;
+        case View::Cloud:    draw_cloud();           break;
         case View::Admin:    draw_admin();           break;
     }
 }
@@ -1760,6 +1763,128 @@ void App::draw_cluster() {
         }
         ImGui::EndTable();
     }
+}
+
+void App::draw_cloud() {
+    ImGui::SeparatorText("Cloud Inspector");
+
+    // The GUI surface over the provider backends (local / on-prem / Kubernetes /
+    // AWS / GCP / Azure / OCI). **Permission-gated, deny-by-default**: inspecting
+    // a provider would read its credential/config files and run read-only
+    // identity/inventory commands, and zetta does NEITHER until the user
+    // explicitly consents — per inspection, never remembered (CLAUDE.md hard
+    // rule). This slice wires no real reads at all: it renders the catalog
+    // metadata + the consent gate; actually invoking the control planes is a
+    // later slice behind this same gate. Nothing in this panel touches a cloud.
+    ImGui::TextDisabled(
+        "Inspect a deployment target. Reading a provider's config/credentials or "
+        "calling it requires your explicit permission — every time, deny by "
+        "default. Nothing is read until you allow it.");
+
+    const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
+
+    const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
+    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 18.0f;
+
+    // Left: the provider list. Each row carries a lock indicator — Local is open
+    // (it reads nothing), everything else is locked behind consent.
+    ImGui::BeginChild("##cloud_list", ImVec2(list_w, panel_h),
+                      ImGuiChildFlags_Borders);
+    for (const CloudProvider& provider : catalog.providers()) {
+        ImGui::PushID(provider.id.c_str());
+        if (provider.requires_consent()) {
+            ImGui::TextColored(kWarnColor, "[lock]");
+        } else {
+            ImGui::TextColored(kSuccessColor, "[open]");
+        }
+        ImGui::SameLine();
+        if (ImGui::Selectable(provider.name.c_str(),
+                              selected_cloud_provider_ == provider.id)) {
+            // Selecting a different provider resets any consent — consent never
+            // carries across providers (deny-by-default, ask every time).
+            if (selected_cloud_provider_ != provider.id) {
+                cloud_consent_provider_.clear();
+            }
+            selected_cloud_provider_ = provider.id;
+        }
+        ImGui::TextDisabled("    %s", provider.category.c_str());
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // Right: the selected provider's detail + the consent gate.
+    ImGui::SameLine();
+    ImGui::BeginChild("##cloud_detail", ImVec2(0, panel_h),
+                      ImGuiChildFlags_Borders);
+    const CloudProvider* provider = catalog.find(selected_cloud_provider_);
+    if (!provider) {
+        ImGui::TextDisabled("Select a provider to inspect.");
+        ImGui::EndChild();
+        return;
+    }
+
+    ImGui::Text("%s", provider->name.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("[%s]", provider->category.c_str());
+    ImGui::TextWrapped("%s", provider->summary.c_str());
+    if (!provider->cli.empty()) {
+        ImGui::TextDisabled("CLI: %s", provider->cli.c_str());
+    }
+
+    // Local needs no consent — it is this running node, reached in-memory. Show
+    // the node facts we already hold (no cloud access), and stop.
+    if (!provider->requires_consent()) {
+        ImGui::SeparatorText("This node");
+        ImGui::TextColored(kSuccessColor,
+                           "No external access — nothing to authorize.");
+        ImGui::TextDisabled("id:       %s", cluster_.node_id().c_str());
+        ImGui::TextDisabled("data dir: %s", node_.config().data_dir.c_str());
+        for (const std::string& address : cluster_.listen_addresses()) {
+            ImGui::TextDisabled("listening: %s", address.c_str());
+        }
+        ImGui::EndChild();
+        return;
+    }
+
+    // What an inspect WOULD touch — named up front so consent is informed.
+    ImGui::SeparatorText("Inspecting this would read");
+    for (const std::string& path : provider->config_paths) {
+        ImGui::BulletText("%s", path.c_str());
+    }
+    ImGui::SeparatorText("and run (read-only)");
+    for (const std::string& command : provider->inspect_commands) {
+        ImGui::BulletText("%s", command.c_str());
+    }
+
+    // The consent gate — deny-by-default. Until the user explicitly allows this
+    // one inspection, nothing is read or run. (And in this slice, even after
+    // consent, no real read happens — the result is a labelled placeholder.)
+    ImGui::SeparatorText("Permission");
+    const bool consented = cloud_consent_provider_ == provider->id;
+    if (!consented) {
+        ImGui::TextColored(kWarnColor, "Locked — permission required.");
+        ImGui::TextWrapped(
+            "zetta will not read the files above or run the commands above until "
+            "you allow it. Consent applies to this one inspection and is not "
+            "remembered.");
+        const std::string allow_label = "Allow inspection of " + provider->name;
+        if (ImGui::Button(allow_label.c_str())) {
+            cloud_consent_provider_ = provider->id;
+        }
+    } else {
+        ImGui::TextColored(kSuccessColor,
+                           "Permission granted for this inspection.");
+        ImGui::TextWrapped(
+            "Reading real %s state is not wired yet — this is where your "
+            "identity, regions, and clusters will appear once the read-only "
+            "inspector lands (behind this same gate). Nothing was read or "
+            "called.",
+            provider->name.c_str());
+        if (ImGui::Button("Revoke permission")) {
+            cloud_consent_provider_.clear();
+        }
+    }
+    ImGui::EndChild();
 }
 
 void App::draw_runs() {

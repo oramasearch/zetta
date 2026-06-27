@@ -56,7 +56,13 @@ validated execution graph onto a target, recording the placement (R1 local; see
 [docs/deployments.md](docs/deployments.md)) — the headed **Deploy panel** does this
 as one-button deploy: pick a blueprint from the **AI Solution Library**, choose a
 placement on the dial, pass the correctness gate, and see its status (see
-[docs/solution-catalog.md](docs/solution-catalog.md)). A **control plane**
+[docs/solution-catalog.md](docs/solution-catalog.md)). Before deploying onto a
+cloud you can **inspect** it from the headed **Cloud Inspector** panel
+(local/on-prem/Kubernetes/AWS/GCP/Azure/OCI) — but reading any provider's
+config/credentials or calling it is **permission-gated, deny-by-default, and
+asked every time** (a load-bearing consent gate naming exactly what an inspect
+would read/call; scaffold + gate, no real cloud access yet — see
+[docs/cloud-inspector.md](docs/cloud-inspector.md)). A **control plane**
 reconciles each local deployment desired→actual and **self-heals** a killed or
 failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
 It owns **runs** (`zetta::Run`), the

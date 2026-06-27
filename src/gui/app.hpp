@@ -60,6 +60,7 @@ private:
         Runs,      // runs / outputs / lineage
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
+        Cloud,     // cloud provider inspector (permission-gated)
         Admin,     // principals / keys / audit
     };
 
@@ -92,6 +93,7 @@ private:
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     void draw_cluster();     // role, listen address, peers, join command
+    void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
@@ -158,6 +160,15 @@ private:
     std::string selected_run_;  // run id; re-resolved each frame like the others
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
+
+    // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
+    // catalog id selected in the list. `cloud_consent_provider_` is the id the
+    // user has *explicitly* consented to inspect right now — deny-by-default and
+    // reset whenever the selection changes, so consent is never carried over to a
+    // different provider or remembered across selections (CLAUDE.md hard rule).
+    // No real config-file read / cloud call happens in this slice regardless.
+    std::string selected_cloud_provider_;
+    std::string cloud_consent_provider_;
     std::string new_db_input_;
     std::string new_table_input_;
     std::string rename_project_input_;
