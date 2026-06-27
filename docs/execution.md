@@ -147,11 +147,26 @@ steps are skipped, the failure is diagnosable), the empty/cyclic guards, that th
 produced run is schema-valid and survives a restart, and that a custom
 `StepExecutor` is honoured.
 
+## Real per-step compute (the churn pipeline)
+
+The first **real** `StepExecutor` is `zetta::ChurnStepExecutor` (#396) — it replaces
+`DefaultStepExecutor`'s logical-ref placeholders with actual distributed accelerated
+compute for the UC-1 churn pipeline, **behind this same seam and without touching the
+orchestrator**. Each heavy step runs as a recorded `ComputeJob`
+(`connect`→load to DDF, `clean`→featurize, `model`→train GBDT + calibrate,
+`index`→score/rank, `serve`→explain via TreeSHAP, `act`→retention playbook), so
+`run_graph`'s churn graph produces a `Run` whose outputs reference a **real** `Model`
++ ranked at-risk list + drivers. Because the seam's `run_step` is a pure-per-step
+function but the pipeline threads artifacts (feature table → model → ranked list →
+drivers), the executor is constructed with its dependencies (the node, a started job
+coordinator, a compute device, the input shards) and used by injection into a
+`GraphExecutor`. See [churn-step-executor.md](churn-step-executor.md).
+
 ## What's next (later slices)
 
-- **Real per-step compute** behind the `StepExecutor` seam — actually building
-  indexes, training/applying models, materializing datasets as real tables/large
-  objects, and recording their real refs in the run's outputs.
+- **More real per-step compute** behind the `StepExecutor` seam for the other use
+  cases — building indexes, materializing datasets as real tables/large objects, and
+  recording their real refs in the run's outputs.
 - **Wiring the correctness gate** ([gate.md](gate.md)) as a pre-execution
   pre-flight (RULE-1), so a graph that fails semantic checks never runs.
 - **Streaming + monitoring** — the Runs / Outputs / Lineage UI panel (SCR-6) that
