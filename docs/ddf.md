@@ -159,13 +159,18 @@ local hash / sort-merge join per shard; #382). The
 **[distributed groupby-aggregate](ddf-groupby.md)** (`zetta::ddf::group_by` /
 `distributed_group_by` — count / sum / min / max / mean grouped by a key column, with
 per-node partials combined across the cluster via gather / merge / broadcast over the
-[collectives](collectives.md); #383) rounds out the built aggregation ops.
+[collectives](collectives.md); #383) rounds out the built aggregation ops, and a
+featurization op closes the set: the
+**[window / as-of (point-in-time) aggregation](ddf-as-of.md)**
+(`zetta::ddf::as_of_aggregate` — for each entity, reduce only the rows whose timestamp
+is at or before an `as_of` cutoff, optionally also at or after a `window_start` lower
+bound; the leakage-free featurization primitive for the churn pipeline; #384).
 
 ## What's next
 
-Still ahead: as-of windowing for the churn featurization pipeline, built the same way
-on the [`ComputeDevice`](compute-device.md) operator set, plus the
-[`ComputeJob`](compute-jobs.md) `ddf` kind that schedules them.
+Still ahead: wiring these ops through a [`ComputeJob`](compute-jobs.md) `ddf` kind
+(scheduled via the job coordinator), built on the
+[`ComputeDevice`](compute-device.md) operator set.
 
 See also [compute-device.md](compute-device.md) (the device seam),
 [cpu-device.md](cpu-device.md) (the reference backend), [storage.md](storage.md)
