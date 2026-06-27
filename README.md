@@ -62,7 +62,9 @@ cloud you can **inspect** it from the headed **Cloud Inspector** panel
 (local/on-prem/Kubernetes/AWS/GCP/Azure/OCI) — but reading any provider's
 config/credentials or calling it is **permission-gated, deny-by-default, and
 asked every time** (a load-bearing consent gate naming exactly what an inspect
-would read/call; scaffold + gate, no real cloud access yet — see
+would read/call). On consent it runs the provider's read-only commands and shows
+your identity, regions, and nodes (never reading the credential files), also
+queryable as `system.zetta_cloud_providers` / `system.zetta_cloud_status` (see
 [docs/cloud-inspector.md](docs/cloud-inspector.md)). A **control plane**
 reconciles each local deployment desired→actual and **self-heals** a killed or
 failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).

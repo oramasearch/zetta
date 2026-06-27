@@ -341,6 +341,7 @@ add_library(zetta-core STATIC
   src/core/job_autoscaler.cpp
   src/core/solution_catalog.cpp
   src/core/cloud_provider.cpp
+  src/core/cloud_inspector.cpp
   src/core/run.cpp
   src/core/model.cpp
   src/core/compute_job.cpp

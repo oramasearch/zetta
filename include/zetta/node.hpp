@@ -10,6 +10,7 @@
 
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
+#include "zetta/cloud_inspector.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
@@ -192,6 +193,19 @@ public:
     std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
     std::size_t job_count() const { return jobs_.size(); }
 
+    // In-memory cache of consent-gated cloud inspect results (CloudInspector;
+    // docs/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
+    // — it is neither replicated nor persisted (a live inspect is session-local;
+    // see RULE-7 in CLAUDE.md). The Cloud Inspector records a report here only
+    // AFTER the user consents to that one inspection; `system.zetta_cloud_status`
+    // reads this cache and never triggers a cloud call. The latest report per
+    // provider id replaces the previous one; cloud_inspections() is in provider
+    // insertion order.
+    void record_cloud_inspection(CloudInspectReport report);
+    std::vector<CloudInspectReport> cloud_inspections() const {
+        return cloud_inspections_;
+    }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -367,6 +381,7 @@ private:
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
     std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
+    std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     DeploymentController controller_{*this};  // control plane (driven by tick())

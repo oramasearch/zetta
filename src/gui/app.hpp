@@ -18,6 +18,7 @@ namespace zetta {
 class Node;
 class Cluster;
 struct ValidationReport;
+struct CloudProvider;
 class Project;
 class ProjectGraph;
 namespace ir {
@@ -106,6 +107,15 @@ private:
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     void draw_cluster();     // role, listen address, peers, join command
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
+    // Run a provider's read-only inspect (CloudInspector) and cache the result on
+    // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
+    // never on a passive render — this is the one place the GUI touches a cloud,
+    // and only after explicit consent. Synchronous (briefly blocks the UI thread,
+    // which owns the node, so no races); a deliberate per-click action.
+    void run_cloud_inspect(const CloudProvider& provider);
+    // Render the cached inspect result for `provider` (from the node). Read-only;
+    // triggers no cloud call. Shown inside the granted consent gate.
+    void draw_cloud_inspect_result(const CloudProvider& provider);
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
@@ -196,7 +206,8 @@ private:
     // user has *explicitly* consented to inspect right now — deny-by-default and
     // reset whenever the selection changes, so consent is never carried over to a
     // different provider or remembered across selections (CLAUDE.md hard rule).
-    // No real config-file read / cloud call happens in this slice regardless.
+    // Only after consent does run_cloud_inspect() run the provider's read-only
+    // commands; the result is cached on the node (system.zetta_cloud_status).
     std::string selected_cloud_provider_;
     std::string cloud_consent_provider_;
     std::string new_db_input_;

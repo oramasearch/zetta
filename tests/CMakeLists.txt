@@ -42,6 +42,7 @@ add_executable(zetta-tests
   test_job_autoscaler.cpp
   test_solution_catalog.cpp
   test_cloud_provider.cpp
+  test_cloud_inspector.cpp
   test_run.cpp
   test_model.cpp
   test_compute_job.cpp

@@ -454,3 +454,72 @@ TEST(QueryService, GroupByRejectsBadQueries) {
 
     node.stop();
 }
+
+// ---- Cloud Inspector system tables -----------------------------------------
+
+TEST(QueryService, SelectsCloudProvidersSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // The provider catalog is queryable as a system table — pure metadata, no
+    // cloud access. It covers every backend (local + 6 others).
+    auto sel = svc.run("SELECT * FROM system.zetta_cloud_providers;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    EXPECT_EQ(sel.rows.size(), 7u);
+
+    // WHERE + projection over it: aws requires consent and is runnable.
+    auto aws = svc.run(
+        "SELECT name, requires_consent, runnable FROM "
+        "system.zetta_cloud_providers WHERE provider = 'aws';",
+        "");
+    ASSERT_TRUE(aws.ok()) << aws.error;
+    ASSERT_EQ(aws.rows.size(), 1u);
+    EXPECT_TRUE(aws.rows[0]["requires_consent"].get<bool>());
+    EXPECT_TRUE(aws.rows[0]["runnable"].get<bool>());
+
+    // local reads nothing — no consent required.
+    auto local = svc.run(
+        "SELECT requires_consent FROM system.zetta_cloud_providers WHERE "
+        "provider = 'local';",
+        "");
+    ASSERT_TRUE(local.ok()) << local.error;
+    ASSERT_EQ(local.rows.size(), 1u);
+    EXPECT_FALSE(local.rows[0]["requires_consent"].get<bool>());
+
+    node.stop();
+}
+
+TEST(QueryService, SelectsCloudStatusSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // Empty until a consent-gated inspect is recorded — querying never triggers a
+    // cloud call.
+    auto empty = svc.run("SELECT * FROM system.zetta_cloud_status;", "");
+    ASSERT_TRUE(empty.ok()) << empty.error;
+    EXPECT_EQ(empty.rows.size(), 0u);
+
+    // Record a (consented) inspect result, as the Cloud Inspector would.
+    zetta::CloudInspectReport report;
+    report.provider_id = "aws";
+    report.provider_name = "Amazon Web Services";
+    report.ran = true;
+    report.reachable = true;
+    report.authenticated = true;
+    report.identity = "account 123456789012";
+    report.locations = {"us-east-1", "eu-west-1"};
+    node.record_cloud_inspection(report);
+
+    auto sel = svc.run("SELECT * FROM system.zetta_cloud_status;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 1u);
+    EXPECT_EQ(sel.rows[0]["provider"].get<std::string>(), "aws");
+    EXPECT_TRUE(sel.rows[0]["authenticated"].get<bool>());
+    EXPECT_EQ(sel.rows[0]["regions"].get<std::string>(), "us-east-1, eu-west-1");
+
+    node.stop();
+}

@@ -61,6 +61,15 @@ codebase map, how-to recipes, and gotchas, see **[reference.md](reference.md)**.
   `system` database, e.g. `system.zetta_nodes`, is resolved there, not in a
   dialect). Add a dialect/engine by implementing the interface, not the executor.
   (To add a whole new input *language*, see the **new-input** skill.)
+- **Surface observable state as a `system.zetta_*` table by default (RULE-7).**
+  State you expose for inspection/observability — cluster nodes, deployments,
+  models, jobs, **cloud/provider state** — defaults to a virtual, read-only
+  `system.zetta_*` table computed at query time from the live source
+  (`Node::…()` / a catalog), not a bespoke GUI-only panel or a hand-synced copy.
+  Composes with "EVERYTHING is replicated": durable state's CRDT is the read
+  view's source; ephemeral/observed state (a live cloud inspect) is a read view
+  with no CRDT backing. Cloud-derived tables stay permission-gated. (See
+  `CLAUDE.md` → Conventions → *System tables*.)
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking goes through `zetta::runtime::net`
   (`include/zetta/runtime/net.hpp`), included **only** by the adapter

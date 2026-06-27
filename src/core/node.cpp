@@ -844,6 +844,24 @@ bool Node::materialize_drop_job(const std::string& id) {
     return true;
 }
 
+// ----- cloud inspections (ephemeral; not replicated, not persisted) ----------
+
+void Node::record_cloud_inspection(CloudInspectReport report) {
+    // Latest report per provider wins, so the cache holds one current row per
+    // provider for system.zetta_cloud_status. No CRDT capture, no disk write —
+    // this is session-local observed state (RULE-7).
+    const auto it = std::find_if(
+        cloud_inspections_.begin(), cloud_inspections_.end(),
+        [&](const CloudInspectReport& existing) {
+            return existing.provider_id == report.provider_id;
+        });
+    if (it == cloud_inspections_.end()) {
+        cloud_inspections_.push_back(std::move(report));
+    } else {
+        *it = std::move(report);
+    }
+}
+
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
 bool Node::drop_principal(const std::string& name) {

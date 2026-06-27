@@ -5,6 +5,21 @@
 
 namespace zetta {
 
+// One read-only inspect command a provider would run: a human `display` string
+// (shown verbatim in the consent gate) plus the `argv` that actually runs it —
+// program + arguments, **no shell** (so it goes straight to the shared
+// CommandRunner, free of shell-injection risk; see command_runner.hpp).
+//
+// `argv` is EMPTY when the command can't run as-is here — e.g. bare-metal's
+// `ssh <host> …`, which needs a concrete host before it is runnable. A provider
+// is `runnable()` only when at least one of its inspect commands has a non-empty
+// argv; the consent gate still *names* a display-only command so the user sees
+// the full shape of what an inspect entails.
+struct InspectCommand {
+    std::string display;            // "aws sts get-caller-identity --output json"
+    std::vector<std::string> argv;  // {"aws","sts","get-caller-identity",…}; empty = not runnable
+};
+
 // A cloud / compute provider zetta can target — the descriptive, read-only
 // metadata the **Cloud Inspector** renders (FEAT-4 family; the GUI surface over
 // the existing provisioner + CLI-control-plane backends).
@@ -12,13 +27,16 @@ namespace zetta {
 // **This is PURE METADATA. It performs no cloud access of any kind** — no SDK,
 // no CLI, no file read, no network call. It only *describes* what inspecting a
 // provider would touch, so the UI can name it in the consent gate *before*
-// anything happens.
+// anything happens. The CloudInspector (cloud_inspector.hpp) is what actually
+// runs a provider's `inspect_commands`, and only behind explicit consent.
 //
 // HARD RULE (see CLAUDE.md → "Cloud providers — permission-gated"): reading any
 // of `config_paths`, or running any of `inspect_commands`, or any other read /
 // write to a provider, is gated behind explicit, per-action, deny-by-default
-// user consent. Wiring those real reads behind the gate is a later slice; this
-// type carries only the description the gate shows.
+// user consent. The CloudInspector reads only what the read-only
+// `inspect_commands` return (an identity/inventory) — it never reads or prints
+// the `config_paths` file contents (those would expose secrets); they are named
+// in the gate only so the user sees what the CLI may touch.
 struct CloudProvider {
     std::string id;        // stable slug ("aws", "gcp", "kubernetes", …); unique
     std::string name;      // display name ("Amazon Web Services")
@@ -29,12 +47,12 @@ struct CloudProvider {
                            // "kubectl", "oci", "ssh"); empty = none (Local)
 
     // What an inspect WOULD read — surfaced verbatim in the consent gate so the
-    // user sees exactly what they are authorizing. Read-only; never written.
-    // Empty for Local (it reads nothing — it is this running node).
+    // user sees exactly what they are authorizing. Read-only; never written, and
+    // never read/printed by the inspector itself. Empty for Local.
     std::vector<std::string> config_paths;     // e.g. "~/.aws/credentials"
     // What an inspect WOULD run — read-only identity / inventory commands only;
     // no provisioning, deploy, or teardown. Empty for Local.
-    std::vector<std::string> inspect_commands;  // e.g. "aws sts get-caller-identity"
+    std::vector<InspectCommand> inspect_commands;
 
     // True when inspecting this provider would touch anything outside this node
     // (a config file or a command) — i.e. when consent is required before an
@@ -42,6 +60,16 @@ struct CloudProvider {
     // Kubernetes / on-prem provider returns true.
     bool requires_consent() const {
         return !config_paths.empty() || !inspect_commands.empty();
+    }
+
+    // True when at least one inspect command can actually run here (a non-empty
+    // argv). bare-metal is described but not yet runnable (its `ssh <host>` needs
+    // a concrete host), so it requires consent but is not runnable.
+    bool runnable() const {
+        for (const InspectCommand& command : inspect_commands) {
+            if (!command.argv.empty()) return true;
+        }
+        return false;
     }
 };
 
