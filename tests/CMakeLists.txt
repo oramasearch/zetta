@@ -40,6 +40,7 @@ add_executable(zetta-tests
   test_scaling_policy.cpp
   test_burst_approval_gate.cpp
   test_solution_catalog.cpp
+  test_cloud_provider.cpp
   test_run.cpp
   test_model.cpp
   test_compute_job.cpp

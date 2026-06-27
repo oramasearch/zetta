@@ -339,6 +339,7 @@ add_library(zetta-core STATIC
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
   src/core/solution_catalog.cpp
+  src/core/cloud_provider.cpp
   src/core/run.cpp
   src/core/model.cpp
   src/core/compute_job.cpp
@@ -426,25 +427,40 @@ target_link_libraries(zetta PRIVATE
   SDL3::SDL3-static
 )
 
-# Embed DroidSans.ttf (ships inside the FetchContent'd imgui tree) so the
-# GUI can rasterize a real TTF at framebuffer-pixel density on HiDPI
-# displays. ImGui's default ProggyClean is a 13px bitmap font that goes
-# blurry the moment SDL_SetRenderScale upscales it; AddFontFromMemoryTTF
-# with RasterizerDensity = pixel_density keeps text crisp.
-set(ZETTA_FONT_SRC   "${imgui_SOURCE_DIR}/misc/fonts/DroidSans.ttf")
-set(ZETTA_FONT_HPP   "${CMAKE_BINARY_DIR}/generated/zetta_font_embedded.hpp")
+# Embed the Orama design-system typefaces — Geist (UI sans) + Geist Mono
+# (labels / counts / metrics) — so the GUI can rasterize real TTFs at
+# framebuffer-pixel density on HiDPI displays with no runtime font-file
+# dependency. ImGui's default ProggyClean is a 13px bitmap font that goes
+# blurry the moment SDL_SetRenderScale upscales it; AddFontFromMemoryTTF with
+# RasterizerDensity = pixel_density keeps text crisp. The TTFs live in
+# assets/fonts/ (SIL OFL 1.1; see assets/fonts/README.md).
+set(ZETTA_FONT_SANS_SRC "${CMAKE_SOURCE_DIR}/assets/fonts/Geist.ttf")
+set(ZETTA_FONT_MONO_SRC "${CMAKE_SOURCE_DIR}/assets/fonts/GeistMono.ttf")
+set(ZETTA_FONT_SANS_HPP "${CMAKE_BINARY_DIR}/generated/zetta_font_sans.hpp")
+set(ZETTA_FONT_MONO_HPP "${CMAKE_BINARY_DIR}/generated/zetta_font_mono.hpp")
 file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/generated")
 add_custom_command(
-  OUTPUT  "${ZETTA_FONT_HPP}"
+  OUTPUT  "${ZETTA_FONT_SANS_HPP}"
   COMMAND ${CMAKE_COMMAND}
-          -DIN_FILE=${ZETTA_FONT_SRC}
-          -DOUT_FILE=${ZETTA_FONT_HPP}
-          -DSYMBOL=kDroidSans
+          -DIN_FILE=${ZETTA_FONT_SANS_SRC}
+          -DOUT_FILE=${ZETTA_FONT_SANS_HPP}
+          -DSYMBOL=kGeistSans
           -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  DEPENDS ${ZETTA_FONT_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
-  COMMENT "Embedding DroidSans.ttf into zetta_font_embedded.hpp"
+  DEPENDS ${ZETTA_FONT_SANS_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+  COMMENT "Embedding Geist.ttf into zetta_font_sans.hpp"
 )
-add_custom_target(zetta-font-embed ALL DEPENDS "${ZETTA_FONT_HPP}")
+add_custom_command(
+  OUTPUT  "${ZETTA_FONT_MONO_HPP}"
+  COMMAND ${CMAKE_COMMAND}
+          -DIN_FILE=${ZETTA_FONT_MONO_SRC}
+          -DOUT_FILE=${ZETTA_FONT_MONO_HPP}
+          -DSYMBOL=kGeistMono
+          -P ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+  DEPENDS ${ZETTA_FONT_MONO_SRC} ${CMAKE_SOURCE_DIR}/cmake/embed_font.cmake
+  COMMENT "Embedding GeistMono.ttf into zetta_font_mono.hpp"
+)
+add_custom_target(zetta-font-embed ALL
+  DEPENDS "${ZETTA_FONT_SANS_HPP}" "${ZETTA_FONT_MONO_HPP}")
 add_dependencies(zetta zetta-font-embed)
 target_include_directories(zetta PRIVATE "${CMAKE_BINARY_DIR}/generated")
 
