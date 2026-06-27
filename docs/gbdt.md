@@ -140,6 +140,18 @@ auto result = zetta::ml::run_train_job(
 // result.model_id the registered zetta::Model (on the root).
 ```
 
+## Probability calibration
+
+The trained model's probabilities `sigmoid(raw)` rank accounts well but are not
+necessarily **calibrated**. [Probability calibration](calibration.md) (Platt scaling
+/ isotonic regression) fits a monotone `raw score → probability` map on a held-out
+split so the risk scores are trustworthy (Brier / ECE improve, AUC preserved). A
+fitted `Calibrator` attaches to a `GbdtModel` (`predict_proba` then routes through
+it, and it rides inside the weights body), and `run_train_job` fits one for the
+produced `Model` when a `CalibrationConfig` is passed — via a content-hash held-out
+split that keeps single-node and multi-node equivalent. See
+[docs/calibration.md](calibration.md).
+
 ## Scope + what's next
 
 - **Objective:** binary logistic (log-loss) only. Other objectives (multiclass,

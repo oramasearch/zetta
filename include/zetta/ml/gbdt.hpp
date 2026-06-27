@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/compute/compute_status.hpp"
+#include "zetta/ml/calibration.hpp"
 
 // Histogram gradient-boosted decision trees with a **binary logistic** objective
 // (FEAT-6 / ENT-14, #390; part of the native distributed accelerated-compute pass
@@ -124,12 +125,19 @@ struct GbdtModel {
     std::vector<std::string> feature_names;     // the fixed feature ordering
     std::vector<RegressionTree> trees;
 
+    // An optional fitted probability calibration (Platt / isotonic, calibration.hpp).
+    // When present, `predict_proba` maps the raw score through it instead of a plain
+    // sigmoid, so a calibrated model carries its calibration in its own weights body
+    // (and `ranking` is unchanged — the map is monotone). Absent = uncalibrated.
+    std::optional<Calibrator> calibration;
+
     std::size_t tree_count() const noexcept { return trees.size(); }
     std::size_t feature_count() const noexcept { return feature_names.size(); }
 
     // The raw score for a feature row: base_score + Σ tree outputs.
     double predict_raw(const std::vector<double>& features) const;
-    // The predicted probability: sigmoid(predict_raw).
+    // The predicted probability: the calibrated map of predict_raw when a
+    // `calibration` is attached, else sigmoid(predict_raw).
     double predict_proba(const std::vector<double>& features) const;
 
     // Serialize / parse the weights body. from_json validates against the GBDT
@@ -210,5 +218,20 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
                            const std::vector<std::string>& feature_names,
                            const std::vector<double>& labels,
                            const GbdtParams& params);
+
+// --- Calibration -------------------------------------------------------------
+
+// Fit a probability calibration for a trained model on a **held-out** set and
+// attach it (so `model.predict_proba` returns calibrated probabilities). The
+// held-out rows must NOT be the rows the model trained on — calibrating on the
+// training data is leaky (isotonic in particular fits it perfectly). `holdout`
+// columns are `[feature][row]` in the model's `feature_names` order;
+// `holdout_labels` the {0,1} targets. Non-throwing: fails (a failing ComputeStatus,
+// no calibration attached) when the shapes disagree or the held-out labels are a
+// single class. AUC is preserved (the map is monotone); reliability (Brier / ECE)
+// improves. See docs/calibration.md.
+compute::ComputeStatus calibrate_model(
+    GbdtModel& model, const std::vector<std::vector<double>>& holdout_columns,
+    const std::vector<double>& holdout_labels, CalibrationMethod method);
 
 }  // namespace zetta::ml

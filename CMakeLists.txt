@@ -384,6 +384,7 @@ add_library(zetta-core STATIC
   src/core/ddf/featurize_job.cpp
   src/core/ml/gbdt.cpp
   src/core/ml/gbdt_train_job.cpp
+  src/core/ml/calibration.cpp
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
   src/core/compute/cpu_device.cpp
