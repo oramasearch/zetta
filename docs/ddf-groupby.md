@@ -213,6 +213,12 @@ The groupby now runs as a recorded `ddf` [`ComputeJob`](compute-jobs.md) through
 (join — already its own [op](ddf-join.md) — and as-of windowing) over a frame's
 columns, schedulable the same way, are later issues against this substrate.
 
+The single-node `group_by` is also reachable from **SQL**: a
+`SELECT … GROUP BY` runs through this op (the table is loaded into a `DataFrame`,
+`WHERE` applied via `ddf::filter`, then `group_by`), materialized back into result
+rows — see [query.md](query.md) → *Aggregation (GROUP BY)* (ARC-12 / API-2, #386).
+
 See also [ddf.md](ddf.md) (the DataFrame core), [collectives.md](collectives.md)
 (the combine), [job-coordinator.md](job-coordinator.md) (the SPMD work surface),
-and [compute-device.md](compute-device.md) (the device seam).
+[query.md](query.md) (the SQL surface), and
+[compute-device.md](compute-device.md) (the device seam).

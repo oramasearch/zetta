@@ -979,8 +979,14 @@ dialect-neutral AST (`zetta::query::Statement`, a `std::variant`) → the
 frontend; `QueryService` is the parse+execute facade the UI calls. Supporting
 another database format = writing another `Dialect` that targets the same AST —
 **never** add dialect specifics to the executor. Supported today: basic DDL
-(CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT + single
-`WHERE` equality). The executor also serves a virtual, read-only **`system`**
+(CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT with a single
+`WHERE` predicate over the comparison set `=` / `!=` / `<>` / `<` / `<=` / `>` /
+`>=`, projection, and **`GROUP BY` aggregation that runs through the
+[DDF engine](docs/ddf.md)** — ARC-12 / API-2, #386: a grouped `SELECT` loads the
+table into a `DataFrame`, applies `WHERE` via `ddf::filter`, and computes
+`COUNT`/`SUM`/`MIN`/`MAX`/`AVG` per group with `ddf::group_by`, materializing the
+result back into rows; numeric-only, one numeric key column, results in ascending
+key order). The executor also serves a virtual, read-only **`system`**
 database (à la `pg_catalog`) whose tables are computed at query time — first
 **`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
 wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
@@ -1925,7 +1931,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
-- [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
+- [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).

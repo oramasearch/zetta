@@ -121,7 +121,7 @@ private:
                 i = j;
                 continue;
             }
-            static constexpr std::string_view kPunct = "(),;*.=-";
+            static constexpr std::string_view kPunct = "(),;*.=-<>!";
             if (kPunct.find(c) != std::string_view::npos) {
                 tokens_.push_back({Tok::Punct, std::string(1, c)});
                 ++i;
@@ -181,6 +181,51 @@ private:
             ref.table = first;
         }
         return ref;
+    }
+
+    // A comparison operator from one or two punctuation tokens: `=`, `!=`, `<>`,
+    // `<`, `<=`, `>`, `>=` (the tokenizer emits each char separately, so `<=` is
+    // two tokens).
+    CompareOp parse_comparison() {
+        if (accept_punct('=')) return CompareOp::Equal;
+        if (accept_punct('!')) {
+            expect_punct('=');
+            return CompareOp::NotEqual;
+        }
+        if (accept_punct('<')) {
+            if (accept_punct('=')) return CompareOp::LessEqual;
+            if (accept_punct('>')) return CompareOp::NotEqual;
+            return CompareOp::Less;
+        }
+        if (accept_punct('>')) {
+            if (accept_punct('=')) return CompareOp::GreaterEqual;
+            return CompareOp::Greater;
+        }
+        throw ParseError{"expected a comparison operator (=, !=, <>, <, <=, >, "
+                         ">=), got '" + peek().text + "'"};
+    }
+
+    // The aggregate function an identifier names, or nullopt if it is not one.
+    static std::optional<AggregateFunc> aggregate_func_of(std::string_view name) {
+        if (iequals(name, "count")) return AggregateFunc::Count;
+        if (iequals(name, "sum")) return AggregateFunc::Sum;
+        if (iequals(name, "min")) return AggregateFunc::Min;
+        if (iequals(name, "max")) return AggregateFunc::Max;
+        if (iequals(name, "avg") || iequals(name, "mean")) {
+            return AggregateFunc::Avg;
+        }
+        return std::nullopt;
+    }
+
+    // Whether the cursor is at an aggregate call: an aggregate-function identifier
+    // immediately followed by '(' (so a column literally named `sum` still parses
+    // as a column unless it is called).
+    bool at_aggregate_call() const {
+        return peek().type == Tok::Ident &&
+               aggregate_func_of(peek().text).has_value() &&
+               pos_ + 1 < tokens_.size() &&
+               tokens_[pos_ + 1].type == Tok::Punct &&
+               tokens_[pos_ + 1].text == "(";
     }
 
     nlohmann::json parse_value() {
@@ -286,21 +331,79 @@ private:
 
     Statement parse_select() {
         SelectStmt stmt;
+
+        // The select list. Each item is `*`, a bare column, or an aggregate call
+        // FUNC(arg), each with an optional `AS alias`. Aggregates and key columns
+        // are collected into `items` (in select order); their presence + a GROUP BY
+        // clause decide whether this is an aggregating query.
+        std::vector<GroupedItem> items;
+        bool any_aggregate = false;
         if (accept_punct('*')) {
             stmt.all = true;
         } else {
             do {
-                stmt.columns.push_back(parse_ident());
+                GroupedItem item;
+                if (at_aggregate_call()) {
+                    AggregateExpr aggregate;
+                    aggregate.func = *aggregate_func_of(advance().text);
+                    expect_punct('(');
+                    if (accept_punct('*')) {
+                        // COUNT(*) — no column argument.
+                        if (aggregate.func != AggregateFunc::Count) {
+                            throw ParseError{"only COUNT(*) takes '*'; other "
+                                             "aggregates need a column"};
+                        }
+                    } else {
+                        aggregate.column = parse_ident();
+                    }
+                    expect_punct(')');
+                    item.aggregate = std::move(aggregate);
+                    any_aggregate = true;
+                } else {
+                    item.column = parse_ident();
+                }
+                if (accept_keyword("as")) item.alias = parse_ident();
+                items.push_back(std::move(item));
             } while (accept_punct(','));
         }
         expect_keyword("from");
         stmt.table = parse_table_ref();
         if (accept_keyword("where")) {
-            WhereEq where;
+            WhereClause where;
             where.column = parse_ident();
-            expect_punct('=');
+            where.op = parse_comparison();
             where.value = parse_value();
             stmt.where = std::move(where);
+        }
+        if (accept_keyword("group")) {
+            expect_keyword("by");
+            do {
+                stmt.group_by.push_back(parse_ident());
+            } while (accept_punct(','));
+        }
+
+        // Reconcile the select list with the GROUP BY into either a plain or an
+        // aggregating SELECT. An aggregate function requires GROUP BY; `SELECT *`
+        // cannot be grouped.
+        if (any_aggregate && stmt.group_by.empty()) {
+            throw ParseError{"aggregate functions require a GROUP BY clause"};
+        }
+        if (stmt.all && !stmt.group_by.empty()) {
+            throw ParseError{"SELECT * cannot be combined with GROUP BY"};
+        }
+        if (!stmt.group_by.empty()) {
+            stmt.items = std::move(items);  // grouped: the ordered key/aggregate list
+        } else if (!stmt.all) {
+            // Plain projection: every item is a bare column (no aggregates — the
+            // GROUP BY check above already guarantees that). AS rename is only
+            // supported on the grouped path, so reject it here rather than drop it.
+            for (const GroupedItem& item : items) {
+                if (!item.alias.empty()) {
+                    throw ParseError{"column aliases (AS) are only supported in "
+                                     "GROUP BY queries"};
+                }
+                stmt.columns.push_back(item.column);
+            }
         }
         return stmt;
     }
