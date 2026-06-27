@@ -372,6 +372,8 @@ add_library(zetta-core STATIC
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
   src/core/ddf/join.cpp
+  src/core/ddf/data_frame_ops.cpp
+  src/core/ddf/distributed_sort.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

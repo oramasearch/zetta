@@ -143,6 +143,15 @@ negative-into-unsigned / out-of-range / zero chunk size), the **read-back bounda
 (dtype mismatch, unknown column), and the **schema JSON boundary** (round-trip plus
 rejection of every malformed shape).
 
+## DDF operators
+
+The first ops over this substrate are built: **[sort / concat / slice](ddf-ops.md)**
+(`zetta::ddf::sort` / `concat` / `slice`) — order a frame by a key column (the
+compare runs on the device via `sort_by_key`), row-wise union, and a contiguous row
+range — and the **[distributed sort](ddf-distributed-sort.md)**
+(`zetta::ddf::DistributedSorter`) that composes them across the cluster
+(sample-partition + local sort + merge).
+
 ## What's next
 
 DDF **operators** over a frame's columns. The first is the **distributed equi-join**
