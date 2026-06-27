@@ -398,6 +398,14 @@ add_library(zetta-core STATIC
   src/core/compute/work_stealing_scheduler.cpp
   src/core/compute/distributed_scheduler.cpp
   src/core/compute/job_coordinator.cpp
+  src/core/testkit/test_suite.cpp
+  src/core/testkit/harness.cpp
+  src/core/testkit/cases_compute.cpp
+  src/core/testkit/cases_ddf.cpp
+  src/core/testkit/cases_ml.cpp
+  src/core/testkit/cases_distributed.cpp
+  src/core/testkit/cases_governance.cpp
+  src/core/testkit/cases_pipeline.cpp
   src/core/runtime.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
