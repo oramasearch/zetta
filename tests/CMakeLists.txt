@@ -66,6 +66,7 @@ add_executable(zetta-tests
   test_gbdt.cpp
   test_calibration.cpp
   test_tree_shap.cpp
+  test_gbdt_score.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
   test_cuda_device.cpp

@@ -387,6 +387,8 @@ add_library(zetta-core STATIC
   src/core/ml/calibration.cpp
   src/core/ml/tree_shap.cpp
   src/core/ml/gbdt_explain_job.cpp
+  src/core/ml/gbdt_score.cpp
+  src/core/ml/gbdt_score_job.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

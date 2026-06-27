@@ -198,14 +198,18 @@ histogram GBDT training** (`zetta::ml::run_train_job`): gradient-boosted decisio
 trees with a binary-logistic objective whose per-feature gradient/Hessian histograms
 are allreduced across nodes each round, so single-node and multi-node grow equivalent
 trees; it runs as a recorded `train` `ComputeJob` and produces a `Model`
-([docs/gbdt.md](docs/gbdt.md)). The model's probabilities are **calibrated** (Platt
-scaling / isotonic regression fit on a held-out split, `zetta::ml::Calibrator`) so
-the churn risk scores are well-calibrated — Brier / ECE improve while the ranking is
-preserved ([docs/calibration.md](docs/calibration.md)), and the trained model is
-**explained** with **exact TreeSHAP** (`zetta::ml::run_explain_job`) — per-entity,
-per-feature attributions that reconstruct the prediction exactly
-(`base + Σ φ = predict_raw`), a per-entity dominant churn driver, and a distributed
-`explain` `ComputeJob` with a global driver ranking
+([docs/gbdt.md](docs/gbdt.md)). A trained model then drives **batch scoring /
+rank-at-risk** (`zetta::ml::run_score_job`): score entities to a calibrated churn risk
+and rank them into an at-risk list, distributed as a `score` `ComputeJob` whose
+ranking runs on the device `sort_by_key` operator — identical single-node and
+multi-node ([docs/gbdt-score.md](docs/gbdt-score.md)). The model's probabilities are
+**calibrated** (Platt scaling / isotonic regression fit on a held-out split,
+`zetta::ml::Calibrator`) so the churn risk scores are well-calibrated — Brier / ECE
+improve while the ranking is preserved ([docs/calibration.md](docs/calibration.md)),
+and the trained model is **explained** with **exact TreeSHAP**
+(`zetta::ml::run_explain_job`) — per-entity, per-feature attributions that reconstruct
+the prediction exactly (`base + Σ φ = predict_raw`), a per-entity dominant churn
+driver, and a distributed `explain` `ComputeJob` with a global driver ranking
 ([docs/tree-shap.md](docs/tree-shap.md)). State replicates between
 nodes as an Automerge CRDT. See [docs/](docs/) for details.
 

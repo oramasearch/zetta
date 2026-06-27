@@ -11,7 +11,6 @@
 
 #include "zetta/collectives.hpp"
 #include "zetta/compute/compute_status.hpp"
-#include "zetta/compute/data_type.hpp"
 #include "zetta/model.hpp"
 #include "zetta/node.hpp"
 
