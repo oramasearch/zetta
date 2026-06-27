@@ -2692,9 +2692,17 @@ void App::draw_graph_canvas() {
             for (std::size_t column = 0; column < kinds.size(); ++column) {
                 const float x =
                     origin.x + static_cast<float>(column) * (node_w + col_gap);
-                const std::string header{ir::to_string(kinds[column])};
-                draw->AddText(ImVec2(x, origin.y), kCanvasHeaderColor,
-                              header.c_str());
+                // Column header as a mono uppercase eyebrow (the StepKind), the
+                // connect→…→act pipeline reading left to right.
+                const std::string header =
+                    to_upper(std::string{ir::to_string(kinds[column])});
+                const ImVec2 header_pos(x, origin.y);
+                if (mono_font_) {
+                    draw->AddText(mono_font_, ImGui::GetFontSize() * 0.92f,
+                                  header_pos, kCanvasHeaderColor, header.c_str());
+                } else {
+                    draw->AddText(header_pos, kCanvasHeaderColor, header.c_str());
+                }
                 float y = origin.y + header_h;
                 for (const auto& node : graph.nodes_of_kind(kinds[column])) {
                     const ImVec2 top_left(x, y);
