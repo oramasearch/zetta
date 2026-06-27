@@ -8,13 +8,19 @@ results (**ARC-12**; part of the native distributed accelerated-compute pass for
 UC-1 churn, [#264](https://github.com/oramasearch/zetta/issues/264) /
 [#383](https://github.com/oramasearch/zetta/issues/383)). It builds on the DDF
 core ([#380](https://github.com/oramasearch/zetta/issues/380)) and the
-[collectives](collectives.md) ([#365](https://github.com/oramasearch/zetta/issues/365)).
+[collectives](collectives.md) ([#365](https://github.com/oramasearch/zetta/issues/365)),
+and [runs as a recorded `ddf` `ComputeJob`](#running-it-as-a-recorded-computejob)
+through the [job coordinator](job-coordinator.md)
+([#387](https://github.com/oramasearch/zetta/issues/387)).
 
 ```
 include/zetta/ddf/group_by.hpp   the AggregateOp / GroupBySpec / GroupByResult / GroupByPartial types + entry points
 src/core/ddf/group_by.cpp        the local op, the partial merge / wire form, the JSON boundary
 schemas/group_by_spec.schema.json   the spec JSON boundary (draft-07)
 tests/test_group_by.cpp          single-node, the partial/merge/wire, the JSON boundary, the multi-node acceptance
+include/zetta/ddf/group_by_job.hpp   run_group_by_job — the op as a recorded ComputeJob (#387)
+src/core/ddf/group_by_job.cpp        drives distributed_group_by through the coordinator's job lifecycle
+tests/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.zetta_jobs)
 ```
 
 ## What it is
@@ -125,6 +131,37 @@ round. No new wire format is introduced — the partial rides the existing
 collective's `vector<double>` payload, which is schema-validated at the
 [signal/collective boundary](signal-plane.md).
 
+## Running it as a recorded ComputeJob
+
+The `distributed_group_by` round above is driven inside an *ad-hoc* `coordinator.run`
+body. **`run_group_by_job`** (`include/zetta/ddf/group_by_job.hpp`, **FEAT-8**,
+[#387](https://github.com/oramasearch/zetta/issues/387)) packages that exact pattern
+as a reusable function that runs the groupby as a **recorded
+[`ComputeJob`](compute-jobs.md) of kind `ddf`** — so the work is durable, audited
+(`job_finished`), and **appears in `system.zetta_jobs`**, like any other unit of
+accelerated compute.
+
+```cpp
+#include "zetta/ddf/group_by_job.hpp"
+
+auto job = node.create_job(zetta::JobKind::Ddf);          // the record
+auto out = zetta::ddf::run_group_by_job(
+    coordinator, *job, my_shard_frame, spec,
+    /*round_tag=*/"region-agg-round");                    // shared across nodes
+
+// out.result is the global aggregation (identical on every node, via the
+// broadcast); out.status is the job's terminal status.
+```
+
+It adds nothing to the distribution math — it calls `distributed_group_by` with the
+job's `JobRound` and lets the [coordinator](job-coordinator.md) drive the lifecycle
+(`Running → Succeeded | Failed`) and record the job. Call it **concurrently on every
+participating node** (the collectives need all participants), each with its own
+`ComputeJob`. The `round_tag` must be **identical on every node** (a node's own job
+id can't serve — each node holds a distinct `ComputeJob`); empty defaults to a
+deterministic, spec-derived tag. Because `distributed_group_by` broadcasts the merged
+result, `out.result` is populated on **every** node, not the root alone.
+
 ## The partial and its wire boundary
 
 `GroupByPartial` is the mergeable per-node state and the unit the collectives carry.
@@ -171,9 +208,10 @@ equals the single-node group-by over the whole frame.
 
 ## What's next
 
-The other DDF featurization ops (join, as-of windowing) over a frame's columns, and
-wiring the `ddf` [`ComputeJob`](compute-jobs.md) kind to schedule them through the
-[job coordinator](job-coordinator.md) — later issues against this substrate.
+The groupby now runs as a recorded `ddf` [`ComputeJob`](compute-jobs.md) through the
+[job coordinator](job-coordinator.md) (above). The remaining DDF featurization ops
+(join — already its own [op](ddf-join.md) — and as-of windowing) over a frame's
+columns, schedulable the same way, are later issues against this substrate.
 
 See also [ddf.md](ddf.md) (the DataFrame core), [collectives.md](collectives.md)
 (the combine), [job-coordinator.md](job-coordinator.md) (the SPMD work surface),

@@ -182,11 +182,12 @@ the cluster via collectives, then runs a local hash / sort-merge join per shard
 (`zetta::ddf::distributed_group_by`, count/sum/min/max/mean) that computes a partial
 per node and combines them across the cluster via the collectives
 ([docs/ddf-groupby.md](docs/ddf-groupby.md)) — single-node and multi-node runs produce
-identical results. A **window / as-of (point-in-time) aggregation**
-(`zetta::ddf::as_of_aggregate`) closes the set — the leakage-free featurization
-primitive that reduces, per entity, only the rows at or before a cutoff
-([docs/ddf-as-of.md](docs/ddf-as-of.md)). State replicates between nodes as an Automerge
-CRDT. See [docs/](docs/) for details.
+identical results, and which also runs as a recorded `ddf` `ComputeJob`
+(`run_group_by_job`) so it appears in `system.zetta_jobs`. A **window / as-of
+(point-in-time) aggregation** (`zetta::ddf::as_of_aggregate`) closes the set — the
+leakage-free featurization primitive that reduces, per entity, only the rows at or
+before a cutoff ([docs/ddf-as-of.md](docs/ddf-as-of.md)). State replicates between
+nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
