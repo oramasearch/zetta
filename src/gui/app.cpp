@@ -1292,9 +1292,11 @@ void App::draw_rows() {
         }
         ImGui::TextDisabled("system.%s  (%zu rows)", selected_table_.c_str(),
                             outcome.rows.size());
+        if (mono_font_) ImGui::PushFont(mono_font_);
         for (std::size_t i = 0; i < outcome.rows.size(); ++i) {
             ImGui::TextWrapped("%zu  %s", i, outcome.rows[i].dump().c_str());
         }
+        if (mono_font_) ImGui::PopFont();
         return;
     }
 
@@ -1348,9 +1350,11 @@ void App::draw_rows() {
     // useful to draw every frame.
     constexpr std::size_t kMaxShown = 500;
     const std::size_t shown = std::min(store.size(), kMaxShown);
+    if (mono_font_) ImGui::PushFont(mono_font_);
     for (std::size_t i = 0; i < shown; ++i) {
         ImGui::TextWrapped("%zu  %s", i, store.at(i).dump().c_str());
     }
+    if (mono_font_) ImGui::PopFont();
     if (store.size() > shown) {
         ImGui::TextDisabled("... and %zu more", store.size() - shown);
     }
@@ -1959,6 +1963,7 @@ void App::draw_deploy() {
         ImGui::TableSetupColumn("Edges");
         ImGui::TableSetupColumn("Created");
         ImGui::TableHeadersRow();
+        if (mono_font_) ImGui::PushFont(mono_font_);
         for (const std::shared_ptr<Deployment>& deployment : deployments) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -1972,23 +1977,28 @@ void App::draw_deploy() {
             ImGui::TableSetColumnIndex(4);
             ImGui::TextUnformatted(deployment->created().c_str());
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::EndTable();
     }
 }
 
 void App::draw_cluster() {
     ImGui::SeparatorText("Cluster");
-    ImGui::Text("Node: %s", cluster_.node_id().c_str());
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    ImGui::TextColored(kInkSecondary, "node       %s", cluster_.node_id().c_str());
     for (const std::string& address : cluster_.listen_addresses()) {
-        ImGui::Text("Listening on: %s", address.c_str());
+        ImGui::TextColored(kInkSecondary, "listening  %s", address.c_str());
     }
+    if (mono_font_) ImGui::PopFont();
     ImGui::TextDisabled(
         "All nodes are equal; leader election and failover are planned.");
 
     ImGui::TextUnformatted("Add another node with:");
     std::string command = cluster_.peer_command();
     ImGui::SetNextItemWidth(-FLT_MIN);
+    if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::InputText("##peer_command", &command, ImGuiInputTextFlags_ReadOnly);
+    if (mono_font_) ImGui::PopFont();
     if (ImGui::Button("Copy command")) {
         ImGui::SetClipboardText(command.c_str());
     }
@@ -2006,6 +2016,7 @@ void App::draw_cluster() {
         ImGui::TableSetupColumn("Version");
         ImGui::TableSetupColumn("Replication");
         ImGui::TableHeadersRow();
+        if (mono_font_) ImGui::PushFont(mono_font_);
         for (const NodeStatus& node : nodes) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -2042,6 +2053,7 @@ void App::draw_cluster() {
                                    node.replication.seconds_since_sync);
             }
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::EndTable();
     }
 }
@@ -2216,9 +2228,11 @@ void App::draw_runs() {
                            std::string(to_string(run->status())).c_str());
         ImGui::SameLine();
         const std::string short_id = run->id().substr(0, run->id().find('-'));
+        if (mono_font_) ImGui::PushFont(mono_font_);
         if (ImGui::Selectable(short_id.c_str(), selected_run_ == run->id())) {
             selected_run_ = run->id();
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -2399,9 +2413,11 @@ void App::draw_jobs() {
         const std::string short_id = job->id().substr(0, job->id().find('-'));
         const std::string label =
             std::string(to_string(job->kind())) + " · " + short_id;
+        if (mono_font_) ImGui::PushFont(mono_font_);
         if (ImGui::Selectable(label.c_str(), selected_job_ == job->id())) {
             selected_job_ = job->id();
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -2504,7 +2520,9 @@ void App::draw_admin() {
 
     // --- Audit log (the immutable, append-only trail) -----------------------
     ImGui::SeparatorText("Audit log");
+    if (mono_font_) ImGui::PushFont(mono_font_);
     render_audit_log(node_.audit_events());
+    if (mono_font_) ImGui::PopFont();
 }
 
 void App::open_graph(const ProjectGraph& stored) {
