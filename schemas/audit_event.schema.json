@@ -1,40 +1,44 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://oramasearch.com/zetta/schemas/audit_event.schema.json",
-  "title": "zetta.AuditEvent",
-  "description": "An immutable, append-only audit record (ENT-23 / FEAT-9): one governed action — a graph change, a deploy, a data-access decision, a compute-job lifecycle event, an access-key issue/revoke (e.g. a burst node's identity, ARC-13), or a provision-burst approval-gate decision. The id is the CRDT key / on-disk file name and is optional in the value shape that rides in the document; it is present in the on-disk projection (audit/<uuid>.json). This file mirrors the inline schema in src/core/audit_event.cpp — keep the two in sync.",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "id": {
-      "type": "string",
-      "description": "The event's UUIDv4 — the CRDT key (audit:<uuid>) and on-disk file name."
-    },
     "action": {
-      "type": "string",
-      "description": "The governed action this event records.",
-      "enum": ["graph_created", "graph_dropped", "graph_deployed", "data_access", "job_created", "job_finished", "key_issued", "key_revoked", "provision_requested"]
+      "enum": [
+        "graph_created",
+        "graph_dropped",
+        "graph_deployed",
+        "data_access",
+        "job_created",
+        "job_finished",
+        "key_issued",
+        "key_revoked",
+        "provision_requested"
+      ],
+      "type": "string"
     },
     "actor": {
-      "type": "string",
-      "description": "Who acted — the login key id / principal, when known (empty when unattributed)."
-    },
-    "target": {
-      "type": "string",
-      "description": "What was acted on — a graph name, a deployment id, or a 'kind:name' resource."
+      "type": "string"
     },
     "allowed": {
-      "type": "boolean",
-      "description": "The outcome. For data_access it is the authorization decision; for state changes it is true (the action happened)."
+      "type": "boolean"
     },
     "detail": {
-      "type": "string",
-      "description": "A human-readable reason / summary, fit for display (e.g. the access decision's reason)."
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "target": {
+      "type": "string"
     },
     "time": {
-      "type": "string",
-      "description": "ISO-8601 UTC stamp of when the action was recorded."
+      "type": "string"
     }
   },
-  "required": ["action", "time"],
-  "additionalProperties": false
+  "required": [
+    "action",
+    "time"
+  ],
+  "title": "zetta.AuditEvent",
+  "type": "object"
 }

@@ -1,21 +1,38 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.ml.Calibrator",
-  "description": "A fitted probability-calibration map: a model's raw score (logit) -> a calibrated probability. Either Platt scaling (sigmoid(platt_a*raw + platt_b)) or isotonic regression (a non-decreasing step function over raw-score breakpoints). Carried inside a GbdtModel weights body so a calibrated model is self-contained.",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "method": { "type": "string", "enum": ["platt", "isotonic"] },
-    "platt_a": { "type": "number" },
-    "platt_b": { "type": "number" },
     "iso_bounds": {
-      "type": "array",
-      "items": { "type": "number" }
+      "items": {
+        "type": "number"
+      },
+      "type": "array"
     },
     "iso_values": {
-      "type": "array",
-      "items": { "type": "number", "minimum": 0, "maximum": 1 }
+      "items": {
+        "maximum": 1,
+        "minimum": 0,
+        "type": "number"
+      },
+      "type": "array"
+    },
+    "method": {
+      "enum": [
+        "platt",
+        "isotonic"
+      ],
+      "type": "string"
+    },
+    "platt_a": {
+      "type": "number"
+    },
+    "platt_b": {
+      "type": "number"
     }
   },
-  "required": ["method"],
-  "additionalProperties": false
+  "required": [
+    "method"
+  ],
+  "title": "zetta.ml.Calibrator",
+  "type": "object"
 }

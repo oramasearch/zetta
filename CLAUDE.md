@@ -1897,7 +1897,11 @@ the burst node is a later slice. See [docs/burst-identity.md](docs/burst-identit
     validation (the Run record; `src/core/run.cpp`). FetchContent'd **after**
     automerge-cpp so it reuses that nlohmann/json target; linked **PRIVATE** to
     `zetta-core`, and compiled with `-fexperimental-library` to match
-    zetta-core's libc++ ABI (propagated from Boost::capy).
+    zetta-core's libc++ ABI (propagated from Boost::capy). **Schema as code:** the
+    embedded draft-07 schema in the C++ (exposed via a `*_schema()` accessor) is the
+    single source of truth; `schemas/*.json` is **generated** from it and
+    **drift-checked** by `tests/test_schemas.cpp` (regenerate with
+    `ZETTA_WRITE_SCHEMAS=1`) — see [`docs/schemas.md`](docs/schemas.md).
 - **ccache** used as the compiler launcher when present (auto-detected).
 
 ## Build + run

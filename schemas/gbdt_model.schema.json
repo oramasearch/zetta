@@ -1,44 +1,84 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.ml.GbdtModel",
-  "description": "The serialized weights body of a trained histogram GBDT (binary logistic): a base score plus an ordered ensemble of regression trees over a fixed feature ordering. This is the JSON document stored as a Model's weights body and re-validated when read back from disk or a peer.",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "objective": { "type": "string", "enum": ["binary_logistic"] },
-    "base_score": { "type": "number" },
-    "learning_rate": { "type": "number" },
+    "base_score": {
+      "type": "number"
+    },
+    "calibration": {
+      "type": "object"
+    },
     "feature_names": {
-      "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "learning_rate": {
+      "type": "number"
+    },
+    "objective": {
+      "enum": [
+        "binary_logistic"
+      ],
+      "type": "string"
     },
     "trees": {
-      "type": "array",
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
           "nodes": {
-            "type": "array",
-            "minItems": 1,
             "items": {
-              "type": "object",
+              "additionalProperties": false,
               "properties": {
-                "feature": { "type": "integer" },
-                "threshold": { "type": "number" },
-                "left": { "type": "integer" },
-                "right": { "type": "integer" },
-                "value": { "type": "number" },
-                "cover": { "type": "number", "description": "Training weight (sum of Hessians) reaching this node — the background branch probabilities exact TreeSHAP integrates over." }
+                "cover": {
+                  "type": "number"
+                },
+                "feature": {
+                  "type": "integer"
+                },
+                "left": {
+                  "type": "integer"
+                },
+                "right": {
+                  "type": "integer"
+                },
+                "threshold": {
+                  "type": "number"
+                },
+                "value": {
+                  "type": "number"
+                }
               },
-              "required": ["feature", "threshold", "left", "right", "value", "cover"],
-              "additionalProperties": false
-            }
+              "required": [
+                "feature",
+                "threshold",
+                "left",
+                "right",
+                "value",
+                "cover"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
           }
         },
-        "required": ["nodes"],
-        "additionalProperties": false
-      }
+        "required": [
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     }
   },
-  "required": ["objective", "base_score", "learning_rate", "feature_names", "trees"],
-  "additionalProperties": false
+  "required": [
+    "objective",
+    "base_score",
+    "learning_rate",
+    "feature_names",
+    "trees"
+  ],
+  "title": "zetta.ml.GbdtModel",
+  "type": "object"
 }
