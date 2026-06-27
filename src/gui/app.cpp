@@ -4,6 +4,7 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/capability.hpp"
+#include "zetta/cloud_inspector.hpp"
 #include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/compute_job.hpp"
@@ -2089,16 +2090,18 @@ void App::draw_cloud() {
 
     // The GUI surface over the provider backends (local / on-prem / Kubernetes /
     // AWS / GCP / Azure / OCI). **Permission-gated, deny-by-default**: inspecting
-    // a provider would read its credential/config files and run read-only
-    // identity/inventory commands, and zetta does NEITHER until the user
+    // a provider runs its read-only identity/inventory commands (which use the
+    // provider's credentials via its CLI), and zetta does NOTHING until the user
     // explicitly consents — per inspection, never remembered (CLAUDE.md hard
-    // rule). This slice wires no real reads at all: it renders the catalog
-    // metadata + the consent gate; actually invoking the control planes is a
-    // later slice behind this same gate. Nothing in this panel touches a cloud.
+    // rule). Only on consent does run_cloud_inspect() shell out (through the
+    // shared CommandRunner) and cache the result on the node
+    // (system.zetta_cloud_status). The credential FILES are never read or printed
+    // — only the read-only commands run.
     ImGui::TextColored(kInkMuted,
-        "Inspect a deployment target. Reading a provider's config or credentials, "
-        "or calling it, requires your explicit permission, every time. Deny by "
-        "default: nothing is read until you allow it.");
+        "Inspect a deployment target. Running a provider's read-only commands "
+        "(which read its config and credentials) requires your explicit "
+        "permission, every time. Deny by default: nothing runs until you allow "
+        "it. Credential files are never displayed.");
     ImGui::Spacing();
 
     const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
@@ -2171,26 +2174,28 @@ void App::draw_cloud() {
     }
 
     // What an inspect WOULD touch — named up front so consent is informed. The
-    // paths + commands render in mono (they are code).
+    // paths + commands render in mono (they are code). The CLI may read these
+    // files; zetta itself never reads or prints them.
     ImGui::Spacing();
-    eyebrow(mono_font_, "INSPECTING THIS WOULD READ");
+    eyebrow(mono_font_, "THE CLI MAY READ");
     if (mono_font_) ImGui::PushFont(mono_font_);
     for (const std::string& path : provider->config_paths) {
         ImGui::BulletText("%s", path.c_str());
     }
     if (mono_font_) ImGui::PopFont();
     ImGui::Spacing();
-    eyebrow(mono_font_, "AND RUN, READ-ONLY");
+    eyebrow(mono_font_, "AND ZETTA WOULD RUN, READ-ONLY");
     if (mono_font_) ImGui::PushFont(mono_font_);
-    for (const std::string& command : provider->inspect_commands) {
-        ImGui::BulletText("%s", command.c_str());
+    for (const InspectCommand& command : provider->inspect_commands) {
+        ImGui::BulletText("%s", command.display.c_str());
     }
     if (mono_font_) ImGui::PopFont();
 
     // The consent gate — a tinted callout box so the permission boundary reads
     // as a deliberate stop, deny-by-default. Until the user explicitly allows
-    // this one inspection nothing is read or run. (And in this slice, even after
-    // consent, no real read happens — the result is a labelled placeholder.)
+    // this one inspection nothing is read or run. On allow, run_cloud_inspect()
+    // shells out to the read-only commands and caches the result; the result is
+    // rendered below and stays queryable as system.zetta_cloud_status.
     ImGui::Spacing();
     const bool consented = cloud_consent_provider_ == provider->id;
     // Amber (caution) wash while locked; green (success) wash once granted.
@@ -2203,24 +2208,25 @@ void App::draw_cloud() {
         status_dot(kWarnColor);
         ImGui::TextColored(kWarnColor, "Permission required");
         ImGui::TextColored(kInkSecondary,
-            "zetta will not read the files above or run the commands above until "
-            "you allow it. Consent applies to this one inspection and is not "
-            "remembered.");
+            "zetta will not run the commands above until you allow it. Consent "
+            "applies to this one inspection and is not remembered. Credential "
+            "files are never read or shown.");
         ImGui::Spacing();
         const std::string allow_label =
             "Allow inspection of " + provider->name;
         if (primary_button(allow_label.c_str())) {
             cloud_consent_provider_ = provider->id;
+            run_cloud_inspect(*provider);  // the one cloud call, behind consent
         }
     } else {
         status_dot(kDotActive);
         ImGui::TextColored(kSuccessColor, "Permission granted for this inspection");
-        ImGui::TextColored(kInkSecondary,
-            "Reading real %s state is not wired yet: this is where your identity, "
-            "regions, and clusters will appear once the read-only inspector lands "
-            "(behind this same gate). Nothing was read or called.",
-            provider->name.c_str());
+        draw_cloud_inspect_result(*provider);
         ImGui::Spacing();
+        if (ImGui::Button("Re-inspect")) {
+            run_cloud_inspect(*provider);
+        }
+        ImGui::SameLine();
         if (ImGui::Button("Revoke permission")) {
             cloud_consent_provider_.clear();
         }
@@ -2228,6 +2234,91 @@ void App::draw_cloud() {
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::EndChild();
+}
+
+// Render the cached result of the consented inspect for `provider` (found on the
+// node). Reads only already-produced state — it triggers no cloud call.
+void App::draw_cloud_inspect_result(const CloudProvider& provider) {
+    const std::vector<CloudInspectReport> reports = node_.cloud_inspections();
+    const CloudInspectReport* report = nullptr;
+    for (const CloudInspectReport& candidate : reports) {
+        if (candidate.provider_id == provider.id) {
+            report = &candidate;
+            break;
+        }
+    }
+    if (report == nullptr) {
+        ImGui::TextColored(kInkSecondary, "Inspecting…");
+        return;
+    }
+
+    // A provider described but not yet runnable (bare-metal needs a host).
+    if (!report->ran) {
+        status_dot(kWarnColor);
+        ImGui::TextColored(kInkSecondary, "%s", report->detail.c_str());
+        return;
+    }
+
+    // Headline reachability / identity.
+    status_dot(report->reachable ? kDotActive : kErrorColor);
+    if (report->authenticated && !report->identity.empty()) {
+        ImGui::TextColored(kSuccessColor, "Connected");
+        ImGui::SameLine();
+        ImGui::TextColored(kInkSecondary, "· %s", report->identity.c_str());
+    } else if (report->reachable) {
+        ImGui::TextColored(kInkSecondary, "Reachable");
+    } else {
+        ImGui::TextColored(kErrorColor, "Not reachable");
+    }
+    if (!report->detail.empty()) {
+        ImGui::TextColored(kInkSecondary, "%s", report->detail.c_str());
+    }
+
+    // Regions / resources, in mono (they are identifiers).
+    if (!report->locations.empty()) {
+        ImGui::Spacing();
+        eyebrow(mono_font_, "REGIONS");
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextWrapped("%s (%zu)", join_refs(report->locations).c_str(),
+                           report->locations.size());
+        if (mono_font_) ImGui::PopFont();
+    }
+    if (!report->resources.empty()) {
+        ImGui::Spacing();
+        eyebrow(mono_font_, "NODES");
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextWrapped("%s (%zu)", join_refs(report->resources).c_str(),
+                           report->resources.size());
+        if (mono_font_) ImGui::PopFont();
+    }
+
+    // Per-command outcomes — a green/red dot, the command (mono), and an error
+    // when one failed, so a missing CLI or a parse failure is legible.
+    ImGui::Spacing();
+    eyebrow(mono_font_, "COMMANDS");
+    for (const CloudInspectCommand& command : report->commands) {
+        status_dot(command.ok ? kDotActive : kErrorColor);
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextColored(kInkSecondary, "%s", command.display.c_str());
+        if (mono_font_) ImGui::PopFont();
+        if (!command.ok && !command.error.empty()) {
+            ImGui::TextColored(kErrorColor, "    %s", command.error.c_str());
+        }
+    }
+    if (!report->checked_at.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(kInkQuiet, "checked at %s", report->checked_at.c_str());
+    }
+}
+
+void App::run_cloud_inspect(const CloudProvider& provider) {
+    // The single point where the GUI touches a cloud — reached only from the
+    // consent gate's Allow / Re-inspect actions. Synchronous: the inspect runs on
+    // the UI thread (which owns the node), so recording the result races with
+    // nothing. The default CommandRunner shells out to the provider's CLI; the
+    // result is cached for the panel and for system.zetta_cloud_status.
+    CloudInspector inspector;
+    node_.record_cloud_inspection(inspector.inspect(provider));
 }
 
 void App::draw_runs() {

@@ -162,6 +162,29 @@ slice (the scheduler), so until then `node` is "which node's registry you
 queried", not a placement assignment. Qualified name only (no bare alias), like
 `system.zetta_deployments`.
 
+Two more tables back the [Cloud Inspector](cloud-inspector.md).
+**`system.zetta_cloud_providers`** is the provider catalog as a table — **pure
+metadata, it reads nothing from any cloud**:
+
+```sql
+SELECT * FROM system.zetta_cloud_providers;
+SELECT name, runnable FROM system.zetta_cloud_providers WHERE requires_consent = true;
+```
+
+Columns: `provider`, `name`, `category`, `cli`, `requires_consent`, `runnable`,
+`config_paths`, `inspect_commands`. **`system.zetta_cloud_status`** is the cached
+results of consent-gated inspects (sourced from `Node::cloud_inspections()`):
+
+```sql
+SELECT provider, reachable, authenticated, identity FROM system.zetta_cloud_status;
+```
+
+Columns: `provider`, `name`, `reachable`, `authenticated`, `identity`, `regions`,
+`resources`, `commands_ok`, `commands_total`, `checked_at`, `detail`. **Querying
+it never triggers a cloud call** — it only reflects inspects the user already ran
+(and consented to) in the Cloud Inspector panel, so it is empty until then; the
+cache is ephemeral (in-memory, not replicated). Both are qualified-name only.
+
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).

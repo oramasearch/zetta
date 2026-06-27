@@ -13,6 +13,8 @@
 #include <variant>
 #include <vector>
 
+#include "zetta/cloud_inspector.hpp"
+#include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
@@ -38,12 +40,21 @@ namespace {
 //    their kind / metrics / weights fingerprint.
 //  - `zetta_jobs` — the compute-job registry (Node::jobs()): one row per unit of
 //    native distributed accelerated compute + its lifecycle (ARC-11 / ENT-31).
+//  - `zetta_cloud_providers` — the deployment-target / provider catalog
+//    (CloudProviderCatalog::builtin()): pure metadata, reads nothing from any
+//    cloud. Surfaces what the Cloud Inspector would touch (RULE-7).
+//  - `zetta_cloud_status` — cached results of consent-gated cloud inspects
+//    (Node::cloud_inspections()). Querying it NEVER triggers a cloud call: it
+//    only reflects inspects the user already consented to in the Cloud Inspector
+//    (empty until then). Ephemeral, not replicated.
 // Future: system.zetta_leadership, etc.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
 constexpr std::string_view kDeploymentsTable = "zetta_deployments";
 constexpr std::string_view kModelsTable = "zetta_models";
 constexpr std::string_view kJobsTable = "zetta_jobs";
+constexpr std::string_view kCloudProvidersTable = "zetta_cloud_providers";
+constexpr std::string_view kCloudStatusTable = "zetta_cloud_status";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -219,6 +230,71 @@ bool row_matches(const nlohmann::json& row,
     if (!where) return true;
     if (!row.contains(where->column)) return false;
     return compare_cell(row.at(where->column), where->op, where->value);
+}
+
+// Join strings with ", " for the flat, scalar cells a SELECT row shows.
+std::string join_comma(const std::vector<std::string>& items) {
+    std::string joined;
+    for (const std::string& item : items) {
+        if (!joined.empty()) joined += ", ";
+        joined += item;
+    }
+    return joined;
+}
+
+// One JSON row per provider for the zetta_cloud_providers system table — the
+// deployment-target / provider catalog (CloudProviderCatalog::builtin()). **Pure
+// metadata: reads nothing from any cloud.** It surfaces, queryable via SQL, what
+// the Cloud Inspector would touch (the config files + read-only commands) and
+// whether inspecting requires consent / can run here (RULE-7).
+std::vector<nlohmann::json> cloud_provider_rows() {
+    std::vector<nlohmann::json> rows;
+    for (const CloudProvider& provider :
+         CloudProviderCatalog::builtin().providers()) {
+        std::vector<std::string> commands;
+        for (const InspectCommand& command : provider.inspect_commands) {
+            commands.push_back(command.display);
+        }
+        nlohmann::json row;
+        row["provider"] = provider.id;
+        row["name"] = provider.name;
+        row["category"] = provider.category;
+        row["cli"] = provider.cli;
+        row["requires_consent"] = provider.requires_consent();
+        row["runnable"] = provider.runnable();
+        row["config_paths"] = join_comma(provider.config_paths);
+        row["inspect_commands"] = join_comma(commands);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per cached cloud inspect for the zetta_cloud_status system table —
+// the results of consent-gated inspects (Node::cloud_inspections()). **Reading
+// this never triggers a cloud call**: it only reflects inspects the user already
+// ran (and consented to) in the Cloud Inspector, so it is empty until then.
+std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const CloudInspectReport& report : node.cloud_inspections()) {
+        std::size_t commands_ok = 0;
+        for (const CloudInspectCommand& command : report.commands) {
+            if (command.ok) ++commands_ok;
+        }
+        nlohmann::json row;
+        row["provider"] = report.provider_id;
+        row["name"] = report.provider_name;
+        row["reachable"] = report.reachable;
+        row["authenticated"] = report.authenticated;
+        row["identity"] = report.identity;
+        row["regions"] = join_comma(report.locations);
+        row["resources"] = join_comma(report.resources);
+        row["commands_ok"] = static_cast<int>(commands_ok);
+        row["commands_total"] = static_cast<int>(report.commands.size());
+        row["checked_at"] = report.checked_at;
+        row["detail"] = report.detail;
+        rows.push_back(std::move(row));
+    }
+    return rows;
 }
 
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
@@ -583,12 +659,19 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kJobsTable) {
                         return select_over_rows(s, compute_job_rows(node_));
                     }
+                    if (sys == kCloudProvidersTable) {
+                        return select_over_rows(s, cloud_provider_rows());
+                    }
+                    if (sys == kCloudStatusTable) {
+                        return select_over_rows(s, cloud_status_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
                                      "system.zetta_deployments, "
-                                     "system.zetta_models, or "
-                                     "system.zetta_jobs)");
+                                     "system.zetta_models, system.zetta_jobs, "
+                                     "system.zetta_cloud_providers, or "
+                                     "system.zetta_cloud_status)");
                     }
                     if (!cluster_) {
                         return error("system.zetta_nodes is unavailable here "

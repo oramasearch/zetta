@@ -1,0 +1,160 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.CloudInspectReport",
+  "description": "The result of one consent-gated, read-only inspect of a cloud provider (zetta::CloudInspector). This is zetta's OWN contract — the value cached on the node and surfaced as system.zetta_cloud_status. The $defs section additionally documents the small slices of each vendor CLI's JSON output that the inspector validates at the point of extraction (it reads only these fields; the rest of the vendor output is opaque). Mirrored embedded in src/core/cloud_inspector.cpp; this copy is for reference.",
+  "type": "object",
+  "required": ["provider_id", "ran", "reachable", "authenticated"],
+  "additionalProperties": false,
+  "properties": {
+    "provider_id": { "type": "string" },
+    "provider_name": { "type": "string" },
+    "ran": { "type": "boolean" },
+    "reachable": { "type": "boolean" },
+    "authenticated": { "type": "boolean" },
+    "identity": { "type": "string" },
+    "locations": { "type": "array", "items": { "type": "string" } },
+    "resources": { "type": "array", "items": { "type": "string" } },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["display", "ok"],
+        "additionalProperties": false,
+        "properties": {
+          "display": { "type": "string" },
+          "exit_code": { "type": "integer" },
+          "ok": { "type": "boolean" },
+          "output": { "type": "string" },
+          "error": { "type": "string" }
+        }
+      }
+    },
+    "detail": { "type": "string" },
+    "checked_at": { "type": "string" }
+  },
+  "$defs": {
+    "aws_identity": {
+      "type": "object",
+      "required": ["Account", "Arn"],
+      "properties": {
+        "Account": { "type": "string" },
+        "Arn": { "type": "string" },
+        "UserId": { "type": "string" }
+      }
+    },
+    "aws_regions": {
+      "type": "object",
+      "required": ["Regions"],
+      "properties": {
+        "Regions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["RegionName"],
+            "properties": { "RegionName": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "gcp_config": {
+      "type": "object",
+      "properties": {
+        "core": {
+          "type": "object",
+          "properties": {
+            "account": { "type": "string" },
+            "project": { "type": "string" }
+          }
+        }
+      }
+    },
+    "gcp_regions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string" } }
+      }
+    },
+    "azure_account": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "user": {
+          "type": "object",
+          "properties": { "name": { "type": "string" } }
+        }
+      }
+    },
+    "azure_locations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string" },
+          "displayName": { "type": "string" }
+        }
+      }
+    },
+    "oci_regions": {
+      "type": "object",
+      "required": ["data"],
+      "properties": {
+        "data": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": { "name": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "oci_namespace": {
+      "type": "object",
+      "required": ["data"],
+      "properties": { "data": { "type": "string" } }
+    },
+    "k8s_config": {
+      "type": "object",
+      "properties": {
+        "current-context": { "type": "string" },
+        "clusters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "cluster": {
+                "type": "object",
+                "properties": { "server": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    },
+    "k8s_nodes": {
+      "type": "object",
+      "required": ["items"],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "metadata": {
+                "type": "object",
+                "properties": { "name": { "type": "string" } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
