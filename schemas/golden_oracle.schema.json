@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.ml.GoldenOracle",
+  "description": "Committed golden numeric expectations for the native churn featurize -> train -> TreeSHAP pipeline: the RSK-8 native correctness oracle (#395). Generated once, offline, by zetta's own native engine (no Python/XGBoost/foreign runtime) and checked in as static data; tests/test_native_oracle.cpp asserts native outputs against these values within tolerance. The committed numbers are pinned regression anchors whose correctness is independently established by the analytic closed-form micro-tests, the SHAP efficiency invariant (base_value + sum(values) == predicted), and the single-node == multi-node == different-shard-count equivalence layer.",
+  "type": "object",
+  "required": ["schema_version", "dataset", "featurize", "train", "shap"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "dataset": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "featurize": {
+      "type": "object",
+      "description": "The expected leakage-free feature table (one row per account in the entity universe, ascending key order).",
+      "required": ["entities", "feature_names", "features", "label_name", "labels"],
+      "additionalProperties": false,
+      "properties": {
+        "entities": { "type": "array", "items": { "type": "integer" } },
+        "feature_names": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "features": {
+          "type": "array",
+          "description": "features[column][row], aligned to feature_names then entities.",
+          "items": { "type": "array", "items": { "type": "number" } }
+        },
+        "label_name": { "type": "string", "minLength": 1 },
+        "labels": { "type": "array", "items": { "type": "number" } }
+      }
+    },
+    "train": {
+      "type": "object",
+      "description": "The expected trained GBDT outputs over the feature table under the canonical hyperparameters.",
+      "required": ["feature_names", "base_score", "tree_count", "auc", "log_loss", "accuracy", "feature_importances", "probabilities"],
+      "additionalProperties": false,
+      "properties": {
+        "feature_names": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "base_score": { "type": "number" },
+        "tree_count": { "type": "integer", "minimum": 0 },
+        "auc": { "type": "number" },
+        "log_loss": { "type": "number" },
+        "accuracy": { "type": "number" },
+        "feature_importances": { "type": "array", "items": { "type": "number" } },
+        "probabilities": {
+          "type": "array",
+          "description": "Predicted churn probability per entity, in featurize entity order.",
+          "items": { "type": "number" }
+        }
+      }
+    },
+    "shap": {
+      "type": "object",
+      "description": "The expected exact TreeSHAP attributions over the trained model (raw / margin space).",
+      "required": ["feature_names", "base_value", "mean_abs_shap", "top_driver", "per_entity"],
+      "additionalProperties": false,
+      "properties": {
+        "feature_names": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "base_value": { "type": "number" },
+        "mean_abs_shap": {
+          "type": "array",
+          "description": "Global mean |phi| per feature over every entity (the population driver importances).",
+          "items": { "type": "number" }
+        },
+        "top_driver": { "type": "string" },
+        "per_entity": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["entity", "predicted", "dominant", "values"],
+            "additionalProperties": false,
+            "properties": {
+              "entity": { "type": "integer" },
+              "predicted": { "type": "number" },
+              "dominant": { "type": "string" },
+              "values": {
+                "type": "array",
+                "description": "phi per feature, in feature_names order. Efficiency: base_value + sum(values) == predicted.",
+                "items": { "type": "number" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

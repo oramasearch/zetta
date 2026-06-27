@@ -210,8 +210,12 @@ and the trained model is **explained** with **exact TreeSHAP**
 (`zetta::ml::run_explain_job`) — per-entity, per-feature attributions that reconstruct
 the prediction exactly (`base + Σ φ = predict_raw`), a per-entity dominant churn
 driver, and a distributed `explain` `ComputeJob` with a global driver ranking
-([docs/tree-shap.md](docs/tree-shap.md)). State replicates between
-nodes as an Automerge CRDT. See [docs/](docs/) for details.
+([docs/tree-shap.md](docs/tree-shap.md)). Because these algorithms are reimplemented
+from scratch — **no Python, no XGBoost, no foreign runtime** — a **native correctness
+oracle** proves they are right without running any reference: committed golden numeric
+fixtures, hand-computable analytic micro-tests, and single-node == multi-node
+equivalence, all self-contained C++ ([docs/native-oracle.md](docs/native-oracle.md)).
+State replicates between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).

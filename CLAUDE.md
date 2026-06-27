@@ -777,6 +777,35 @@ doubles; entity keys exact ≤ 2⁵³) and the weights body its existing `GbdtMo
 boundary. The deliverable is the in-memory ranked list (persisting scores as an
 entity / SQL + GUI is a later slice). See [docs/gbdt-score.md](docs/gbdt-score.md).
 
+### Native correctness oracle (`zetta::ml::load_golden_oracle`)
+
+The **native correctness oracle** (`tests/test_native_oracle.cpp` + the
+`zetta::ml::GoldenOracle` format, `include/zetta/ml/golden_oracle.hpp`; **RSK-8**,
+#395) proves the from-scratch native [featurize](docs/ddf-featurize.md) /
+[GBDT-train](docs/gbdt.md) / [TreeSHAP](docs/tree-shap.md) reimplementations are
+numerically correct **without running any reference implementation at test time** — no
+Python, no XGBoost, no foreign runtime, in the engine, the build, or CI (ADR-17). Three
+self-contained C++ layers, all over the [synthetic churn fixture](docs/churn-dataset.md):
+(1) **golden numeric fixtures** — expected featurize / train / SHAP outputs committed as
+static data (`tests/fixtures/golden/churn_oracle.json`, generated once offline by zetta's
+own engine via an env-gated `ZETTA_WRITE_GOLDEN=1` write mode; the generator is **not** a
+repo/build/CI dependency) and asserted within tolerance, *and* cross-checked in the same
+run against an independent leakage-free ground truth (featurize) + the SHAP **efficiency
+identity** `base_value + Σ φ == predicted` (so the golden is proven correct, not merely
+pinned); (2) **analytic micro-tests** — tiny hand-built datasets whose GBDT split + leaf
+Newton step and TreeSHAP attributions are computable by hand (a balanced single-split
+gives leaves exactly ∓2 with `base_value = 0`; an asymmetric-cover depth-2 tree gives
+hand-derived φ), asserted to closed form; (3) **cross-cluster equivalence** —
+single-node == 2-node == 3-node identical within tolerance (featurize bit-exact, train
+equivalent up to floating-point reduction order at the `1e-4` cross-shard tolerance,
+explain bit-stable on the replicated model), each equal to the single-node golden. The
+golden is a **schema-validated boundary** like the [churn dataset](docs/churn-dataset.md):
+`load_golden_oracle` is non-throwing, validates against
+`schemas/golden_oracle.schema.json` (the embedded `pboettch` draft-07 validator) then the
+cross-field structural rules, so a malformed fixture fails the load with a path-qualified
+reason. Depends on #390 (GBDT) + #393 (TreeSHAP); ships **no** reference Python. See
+[docs/native-oracle.md](docs/native-oracle.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1926,6 +1955,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     calibration.hpp         zetta::ml — probability calibration: Calibrator (Platt sigmoid(a·raw+b) / isotonic PAVA step) + fit_calibrator + Brier/ECE metrics + JSON/wire boundaries; attaches to a GbdtModel (predict_proba applies it) via calibrate_model (FEAT-6; #391)
     tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
     gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
+    golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -2012,6 +2042,7 @@ src/core/                   zetta-core impl
   ml/calibration.cpp        zetta::ml — Platt (robust Newton, Lin et al. 2007) + isotonic (PAVA) fit, Calibrator apply/JSON/wire boundary, Brier/ECE metrics (zetta-core; #391)
   ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
   ml/gbdt_explain_job.cpp   run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
+  ml/golden_oracle.cpp      load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -2287,6 +2318,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/gbdt-score.md`](docs/gbdt-score.md) — batch scoring / rank-at-risk over a trained `Model` (`zetta::ml::score_gbdt` + `run_score_job`): score entities through a GBDT model to a **calibrated risk** (the binary-logistic `predict_proba`) and rank them into an **at-risk list**; the distributed `score` `ComputeJob` is SPMD (per-shard predict, gather + device `sort_by_key` rank + broadcast → identical global ranking single-node == multi-node), `load_gbdt_model` re-validates the weights body at the GBDT model JSON Schema boundary; the inference counterpart to the trainer, GPU-native / CPU-fallback / distributed (FEAT-6 / CMD-10; #392).
 - [`docs/calibration.md`](docs/calibration.md) — probability calibration (`zetta::ml::Calibrator` + `fit_calibrator` + `calibrate_model`): Platt scaling + isotonic regression fit on a held-out split so the GBDT's risk scores are well-calibrated (Brier / ECE improve, AUC preserved); attaches to a `GbdtModel` (predict_proba applies it, rides inside the weights body) and wires into the distributed `train` job via a sharding-invariant content-hash held-out split, schema-validated boundary (FEAT-6; #391).
 - [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
+- [`docs/native-oracle.md`](docs/native-oracle.md) — the native correctness oracle (`zetta::ml::load_golden_oracle` + `tests/test_native_oracle.cpp`, RSK-8 / #395): proves the native featurize / GBDT-train / TreeSHAP reimplementations are numerically correct **without running any reference** (no Python/XGBoost/foreign runtime, in the engine, build, or CI) via three self-contained C++ layers over the [churn fixture](docs/churn-dataset.md) — committed **golden numeric fixtures** (cross-checked against a leakage-free ground truth + the SHAP efficiency identity `base_value + Σ φ = predicted`), **analytic** closed-form GBDT-split + TreeSHAP micro-tests, and single-node == 2-node == 3-node **equivalence**; the golden is a `pboettch`-validated boundary (`schemas/golden_oracle.schema.json`), regenerated offline via `ZETTA_WRITE_GOLDEN=1` (the generator is not a repo/CI dependency).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
