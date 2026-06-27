@@ -92,9 +92,11 @@ const nlohmann::json& model_schema_document() {
                     "threshold": { "type": "number" },
                     "left":      { "type": "integer" },
                     "right":     { "type": "integer" },
-                    "value":     { "type": "number" }
+                    "value":     { "type": "number" },
+                    "cover":     { "type": "number" }
                   },
-                  "required": ["feature", "threshold", "left", "right", "value"],
+                  "required": ["feature", "threshold", "left", "right", "value",
+                               "cover"],
                   "additionalProperties": false
                 }
               }
@@ -312,7 +314,8 @@ nlohmann::json GbdtModel::to_json() const {
                                   {"threshold", node.threshold},
                                   {"left", node.left},
                                   {"right", node.right},
-                                  {"value", node.value}});
+                                  {"value", node.value},
+                                  {"cover", node.cover}});
         }
         trees_json.push_back({{"nodes", std::move(nodes_json)}});
     }
@@ -348,6 +351,7 @@ std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
             node.left = node_json.at("left").get<int>();
             node.right = node_json.at("right").get<int>();
             node.value = node_json.at("value").get<double>();
+            node.cover = node_json.at("cover").get<double>();
             // Structural rule the schema can't express: an internal node's
             // children must be valid, distinct, forward indices in this tree.
             if (!node.is_leaf()) {
@@ -629,6 +633,11 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
                     total_g += node_hist[bin * 2];
                     total_h += node_hist[bin * 2 + 1];
                 }
+                // The node's training weight (XGBoost's "cover"): the global Σ of
+                // Hessians reaching it. Recorded on every node — internal or leaf —
+                // so the serialized tree carries the background branch probabilities
+                // exact path-dependent TreeSHAP integrates over (see tree_shap.hpp).
+                tree.nodes[node.tree_index].cover = total_h;
 
                 Split split;
                 if (node.depth < params.max_depth) {

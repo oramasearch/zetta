@@ -612,8 +612,8 @@ acceptance featurizes the [synthetic churn fixture](docs/churn-dataset.md) and a
 every feature matches a leakage-free ground truth — the deliberate post-`t0` events
 (`acct_fedex_office`'s 4th payment failure, `acct_globex`'s 2nd support ticket) never
 enter a feature. Training a `Model` from the table is the **GBDT trainer**
-(`zetta::ml`, below); SHAP explanation is a later FEAT-6 slice. See
-[docs/ddf-featurize.md](docs/ddf-featurize.md).
+(`zetta::ml`, below); explaining its predictions is the **exact TreeSHAP** slice
+(`zetta::ml::tree_shap`, below). See [docs/ddf-featurize.md](docs/ddf-featurize.md).
 
 ### Model training — distributed histogram GBDT (`zetta::ml`)
 
@@ -668,9 +668,51 @@ new wire format** — the histograms ride the schema-validated `CollectiveMessag
 weights body carries its own validated boundary, and the job + model records are
 validated at their own boundaries. Trained on the
 [synthetic churn fixture](docs/churn-dataset.md) (via featurization) it reaches a
-strong AUC and surfaces `failed_payments` as a churn driver. SHAP-based explanation
-(an `explain` job) and device-native histograms are later slices. See
-[docs/gbdt.md](docs/gbdt.md).
+strong AUC and surfaces `failed_payments` as a churn driver. Per-prediction SHAP
+explanation is the **exact TreeSHAP** slice below; device-native histograms are a
+later slice. See [docs/gbdt.md](docs/gbdt.md).
+
+### Model explanation — exact TreeSHAP (`zetta::ml`)
+
+The **TreeSHAP explainer** (`zetta::ml`, `include/zetta/ml/tree_shap.hpp`; **FEAT-6**,
+#393) is the explainability the rented-model approach can't give — it attributes a
+[GBDT](docs/gbdt.md) prediction to its features per entity, so a per-entity **dominant
+churn driver** falls out. It implements **exact path-dependent TreeSHAP** (Lundberg,
+Erion, Lee 2018, Algorithm 2): a single polynomial-time (`O(trees·leaves·depth²)`)
+recursive traversal per tree that tracks, for every feature subset, the proportion of
+permutations consistent with it (the `extend_path`/`unwind_path`/`unwound_path_sum`
+bookkeeping). A "missing" feature is integrated out by following **both** children
+weighted by the training **cover** that flowed each way (`cover[child]/cover[node]`) —
+the per-node Σ-Hessian the trainer already computes, now **recorded on every
+`TreeNode`** (`TreeNode::cover`, serialized in the `gbdt_model` weights body +
+schema), so the model is **self-describing** and no background dataset is needed.
+`tree_shap(model, x)` returns a `ShapExplanation` — the per-feature `φ`, the model's
+cover-weighted `base_value`, and `predicted` — in the model's **raw-score (margin /
+logit) space**, where SHAP is additive, so the headline **efficiency** invariant
+`base_value + Σ φ = predict_raw(x)` holds exactly per entity (the acceptance test);
+`dominant_driver` is the feature with the largest `|φ|` (signed). It is **pure +
+deterministic + non-throwing** and adds **no new JSON boundary** (it reads the
+already-validated `GbdtModel`).
+
+It runs as a recorded **`explain` ComputeJob** through the
+[job coordinator](docs/job-coordinator.md): `zetta::ml::run_explain_job`
+(`include/zetta/ml/gbdt_explain_job.hpp`) drives `job` (kind `explain`) through the
+lifecycle (so it appears in `system.zetta_jobs`), distributed for **batch
+explanation** of a whole entity universe. Per-entity SHAP has no cross-entity
+dependency (the model is replicated, identical on every node), so each node fans
+`tree_shap` across its shard's rows (intra-node `runtime::parallel_for`, the trainer's
+pattern) labelling each by its entity key, and **one allreduce** combines the per-node
+`Σ|φ|` + row counts into a global, population-level **mean-|φ| driver ranking**
+(identical on every node) — so single-node and multi-node produce identical drivers.
+No splitter/repartition is needed (the model carries the cover background it integrates
+over), and there is **no new wire format** (the `Σ|φ|` partials ride the
+schema-validated `CollectiveMessage`; the job record is validated at its own
+boundary). Trained + explained on the [churn fixture](docs/churn-dataset.md),
+`failed_payments` is the dominant driver of the worst-failure account and the top
+global driver. Persisting the per-entity scores as a dataset / Run output, writing the
+SHAP ranking onto the `Model`'s `feature_schema.drivers`, an interventional
+(background-dataset) variant, and a GPU TreeSHAP kernel are later slices. See
+[docs/tree-shap.md](docs/tree-shap.md).
 
 ### Work-stealing scheduler (`zetta::compute`)
 
@@ -1816,6 +1858,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   ml/
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
     gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root) (FEAT-6/ENT-14; #390)
+    tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
+    gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1896,6 +1940,9 @@ src/core/                   zetta-core impl
   ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
   ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root (zetta-core; #390)
+  ml/feature_columns.hpp    zetta::ml::detail::read_column_as_double — shared device-download helper (frame column → host doubles, dtype-widening) used by the train + explain job bodies (zetta-core internal; #393)
+  ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
+  ml/gbdt_explain_job.cpp   run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -2146,6 +2193,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
+- [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).

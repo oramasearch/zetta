@@ -26,9 +26,10 @@
                 "threshold": { "type": "number" },
                 "left": { "type": "integer" },
                 "right": { "type": "integer" },
-                "value": { "type": "number" }
+                "value": { "type": "number" },
+                "cover": { "type": "number", "description": "Training weight (sum of Hessians) reaching this node — the background branch probabilities exact TreeSHAP integrates over." }
               },
-              "required": ["feature", "threshold", "left", "right", "value"],
+              "required": ["feature", "threshold", "left", "right", "value", "cover"],
               "additionalProperties": false
             }
           }
