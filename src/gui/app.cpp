@@ -224,6 +224,20 @@ void eyebrow(ImFont* mono, const char* text) {
     if (mono) ImGui::PopFont();
 }
 
+// Ambient Geist Mono face for the file-local render_* helpers (which aren't App
+// methods, so they can't reach App::mono_font_). Set once per frame at the top of
+// render_frame(); null until the first atlas build. Like ImGui's current-font
+// concept, but used to mono just the data bits (ids / timestamps / numbers).
+ImFont* g_mono_font = nullptr;
+
+// Render one line of mono data (an id, timestamp, or number) in the given
+// colour, falling back to the default font when mono isn't available yet.
+void mono_line(ImVec4 color, const char* label, const std::string& value) {
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(color, "%s%s", label, value.c_str());
+    if (g_mono_font) ImGui::PopFont();
+}
+
 // Paint the ImGui style with the Orama design system (light). Flat surfaces,
 // hairline borders, modest radii, ink text on canvas. Coral is reserved for the
 // "you are here" accent (menu checkmarks, selected-graph node border, the one
@@ -349,15 +363,17 @@ void render_model_card(const Model& model) {
     const std::string short_id = model.id().substr(0, model.id().find('-'));
     ImGui::SeparatorText(
         (model.name().empty() ? ("model " + short_id) : model.name()).c_str());
-    ImGui::TextDisabled("kind: %s  ·  id: %s", model.kind().c_str(),
-                        short_id.c_str());
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkQuiet, "kind: %s  ·  id: %s", model.kind().c_str(),
+                       short_id.c_str());
     if (model.has_weights()) {
-        ImGui::TextDisabled(
-            "weights: %s%s", format_bytes(model.weights()->size).c_str(),
+        ImGui::TextColored(
+            kInkQuiet, "weights: %s%s", format_bytes(model.weights()->size).c_str(),
             model.has_weights_body() ? "" : " (awaiting body transfer)");
     } else {
-        ImGui::TextDisabled("weights: (not yet attached)");
+        ImGui::TextColored(kInkQuiet, "weights: (not yet attached)");
     }
+    if (g_mono_font) ImGui::PopFont();
 
     const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
                                         ImGuiTableFlags_RowBg |
@@ -429,19 +445,17 @@ void render_model_card(const Model& model) {
 // the node's models whose producing-run ref is this run (resolved by the caller).
 void render_run_detail(const Run& run,
                        const std::vector<std::shared_ptr<Model>>& models) {
-    ImGui::Text("Run %s", run.id().c_str());
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkPrimary, "run %s", run.id().c_str());
+    if (g_mono_font) ImGui::PopFont();
     ImGui::SameLine();
     ImGui::TextColored(run_status_color(run.status()), "[%s]",
                        std::string(to_string(run.status())).c_str());
-    if (!run.project().empty()) {
-        ImGui::TextDisabled("project: %s", run.project().c_str());
-    }
-    if (!run.graph().empty()) {
-        ImGui::TextDisabled("graph: %s", run.graph().c_str());
-    }
-    ImGui::TextDisabled("created: %s", run.created().c_str());
+    if (!run.project().empty()) mono_line(kInkQuiet, "project:  ", run.project());
+    if (!run.graph().empty()) mono_line(kInkQuiet, "graph:    ", run.graph());
+    mono_line(kInkQuiet, "created:  ", run.created());
     if (run.updated() != run.created()) {
-        ImGui::TextDisabled("updated: %s", run.updated().c_str());
+        mono_line(kInkQuiet, "updated:  ", run.updated());
     }
 
     const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
@@ -455,10 +469,12 @@ void render_run_detail(const Run& run,
         ImGui::TextDisabled("(no log entries)");
     } else {
         for (const RunLogEntry& entry : run.logs()) {
-            ImGui::TextDisabled("%s", entry.time.c_str());
+            if (g_mono_font) ImGui::PushFont(g_mono_font);
+            ImGui::TextColored(kInkQuiet, "%s", entry.time.c_str());
             ImGui::SameLine();
             ImGui::TextColored(log_level_color(entry.level), "%-5s",
                                entry.level.c_str());
+            if (g_mono_font) ImGui::PopFont();
             ImGui::SameLine();
             ImGui::TextWrapped("%s", entry.message.c_str());
         }
@@ -473,6 +489,7 @@ void render_run_detail(const Run& run,
         ImGui::TableSetupColumn("Name");
         ImGui::TableSetupColumn("Ref");
         ImGui::TableHeadersRow();
+        if (g_mono_font) ImGui::PushFont(g_mono_font);
         for (const RunOutput& output : run.outputs()) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -482,6 +499,7 @@ void render_run_detail(const Run& run,
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(output.ref.c_str());
         }
+        if (g_mono_font) ImGui::PopFont();
         ImGui::EndTable();
     }
 
@@ -532,7 +550,7 @@ void render_run_detail(const Run& run,
 void render_access_key(const AccessKey& key, const std::string& now) {
     const std::string short_id = key.id().substr(0, key.id().find('-'));
     ImGui::SeparatorText(("key " + short_id).c_str());
-    ImGui::TextDisabled("created: %s", key.created().c_str());
+    mono_line(kInkQuiet, "created:  ", key.created());
 
     // Scope — which resources this key may touch (the resource axis, RULE-3).
     const Scope& scope = key.scope();
@@ -585,8 +603,8 @@ void render_principal_detail(const Principal& principal) {
     ImGui::SameLine();
     ImGui::TextDisabled("[%s]",
                         std::string(to_string(principal.kind())).c_str());
-    ImGui::TextDisabled("id: %s", principal.id().c_str());
-    ImGui::TextDisabled("created: %s", principal.created().c_str());
+    mono_line(kInkQuiet, "id:       ", principal.id());
+    mono_line(kInkQuiet, "created:  ", principal.created());
 
     const std::vector<std::shared_ptr<AccessKey>>& keys = principal.keys();
     ImGui::Spacing();
@@ -1114,12 +1132,12 @@ void App::draw_projects() {
     // First UUID segment — enough to identify the project at a glance.
     const std::string short_id =
         project->id().substr(0, project->id().find('-'));
-    ImGui::TextDisabled("id: %s", short_id.c_str());
-    ImGui::TextDisabled("owner: %s",
-                        project->owner().empty() ? "—" : project->owner().c_str());
-    ImGui::TextDisabled("created: %s", project->created().c_str());
+    mono_line(kInkQuiet, "id:       ", short_id);
+    mono_line(kInkQuiet, "owner:    ",
+              project->owner().empty() ? "-" : project->owner());
+    mono_line(kInkQuiet, "created:  ", project->created());
     if (project->updated() != project->created()) {
-        ImGui::TextDisabled("updated: %s", project->updated().c_str());
+        mono_line(kInkQuiet, "updated:  ", project->updated());
     }
 
     ImGui::Separator();
@@ -2435,15 +2453,16 @@ void App::draw_jobs() {
             scaling_loaded_job_ = job->id();
         }
 
-        ImGui::Text("Job %s", job->id().c_str());
+        if (g_mono_font) ImGui::PushFont(g_mono_font);
+        ImGui::TextColored(kInkPrimary, "job %s", job->id().c_str());
+        if (g_mono_font) ImGui::PopFont();
         ImGui::SameLine();
         ImGui::TextColored(job_status_color(job->status()), "[%s]",
                            std::string(to_string(job->status())).c_str());
-        ImGui::TextDisabled("kind: %s",
-                            std::string(to_string(job->kind())).c_str());
-        ImGui::TextDisabled("created: %s", job->created().c_str());
+        mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
+        mono_line(kInkQuiet, "created:  ", job->created());
         if (job->updated() != job->created()) {
-            ImGui::TextDisabled("updated: %s", job->updated().c_str());
+            mono_line(kInkQuiet, "updated:  ", job->updated());
         }
         if (!job->detail().empty()) {
             ImGui::TextWrapped("detail: %s", job->detail().c_str());
@@ -2452,12 +2471,12 @@ void App::draw_jobs() {
         // Id references — the job's place in the pipeline (project / graph / run /
         // scaling-policy reward). Shown only when set.
         const auto ref_line = [](const char* label, const std::string& value) {
-            if (!value.empty()) ImGui::TextDisabled("%s: %s", label, value.c_str());
+            if (!value.empty()) mono_line(kInkQuiet, label, value);
         };
-        ref_line("project", job->project());
-        ref_line("graph", job->graph());
-        ref_line("run", job->run());
-        ref_line("scaling_policy", job->scaling_policy());
+        ref_line("project:  ", job->project());
+        ref_line("graph:    ", job->graph());
+        ref_line("run:      ", job->run());
+        ref_line("policy:   ", job->scaling_policy());
 
         draw_job_scaling_controls();
     } else {
@@ -2957,6 +2976,7 @@ void App::render_frame() {
     // rendering (it runs synchronously inside SDL's pump). One frame at a time.
     if (rendering_) return;
     rendering_ = true;
+    g_mono_font = mono_font_;  // ambient mono for the file-local render_* helpers
 
     ImGuiIO& io = ImGui::GetIO();
     ImGui_ImplSDLRenderer3_NewFrame();
