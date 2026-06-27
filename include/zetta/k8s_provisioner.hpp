@@ -1,12 +1,12 @@
 #pragma once
 
-#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/burst_provisioner.hpp"
 #include "zetta/provisioner.hpp"
 
 namespace zetta {
@@ -95,57 +95,16 @@ public:
 //
 // It owns none of the Kubernetes mechanics: it delegates them to an injected
 // K8sControlPlane (above), so it stays in zetta-core with no Kubernetes client and
-// is fully unit-testable with a fake control plane. The control plane is the source
-// of truth for what is up (`provisioned()` and the "last node?" check both read
-// it), so K8sProvisioner keeps no parallel copy of fleet state. This class is
-// structurally identical to AzureProvisioner / GcpProvisioner / OciProvisioner —
-// only the config type it carries differs.
-//
-// Bulk burst identity (#375) is wired through two optional **IdentityHooks**
-// callables rather than a hard dependency on BurstIdentityManager — the same
-// injection style as LocalProvisioner's FleetSource and BurstApprovalGate's
-// CostEstimator. Production binds them to BurstIdentityManager::mint / revoke for
-// the job; a test passes recording lambdas; both empty means "no identity".
-class K8sProvisioner : public Provisioner {
+// is fully unit-testable with a fake control plane. The shared burst lifecycle
+// (provision + mint, teardown + revoke-on-drain, provisioned), the optional
+// IdentityHooks, the captured config, and the config() accessor all come from the
+// BurstProvisioner<Config, ControlPlane> base — this class only binds the two
+// Kubernetes-specific types. The control plane is the source of truth for what is
+// up (`provisioned()` and the drain check both read it), so it keeps no parallel
+// copy of fleet state.
+class K8sProvisioner : public BurstProvisioner<K8sConfig, K8sControlPlane> {
 public:
-    // The bulk burst-identity wiring (optional). `mint` is invoked with the pods a
-    // provision call brought up — so each gets a short-lived credential to join the
-    // cluster. `revoke` is invoked once, when the burst's **last** pod is torn down,
-    // to drop the job's identities in bulk. Production wires these to a
-    // BurstIdentityManager for the job (see docs/k8s-provisioner.md); leaving both
-    // empty disables identity wiring.
-    struct IdentityHooks {
-        std::function<void(const std::vector<ProvisionedNode>&)> mint;
-        std::function<void()> revoke;
-    };
-
-    // `control_plane` must outlive the provisioner. `config` is captured by value.
-    K8sProvisioner(K8sControlPlane& control_plane, K8sConfig config,
-                   IdentityHooks identity = {});
-
-    // Burst up to `request.count` pods meeting `request.spec` via the control plane
-    // (best-effort). On any pod coming up, mints bulk identities for the returned
-    // pods (so they can join) when an identity mint hook is wired. A count of 0 is a
-    // satisfied no-op that touches neither the control plane nor the hooks.
-    ProvisionResult provision(const ProvisionRequest& request) override;
-
-    // Tear down one pod by id via the control plane (idempotent — unknown id →
-    // false). When a successful teardown leaves the burst pool **empty**, revokes
-    // the job's identities in bulk (the revoke hook, if wired). Returns true iff a
-    // pod was released.
-    bool teardown(const std::string& node_id) override;
-
-    // The pods currently up in the burst Deployment — delegated to the control
-    // plane, so it reflects live capacity (an evicted pod disappears without a
-    // teardown call, like LocalProvisioner reflects self-healing membership).
-    std::vector<ProvisionedNode> provisioned() const override;
-
-    const K8sConfig& config() const { return config_; }
-
-private:
-    K8sControlPlane& control_plane_;
-    K8sConfig config_;
-    IdentityHooks identity_;
+    using BurstProvisioner<K8sConfig, K8sControlPlane>::BurstProvisioner;
 };
 
 }  // namespace zetta

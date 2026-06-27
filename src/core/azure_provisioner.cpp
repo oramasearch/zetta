@@ -1,26 +1,10 @@
 #include "zetta/azure_provisioner.hpp"
 
-#include <utility>
+#include "json_boundary.hpp"
 
 namespace zetta {
 
-namespace {
-
-// A string field on a JSON object: must be a string when present. `required`
-// fields must be present and non-empty. Returns false (out untouched) on a
-// missing-required / wrong-typed / empty-required field — the boundary check.
-bool read_string(const nlohmann::json& object, const char* key, bool required,
-                 std::string& out) {
-    if (!object.contains(key)) return !required;
-    const nlohmann::json& value = object[key];
-    if (!value.is_string()) return false;
-    std::string text = value.get<std::string>();
-    if (required && text.empty()) return false;
-    out = std::move(text);
-    return true;
-}
-
-}  // namespace
+using detail::read_string;
 
 nlohmann::json AzureConfig::to_json() const {
     nlohmann::json document{
@@ -70,51 +54,6 @@ std::optional<AzureConfig> AzureConfig::from_json(const nlohmann::json& value) {
         if (config.max_price < -1.0) return std::nullopt;  // Azure floor: -1 = on-demand
     }
     return config;
-}
-
-AzureProvisioner::AzureProvisioner(AzureControlPlane& control_plane,
-                                   AzureConfig config, IdentityHooks identity)
-    : control_plane_(control_plane),
-      config_(std::move(config)),
-      identity_(std::move(identity)) {}
-
-ProvisionResult AzureProvisioner::provision(const ProvisionRequest& request) {
-    // A count of 0 is a satisfied no-op (the seam contract): touch neither the
-    // control plane nor the identity hooks.
-    if (request.count == 0) {
-        ProvisionResult empty;
-        empty.satisfied = true;
-        empty.detail = "no nodes requested";
-        return empty;
-    }
-
-    ProvisionResult result = control_plane_.bring_up(config_, request);
-
-    // Mint bulk burst identities for the nodes that came up so they can
-    // authenticate and join the cluster (#375). Best-effort backends may return
-    // zero nodes (no capacity) — only mint when something actually came up.
-    if (!result.nodes.empty() && identity_.mint) {
-        identity_.mint(result.nodes);
-    }
-    return result;
-}
-
-bool AzureProvisioner::teardown(const std::string& node_id) {
-    const bool released = control_plane_.destroy(config_, node_id);
-
-    // Bulk-revoke the job's identities when this teardown drains the pool — the
-    // "bulk revoke on teardown" half of the burst-identity lifecycle. Reading the
-    // control plane (the source of truth) avoids a parallel copy of fleet state;
-    // revoke is idempotent, so firing it exactly on the transition to empty is
-    // safe even if a later teardown finds the pool already empty.
-    if (released && identity_.revoke && control_plane_.list(config_).empty()) {
-        identity_.revoke();
-    }
-    return released;
-}
-
-std::vector<ProvisionedNode> AzureProvisioner::provisioned() const {
-    return control_plane_.list(config_);
 }
 
 }  // namespace zetta
