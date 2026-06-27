@@ -51,6 +51,7 @@ add_executable(zetta-tests
   test_executor.cpp
   test_churn_step_executor.cpp
   test_churn_solution.cpp
+  test_uc1_end_to_end.cpp
   test_audit.cpp
   test_intent_compiler.cpp
   test_node.cpp
