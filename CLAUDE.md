@@ -184,9 +184,12 @@ also carries **per-job objective/scaling controls** (`App::draw_job_scaling_cont
 built `ScalingPolicy::evaluate()`: pick a reward objective + bounds, add/remove
 nodes, and see the resulting `ScalingDecision` (recommended nodes, scale
 up/hold/down, reward, cost-cap). It is a what-if calculator, **not** a write path —
-nothing is persisted (policy persistence + a live autoscaler are later slices).
-Scheduling/running a job (the coordinator, scheduler + collectives, the autoscaler
-wired to the `ScalingPolicy` reward model below) are separate, later slices. See
+nothing is persisted (policy persistence + driving this preview from the live
+autoscaler control loop below are later slices).
+Scheduling/running a job (the coordinator, scheduler + collectives) and the
+autoscaler control loop that sizes the fleet from the `ScalingPolicy` reward model
+(the **job autoscaler** below) are built; wiring the autoscaler's live observation
+source into the coordinator for an end-to-end autoscaled job is a later slice. See
 [docs/compute-jobs.md](docs/compute-jobs.md) and [docs/jobs-panel.md](docs/jobs-panel.md).
 
 A compute job's `scaling_policy` ref points at a **`zetta::ScalingPolicy`** — the
@@ -204,8 +207,9 @@ function returning a `ScalingDecision` (`reward` — higher is better, the
 autoscaler maximizes it; `recommended_nodes` clamped to the bounds; a
 `scale_up`/`hold`/`scale_down` `action`; `within_cost_cap`; a reason). The cost
 cap is a **hard constraint** — a breach sheds the fleet to `min_nodes` regardless
-of objective. No autoscaler loop, no replication, no `Node` CRUD in this slice —
-those are later. See [docs/scaling-policy.md](docs/scaling-policy.md).
+of objective. This slice is the pure reward model only — no replication, no `Node`
+CRUD (those are later); the control loop that *acts on* `evaluate()` is the **job
+autoscaler** below. See [docs/scaling-policy.md](docs/scaling-policy.md).
 
 A node also owns **principals** (`zetta::Principal`) — authenticated actors
 (user/service/node), a top-level entity with the same CRUD shape as projects
@@ -530,8 +534,45 @@ destruction unwind it cleanly, which is why it owns (not references) those piece
 It introduces **no new JSON format** — `map` rides the schema-validated steal
 messages, the collectives ride the schema-validated `CollectiveMessage`, and the
 job record is schema-validated at its own boundary. The autoscaler that sizes the
-fleet from a job's `ScalingPolicy` is the remaining, later slice. See
+fleet from a job's `ScalingPolicy` is the **job autoscaler** below (wiring the
+loop's observation source + tick into the coordinator for a live, end-to-end
+autoscaled job is the remaining, later slice). See
 [docs/job-coordinator.md](docs/job-coordinator.md).
+
+### Job autoscaler (`zetta::JobAutoscaler`)
+
+The **autoscaler control loop** (`zetta::JobAutoscaler`,
+`include/zetta/job_autoscaler.hpp`; **ADR-29 / ARC-11**, #371) is the piece that
+finally **acts on** a job's reward objective — the `ScalingPolicy` slice computes
+a `ScalingDecision`, this loop closes it. Each `tick()` it (1) reads the current
+allocation from
+`Provisioner::provisioned()`, (2) calls an injected **`ObservationSource`**
+callable for the running [`ComputeJob`](#compute-jobs)'s live signals
+(`progress`/`elapsed_seconds`/`cost`), (3) scores them with the job's
+`ScalingPolicy::evaluate()`, (4) applies **hysteresis**, and (5) — if a move is
+confirmed — **adds/removes nodes through the `Provisioner` seam** (`provision(count
+= target)` to grow, `teardown(node_id)` on the surplus to shrink), inside the
+policy's bounds. It is **tick-driven and owns no thread** — the caller drives it
+each heartbeat, exactly like the deployment controller's `reconcile()` — which
+makes it deterministic and unit-testable. Because it reads `provisioned()` **every
+tick**, it reflects live, **elastic membership** for free (a node that left simply
+stops appearing → the loop re-provisions toward the target). **Hysteresis** is the
+anti-thrash guard: a direction must be recommended on `confirm_ticks` consecutive
+ticks (default 2) before the loop acts (a hold / a flip resets the streak), so an
+alternating signal never moves the fleet — **except** a cost-cap breach, which
+sheds **immediately** (`shed_on_cost_breach`, default true; the cap is a hard
+safety constraint). On **given hardware** (`LocalProvisioner` — can't add,
+no-op teardown) it degrades to **best-effort max utilization** (records the
+shortfall in the tick `detail`, never fails). It programs against the abstract
+`Provisioner&`, so the `BurstApprovalGate` decorator drops in transparently to
+cost-cap every scale-up. It introduces **no new
+replicated state** (the policy is passed in by value — a `ComputeJob` references
+it by id only); the one JSON boundary is the **`AutoscalerConfig`** DTO
+(`node_spec` + `confirm_ticks` + `shed_on_cost_breach`), boundary-validated like
+`NodeCapability`/`BurstCap` (`from_json` mirroring
+`schemas/autoscaler_config.schema.json`). Wiring the observation source to a real
+progress/cost meter + mounting the tick into the coordinator/`Node::tick()` for a
+live job are later slices. See [docs/job-autoscaler.md](docs/job-autoscaler.md).
 
 ### Cluster (equal peers)
 
@@ -1410,6 +1451,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   burst_identity.hpp        zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
+  job_autoscaler.hpp        zetta::JobAutoscaler/AutoscalerConfig — autoscaler control loop: observe a running ComputeJob, score its ScalingPolicy, add/remove nodes via the Provisioner within bounds, hysteresis + cost-cap shed, elastic membership, best-effort on given hardware (ADR-29/ARC-11; #371)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   cloud_provider.hpp        zetta::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access)
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
@@ -1502,6 +1544,7 @@ src/core/                   zetta-core impl
   burst_identity.cpp        zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
+  job_autoscaler.cpp        zetta::JobAutoscaler — the tick() control loop (observe → evaluate → hysteresis → provision/teardown) + AutoscalerConfig JSON boundary (ADR-29/ARC-11)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   cloud_provider.cpp        zetta::CloudProviderCatalog — built-in provider metadata (local/bare-metal/k8s/aws/gcp/azure/oci); no cloud access
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
@@ -1777,6 +1820,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/burst-identity.md`](docs/burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node on provision, bulk-revoke on teardown, audited (`zetta::BurstIdentityManager`; reuses the identity model — ARC-13 / RSK-9, #375).
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
+- [`docs/job-autoscaler.md`](docs/job-autoscaler.md) — the autoscaler control loop (`zetta::JobAutoscaler`): each tick observe a running `ComputeJob`'s progress, score it with the job's `ScalingPolicy`, and add/remove nodes through the `Provisioner` seam within bounds, with hysteresis (anti-thrash) + immediate cost-cap shed; reads live membership each tick (elastic) and degrades to best-effort max utilization on given hardware; schema-validated `AutoscalerConfig` (ADR-29 / ARC-11, #371).
 - [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
 - [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.
