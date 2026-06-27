@@ -189,7 +189,12 @@ per-op suites (`test_ddf_featurize`, `test_gbdt`, `test_gbdt_score`, `test_tree_
 - **Real executors for the other use cases** behind the same seam, the way this one
   realizes churn.
 
-See also [execution.md](execution.md), [execution-graph.md](execution-graph.md),
-[ddf-featurize.md](ddf-featurize.md), [gbdt.md](gbdt.md),
-[gbdt-score.md](gbdt-score.md), [tree-shap.md](tree-shap.md), and
+[`zetta::run_churn_solution`](churn-solution.md) is the reusable bridge that drives
+this executor from the catalog **churn-prediction** blueprint (and the headed Deploy
+panel's "Run on real engine" action) — it builds the numeric shards + pipeline config
+this executor needs and injects it into a `GraphExecutor`.
+
+See also [churn-solution.md](churn-solution.md), [execution.md](execution.md),
+[execution-graph.md](execution-graph.md), [ddf-featurize.md](ddf-featurize.md),
+[gbdt.md](gbdt.md), [gbdt-score.md](gbdt-score.md), [tree-shap.md](tree-shap.md), and
 [job-coordinator.md](job-coordinator.md).

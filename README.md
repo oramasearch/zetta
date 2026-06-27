@@ -82,7 +82,11 @@ native distributed accelerated compute behind that same seam — connect→load 
 clean→featurize, model→train GBDT + calibrate, index→score/rank, serve→explain
 (TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob` — so the
 run's outputs reference a real **Model** + ranked at-risk list + drivers (see
-[docs/churn-step-executor.md](docs/churn-step-executor.md)).
+[docs/churn-step-executor.md](docs/churn-step-executor.md)). The catalog
+**churn-prediction** blueprint is wired to that real engine (`zetta::run_churn_solution`):
+the same graph that deploys also *runs* the full pipeline, and the Deploy panel's
+**Run on real engine** action trains a real Model on a built-in demo dataset (see
+[docs/churn-solution.md](docs/churn-solution.md)).
 It owns **models** (`zetta::Model`) — trained models registered on the node:
 metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
 serialized **weights** stored as a large-object body that transfers peer-to-peer

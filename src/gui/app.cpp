@@ -4,9 +4,12 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/capability.hpp"
+#include "zetta/churn_solution.hpp"
 #include "zetta/cloud_inspector.hpp"
 #include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
+#include "zetta/compute/cpu_device.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
@@ -1971,6 +1974,23 @@ void App::draw_deploy() {
                            deploy_status_.c_str());
     }
 
+    // 3b) Run on the real engine — the churn solution actually trains a Model,
+    //     ranks the at-risk accounts, and explains the drivers (FEAT-4 / UC-1,
+    //     #398). Only the churn blueprint maps to the real churn pipeline today, so
+    //     the action is offered only for it; it runs over a built-in demo dataset.
+    if (selected != nullptr && selected->id == "churn-prediction") {
+        ImGui::Spacing();
+        if (primary_button("Run on real engine")) {
+            run_churn_demo();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("trains a real model on a built-in demo dataset");
+        if (!churn_run_status_.empty()) {
+            ImGui::TextColored(churn_run_failed_ ? kErrorColor : kSuccessColor,
+                               "%s", churn_run_status_.c_str());
+        }
+    }
+
     // 4) Deployment status — the recorded placements (acceptance: "see its
     //    status"). Sourced from the replicated deployments() list.
     ImGui::SeparatorText("Deployments");
@@ -2007,6 +2027,51 @@ void App::draw_deploy() {
         if (mono_font_) ImGui::PopFont();
         ImGui::EndTable();
     }
+}
+
+void App::run_churn_demo() {
+    const Solution* selected = SolutionCatalog::builtin().find(selected_solution_);
+    if (selected == nullptr || selected->id != "churn-prediction") {
+        churn_run_failed_ = true;
+        churn_run_status_ = "Select the churn solution to run it.";
+        return;
+    }
+
+    // Run on an ISOLATED single-node loopback cluster + coordinator so the SPMD
+    // collectives are trivially single-node and never block on this node's real
+    // peers. The Model + jobs + Run still register on the App's node_ (so the Runs /
+    // Jobs / Admin panels reflect them). Synchronous on the UI thread that owns the
+    // node — the same deliberate per-click pattern as run_cloud_inspect.
+    ClusterConfig compute_cfg;
+    compute_cfg.listen_host = "127.0.0.1";
+    compute_cfg.listen_port = 47000;
+    compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse it)
+    Cluster compute_cluster("churn-run", compute_cfg);
+    compute_cluster.start();
+    compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
+    coordinator.start();
+    compute::CpuDevice device;
+
+    ChurnSolutionOptions options;
+    options.project = "deploy-panel";
+    options.graph = "churn-prediction";
+    const ChurnSolutionResult result = run_churn_solution(
+        node_, coordinator, device, selected->graph, demo_churn_dataset(), options);
+    coordinator.stop();
+
+    if (!result.ok()) {
+        churn_run_failed_ = true;
+        churn_run_status_ = "Run failed: " +
+                            (result.execution.error.empty()
+                                 ? std::string("the churn pipeline did not complete")
+                                 : result.execution.error);
+        return;
+    }
+    churn_run_failed_ = false;
+    std::string line = "Trained model " + result.model_id.substr(0, 8) + " · " +
+                       std::to_string(result.ranked.size()) + " accounts ranked";
+    if (!result.top_driver.empty()) line += " · top driver: " + result.top_driver;
+    churn_run_status_ = line;
 }
 
 void App::draw_cluster() {
