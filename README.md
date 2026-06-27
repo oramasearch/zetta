@@ -221,7 +221,14 @@ from scratch — **no Python, no XGBoost, no foreign runtime** — a **native co
 oracle** proves they are right without running any reference: committed golden numeric
 fixtures, hand-computable analytic micro-tests, and single-node == multi-node
 equivalence, all self-contained C++ ([docs/native-oracle.md](docs/native-oracle.md)).
-State replicates between nodes as an Automerge CRDT. See [docs/](docs/) for details.
+On top of that the risk + dominant driver become a **CRM-ready retention playbook**
+(`zetta::ml::generate_playbook`) — a deterministic driver→action→owner dictionary, an
+expected-retained-value priority (`P(churn) × ARR × P(save | driver)`, computed and
+frozen in code), and a **constrained narrator** behind a seam (default Claude; writes
+the narrative + picks the play within a strict JSON schema and never invents numbers)
+with a deterministic rules-engine fallback so it always runs offline, plus an outcome
+log for the feedback loop ([docs/playbook.md](docs/playbook.md)). State replicates
+between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).
