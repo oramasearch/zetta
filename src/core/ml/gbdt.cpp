@@ -104,7 +104,8 @@ const nlohmann::json& model_schema_document() {
             "required": ["nodes"],
             "additionalProperties": false
           }
-        }
+        },
+        "calibration": { "type": "object" }
       },
       "required": ["objective", "base_score", "learning_rate", "feature_names",
                    "trees"],
@@ -302,7 +303,9 @@ double GbdtModel::predict_raw(const std::vector<double>& features) const {
 }
 
 double GbdtModel::predict_proba(const std::vector<double>& features) const {
-    return sigmoid(predict_raw(features));
+    const double raw = predict_raw(features);
+    if (calibration) return calibration->calibrate(raw);
+    return sigmoid(raw);
 }
 
 nlohmann::json GbdtModel::to_json() const {
@@ -319,11 +322,13 @@ nlohmann::json GbdtModel::to_json() const {
         }
         trees_json.push_back({{"nodes", std::move(nodes_json)}});
     }
-    return nlohmann::json{{"objective", objective},
-                          {"base_score", base_score},
-                          {"learning_rate", learning_rate},
-                          {"feature_names", feature_names},
-                          {"trees", std::move(trees_json)}};
+    nlohmann::json value{{"objective", objective},
+                         {"base_score", base_score},
+                         {"learning_rate", learning_rate},
+                         {"feature_names", feature_names},
+                         {"trees", std::move(trees_json)}};
+    if (calibration) value["calibration"] = calibration->to_json();
+    return value;
 }
 
 std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
@@ -364,6 +369,15 @@ std::optional<GbdtModel> GbdtModel::from_json(const nlohmann::json& value,
             tree.nodes.push_back(node);
         }
         model.trees.push_back(std::move(tree));
+    }
+    // An attached calibration is validated by its own boundary (the loose object
+    // the model schema allows is pinned down strictly here, like the tree child
+    // indices above).
+    if (value.contains("calibration")) {
+        std::optional<Calibrator> calibrator =
+            Calibrator::from_json(value.at("calibration"), error);
+        if (!calibrator) return std::nullopt;
+        model.calibration = std::move(*calibrator);
     }
     return model;
 }
@@ -703,6 +717,38 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
                                   const std::vector<double>& local,
                                   GbdtReduce) { return local; };
     return train_gbdt(columns, feature_names, labels, params, identity);
+}
+
+// --- Calibration -------------------------------------------------------------
+
+ComputeStatus calibrate_model(
+    GbdtModel& model, const std::vector<std::vector<double>>& holdout_columns,
+    const std::vector<double>& holdout_labels, CalibrationMethod method) {
+    const std::size_t feature_count = model.feature_names.size();
+    if (holdout_columns.size() != feature_count) {
+        return ComputeStatus::invalid_argument(
+            "calibrate_model: column count does not match the model features");
+    }
+    const std::size_t rows = holdout_labels.size();
+    for (const std::vector<double>& column : holdout_columns) {
+        if (column.size() != rows) {
+            return ComputeStatus::invalid_argument(
+                "calibrate_model: ragged columns / labels length mismatch");
+        }
+    }
+
+    // Score every held-out row through the (uncalibrated) trees.
+    std::vector<double> raw_scores(rows);
+    std::vector<double> row(feature_count);
+    for (std::size_t r = 0; r < rows; ++r) {
+        for (std::size_t f = 0; f < feature_count; ++f) row[f] = holdout_columns[f][r];
+        raw_scores[r] = model.predict_raw(row);
+    }
+
+    const CalibrationResult fit = fit_calibrator(raw_scores, holdout_labels, method);
+    if (!fit.ok()) return fit.status;
+    model.calibration = fit.calibrator;
+    return ComputeStatus::success();
 }
 
 }  // namespace zetta::ml

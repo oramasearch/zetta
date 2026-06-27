@@ -714,6 +714,35 @@ SHAP ranking onto the `Model`'s `feature_schema.drivers`, an interventional
 (background-dataset) variant, and a GPU TreeSHAP kernel are later slices. See
 [docs/tree-shap.md](docs/tree-shap.md).
 
+The GBDT's output probabilities are **calibrated** (`zetta::ml::Calibrator`,
+`include/zetta/ml/calibration.hpp`; **FEAT-6**, #391) so the risk scores are
+trustworthy — the reference is a *calibrated* XGBoost. The model orders accounts
+well (a strong AUC) but `sigmoid(raw)` is not necessarily well-calibrated;
+calibration fits a **monotone** `raw score → probability` map on a **held-out**
+split, so reliability (Brier / ECE) improves while the ranking (AUC) is preserved.
+Two methods, both pure/host-side/non-throwing: **Platt scaling** (a two-parameter
+`sigmoid(a·raw+b)` fit by the robust Newton method of Lin, Lin & Weng 2007 — the
+identity `a=1,b=0` is the no-op, so an uncalibrated model is plain `sigmoid(raw)`)
+and **isotonic regression** (a non-decreasing step function fit by PAVA).
+`fit_calibrator(raw_scores, labels, method)` fits it, `Calibrator::calibrate(raw)`
+applies it, and `calibration_metrics` gives the **Brier score + ECE**. A fitted
+`Calibrator` is **part of a `GbdtModel`** (optional `calibration` field; when present
+`predict_proba` routes through it, and it rides inside the schema-validated weights
+body — a calibrated model is self-contained); `calibrate_model(model, holdout, …)`
+fits + attaches in one step. The distributed `train` job calibrates the produced
+`Model` when a `CalibrationConfig{enabled, method, holdout_fraction}` is passed to
+`run_train_job` (off by default → uncalibrated, unchanged): each node holds out a
+slice of its shard by a **content hash of the row** (sharding-invariant, so the same
+physical rows are held out under any sharding → single-node and multi-node grow the
+same trees and fit the same calibrator), trains on the train rows, and the held-out
+`(raw score, label)` pairs are **gathered to the root, fit there, and broadcast
+back** (best-effort — a single-class held-out set leaves the model uncalibrated, the
+job never fails). **No new wire format** (the pairs + calibrator ride the
+schema-validated `CollectiveMessage`; the calibrator serializes into the GBDT weights
+body). Its JSON boundary mirrors `schemas/calibration.schema.json` (the pboettch
+validator, like the model body it rides inside). See
+[docs/calibration.md](docs/calibration.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1857,7 +1886,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
   ml/
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
-    gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root) (FEAT-6/ENT-14; #390)
+    gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig (FEAT-6/ENT-14; #390/#391)
+    calibration.hpp         zetta::ml — probability calibration: Calibrator (Platt sigmoid(a·raw+b) / isotonic PAVA step) + fit_calibrator + Brier/ECE metrics + JSON/wire boundaries; attaches to a GbdtModel (predict_proba applies it) via calibrate_model (FEAT-6; #391)
     tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
     gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
 src/core/                   zetta-core impl
@@ -1939,7 +1969,8 @@ src/core/                   zetta-core impl
   ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
   ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
-  ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root (zetta-core; #390)
+  ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast) (zetta-core; #390/#391)
+  ml/calibration.cpp        zetta::ml — Platt (robust Newton, Lin et al. 2007) + isotonic (PAVA) fit, Calibrator apply/JSON/wire boundary, Brier/ECE metrics (zetta-core; #391)
   ml/feature_columns.hpp    zetta::ml::detail::read_column_as_double — shared device-download helper (frame column → host doubles, dtype-widening) used by the train + explain job bodies (zetta-core internal; #393)
   ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
   ml/gbdt_explain_job.cpp   run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
@@ -2193,6 +2224,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
+- [`docs/calibration.md`](docs/calibration.md) — probability calibration (`zetta::ml::Calibrator` + `fit_calibrator` + `calibrate_model`): Platt scaling + isotonic regression fit on a held-out split so the GBDT's risk scores are well-calibrated (Brier / ECE improve, AUC preserved); attaches to a `GbdtModel` (predict_proba applies it, rides inside the weights body) and wires into the distributed `train` job via a sharding-invariant content-hash held-out split, schema-validated boundary (FEAT-6; #391).
 - [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).

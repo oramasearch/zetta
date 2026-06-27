@@ -54,6 +54,21 @@ namespace zetta::ml {
 // collectives transport).
 inline constexpr std::chrono::milliseconds kDefaultGbdtTimeout{10000};
 
+// Opt-in held-out probability calibration for the produced model (#391). When
+// `enabled`, each node deterministically holds out a `holdout_fraction` slice of
+// its shard (a **content hash** of the row — so the same physical rows are held out
+// regardless of sharding, which keeps single-node and multi-node equivalent: the
+// trees are grown on the same train rows, the calibrator is fit on the same held-out
+// rows). The model trains on the train rows only; the held-out `(raw score, label)`
+// pairs are gathered to the root, the calibrator is fit there and broadcast back, so
+// every node attaches an identical calibrator to its model. Disabled by default —
+// the produced model is then uncalibrated, exactly as before. See docs/calibration.md.
+struct CalibrationConfig {
+    bool enabled = false;
+    CalibrationMethod method = CalibrationMethod::Platt;
+    double holdout_fraction = 0.2;  // share of rows reserved for the calibration fit
+};
+
 // The outcome of running distributed GBDT training as a ComputeJob.
 struct DistributedTrainResult {
     // The trained model — identical on every participating node (the trees are
@@ -64,6 +79,10 @@ struct DistributedTrainResult {
     GbdtMetrics metrics;
     // Per-feature total split gain, in `feature_columns` order (the drivers).
     std::vector<double> feature_importances;
+    // Whether a probability calibration was fit + attached to `model` (only when
+    // calibration was requested and the held-out fit succeeded). The metrics above
+    // then reflect the calibrated probabilities.
+    bool calibrated = false;
     // The registered Model's id — set only on the root when `node` was provided.
     std::string model_id;
     // The job's terminal status (Succeeded when the rounds completed; Failed on a
@@ -87,6 +106,9 @@ struct DistributedTrainResult {
 // (defaulted when empty). `round_tag` names the collective rounds and **must be
 // identical on every participating node** (a node's own `job` id cannot serve);
 // it defaults to a deterministic, spec-derived tag.
+// When `calibration.enabled`, the produced model carries a fitted probability
+// calibration (held-out split + gather/fit-at-root/broadcast, above); otherwise the
+// model is uncalibrated (the default, unchanged behavior).
 DistributedTrainResult run_train_job(
     compute::JobCoordinator& coordinator, ComputeJob& job,
     const ddf::DataFrame& features,
@@ -94,6 +116,7 @@ DistributedTrainResult run_train_job(
     const std::string& label_column, const GbdtParams& params,
     Node* node = nullptr, const std::string& model_name = {},
     const std::string& round_tag = {},
+    CalibrationConfig calibration = {},
     std::chrono::milliseconds timeout = kDefaultGbdtTimeout);
 
 }  // namespace zetta::ml

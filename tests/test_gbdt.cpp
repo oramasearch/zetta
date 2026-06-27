@@ -339,7 +339,8 @@ std::vector<Json> synthetic_rows(const Synthetic& data, const std::string& label
 zetta::ml::DistributedTrainResult run_distributed_train(
     const std::vector<Json>& rows, const std::vector<std::string>& features,
     const std::string& label, const GbdtParams& params, std::size_t node_count,
-    std::uint16_t base_port, bool register_model) {
+    std::uint16_t base_port, bool register_model,
+    zetta::ml::CalibrationConfig calibration = {}) {
     const std::vector<std::string> ids = {"node-a", "node-b", "node-c"};
     std::vector<std::unique_ptr<ComputeNode>> nodes;
     for (std::size_t index = 0; index < node_count; ++index) {
@@ -379,7 +380,8 @@ zetta::ml::DistributedTrainResult run_distributed_train(
         threads.emplace_back([&, index] {
             results[index] = run_train_job(
                 nodes[index]->coordinator, *jobs[index], frames[index], features,
-                label, params, register_model ? &nodes[index]->node : nullptr);
+                label, params, register_model ? &nodes[index]->node : nullptr, {},
+                {}, calibration);
         });
     }
     for (auto& thread : threads) thread.join();
@@ -446,6 +448,49 @@ TEST(GbdtDistributed, SingleNodeMatchesMultiNode) {
             << "row " << r;
     }
     EXPECT_NEAR(single.metrics.auc, multi.metrics.auc, 1e-9);
+}
+
+TEST(GbdtDistributed, CalibratesProducedModel) {
+    // A larger synthetic so the content-hash held-out split reliably carries both
+    // classes for the calibration fit.
+    const Synthetic data = make_synthetic(400);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    GbdtParams params;
+    params.num_trees = 8;
+    params.max_depth = 3;
+    zetta::ml::CalibrationConfig calibration;
+    calibration.enabled = true;
+    calibration.method = zetta::ml::CalibrationMethod::Platt;
+    calibration.holdout_fraction = 0.25;
+
+    const auto single = run_distributed_train(rows, data.names, "y", params, 1,
+                                              22300, false, calibration);
+    const auto multi = run_distributed_train(rows, data.names, "y", params, 2,
+                                             22310, false, calibration);
+    ASSERT_TRUE(single.ok());
+    ASSERT_TRUE(multi.ok());
+
+    // The produced model is calibrated end-to-end and its weights body re-validates
+    // against the GBDT model schema (carrying the calibration).
+    EXPECT_TRUE(single.calibrated);
+    ASSERT_TRUE(single.model.calibration.has_value());
+    EXPECT_EQ(single.model.calibration->method,
+              zetta::ml::CalibrationMethod::Platt);
+    std::string error;
+    EXPECT_TRUE(GbdtModel::from_json(single.model.to_json(), &error).has_value())
+        << error;
+
+    // Single-node and multi-node fit an equivalent calibrated model (the held-out
+    // split is sharding-invariant): same trees, agreeing calibrated probabilities.
+    ASSERT_TRUE(multi.model.calibration.has_value());
+    ASSERT_EQ(single.model.tree_count(), multi.model.tree_count());
+    for (std::size_t r = 0; r < data.labels.size(); ++r) {
+        std::vector<double> x{data.columns[0][r], data.columns[1][r],
+                              data.columns[2][r]};
+        EXPECT_NEAR(single.model.predict_proba(x), multi.model.predict_proba(x),
+                    1e-4)
+            << "row " << r;
+    }
 }
 
 // =====================================================================
