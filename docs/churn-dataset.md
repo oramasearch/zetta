@@ -85,13 +85,20 @@ carry mention variants (`"FedEx Freight"`, `"Fedex Freight"`, …), plus a
 near-collision (`"Umbrella Logistics"` → `acct_umbrella`, *not* FedEx Logistics)
 to keep resolution non-trivial.
 
-`zetta::entity_resolution_attribute(dataset)` builds the **division-correct**
-`entity_resolution` payload (`{ records: [{ mention, entity, resolved }] }`, with
-`entity` = the account's ground-truth entity and `resolved` = its `account_id`)
-straight from the comms mentions. Attach it to an `ExecutionGraph` node and it
-passes `zetta::EntityResolutionCheck` (and `default_gate()`) by construction;
-mutate it to point two siblings at one account and the gate **fails and blocks
-deploy** (RULE-1). See [entity-resolution-check.md](entity-resolution-check.md).
+`zetta::entity_resolution_attribute(dataset, strategy = FullName)` builds the
+`entity_resolution` payload by **actually resolving** the comms mentions against
+the account directory with [`zetta::EntityResolver`](entity-resolution.md): the
+resolver sees only the raw `mention` string and matches it to an account, while the
+ground-truth `entity` is held out and recorded so the gate can check the resolver's
+choice. With the default `FullName` strategy the resolution is division-correct —
+`"FedEx Freight"` and the variant `"Fedex Freight"` both land on
+`acct_fedex_freight` while `"FedEx Ground"` stays separate — so the payload passes
+`zetta::EntityResolutionCheck` (and `default_gate()`) because it *resolved
+correctly*, not by construction. Passing `ResolutionStrategy::Brand` collapses every
+`"FedEx …"` mention onto one brand bucket, so the gate **fails and blocks deploy**
+(RULE-1) — the real-resolver way to drive the conflation failure. See
+[entity-resolution.md](entity-resolution.md) and
+[entity-resolution-check.md](entity-resolution-check.md).
 
 ## The loader
 
@@ -161,6 +168,7 @@ via the `ZETTA_TEST_FIXTURES_DIR` compile-define (`tests/fixtures`).
 ## Pointers
 
 - [execution-graph.md](execution-graph.md) — the IR the resolution payload rides on.
+- [entity-resolution.md](entity-resolution.md) — the resolver (`zetta::EntityResolver`) that maps the fixture's comms mentions to accounts (TC-4 producer).
 - [entity-resolution-check.md](entity-resolution-check.md) — the TC-4 check this fixture feeds.
 - [gate.md](gate.md) — the correctness gate that blocks deploy on conflation (RULE-1).
 - [use-cases/uc1.md](use-cases/uc1.md) — the full UC-1 churn solution this is the dataset for.

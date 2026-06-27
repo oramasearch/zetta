@@ -1198,6 +1198,45 @@ malformed payload fails the check with a clear reason. Registered in
 `default_gate()` after `NonEmptyGraphCheck`. Full detail in
 [docs/entity-resolution-check.md](docs/entity-resolution-check.md).
 
+### Entity resolution in featurization (`zetta::EntityResolver`)
+
+The **producer** the entity-resolution gate above was built to guard
+(`include/zetta/entity_resolution.hpp`, **FEAT-6 / TC-4**, `#394`) — the
+make-or-break **data step before churn featurization**: it maps the raw
+account-name strings on comms events (the `mention`s) to a canonical CRM account so
+a customer's events aggregate against the right account, division-correct — "FedEx
+Freight" resolves to its own account **without conflating** the 5–6 FedEx siblings.
+Resolver **produces** the `entity_resolution` annotation; the
+[gate](#entity-resolution-correctness-eval-zettaentityresolutioncheck)
+**verifies** it before deploy (RULE-1), so a buggy resolver cannot ship. A
+`ResolutionCandidate` is one candidate account (`account_id` target + `name`/`brand`
+match keys + ground-truth `entity` that *labels* output, never *decides*);
+`EntityResolver(candidates, strategy).resolve(mention)` returns the matched
+`account_id`. It is **transparent + deterministic** — pure normalized string
+matching, no ML/LLM (the same heuristic spirit as `compile_intent`); real
+fuzzy/embedding resolution plugs in behind the same `resolve` front door later. Two
+strategies: **`FullName`** (default) matches the normalized full account name
+(`normalize_entity_name`: ASCII-lowercase + fold punctuation/whitespace), so the
+variant "Fedex Freight" still lands on `acct_fedex_freight` while "FedEx Ground"
+stays separate and the near-collision "Umbrella Logistics" is **not** fooled into
+"FedEx Logistics" — a mention that doesn't exactly match a division name is left
+**unresolved** (the conservative choice); **`Brand`** is the deliberately coarse
+trap that collapses every "FedEx …" mention onto one `acct_brand_fedex` bucket,
+producing the conflation the gate must fail (a *real resolver behavior*, not a
+hand-mutated payload). `entity_resolution_annotation(candidates, mentions, strategy)`
+emits the schema-shaped payload (each `LabeledMention` pairs a raw mention with the
+held-out ground-truth entity; an unresolved mention gets a deterministic per-mention
+`unresolved:<…>` account, never a silent drop). The churn fixture's
+`entity_resolution_attribute(dataset, strategy = FullName)`
+([churn_dataset.hpp](include/zetta/churn_dataset.hpp)) now routes through this
+resolver — so "division-correct" is **earned** (matched from the mention string),
+not asserted by construction as before. It introduces **no new JSON format**: the
+output rides the existing `schemas/entity_resolution.schema.json`, validated where
+it enters the gate (the resolver's inputs are typed structs, not parsed JSON). This
+is the resolution/clean step, **not** the numeric `point_in_time_featurize` op
+(which operates on already-resolved integer keys). See
+[docs/entity-resolution.md](docs/entity-resolution.md).
+
 ### Synthetic churn dataset (UC-1 fixture) + loader
 
 The **synthetic churn dataset** (`zetta::ChurnDataset`,
@@ -1701,6 +1740,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   graph_checks.hpp          zetta::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
   checks/
     entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
+  entity_resolution.hpp     zetta::EntityResolver — resolve raw comms mentions → CRM accounts division-correct (FullName) / coarse Brand trap; emit the entity_resolution annotation the gate verifies (FEAT-6/TC-4; #394)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy (task/block_on/thread_pool + parallel_for data-parallel fan-out)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -1801,6 +1841,7 @@ src/core/                   zetta-core impl
   graph_checks.cpp          SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
   checks/
     entity_resolution_check.cpp  EntityResolutionCheck — conflation/fragmentation + schema boundary
+  entity_resolution.cpp     EntityResolver — normalized full-name / brand matching + entity_resolution_annotation builder (FEAT-6/TC-4; #394)
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
@@ -2039,6 +2080,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
+- [`docs/entity-resolution.md`](docs/entity-resolution.md) — entity resolution in featurization (`zetta::EntityResolver`, FEAT-6 / TC-4 / #394): resolve raw comms mentions to CRM accounts division-correct (FullName) — "FedEx Freight" without conflating its siblings — vs. the coarse Brand trap, emitting the `entity_resolution` annotation the gate verifies (resolver produces, gate verifies); no new JSON format.
 - [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
 - [`docs/churn-dataset.md`](docs/churn-dataset.md) — the synthetic UC-1 churn dataset fixture + loader (`zetta::ChurnDataset` / `load_churn_dataset`, FEAT-6 / #402): committed accounts + comms/events (JSONL/CSV), the FedEx entity-resolution case, schema-validated, no foreign runtime.
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
