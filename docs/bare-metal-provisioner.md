@@ -176,10 +176,13 @@ id/name + IP), and the reference binding consumes that shape directly.
   / deployment step.
 - **No persistence / replication.** `BareMetalConfig` and the in-flight burst are
   in-memory; the config's JSON form exists for forward use.
-- **No autoscaler wiring.** The autoscaler / job coordinator that *drives*
-  `provision`/`teardown` (and the [cost-cap approval gate](burst-approval-gate.md)
-  that wraps it) is a separate, later slice. `BareMetalProvisioner` drops in wherever
-  one holds a `Provisioner&`.
+- **Not yet driven by a live autoscaler.** The
+  [autoscaler control loop](job-autoscaler.md) (#371) and
+  [job coordinator](job-coordinator.md) are built and act through any
+  `Provisioner&` (optionally wrapped by the
+  [cost-cap approval gate](burst-approval-gate.md)); wiring them to drive *this*
+  backend in a live burst is the remaining slice. `BareMetalProvisioner` drops in
+  wherever one holds a `Provisioner&`.
 - **No raw-process variant.** Workers run as local containers; a systemd/launchd raw-
   process backend is a possible future sibling behind the same control-plane seam.
 

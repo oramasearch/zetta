@@ -338,6 +338,7 @@ add_library(zetta-core STATIC
   src/core/burst_identity.cpp
   src/core/scaling_policy.cpp
   src/core/burst_approval_gate.cpp
+  src/core/job_autoscaler.cpp
   src/core/solution_catalog.cpp
   src/core/cloud_provider.cpp
   src/core/run.cpp
@@ -370,6 +371,13 @@ add_library(zetta-core STATIC
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
+  src/core/ddf/ops.cpp
+  src/core/ddf/join.cpp
+  src/core/ddf/data_frame_ops.cpp
+  src/core/ddf/distributed_sort.cpp
+  src/core/ddf/group_by.cpp
+  src/core/ddf/as_of.cpp
+  src/core/ddf/group_by_job.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

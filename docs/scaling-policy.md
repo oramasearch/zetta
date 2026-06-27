@@ -17,12 +17,15 @@ always inside a hard **bounds** envelope:
 - **data shape** — size the fleet to the shape/size of the work.
 
 This slice is a **pure value type + boundary validation + the objective
-evaluation** — no autoscaler loop, no replication, no `Node` CRUD. It is modeled
-exactly like its sibling value types `NodeCapability` / `ProvisionedNode`
+evaluation** — no replication, no `Node` CRUD. It is modeled exactly like its
+sibling value types `NodeCapability` / `ProvisionedNode`
 ([provisioner.md](provisioner.md)): a JSON `to_json` / non-throwing `from_json`
-boundary plus a pure `evaluate()`. A `ComputeJob` references a `ScalingPolicy` by
-id (its `scaling_policy` field) — persisting/replicating policies as their own
-entity and wiring `evaluate()` into the live job coordinator are **later slices**.
+boundary plus a pure `evaluate()`. The control loop that *acts on* `evaluate()` —
+add/remove nodes via the `Provisioner` within bounds, with hysteresis — is the
+[job autoscaler](job-autoscaler.md) (`#371`). A `ComputeJob` references a
+`ScalingPolicy` by id (its `scaling_policy` field) — persisting/replicating
+policies as their own entity, and wiring the autoscaler's live observation source
+into the job coordinator, are **later slices**.
 
 ## The value type
 

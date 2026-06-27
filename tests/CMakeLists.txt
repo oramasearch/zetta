@@ -39,6 +39,7 @@ add_executable(zetta-tests
   test_burst_identity.cpp
   test_scaling_policy.cpp
   test_burst_approval_gate.cpp
+  test_job_autoscaler.cpp
   test_solution_catalog.cpp
   test_cloud_provider.cpp
   test_run.cpp
@@ -52,6 +53,13 @@ add_executable(zetta-tests
   test_query.cpp
   test_execution_graph.cpp
   test_data_frame.cpp
+  test_ddf_ops.cpp
+  test_ddf_join.cpp
+  test_data_frame_ops.cpp
+  test_distributed_sort.cpp
+  test_group_by.cpp
+  test_ddf_as_of.cpp
+  test_ddf_group_by.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
   test_cuda_device.cpp

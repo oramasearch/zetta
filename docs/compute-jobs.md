@@ -17,9 +17,12 @@ as is the [`ScalingPolicy`](scaling-policy.md) reward model the autoscaler reads
 (built in [#370](https://github.com/oramasearch/zetta/issues/370)). The
 [job coordinator](job-coordinator.md) that *schedules* a job onto the scheduler +
 collectives and drives its lifecycle is also built
-([#372](https://github.com/oramasearch/zetta/issues/372)); the **autoscaler** that
-sizes the fleet from a job's `ScalingPolicy` is the remaining, later slice. A job
-created here is the durable, replicated record the coordinator drives.
+([#372](https://github.com/oramasearch/zetta/issues/372)); the
+[**autoscaler** control loop](job-autoscaler.md) that sizes the fleet from a job's
+`ScalingPolicy` via the `Provisioner` is built too
+([#371](https://github.com/oramasearch/zetta/issues/371)) — wiring its live
+observation source into the coordinator is the remaining slice. A job created here
+is the durable, replicated record the coordinator drives.
 
 It is modeled **exactly like** [`zetta::Run`](runs.md): a top-level entity keyed
 by id, a flat CRDT key + on-disk JSON projection, mutators on the handle, and

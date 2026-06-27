@@ -133,7 +133,13 @@ controls (see [docs/compute-jobs.md](docs/compute-jobs.md) and
 (`zetta::ScalingPolicy`) — the per-job autoscaler reward objective (minimize cost
 / runtime-latency target / data shape) inside bounds (min/max nodes, cost cap),
 with an `evaluate()` over (progress, elapsed, cost) samples that the Jobs panel
-previews live (see [docs/scaling-policy.md](docs/scaling-policy.md)).
+previews live (see [docs/scaling-policy.md](docs/scaling-policy.md)). The
+**`JobAutoscaler`** (`zetta::JobAutoscaler`) is the control loop that acts on it:
+each tick it observes a running job's progress, scores the policy, and adds/removes
+nodes through the `Provisioner` seam within bounds — with hysteresis to avoid
+thrashing, an immediate shed on a cost-cap breach, live (elastic) membership read
+each tick, and best-effort max utilization when hardware is fixed (see
+[docs/job-autoscaler.md](docs/job-autoscaler.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
@@ -164,8 +170,24 @@ capability, and selects one per op — GPU when present, else CPU (see
 [docs/device-registry.md](docs/device-registry.md)). On top of that seam, the
 **DDF (distributed dataframe) core** (`zetta::ddf::DataFrame`) reads a table's rows
 into typed, chunked numeric columns — each chunk a `ComputeDevice` buffer — so those
-operators run directly over a table's data (see [docs/ddf.md](docs/ddf.md)). State
-replicates between nodes as an Automerge CRDT. See [docs/](docs/) for details.
+local **DDF ops** build on it — `scan` / `filter` / `project` and `sort` / `concat` /
+`slice` ([docs/ddf-ops.md](docs/ddf-ops.md)): `gather`-based row filtering,
+`map`/`elementwise` computed columns, and key-column ordering via the device
+`sort_by_key`. Three cross-node ops compose them: a **distributed sort**
+(sample-partition + local sort + merge across the cluster,
+[docs/ddf-distributed-sort.md](docs/ddf-distributed-sort.md)), a **distributed
+equi-join** (`zetta::ddf::distributed_join`) that repartitions two frames by key across
+the cluster via collectives, then runs a local hash / sort-merge join per shard
+([docs/ddf-join.md](docs/ddf-join.md)), and a **distributed groupby-aggregate**
+(`zetta::ddf::distributed_group_by`, count/sum/min/max/mean) that computes a partial
+per node and combines them across the cluster via the collectives
+([docs/ddf-groupby.md](docs/ddf-groupby.md)) — single-node and multi-node runs produce
+identical results, and which also runs as a recorded `ddf` `ComputeJob`
+(`run_group_by_job`) so it appears in `system.zetta_jobs`. A **window / as-of
+(point-in-time) aggregation** (`zetta::ddf::as_of_aggregate`) closes the set — the
+leakage-free featurization primitive that reduces, per entity, only the rows at or
+before a cutoff ([docs/ddf-as-of.md](docs/ddf-as-of.md)). State replicates between
+nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).

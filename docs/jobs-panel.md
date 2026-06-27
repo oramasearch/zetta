@@ -21,8 +21,11 @@ model is naturally read alongside the run that produced it.
 Like the [Runs](runs.md#gui-panel) and [Admin](admin-panel.md) panels, the job
 list is **read-only**: it renders whatever jobs the node holds (created via the
 API / tests, or replicated from a peer), so a fresh standalone node shows
-"(no jobs)" until something creates one. Creating / scheduling a job — the
-coordinator, scheduler, and live autoscaler — are later slices.
+"(no jobs)" until something creates one. The compute pass behind a job is built —
+the [coordinator](job-coordinator.md), the scheduler, and the
+[autoscaler control loop](job-autoscaler.md) — but **driving** one from the GUI
+(create + schedule a job, then watch the autoscaler size its fleet live) is a
+later slice.
 
 ## Layout
 
@@ -55,10 +58,12 @@ For the selected job:
 
 `App::draw_job_scaling_controls` is the per-job **objective/scaling** surface. It is
 a **live preview**, not a write path: a [`ScalingPolicy`](scaling-policy.md) is not
-persisted yet and the autoscaler is unbuilt (both later slices), so the controls
+persisted yet and the [autoscaler control loop](job-autoscaler.md) (`#371`), though
+built, is not yet wired live into a running job (both later slices), so the controls
 score an editable policy + sample against the **real, pure**
-`ScalingPolicy::evaluate()` and show the decision. Nothing here mutates the job —
-it is a "what-if" calculator that exercises the shipped reward logic.
+`ScalingPolicy::evaluate()` — the same evaluation the autoscaler runs each tick —
+and show the decision. Nothing here mutates the job — it is a "what-if" calculator
+that exercises the shipped reward logic.
 
 The controls, top to bottom:
 
@@ -101,8 +106,9 @@ read-only panels (Cluster, Runs, Admin) and depends on two shipped subsystems: t
 [ComputeJob registry](compute-jobs.md) (`system.zetta_jobs`) and the
 [ScalingPolicy reward model](scaling-policy.md). The natural next slices are the
 **mutating** compute actions — creating + scheduling a job (the coordinator), and
-persisting a `ScalingPolicy` so the controls drive a live autoscaler instead of
-previewing it.
+persisting a `ScalingPolicy` so the controls drive the live
+[autoscaler control loop](job-autoscaler.md) (built in `#371`) instead of
+previewing its evaluation.
 
 ## Pointers
 

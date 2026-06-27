@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/ddf_projection.schema.json",
+  "title": "DdfProjection",
+  "description": "The DDF project/select op spec (ARC-12): the ordered set of output columns over a DataFrame. Each output column is exactly one of three modes: a passthrough of an existing column (`source` only), a unary op over one column (`source` + `unary`), or a binary op over two columns (`left` + `right` + `binary`). Output column names must be unique.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["columns"],
+  "properties": {
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The output column's name in the projected frame."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Passthrough: the existing column copied. Unary: the input column."
+          },
+          "unary": {
+            "type": "string",
+            "enum": ["negate", "absolute", "square", "sqrt", "exp", "log"],
+            "description": "Unary op applied to `source` (the zetta::compute::UnaryOp set)."
+          },
+          "binary": {
+            "type": "string",
+            "enum": ["add", "subtract", "multiply", "divide", "maximum", "minimum"],
+            "description": "Binary op applied to `left` and `right` (the zetta::compute::BinaryOp set)."
+          },
+          "left": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Binary: the left input column."
+          },
+          "right": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Binary: the right input column."
+          }
+        }
+      }
+    }
+  }
+}
