@@ -981,6 +981,34 @@ the recorded placements (`Node::deployments()`) so a deploy's status is visible.
 The panel adds no persisted state of its own — only UI selection. See
 [docs/solution-catalog.md](docs/solution-catalog.md).
 
+### Cloud Inspector (permission-gated cloud provider inspection)
+
+The headed **Cloud Inspector** (`App::draw_cloud`, **Operations → Cloud
+Inspector**) is the GUI surface for the deployment-target backends — local,
+on-prem bare-metal, Kubernetes, and the managed clouds (AWS / GCP / Azure / OCI) —
+where a user **inspects a cloud** before deploying onto it (the GUI counterpart to
+the `Provisioner` + CLI-control-plane layer). It is built around the **hard rule**
+in *Conventions → Cloud providers — permission-gated*: touching a provider reads
+credential/config files and can call real cloud APIs, so it is **deny-by-default,
+ask-every-time, never-remembered** consent — a **load-bearing consent gate** that
+names exactly what an inspect *would* read/call **before** anything happens.
+
+The catalog is `zetta::CloudProviderCatalog` (`include/zetta/cloud_provider.hpp`),
+a **pure-metadata** library (mirrors `SolutionCatalog`'s built-in singleton +
+`find`): each `CloudProvider` carries identity/presentation plus a *description* of
+what an inspect would touch — its `cli`, the `config_paths` it would **read**
+(read-only), and the read-only `inspect_commands` it would **run** (never
+provision/deploy/teardown). It performs **no cloud access of any kind** — no SDK,
+CLI, file read, or network call; `requires_consent()` is false only for Local
+(which reads nothing — it is this node), true for every other backend. Because
+there is no untrusted input there is no JSON boundary to validate (unlike the
+solution catalog). The panel (list + detail, like Runs/Admin) tags each provider
+`[open]`/`[lock]`, resets consent when the selection changes, and gates the
+"Allow inspection of `<name>`" action behind the named files/commands. **This
+slice is scaffold + gate only: no real config read or cloud call happens even
+after consent** — wiring the gate to the real read-only inspect (invoking the CLI
+control planes) is the next slice. See [docs/cloud-inspector.md](docs/cloud-inspector.md).
+
 ### Deployment controller (reconcile + self-heal)
 
 The **control plane** for local deployments (`zetta::DeploymentController`,
@@ -1320,6 +1348,7 @@ Building tests is on by default; turn off with `-DZETTA_BUILD_TESTS=OFF`.
 ```
 CMakeLists.txt              build graph: imgui lib, zetta-compute lib (+ optional CUDA), zetta-core lib, zetta exe
 cmake/embed_font.cmake      bakes a .ttf into a C++ header at configure time
+assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + README
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
@@ -1351,6 +1380,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   scaling_policy.hpp        zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
+  cloud_provider.hpp        zetta::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access)
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
@@ -1441,6 +1471,7 @@ src/core/                   zetta-core impl
   scaling_policy.cpp        zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
   burst_approval_gate.cpp   zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
+  cloud_provider.cpp        zetta::CloudProviderCatalog — built-in provider metadata (local/bare-metal/k8s/aws/gcp/azure/oci); no cloud access
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
@@ -1509,9 +1540,20 @@ These are load-bearing and easy to break:
    logical window. The SDLRenderer3 backend does NOT set the render scale for
    us — without this line the UI paints into the top-left quadrant only.
 
-The font (DroidSans.ttf from the ImGui tree) is embedded via
-`cmake/embed_font.cmake` into `namespace zetta`, so the binary has no runtime
-asset dependency.
+The fonts — **Geist** (UI sans) + **Geist Mono** (labels / counts / metrics /
+code) — are embedded from `assets/fonts/` via `cmake/embed_font.cmake` into
+`namespace zetta` (symbols `kGeistSans` / `kGeistMono`), so the binary has no
+runtime asset dependency. `App::mono_font_` holds the mono face for `PushFont`.
+
+The GUI follows the **Orama design system** (light surfaces, ink text, Geist
+typography, coral used surgically, semantic green/amber/red for status, sentence
+case, no em-dashes). It is **not** the old dark theme — `init()` calls
+`StyleColorsLight()` then `apply_orama_theme()`, which paints the exact tokens.
+The rules + token table + component grammar live in
+[docs/design-system.md](docs/design-system.md); **read it before touching the
+GUI.** The headed app opens on a project-first **Home** landing (`App::draw_home`
+— hero + New project + your projects), with the other views reached from the menu
+bar.
 
 ## Known gaps / behavior notes
 
@@ -1521,6 +1563,47 @@ asset dependency.
   reasonable future tweak if it becomes annoying.)
 
 ## Conventions
+
+### Cloud providers — permission-gated (HARD RULE, all UI work)
+
+**Any UI that touches a cloud provider is permission-gated. No exceptions, ever.**
+This is a non-negotiable safety rule for *all* UI work (the SDL3 + ImGui app, any
+future control plane) — and it binds both the **product** and **Claude when
+building it**.
+
+- **Never read a cloud provider's config or credential files without asking for
+  explicit permission first** — `~/.aws/config`, `~/.aws/credentials`,
+  `~/.kube/config`, `~/.config/gcloud/**`, `~/.azure/**`, credential env vars
+  (`AWS_*`, `GOOGLE_APPLICATION_CREDENTIALS`, `AZURE_*`), the cloud
+  instance-metadata endpoint (`169.254.169.254`), etc.
+- **Never read from or write to a cloud provider without asking for explicit
+  permission first** — any API / SDK / CLI call to AWS, Azure, GCP, Kubernetes,
+  or any other provider (`aws`, `gcloud`, `az`, `kubectl`, their SDKs, raw REST).
+  Writes (deploy, create, delete) are especially sensitive — confirm intent.
+- **Ask every time.** Consent is per-action, deny-by-default, and *not* remembered
+  across actions unless the user explicitly says so. The safe/default state reads
+  nothing and calls nothing.
+- **In the product:** gate the action behind an explicit, in-UI consent step that
+  names exactly what will be read or called (which files, which API, read vs.
+  write) *before* anything happens. No silent background reads of cloud state.
+- **For Claude:** before writing UI code that reads cloud creds/config or calls a
+  cloud, ask the developer first. When in doubt, surface what *would* be
+  read/called and ask — never touch the cloud to "just check."
+
+### Design system — follow it for all GUI work
+
+The headed app follows the **Orama design system** (light surfaces, ink text,
+**Geist + Geist Mono**, coral used *surgically* as the "you are here" accent,
+semantic green/amber/red for status — never coral/blue, **sentence case**, **no
+em-dashes** in product copy — use `·`/colons). The tokens, typography/copy rules,
+coral discipline, and component grammar (cards, ghost buttons, charcoal primary
+actions, status dots, mono metadata strips, tinted callouts) — and how they map
+to `src/gui/app.cpp` (`apply_orama_theme`, `mono_font_`, the `eyebrow` /
+`status_dot` / `wash` helpers) — are documented in
+[`docs/design-system.md`](docs/design-system.md). **Read it before adding or
+changing GUI**, and run its self-check before shipping. Canonical source: the
+`orama-work` repo's `orama_design_review/design-system` + the Orama Zetta
+marketing site.
 
 ### C++ conventions
 - **C++26** (`set(CMAKE_CXX_STANDARD 26)`, `cxx_std_26`). Use modern
@@ -1593,12 +1676,25 @@ name. "Update the docs" means *all* of the above, not just `docs/`.
   `.claude/skills/*/SKILL.md` (those *are* committed). If asked to "remember"
   something, write it to the right git-tracked doc instead — never to memory.
 
-### Idle loop
+### Idle loop + live resize
 The headed loop uses `SDL_WaitEventTimeout` (≈30fps idle cap) rather than a busy
 vsync spin — it wakes immediately on input so interaction stays full-speed but
 doesn't burn CPU on identical frames. The headless loop ticks at 10 Hz. Keep any
 background work cheap enough to run inside those cadences (or move it off the
-loop thread).
+loop thread). One frame's worth of build+present is factored into
+`App::render_frame()`; an `SDL_AddEventWatch` (`App::on_sdl_event`) calls it on
+`WINDOW_RESIZED`/`PIXEL_SIZE_CHANGED`/`EXPOSED` so the UI tracks a live resize
+drag instead of the OS stretching the last frame (macOS runs a modal runloop
+during resize that starves the normal loop). `render_frame()` has a re-entrancy
+guard; it does **not** tick the node (that stays in `run()`).
+
+### Font + text size
+The GUI font size is `kBaseFontPixels × OS-content-scale × user-text-size`. The
+user multiplier is **View → Text size** (`ui_scale_`); changing it sets
+`font_rebuild_requested_`, and `run()` rebuilds the font atlas via
+`apply_display_scale()` **between** frames (never mid-frame, while the atlas is in
+use). The atlas also rebuilds on display-scale/DPI changes. Both Geist faces +
+the whole style scale together, so text-size is effectively a UI zoom.
 
 ## Pointers
 
@@ -1635,6 +1731,7 @@ loop thread).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
+- [`docs/cloud-inspector.md`](docs/cloud-inspector.md) — the headed **Cloud Inspector** (`zetta::CloudProviderCatalog` + `App::draw_cloud`): permission-gated inspection of deployment targets (local/on-prem/k8s/AWS/GCP/Azure/OCI) — a deny-by-default, ask-every-time consent gate naming what an inspect would read/call; scaffold + gate, no real cloud access yet.
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).

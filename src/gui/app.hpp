@@ -9,7 +9,9 @@
 // app.cpp (and no other translation unit) needs the full definitions.
 struct SDL_Window;
 struct SDL_Renderer;
+union SDL_Event;
 struct ImGuiStyle;
+struct ImFont;
 
 namespace zetta {
 
@@ -47,6 +49,24 @@ public:
     void run();
 
 private:
+    // The single active view shown in the content area. The menu bar selects
+    // which one is live, so the window shows one focused panel at a time instead
+    // of every panel stacked in one long scroll. Ordered along the product flow:
+    // your data → architect the pipeline → operate it → govern it.
+    enum class View {
+        Home,      // project-first landing (the default)
+        Explorer,  // Projects | Databases | Tables | Rows | Large Objects
+        Query,     // the SQL console
+        Graph,     // the execution-graph workspace
+        Gate,      // the correctness gate
+        Deploy,    // the AI Solution Library → one-button deploy
+        Runs,      // runs / outputs / lineage
+        Jobs,      // compute jobs + scaling preview
+        Cluster,   // membership + replication
+        Cloud,     // cloud provider inspector (permission-gated)
+        Admin,     // principals / keys / audit
+    };
+
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
     // routes by extension: .json/.jsonl import as rows, anything else stores as
@@ -62,7 +82,18 @@ private:
     // Re-rasterize the font and rescale the style for the current display.
     // See app.cpp for the content-scale vs pixel-density rationale.
     void apply_display_scale();
-    void draw_menu_bar(bool& running);
+    // Build + present one ImGui frame. Factored out of run() so the SDL event
+    // watch can re-render during a live window resize (macOS blocks the normal
+    // loop inside its modal resize runloop, which otherwise stretches the last
+    // frame). Does NOT tick the node — that stays in run().
+    void render_frame();
+    // SDL event watch: re-render on window resize/expose so the UI tracks the
+    // drag. Registered in run(); `userdata` is the App.
+    static bool on_sdl_event(void* userdata, SDL_Event* event);
+    void draw_menu_bar();     // selects the view; Quit toggles running_
+    void draw_active_view();  // render whichever View is selected (the menu switcher)
+    void draw_about_modal();  // the Help → About Orama Zetta dialog
+    void draw_home();         // project-first landing (hero + New project + projects)
     void draw_dashboard();
     void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
     void draw_projects();    // top-level AI projects (create/select/rename/delete)
@@ -74,6 +105,7 @@ private:
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     void draw_cluster();     // role, listen address, peers, join command
+    void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
@@ -121,8 +153,33 @@ private:
     Cluster& cluster_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
+    // Geist Mono face for labels / counts / metrics / paths (the design system's
+    // mono role). Non-owning — the ImGui font atlas owns it; re-captured whenever
+    // the atlas is rebuilt in apply_display_scale().
+    ImFont* mono_font_ = nullptr;
     bool initialized_ = false;
     bool show_demo_ = false;
+
+    // Which panel the content area is showing (set from the menu bar). Defaults
+    // to the project-first Home landing.
+    View active_view_ = View::Home;
+    // Asks draw_about_modal() to open the About popup on the next frame (set from
+    // the Help menu), mirroring the New Project modal's request flag.
+    bool about_requested_ = false;
+
+    // Main-loop run flag (a member so render_frame() / the menu's Quit can set it
+    // without threading a reference through every call).
+    bool running_ = true;
+    // Guards render_frame() against re-entry from the resize event watch.
+    bool rendering_ = false;
+
+    // User text-size multiplier (View → Text size), applied on top of the OS
+    // content scale. Changing it requests a font-atlas rebuild between frames
+    // (font size is baked at rasterization). applied_ui_scale_ tracks the value
+    // the current atlas was built for.
+    float ui_scale_ = 1.0f;
+    float applied_ui_scale_ = 0.0f;
+    bool font_rebuild_requested_ = false;
 
     // Explorer selection (held by name; re-resolved each frame so a dropped
     // database/table can't leave a dangling handle) and input fields. ImGui's
@@ -133,6 +190,15 @@ private:
     std::string selected_run_;  // run id; re-resolved each frame like the others
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
+
+    // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
+    // catalog id selected in the list. `cloud_consent_provider_` is the id the
+    // user has *explicitly* consented to inspect right now — deny-by-default and
+    // reset whenever the selection changes, so consent is never carried over to a
+    // different provider or remembered across selections (CLAUDE.md hard rule).
+    // No real config-file read / cloud call happens in this slice regardless.
+    std::string selected_cloud_provider_;
+    std::string cloud_consent_provider_;
     std::string new_db_input_;
     std::string new_table_input_;
     std::string rename_project_input_;

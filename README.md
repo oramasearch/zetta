@@ -20,8 +20,9 @@ intelligence** from quarters to hours — **Intelligence Velocity for Big Thinke
 This repo is Orama Zetta's core. Today that's a fast, equal-peer **CRDT-replicated**
 store with clustering — JSONL on-disk storage, large objects, and a Postgres-SQL
 subset. A *zetta node* is one running instance; it runs **headed** (default — an SDL3
-+ Dear ImGui desktop UI, so the desktop is itself a cluster member) or **headless**
-(no UI, for servers with no display). C++26, macOS-first, single statically-linked
++ Dear ImGui desktop UI styled to the **Orama design system** (light, Geist,
+coral-disciplined; opens on a project-first Home), so the desktop is itself a
+cluster member) or **headless** (no UI, for servers with no display). C++26, macOS-first, single statically-linked
 binary. (`zetta` is the binary + codename; **Orama Zetta** is the product name — the
 older name *"ZettaDB"* is retired.) The broader product surface — GUI control plane,
 one-button deploy onto k8s/cloud, tiered storage, compute-near-data, the learning
@@ -56,7 +57,13 @@ validated execution graph onto a target, recording the placement (R1 local; see
 [docs/deployments.md](docs/deployments.md)) — the headed **Deploy panel** does this
 as one-button deploy: pick a blueprint from the **AI Solution Library**, choose a
 placement on the dial, pass the correctness gate, and see its status (see
-[docs/solution-catalog.md](docs/solution-catalog.md)). A **control plane**
+[docs/solution-catalog.md](docs/solution-catalog.md)). Before deploying onto a
+cloud you can **inspect** it from the headed **Cloud Inspector** panel
+(local/on-prem/Kubernetes/AWS/GCP/Azure/OCI) — but reading any provider's
+config/credentials or calling it is **permission-gated, deny-by-default, and
+asked every time** (a load-bearing consent gate naming exactly what an inspect
+would read/call; scaffold + gate, no real cloud access yet — see
+[docs/cloud-inspector.md](docs/cloud-inspector.md)). A **control plane**
 reconciles each local deployment desired→actual and **self-heals** a killed or
 failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
 It owns **runs** (`zetta::Run`), the

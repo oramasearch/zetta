@@ -4,6 +4,7 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/capability.hpp"
+#include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
@@ -60,26 +61,42 @@
 #include <utility>
 #include <vector>
 
-#include "zetta_font_embedded.hpp"
+#include "zetta_font_sans.hpp"
+#include "zetta_font_mono.hpp"
 
 namespace zetta::gui {
 namespace {
 
-// Base logical font size; multiplied by the OS content scale per display.
-constexpr float kBaseFontPixels = 15.0f;
+// Base logical font size; multiplied by the OS content scale and the user's
+// View → Text size multiplier. The Geist Mono face is built a touch smaller
+// (kMonoScale) for the design system's label / count / metric role.
+constexpr float kBaseFontPixels = 17.0f;
+constexpr float kMonoScale = 0.86f;
 
-// Inline-error text colour (soft red).
-constexpr ImVec4 kErrorColor{1.0f, 0.4f, 0.4f, 1.0f};
+// ── Orama design-system palette (light) ───────────────────────────────────
+// Exact tokens from design-system/colors_and_type.css. Coral is the brand
+// "you are here" accent — used surgically (active nav, one focal action), NEVER
+// for status. Status uses the semantic green/amber/red below. See CLAUDE.md.
+constexpr ImVec4 kCoral{0.886f, 0.329f, 0.353f, 1.0f};       // #E2545A
+constexpr ImVec4 kCoralHover{0.831f, 0.263f, 0.286f, 1.0f};  // #D44349
+constexpr ImVec4 kInkPrimary{0.110f, 0.110f, 0.102f, 1.0f};  // #1C1C1A
+constexpr ImVec4 kInkSecondary{0.267f, 0.267f, 0.255f, 1.0f};// #444441
+constexpr ImVec4 kInkMuted{0.373f, 0.373f, 0.361f, 1.0f};    // #5F5F5C
+constexpr ImVec4 kInkQuiet{0.490f, 0.490f, 0.478f, 1.0f};    // #7D7D7A
+constexpr ImVec4 kCanvas{0.980f, 0.980f, 0.973f, 1.0f};      // #FAFAF8
+constexpr ImVec4 kSidebar{0.961f, 0.957f, 0.949f, 1.0f};     // #F5F4F2
+constexpr ImVec4 kWhite{1.0f, 1.0f, 1.0f, 1.0f};             // #FFFFFF
+constexpr ImVec4 kBorder{0.878f, 0.878f, 0.878f, 1.0f};      // #E0E0E0
 
-// Inline-success text colour (soft green) — matches the cluster panel's
-// "in sync" hue.
-constexpr ImVec4 kSuccessColor{0.4f, 0.8f, 0.4f, 1.0f};
+// Semantic state palette (product only) — for status, never coral.
+constexpr ImVec4 kSuccessColor{0.059f, 0.431f, 0.337f, 1.0f};// fresh-fg #0F6E56
+constexpr ImVec4 kDotActive{0.114f, 0.620f, 0.459f, 1.0f};   // dot-active #1D9E75
+constexpr ImVec4 kWarnColor{0.522f, 0.310f, 0.043f, 1.0f};   // stale-fg #854F0B
+constexpr ImVec4 kErrorColor{0.706f, 0.137f, 0.094f, 1.0f};  // error #B42318
 
-// Correctness-gate status colours: green pass, amber warn, red fail. The amber
-// matches the "syncing" colour used in the cluster panel.
-constexpr ImVec4 kPassColor{0.4f, 0.8f, 0.4f, 1.0f};
-constexpr ImVec4 kWarnColor{0.9f, 0.7f, 0.3f, 1.0f};
-constexpr ImVec4 kFailColor{0.95f, 0.4f, 0.4f, 1.0f};
+// Correctness-gate status colours: green pass, amber warn, red fail.
+constexpr ImVec4 kPassColor = kSuccessColor;
+constexpr ImVec4 kFailColor = kErrorColor;
 
 // A small, valid execution graph (the IR's canonical JSON form) prefilled into
 // the gate panel so the passing path is one click away — a churn-flavoured
@@ -125,20 +142,22 @@ ImVec4 status_color(CheckStatus status) {
     return kFailColor;
 }
 
-// "unsaved edits" / dirty marker colour (soft amber).
-constexpr ImVec4 kUnsavedColor{0.9f, 0.7f, 0.3f, 1.0f};
+// "unsaved edits" / dirty marker colour (stale amber).
+constexpr ImVec4 kUnsavedColor = kWarnColor;
 
-// Graph-workspace canvas palette (ImU32, for the window draw list). Nodes are
-// boxes laid out in columns by StepKind; edges are lines drawn underneath them.
-constexpr ImU32 kCanvasHeaderColor = IM_COL32(150, 160, 180, 255);
-constexpr ImU32 kNodeFill = IM_COL32(45, 55, 70, 255);
-constexpr ImU32 kNodeFillHover = IM_COL32(60, 72, 92, 255);
-constexpr ImU32 kNodeFillSelected = IM_COL32(48, 86, 130, 255);
-constexpr ImU32 kNodeBorder = IM_COL32(120, 130, 150, 255);
-constexpr ImU32 kNodeBorderSelected = IM_COL32(120, 180, 255, 255);
-constexpr ImU32 kNodeTextColor = IM_COL32(230, 230, 235, 255);
-constexpr ImU32 kDataEdgeColor = IM_COL32(150, 160, 180, 210);
-constexpr ImU32 kControlEdgeColor = IM_COL32(200, 160, 110, 210);
+// Graph-workspace canvas palette (ImU32, for the window draw list) — light
+// cards on the Orama canvas. Nodes are white boxes with hairline borders laid
+// out in columns by StepKind; the selected node gets a coral border (the "you
+// are here" accent). Edges are gray lines (data) / amber (control).
+constexpr ImU32 kCanvasHeaderColor = IM_COL32(95, 95, 92, 255);      // ink-muted
+constexpr ImU32 kNodeFill = IM_COL32(255, 255, 255, 255);           // white
+constexpr ImU32 kNodeFillHover = IM_COL32(242, 242, 240, 255);      // wash
+constexpr ImU32 kNodeFillSelected = IM_COL32(247, 238, 239, 255);   // coral wash
+constexpr ImU32 kNodeBorder = IM_COL32(224, 224, 224, 255);         // border
+constexpr ImU32 kNodeBorderSelected = IM_COL32(226, 84, 90, 255);   // coral
+constexpr ImU32 kNodeTextColor = IM_COL32(28, 28, 26, 255);         // ink-primary
+constexpr ImU32 kDataEdgeColor = IM_COL32(150, 150, 146, 220);      // gray line
+constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -152,28 +171,172 @@ float ui_pixel_density(SDL_Window* window) {
     return d > 0.0f ? d : 1.0f;
 }
 
+// A black wash at the given alpha — the design system's hover/selected washes
+// and ghost-button fills (rgba(0,0,0,a)), which blend over whatever is behind.
+constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alpha); }
+
+// Compact uptime, e.g. "45s", "1m 7s", "2h 3m 0s" — for the status strip.
+std::string format_uptime(double seconds) {
+    long total = seconds > 0.0 ? static_cast<long>(seconds) : 0;
+    const long hours = total / 3600;
+    total %= 3600;
+    const long minutes = total / 60;
+    const long secs = total % 60;
+    std::string out;
+    if (hours) out += std::to_string(hours) + "h ";
+    if (hours || minutes) out += std::to_string(minutes) + "m ";
+    out += std::to_string(secs) + "s";
+    return out;
+}
+
+// "N thing" / "N things" — singular/plural by count.
+std::string plural(std::size_t count, const char* one, const char* many) {
+    return std::to_string(count) + " " + (count == 1 ? one : many);
+}
+
+std::string to_upper(std::string text) {
+    for (char& character : text) {
+        character =
+            static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    }
+    return text;
+}
+
+// Draw a small filled status dot inline (the design system's 6px indicator
+// dot), then SameLine so the caller's next item sits to its right. Green =
+// active/open, amber = locked/attention.
+void status_dot(ImVec4 color) {
+    const float size = ImGui::GetFontSize();
+    const float radius = size * 0.26f;
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const ImVec2 center(pos.x + radius, pos.y + size * 0.5f);
+    ImGui::GetWindowDrawList()->AddCircleFilled(center, radius,
+                                                ImGui::GetColorU32(color));
+    ImGui::Dummy(ImVec2(radius * 2.0f, size));
+    ImGui::SameLine(0.0f, 7.0f);
+}
+
+// A mono uppercase eyebrow label (the design system's section-label role). Needs
+// the mono font pushed by the caller when available.
+void eyebrow(ImFont* mono, const char* text) {
+    if (mono) ImGui::PushFont(mono);
+    ImGui::TextColored(kInkMuted, "%s", text);
+    if (mono) ImGui::PopFont();
+}
+
+// Ambient Geist Mono face for the file-local render_* helpers (which aren't App
+// methods, so they can't reach App::mono_font_). Set once per frame at the top of
+// render_frame(); null until the first atlas build. Like ImGui's current-font
+// concept, but used to mono just the data bits (ids / timestamps / numbers).
+ImFont* g_mono_font = nullptr;
+
+// Render one line of mono data (an id, timestamp, or number) in the given
+// colour, falling back to the default font when mono isn't available yet.
+void mono_line(ImVec4 color, const char* label, const std::string& value) {
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(color, "%s%s", label, value.c_str());
+    if (g_mono_font) ImGui::PopFont();
+}
+
+// The one focal action on a surface: a charcoal-filled, white-text button (the
+// design system's primary button). Everything else stays a ghost button. Coral
+// is never a button fill here (there is no "send").
+bool primary_button(const char* label) {
+    ImGui::PushStyleColor(ImGuiCol_Button, kInkPrimary);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kInkSecondary);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kInkMuted);
+    ImGui::PushStyleColor(ImGuiCol_Text, kWhite);
+    const bool clicked = ImGui::Button(label);
+    ImGui::PopStyleColor(4);
+    return clicked;
+}
+
+// Paint the ImGui style with the Orama design system (light). Flat surfaces,
+// hairline borders, modest radii, ink text on canvas. Coral is reserved for the
+// "you are here" accent (menu checkmarks, selected-graph node border, the one
+// focal action); status uses the semantic green/amber/red, never coral.
+void apply_orama_theme(ImGuiStyle& style) {
+    ImVec4* colors = style.Colors;
+    colors[ImGuiCol_Text] = kInkPrimary;
+    colors[ImGuiCol_TextDisabled] = kInkQuiet;
+    colors[ImGuiCol_WindowBg] = kCanvas;
+    colors[ImGuiCol_ChildBg] = kWhite;          // child panes read as cards
+    colors[ImGuiCol_PopupBg] = kWhite;
+    colors[ImGuiCol_Border] = kBorder;
+    colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_FrameBg] = kWhite;          // inputs: white + hairline border
+    colors[ImGuiCol_FrameBgHovered] = wash(0.04f);
+    colors[ImGuiCol_FrameBgActive] = wash(0.06f);
+    colors[ImGuiCol_TitleBg] = kSidebar;
+    colors[ImGuiCol_TitleBgActive] = kSidebar;
+    colors[ImGuiCol_MenuBarBg] = kSidebar;
+    colors[ImGuiCol_ScrollbarBg] = ImVec4(0, 0, 0, 0);
+    colors[ImGuiCol_ScrollbarGrab] = wash(0.16f);
+    colors[ImGuiCol_ScrollbarGrabHovered] = wash(0.24f);
+    colors[ImGuiCol_ScrollbarGrabActive] = wash(0.32f);
+    colors[ImGuiCol_CheckMark] = kCoral;        // "you are here" (active view)
+    colors[ImGuiCol_SliderGrab] = kInkMuted;
+    colors[ImGuiCol_SliderGrabActive] = kCoral;
+    // Ghost buttons: a faint wash + hairline border, ink text.
+    colors[ImGuiCol_Button] = wash(0.03f);
+    colors[ImGuiCol_ButtonHovered] = wash(0.06f);
+    colors[ImGuiCol_ButtonActive] = wash(0.10f);
+    // Selection (Selectable / MenuItem / Header): a soft wash, never a coral or
+    // charcoal fill — coral stays reserved for the accent.
+    colors[ImGuiCol_Header] = wash(0.05f);
+    colors[ImGuiCol_HeaderHovered] = wash(0.04f);
+    colors[ImGuiCol_HeaderActive] = wash(0.06f);
+    colors[ImGuiCol_Separator] = kBorder;
+    colors[ImGuiCol_SeparatorHovered] = kInkQuiet;
+    colors[ImGuiCol_SeparatorActive] = kInkMuted;
+    colors[ImGuiCol_ResizeGrip] = wash(0.06f);
+    colors[ImGuiCol_ResizeGripHovered] = wash(0.12f);
+    colors[ImGuiCol_ResizeGripActive] = wash(0.18f);
+    colors[ImGuiCol_PlotHistogram] = kInkSecondary;  // metric / confidence bars
+    colors[ImGuiCol_PlotHistogramHovered] = kInkPrimary;
+    colors[ImGuiCol_TextSelectedBg] = ImVec4(0.886f, 0.329f, 0.353f, 0.18f);
+    colors[ImGuiCol_NavHighlight] = kCoral;
+
+    // Flat + measured: hairline borders, modest radii (design radius-8), no
+    // decorative rounding on the full-window root.
+    style.WindowBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
+    style.FrameBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.SeparatorTextBorderSize = 1.0f;
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 8.0f;
+    style.FrameRounding = 8.0f;
+    style.PopupRounding = 8.0f;
+    style.GrabRounding = 8.0f;
+    style.ScrollbarRounding = 8.0f;
+    style.TabRounding = 8.0f;
+    style.FramePadding = ImVec2(9.0f, 5.0f);
+    style.ItemSpacing = ImVec2(8.0f, 7.0f);
+}
+
 // A run's status, color-coded along its lifecycle: pending (neutral) → running
 // (amber) → succeeded (green) | failed (red). Same palette as the cluster panel.
 ImVec4 run_status_color(RunStatus status) {
     switch (status) {
-        case RunStatus::Pending:   return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-        case RunStatus::Running:   return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
-        case RunStatus::Succeeded: return ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
+        case RunStatus::Pending:   return kInkQuiet;
+        case RunStatus::Running:   return kWarnColor;
+        case RunStatus::Succeeded: return kSuccessColor;
         case RunStatus::Failed:    return kErrorColor;
     }
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    return kInkQuiet;
 }
 
 // A compute job's status, color-coded along its lifecycle: queued (neutral) →
 // running (amber) → succeeded (green) | failed (red). Same palette as runs.
 ImVec4 job_status_color(JobStatus status) {
     switch (status) {
-        case JobStatus::Queued:    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
-        case JobStatus::Running:   return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
-        case JobStatus::Succeeded: return ImVec4(0.4f, 0.8f, 0.4f, 1.0f);
+        case JobStatus::Queued:    return kInkQuiet;
+        case JobStatus::Running:   return kWarnColor;
+        case JobStatus::Succeeded: return kSuccessColor;
         case JobStatus::Failed:    return kErrorColor;
     }
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    return kInkQuiet;
 }
 
 // A scaling action's color: scale-up green (more capacity), hold neutral,
@@ -181,17 +344,17 @@ ImVec4 job_status_color(JobStatus status) {
 ImVec4 scaling_action_color(ScalingAction action) {
     switch (action) {
         case ScalingAction::ScaleUp:   return kSuccessColor;
-        case ScalingAction::Hold:      return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+        case ScalingAction::Hold:      return kInkQuiet;
         case ScalingAction::ScaleDown: return kWarnColor;
     }
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    return kInkQuiet;
 }
 
 // A log line's severity color — error red, warn amber, anything else neutral.
 ImVec4 log_level_color(const std::string& level) {
     if (level == "error") return kErrorColor;
-    if (level == "warn")  return ImVec4(0.9f, 0.7f, 0.3f, 1.0f);
-    return ImVec4(0.7f, 0.7f, 0.7f, 1.0f);
+    if (level == "warn")  return kWarnColor;
+    return kInkQuiet;
 }
 
 // Join lineage refs (sources / steps) for a single wrapped line.
@@ -213,15 +376,17 @@ void render_model_card(const Model& model) {
     const std::string short_id = model.id().substr(0, model.id().find('-'));
     ImGui::SeparatorText(
         (model.name().empty() ? ("model " + short_id) : model.name()).c_str());
-    ImGui::TextDisabled("kind: %s  ·  id: %s", model.kind().c_str(),
-                        short_id.c_str());
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkQuiet, "kind: %s  ·  id: %s", model.kind().c_str(),
+                       short_id.c_str());
     if (model.has_weights()) {
-        ImGui::TextDisabled(
-            "weights: %s%s", format_bytes(model.weights()->size).c_str(),
+        ImGui::TextColored(
+            kInkQuiet, "weights: %s%s", format_bytes(model.weights()->size).c_str(),
             model.has_weights_body() ? "" : " (awaiting body transfer)");
     } else {
-        ImGui::TextDisabled("weights: (not yet attached)");
+        ImGui::TextColored(kInkQuiet, "weights: (not yet attached)");
     }
+    if (g_mono_font) ImGui::PopFont();
 
     const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
                                         ImGuiTableFlags_RowBg |
@@ -293,19 +458,17 @@ void render_model_card(const Model& model) {
 // the node's models whose producing-run ref is this run (resolved by the caller).
 void render_run_detail(const Run& run,
                        const std::vector<std::shared_ptr<Model>>& models) {
-    ImGui::Text("Run %s", run.id().c_str());
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkPrimary, "run %s", run.id().c_str());
+    if (g_mono_font) ImGui::PopFont();
     ImGui::SameLine();
     ImGui::TextColored(run_status_color(run.status()), "[%s]",
                        std::string(to_string(run.status())).c_str());
-    if (!run.project().empty()) {
-        ImGui::TextDisabled("project: %s", run.project().c_str());
-    }
-    if (!run.graph().empty()) {
-        ImGui::TextDisabled("graph: %s", run.graph().c_str());
-    }
-    ImGui::TextDisabled("created: %s", run.created().c_str());
+    if (!run.project().empty()) mono_line(kInkQuiet, "project:  ", run.project());
+    if (!run.graph().empty()) mono_line(kInkQuiet, "graph:    ", run.graph());
+    mono_line(kInkQuiet, "created:  ", run.created());
     if (run.updated() != run.created()) {
-        ImGui::TextDisabled("updated: %s", run.updated().c_str());
+        mono_line(kInkQuiet, "updated:  ", run.updated());
     }
 
     const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
@@ -319,10 +482,12 @@ void render_run_detail(const Run& run,
         ImGui::TextDisabled("(no log entries)");
     } else {
         for (const RunLogEntry& entry : run.logs()) {
-            ImGui::TextDisabled("%s", entry.time.c_str());
+            if (g_mono_font) ImGui::PushFont(g_mono_font);
+            ImGui::TextColored(kInkQuiet, "%s", entry.time.c_str());
             ImGui::SameLine();
             ImGui::TextColored(log_level_color(entry.level), "%-5s",
                                entry.level.c_str());
+            if (g_mono_font) ImGui::PopFont();
             ImGui::SameLine();
             ImGui::TextWrapped("%s", entry.message.c_str());
         }
@@ -337,6 +502,7 @@ void render_run_detail(const Run& run,
         ImGui::TableSetupColumn("Name");
         ImGui::TableSetupColumn("Ref");
         ImGui::TableHeadersRow();
+        if (g_mono_font) ImGui::PushFont(g_mono_font);
         for (const RunOutput& output : run.outputs()) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -346,6 +512,7 @@ void render_run_detail(const Run& run,
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(output.ref.c_str());
         }
+        if (g_mono_font) ImGui::PopFont();
         ImGui::EndTable();
     }
 
@@ -396,14 +563,14 @@ void render_run_detail(const Run& run,
 void render_access_key(const AccessKey& key, const std::string& now) {
     const std::string short_id = key.id().substr(0, key.id().find('-'));
     ImGui::SeparatorText(("key " + short_id).c_str());
-    ImGui::TextDisabled("created: %s", key.created().c_str());
+    mono_line(kInkQuiet, "created:  ", key.created());
 
     // Scope — which resources this key may touch (the resource axis, RULE-3).
     const Scope& scope = key.scope();
     if (scope.unrestricted) {
         ImGui::TextColored(kWarnColor, "scope: unrestricted (admin)");
     } else if (scope.grants.empty()) {
-        ImGui::TextDisabled("scope: (no resources — denies every resource)");
+        ImGui::TextDisabled("scope: (no resources, denies every resource)");
     } else {
         ImGui::TextDisabled("scope:");
         ImGui::Indent();
@@ -419,7 +586,7 @@ void render_access_key(const AccessKey& key, const std::string& now) {
     // optionally TTL'd. No wildcard: a key with none denies every operation.
     const CapabilitySet& capabilities = key.capabilities();
     if (capabilities.grants.empty()) {
-        ImGui::TextDisabled("capabilities: (none — denies every operation)");
+        ImGui::TextDisabled("capabilities: (none, denies every operation)");
     } else {
         ImGui::TextDisabled("capabilities:");
         ImGui::Indent();
@@ -449,14 +616,14 @@ void render_principal_detail(const Principal& principal) {
     ImGui::SameLine();
     ImGui::TextDisabled("[%s]",
                         std::string(to_string(principal.kind())).c_str());
-    ImGui::TextDisabled("id: %s", principal.id().c_str());
-    ImGui::TextDisabled("created: %s", principal.created().c_str());
+    mono_line(kInkQuiet, "id:       ", principal.id());
+    mono_line(kInkQuiet, "created:  ", principal.created());
 
     const std::vector<std::shared_ptr<AccessKey>>& keys = principal.keys();
     ImGui::Spacing();
     ImGui::TextDisabled("%zu access key(s)", keys.size());
     if (keys.empty()) {
-        ImGui::TextDisabled("(no keys — this principal can authenticate nothing)");
+        ImGui::TextDisabled("(no keys, this principal can authenticate nothing)");
         return;
     }
     const std::string now = now_iso8601();
@@ -555,7 +722,7 @@ bool App::init() {
         if (win_h < 600) win_h = 600;
     }
 
-    const std::string title = std::string{"zetta "} + kVersion;
+    const std::string title = std::string{"Orama Zetta "} + kVersion;
     window_ = SDL_CreateWindow(
         title.c_str(), win_w, win_h,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -580,7 +747,8 @@ bool App::init() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr;
-    ImGui::StyleColorsDark();
+    ImGui::StyleColorsLight();
+    apply_orama_theme(ImGui::GetStyle());
 
     ImGui_ImplSDL3_InitForSDLRenderer(window_, renderer_);
     ImGui_ImplSDLRenderer3_Init(renderer_);
@@ -609,66 +777,302 @@ bool App::init() {
 void App::apply_display_scale() {
     const float content = ui_content_scale(window_);
     const float density = ui_pixel_density(window_);
-    if (content == applied_content_scale_ &&
-        density == applied_pixel_density_) return;
+    if (content == applied_content_scale_ && density == applied_pixel_density_ &&
+        ui_scale_ == applied_ui_scale_) {
+        return;
+    }
     applied_content_scale_ = content;
     applied_pixel_density_ = density;
+    applied_ui_scale_ = ui_scale_;
+    const float scale = content * ui_scale_;  // OS content scale × user text size
 
     ImGuiIO& io = ImGui::GetIO();
     io.Fonts->Clear();
-    ImFontConfig cfg;
-    cfg.SizePixels = kBaseFontPixels * content;
-    cfg.RasterizerDensity = density;
-    cfg.FontDataOwnedByAtlas = false;  // bytes live in the embedded header
-    cfg.OversampleH = 2;
-    cfg.OversampleV = 2;
-    io.Fonts->AddFontFromMemoryTTF(
-        const_cast<unsigned char*>(kDroidSans),
-        static_cast<int>(kDroidSans_len),
-        cfg.SizePixels, &cfg);
+
+    // Glyph coverage beyond ImGui's default Latin-1: General Punctuation (so a
+    // stray en/em-dash, bullet, or ellipsis renders instead of a "?" tofu) plus
+    // arrows. Geist covers these. Static so the pointer stays valid until Build.
+    static const ImWchar kRanges[] = {
+        0x0020, 0x00FF,  // Basic Latin + Latin-1 Supplement
+        0x2010, 0x205E,  // General Punctuation: – — ' ' " " • …
+        0x2190, 0x2199,  // Arrows
+        0,
+    };
+
+    // The embedded bytes are static (constexpr arrays), so FontDataOwnedByAtlas
+    // = false is safe — ImGui reads them at Build() and never frees them.
+    const auto add_font = [&](const unsigned char* data, unsigned length,
+                              float pixels) -> ImFont* {
+        ImFontConfig cfg;
+        cfg.SizePixels = pixels;
+        cfg.RasterizerDensity = density;
+        cfg.FontDataOwnedByAtlas = false;
+        cfg.OversampleH = 2;
+        cfg.OversampleV = 2;
+        return io.Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(data),
+                                              static_cast<int>(length), pixels,
+                                              &cfg, kRanges);
+    };
+
+    // Geist (sans) is the default UI face; Geist Mono (a touch smaller) is the
+    // design system's label / count / metric face, captured for PushFont.
+    add_font(kGeistSans, kGeistSans_len, kBaseFontPixels * scale);
+    mono_font_ = add_font(kGeistMono, kGeistMono_len,
+                          kBaseFontPixels * kMonoScale * scale);
+
     io.Fonts->Build();
     ImGui_ImplSDLRenderer3_DestroyFontsTexture();
     ImGui_ImplSDLRenderer3_CreateFontsTexture();
 
     ImGuiStyle& style = ImGui::GetStyle();
     style = *base_style_;
-    style.ScaleAllSizes(content);
+    style.ScaleAllSizes(scale);
 }
 
-void App::draw_menu_bar(bool& running) {
+void App::draw_menu_bar() {
     if (!ImGui::BeginMenuBar()) return;
 
+    // A menu entry that selects a view: a checkmark marks the live one, and
+    // choosing it makes that view the content area's sole panel.
+    const auto view_item = [&](const char* label, View view) {
+        if (ImGui::MenuItem(label, nullptr, active_view_ == view)) {
+            active_view_ = view;
+        }
+    };
+
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New Project...")) {
+        view_item("Home", View::Home);
+        if (ImGui::MenuItem("New project…")) {
             new_project_modal_requested_ = true;
         }
         ImGui::Separator();
-        if (ImGui::MenuItem("Quit", "Cmd+Q")) running = false;
+        if (ImGui::MenuItem("Quit", "Cmd+Q")) running_ = false;
+        ImGui::EndMenu();
+    }
+    // The views, grouped along the product flow: your data → architect the
+    // pipeline → operate it → govern it.
+    if (ImGui::BeginMenu("Data")) {
+        view_item("Explorer", View::Explorer);
+        view_item("SQL query", View::Query);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Pipeline")) {
+        view_item("Graph workspace", View::Graph);
+        view_item("Correctness gate", View::Gate);
+        view_item("Deploy", View::Deploy);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Operations")) {
+        view_item("Runs", View::Runs);
+        view_item("Compute jobs", View::Jobs);
+        view_item("Cluster", View::Cluster);
+        view_item("Cloud inspector", View::Cloud);
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Governance")) {
+        view_item("Admin & audit", View::Admin);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
+        if (ImGui::BeginMenu("Text size")) {
+            // Each option is a UI scale on top of the OS content scale; a change
+            // requests a font-atlas rebuild before the next frame.
+            const struct {
+                const char* label;
+                float scale;
+            } sizes[] = {
+                {"Small", 0.85f},  {"Default", 1.0f}, {"Large", 1.15f},
+                {"Larger", 1.30f}, {"Largest", 1.5f},
+            };
+            for (const auto& size : sizes) {
+                const bool selected = ui_scale_ == size.scale;
+                if (ImGui::MenuItem(size.label, nullptr, selected) &&
+                    ui_scale_ != size.scale) {
+                    ui_scale_ = size.scale;
+                    font_rebuild_requested_ = true;
+                }
+            }
+            ImGui::EndMenu();
+        }
         ImGui::MenuItem("ImGui demo window", nullptr, &show_demo_);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
-        ImGui::MenuItem("About zetta");
+        if (ImGui::MenuItem("About Orama Zetta")) about_requested_ = true;
         ImGui::EndMenu();
     }
 
     ImGui::EndMenuBar();
 }
 
-void App::draw_dashboard() {
-    ImGui::Text("Node: %s", node_.status_line().c_str());
+// The content-area switcher: render whichever view the menu bar selected. Each
+// draw_* leads with a SeparatorText title, so the active panel is self-labelled.
+void App::draw_active_view() {
+    switch (active_view_) {
+        case View::Home:     draw_home();            break;
+        case View::Explorer: draw_explorer();        break;
+        case View::Query:    draw_query();           break;
+        case View::Graph:    draw_graph_workspace(); break;
+        case View::Gate:     draw_gate();            break;
+        case View::Deploy:   draw_deploy();          break;
+        case View::Runs:     draw_runs();            break;
+        case View::Jobs:     draw_jobs();            break;
+        case View::Cluster:  draw_cluster();         break;
+        case View::Cloud:    draw_cloud();           break;
+        case View::Admin:    draw_admin();           break;
+    }
+}
+
+void App::draw_about_modal() {
+    if (about_requested_) {
+        ImGui::OpenPopup("About Orama Zetta");
+        about_requested_ = false;
+    }
+
+    const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 30.0f, 0.0f),
+                             ImGuiCond_Appearing);
+
+    bool stay_open = true;
+    if (!ImGui::BeginPopupModal("About Orama Zetta", &stay_open,
+                                ImGuiWindowFlags_AlwaysAutoResize)) {
+        return;
+    }
+
+    ImGui::Text("Orama Zetta");
     ImGui::SameLine();
-    ImGui::TextDisabled("|  data dir: %s", node_.config().data_dir.c_str());
+    ImGui::TextDisabled("%s", kVersion);
+    ImGui::TextColored(kCoral, "Intelligence Velocity for big thinkers.");
+    ImGui::Spacing();
+    ImGui::TextColored(kInkSecondary,
+        "Orama Zetta turns a question into running, deployed intelligence. "
+        "Describe a data or AI problem in plain language, or hand over an "
+        "artifact you already have, and it architects a correct data + AI "
+        "pipeline, deploys it onto infrastructure you control, runs it, and "
+        "learns from your data.");
+    ImGui::Spacing();
+    ImGui::TextColored(kInkMuted,
+        "\"The data engineer, the AI engineer, and the platform engineer, "
+        "in a bottle.\"");
+
+    ImGui::SeparatorText("This node");
+    ImGui::TextDisabled("id:       %s", cluster_.node_id().c_str());
+    ImGui::TextDisabled("data dir: %s", node_.config().data_dir.c_str());
+    for (const std::string& address : cluster_.listen_addresses()) {
+        ImGui::TextDisabled("listening: %s", address.c_str());
+    }
+
+    ImGui::Spacing();
+    ImGui::TextDisabled(
+        "\"zetta\" is the binary codename for the product Orama Zetta.");
+
+    ImGui::Spacing();
+    if (ImGui::Button("Close") || !stay_open) {
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+}
+
+void App::draw_home() {
+    // Hero — the product framing, echoing the marketing site. An eyebrow, a
+    // headline with a single coral phrase (the only coral on this screen besides
+    // the active-view checkmark), the tagline, and a short lead.
+    ImGui::Spacing();
+    eyebrow(mono_font_, "ORAMA ZETTA · AUTO-AI FOR THE ENTERPRISE");
+    ImGui::Spacing();
+    ImGui::SetWindowFontScale(1.7f);
+    ImGui::TextColored(kInkPrimary, "Production-grade AI,");
+    ImGui::SameLine();
+    ImGui::TextColored(kCoral, "deployed in minutes.");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::Spacing();
+    ImGui::TextColored(kInkSecondary, "Intelligence Velocity for big thinkers.");
+    ImGui::PushTextWrapPos(ImGui::GetFontSize() * 44.0f);
+    ImGui::TextColored(kInkMuted,
+        "Describe a data or AI problem in plain language, or bring an artifact "
+        "you already have (an n8n workflow, a SQL script, a notebook), and Orama "
+        "Zetta architects a correct pipeline, deploys it onto infrastructure you "
+        "control, and runs it.");
+    ImGui::PopTextWrapPos();
+
+    // Primary action — charcoal fill, white text. Per the design system, "New …"
+    // is a charcoal primary action; coral stays reserved for the accent.
+    ImGui::Spacing();
+    if (primary_button("New project…")) new_project_modal_requested_ = true;
+
+    // Your projects — the central AI-project artifact. Each row opens the project
+    // in the Graph workspace. Empty state is voiced, not generic.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    eyebrow(mono_font_, "YOUR PROJECTS");
+    ImGui::Spacing();
+    const std::vector<std::string> names = node_.project_names();
+    if (names.empty()) {
+        ImGui::TextColored(kInkMuted,
+            "No projects yet. Create one to turn an intent into a deployed "
+            "pipeline.");
+        return;
+    }
+    for (const std::string& name : names) {
+        const auto project = node_.find_project(name);
+        if (!project) continue;
+        ImGui::PushID(name.c_str());
+        if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
+            selected_project_ = name;
+            active_view_ = View::Graph;  // open it in the workspace
+        }
+        const std::string short_id =
+            project->id().substr(0, project->id().find('-'));
+        const std::size_t graphs = project->graph_names().size();
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextColored(kInkQuiet, "    %s · %s · created %s", short_id.c_str(),
+                           plural(graphs, "graph", "graphs").c_str(),
+                           project->created().c_str());
+        if (mono_font_) ImGui::PopFont();
+        ImGui::Spacing();
+        ImGui::PopID();
+    }
+}
+
+void App::draw_dashboard() {
+    // A quiet, mono metadata strip in the design-system grammar: middle-dot
+    // separators, tabular counts, no debug noise (uptime, not raw tick counts).
+    // Only non-zero entity counts are shown, so an idle node reads clean.
+    std::string strip = "orama zetta · running · up " +
+                        format_uptime(node_.uptime_seconds());
+    const struct {
+        std::size_t count;
+        const char* one;
+        const char* many;
+    } items[] = {
+        {node_.project_count(), "project", "projects"},
+        {node_.database_count(), "database", "databases"},
+        {node_.deployment_count(), "deployment", "deployments"},
+        {node_.run_count(), "run", "runs"},
+        {node_.model_count(), "model", "models"},
+        {node_.job_count(), "job", "jobs"},
+        {node_.principal_count(), "principal", "principals"},
+        {node_.audit_event_count(), "audit event", "audit events"},
+    };
+    for (const auto& item : items) {
+        if (item.count > 0) strip += " · " + plural(item.count, item.one, item.many);
+    }
+
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    ImGui::TextColored(kInkMuted, "%s", strip.c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(kInkQuiet, "· %s", node_.config().data_dir.c_str());
+    if (mono_font_) ImGui::PopFont();
+
     if (!io_status_.empty()) {
-        ImGui::TextDisabled("%s", io_status_.c_str());
+        ImGui::TextColored(kInkSecondary, "%s", io_status_.c_str());
     }
     ImGui::Spacing();
 }
 
 void App::draw_explorer() {
+    ImGui::SeparatorText("Explorer");
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =
         (ImGui::GetContentRegionAvail().x - 4.0f * spacing) / 5.0f;
@@ -704,7 +1108,7 @@ void App::draw_projects() {
     // The full create flow — name + NL intent + n8n artifact import — lives in
     // the New Project modal (SCR-2); this button is its front door. Rename /
     // select / delete for existing projects stay inline below.
-    if (ImGui::Button("New Project...")) {
+    if (ImGui::Button("New project…")) {
         new_project_modal_requested_ = true;
     }
     if (!project_error_.empty()) {
@@ -736,12 +1140,12 @@ void App::draw_projects() {
     // First UUID segment — enough to identify the project at a glance.
     const std::string short_id =
         project->id().substr(0, project->id().find('-'));
-    ImGui::TextDisabled("id: %s", short_id.c_str());
-    ImGui::TextDisabled("owner: %s",
-                        project->owner().empty() ? "—" : project->owner().c_str());
-    ImGui::TextDisabled("created: %s", project->created().c_str());
+    mono_line(kInkQuiet, "id:       ", short_id);
+    mono_line(kInkQuiet, "owner:    ",
+              project->owner().empty() ? "-" : project->owner());
+    mono_line(kInkQuiet, "created:  ", project->created());
     if (project->updated() != project->created()) {
-        ImGui::TextDisabled("updated: %s", project->updated().c_str());
+        mono_line(kInkQuiet, "updated:  ", project->updated());
     }
 
     ImGui::Separator();
@@ -914,9 +1318,11 @@ void App::draw_rows() {
         }
         ImGui::TextDisabled("system.%s  (%zu rows)", selected_table_.c_str(),
                             outcome.rows.size());
+        if (mono_font_) ImGui::PushFont(mono_font_);
         for (std::size_t i = 0; i < outcome.rows.size(); ++i) {
             ImGui::TextWrapped("%zu  %s", i, outcome.rows[i].dump().c_str());
         }
+        if (mono_font_) ImGui::PopFont();
         return;
     }
 
@@ -950,7 +1356,7 @@ void App::draw_rows() {
         auto doc = nlohmann::json::parse(doc_input_, nullptr,
                                          /*allow_exceptions=*/false);
         if (doc.is_discarded()) {
-            row_error_ = "invalid JSON — not added";
+            row_error_ = "invalid JSON, not added";
         } else {
             table->add_row(std::move(doc));
             row_error_.clear();
@@ -970,28 +1376,30 @@ void App::draw_rows() {
     // useful to draw every frame.
     constexpr std::size_t kMaxShown = 500;
     const std::size_t shown = std::min(store.size(), kMaxShown);
+    if (mono_font_) ImGui::PushFont(mono_font_);
     for (std::size_t i = 0; i < shown; ++i) {
         ImGui::TextWrapped("%zu  %s", i, store.at(i).dump().c_str());
     }
+    if (mono_font_) ImGui::PopFont();
     if (store.size() > shown) {
         ImGui::TextDisabled("... and %zu more", store.size() - shown);
     }
 }
 
 void App::draw_query() {
-    if (!ImGui::CollapsingHeader("Query (postgres)",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("SQL query (postgres)");
     ImGui::TextDisabled(
         "Unqualified names use the selected database (%s); use db.table to "
         "target another.",
         selected_db_.empty() ? "none" : selected_db_.c_str());
 
+    // The SQL editor is code: render it in Geist Mono.
+    if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::InputTextMultiline("##query", &query_input_,
                               ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 6));
+    if (mono_font_) ImGui::PopFont();
 
-    if (ImGui::Button("Run")) {
+    if (primary_button("Run")) {
         const query::QueryService::Outcome outcome =
             query_->run(query_input_, selected_db_);
         query_status_.clear();
@@ -1025,13 +1433,15 @@ void App::draw_query() {
 
     if (ImGui::BeginChild("##query_results", ImVec2(0, 160),
                           ImGuiChildFlags_Borders)) {
+        // Results are data: mono.
+        if (mono_font_) ImGui::PushFont(mono_font_);
         if (!query_result_columns_.empty()) {
             std::string cols;
             for (std::size_t i = 0; i < query_result_columns_.size(); ++i) {
                 if (i) cols += ", ";
                 cols += query_result_columns_[i];
             }
-            ImGui::TextDisabled("columns: %s", cols.c_str());
+            ImGui::TextColored(kInkMuted, "columns: %s", cols.c_str());
         }
         constexpr std::size_t kMaxShown = 500;
         const std::size_t shown = std::min(query_result_rows_.size(), kMaxShown);
@@ -1039,18 +1449,16 @@ void App::draw_query() {
             ImGui::TextWrapped("%s", query_result_rows_[i].c_str());
         }
         if (query_result_rows_.size() > shown) {
-            ImGui::TextDisabled("... and %zu more",
-                                query_result_rows_.size() - shown);
+            ImGui::TextColored(kInkQuiet, "... and %zu more",
+                               query_result_rows_.size() - shown);
         }
+        if (mono_font_) ImGui::PopFont();
     }
     ImGui::EndChild();
 }
 
 void App::draw_gate() {
-    if (!ImGui::CollapsingHeader("Correctness gate",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Correctness gate");
     ImGui::TextDisabled(
         "Validate an execution graph before deploy. RULE-1: no deploy without a "
         "passing gate.");
@@ -1090,7 +1498,7 @@ void App::draw_gate() {
     ImGui::InputTextMultiline("##gategraph", &gate_graph_input_,
                               ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8));
 
-    if (ImGui::Button("Run gate")) {
+    if (primary_button("Run gate")) {
         gate_error_.clear();
         gate_report_.reset();
         // Parse + validate at the boundary without exceptions: a malformed
@@ -1098,7 +1506,7 @@ void App::draw_gate() {
         auto document = nlohmann::json::parse(gate_graph_input_, nullptr,
                                               /*allow_exceptions=*/false);
         if (document.is_discarded()) {
-            gate_error_ = "invalid JSON — could not parse the graph";
+            gate_error_ = "invalid JSON, could not parse the graph";
         } else {
             std::string parse_error;
             std::optional<ir::ExecutionGraph> graph =
@@ -1127,11 +1535,11 @@ void App::draw_gate() {
             if (check.status == CheckStatus::Fail) ++failures;
         }
         ImGui::TextColored(kFailColor,
-                           "Deploy blocked — %zu check(s) failed (verdict: %s)",
+                           "Deploy blocked: %zu check(s) failed (verdict: %s)",
                            failures, to_string(report.verdict()).c_str());
     } else {
         ImGui::TextColored(kPassColor,
-                           "Deploy allowed — gate passed (verdict: %s)",
+                           "Deploy allowed: gate passed (verdict: %s)",
                            to_string(report.verdict()).c_str());
     }
 
@@ -1165,7 +1573,7 @@ void App::draw_gate() {
 }
 
 void App::draw_large_objects() {
-    ImGui::SeparatorText("Large Objects");
+    ImGui::SeparatorText("Large objects");
     const auto db = node_.find_database(selected_db_);
     if (!db) {
         ImGui::TextDisabled("Select a database.");
@@ -1190,7 +1598,7 @@ void App::draw_large_objects() {
         // so a freshly-replicated object may not have its bytes here yet.
         if (!lo.body_present) {
             ImGui::SameLine();
-            ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "(syncing body)");
+            ImGui::TextColored(kWarnColor, "(syncing body)");
         }
         ImGui::PopID();
     }
@@ -1307,7 +1715,7 @@ void App::stage_n8n_artifact(const std::string& path) {
             ? document["nodes"].size()
             : 0;
     new_project_artifact_status_ =
-        "valid n8n workflow — " + std::to_string(node_count) + " node(s)";
+        "valid n8n workflow, " + std::to_string(node_count) + " node(s)";
 }
 
 void App::reset_new_project_form() {
@@ -1322,7 +1730,7 @@ void App::reset_new_project_form() {
 
 void App::draw_new_project_modal() {
     if (new_project_modal_requested_) {
-        ImGui::OpenPopup("New Project");
+        ImGui::OpenPopup("New project");
         new_project_modal_requested_ = false;
         new_project_error_.clear();
     }
@@ -1334,7 +1742,7 @@ void App::draw_new_project_modal() {
                              ImGuiCond_Appearing);
 
     bool stay_open = true;  // the window's close (x) button toggles this
-    if (!ImGui::BeginPopupModal("New Project", &stay_open,
+    if (!ImGui::BeginPopupModal("New project", &stay_open,
                                 ImGuiWindowFlags_AlwaysAutoResize)) {
         new_project_modal_open_ = false;
         return;
@@ -1409,12 +1817,12 @@ void App::draw_new_project_modal() {
     // blocks the create so the project is never built with a broken artifact.
     const bool artifact_blocks =
         !new_project_artifact_path_.empty() && !new_project_artifact_valid_;
-    if (ImGui::Button("Create Project")) {
+    if (primary_button("Create project")) {
         if (new_project_name_.empty()) {
             new_project_error_ = "name required";
         } else if (artifact_blocks) {
             new_project_error_ =
-                "the staged n8n file is not a valid workflow — fix or clear it";
+                "the staged n8n file is not a valid workflow; fix or clear it";
         } else if (auto project = node_.create_project(new_project_name_)) {
             std::string summary = "Created project '" + project->name() + "'";
             if (project->capture_intent(new_project_intent_)) {
@@ -1452,12 +1860,10 @@ void App::draw_new_project_modal() {
 }
 
 void App::draw_deploy() {
-    if (!ImGui::CollapsingHeader("Deploy", ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Deploy");
     ImGui::TextDisabled(
         "Pick an AI solution, choose where to run it, and deploy. The "
-        "correctness gate must pass first — no deploy without it.");
+        "correctness gate must pass first; no deploy without it.");
 
     const SolutionCatalog& catalog = SolutionCatalog::builtin();
 
@@ -1475,7 +1881,7 @@ void App::draw_deploy() {
                 deploy_status_.clear();
             }
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s — %s", solution.category.c_str(),
+                ImGui::SetTooltip("%s · %s", solution.category.c_str(),
                                   solution.summary.c_str());
             }
             if (is_selected) ImGui::SetItemDefaultFocus();
@@ -1523,7 +1929,7 @@ void App::draw_deploy() {
     // 3) One-button deploy: run the correctness gate (RULE-1 — no deploy without
     //    a passing gate), then place the blueprint onto the chosen target.
     ImGui::BeginDisabled(selected == nullptr);
-    if (ImGui::Button("Deploy")) {
+    if (primary_button("Deploy")) {
         const ir::ExecutionGraph& graph = selected->graph;
         const ValidationReport report = default_gate().run(graph);
         if (report.block_deploy) {
@@ -1535,7 +1941,7 @@ void App::draw_deploy() {
                 }
             }
             deploy_failed_ = true;
-            deploy_status_ = "Gate blocked deploy — " +
+            deploy_status_ = "Gate blocked deploy: " +
                              (reason.empty() ? "graph failed validation" : reason);
         } else {
             const DeploymentTarget target{kDial[deploy_placement_], {}, {}};
@@ -1550,9 +1956,9 @@ void App::draw_deploy() {
                 deploy_failed_ = true;
                 deploy_status_ =
                     target.is_local()
-                        ? "Deploy failed — the gate passed but placement was "
+                        ? "Deploy failed: the gate passed but placement was "
                           "rejected"
-                        : "Deploy failed — only the local target is available "
+                        : "Deploy failed: only the local target is available "
                           "in R1";
             }
         }
@@ -1583,6 +1989,7 @@ void App::draw_deploy() {
         ImGui::TableSetupColumn("Edges");
         ImGui::TableSetupColumn("Created");
         ImGui::TableHeadersRow();
+        if (mono_font_) ImGui::PushFont(mono_font_);
         for (const std::shared_ptr<Deployment>& deployment : deployments) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -1596,25 +2003,28 @@ void App::draw_deploy() {
             ImGui::TableSetColumnIndex(4);
             ImGui::TextUnformatted(deployment->created().c_str());
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::EndTable();
     }
 }
 
 void App::draw_cluster() {
-    if (!ImGui::CollapsingHeader("Cluster", ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
-    ImGui::Text("Node: %s", cluster_.node_id().c_str());
+    ImGui::SeparatorText("Cluster");
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    ImGui::TextColored(kInkSecondary, "node       %s", cluster_.node_id().c_str());
     for (const std::string& address : cluster_.listen_addresses()) {
-        ImGui::Text("Listening on: %s", address.c_str());
+        ImGui::TextColored(kInkSecondary, "listening  %s", address.c_str());
     }
+    if (mono_font_) ImGui::PopFont();
     ImGui::TextDisabled(
-        "All nodes are equal — leader election + failover are planned.");
+        "All nodes are equal; leader election and failover are planned.");
 
     ImGui::TextUnformatted("Add another node with:");
     std::string command = cluster_.peer_command();
     ImGui::SetNextItemWidth(-FLT_MIN);
+    if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::InputText("##peer_command", &command, ImGuiInputTextFlags_ReadOnly);
+    if (mono_font_) ImGui::PopFont();
     if (ImGui::Button("Copy command")) {
         ImGui::SetClipboardText(command.c_str());
     }
@@ -1632,6 +2042,7 @@ void App::draw_cluster() {
         ImGui::TableSetupColumn("Version");
         ImGui::TableSetupColumn("Replication");
         ImGui::TableHeadersRow();
+        if (mono_font_) ImGui::PushFont(mono_font_);
         for (const NodeStatus& node : nodes) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -1659,24 +2070,168 @@ void App::draw_cluster() {
             } else if (!node.replication.known) {
                 ImGui::TextDisabled("no status yet");
             } else if (node.replication.in_sync) {
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f),
+                ImGui::TextColored(kSuccessColor,
                                    "in sync (%.1fs)",
                                    node.replication.seconds_since_sync);
             } else {
-                ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f),
+                ImGui::TextColored(kWarnColor,
                                    "syncing (%.1fs)",
                                    node.replication.seconds_since_sync);
             }
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::EndTable();
     }
 }
 
-void App::draw_runs() {
-    if (!ImGui::CollapsingHeader("Runs / Outputs / Lineage",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
+void App::draw_cloud() {
+    ImGui::SeparatorText("Cloud inspector");
+
+    // The GUI surface over the provider backends (local / on-prem / Kubernetes /
+    // AWS / GCP / Azure / OCI). **Permission-gated, deny-by-default**: inspecting
+    // a provider would read its credential/config files and run read-only
+    // identity/inventory commands, and zetta does NEITHER until the user
+    // explicitly consents — per inspection, never remembered (CLAUDE.md hard
+    // rule). This slice wires no real reads at all: it renders the catalog
+    // metadata + the consent gate; actually invoking the control planes is a
+    // later slice behind this same gate. Nothing in this panel touches a cloud.
+    ImGui::TextColored(kInkMuted,
+        "Inspect a deployment target. Reading a provider's config or credentials, "
+        "or calling it, requires your explicit permission, every time. Deny by "
+        "default: nothing is read until you allow it.");
+    ImGui::Spacing();
+
+    const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
+
+    const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
+    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 18.0f;
+
+    // Left: the provider list, grouped under mono category eyebrows. A green dot
+    // = open (Local, reads nothing); an amber dot = locked behind consent.
+    ImGui::BeginChild("##cloud_list", ImVec2(list_w, panel_h),
+                      ImGuiChildFlags_Borders);
+    std::string current_category;
+    for (const CloudProvider& provider : catalog.providers()) {
+        if (provider.category != current_category) {
+            current_category = provider.category;
+            if (&provider != &catalog.providers().front()) ImGui::Spacing();
+            eyebrow(mono_font_, to_upper(current_category).c_str());
+        }
+        ImGui::PushID(provider.id.c_str());
+        status_dot(provider.requires_consent() ? kWarnColor : kDotActive);
+        if (ImGui::Selectable(provider.name.c_str(),
+                              selected_cloud_provider_ == provider.id)) {
+            // Selecting a different provider resets any consent — consent never
+            // carries across providers (deny-by-default, ask every time).
+            if (selected_cloud_provider_ != provider.id) {
+                cloud_consent_provider_.clear();
+            }
+            selected_cloud_provider_ = provider.id;
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // Right: the selected provider's detail + the consent gate.
+    ImGui::SameLine();
+    ImGui::BeginChild("##cloud_detail", ImVec2(0, panel_h),
+                      ImGuiChildFlags_Borders);
+    const CloudProvider* provider = catalog.find(selected_cloud_provider_);
+    if (!provider) {
+        ImGui::TextDisabled("Select a provider to inspect.");
+        ImGui::EndChild();
         return;
     }
+
+    ImGui::Text("%s", provider->name.c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(kInkQuiet, "%s", provider->category.c_str());
+    ImGui::TextColored(kInkSecondary, "%s", provider->summary.c_str());
+
+    // Local needs no consent: it is this running node, reached in memory. Show
+    // the node facts we already hold (no cloud access) and stop.
+    if (!provider->requires_consent()) {
+        ImGui::Spacing();
+        eyebrow(mono_font_, "THIS NODE");
+        ImGui::Spacing();
+        status_dot(kDotActive);
+        ImGui::TextColored(kSuccessColor,
+                           "No external access. Nothing to authorize.");
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextColored(kInkSecondary, "id        %s",
+                           cluster_.node_id().c_str());
+        ImGui::TextColored(kInkSecondary, "data dir  %s",
+                           node_.config().data_dir.c_str());
+        for (const std::string& address : cluster_.listen_addresses()) {
+            ImGui::TextColored(kInkSecondary, "listening %s", address.c_str());
+        }
+        if (mono_font_) ImGui::PopFont();
+        ImGui::EndChild();
+        return;
+    }
+
+    // What an inspect WOULD touch — named up front so consent is informed. The
+    // paths + commands render in mono (they are code).
+    ImGui::Spacing();
+    eyebrow(mono_font_, "INSPECTING THIS WOULD READ");
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    for (const std::string& path : provider->config_paths) {
+        ImGui::BulletText("%s", path.c_str());
+    }
+    if (mono_font_) ImGui::PopFont();
+    ImGui::Spacing();
+    eyebrow(mono_font_, "AND RUN, READ-ONLY");
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    for (const std::string& command : provider->inspect_commands) {
+        ImGui::BulletText("%s", command.c_str());
+    }
+    if (mono_font_) ImGui::PopFont();
+
+    // The consent gate — a tinted callout box so the permission boundary reads
+    // as a deliberate stop, deny-by-default. Until the user explicitly allows
+    // this one inspection nothing is read or run. (And in this slice, even after
+    // consent, no real read happens — the result is a labelled placeholder.)
+    ImGui::Spacing();
+    const bool consented = cloud_consent_provider_ == provider->id;
+    // Amber (caution) wash while locked; green (success) wash once granted.
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                          consented ? ImVec4(0.882f, 0.961f, 0.933f, 1.0f)
+                                    : ImVec4(0.980f, 0.933f, 0.855f, 1.0f));
+    ImGui::BeginChild("##consent", ImVec2(0, 0),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    if (!consented) {
+        status_dot(kWarnColor);
+        ImGui::TextColored(kWarnColor, "Permission required");
+        ImGui::TextColored(kInkSecondary,
+            "zetta will not read the files above or run the commands above until "
+            "you allow it. Consent applies to this one inspection and is not "
+            "remembered.");
+        ImGui::Spacing();
+        const std::string allow_label =
+            "Allow inspection of " + provider->name;
+        if (primary_button(allow_label.c_str())) {
+            cloud_consent_provider_ = provider->id;
+        }
+    } else {
+        status_dot(kDotActive);
+        ImGui::TextColored(kSuccessColor, "Permission granted for this inspection");
+        ImGui::TextColored(kInkSecondary,
+            "Reading real %s state is not wired yet: this is where your identity, "
+            "regions, and clusters will appear once the read-only inspector lands "
+            "(behind this same gate). Nothing was read or called.",
+            provider->name.c_str());
+        ImGui::Spacing();
+        if (ImGui::Button("Revoke permission")) {
+            cloud_consent_provider_.clear();
+        }
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::EndChild();
+}
+
+void App::draw_runs() {
+    ImGui::SeparatorText("Runs / outputs / lineage");
 
     // A run is the record of one execution of a deployed graph (status / logs /
     // outputs / lineage). This panel is a read-only viewer: runs arrive via the
@@ -1699,9 +2254,11 @@ void App::draw_runs() {
                            std::string(to_string(run->status())).c_str());
         ImGui::SameLine();
         const std::string short_id = run->id().substr(0, run->id().find('-'));
+        if (mono_font_) ImGui::PushFont(mono_font_);
         if (ImGui::Selectable(short_id.c_str(), selected_run_ == run->id())) {
             selected_run_ = run->id();
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1749,7 +2306,7 @@ void App::draw_job_scaling_controls() {
     // mutates the job.
     ImGui::SeparatorText("Objective & scaling (preview)");
     ImGui::TextDisabled(
-        "Score a reward objective against a sample — no autoscaler is wired yet, "
+        "Score a reward objective against a sample; no autoscaler is wired yet, "
         "so this previews ScalingPolicy::evaluate(); it doesn't change the job.");
 
     // 1) Objective — "set the reward". The three reward models the autoscaler can
@@ -1855,10 +2412,7 @@ void App::draw_job_scaling_controls() {
 }
 
 void App::draw_jobs() {
-    if (!ImGui::CollapsingHeader("Compute Jobs",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Compute jobs");
 
     // The GUI form of system.zetta_jobs: the live compute-job registry (one row
     // per unit of native distributed accelerated compute — featurize / train /
@@ -1885,9 +2439,11 @@ void App::draw_jobs() {
         const std::string short_id = job->id().substr(0, job->id().find('-'));
         const std::string label =
             std::string(to_string(job->kind())) + " · " + short_id;
+        if (mono_font_) ImGui::PushFont(mono_font_);
         if (ImGui::Selectable(label.c_str(), selected_job_ == job->id())) {
             selected_job_ = job->id();
         }
+        if (mono_font_) ImGui::PopFont();
         ImGui::PopID();
     }
     ImGui::EndChild();
@@ -1905,15 +2461,16 @@ void App::draw_jobs() {
             scaling_loaded_job_ = job->id();
         }
 
-        ImGui::Text("Job %s", job->id().c_str());
+        if (g_mono_font) ImGui::PushFont(g_mono_font);
+        ImGui::TextColored(kInkPrimary, "job %s", job->id().c_str());
+        if (g_mono_font) ImGui::PopFont();
         ImGui::SameLine();
         ImGui::TextColored(job_status_color(job->status()), "[%s]",
                            std::string(to_string(job->status())).c_str());
-        ImGui::TextDisabled("kind: %s",
-                            std::string(to_string(job->kind())).c_str());
-        ImGui::TextDisabled("created: %s", job->created().c_str());
+        mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
+        mono_line(kInkQuiet, "created:  ", job->created());
         if (job->updated() != job->created()) {
-            ImGui::TextDisabled("updated: %s", job->updated().c_str());
+            mono_line(kInkQuiet, "updated:  ", job->updated());
         }
         if (!job->detail().empty()) {
             ImGui::TextWrapped("detail: %s", job->detail().c_str());
@@ -1922,12 +2479,12 @@ void App::draw_jobs() {
         // Id references — the job's place in the pipeline (project / graph / run /
         // scaling-policy reward). Shown only when set.
         const auto ref_line = [](const char* label, const std::string& value) {
-            if (!value.empty()) ImGui::TextDisabled("%s: %s", label, value.c_str());
+            if (!value.empty()) mono_line(kInkQuiet, label, value);
         };
-        ref_line("project", job->project());
-        ref_line("graph", job->graph());
-        ref_line("run", job->run());
-        ref_line("scaling_policy", job->scaling_policy());
+        ref_line("project:  ", job->project());
+        ref_line("graph:    ", job->graph());
+        ref_line("run:      ", job->run());
+        ref_line("policy:   ", job->scaling_policy());
 
         draw_job_scaling_controls();
     } else {
@@ -1938,10 +2495,7 @@ void App::draw_jobs() {
 }
 
 void App::draw_admin() {
-    if (!ImGui::CollapsingHeader("Admin & Settings",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Admin & audit");
 
     // The governance surface (SCR-7 / CMP-5, the GUI slice of FEAT-9): a
     // **read-only** viewer over the node's already-validated governance state —
@@ -1993,7 +2547,9 @@ void App::draw_admin() {
 
     // --- Audit log (the immutable, append-only trail) -----------------------
     ImGui::SeparatorText("Audit log");
+    if (mono_font_) ImGui::PushFont(mono_font_);
     render_audit_log(node_.audit_events());
+    if (mono_font_) ImGui::PopFont();
 }
 
 void App::open_graph(const ProjectGraph& stored) {
@@ -2013,10 +2569,7 @@ void App::open_graph(const ProjectGraph& stored) {
 }
 
 void App::draw_graph_workspace() {
-    if (!ImGui::CollapsingHeader("Graph Workspace",
-                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        return;
-    }
+    ImGui::SeparatorText("Graph workspace");
 
     // The workspace edits the *currently selected* project's graphs (the same
     // selection the explorer's Projects column drives). Re-resolved by name each
@@ -2118,7 +2671,7 @@ void App::draw_graph_canvas() {
                           ImGuiChildFlags_Borders,
                           ImGuiWindowFlags_HorizontalScrollbar)) {
         if (graph.empty()) {
-            ImGui::TextDisabled("(empty graph — add a step below)");
+            ImGui::TextDisabled("(empty graph; add a step below)");
         } else {
             ImDrawList* draw = ImGui::GetWindowDrawList();
             const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -2139,9 +2692,17 @@ void App::draw_graph_canvas() {
             for (std::size_t column = 0; column < kinds.size(); ++column) {
                 const float x =
                     origin.x + static_cast<float>(column) * (node_w + col_gap);
-                const std::string header{ir::to_string(kinds[column])};
-                draw->AddText(ImVec2(x, origin.y), kCanvasHeaderColor,
-                              header.c_str());
+                // Column header as a mono uppercase eyebrow (the StepKind), the
+                // connect→…→act pipeline reading left to right.
+                const std::string header =
+                    to_upper(std::string{ir::to_string(kinds[column])});
+                const ImVec2 header_pos(x, origin.y);
+                if (mono_font_) {
+                    draw->AddText(mono_font_, ImGui::GetFontSize() * 0.92f,
+                                  header_pos, kCanvasHeaderColor, header.c_str());
+                } else {
+                    draw->AddText(header_pos, kCanvasHeaderColor, header.c_str());
+                }
                 float y = origin.y + header_h;
                 for (const auto& node : graph.nodes_of_kind(kinds[column])) {
                     const ImVec2 top_left(x, y);
@@ -2266,7 +2827,7 @@ void App::draw_graph_editor(Project& project) {
                          std::to_string(updated->graph().edge_count()) +
                          " edges)";
         } else {
-            graph_error_ = "save failed — name empty or already taken";
+            graph_error_ = "save failed: name empty or already taken";
         }
     }
     ImGui::SameLine();
@@ -2364,7 +2925,7 @@ void App::draw_graph_editor(Project& project) {
                 graph_error_.clear();
             } else {
                 graph_error_ =
-                    "edge rejected — unknown step or duplicate edge";
+                    "edge rejected: unknown step or duplicate edge";
             }
         }
     }
@@ -2426,18 +2987,92 @@ void App::draw_graph_editor(Project& project) {
     }
 }
 
-void App::run() {
-    ImGuiIO& io = ImGui::GetIO();
+void App::render_frame() {
+    // Re-entrancy guard: the resize event watch can fire while we're already
+    // rendering (it runs synchronously inside SDL's pump). One frame at a time.
+    if (rendering_) return;
+    rendering_ = true;
+    g_mono_font = mono_font_;  // ambient mono for the file-local render_* helpers
 
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui_ImplSDLRenderer3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
+    ImGui::NewFrame();
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    constexpr ImGuiWindowFlags kRootFlags =
+        ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_MenuBar;
+    ImGui::Begin("##zetta_root", nullptr, kRootFlags);
+
+    // Menu bar (selects the view) + a persistent node-status strip, then the
+    // single active view fills the rest of the window. One focused panel at a
+    // time instead of every panel stacked in one long scroll.
+    draw_menu_bar();
+    draw_dashboard();
+    ImGui::Separator();
+    draw_active_view();
+
+    // The New Project dialog (SCR-2) and the About dialog are modals over the
+    // root window; they must be issued every frame so ImGui keeps them alive
+    // while open.
+    draw_new_project_modal();
+    draw_about_modal();
+
+    ImGui::End();
+
+    if (show_demo_) ImGui::ShowDemoWindow(&show_demo_);
+
+    ImGui::Render();
+    // SDL_WINDOW_HIGH_PIXEL_DENSITY gives a framebuffer larger than the logical
+    // window. ImGui draws in logical coords and the SDLRenderer3 backend does
+    // NOT set the render scale for us, so without this the UI paints into the
+    // top-left logical-sized quadrant only.
+    SDL_SetRenderScale(renderer_, io.DisplayFramebufferScale.x,
+                       io.DisplayFramebufferScale.y);
+    SDL_SetRenderDrawColor(renderer_, 250, 250, 248, 255);  // Orama canvas
+    SDL_RenderClear(renderer_);
+    ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
+    SDL_RenderPresent(renderer_);
+
+    rendering_ = false;
+}
+
+bool App::on_sdl_event(void* userdata, SDL_Event* event) {
+    // Render synchronously while the window is being live-resized (or exposed),
+    // so the UI tracks the drag instead of the OS stretching the last frame.
+    // macOS runs a modal runloop during resize that starves the normal loop.
+    App* app = static_cast<App*>(userdata);
+    if (event->type == SDL_EVENT_WINDOW_RESIZED ||
+        event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+        event->type == SDL_EVENT_WINDOW_EXPOSED) {
+        app->render_frame();
+    }
+    return true;  // watchers don't filter; keep the event
+}
+
+void App::run() {
     // Install our handlers last (after SDL_Init may have set its own) so
     // terminal Ctrl-C quits the headed app too, matching headless. The flag is
     // polled below; SDL_WaitEventTimeout's cap bounds the response to ~33ms.
     install_signal_handlers();
 
-    bool running = true;
-    while (running) {
+    // Re-render during live resize (see on_sdl_event).
+    SDL_AddEventWatch(&App::on_sdl_event, this);
+
+    while (running_) {
         if (stop_requested()) break;
         node_.tick();
+
+        // A user text-size change (View → Text size) rebuilds the font atlas
+        // here, between frames — never mid-frame, while the atlas is in use.
+        if (font_rebuild_requested_) {
+            apply_display_scale();
+            font_rebuild_requested_ = false;
+        }
 
         // Sleep until the next input arrives or kIdleFrameMs elapses, so an
         // idle UI doesn't peg the CPU redrawing identical frames. Wait wakes
@@ -2451,7 +3086,7 @@ void App::run() {
             if (event.type == 0) break;
             ImGui_ImplSDL3_ProcessEvent(&event);
             if (event.type == SDL_EVENT_QUIT) {
-                running = false;
+                running_ = false;
             } else if (event.type == SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED ||
                        event.type == SDL_EVENT_WINDOW_DISPLAY_CHANGED) {
                 apply_display_scale();
@@ -2472,53 +3107,10 @@ void App::run() {
         // callback runs on another thread; this drains on the main thread).
         handle_incoming_files();
 
-        ImGui_ImplSDLRenderer3_NewFrame();
-        ImGui_ImplSDL3_NewFrame();
-        ImGui::NewFrame();
-
-        const ImGuiViewport* vp = ImGui::GetMainViewport();
-        ImGui::SetNextWindowPos(vp->WorkPos);
-        ImGui::SetNextWindowSize(vp->WorkSize);
-        constexpr ImGuiWindowFlags kRootFlags =
-            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoBringToFrontOnFocus |
-            ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_MenuBar;
-        ImGui::Begin("##zetta_root", nullptr, kRootFlags);
-
-        draw_menu_bar(running);
-        draw_dashboard();
-        draw_query();
-        draw_gate();
-        draw_deploy();
-        draw_cluster();
-        draw_runs();
-        draw_jobs();
-        draw_admin();
-        draw_graph_workspace();
-        ImGui::Separator();
-        draw_explorer();
-
-        // The New Project dialog (SCR-2) is a modal over the root window; it must
-        // be issued every frame so ImGui keeps it alive while it's open.
-        draw_new_project_modal();
-
-        ImGui::End();
-
-        if (show_demo_) ImGui::ShowDemoWindow(&show_demo_);
-
-        ImGui::Render();
-        // SDL_WINDOW_HIGH_PIXEL_DENSITY gives a framebuffer larger than the
-        // logical window. ImGui draws in logical coords and the SDLRenderer3
-        // backend does NOT set the render scale for us, so without this the UI
-        // paints into the top-left logical-sized quadrant only.
-        SDL_SetRenderScale(renderer_,
-                           io.DisplayFramebufferScale.x,
-                           io.DisplayFramebufferScale.y);
-        SDL_SetRenderDrawColor(renderer_, 30, 30, 30, 255);
-        SDL_RenderClear(renderer_);
-        ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer_);
-        SDL_RenderPresent(renderer_);
+        render_frame();
     }
+
+    SDL_RemoveEventWatch(&App::on_sdl_event, this);
 }
 
 }  // namespace zetta::gui
