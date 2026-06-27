@@ -69,6 +69,7 @@ add_executable(zetta-tests
   test_tree_shap.cpp
   test_native_oracle.cpp
   test_gbdt_score.cpp
+  test_playbook.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
   test_cuda_device.cpp

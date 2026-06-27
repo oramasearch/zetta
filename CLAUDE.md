@@ -806,6 +806,50 @@ cross-field structural rules, so a malformed fixture fails the load with a path-
 reason. Depends on #390 (GBDT) + #393 (TreeSHAP); ships **no** reference Python. See
 [docs/native-oracle.md](docs/native-oracle.md).
 
+### Retention playbook — driver→action→owner + constrained narrator (`zetta::ml`)
+
+The **retention playbook** (`zetta::ml`, `include/zetta/ml/playbook.hpp`; **FEAT-6**,
+#397) is the optional *use-case skin* that turns the churn model's quantitative output
+— a [calibrated risk](docs/gbdt-score.md) per account + the
+[per-entity dominant churn driver](docs/tree-shap.md) — into a **CRM-ready playbook** a
+retention team acts on, plus an **outcome log** for the feedback loop. **The model and
+the math do the quantitative work; the narrator does only language + play-selection** —
+that division is the whole point. Three layers, in strict order: (1) a **deterministic
+driver→action→owner mapping** — a `PlaybookPolicy` (the editable driver dictionary)
+maps each churn driver (a feature name) to a recommended `play`, an owning role
+(`PlaybookOwner` CSM/AM/Billing/Support/Marketing), and a **save-rate prior**
+`P(save | driver)` (the heuristic spirit of `compile_intent`/`EntityResolver`); (2) the
+**expected-retained-value priority** — rank by `P(churn) × ARR × P(save | dominant
+driver)`, computed **in code** and **frozen before the narrator runs**, so a narrator
+can never change the ranking (descending, ties by entity ascending → deterministic;
+`top_k` caps the list a team can work); (3) a **constrained narrator behind a seam**
+(`PlaybookNarrator`) — the production binding is **Claude**, which writes the narrative
++ selects the play within a **strict JSON schema** but **never invents numbers** (the
+probability/ARR/priority are computed above and **absent from the narrator's output
+schema**, so the model physically cannot emit or change them), with a deterministic
+`RulesEngineNarrator` **fallback** so the pipeline runs **end-to-end offline**, no API
+key, fully testable. `ConstrainedNarrator` calls an **injected `NarratorCompletion`**
+callable (zetta-core carries no HTTP/LLM SDK — the `CommandRunner`/`FleetSource`
+injection pattern; the production binding wires it to Claude Opus 4.8 structured
+outputs), validates the model's JSON at the boundary, and falls back on **any** failure
+(offline, non-JSON, schema/semantic violation). It adds **two JSON boundaries**: the
+editable `PlaybookPolicy` (hand-written non-throwing `from_json`, the
+`FeaturizeSpec`/`ScalingPolicy` pattern, `schemas/playbook_policy.schema.json`) and the
+strict narrator-output contract (`playbook_entry_schema()`, the **pboettch draft-07
+validator like the Run record**, `schemas/playbook_entry.schema.json` — the LLM/API
+response enters here). `generate_playbook` produces the ranked `Playbook` of
+`PlaybookEntry` rows (the frozen numbers + the narrative + play + a `narrator`
+provenance field), and `outcome_log_from_playbook` seeds the append-only **outcome log**
+(one pending row per entry; a later job resolves `renewed`/`action_taken` when the churn
+horizon closes — the dataset that turns the static save-rate priors into learned
+save-rate-by-driver). A **pure library** like `score_gbdt`/`tree_shap` (non-throwing, in
+zetta-core); proven on the [churn fixture](docs/churn-dataset.md) deterministically (the
+offline fallback path) — the worst-failed-payments account runs the billing play under
+the Billing owner. Wiring it as a recorded `playbook` `ComputeJob` (into
+`system.zetta_jobs`), a `system.zetta_*` read view, persistence, a GUI panel, and a real
+Anthropic-Messages-API `NarratorCompletion` binding are later slices. See
+[docs/playbook.md](docs/playbook.md).
+
 ### Work-stealing scheduler (`zetta::compute`)
 
 The **work-stealing scheduler** is the task pool the native distributed compute
@@ -1985,6 +2029,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
     gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
     golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
+    playbook.hpp            zetta::ml — UC-1 retention playbook: generate_playbook (deterministic driver→action→owner via PlaybookPolicy + frozen expected-retained-value priority risk×ARR×save_rate, ranked) behind a constrained PlaybookNarrator seam (default-Claude ConstrainedNarrator over an injected NarratorCompletion, validated at the playbook_entry schema boundary, never invents numbers; RulesEngineNarrator offline fallback) + OutcomeLog (FEAT-6; #397)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -2073,6 +2118,7 @@ src/core/                   zetta-core impl
   ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
   ml/gbdt_explain_job.cpp   run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
   ml/golden_oracle.cpp      load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
+  ml/playbook.cpp           zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -2350,6 +2396,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/calibration.md`](docs/calibration.md) — probability calibration (`zetta::ml::Calibrator` + `fit_calibrator` + `calibrate_model`): Platt scaling + isotonic regression fit on a held-out split so the GBDT's risk scores are well-calibrated (Brier / ECE improve, AUC preserved); attaches to a `GbdtModel` (predict_proba applies it, rides inside the weights body) and wires into the distributed `train` job via a sharding-invariant content-hash held-out split, schema-validated boundary (FEAT-6; #391).
 - [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
 - [`docs/native-oracle.md`](docs/native-oracle.md) — the native correctness oracle (`zetta::ml::load_golden_oracle` + `tests/test_native_oracle.cpp`, RSK-8 / #395): proves the native featurize / GBDT-train / TreeSHAP reimplementations are numerically correct **without running any reference** (no Python/XGBoost/foreign runtime, in the engine, build, or CI) via three self-contained C++ layers over the [churn fixture](docs/churn-dataset.md) — committed **golden numeric fixtures** (cross-checked against a leakage-free ground truth + the SHAP efficiency identity `base_value + Σ φ = predicted`), **analytic** closed-form GBDT-split + TreeSHAP micro-tests, and single-node == 2-node == 3-node **equivalence**; the golden is a `pboettch`-validated boundary (`schemas/golden_oracle.schema.json`), regenerated offline via `ZETTA_WRITE_GOLDEN=1` (the generator is not a repo/CI dependency).
+- [`docs/playbook.md`](docs/playbook.md) — the UC-1 retention playbook (`zetta::ml::generate_playbook`): turn the model's [calibrated risk](docs/gbdt-score.md) + [dominant churn driver](docs/tree-shap.md) into a **CRM-ready playbook** — a deterministic **driver→action→owner** dictionary (`PlaybookPolicy`, a hand-written JSON boundary), an **expected-retained-value priority** `P(churn) × ARR × P(save | dominant driver)` computed and **frozen in code**, and a **constrained narrator behind a seam** (`PlaybookNarrator`; default **Claude** via an injected `NarratorCompletion`, writes the narrative + picks the play within a strict schema validated at the `playbook_entry` boundary, **never invents numbers**) with a deterministic `RulesEngineNarrator` **fallback** so it runs end-to-end offline; plus an **outcome log** for the feedback loop. A pure library proven on the [churn fixture](docs/churn-dataset.md) deterministically (FEAT-6; #397).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
