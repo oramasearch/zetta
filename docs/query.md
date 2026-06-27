@@ -43,10 +43,31 @@ INSERT INTO shop.items (sku, qty) VALUES ('A1', 5), ('B2', 3);
 
 SELECT * FROM shop.items;
 SELECT sku, qty FROM shop.items WHERE sku = 'A1';
+SELECT sku, qty FROM shop.items WHERE qty >= 3;
 ```
 
 Values: single-quoted strings (`''` escapes a quote), integers, decimals,
 optional leading `-`, `true` / `false` / `null`.
+
+### Aggregation (GROUP BY)
+
+A `SELECT … GROUP BY` runs through the **[DDF engine](ddf.md)** (ARC-12 /
+API-2): the table is loaded into a typed, columnar `DataFrame`, the `WHERE` is
+applied with the DDF `filter` op, and `group_by` computes the per-group
+aggregates, materialized back into result rows.
+
+```sql
+SELECT segment, SUM(amount), COUNT(*) FROM churn.events GROUP BY segment;
+SELECT segment, SUM(amount) AS total, MIN(amount), MAX(amount)
+  FROM churn.events WHERE amount >= 10 GROUP BY segment;
+SELECT segment, AVG(score) AS avg_score FROM churn.events GROUP BY segment;
+SELECT segment FROM churn.events GROUP BY segment;   -- distinct keys (no aggregate)
+```
+
+Aggregate functions: `COUNT(*)`, `SUM(col)`, `MIN(col)`, `MAX(col)`,
+`AVG(col)` / `MEAN(col)` (mapped to the DDF op set; `AVG` → `mean`). The default
+result-column name follows DDF's convention — `count`, `sum_amount`,
+`min_amount`, `mean_score`, … — overridable per item with `AS alias`.
 
 ## Semantics
 
@@ -54,7 +75,19 @@ optional leading `-`, `true` / `false` / `null`.
   `VALUES` tuple becomes one JSON row `{col: value, ...}`.
 - `SELECT *` returns whole rows; `SELECT a, b` projects to those keys (missing
   keys come back as `null`).
-- `WHERE` supports a single `column = value` equality.
+- `WHERE` supports a single `column <op> value` predicate, where `<op>` is one of
+  `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`. Equality/inequality work over any value;
+  the ordering comparisons apply numerically (numbers) or lexicographically
+  (strings). A row lacking the column never matches.
+- **`GROUP BY`** routes through the DDF engine: it groups by **exactly one
+  numeric key column** and aggregates the referenced numeric columns. Because the
+  DataFrame is numeric only, the grouping key, every aggregated column, and a
+  `WHERE` column must be **dense numeric** fields (present + numeric in every row);
+  otherwise the query returns a clear error. Integer columns return whole numbers
+  as JSON integers; means and float columns return doubles. Groups come back in
+  ascending key order. (Not supported over `system` tables — they are computed,
+  non-numeric rows.) Building a new table from a grouped result (`CREATE TABLE AS`)
+  is a later slice.
 - Statements run in order; the first failure stops the batch and is reported.
 
 ## The `system` database
@@ -143,9 +176,11 @@ magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
 
 ## Limitations (today)
 
-Single-equality `WHERE` only; no joins, ordering, aggregation, `UPDATE`,
-`DELETE`, or multi-table queries; column types are parsed but not stored or
-enforced. These land behind the same AST/executor seam.
+`WHERE` is a single-column predicate (no `AND`/`OR`); `GROUP BY` takes exactly
+one numeric key (no multi-key grouping, `HAVING`, or aggregating over `system`
+tables); no joins, ordering (`ORDER BY`), `UPDATE`, `DELETE`, multi-table queries,
+or `CREATE TABLE AS`; column types are parsed but not stored or enforced. These
+land behind the same AST/executor seam.
 
 ## Adding a dialect
 

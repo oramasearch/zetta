@@ -150,8 +150,10 @@ change, deploy, and data-access decision, replicated and JSON-Schema validated
 this read-only in an **Admin & Settings** panel — principals + keys, their scope
 + capability grants, and the audit log (see
 [docs/admin-panel.md](docs/admin-panel.md)). Query it all with basic
-Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
-query engine is dialect-agnostic, so other SQL formats can be added as frontends.
+Postgres-flavored SQL (DDL + INSERT/SELECT with comparison `WHERE` and `GROUP BY`
+aggregation that runs through the DDF engine, plus the virtual `system` tables);
+the query engine is dialect-agnostic, so other SQL formats can be added as
+frontends.
 The async runtime is coroutine-native (C++
 Alliance Capy/Corosio), behind the `zetta::runtime` seam (which also exposes a
 `parallel_for` data-parallel primitive over a shared thread pool). Heavy numeric

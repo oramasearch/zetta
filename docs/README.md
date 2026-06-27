@@ -20,7 +20,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [admin-panel.md](admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [jobs-panel.md](jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes). Pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam.
-- [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset.
+- [query.md](query.md) — the dialect-agnostic query layer and the supported Postgres subset (comparison `WHERE`, `GROUP BY` aggregation through the [DDF engine](ddf.md), and the virtual `system` tables).
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR: typed step nodes/edges, the connect→clean→model→index→serve→act taxonomy, and its JSON form (`to_json`/`from_json` + schema validation).
 - [intent-compiler.md](intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [deployments.md](deployments.md) — placing a validated execution graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
