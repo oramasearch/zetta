@@ -576,8 +576,43 @@ onto `sort_by_key` + segmented scan is a later optimization behind the same API)
 `window_start > as_of`, returns a failing `ComputeStatus`). The `AsOfAggregate` spec
 carries a **validated JSON boundary** (`to_json`/`from_json` mirroring
 `schemas/as_of_aggregate.schema.json`, the same hand-written non-throwing
-`DataFrameSchema`/`ScalingPolicy` pattern). The `ComputeJob` `ddf` kind that schedules
-these ops is a later issue. See [docs/ddf-as-of.md](docs/ddf-as-of.md).
+`DataFrameSchema`/`ScalingPolicy` pattern). See [docs/ddf-as-of.md](docs/ddf-as-of.md).
+
+The DDF ops above **compose into point-in-time featurization**
+(`zetta::ddf::point_in_time_featurize`, `include/zetta/ddf/featurize.hpp`; **ARC-12 /
+FEAT-6**, #388) — the **leakage-free feature table for training**, expressing the
+churn `churn_features.sql` shape as a DDF graph. The non-negotiable property is **no
+leakage**: every feature for an entity at decision time `t0 = as_of` uses only events
+with `time <= as_of` (the realized churn label + any post-`t0` signal live only in the
+training target). A `FeaturizeSpec` is a small graph — the entity/time keys, the single
+`as_of` cutoff, the windowed `event_features` (each a `count`/`sum`/`min`/`max`/`mean`
+aggregate over `[window_start, as_of]`, optionally one event type), the static
+`account_features` carried through, and the optional `label_column` (the target `y`,
+never a feature). The single-node op composes the leaf ops: each windowed feature runs
+through the [as-of op](#ddf-dataframe-zettaddf) (`sum`/`min`/`max`) or a
+[filter](#ddf-dataframe-zettaddf) + [group-by](#ddf-dataframe-zettaddf)
+(`count`/`mean`), and the per-entity results attach to the account dimension with the
+[equi-join op](#ddf-dataframe-zettaddf) (`hash_join`). Output is a `FeatureTable` —
+**dense + left-join**: one row per entity in the *accounts* frame (the universe to
+score), ascending, an account with no qualifying events filled to 0 (the SQL
+`COALESCE(agg, 0)`; a `min`/`max` over an empty window collapses to 0, not `±inf`), with
+the columns also materializable into a device-backed feature `DataFrame`
+(`FeatureTable::to_data_frame`). It runs **distributed as a recorded `featurize`
+`ComputeJob`** (`zetta::ddf::run_featurize_job`, `include/zetta/ddf/featurize_job.hpp`)
+through the [job coordinator](#job-coordinator-zettacompute): the literal `accounts ⋈
+events … GROUP BY account` shape — `distributed_join` repartitions+enriches the events
+shard with the accounts shard, then per-feature `filter` + `distributed_group_by` combine
+per entity (broadcast back, so the global table is identical on every node), recorded in
+`system.zetta_jobs`. Single-node and multi-node produce identical tables; the
+`distributed_join` is inner-only (an account with no events isn't emitted by the
+distributed path — the fixture has events for every account; a true left join lands when
+the join gains outer support). The `FeaturizeSpec` carries a **validated JSON boundary**
+(`schemas/featurize_spec.schema.json`, the hand-written non-throwing pattern). The
+acceptance featurizes the [synthetic churn fixture](docs/churn-dataset.md) and asserts
+every feature matches a leakage-free ground truth — the deliberate post-`t0` events
+(`acct_fedex_office`'s 4th payment failure, `acct_globex`'s 2nd support ticket) never
+enter a feature. Training a `Model` from the table + SHAP explanation are later FEAT-6
+slices. See [docs/ddf-featurize.md](docs/ddf-featurize.md).
 
 ### Work-stealing scheduler (`zetta::compute`)
 
@@ -1648,6 +1683,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by.hpp            zetta::ddf::group_by/distributed_group_by — DDF groupby-aggregate (count/sum/min/max/mean), partial-per-node + gather/merge/broadcast combine + GroupBySpec JSON boundary (ARC-12; #383)
     as_of.hpp               zetta::ddf::as_of_aggregate/AsOfAggregate — DDF window / as-of (point-in-time) op: per-entity reduce of rows in a time window (time <= as_of), the leakage-free featurization primitive + JSON boundary (ARC-12; #384)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
+    featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
+    featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1722,6 +1759,8 @@ src/core/                   zetta-core impl
   ddf/group_by.cpp          group_by/local_partial/GroupByPartial — groupby-aggregate accumulate/merge/finalize, the partial wire form + GroupBySpec JSON boundary (zetta-core; #383)
   ddf/as_of.cpp             as_of_aggregate — host-side per-entity windowed/point-in-time reduction (group key + time mask) + AsOfAggregate JSON boundary (zetta-core; #384)
   ddf/group_by_job.cpp      run_group_by_job — drive the distributed groupby-aggregate as a recorded ddf ComputeJob through the coordinator (calls distributed_group_by on the JobRound) (zetta-core; #387)
+  ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
+  ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1951,6 +1990,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383) — and runs as a recorded `ddf` `ComputeJob` (`zetta::ddf::run_group_by_job`, `group_by_job.hpp`) through the [job coordinator](docs/job-coordinator.md), so it appears in `system.zetta_jobs` (FEAT-8; #387).
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
+- [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
