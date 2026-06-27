@@ -89,6 +89,127 @@ under a mutex and rendered as they arrive. Following the Orama design system: se
 case, mono for ids / counts / metrics, semantic green/amber/red for status, a charcoal
 primary Run button.
 
+## Adding a case
+
+A case is a `TestCase` appended to the suite in one of the `src/core/testkit/cases_*.cpp`
+`register_*_cases(TestSuite&)` functions (assembled by `TestSuite::builtin()`):
+
+```cpp
+suite.add(TestCase{
+    .id = "compute.cpu.histogram",        // stable, dotted, unique
+    .category = TestCategory::Compute,
+    .name = "CPU device: histogram",
+    .description = "Bin a vector on the device and check the counts host-side.",
+    .options = {TestOption::integer("count", "Element count", 4096, 1, 2000000)},
+    .run = [](const TestOptions& options, TestContext& context) -> TestResult {
+        // ... call the real engine ...
+        if (/* mismatch */) return TestResult::fail("histogram diverged from host");
+        TestResult result = TestResult::pass("histogram matched the host");
+        return result.metric("bins", "16");
+    },
+});
+```
+
+Guidelines: a case is **non-throwing-by-contract** (the runner catches anything and
+reports `Error`, but prefer the non-throwing engine APIs and `TestResult::fail`);
+**self-contained** (stand up your own ephemeral `Node` / `LoopbackCluster` via the
+[harness](../include/zetta/testkit/harness.hpp), never touch the app's live node);
+and **deterministic** (no wall-clock / RNG in the assertion). Report what happened
+with `metric(...)` + `context.emit(...)`. A distributed case spins a thread per node
+calling the collective / op concurrently (the SPMD pattern). Then add an assertion in
+`tests/test_testkit.cpp` so the case is covered headless. Never call a real cloud
+(the permission-gated rule) — inject a fake control plane instead.
+
+## Inventory: candidate cases to add
+
+The catalog is a representative slice today; the engine has far more that could be
+surfaced as runnable, parameterized cases. This is the backlog, by category. Markers:
+**(pure)** host-only, no infra · **(node)** needs a scratch `Node` · **(cluster)**
+stands up a real loopback cluster · **(coordinator)** needs a `JobCoordinator`
+(recorded `ComputeJob`) · **(GPU)** needs `-DZETTA_ENABLE_CUDA=ON` · **(fake seam)**
+needs a test fake exposed to the testkit.
+
+### Compute & device
+- `compute.cpu.histogram` — bin counts vs host (pure)
+- `compute.cpu.gemm` / `compute.cpu.axpy` — float matmul / axpy; reject integer dtype (pure)
+- `compute.cpu.scan` — inclusive / exclusive prefix scan (pure)
+- `compute.cpu.gather_scatter` — gather / scatter, out-of-range rejection, deterministic duplicate-index scatter (pure)
+- `compute.cpu.dtype_guards` — integer-dtype rejection for sqrt/exp/log/gemm, safe integer divide (pure)
+- `compute.device_registry` — enumerate / report / select (accelerator-first, CPU fallback, `require_kind` / `min_memory_bytes`) (pure)
+- `compute.cuda.parity` — run every operator on CPU **and** CUDA and assert they agree (today's case only reports the build state) (GPU)
+- `compute.work_stealing` — local per-worker-deque steal balance, `parallel_map` order, steal stats (pure)
+- `runtime.parallel_for` — data-parallel tiling correctness + phase alignment (pure)
+
+### DDF dataframe ops
+- `ddf.project` — passthrough / unary (`map`) / binary (`elementwise`) computed columns (pure)
+- `ddf.as_of` — point-in-time windowed aggregation; assert the post-`as_of` leakage trap is dropped (pure)
+- `ddf.sort` / `ddf.concat` / `ddf.slice` — frame-shaping ops (pure)
+- `ddf.join` — single-node hash / sort-merge inner equi-join (pure)
+- `ddf.featurize` — `point_in_time_featurize` over the churn dataset vs a leakage-free ground truth (node)
+- `ddf.distributed_sort` — sample-sort across the cluster; globally range-ordered partitions (cluster)
+- `ddf.distributed_join` — repartition + local join; single-node == multi-node (cluster)
+- `ddf.group_by_job` / `ddf.featurize_job` — the recorded `ComputeJob` path (appears in `system.zetta_jobs`) (coordinator)
+- `query.group_by_sql` — `SELECT … GROUP BY` routed through the DDF engine (node)
+
+### Machine learning
+- `ml.score` — `score_gbdt` / rank-at-risk: calibrated risk, descending order, `top_k` (pure)
+- `ml.calibration_metrics` — Brier / ECE reliability over predicted probabilities (pure)
+- `ml.model_roundtrip` — `GbdtModel` JSON-Schema boundary: serialize weights, read back, re-validate (pure)
+- `ml.playbook` — `generate_playbook` deterministic driver→action→owner + frozen expected-retained-value priority + the offline rules-engine narrator (pure)
+- `ml.native_oracle` — load the committed golden oracle + the analytic closed-form GBDT-split / TreeSHAP micro-tests (pure)
+- `ml.gbdt_distributed` — single-node == multi-node trees (gradient-histogram allreduce) (cluster)
+- `ml.tree_shap_distributed` — the `explain` job: per-entity SHAP + the population mean-|φ| ranking, single == multi (cluster / coordinator)
+- `ml.train_job` / `ml.score_job` / `ml.explain_job` — the recorded `ComputeJob` paths that register a `Model` (coordinator)
+
+### Distributed & cluster
+- `cluster.broadcast` / `cluster.gather` / `cluster.barrier` — the other collectives (cluster)
+- `cluster.signal_plane` — request/response RPC, events, tasks over the cluster transport (cluster)
+- `cluster.work_stealing_distributed` — cross-node steal; elastic mid-job membership (join / leave / lost-node re-exec) (cluster)
+- `cluster.job_coordinator` — a `JobRound` body: `parallel_map` + collectives at a round boundary + lifecycle (cluster / coordinator)
+- `cluster.replication` — CRDT convergence: create DDL + rows on A, converge on B; versions match (cluster)
+- `cluster.large_object_replication` — body transfer (`LOREQ`/`LORES`), sha256-verified before write (cluster)
+- `cluster.self_heal` — drop a peer, re-dial, restarted-node ghost replacement (cluster)
+- `cluster.uc1_pipeline_multinode` — the SPMD UC-1 pipeline across N nodes (the deferred multi-node flagship) (cluster / coordinator)
+
+### Governance, gate & orchestration
+- `governance.capability_ttl` — TTL'd capability expiry with a deterministic `now` (node)
+- `governance.scope_replication` — a key replicates to a peer and enforces identically (cluster)
+- `gate.schema_type` / `gate.data_leakage` — the #309 checks (field/type mismatch; ML leakage / point-in-time) (pure)
+- `gate.structural` — non-empty / acyclicity / legal stage transitions (pure)
+- `governance.entity_resolver` — the resolver itself: FullName vs Brand, `normalize_entity_name`, the "Umbrella Logistics" near-collision (pure)
+- `governance.intent_compiler` — NL intent → churn / generic skeleton, deterministic, round-trips through `ir::from_json` (pure)
+- `governance.n8n` — import / compile an n8n workflow JSON → artifact input / ExecutionGraph IR (node)
+- `governance.deployment` — `deploy_graph` + the reconcile / self-heal control loop (start, kill, heal a run) (node)
+- `governance.burst_identity` — bulk-mint / revoke service `Principal` + `AccessKey` per burst node, audited (node)
+- `governance.burst_approval_gate` — an over-cap burst blocked pending approval + audited (`provision_requested`) (node)
+
+### Provisioning (no real cloud calls)
+- `provision.local` — `LocalProvisioner` best-effort select over the live cluster fleet (cluster)
+- `provision.node_capability` — `NodeCapability::satisfies` (cores / memory / GPU kind + throughput) + the JSON boundaries (pure)
+- `provision.autoscaler` — `JobAutoscaler` tick loop (observe → `ScalingPolicy::evaluate` → provision / teardown, hysteresis, cost-cap shed) against a **fake** `Provisioner` (fake seam)
+- `provision.cloud_burst` — the Azure / AWS / GCP / OCI / k8s / bare-metal burst lifecycle (provision + mint / teardown + revoke) against a **fake** control plane — never a real CLI (fake seam)
+- `provision.scaling_policy` — `evaluate()` per objective (minimize-cost / runtime-target / data-shape) + the hard cost-cap shed (pure)
+
+### Storage, persistence & primitives
+- `storage.jsonl_store` — round-trip + 10k-per-chunk chunking (node)
+- `storage.import_records` — JSON / JSONL → table rows (array → many, object → one) (node)
+- `storage.large_object` — import / export / read / unlink + sha256 fingerprint (node)
+- `storage.integrity` — the preflight check: detect a corrupt large-object body + dangling references (node)
+- `storage.persistence` — restart a node and confirm the tree (projects / runs / models / jobs / principals / audit) reloads from disk (node)
+- `primitives.sha256` / `primitives.uuid` / `primitives.timestamp` — the self-contained primitives (pure)
+
+### Query layer & catalog
+- `query.ddl_dml` — CREATE / DROP DATABASE + TABLE, INSERT, SELECT with a `WHERE` comparison (node)
+- `query.system_tables` — `system.zetta_nodes` / `zetta_deployments` / `zetta_models` / `zetta_jobs` computed at query time (node / cluster)
+- `solution.catalog` — the built-in AI Solution Library blueprints parse + schema-validate + id-uniqueness (pure)
+- `solution.churn` — `run_churn_solution`: the catalog churn blueprint on the real engine → a real `Model` + ranked list + drivers (coordinator)
+
+Most **(pure)** and **(node)** cases are drop-in (same shape as the existing ones).
+The **(fake seam)** provisioning cases need a small refactor to expose a fake control
+plane / `Provisioner` into the testkit (the test fakes live in `tests/` today) — and
+must **never** call a real cloud (the permission-gated rule). The **(GPU)** parity
+case only runs on a CUDA build.
+
 ## Run it
 
 ```bash
