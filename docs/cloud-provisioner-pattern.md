@@ -23,12 +23,16 @@ A cloud backend is four small pieces plus the shared infrastructure below. Name
 them `<Vendor>` — `Aws` (built), `Gcp` (built), `Oci` (built), `K8s` (built),
 `BareMetal` (built):
 
-1. **`<Vendor>Provisioner : Provisioner`** — the burst **orchestration**, copied
-   structurally from `AzureProvisioner`: `provision` → `control_plane.bring_up` +
-   mint identities; `teardown` → `control_plane.destroy` + bulk-revoke when the
-   pool drains; `provisioned` → `control_plane.list`. **This class is almost
-   identical across vendors** — only the config type it carries differs. It owns
-   *no* cloud mechanics.
+1. **`<Vendor>Provisioner : BurstProvisioner<<Vendor>Config, <Vendor>ControlPlane>`**
+   — the burst **orchestration** is **shared, not copied**: the
+   `BurstProvisioner<Config, ControlPlane>` class template
+   ([`burst_provisioner.hpp`](../include/zetta/burst_provisioner.hpp)) implements
+   `provision` → `control_plane.bring_up` + mint identities; `teardown` →
+   `control_plane.destroy` + bulk-revoke when the pool drains; `provisioned` →
+   `control_plane.list`, once for every vendor. A `<Vendor>Provisioner` is then just
+   `: public BurstProvisioner<<Vendor>Config, <Vendor>ControlPlane>` with
+   `using BurstProvisioner::BurstProvisioner;` — it carries the config type and owns
+   *no* orchestration or cloud mechanics.
 2. **`<Vendor>ControlPlane`** (an injectable seam, like `AzureControlPlane`) —
    `bring_up` / `destroy` / `list`. Lets the provisioner stay in `zetta-core` and
    be unit-tested against a fake. *Vendor-specific in the binding, identical in
@@ -53,7 +57,9 @@ them `<Vendor>` — `Aws` (built), `Gcp` (built), `Oci` (built), `K8s` (built),
 | `BurstApprovalGate` | [`burst-approval-gate.md`](burst-approval-gate.md) | the cost-cap gate is a `Provisioner` **decorator** — it wraps *any* backend unchanged |
 
 So a new vendor backend is, in practice, **one CLI binding + one config + a schema
-+ a near-copy of the provisioner + a test**. Everything else is already built.
++ a two-line `Provisioner` subclass + a test**. The orchestration is the shared
+`BurstProvisioner` template and the JSON-boundary helpers are
+`src/core/json_boundary.hpp`; everything else is already built.
 
 ## The lifecycle → CLI mapping
 
