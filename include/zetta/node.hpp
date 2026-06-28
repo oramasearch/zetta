@@ -10,6 +10,7 @@
 
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
+#include "zetta/cloud_inspector.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
@@ -192,6 +193,19 @@ public:
     std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
     std::size_t job_count() const { return jobs_.size(); }
 
+    // In-memory cache of consent-gated cloud inspect results (CloudInspector;
+    // docs/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
+    // — it is neither replicated nor persisted (a live inspect is session-local;
+    // see RULE-7 in CLAUDE.md). The Cloud Inspector records a report here only
+    // AFTER the user consents to that one inspection; `system.zetta_cloud_status`
+    // reads this cache and never triggers a cloud call. The latest report per
+    // provider id replaces the previous one; cloud_inspections() is in provider
+    // insertion order.
+    void record_cloud_inspection(CloudInspectReport report);
+    std::vector<CloudInspectReport> cloud_inspections() const {
+        return cloud_inspections_;
+    }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -205,6 +219,12 @@ public:
     bool rename_principal(const std::string& from, const std::string& to);
     std::vector<std::string> principal_names() const;
     std::size_t principal_count() const { return principals_.size(); }
+    // The principals in insertion order — the live source for the
+    // system.zetta_principals / system.zetta_keys read views (each principal owns
+    // its keys via Principal::keys()).
+    std::vector<std::shared_ptr<Principal>> principals() const {
+        return principals_;
+    }
 
     // Resolve the access key presented at login (by its id), or an empty handle.
     // Keys are globally identified by UUID; this searches every principal.
@@ -321,6 +341,23 @@ private:
     void persist_replication() const;  // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
     void reconcile_from_replication(); // apply the CRDT document to the projection
+    // Per-entity reconcile passes, called by reconcile_from_replication() in the
+    // order parent entities precede their children. Each scans the same CRDT
+    // snapshot for its keys, drops local entries the document no longer has, and
+    // materializes new/changed ones. reconcile_databases also covers tables, rows,
+    // and large objects — they decode in one shared pass and their removals nest
+    // under their owning database, so they don't split cleanly.
+    void reconcile_databases(const nlohmann::json& snapshot);
+    void reconcile_projects(const nlohmann::json& snapshot);
+    void reconcile_inputs(const nlohmann::json& snapshot);
+    void reconcile_graphs(const nlohmann::json& snapshot);
+    void reconcile_deployments(const nlohmann::json& snapshot);
+    void reconcile_runs(const nlohmann::json& snapshot);
+    void reconcile_models(const nlohmann::json& snapshot);
+    void reconcile_jobs(const nlohmann::json& snapshot);
+    void reconcile_principals(const nlohmann::json& snapshot);
+    void reconcile_access_keys(const nlohmann::json& snapshot);
+    void reconcile_audit_events(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<Database> materialize_database(std::string id,
                                                    std::string name);
@@ -367,6 +404,7 @@ private:
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
     std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
+    std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     DeploymentController controller_{*this};  // control plane (driven by tick())

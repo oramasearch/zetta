@@ -576,8 +576,279 @@ onto `sort_by_key` + segmented scan is a later optimization behind the same API)
 `window_start > as_of`, returns a failing `ComputeStatus`). The `AsOfAggregate` spec
 carries a **validated JSON boundary** (`to_json`/`from_json` mirroring
 `schemas/as_of_aggregate.schema.json`, the same hand-written non-throwing
-`DataFrameSchema`/`ScalingPolicy` pattern). The `ComputeJob` `ddf` kind that schedules
-these ops is a later issue. See [docs/ddf-as-of.md](docs/ddf-as-of.md).
+`DataFrameSchema`/`ScalingPolicy` pattern). See [docs/ddf-as-of.md](docs/ddf-as-of.md).
+
+The DDF ops above **compose into point-in-time featurization**
+(`zetta::ddf::point_in_time_featurize`, `include/zetta/ddf/featurize.hpp`; **ARC-12 /
+FEAT-6**, #388) — the **leakage-free feature table for training**, expressing the
+churn `churn_features.sql` shape as a DDF graph. The non-negotiable property is **no
+leakage**: every feature for an entity at decision time `t0 = as_of` uses only events
+with `time <= as_of` (the realized churn label + any post-`t0` signal live only in the
+training target). A `FeaturizeSpec` is a small graph — the entity/time keys, the single
+`as_of` cutoff, the windowed `event_features` (each a `count`/`sum`/`min`/`max`/`mean`
+aggregate over `[window_start, as_of]`, optionally one event type), the static
+`account_features` carried through, and the optional `label_column` (the target `y`,
+never a feature). The single-node op composes the leaf ops: each windowed feature runs
+through the [as-of op](#ddf-dataframe-zettaddf) (`sum`/`min`/`max`) or a
+[filter](#ddf-dataframe-zettaddf) + [group-by](#ddf-dataframe-zettaddf)
+(`count`/`mean`), and the per-entity results attach to the account dimension with the
+[equi-join op](#ddf-dataframe-zettaddf) (`hash_join`). Output is a `FeatureTable` —
+**dense + left-join**: one row per entity in the *accounts* frame (the universe to
+score), ascending, an account with no qualifying events filled to 0 (the SQL
+`COALESCE(agg, 0)`; a `min`/`max` over an empty window collapses to 0, not `±inf`), with
+the columns also materializable into a device-backed feature `DataFrame`
+(`FeatureTable::to_data_frame`). It runs **distributed as a recorded `featurize`
+`ComputeJob`** (`zetta::ddf::run_featurize_job`, `include/zetta/ddf/featurize_job.hpp`)
+through the [job coordinator](#job-coordinator-zettacompute): the literal `accounts ⋈
+events … GROUP BY account` shape — `distributed_join` repartitions+enriches the events
+shard with the accounts shard, then per-feature `filter` + `distributed_group_by` combine
+per entity (broadcast back, so the global table is identical on every node), recorded in
+`system.zetta_jobs`. Single-node and multi-node produce identical tables; the
+`distributed_join` is inner-only (an account with no events isn't emitted by the
+distributed path — the fixture has events for every account; a true left join lands when
+the join gains outer support). The `FeaturizeSpec` carries a **validated JSON boundary**
+(`schemas/featurize_spec.schema.json`, the hand-written non-throwing pattern). The
+acceptance featurizes the [synthetic churn fixture](docs/churn-dataset.md) and asserts
+every feature matches a leakage-free ground truth — the deliberate post-`t0` events
+(`acct_fedex_office`'s 4th payment failure, `acct_globex`'s 2nd support ticket) never
+enter a feature. Training a `Model` from the table is the **GBDT trainer**
+(`zetta::ml`, below); explaining its predictions is the **exact TreeSHAP** slice
+(`zetta::ml::tree_shap`, below). See [docs/ddf-featurize.md](docs/ddf-featurize.md).
+
+### Model training — distributed histogram GBDT (`zetta::ml`)
+
+The **GBDT trainer** (`zetta::ml`, `include/zetta/ml/gbdt.hpp`; **FEAT-6 / ENT-14**,
+#390) trains a model on the customer's own data — the differentiator of the native
+distributed accelerated-compute pass. It implements **histogram gradient-boosted
+decision trees** with a **binary logistic (log-loss)** objective: a model is a base
+score plus an ordered ensemble of small `RegressionTree`s, each boosting round
+fitting one tree to the gradient/Hessian of the log-loss (`g = p - y`, `h = p(1-p)`)
+at the current predictions. A tree is grown level by level by **binning** each
+feature's values (equal-width over globally-agreed edges) and accumulating per-bin
+sums of gradients + Hessians — the **gradient histogram** — then taking the bin
+split that maximizes the regularized gain `½[G_L²/(H_L+λ) + G_R²/(H_R+λ) - G²/(H+λ)]
+- γ`; a leaf's output is the Newton step `-G/(H+λ)` shrunk by the learning rate.
+`GbdtParams` carries the knobs (`num_trees`/`max_depth`/`max_bins`/`learning_rate`/
+λ/γ/`min_child_hessian`) behind a **validated JSON boundary** (the hand-written
+`from_json` pattern of `FeaturizeSpec`); `GbdtMetrics`/`evaluate_binary` give
+AUC/log-loss/accuracy.
+
+**Distributed by histogram allreduce.** The training rows (one per entity — the
+design matrix `X` + label `y`) are sharded across the cluster, and the trainer is
+**SPMD**: every node runs the same boosting loop over its shard, combining per-node
+statistics across the cluster each round via the round's
+[collectives](#collectives-allreduce--broadcast--barrier--gather) — global bin edges
+(`allreduce` Min/Max), the global base rate (`allreduce` Sum), and the per-level
+gradient histograms (`allreduce` Sum). Because split-finding then runs off the
+**global** histograms (identical on every node), every node grows the **same trees**
+with no further coordination, so single-node and multi-node produce equivalent
+models (bit-identical within a run; equal up to floating-point across different
+shardings). The combine is injected as an `AllReduce` callable, so the single-node
+path (identity reduction) and the distributed job share one boosting implementation.
+Like the [as-of](#ddf-dataframe-zettaddf)/[group-by](#ddf-dataframe-zettaddf) ops it
+is a **host-side reference over device-backed data** — it reads the feature columns
+back through the `ComputeDevice` download seam (so it runs the same over a CPU or
+CUDA frame) and accumulates the histograms host-side via `runtime::parallel_for`; a
+device-native weighted-histogram kernel is a later optimization behind the same API.
+Non-throwing throughout.
+
+It runs as a recorded `train` **ComputeJob** through the
+[job coordinator](#job-coordinator-zettacompute) and **produces a `Model`**:
+`zetta::ml::run_train_job` (`include/zetta/ml/gbdt_train_job.hpp`) drives `job` (kind
+`train`) through the lifecycle (so it appears in `system.zetta_jobs`), computes global
+metrics (gather the per-node `(prob, label)` pairs to the root, evaluate over the
+union, broadcast back), and on the deterministic root registers the trained model as
+a `zetta::Model` (kind `classifier`) — the GBDT weights body is the `GbdtModel` JSON
+(**boundary-validated** like the Run record via the `pboettch` draft-07 validator,
+`schemas/gbdt_model.schema.json`, because the body is read back from disk / a peer),
+attached via `set_weights` (fingerprinted + replicated peer-to-peer like any
+large-object body), with the metrics in `metrics` and the per-feature gains as the
+ranked `feature_schema.drivers` (read by `zetta::ranked_drivers`). It introduces **no
+new wire format** — the histograms ride the schema-validated `CollectiveMessage`, the
+weights body carries its own validated boundary, and the job + model records are
+validated at their own boundaries. Trained on the
+[synthetic churn fixture](docs/churn-dataset.md) (via featurization) it reaches a
+strong AUC and surfaces `failed_payments` as a churn driver. Per-prediction SHAP
+explanation is the **exact TreeSHAP** slice below; device-native histograms are a
+later slice. See [docs/gbdt.md](docs/gbdt.md).
+
+### Model explanation — exact TreeSHAP (`zetta::ml`)
+
+The **TreeSHAP explainer** (`zetta::ml`, `include/zetta/ml/tree_shap.hpp`; **FEAT-6**,
+#393) is the explainability the rented-model approach can't give — it attributes a
+[GBDT](docs/gbdt.md) prediction to its features per entity, so a per-entity **dominant
+churn driver** falls out. It implements **exact path-dependent TreeSHAP** (Lundberg,
+Erion, Lee 2018, Algorithm 2): a single polynomial-time (`O(trees·leaves·depth²)`)
+recursive traversal per tree that tracks, for every feature subset, the proportion of
+permutations consistent with it (the `extend_path`/`unwind_path`/`unwound_path_sum`
+bookkeeping). A "missing" feature is integrated out by following **both** children
+weighted by the training **cover** that flowed each way (`cover[child]/cover[node]`) —
+the per-node Σ-Hessian the trainer already computes, now **recorded on every
+`TreeNode`** (`TreeNode::cover`, serialized in the `gbdt_model` weights body +
+schema), so the model is **self-describing** and no background dataset is needed.
+`tree_shap(model, x)` returns a `ShapExplanation` — the per-feature `φ`, the model's
+cover-weighted `base_value`, and `predicted` — in the model's **raw-score (margin /
+logit) space**, where SHAP is additive, so the headline **efficiency** invariant
+`base_value + Σ φ = predict_raw(x)` holds exactly per entity (the acceptance test);
+`dominant_driver` is the feature with the largest `|φ|` (signed). It is **pure +
+deterministic + non-throwing** and adds **no new JSON boundary** (it reads the
+already-validated `GbdtModel`).
+
+It runs as a recorded **`explain` ComputeJob** through the
+[job coordinator](docs/job-coordinator.md): `zetta::ml::run_explain_job`
+(`include/zetta/ml/gbdt_explain_job.hpp`) drives `job` (kind `explain`) through the
+lifecycle (so it appears in `system.zetta_jobs`), distributed for **batch
+explanation** of a whole entity universe. Per-entity SHAP has no cross-entity
+dependency (the model is replicated, identical on every node), so each node fans
+`tree_shap` across its shard's rows (intra-node `runtime::parallel_for`, the trainer's
+pattern) labelling each by its entity key, and **one allreduce** combines the per-node
+`Σ|φ|` + row counts into a global, population-level **mean-|φ| driver ranking**
+(identical on every node) — so single-node and multi-node produce identical drivers.
+No splitter/repartition is needed (the model carries the cover background it integrates
+over), and there is **no new wire format** (the `Σ|φ|` partials ride the
+schema-validated `CollectiveMessage`; the job record is validated at its own
+boundary). Trained + explained on the [churn fixture](docs/churn-dataset.md),
+`failed_payments` is the dominant driver of the worst-failure account and the top
+global driver. Persisting the per-entity scores as a dataset / Run output, writing the
+SHAP ranking onto the `Model`'s `feature_schema.drivers`, an interventional
+(background-dataset) variant, and a GPU TreeSHAP kernel are later slices. See
+[docs/tree-shap.md](docs/tree-shap.md).
+
+The GBDT's output probabilities are **calibrated** (`zetta::ml::Calibrator`,
+`include/zetta/ml/calibration.hpp`; **FEAT-6**, #391) so the risk scores are
+trustworthy — the reference is a *calibrated* XGBoost. The model orders accounts
+well (a strong AUC) but `sigmoid(raw)` is not necessarily well-calibrated;
+calibration fits a **monotone** `raw score → probability` map on a **held-out**
+split, so reliability (Brier / ECE) improves while the ranking (AUC) is preserved.
+Two methods, both pure/host-side/non-throwing: **Platt scaling** (a two-parameter
+`sigmoid(a·raw+b)` fit by the robust Newton method of Lin, Lin & Weng 2007 — the
+identity `a=1,b=0` is the no-op, so an uncalibrated model is plain `sigmoid(raw)`)
+and **isotonic regression** (a non-decreasing step function fit by PAVA).
+`fit_calibrator(raw_scores, labels, method)` fits it, `Calibrator::calibrate(raw)`
+applies it, and `calibration_metrics` gives the **Brier score + ECE**. A fitted
+`Calibrator` is **part of a `GbdtModel`** (optional `calibration` field; when present
+`predict_proba` routes through it, and it rides inside the schema-validated weights
+body — a calibrated model is self-contained); `calibrate_model(model, holdout, …)`
+fits + attaches in one step. The distributed `train` job calibrates the produced
+`Model` when a `CalibrationConfig{enabled, method, holdout_fraction}` is passed to
+`run_train_job` (off by default → uncalibrated, unchanged): each node holds out a
+slice of its shard by a **content hash of the row** (sharding-invariant, so the same
+physical rows are held out under any sharding → single-node and multi-node grow the
+same trees and fit the same calibrator), trains on the train rows, and the held-out
+`(raw score, label)` pairs are **gathered to the root, fit there, and broadcast
+back** (best-effort — a single-class held-out set leaves the model uncalibrated, the
+job never fails). **No new wire format** (the pairs + calibrator ride the
+schema-validated `CollectiveMessage`; the calibrator serializes into the GBDT weights
+body). Its JSON boundary mirrors `schemas/calibration.schema.json` (the pboettch
+validator, like the model body it rides inside). See
+[docs/calibration.md](docs/calibration.md).
+
+### Batch scoring — rank-at-risk over a Model (`zetta::ml`)
+
+The **inference counterpart** to the GBDT trainer (`zetta::ml`,
+`include/zetta/ml/gbdt_score.hpp` + `gbdt_score_job.hpp`; **FEAT-6 / CMD-10**, #392):
+batch-score a set of entities through a trained [`GbdtModel`](docs/gbdt.md) to produce
+a **calibrated churn risk** per entity, then rank them into an **at-risk list**
+(highest risk first) — the "rank-at-risk" deliverable a retention team acts on.
+**Calibrated for free:** the model is binary-logistic (trained on log-loss, a proper
+scoring rule), so its `predict_proba` (sigmoid of the raw ensemble score) *is* a
+calibrated risk in `[0, 1]` — no Platt/isotonic step. The ranking is those
+probabilities sorted descending, ties broken by entity ascending (**deterministic**,
+input-order-independent). `score_gbdt` is the pure single-node scorer — it aligns the
+provided columns to the model's own `feature_names` **by name** (so input columns may
+be in any order / carry extras), with `predict_risk` the unranked half and a `top_k`
+cap; `load_gbdt_model` reads a registered [`Model`](docs/models.md)'s serialized
+weights body back through the **GBDT model JSON Schema boundary**
+(`GbdtModel::from_json`, the same `schemas/gbdt_model.schema.json` the trainer writes
+— re-validated because the body is read from disk / a peer). It runs as a recorded,
+audited **`score` ComputeJob** (`run_score_job`) through the
+[job coordinator](docs/job-coordinator.md) — **SPMD** like training: each node scores
+its own shard locally (the small model is identical on every node, so no model
+broadcast), the per-node `(entity, risk)` pairs are **gathered** to the root, **ranked
+on the device** via the `sort_by_key` operator (the op the device header documents as
+"sort entities by risk score, carrying their ids" — GPU when the frame lives there,
+CPU fallback — embodying the [GPU-native, CPU-fallback, distributed](#ai-compute--gpu-native-cpu-fallback-distributed-direction)
+direction), truncated to `top_k`, then **broadcast** back, so every node holds the
+**identical global at-risk list** (single-node == multi-node). The tree-predict
+numerics are the host-side reference today (device-native predict kernel deferred
+behind the same API, like the trainer's histograms). It introduces **no new JSON /
+wire format** — the pairs ride the schema-validated `CollectiveMessage` (values as
+doubles; entity keys exact ≤ 2⁵³) and the weights body its existing `GbdtModel`
+boundary. The deliverable is the in-memory ranked list (persisting scores as an
+entity / SQL + GUI is a later slice). See [docs/gbdt-score.md](docs/gbdt-score.md).
+
+### Native correctness oracle (`zetta::ml::load_golden_oracle`)
+
+The **native correctness oracle** (`tests/test_native_oracle.cpp` + the
+`zetta::ml::GoldenOracle` format, `include/zetta/ml/golden_oracle.hpp`; **RSK-8**,
+#395) proves the from-scratch native [featurize](docs/ddf-featurize.md) /
+[GBDT-train](docs/gbdt.md) / [TreeSHAP](docs/tree-shap.md) reimplementations are
+numerically correct **without running any reference implementation at test time** — no
+Python, no XGBoost, no foreign runtime, in the engine, the build, or CI (ADR-17). Three
+self-contained C++ layers, all over the [synthetic churn fixture](docs/churn-dataset.md):
+(1) **golden numeric fixtures** — expected featurize / train / SHAP outputs committed as
+static data (`tests/fixtures/golden/churn_oracle.json`, generated once offline by zetta's
+own engine via an env-gated `ZETTA_WRITE_GOLDEN=1` write mode; the generator is **not** a
+repo/build/CI dependency) and asserted within tolerance, *and* cross-checked in the same
+run against an independent leakage-free ground truth (featurize) + the SHAP **efficiency
+identity** `base_value + Σ φ == predicted` (so the golden is proven correct, not merely
+pinned); (2) **analytic micro-tests** — tiny hand-built datasets whose GBDT split + leaf
+Newton step and TreeSHAP attributions are computable by hand (a balanced single-split
+gives leaves exactly ∓2 with `base_value = 0`; an asymmetric-cover depth-2 tree gives
+hand-derived φ), asserted to closed form; (3) **cross-cluster equivalence** —
+single-node == 2-node == 3-node identical within tolerance (featurize bit-exact, train
+equivalent up to floating-point reduction order at the `1e-4` cross-shard tolerance,
+explain bit-stable on the replicated model), each equal to the single-node golden. The
+golden is a **schema-validated boundary** like the [churn dataset](docs/churn-dataset.md):
+`load_golden_oracle` is non-throwing, validates against
+`schemas/golden_oracle.schema.json` (the embedded `pboettch` draft-07 validator) then the
+cross-field structural rules, so a malformed fixture fails the load with a path-qualified
+reason. Depends on #390 (GBDT) + #393 (TreeSHAP); ships **no** reference Python. See
+[docs/native-oracle.md](docs/native-oracle.md).
+
+### Retention playbook — driver→action→owner + constrained narrator (`zetta::ml`)
+
+The **retention playbook** (`zetta::ml`, `include/zetta/ml/playbook.hpp`; **FEAT-6**,
+#397) is the optional *use-case skin* that turns the churn model's quantitative output
+— a [calibrated risk](docs/gbdt-score.md) per account + the
+[per-entity dominant churn driver](docs/tree-shap.md) — into a **CRM-ready playbook** a
+retention team acts on, plus an **outcome log** for the feedback loop. **The model and
+the math do the quantitative work; the narrator does only language + play-selection** —
+that division is the whole point. Three layers, in strict order: (1) a **deterministic
+driver→action→owner mapping** — a `PlaybookPolicy` (the editable driver dictionary)
+maps each churn driver (a feature name) to a recommended `play`, an owning role
+(`PlaybookOwner` CSM/AM/Billing/Support/Marketing), and a **save-rate prior**
+`P(save | driver)` (the heuristic spirit of `compile_intent`/`EntityResolver`); (2) the
+**expected-retained-value priority** — rank by `P(churn) × ARR × P(save | dominant
+driver)`, computed **in code** and **frozen before the narrator runs**, so a narrator
+can never change the ranking (descending, ties by entity ascending → deterministic;
+`top_k` caps the list a team can work); (3) a **constrained narrator behind a seam**
+(`PlaybookNarrator`) — the production binding is **Claude**, which writes the narrative
++ selects the play within a **strict JSON schema** but **never invents numbers** (the
+probability/ARR/priority are computed above and **absent from the narrator's output
+schema**, so the model physically cannot emit or change them), with a deterministic
+`RulesEngineNarrator` **fallback** so the pipeline runs **end-to-end offline**, no API
+key, fully testable. `ConstrainedNarrator` calls an **injected `NarratorCompletion`**
+callable (zetta-core carries no HTTP/LLM SDK — the `CommandRunner`/`FleetSource`
+injection pattern; the production binding wires it to Claude Opus 4.8 structured
+outputs), validates the model's JSON at the boundary, and falls back on **any** failure
+(offline, non-JSON, schema/semantic violation). It adds **two JSON boundaries**: the
+editable `PlaybookPolicy` (hand-written non-throwing `from_json`, the
+`FeaturizeSpec`/`ScalingPolicy` pattern, `schemas/playbook_policy.schema.json`) and the
+strict narrator-output contract (`playbook_entry_schema()`, the **pboettch draft-07
+validator like the Run record**, `schemas/playbook_entry.schema.json` — the LLM/API
+response enters here). `generate_playbook` produces the ranked `Playbook` of
+`PlaybookEntry` rows (the frozen numbers + the narrative + play + a `narrator`
+provenance field), and `outcome_log_from_playbook` seeds the append-only **outcome log**
+(one pending row per entry; a later job resolves `renewed`/`action_taken` when the churn
+horizon closes — the dataset that turns the static save-rate priors into learned
+save-rate-by-driver). A **pure library** like `score_gbdt`/`tree_shap` (non-throwing, in
+zetta-core); proven on the [churn fixture](docs/churn-dataset.md) deterministically (the
+offline fallback path) — the worst-failed-payments account runs the billing play under
+the Billing owner. Wiring it as a recorded `playbook` `ComputeJob` (into
+`system.zetta_jobs`), a `system.zetta_*` read view, persistence, a GUI panel, and a real
+Anthropic-Messages-API `NarratorCompletion` binding are later slices. See
+[docs/playbook.md](docs/playbook.md).
 
 ### Work-stealing scheduler (`zetta::compute`)
 
@@ -979,8 +1250,14 @@ dialect-neutral AST (`zetta::query::Statement`, a `std::variant`) → the
 frontend; `QueryService` is the parse+execute facade the UI calls. Supporting
 another database format = writing another `Dialect` that targets the same AST —
 **never** add dialect specifics to the executor. Supported today: basic DDL
-(CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT + single
-`WHERE` equality). The executor also serves a virtual, read-only **`system`**
+(CREATE/DROP DATABASE, CREATE/DROP TABLE) and query (INSERT, SELECT with a single
+`WHERE` predicate over the comparison set `=` / `!=` / `<>` / `<` / `<=` / `>` /
+`>=`, projection, and **`GROUP BY` aggregation that runs through the
+[DDF engine](docs/ddf.md)** — ARC-12 / API-2, #386: a grouped `SELECT` loads the
+table into a `DataFrame`, applies `WHERE` via `ddf::filter`, and computes
+`COUNT`/`SUM`/`MIN`/`MAX`/`AVG` per group with `ddf::group_by`, materializing the
+result back into rows; numeric-only, one numeric key column, results in ascending
+key order). The executor also serves a virtual, read-only **`system`**
 database (à la `pg_catalog`) whose tables are computed at query time — first
 **`system.zetta_nodes`** (cluster + replication status, when a `Cluster*` is
 wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
@@ -989,9 +1266,20 @@ wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
 model registry — trained models + their kind / metrics / weights fingerprint,
 sourced from `Node::models()`; qualified name only) and **`system.zetta_jobs`**
 (the compute-job registry — one row per unit of accelerated compute + its
-lifecycle, sourced from `Node::jobs()`; qualified name only). `system` is
-reserved (can't be created/dropped/written; no real db may be named it) and is
-where future system tables (e.g. `system.zetta_leadership`) live. Full detail in
+lifecycle, sourced from `Node::jobs()`; qualified name only) and
+**`system.zetta_cloud_providers`** (the Cloud Inspector's provider catalog — pure
+metadata, reads nothing from any cloud) and **`system.zetta_cloud_status`** (the
+cached results of consent-gated cloud inspects, from `Node::cloud_inspections()`;
+querying it never triggers a cloud call) and the run + governance read views
+(RULE-7, the queryable counterpart of the GUI Runs / Admin panels):
+**`system.zetta_runs`** (the run registry, `Node::runs()`),
+**`system.zetta_principals`** (authenticated actors, `Node::principals()`),
+**`system.zetta_keys`** (the access keys principals own — scope + capabilities as
+readable strings, no secret material) and **`system.zetta_audit`** (the immutable
+audit trail, `Node::audit_events()`). `system` is reserved (can't be
+created/dropped/written; no real db may be named it) and is where future system
+tables (e.g. `system.zetta_leadership`) live — **surfacing observable state as a
+`system.zetta_*` table is the default**, see the convention below. Full detail in
 [docs/query.md](docs/query.md).
 
 ### Execution graph IR (`zetta::ir`)
@@ -1099,6 +1387,45 @@ malformed payload fails the check with a clear reason. Registered in
 `default_gate()` after `NonEmptyGraphCheck`. Full detail in
 [docs/entity-resolution-check.md](docs/entity-resolution-check.md).
 
+### Entity resolution in featurization (`zetta::EntityResolver`)
+
+The **producer** the entity-resolution gate above was built to guard
+(`include/zetta/entity_resolution.hpp`, **FEAT-6 / TC-4**, `#394`) — the
+make-or-break **data step before churn featurization**: it maps the raw
+account-name strings on comms events (the `mention`s) to a canonical CRM account so
+a customer's events aggregate against the right account, division-correct — "FedEx
+Freight" resolves to its own account **without conflating** the 5–6 FedEx siblings.
+Resolver **produces** the `entity_resolution` annotation; the
+[gate](#entity-resolution-correctness-eval-zettaentityresolutioncheck)
+**verifies** it before deploy (RULE-1), so a buggy resolver cannot ship. A
+`ResolutionCandidate` is one candidate account (`account_id` target + `name`/`brand`
+match keys + ground-truth `entity` that *labels* output, never *decides*);
+`EntityResolver(candidates, strategy).resolve(mention)` returns the matched
+`account_id`. It is **transparent + deterministic** — pure normalized string
+matching, no ML/LLM (the same heuristic spirit as `compile_intent`); real
+fuzzy/embedding resolution plugs in behind the same `resolve` front door later. Two
+strategies: **`FullName`** (default) matches the normalized full account name
+(`normalize_entity_name`: ASCII-lowercase + fold punctuation/whitespace), so the
+variant "Fedex Freight" still lands on `acct_fedex_freight` while "FedEx Ground"
+stays separate and the near-collision "Umbrella Logistics" is **not** fooled into
+"FedEx Logistics" — a mention that doesn't exactly match a division name is left
+**unresolved** (the conservative choice); **`Brand`** is the deliberately coarse
+trap that collapses every "FedEx …" mention onto one `acct_brand_fedex` bucket,
+producing the conflation the gate must fail (a *real resolver behavior*, not a
+hand-mutated payload). `entity_resolution_annotation(candidates, mentions, strategy)`
+emits the schema-shaped payload (each `LabeledMention` pairs a raw mention with the
+held-out ground-truth entity; an unresolved mention gets a deterministic per-mention
+`unresolved:<…>` account, never a silent drop). The churn fixture's
+`entity_resolution_attribute(dataset, strategy = FullName)`
+([churn_dataset.hpp](include/zetta/churn_dataset.hpp)) now routes through this
+resolver — so "division-correct" is **earned** (matched from the mention string),
+not asserted by construction as before. It introduces **no new JSON format**: the
+output rides the existing `schemas/entity_resolution.schema.json`, validated where
+it enters the gate (the resolver's inputs are typed structs, not parsed JSON). This
+is the resolution/clean step, **not** the numeric `point_in_time_featurize` op
+(which operates on already-resolved integer keys). See
+[docs/entity-resolution.md](docs/entity-resolution.md).
+
 ### Synthetic churn dataset (UC-1 fixture) + loader
 
 The **synthetic churn dataset** (`zetta::ChurnDataset`,
@@ -1134,9 +1461,12 @@ holding a Cloud Interface **binding** + a **credentials-ref**; R1 ships **`Local
 only** (the rest are declared but not built, like `ClusterRole`), and a Local
 target has an empty binding/credentials (implicitly this node). `Node` owns
 deployments like projects: **`deploy_graph(graph, target, name)`** (empty handle
-on an empty graph or a non-local target — basic guards only; the semantic
-**correctness gate** above runs separately, not yet wired into `deploy_graph`),
-`find_deployment(id)`, `deployments()`, `deployment_count()`. A `Deployment`
+on an empty graph, a non-local target, **or a graph that fails the correctness
+gate** — RULE-1 is enforced at the deploy seam itself: `deploy_graph` runs
+`default_gate()` and places nothing on a failing report, recording a blocked
+`graph_deployed` audit event, so a *programmatic* deploy can't bypass the gate the
+GUI Deploy panel runs), `find_deployment(id)`, `deployments()`,
+`deployment_count()`. A `Deployment`
 (`include/zetta/deployment.hpp`) is **replicated state** (flat key
 `deployment:<uuid>` → `{ graph_name, target, node, node_count, edge_count,
 created }`) with a `<deployment-uuid>/deployment.json` projection, persisted across
@@ -1177,6 +1507,30 @@ the recorded placements (`Node::deployments()`) so a deploy's status is visible.
 The panel adds no persisted state of its own — only UI selection. See
 [docs/solution-catalog.md](docs/solution-catalog.md).
 
+The catalog **churn** blueprint is **wired to the real engine** (`zetta::run_churn_solution`,
+`include/zetta/churn_solution.hpp`; **FEAT-4 / UC-1**, #398) — so the same graph
+that deploys also *runs* the real featurize→train→explain→rank→playbook pipeline
+rather than the stubbed `DefaultStepExecutor`. The wiring has two parts: (1) the
+catalog churn graph gained the **`index` step** so its shape
+(`connect×2→clean→model→index→serve→act`) matches the real
+[`ChurnStepExecutor`](#graph-execution-run-a-graph--a-run) pipeline (the
+`index→score/rank` stage the `act` retention-playbook step needs); and (2) the
+reusable bridge `run_churn_solution(node, coordinator, device, graph, dataset,
+options)` **encodes** a [`ChurnDataset`](#synthetic-churn-dataset-uc-1-fixture--loader)
+into numeric DDF shards (string ids / ISO dates / categorical event types → numeric
+columns), builds the standard featurize spec + GBDT params, **injects** a
+`ChurnStepExecutor`, and **executes** the graph — returning the Run plus the real
+`Model` id + ranked at-risk list + drivers + playbook. It adds **no new JSON
+format** (rides the validated `ChurnDataset` / catalog / Run / ComputeJob / GBDT
+boundaries). The Deploy panel offers a **"Run on real engine"** action
+(`App::run_churn_demo`) for the churn blueprint — synchronous on the UI thread (like
+the Cloud Inspector), over `demo_churn_dataset()` (a built-in, no-files demo
+dataset), on an **isolated single-node loopback `JobCoordinator`** so the SPMD
+collectives never block on this node's real peers; the produced Model + jobs
+register on the node (visible in the Runs/Jobs panels). Single-node here; the
+single-node == multi-node equivalence is proven in the per-op job suites. See
+[docs/churn-solution.md](docs/churn-solution.md).
+
 ### Cloud Inspector (permission-gated cloud provider inspection)
 
 The headed **Cloud Inspector** (`App::draw_cloud`, **Operations → Cloud
@@ -1192,18 +1546,42 @@ names exactly what an inspect *would* read/call **before** anything happens.
 The catalog is `zetta::CloudProviderCatalog` (`include/zetta/cloud_provider.hpp`),
 a **pure-metadata** library (mirrors `SolutionCatalog`'s built-in singleton +
 `find`): each `CloudProvider` carries identity/presentation plus a *description* of
-what an inspect would touch — its `cli`, the `config_paths` it would **read**
-(read-only), and the read-only `inspect_commands` it would **run** (never
-provision/deploy/teardown). It performs **no cloud access of any kind** — no SDK,
+what an inspect would touch — its `cli`, the `config_paths` the CLI may **read**
+(read-only), and the read-only `inspect_commands` zetta would **run** (each an
+`InspectCommand` = a `display` string + the no-shell `argv`; never
+provision/deploy/teardown). The catalog performs **no cloud access** — no SDK,
 CLI, file read, or network call; `requires_consent()` is false only for Local
-(which reads nothing — it is this node), true for every other backend. Because
-there is no untrusted input there is no JSON boundary to validate (unlike the
-solution catalog). The panel (list + detail, like Runs/Admin) tags each provider
-`[open]`/`[lock]`, resets consent when the selection changes, and gates the
-"Allow inspection of `<name>`" action behind the named files/commands. **This
-slice is scaffold + gate only: no real config read or cloud call happens even
-after consent** — wiring the gate to the real read-only inspect (invoking the CLI
-control planes) is the next slice. See [docs/cloud-inspector.md](docs/cloud-inspector.md).
+(which reads nothing — it is this node), and `runnable()` is true only for the CLI
+providers (bare-metal is described but not runnable — its `ssh <host>` needs a
+host). The catalog has no untrusted input, so no JSON boundary to validate.
+
+The **real read-only inspect** is `zetta::CloudInspector`
+(`include/zetta/cloud_inspector.hpp`, **#445 follow-up slice**): behind the
+consent gate it runs a provider's `inspect_commands` through the shared
+`CommandRunner` seam (argv, no shell — testable with a fake, no CLI installed) and
+projects each vendor's JSON into a `CloudInspectReport` (reachable / authenticated
+/ identity / locations / resources / per-command outcomes). It carries **no
+credentials** — it runs the read-only commands but never reads or prints the
+`config_paths` files. **Every vendor command's JSON is parsed non-throwing and
+boundary-validated against an embedded draft-07 schema before any field is read**
+(`schemas/cloud_inspect_report.schema.json` `$defs`), so a missing CLI / non-zero
+exit / malformed output degrades gracefully; the `CloudInspectReport` is itself
+boundary-validated (`parse_cloud_inspect_report`) like the Run record. Consent is
+done by the GUI, never by the inspector: `CloudInspector::inspect` performs no
+permission check itself.
+
+The panel (list + detail, like Runs/Admin) tags each provider `[open]`/`[lock]`,
+resets consent when the selection changes, and gates the "Allow inspection of
+`<name>`" action behind the named commands; on consent `App::run_cloud_inspect`
+runs the inspect (synchronously, on the UI thread that owns the node) and caches
+the report on the node, then renders identity / regions / nodes / per-command
+status, with **Re-inspect** / **Revoke**. Following *Conventions → System
+tables*, the inspector is also queryable: **`system.zetta_cloud_providers`** (the
+catalog as a table — pure metadata, reads nothing) and **`system.zetta_cloud_status`**
+(the cached consent-gated inspect results from `Node::cloud_inspections()` — an
+**ephemeral, non-replicated** in-memory cache; querying it never triggers a cloud
+call). Writes (provision/deploy/teardown) stay out of the inspector entirely. See
+[docs/cloud-inspector.md](docs/cloud-inspector.md).
 
 ### Deployment controller (reconcile + self-heal)
 
@@ -1252,6 +1630,34 @@ the only artifact is a `Run`, already schema-validated at the storage boundary,
 and the executor only emits schema-legal output kinds (a restart-reload test
 proves the produced run passes `parse_run_value`). See
 [docs/execution.md](docs/execution.md).
+
+The first **real** `StepExecutor` is **`zetta::ChurnStepExecutor`**
+(`include/zetta/churn_step_executor.hpp`, **#396**; FEAT-5 / FEAT-6 / UC-1) — it
+replaces `DefaultStepExecutor`'s logical-ref placeholders with actual **native
+distributed accelerated compute** for the UC-1 churn pipeline, **behind the same
+seam and without touching the orchestrator**. It interprets the same
+`connect→clean→model→index→serve→act` taxonomy as *real* work, each heavy step a
+recorded [`ComputeJob`](#job-coordinator-zettacompute): **connect→load to DDF**
+(`load_data_frame`), **clean→featurize** (`run_featurize_job`), **model→train GBDT +
+calibrate** (`run_train_job`, which **registers a real `Model`** on the node),
+**index→score/rank** (`run_score_job`, the at-risk list), **serve→explain**
+(`run_explain_job` exact TreeSHAP — the per-entity + population churn drivers), and
+**act→retention playbook** (a host-side join of the at-risk list with each entity's
+dominant SHAP driver — the one non-job step). So `run_graph`'s churn graph produces a
+`Run` whose outputs reference a **real `Model` + ranked at-risk list + drivers** (the
+acceptance). Because the seam's `run_step` is a pure-per-step function but the pipeline
+threads artifacts (feature table → model → ranked list → drivers), the executor
+**carries that state in a pImpl** (mutated through a `unique_ptr` member, so `run_step`
+stays `const`) and **holds the dependencies the seam can't supply** — the `Node`, a
+started `JobCoordinator`, a `ComputeDevice`, and this node's numeric input shards + the
+specs. One instance drives **one** execution; it is used by **injection into a
+`GraphExecutor`** (not `Node::run_graph`, which can't conjure a coordinator/data). It
+is **SPMD** — on a multi-node cluster every node runs the same graph against its shard
+and the composed jobs combine partials over the collectives, so single-node and
+multi-node produce equivalent artifacts. It adds **no new JSON format**: every JSON it
+touches rides an existing validated boundary (the Run, the ComputeJob records, the GBDT
+weights body, the FeaturizeSpec/GbdtParams). See
+[docs/churn-step-executor.md](docs/churn-step-executor.md).
 
 ### Provisioning (node capability model + the `Provisioner` seam)
 
@@ -1500,7 +1906,11 @@ the burst node is a later slice. See [docs/burst-identity.md](docs/burst-identit
     validation (the Run record; `src/core/run.cpp`). FetchContent'd **after**
     automerge-cpp so it reuses that nlohmann/json target; linked **PRIVATE** to
     `zetta-core`, and compiled with `-fexperimental-library` to match
-    zetta-core's libc++ ABI (propagated from Boost::capy).
+    zetta-core's libc++ ABI (propagated from Boost::capy). **Schema as code:** the
+    embedded draft-07 schema in the C++ (exposed via a `*_schema()` accessor) is the
+    single source of truth; `schemas/*.json` is **generated** from it and
+    **drift-checked** by `tests/test_schemas.cpp` (regenerate with
+    `ZETTA_WRITE_SCHEMAS=1`) — see [`docs/schemas.md`](docs/schemas.md).
 - **ccache** used as the compiler launcher when present (auto-detected).
 
 ## Build + run
@@ -1558,6 +1968,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
+  burst_provisioner.hpp     zetta::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
   azure_cli_control_plane.hpp zetta::AzCliControlPlane — reference AzureControlPlane binding: shells out to the `az` CLI (VMSS/Spot shape) via the shared CommandRunner (#376)
@@ -1577,7 +1988,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   burst_approval_gate.hpp   zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
   job_autoscaler.hpp        zetta::JobAutoscaler/AutoscalerConfig — autoscaler control loop: observe a running ComputeJob, score its ScalingPolicy, add/remove nodes via the Provisioner within bounds, hysteresis + cost-cap shed, elastic membership, best-effort on given hardware (ADR-29/ARC-11; #371)
   solution_catalog.hpp      zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
-  cloud_provider.hpp        zetta::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access)
+  cloud_provider.hpp        zetta::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access); each inspect command is an InspectCommand (display + no-shell argv)
+  cloud_inspector.hpp       zetta::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
@@ -1588,6 +2000,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
+  churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
+  churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
   table.hpp                 zetta::Table — owns a storage engine (its rows)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
@@ -1602,6 +2016,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   graph_checks.hpp          zetta::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
   checks/
     entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
+  entity_resolution.hpp     zetta::EntityResolver — resolve raw comms mentions → CRM accounts division-correct (FullName) / coarse Brand trap; emit the entity_resolution annotation the gate verifies (FEAT-6/TC-4; #394)
   bytes.hpp / duration.hpp  human-readable size / time formatters
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy (task/block_on/thread_pool + parallel_for data-parallel fan-out)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
@@ -1642,6 +2057,21 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by.hpp            zetta::ddf::group_by/distributed_group_by — DDF groupby-aggregate (count/sum/min/max/mean), partial-per-node + gather/merge/broadcast combine + GroupBySpec JSON boundary (ARC-12; #383)
     as_of.hpp               zetta::ddf::as_of_aggregate/AsOfAggregate — DDF window / as-of (point-in-time) op: per-entity reduce of rows in a time window (time <= as_of), the leakage-free featurization primitive + JSON boundary (ARC-12; #384)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
+    featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
+    featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
+  ml/
+    gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
+    gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig (FEAT-6/ENT-14; #390/#391)
+    gbdt_score.hpp          zetta::ml — batch scoring / rank-at-risk: score_gbdt/predict_risk (calibrated risk = predict_proba, ranked desc) + load_gbdt_model (weights body read back through the GbdtModel JSON Schema boundary) (FEAT-6/CMD-10; #392)
+    gbdt_score_job.hpp      zetta::ml::run_score_job — run distributed batch scoring as a recorded `score` ComputeJob through the job coordinator: SPMD per-shard predict, gather + device sort_by_key rank + broadcast → identical global at-risk list on every node (FEAT-6/CMD-10; #392)
+    calibration.hpp         zetta::ml — probability calibration: Calibrator (Platt sigmoid(a·raw+b) / isotonic PAVA step) + fit_calibrator + Brier/ECE metrics + JSON/wire boundaries; attaches to a GbdtModel (predict_proba applies it) via calibrate_model (FEAT-6; #391)
+    tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
+    gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
+    golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
+    playbook.hpp            zetta::ml — UC-1 retention playbook: generate_playbook (deterministic driver→action→owner via PlaybookPolicy + frozen expected-retained-value priority risk×ARR×save_rate, ranked) behind a constrained PlaybookNarrator seam (default-Claude ConstrainedNarrator over an injected NarratorCompletion, validated at the playbook_entry schema boundary, never invents numbers; RulesEngineNarrator offline fallback) + OutcomeLog (FEAT-6; #397)
+  testkit/                  zetta::testkit — the in-app test-suite catalog (headless-runnable; #462)
+    test_suite.hpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin() — the catalog model the GUI renders
+    harness.hpp             ScratchDir + LoopbackCluster (a real N-node loopback cluster) + the in-code synthetic churn dataset + numeric encoding
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -1677,6 +2107,7 @@ src/core/                   zetta-core impl
   job_autoscaler.cpp        zetta::JobAutoscaler — the tick() control loop (observe → evaluate → hysteresis → provision/teardown) + AutoscalerConfig JSON boundary (ADR-29/ARC-11)
   solution_catalog.cpp      zetta::SolutionCatalog — built-in library + schema/IR boundary parse
   cloud_provider.cpp        zetta::CloudProviderCatalog — built-in provider metadata (local/bare-metal/k8s/aws/gcp/azure/oci); no cloud access
+  cloud_inspector.cpp       zetta::CloudInspector — run a provider's read-only commands, per-vendor JSON parse + boundary validation → CloudInspectReport, report JSON boundary (#445)
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
@@ -1687,6 +2118,8 @@ src/core/                   zetta-core impl
   audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
   intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
+  churn_step_executor.cpp   ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain) (#396)
+  churn_solution.cpp        run_churn_solution — the ChurnDataset→numeric encoder + standard churn pipeline config + the runner (inject ChurnStepExecutor into a GraphExecutor) + demo_churn_dataset (#398)
   table.cpp
   jsonl_store.cpp
   uuid.cpp
@@ -1697,6 +2130,7 @@ src/core/                   zetta-core impl
   graph_checks.cpp          SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
   checks/
     entity_resolution_check.cpp  EntityResolutionCheck — conflation/fragmentation + schema boundary
+  entity_resolution.cpp     EntityResolver — normalized full-name / brand matching + entity_resolution_annotation builder (FEAT-6/TC-4; #394)
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
@@ -1716,6 +2150,18 @@ src/core/                   zetta-core impl
   ddf/group_by.cpp          group_by/local_partial/GroupByPartial — groupby-aggregate accumulate/merge/finalize, the partial wire form + GroupBySpec JSON boundary (zetta-core; #383)
   ddf/as_of.cpp             as_of_aggregate — host-side per-entity windowed/point-in-time reduction (group key + time mask) + AsOfAggregate JSON boundary (zetta-core; #384)
   ddf/group_by_job.cpp      run_group_by_job — drive the distributed groupby-aggregate as a recorded ddf ComputeJob through the coordinator (calls distributed_group_by on the JobRound) (zetta-core; #387)
+  ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
+  ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
+  ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
+  ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast) (zetta-core; #390/#391)
+  ml/gbdt_score.cpp         zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
+  ml/gbdt_score_job.cpp     run_score_job — read device-backed columns, predict the shard, gather (entity,risk) to root, rank on the device (sort_by_key), broadcast the global at-risk list (zetta-core; #392)
+  ml/feature_columns.hpp    zetta::ml::detail::read_column_as_double — shared device-download helper (frame column → host doubles, dtype-widening) used by the train + score + explain job bodies (zetta-core internal; #392/#393)
+  ml/calibration.cpp        zetta::ml — Platt (robust Newton, Lin et al. 2007) + isotonic (PAVA) fit, Calibrator apply/JSON/wire boundary, Brier/ECE metrics (zetta-core; #391)
+  ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
+  ml/gbdt_explain_job.cpp   run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
+  ml/golden_oracle.cpp      load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
+  ml/playbook.cpp           zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
   runtime.cpp               zetta::runtime::parallel_for / parallel_chunks — data-parallel fan-out over the shared Capy thread pool
   cluster.cpp               cluster networking adapter (the one Corosio user) + signal-plane transport
   signal.cpp                zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
@@ -1724,8 +2170,16 @@ src/core/                   zetta-core impl
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
+  testkit/                  zetta::testkit — the in-app test-suite catalog (no SDL; #462)
+    test_suite.cpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin()
+    harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback) + sample_churn_dataset + numeric encoding
+    cases_*.cpp             the canned cases per category (compute/ddf/ml/distributed/governance/pipeline)
 src/gui/                    headed UI (links SDL3 + ImGui)
-  app.hpp / app.cpp         zetta::gui::App — window + render loop over a Node
+  app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
+  app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
+  app_internal.hpp          shared GUI-only helpers: the Orama design tokens + wash/status_dot/eyebrow/mono_line/primary_button + extern g_mono_font (not in the public include/zetta surface)
+  app_home.cpp / app_explorer.cpp / app_pipeline.cpp / app_operations.cpp / app_governance.cpp
+                            the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464)
 src/main.cpp                arg parsing + mode dispatch
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
@@ -1802,6 +2256,28 @@ building it**.
   cloud, ask the developer first. When in doubt, surface what *would* be
   read/called and ask — never touch the cloud to "just check."
 
+### AI compute — GPU-native, CPU fallback, distributed (DIRECTION)
+
+**All AI/ML compute should be GPU-native with a CPU fallback, and distributed.**
+The target for every heavy AI op (featurize / train / score / explain) is: it runs
+on the accelerator when one is present, falls back to the CPU when it is not, and
+scales across the cluster — there is no CPU-only AI path that a GPU build leaves on
+the table. The mechanism is already in the architecture: route the op **through the
+`ComputeDevice` seam** (so it executes on whatever device the data lives on — GPU on
+a CUDA frame, CPU otherwise) and through the [job coordinator](docs/job-coordinator.md)
+collectives (so it is SPMD across nodes). New hardware = a new backend, nothing else.
+
+> **Current reality vs. the rule.** Today the ML *numerics* are **host-side
+> references over device-backed data** — the [GBDT trainer](docs/gbdt.md) and the
+> [scorer](docs/gbdt-score.md) read their columns back through the device download
+> seam and compute host-side, and the device-native (GPU) kernels are the documented
+> optimization *behind the same API*. The data already lives on the device, the
+> distribution is real (allreduce / gather / broadcast), and parts are already
+> device-native (e.g. scoring ranks the at-risk list with the device `sort_by_key`
+> operator — GPU when present, CPU fallback). Move things *toward* this rule (push
+> the numerics onto device kernels), never away (never add a new AI op that bypasses
+> the `ComputeDevice` seam).
+
 ### Design system — follow it for all GUI work
 
 The headed app follows the **Orama design system** (light surfaces, ink text,
@@ -1852,6 +2328,24 @@ marketing site.
 Keep the query frontend and execution separate: dialects parse to the generic
 AST; the `Executor` only ever sees the generic AST. Add a database format by
 implementing `Dialect`, not by special-casing the executor or UI.
+
+### System tables — surface observable state as `system.zetta_*` by default
+**Any state the product exposes for inspection or observability defaults to a
+virtual, read-only table in the reserved `system` database** — the cluster/node
+list, deployments, models, compute jobs, and **cloud/provider state** (the Cloud
+Inspector, provisioned bursts, …) all belong as `system.zetta_*` tables (à la
+`pg_catalog`), the way `system.zetta_nodes` / `zetta_deployments` /
+`zetta_models` / `zetta_jobs` already do. A `system` table is **computed at query
+time from the live in-memory source** (`Node::…()` / a catalog), **never** a
+stored or hand-synced copy. Reach for a bespoke GUI-only panel or an ad-hoc
+structure only when a `system` table genuinely can't express the state — and even
+then, prefer a table plus a panel that renders it, so SQL and the GUI never drift.
+This **composes with "EVERYTHING is replicated state"** (above), it doesn't
+contradict it: durable agreement still lives in the CRDT, and the `system` table
+is its read view; **ephemeral/observed** state (a live cloud inspect, the device
+registry) is a read view with **no** CRDT backing. Cloud-derived `system` tables
+stay **permission-gated** (the hard rule above) — reading one must not trigger a
+real config-file read or cloud call without explicit, per-action consent.
 
 ### Documentation — update it with EVERY change (not optional)
 Docs are **part of the change, in the same commit** — never a follow-up. After
@@ -1925,17 +2419,19 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
-- [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset.
+- [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
+- [`docs/entity-resolution.md`](docs/entity-resolution.md) — entity resolution in featurization (`zetta::EntityResolver`, FEAT-6 / TC-4 / #394): resolve raw comms mentions to CRM accounts division-correct (FullName) — "FedEx Freight" without conflating its siblings — vs. the coarse Brand trap, emitting the `entity_resolution` annotation the gate verifies (resolver produces, gate verifies); no new JSON format.
 - [`docs/entity-resolution-check.md`](docs/entity-resolution-check.md) — the entity-resolution correctness eval (`zetta::EntityResolutionCheck`, TC-4): fail the gate on account conflation (FedEx-Freight).
 - [`docs/churn-dataset.md`](docs/churn-dataset.md) — the synthetic UC-1 churn dataset fixture + loader (`zetta::ChurnDataset` / `load_churn_dataset`, FEAT-6 / #402): committed accounts + comms/events (JSONL/CSV), the FedEx entity-resolution case, schema-validated, no foreign runtime.
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
+- [`docs/churn-step-executor.md`](docs/churn-step-executor.md) — the **real** churn StepExecutor (`zetta::ChurnStepExecutor`, #396): real native distributed accelerated compute behind the `StepExecutor` seam (orchestrator untouched) — connect→load to DDF, clean→featurize, model→train GBDT + calibrate (registers a real `Model`), index→score/rank, serve→explain (TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob`; `run_graph` over the churn graph produces a Run whose outputs reference a real `Model` + ranked at-risk list + drivers (FEAT-5 / FEAT-6 / UC-1).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
@@ -1945,10 +2441,20 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383) — and runs as a recorded `ddf` `ComputeJob` (`zetta::ddf::run_group_by_job`, `group_by_job.hpp`) through the [job coordinator](docs/job-coordinator.md), so it appears in `system.zetta_jobs` (FEAT-8; #387).
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
+- [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
+- [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
+- [`docs/gbdt-score.md`](docs/gbdt-score.md) — batch scoring / rank-at-risk over a trained `Model` (`zetta::ml::score_gbdt` + `run_score_job`): score entities through a GBDT model to a **calibrated risk** (the binary-logistic `predict_proba`) and rank them into an **at-risk list**; the distributed `score` `ComputeJob` is SPMD (per-shard predict, gather + device `sort_by_key` rank + broadcast → identical global ranking single-node == multi-node), `load_gbdt_model` re-validates the weights body at the GBDT model JSON Schema boundary; the inference counterpart to the trainer, GPU-native / CPU-fallback / distributed (FEAT-6 / CMD-10; #392).
+- [`docs/calibration.md`](docs/calibration.md) — probability calibration (`zetta::ml::Calibrator` + `fit_calibrator` + `calibrate_model`): Platt scaling + isotonic regression fit on a held-out split so the GBDT's risk scores are well-calibrated (Brier / ECE improve, AUC preserved); attaches to a `GbdtModel` (predict_proba applies it, rides inside the weights body) and wires into the distributed `train` job via a sharding-invariant content-hash held-out split, schema-validated boundary (FEAT-6; #391).
+- [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
+- [`docs/native-oracle.md`](docs/native-oracle.md) — the native correctness oracle (`zetta::ml::load_golden_oracle` + `tests/test_native_oracle.cpp`, RSK-8 / #395): proves the native featurize / GBDT-train / TreeSHAP reimplementations are numerically correct **without running any reference** (no Python/XGBoost/foreign runtime, in the engine, build, or CI) via three self-contained C++ layers over the [churn fixture](docs/churn-dataset.md) — committed **golden numeric fixtures** (cross-checked against a leakage-free ground truth + the SHAP efficiency identity `base_value + Σ φ = predicted`), **analytic** closed-form GBDT-split + TreeSHAP micro-tests, and single-node == 2-node == 3-node **equivalence**; the golden is a `pboettch`-validated boundary (`schemas/golden_oracle.schema.json`), regenerated offline via `ZETTA_WRITE_GOLDEN=1` (the generator is not a repo/CI dependency).
+- [`docs/playbook.md`](docs/playbook.md) — the UC-1 retention playbook (`zetta::ml::generate_playbook`): turn the model's [calibrated risk](docs/gbdt-score.md) + [dominant churn driver](docs/tree-shap.md) into a **CRM-ready playbook** — a deterministic **driver→action→owner** dictionary (`PlaybookPolicy`, a hand-written JSON boundary), an **expected-retained-value priority** `P(churn) × ARR × P(save | dominant driver)` computed and **frozen in code**, and a **constrained narrator behind a seam** (`PlaybookNarrator`; default **Claude** via an injected `NarratorCompletion`, writes the narrative + picks the play within a strict schema validated at the `playbook_entry` boundary, **never invents numbers**) with a deterministic `RulesEngineNarrator` **fallback** so it runs end-to-end offline; plus an **outcome log** for the feedback loop. A pure library proven on the [churn fixture](docs/churn-dataset.md) deterministically (FEAT-6; #397).
+- [`docs/uc1-end-to-end.md`](docs/uc1-end-to-end.md) — the **UC-1 end-to-end** integration test (`tests/test_uc1_end_to_end.cpp`, #399; realizes UC-1 / satisfies TP-1): drives the whole churn pipeline on the [synthetic fixture](docs/churn-dataset.md) in one test — synthetic data → [featurize](docs/ddf-featurize.md) (point-in-time, [entity-resolved](docs/entity-resolution.md)) → [train GBDT](docs/gbdt.md) → [explain (TreeSHAP)](docs/tree-shap.md) → ranked at-risk + drivers → playbook, behind the real [`ChurnStepExecutor`](docs/churn-step-executor.md) — asserting a **calibrated ranked list** + **division-correct resolution** + a **gated** ([correctness gate](docs/gate.md) incl. [`EntityResolutionCheck`](docs/entity-resolution-check.md), RULE-1) **governed** ([key-scoped access](docs/access-control.md) + [audit trail](docs/audit-trail.md)) run; a conflating resolver is shown to block the gate. Composes the already-built pieces (real StepExecutors, playbook, entity resolution, oracle parity) — no new engine code.
+- [`docs/test-suite.md`](docs/test-suite.md) — the in-app **test suite** (`zetta::testkit`, #462): a **headless-runnable catalog of canned, parameterized test cases** over the real engine (`TestCase` = id + category + typed `TestOption`s + a `run(TestOptions, TestContext) -> TestResult` body; `TestSuite::builtin()`), spanning **compute/device** (CpuDevice ops; CUDA build state), **DDF** (scan/filter/group-by), **ML** (GBDT AUC / exact TreeSHAP efficiency identity / calibration), **distributed/cluster** over a **real multi-node loopback cluster** (`testkit::LoopbackCluster` — membership / allreduce / distributed-group-by == single-node), **governance** (key-scoped access / audit / the entity-resolution gate), and the whole **UC-1 pipeline** (the [#399 end-to-end](docs/uc1-end-to-end.md)). The catalog lives in **zetta-core** (no SDL — runnable headless, `tests/test_testkit.cpp`); the headed **Operations → Test suite** panel (`App::draw_test_suite`) is a **thin renderer** that runs a selected case on a **worker thread** (so the loopback-cluster cases don't block the UI) with a per-test options modal + custom-data field. Self-contained data (`testkit::sample_churn_dataset`); `run_test_case` converts a thrown exception into a clean `Error` so a case can't crash the app; no new JSON format. The doc carries an **"adding a case" how-to** + an **inventory of candidate cases** (the backlog of engine surfaces — compute/DDF/ML/cluster/governance/provisioning/storage/query — that could become runnable cases, with effort/infra markers); extend the catalog there as new engine slices land. See [`docs/test-suite.md`](docs/test-suite.md).
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
-- [`docs/cloud-inspector.md`](docs/cloud-inspector.md) — the headed **Cloud Inspector** (`zetta::CloudProviderCatalog` + `App::draw_cloud`): permission-gated inspection of deployment targets (local/on-prem/k8s/AWS/GCP/Azure/OCI) — a deny-by-default, ask-every-time consent gate naming what an inspect would read/call; scaffold + gate, no real cloud access yet.
+- [`docs/churn-solution.md`](docs/churn-solution.md) — wiring the catalog **churn-prediction** blueprint to the **real engine** (`zetta::run_churn_solution`, FEAT-4 / UC-1 / #398): the catalog churn graph gains the `index` step to match the real pipeline, and a reusable bridge encodes a [`ChurnDataset`](docs/churn-dataset.md) → numeric DDF shards, builds the standard featurize spec + GBDT params, injects a [`ChurnStepExecutor`](docs/churn-step-executor.md), and runs the blueprint → a real trained `Model` + ranked at-risk list + churn drivers + playbook (not the stubbed `DefaultStepExecutor`); the Deploy panel's "Run on real engine" action (`demo_churn_dataset`, isolated single-node coordinator) + the acceptance test drive it; no new JSON format.
+- [`docs/cloud-inspector.md`](docs/cloud-inspector.md) — the headed **Cloud Inspector** (`zetta::CloudProviderCatalog` + `zetta::CloudInspector` + `App::draw_cloud`): permission-gated inspection of deployment targets (local/on-prem/k8s/AWS/GCP/Azure/OCI) — a deny-by-default, ask-every-time consent gate that, on consent, runs the provider's read-only commands via the shared `CommandRunner`, parses each vendor's JSON at a validated boundary into identity/regions/nodes (no creds read), and surfaces it in the panel + `system.zetta_cloud_providers` / `system.zetta_cloud_status` (#445).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [`docs/provisioner.md`](docs/provisioner.md) — the `Provisioner` seam + node capability model (`zetta::NodeCapability`): provision N nodes against a capability spec / teardown / list; cores / GPU type+throughput / memory (ARC-13 / ENT-32, #373) — and the `LocalProvisioner` given-hardware backend (uses existing cluster nodes, best-effort; no-op teardown; #374).

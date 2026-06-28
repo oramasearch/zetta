@@ -31,8 +31,11 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .summary = "On-prem hosts you own, reached over SSH.",
             .cli = "ssh",
             .config_paths = {"~/.ssh/config", "~/.ssh/known_hosts"},
-            .inspect_commands = {"ssh <host> -- uname -a",
-                                 "ssh <host> -- nproc"},
+            // Display-only (empty argv): an inspect needs a concrete host, which
+            // isn't configured yet, so bare-metal requires consent but is not
+            // runnable. The gate still shows the shape an inspect would take.
+            .inspect_commands = {{.display = "ssh <host> -- uname -a"},
+                                 {.display = "ssh <host> -- nproc"}},
         },
         CloudProvider{
             .id = "kubernetes",
@@ -41,9 +44,12 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .summary = "A customer-managed Kubernetes cluster (any distribution).",
             .cli = "kubectl",
             .config_paths = {"~/.kube/config"},
-            .inspect_commands = {"kubectl config current-context",
-                                 "kubectl cluster-info",
-                                 "kubectl get nodes"},
+            .inspect_commands =
+                {{.display = "kubectl config view --minify -o json",
+                  .argv = {"kubectl", "config", "view", "--minify", "-o",
+                           "json"}},
+                 {.display = "kubectl get nodes -o json",
+                  .argv = {"kubectl", "get", "nodes", "-o", "json"}}},
         },
         CloudProvider{
             .id = "aws",
@@ -52,9 +58,13 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .summary = "EC2 / EKS compute in your AWS account.",
             .cli = "aws",
             .config_paths = {"~/.aws/config", "~/.aws/credentials"},
-            .inspect_commands = {"aws sts get-caller-identity",
-                                 "aws configure list",
-                                 "aws ec2 describe-regions"},
+            .inspect_commands =
+                {{.display = "aws sts get-caller-identity --output json",
+                  .argv = {"aws", "sts", "get-caller-identity", "--output",
+                           "json"}},
+                 {.display = "aws ec2 describe-regions --output json",
+                  .argv = {"aws", "ec2", "describe-regions", "--output",
+                           "json"}}},
         },
         CloudProvider{
             .id = "gcp",
@@ -65,8 +75,12 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .config_paths =
                 {"~/.config/gcloud/configurations/config_default",
                  "~/.config/gcloud/application_default_credentials.json"},
-            .inspect_commands = {"gcloud config list", "gcloud auth list",
-                                 "gcloud compute regions list"},
+            .inspect_commands =
+                {{.display = "gcloud config list --format=json",
+                  .argv = {"gcloud", "config", "list", "--format=json"}},
+                 {.display = "gcloud compute regions list --format=json",
+                  .argv = {"gcloud", "compute", "regions", "list",
+                           "--format=json"}}},
         },
         CloudProvider{
             .id = "azure",
@@ -75,8 +89,12 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .summary = "Virtual Machines / AKS in your Azure subscription.",
             .cli = "az",
             .config_paths = {"~/.azure/config", "~/.azure/azureProfile.json"},
-            .inspect_commands = {"az account show",
-                                 "az account list-locations"},
+            .inspect_commands =
+                {{.display = "az account show --output json",
+                  .argv = {"az", "account", "show", "--output", "json"}},
+                 {.display = "az account list-locations --output json",
+                  .argv = {"az", "account", "list-locations", "--output",
+                           "json"}}},
         },
         CloudProvider{
             .id = "oci",
@@ -85,7 +103,11 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .summary = "Compute in your OCI tenancy.",
             .cli = "oci",
             .config_paths = {"~/.oci/config"},
-            .inspect_commands = {"oci iam region list", "oci os ns get"},
+            .inspect_commands =
+                {{.display = "oci iam region list --output json",
+                  .argv = {"oci", "iam", "region", "list", "--output", "json"}},
+                 {.display = "oci os ns get --output json",
+                  .argv = {"oci", "os", "ns", "get", "--output", "json"}}},
         },
     }};
     return catalog;

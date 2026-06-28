@@ -1,53 +1,55 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://oramasearch.com/zetta/schemas/compute_job.schema.json",
-  "title": "zetta.ComputeJob",
-  "description": "One unit of native distributed accelerated compute (ARC-11 / ENT-31): featurize / train / explain / score / a DDF op, with a lifecycle (queued -> running -> succeeded | failed). A top-level, replicated entity (flat key job:<uuid>), modeled like zetta.Run. The id is the CRDT key / on-disk folder name and is optional in the value shape that rides in the document; it is present in the on-disk projection (<job-uuid>/job.json). The project / graph / run / scaling_policy refs are optional plain ids (a ScalingPolicy is the reward model — a separate entity slice; here it is only referenced by id). This file mirrors the inline schema in src/core/compute_job.cpp — keep the two in sync.",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "id": {
-      "type": "string",
-      "description": "The job's UUIDv4 — the CRDT key (job:<uuid>) and on-disk folder name."
-    },
-    "kind": {
-      "type": "string",
-      "description": "What work the job performs.",
-      "enum": ["featurize", "train", "explain", "score", "ddf"]
-    },
-    "status": {
-      "type": "string",
-      "description": "The lifecycle state. succeeded / failed are terminal.",
-      "enum": ["queued", "running", "succeeded", "failed"]
-    },
-    "project": {
-      "type": "string",
-      "description": "Owning project uuid (optional ref)."
-    },
-    "graph": {
-      "type": "string",
-      "description": "Source graph id (optional ref)."
-    },
-    "run": {
-      "type": "string",
-      "description": "Produced run uuid (optional ref)."
-    },
-    "scaling_policy": {
-      "type": "string",
-      "description": "ScalingPolicy (reward) id (optional ref — the policy itself is a separate entity)."
-    },
     "created": {
-      "type": "string",
-      "description": "ISO-8601 UTC stamp at creation."
-    },
-    "updated": {
-      "type": "string",
-      "description": "ISO-8601 UTC stamp; bumped on every change."
+      "type": "string"
     },
     "detail": {
-      "type": "string",
-      "description": "A human-readable note / failure reason, fit for display (optional)."
+      "type": "string"
+    },
+    "graph": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "featurize",
+        "train",
+        "explain",
+        "score",
+        "ddf"
+      ],
+      "type": "string"
+    },
+    "project": {
+      "type": "string"
+    },
+    "run": {
+      "type": "string"
+    },
+    "scaling_policy": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "queued",
+        "running",
+        "succeeded",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "updated": {
+      "type": "string"
     }
   },
-  "required": ["kind", "status"],
-  "additionalProperties": false
+  "required": [
+    "kind",
+    "status"
+  ],
+  "title": "zetta.ComputeJob",
+  "type": "object"
 }

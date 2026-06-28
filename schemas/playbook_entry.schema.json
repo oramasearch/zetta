@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "diagnosis": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "owner": {
+      "enum": [
+        "csm",
+        "account_manager",
+        "billing",
+        "support",
+        "marketing"
+      ],
+      "type": "string"
+    },
+    "primary_driver": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "recommended_play": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "talking_points": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array"
+    },
+    "urgency": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "account_id",
+    "primary_driver",
+    "recommended_play",
+    "owner",
+    "urgency",
+    "diagnosis",
+    "talking_points",
+    "confidence"
+  ],
+  "type": "object"
+}

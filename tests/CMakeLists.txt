@@ -20,6 +20,7 @@ add_executable(zetta-tests
   test_gate.cpp
   test_graph_checks.cpp
   test_entity_resolution_check.cpp
+  test_entity_resolution.cpp
   test_duration.cpp
   test_jsonl_store.cpp
   test_database.cpp
@@ -42,11 +43,16 @@ add_executable(zetta-tests
   test_job_autoscaler.cpp
   test_solution_catalog.cpp
   test_cloud_provider.cpp
+  test_cloud_inspector.cpp
   test_run.cpp
   test_model.cpp
   test_compute_job.cpp
   test_access_control.cpp
   test_executor.cpp
+  test_churn_step_executor.cpp
+  test_churn_solution.cpp
+  test_uc1_end_to_end.cpp
+  test_testkit.cpp
   test_audit.cpp
   test_intent_compiler.cpp
   test_node.cpp
@@ -60,6 +66,13 @@ add_executable(zetta-tests
   test_group_by.cpp
   test_ddf_as_of.cpp
   test_ddf_group_by.cpp
+  test_ddf_featurize.cpp
+  test_gbdt.cpp
+  test_calibration.cpp
+  test_tree_shap.cpp
+  test_native_oracle.cpp
+  test_gbdt_score.cpp
+  test_playbook.cpp
   test_compute_device.cpp
   test_cpu_device.cpp
   test_cuda_device.cpp
@@ -80,14 +93,17 @@ add_executable(zetta-tests
   test_data_replication.cpp
   test_large_object_replication.cpp
   test_integrity.cpp
+  test_schemas.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_26)
 target_include_directories(zetta-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # Path to test fixture files (e.g. the n8n churn workflow) so tests can load
-# them at runtime without depending on the working directory.
+# them at runtime without depending on the working directory; and the repo's
+# schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).
 target_compile_definitions(zetta-tests PRIVATE
-  ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+  ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+  ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 target_link_libraries(zetta-tests PRIVATE zetta-core GTest::gtest_main)
 
 include(GoogleTest)

@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "dataset": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "featurize": {
+      "additionalProperties": false,
+      "properties": {
+        "entities": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "feature_names": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "features": {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "label_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "labels": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entities",
+        "feature_names",
+        "features",
+        "label_name",
+        "labels"
+      ],
+      "type": "object"
+    },
+    "schema_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "shap": {
+      "additionalProperties": false,
+      "properties": {
+        "base_value": {
+          "type": "number"
+        },
+        "feature_names": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "mean_abs_shap": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "per_entity": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "dominant": {
+                "type": "string"
+              },
+              "entity": {
+                "type": "integer"
+              },
+              "predicted": {
+                "type": "number"
+              },
+              "values": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "entity",
+              "predicted",
+              "dominant",
+              "values"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "top_driver": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "feature_names",
+        "base_value",
+        "mean_abs_shap",
+        "top_driver",
+        "per_entity"
+      ],
+      "type": "object"
+    },
+    "train": {
+      "additionalProperties": false,
+      "properties": {
+        "accuracy": {
+          "type": "number"
+        },
+        "auc": {
+          "type": "number"
+        },
+        "base_score": {
+          "type": "number"
+        },
+        "feature_importances": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "feature_names": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "log_loss": {
+          "type": "number"
+        },
+        "probabilities": {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "tree_count": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "feature_names",
+        "base_score",
+        "tree_count",
+        "auc",
+        "log_loss",
+        "accuracy",
+        "feature_importances",
+        "probabilities"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "dataset",
+    "featurize",
+    "train",
+    "shap"
+  ],
+  "title": "zetta.ml.GoldenOracle",
+  "type": "object"
+}

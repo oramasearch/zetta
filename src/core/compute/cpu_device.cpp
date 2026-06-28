@@ -38,7 +38,7 @@ constexpr bool is_integer(DataType dtype) { return !is_floating(dtype); }
 
 // --- type dispatch -----------------------------------------------------------
 // A buffer's element type is a runtime DataType tag; these turn it into a static
-// C++ type for a templated visitor. The visitor is `[]<class T>() -> ComputeStatus`,
+// C++ type for a templated visitor. The visitor is `[]<class Element>() -> ComputeStatus`,
 // so the kernels stay one templated body each instead of seven copies.
 
 template <class Visitor>
@@ -81,38 +81,38 @@ ComputeStatus visit_float(DataType dtype, Visitor&& visitor) {
 
 // --- scalar kernels ----------------------------------------------------------
 
-template <class T>
-T absolute_value(T value) {
-    if constexpr (std::is_unsigned_v<T>) {
+template <class Element>
+Element absolute_value(Element value) {
+    if constexpr (std::is_unsigned_v<Element>) {
         return value;
-    } else if constexpr (std::is_floating_point_v<T>) {
+    } else if constexpr (std::is_floating_point_v<Element>) {
         return std::fabs(value);
     } else {
-        return value < 0 ? static_cast<T>(-value) : value;
+        return value < 0 ? static_cast<Element>(-value) : value;
     }
 }
 
-template <class T>
-T apply_unary(UnaryOp op, T value) {
+template <class Element>
+Element apply_unary(UnaryOp op, Element value) {
     switch (op) {
-        case UnaryOp::Negate:   return static_cast<T>(T{0} - value);
+        case UnaryOp::Negate:   return static_cast<Element>(Element{0} - value);
         case UnaryOp::Absolute: return absolute_value(value);
-        case UnaryOp::Square:   return static_cast<T>(value * value);
+        case UnaryOp::Square:   return static_cast<Element>(value * value);
         case UnaryOp::SquareRoot:
-            if constexpr (std::is_floating_point_v<T>)
-                return static_cast<T>(std::sqrt(value));
+            if constexpr (std::is_floating_point_v<Element>)
+                return static_cast<Element>(std::sqrt(value));
             else
-                return T{0};  // guarded out at the op level for integers
+                return Element{0};  // guarded out at the op level for integers
         case UnaryOp::Exponential:
-            if constexpr (std::is_floating_point_v<T>)
-                return static_cast<T>(std::exp(value));
+            if constexpr (std::is_floating_point_v<Element>)
+                return static_cast<Element>(std::exp(value));
             else
-                return T{0};
+                return Element{0};
         case UnaryOp::Logarithm:
-            if constexpr (std::is_floating_point_v<T>)
-                return static_cast<T>(std::log(value));
+            if constexpr (std::is_floating_point_v<Element>)
+                return static_cast<Element>(std::log(value));
             else
-                return T{0};
+                return Element{0};
     }
     return value;
 }
@@ -123,19 +123,19 @@ bool unary_requires_float(UnaryOp op) {
            op == UnaryOp::Logarithm;
 }
 
-template <class T>
-T apply_binary(BinaryOp op, T lhs, T rhs) {
+template <class Element>
+Element apply_binary(BinaryOp op, Element lhs, Element rhs) {
     switch (op) {
-        case BinaryOp::Add:      return static_cast<T>(lhs + rhs);
-        case BinaryOp::Subtract: return static_cast<T>(lhs - rhs);
-        case BinaryOp::Multiply: return static_cast<T>(lhs * rhs);
+        case BinaryOp::Add:      return static_cast<Element>(lhs + rhs);
+        case BinaryOp::Subtract: return static_cast<Element>(lhs - rhs);
+        case BinaryOp::Multiply: return static_cast<Element>(lhs * rhs);
         case BinaryOp::Divide:
-            if constexpr (std::is_integral_v<T>) {
+            if constexpr (std::is_integral_v<Element>) {
                 // Integer divide-by-zero is UB on hardware; the reference
                 // returns 0 so a stray zero divisor can't crash the node.
-                return rhs == 0 ? T{0} : static_cast<T>(lhs / rhs);
+                return rhs == 0 ? Element{0} : static_cast<Element>(lhs / rhs);
             } else {
-                return static_cast<T>(lhs / rhs);  // IEEE: yields inf / nan
+                return static_cast<Element>(lhs / rhs);  // IEEE: yields inf / nan
             }
         case BinaryOp::Maximum: return std::max(lhs, rhs);
         case BinaryOp::Minimum: return std::min(lhs, rhs);
@@ -143,22 +143,22 @@ T apply_binary(BinaryOp op, T lhs, T rhs) {
     return lhs;
 }
 
-template <class T>
-T reduce_identity(ReduceOp op) {
+template <class Element>
+Element reduce_identity(ReduceOp op) {
     switch (op) {
-        case ReduceOp::Sum:     return T{0};
-        case ReduceOp::Product: return T{1};
-        case ReduceOp::Minimum: return std::numeric_limits<T>::max();
-        case ReduceOp::Maximum: return std::numeric_limits<T>::lowest();
+        case ReduceOp::Sum:     return Element{0};
+        case ReduceOp::Product: return Element{1};
+        case ReduceOp::Minimum: return std::numeric_limits<Element>::max();
+        case ReduceOp::Maximum: return std::numeric_limits<Element>::lowest();
     }
-    return T{0};
+    return Element{0};
 }
 
-template <class T>
-T reduce_combine(ReduceOp op, T lhs, T rhs) {
+template <class Element>
+Element reduce_combine(ReduceOp op, Element lhs, Element rhs) {
     switch (op) {
-        case ReduceOp::Sum:     return static_cast<T>(lhs + rhs);
-        case ReduceOp::Product: return static_cast<T>(lhs * rhs);
+        case ReduceOp::Sum:     return static_cast<Element>(lhs + rhs);
+        case ReduceOp::Product: return static_cast<Element>(lhs * rhs);
         case ReduceOp::Minimum: return std::min(lhs, rhs);
         case ReduceOp::Maximum: return std::max(lhs, rhs);
     }
@@ -167,10 +167,10 @@ T reduce_combine(ReduceOp op, T lhs, T rhs) {
 
 // Scan one contiguous range [begin, end) of `input` into `output`, seeded with
 // `seed` (the reduction of everything before `begin`).
-template <class T>
-void scan_range(ReduceOp op, ScanInclusivity inclusivity, const T* input,
-                T* output, std::size_t begin, std::size_t end, T seed) {
-    T running = seed;
+template <class Element>
+void scan_range(ReduceOp op, ScanInclusivity inclusivity, const Element* input,
+                Element* output, std::size_t begin, std::size_t end, Element seed) {
+    Element running = seed;
     if (inclusivity == ScanInclusivity::Inclusive) {
         for (std::size_t i = begin; i < end; ++i) {
             running = reduce_combine(op, running, input[i]);
@@ -273,14 +273,14 @@ ComputeStatus CpuDevice::map(UnaryOp op, const DeviceBuffer& input,
             "map: sqrt/exp/log require a floating-point dtype");
     }
 
-    return visit_numeric(input.dtype(), [&]<class T>() -> ComputeStatus {
-        const T* in = static_cast<const T*>(input.handle());
-        T* out = static_cast<T*>(output.handle());
+    return visit_numeric(input.dtype(), [&]<class Element>() -> ComputeStatus {
+        const Element* in = static_cast<const Element*>(input.handle());
+        Element* out = static_cast<Element*>(output.handle());
         runtime::parallel_for(
             input.element_count(),
             [&](std::size_t, std::size_t begin, std::size_t end) {
                 for (std::size_t i = begin; i < end; ++i)
-                    out[i] = apply_unary<T>(op, in[i]);
+                    out[i] = apply_unary<Element>(op, in[i]);
             });
         return ComputeStatus::success();
     });
@@ -307,15 +307,15 @@ ComputeStatus CpuDevice::elementwise(BinaryOp op, const DeviceBuffer& lhs,
         return status;
     }
 
-    return visit_numeric(lhs.dtype(), [&]<class T>() -> ComputeStatus {
-        const T* a = static_cast<const T*>(lhs.handle());
-        const T* b = static_cast<const T*>(rhs.handle());
-        T* out = static_cast<T*>(output.handle());
+    return visit_numeric(lhs.dtype(), [&]<class Element>() -> ComputeStatus {
+        const Element* a = static_cast<const Element*>(lhs.handle());
+        const Element* b = static_cast<const Element*>(rhs.handle());
+        Element* out = static_cast<Element*>(output.handle());
         runtime::parallel_for(
             lhs.element_count(),
             [&](std::size_t, std::size_t begin, std::size_t end) {
                 for (std::size_t i = begin; i < end; ++i)
-                    out[i] = apply_binary<T>(op, a[i], b[i]);
+                    out[i] = apply_binary<Element>(op, a[i], b[i]);
             });
         return ComputeStatus::success();
     });
@@ -341,21 +341,21 @@ ComputeStatus CpuDevice::reduce(ReduceOp op, const DeviceBuffer& input,
         return status;
     }
 
-    return visit_numeric(input.dtype(), [&]<class T>() -> ComputeStatus {
-        const T* in = static_cast<const T*>(input.handle());
-        const T identity = reduce_identity<T>(op);
+    return visit_numeric(input.dtype(), [&]<class Element>() -> ComputeStatus {
+        const Element* in = static_cast<const Element*>(input.handle());
+        const Element identity = reduce_identity<Element>(op);
         std::mutex merge_mutex;
-        T total = identity;
+        Element total = identity;
         runtime::parallel_for(
             input.element_count(),
             [&](std::size_t, std::size_t begin, std::size_t end) {
-                T local = identity;
+                Element local = identity;
                 for (std::size_t i = begin; i < end; ++i)
                     local = reduce_combine(op, local, in[i]);
                 std::lock_guard<std::mutex> lock(merge_mutex);
                 total = reduce_combine(op, total, local);
             });
-        *static_cast<T*>(output.handle()) = total;
+        *static_cast<Element*>(output.handle()) = total;
         return ComputeStatus::success();
     });
 }
@@ -379,32 +379,32 @@ ComputeStatus CpuDevice::scan(ReduceOp op, ScanInclusivity inclusivity,
     }
 
     const std::size_t count = input.element_count();
-    return visit_numeric(input.dtype(), [&]<class T>() -> ComputeStatus {
-        const T* in = static_cast<const T*>(input.handle());
-        T* out = static_cast<T*>(output.handle());
-        const T identity = reduce_identity<T>(op);
+    return visit_numeric(input.dtype(), [&]<class Element>() -> ComputeStatus {
+        const Element* in = static_cast<const Element*>(input.handle());
+        Element* out = static_cast<Element*>(output.handle());
+        const Element identity = reduce_identity<Element>(op);
 
         const std::size_t chunks = runtime::parallel_chunks(count);
         if (chunks <= 1) {
-            scan_range<T>(op, inclusivity, in, out, 0, count, identity);
+            scan_range<Element>(op, inclusivity, in, out, 0, count, identity);
             return ComputeStatus::success();
         }
 
         // Parallel three-phase prefix scan. parallel_for tiles [0, count) the
         // same way in both passes (its tiling is a pure function of count), so a
         // chunk index maps to the same [begin, end) in phase 1 and phase 3.
-        std::vector<T> chunk_total(chunks, identity);
+        std::vector<Element> chunk_total(chunks, identity);
         runtime::parallel_for(
             count,
             [&](std::size_t chunk, std::size_t begin, std::size_t end) {
-                T local = identity;
+                Element local = identity;
                 for (std::size_t i = begin; i < end; ++i)
                     local = reduce_combine(op, local, in[i]);
                 chunk_total[chunk] = local;
             });
 
-        std::vector<T> offset(chunks);
-        T running = identity;
+        std::vector<Element> offset(chunks);
+        Element running = identity;
         for (std::size_t chunk = 0; chunk < chunks; ++chunk) {
             offset[chunk] = running;
             running = reduce_combine(op, running, chunk_total[chunk]);
@@ -413,7 +413,7 @@ ComputeStatus CpuDevice::scan(ReduceOp op, ScanInclusivity inclusivity,
         runtime::parallel_for(
             count,
             [&](std::size_t chunk, std::size_t begin, std::size_t end) {
-                scan_range<T>(op, inclusivity, in, out, begin, end,
+                scan_range<Element>(op, inclusivity, in, out, begin, end,
                               offset[chunk]);
             });
         return ComputeStatus::success();
@@ -457,8 +457,8 @@ ComputeStatus CpuDevice::histogram(const DeviceBuffer& input,
     std::mutex merge_mutex;
 
     const ComputeStatus accumulate =
-        visit_numeric(input.dtype(), [&]<class T>() -> ComputeStatus {
-            const T* in = static_cast<const T*>(input.handle());
+        visit_numeric(input.dtype(), [&]<class Element>() -> ComputeStatus {
+            const Element* in = static_cast<const Element*>(input.handle());
             runtime::parallel_for(
                 input.element_count(),
                 [&](std::size_t, std::size_t begin, std::size_t end) {
@@ -527,12 +527,12 @@ ComputeStatus CpuDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
         return status;
     }
 
-    return visit_float(c.dtype(), [&]<class T>() -> ComputeStatus {
-        const T* matrix_a = static_cast<const T*>(a.handle());
-        const T* matrix_b = static_cast<const T*>(b.handle());
-        T* matrix_c = static_cast<T*>(c.handle());
-        const T alpha = static_cast<T>(params.alpha);
-        const T beta = static_cast<T>(params.beta);
+    return visit_float(c.dtype(), [&]<class Element>() -> ComputeStatus {
+        const Element* matrix_a = static_cast<const Element*>(a.handle());
+        const Element* matrix_b = static_cast<const Element*>(b.handle());
+        Element* matrix_c = static_cast<Element*>(c.handle());
+        const Element alpha = static_cast<Element>(params.alpha);
+        const Element beta = static_cast<Element>(params.beta);
         const bool beta_is_zero = params.beta == 0.0;
 
         // Parallelize over the rows of C; each row is an independent dot-product
@@ -541,23 +541,23 @@ ComputeStatus CpuDevice::gemm(const GemmParams& params, const DeviceBuffer& a,
             rows, [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
                 for (std::size_t row = row_begin; row < row_end; ++row) {
                     for (std::size_t col = 0; col < cols; ++col) {
-                        T accumulator = T{0};
+                        Element accumulator = Element{0};
                         for (std::size_t k = 0; k < inner; ++k) {
-                            const T av = params.transpose_a
+                            const Element av = params.transpose_a
                                              ? matrix_a[k * rows + row]
                                              : matrix_a[row * inner + k];
-                            const T bv = params.transpose_b
+                            const Element bv = params.transpose_b
                                              ? matrix_b[col * inner + k]
                                              : matrix_b[k * cols + col];
                             accumulator =
-                                static_cast<T>(accumulator + av * bv);
+                                static_cast<Element>(accumulator + av * bv);
                         }
-                        T& target = matrix_c[row * cols + col];
+                        Element& target = matrix_c[row * cols + col];
                         // beta == 0 means "do not read C" (BLAS convention), so
                         // an uninitialized / NaN C does not poison the result.
                         target = beta_is_zero
-                                     ? static_cast<T>(alpha * accumulator)
-                                     : static_cast<T>(alpha * accumulator +
+                                     ? static_cast<Element>(alpha * accumulator)
+                                     : static_cast<Element>(alpha * accumulator +
                                                       beta * target);
                     }
                 }
@@ -587,16 +587,16 @@ ComputeStatus CpuDevice::axpy(double alpha, const DeviceBuffer& x,
         return status;
     }
 
-    return visit_float(x.dtype(), [&]<class T>() -> ComputeStatus {
-        const T* vector_x = static_cast<const T*>(x.handle());
-        T* vector_y = static_cast<T*>(y.handle());
-        const T scale = static_cast<T>(alpha);
+    return visit_float(x.dtype(), [&]<class Element>() -> ComputeStatus {
+        const Element* vector_x = static_cast<const Element*>(x.handle());
+        Element* vector_y = static_cast<Element*>(y.handle());
+        const Element scale = static_cast<Element>(alpha);
         runtime::parallel_for(
             x.element_count(),
             [&](std::size_t, std::size_t begin, std::size_t end) {
                 for (std::size_t i = begin; i < end; ++i)
                     vector_y[i] =
-                        static_cast<T>(scale * vector_x[i] + vector_y[i]);
+                        static_cast<Element>(scale * vector_x[i] + vector_y[i]);
             });
         return ComputeStatus::success();
     });
@@ -611,13 +611,13 @@ ComputeStatus CpuDevice::sort(DeviceBuffer& keys, SortOrder order) {
         !status.ok()) {
         return status;
     }
-    return visit_numeric(keys.dtype(), [&]<class T>() -> ComputeStatus {
-        T* data = static_cast<T*>(keys.handle());
+    return visit_numeric(keys.dtype(), [&]<class Element>() -> ComputeStatus {
+        Element* data = static_cast<Element*>(keys.handle());
         const std::size_t count = keys.element_count();
         if (order == SortOrder::Ascending)
             std::sort(data, data + count);
         else
-            std::sort(data, data + count, std::greater<T>{});
+            std::sort(data, data + count, std::greater<Element>{});
         return ComputeStatus::success();
     });
 }
@@ -642,18 +642,18 @@ ComputeStatus CpuDevice::sort_by_key(DeviceBuffer& keys, DeviceBuffer& values,
     // Sort an index permutation by key (stable, so equal keys keep input order),
     // then reorder keys (typed) and values (by raw element size) through it.
     const ComputeStatus order_keys =
-        visit_numeric(keys.dtype(), [&]<class T>() -> ComputeStatus {
-            const T* key_data = static_cast<const T*>(keys.handle());
+        visit_numeric(keys.dtype(), [&]<class Element>() -> ComputeStatus {
+            const Element* key_data = static_cast<const Element*>(keys.handle());
             std::stable_sort(permutation.begin(), permutation.end(),
                              [&](std::size_t lhs, std::size_t rhs) {
                                  return order == SortOrder::Ascending
                                             ? key_data[lhs] < key_data[rhs]
                                             : key_data[lhs] > key_data[rhs];
                              });
-            std::vector<T> sorted(count);
+            std::vector<Element> sorted(count);
             for (std::size_t i = 0; i < count; ++i)
                 sorted[i] = key_data[permutation[i]];
-            std::memcpy(keys.handle(), sorted.data(), count * sizeof(T));
+            std::memcpy(keys.handle(), sorted.data(), count * sizeof(Element));
             return ComputeStatus::success();
         });
     if (!order_keys.ok()) return order_keys;

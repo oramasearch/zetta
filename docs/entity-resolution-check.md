@@ -103,8 +103,10 @@ CheckResult result = EntityResolutionCheck{}.evaluate(graph);
 ## Where it fits
 
 This is one concrete check on the gate's `Check` seam; the schema/type,
-data-leakage and point-in-time checks (`#309`) plug in the same way. See
-[gate.md](gate.md) (the runner that hosts it), [validation.md](validation.md)
-(the `CheckResult` / `ValidationReport` it produces), and
-[execution-graph.md](execution-graph.md) (the IR it inspects). Related artifacts:
-FEAT-3 (`#134`), TC-4 (`#251`), RULE-1.
+data-leakage and point-in-time checks (`#309`) plug in the same way. The
+**producer** of the payload it reads is the entity resolver
+([entity-resolution.md](entity-resolution.md), `zetta::EntityResolver`, #394) —
+resolver produces, this gate verifies. See [gate.md](gate.md) (the runner that
+hosts it), [validation.md](validation.md) (the `CheckResult` / `ValidationReport`
+it produces), and [execution-graph.md](execution-graph.md) (the IR it inspects).
+Related artifacts: FEAT-3 (`#134`), TC-4 (`#251`), RULE-1.

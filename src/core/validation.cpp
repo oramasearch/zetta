@@ -84,21 +84,21 @@ bool parse_check(const nlohmann::json& entry, std::vector<CheckResult>& out) {
 
 }  // namespace
 
-bool validation_report_from_json(const nlohmann::json& document,
-                                 ValidationReport& out) {
-    if (!document.is_object()) return false;
+std::optional<ValidationReport> validation_report_from_json(
+    const nlohmann::json& document) {
+    if (!document.is_object()) return std::nullopt;
     if (!document.contains("checks") || !document["checks"].is_array()) {
-        return false;
+        return std::nullopt;
     }
     if (!document.contains("block_deploy") ||
         !document["block_deploy"].is_boolean()) {
-        return false;
+        return std::nullopt;
     }
 
     ValidationReport parsed;
     parsed.checks.reserve(document["checks"].size());
     for (const auto& entry : document["checks"]) {
-        if (!parse_check(entry, parsed.checks)) return false;
+        if (!parse_check(entry, parsed.checks)) return std::nullopt;
     }
     parsed.block_deploy = document["block_deploy"].get<bool>();
 
@@ -106,17 +106,16 @@ bool validation_report_from_json(const nlohmann::json& document,
     // reject the document if a present verdict contradicts the checks (a sign
     // the payload was corrupted or hand-edited inconsistently).
     if (document.contains("verdict")) {
-        if (!document["verdict"].is_string()) return false;
+        if (!document["verdict"].is_string()) return std::nullopt;
         CheckStatus stated{};
         if (!check_status_from_string(document["verdict"].get<std::string>(),
                                       stated)) {
-            return false;
+            return std::nullopt;
         }
-        if (stated != parsed.verdict()) return false;
+        if (stated != parsed.verdict()) return std::nullopt;
     }
 
-    out = std::move(parsed);
-    return true;
+    return parsed;
 }
 
 }  // namespace zetta

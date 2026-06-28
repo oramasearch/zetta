@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "base_score": {
+      "type": "number"
+    },
+    "calibration": {
+      "type": "object"
+    },
+    "feature_names": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "learning_rate": {
+      "type": "number"
+    },
+    "objective": {
+      "enum": [
+        "binary_logistic"
+      ],
+      "type": "string"
+    },
+    "trees": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "nodes": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cover": {
+                  "type": "number"
+                },
+                "feature": {
+                  "type": "integer"
+                },
+                "left": {
+                  "type": "integer"
+                },
+                "right": {
+                  "type": "integer"
+                },
+                "threshold": {
+                  "type": "number"
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "feature",
+                "threshold",
+                "left",
+                "right",
+                "value",
+                "cover"
+              ],
+              "type": "object"
+            },
+            "minItems": 1,
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "objective",
+    "base_score",
+    "learning_rate",
+    "feature_names",
+    "trees"
+  ],
+  "title": "zetta.ml.GbdtModel",
+  "type": "object"
+}

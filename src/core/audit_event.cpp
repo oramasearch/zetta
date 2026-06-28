@@ -15,8 +15,9 @@ namespace {
 // value shape carried by audit/<uuid>.json (with an optional `id`) and the
 // `audit:<uuid>` CRDT value (without it). `action` is a closed enum and the
 // shape is sealed (additionalProperties: false), so a malformed record fails
-// validation at the boundary instead of corrupting the trail. Mirrors
-// schemas/audit_event.schema.json — keep the two in sync.
+// validation at the boundary instead of corrupting the trail. This embedded schema
+// is the source of truth; schemas/audit_event.schema.json is generated from it
+// (tests/test_schemas.cpp) and a drift check keeps it in sync.
 const nlohmann::json& schema_document() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",

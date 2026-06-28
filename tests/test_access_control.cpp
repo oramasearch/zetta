@@ -130,27 +130,25 @@ TEST(Scope, RoundTripsThroughJson) {
         .grant(ResourceKind::Project, "retention");
 
     const nlohmann::json document = scope;  // to_json ADL hook
-    Scope parsed;
-    ASSERT_TRUE(zetta::scope_from_json(document, parsed));
-    EXPECT_EQ(parsed, scope);
+    const auto parsed = zetta::scope_from_json(document);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(*parsed, scope);
 }
 
 TEST(Scope, RejectsMalformedJsonAtTheBoundary) {
-    Scope out;
     // Not an object.
-    EXPECT_FALSE(zetta::scope_from_json(nlohmann::json::array(), out));
+    EXPECT_FALSE(zetta::scope_from_json(nlohmann::json::array()));
     // Missing `grants`.
     EXPECT_FALSE(zetta::scope_from_json(
-        nlohmann::json{{"unrestricted", false}}, out));
+        nlohmann::json{{"unrestricted", false}}));
     // `unrestricted` wrong type.
     EXPECT_FALSE(zetta::scope_from_json(
-        nlohmann::json{{"unrestricted", "no"}, {"grants", nlohmann::json::array()}},
-        out));
+        nlohmann::json{{"unrestricted", "no"},
+                       {"grants", nlohmann::json::array()}}));
     // An unknown resource kind must fail fast (never silently drop a grant).
     EXPECT_FALSE(zetta::scope_from_json(
         nlohmann::json::parse(
-            R"({"unrestricted": false, "grants": [{"kind": "table", "name": "x"}]})"),
-        out));
+            R"({"unrestricted": false, "grants": [{"kind": "table", "name": "x"}]})")));
 }
 
 TEST(AccessKey, MetadataCarriesPrincipalAndScope) {
@@ -162,9 +160,9 @@ TEST(AccessKey, MetadataCarriesPrincipalAndScope) {
     EXPECT_EQ(meta.at("principal"), "principal-id");
     EXPECT_EQ(meta.at("created"), "2026-01-01");
 
-    Scope parsed;
-    ASSERT_TRUE(zetta::scope_from_json(meta.at("scope"), parsed));
-    EXPECT_EQ(parsed, scope);
+    const auto parsed = zetta::scope_from_json(meta.at("scope"));
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(*parsed, scope);
 }
 
 // ----- Capability: the deny-by-default rights primitive (ENT-22) -------------
@@ -257,27 +255,24 @@ TEST(Capability, RoundTripsThroughJson) {
     EXPECT_FALSE(document.at(0).contains("expires_at"));
     EXPECT_EQ(document.at(1).at("expires_at"), kFuture);
 
-    CapabilitySet parsed;
-    ASSERT_TRUE(zetta::capability_set_from_json(document, parsed));
-    EXPECT_EQ(parsed, capabilities);
+    const auto parsed = zetta::capability_set_from_json(document);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(*parsed, capabilities);
 }
 
 TEST(Capability, RejectsMalformedJsonAtTheBoundary) {
-    CapabilitySet out;
     // Not an array.
-    EXPECT_FALSE(zetta::capability_set_from_json(nlohmann::json::object(), out));
+    EXPECT_FALSE(zetta::capability_set_from_json(nlohmann::json::object()));
     // An unknown domain must fail fast (never silently drop a grant).
     EXPECT_FALSE(zetta::capability_set_from_json(
-        nlohmann::json::parse(R"([{"domain": "filesystem", "action": "read"}])"),
-        out));
+        nlohmann::json::parse(R"([{"domain": "filesystem", "action": "read"}])")));
     // A missing action.
     EXPECT_FALSE(zetta::capability_set_from_json(
-        nlohmann::json::parse(R"([{"domain": "data"}])"), out));
+        nlohmann::json::parse(R"([{"domain": "data"}])")));
     // A wrong-typed expires_at.
     EXPECT_FALSE(zetta::capability_set_from_json(
         nlohmann::json::parse(
-            R"([{"domain": "data", "action": "read", "expires_at": 1}])"),
-        out));
+            R"([{"domain": "data", "action": "read", "expires_at": 1}])")));
 }
 
 TEST(Capability, DomainRoundTripsThroughStrings) {

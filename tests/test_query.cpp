@@ -16,6 +16,8 @@
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::test::TempDir;
+using zetta::query::AggregateFunc;
+using zetta::query::CompareOp;
 using zetta::query::CreateTableStmt;
 using zetta::query::PostgresDialect;
 using zetta::query::QueryService;
@@ -237,5 +239,363 @@ TEST(QueryService, ClusterNodesNeedsACluster) {
     QueryService svc{node};  // no cluster wired in
     auto sel = svc.run("SELECT * FROM zetta_nodes;", "");
     EXPECT_FALSE(sel.ok());
+    node.stop();
+}
+
+// ---- WHERE comparison operators (parser + row path) ------------------------
+
+TEST(PostgresParser, ParsesComparisonOperators) {
+    PostgresDialect pg;
+    const auto check = [&](const std::string& sql, CompareOp expected) {
+        const auto parsed = pg.parse(sql);
+        ASSERT_TRUE(parsed.ok()) << parsed.error;
+        const auto* stmt = std::get_if<SelectStmt>(&parsed.statements[0]);
+        ASSERT_NE(stmt, nullptr);
+        ASSERT_TRUE(stmt->where.has_value());
+        EXPECT_EQ(stmt->where->op, expected);
+    };
+    check("SELECT * FROM t WHERE a = 1;", CompareOp::Equal);
+    check("SELECT * FROM t WHERE a != 1;", CompareOp::NotEqual);
+    check("SELECT * FROM t WHERE a <> 1;", CompareOp::NotEqual);
+    check("SELECT * FROM t WHERE a < 1;", CompareOp::Less);
+    check("SELECT * FROM t WHERE a <= 1;", CompareOp::LessEqual);
+    check("SELECT * FROM t WHERE a > 1;", CompareOp::Greater);
+    check("SELECT * FROM t WHERE a >= 1;", CompareOp::GreaterEqual);
+}
+
+TEST(QueryService, WhereComparisonsOnRowPath) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (a int);", "");
+    svc.run("INSERT INTO d.t (a) VALUES (1), (2), (3), (4);", "");
+
+    EXPECT_EQ(svc.run("SELECT a FROM d.t WHERE a >= 3;", "").rows.size(), 2u);
+    EXPECT_EQ(svc.run("SELECT a FROM d.t WHERE a < 2;", "").rows.size(), 1u);
+    EXPECT_EQ(svc.run("SELECT a FROM d.t WHERE a != 2;", "").rows.size(), 3u);
+    EXPECT_EQ(svc.run("SELECT a FROM d.t WHERE a <= 2;", "").rows.size(), 2u);
+
+    node.stop();
+}
+
+// ---- GROUP BY through the DDF engine ---------------------------------------
+
+TEST(PostgresParser, ParsesGroupByWithAggregates) {
+    PostgresDialect pg;
+    const auto parsed = pg.parse(
+        "SELECT segment, SUM(amount), COUNT(*) FROM events "
+        "WHERE amount > 0 GROUP BY segment;");
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    const auto* stmt = std::get_if<SelectStmt>(&parsed.statements[0]);
+    ASSERT_NE(stmt, nullptr);
+    EXPECT_TRUE(stmt->grouped());
+    ASSERT_EQ(stmt->group_by.size(), 1u);
+    EXPECT_EQ(stmt->group_by[0], "segment");
+    ASSERT_EQ(stmt->items.size(), 3u);
+    EXPECT_FALSE(stmt->items[0].aggregate.has_value());  // key passthrough
+    EXPECT_EQ(stmt->items[0].column, "segment");
+    ASSERT_TRUE(stmt->items[1].aggregate.has_value());
+    EXPECT_EQ(stmt->items[1].aggregate->func, AggregateFunc::Sum);
+    EXPECT_EQ(stmt->items[1].aggregate->column, "amount");
+    ASSERT_TRUE(stmt->items[2].aggregate.has_value());
+    EXPECT_EQ(stmt->items[2].aggregate->func, AggregateFunc::Count);
+    EXPECT_TRUE(stmt->items[2].aggregate->column.empty());  // COUNT(*)
+    ASSERT_TRUE(stmt->where.has_value());
+    EXPECT_EQ(stmt->where->op, CompareOp::Greater);
+}
+
+TEST(PostgresParser, RejectsAggregateWithoutGroupBy) {
+    PostgresDialect pg;
+    EXPECT_FALSE(pg.parse("SELECT SUM(amount) FROM t;").ok());
+    EXPECT_FALSE(pg.parse("SELECT * FROM t GROUP BY a;").ok());
+}
+
+TEST(QueryService, GroupByAggregatesThroughDdfEngine) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run(
+        "CREATE DATABASE churn;"
+        "CREATE TABLE churn.events (segment int, amount int);",
+        "");
+    svc.run(
+        "INSERT INTO churn.events (segment, amount) VALUES "
+        "(1, 10), (1, 5), (2, 100), (2, 200), (1, 20), (3, 7), (3, 3), (2, 50);",
+        "");
+
+    // The acceptance: a SELECT … GROUP BY runs through the DDF engine and returns
+    // correct per-group rows (ascending key order).
+    auto sel = svc.run(
+        "SELECT segment, SUM(amount), COUNT(*) FROM churn.events GROUP BY segment;",
+        "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 3u);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["segment"].get<double>(), 1.0);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["sum_amount"].get<double>(), 35.0);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["count"].get<double>(), 3.0);
+    EXPECT_DOUBLE_EQ(sel.rows[1]["segment"].get<double>(), 2.0);
+    EXPECT_DOUBLE_EQ(sel.rows[1]["sum_amount"].get<double>(), 350.0);
+    EXPECT_DOUBLE_EQ(sel.rows[1]["count"].get<double>(), 3.0);
+    EXPECT_DOUBLE_EQ(sel.rows[2]["segment"].get<double>(), 3.0);
+    EXPECT_DOUBLE_EQ(sel.rows[2]["sum_amount"].get<double>(), 10.0);
+    EXPECT_DOUBLE_EQ(sel.rows[2]["count"].get<double>(), 2.0);
+    // Integer columns come back as JSON integers (not 1.0 / 35.0).
+    EXPECT_TRUE(sel.rows[0]["segment"].is_number_integer());
+    EXPECT_TRUE(sel.rows[0]["sum_amount"].is_number_integer());
+    EXPECT_TRUE(sel.rows[0]["count"].is_number_integer());
+
+    node.stop();
+}
+
+TEST(QueryService, GroupByWithWhereFiltersThroughDdf) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run(
+        "CREATE DATABASE churn;"
+        "CREATE TABLE churn.events (segment int, amount int);",
+        "");
+    // amount as a float column so SUM/MIN/MAX come back as doubles.
+    svc.run(
+        "INSERT INTO churn.events (segment, amount) VALUES "
+        "(1, 10.0), (1, 5.0), (2, 100.0), (2, 8.0), (3, 4.0);",
+        "");
+
+    // WHERE amount >= 10 drops (1,5), (2,8), (3,4) — segment 3 vanishes entirely.
+    auto sel = svc.run(
+        "SELECT segment, SUM(amount) AS total, MIN(amount), MAX(amount) "
+        "FROM churn.events WHERE amount >= 10 GROUP BY segment;",
+        "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 2u);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["segment"].get<double>(), 1.0);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["total"].get<double>(), 10.0);          // alias
+    EXPECT_DOUBLE_EQ(sel.rows[0]["min_amount"].get<double>(), 10.0);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["max_amount"].get<double>(), 10.0);
+    EXPECT_DOUBLE_EQ(sel.rows[1]["segment"].get<double>(), 2.0);
+    EXPECT_DOUBLE_EQ(sel.rows[1]["total"].get<double>(), 100.0);
+    // A float column's sum is emitted as a JSON float.
+    EXPECT_TRUE(sel.rows[0]["total"].is_number_float());
+
+    node.stop();
+}
+
+TEST(QueryService, GroupByAvgAndDistinctKeys) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (g int, v int);", "");
+    svc.run("INSERT INTO d.t (g, v) VALUES (1, 10), (1, 20), (2, 9);", "");
+
+    // AVG (mean) always returns a float, even over an integer column.
+    auto avg = svc.run("SELECT g, AVG(v) AS avg_value FROM d.t GROUP BY g;", "");
+    ASSERT_TRUE(avg.ok()) << avg.error;
+    ASSERT_EQ(avg.rows.size(), 2u);
+    EXPECT_DOUBLE_EQ(avg.rows[0]["avg_value"].get<double>(), 15.0);
+    EXPECT_DOUBLE_EQ(avg.rows[1]["avg_value"].get<double>(), 9.0);
+
+    // A GROUP BY with no aggregate returns the distinct keys (ascending).
+    auto distinct = svc.run("SELECT g FROM d.t GROUP BY g;", "");
+    ASSERT_TRUE(distinct.ok()) << distinct.error;
+    ASSERT_EQ(distinct.rows.size(), 2u);
+    EXPECT_DOUBLE_EQ(distinct.rows[0]["g"].get<double>(), 1.0);
+    EXPECT_DOUBLE_EQ(distinct.rows[1]["g"].get<double>(), 2.0);
+
+    node.stop();
+}
+
+TEST(QueryService, GroupByOnEmptyTableReturnsNoRows) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (segment int, amount int);", "");
+
+    auto sel = svc.run(
+        "SELECT segment, SUM(amount) FROM d.t GROUP BY segment;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    EXPECT_EQ(sel.rows.size(), 0u);
+    // The output columns are still reported.
+    ASSERT_EQ(sel.columns.size(), 2u);
+    EXPECT_EQ(sel.columns[0], "segment");
+    EXPECT_EQ(sel.columns[1], "sum_amount");
+
+    node.stop();
+}
+
+TEST(QueryService, GroupByRejectsBadQueries) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    svc.run("CREATE DATABASE d; CREATE TABLE d.t (region text, amount int);", "");
+    svc.run("INSERT INTO d.t (region, amount) VALUES ('US', 5), ('EU', 3);", "");
+
+    // The grouping key is not a dense numeric column (DDF is numeric only).
+    EXPECT_FALSE(svc.run(
+        "SELECT region, SUM(amount) FROM d.t GROUP BY region;", "").ok());
+
+    // A non-aggregated select column that is not the grouping key.
+    svc.run("CREATE TABLE d.n (g int, v int);", "");
+    svc.run("INSERT INTO d.n (g, v) VALUES (1, 2);", "");
+    EXPECT_FALSE(svc.run("SELECT g, v FROM d.n GROUP BY g;", "").ok());
+
+    // A non-numeric WHERE predicate in a grouped query.
+    EXPECT_FALSE(svc.run(
+        "SELECT g, SUM(v) FROM d.n WHERE g = 'x' GROUP BY g;", "").ok());
+
+    // GROUP BY over a system table is not supported.
+    EXPECT_FALSE(svc.run(
+        "SELECT kind, COUNT(*) FROM system.zetta_jobs GROUP BY kind;", "").ok());
+
+    node.stop();
+}
+
+// ---- Cloud Inspector system tables -----------------------------------------
+
+TEST(QueryService, SelectsCloudProvidersSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // The provider catalog is queryable as a system table — pure metadata, no
+    // cloud access. It covers every backend (local + 6 others).
+    auto sel = svc.run("SELECT * FROM system.zetta_cloud_providers;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    EXPECT_EQ(sel.rows.size(), 7u);
+
+    // WHERE + projection over it: aws requires consent and is runnable.
+    auto aws = svc.run(
+        "SELECT name, requires_consent, runnable FROM "
+        "system.zetta_cloud_providers WHERE provider = 'aws';",
+        "");
+    ASSERT_TRUE(aws.ok()) << aws.error;
+    ASSERT_EQ(aws.rows.size(), 1u);
+    EXPECT_TRUE(aws.rows[0]["requires_consent"].get<bool>());
+    EXPECT_TRUE(aws.rows[0]["runnable"].get<bool>());
+
+    // local reads nothing — no consent required.
+    auto local = svc.run(
+        "SELECT requires_consent FROM system.zetta_cloud_providers WHERE "
+        "provider = 'local';",
+        "");
+    ASSERT_TRUE(local.ok()) << local.error;
+    ASSERT_EQ(local.rows.size(), 1u);
+    EXPECT_FALSE(local.rows[0]["requires_consent"].get<bool>());
+
+    node.stop();
+}
+
+TEST(QueryService, SelectsCloudStatusSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // Empty until a consent-gated inspect is recorded — querying never triggers a
+    // cloud call.
+    auto empty = svc.run("SELECT * FROM system.zetta_cloud_status;", "");
+    ASSERT_TRUE(empty.ok()) << empty.error;
+    EXPECT_EQ(empty.rows.size(), 0u);
+
+    // Record a (consented) inspect result, as the Cloud Inspector would.
+    zetta::CloudInspectReport report;
+    report.provider_id = "aws";
+    report.provider_name = "Amazon Web Services";
+    report.ran = true;
+    report.reachable = true;
+    report.authenticated = true;
+    report.identity = "account 123456789012";
+    report.locations = {"us-east-1", "eu-west-1"};
+    node.record_cloud_inspection(report);
+
+    auto sel = svc.run("SELECT * FROM system.zetta_cloud_status;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 1u);
+    EXPECT_EQ(sel.rows[0]["provider"].get<std::string>(), "aws");
+    EXPECT_TRUE(sel.rows[0]["authenticated"].get<bool>());
+    EXPECT_EQ(sel.rows[0]["regions"].get<std::string>(), "us-east-1, eu-west-1");
+
+    node.stop();
+}
+
+// RULE-7: runs / principals / keys / the audit trail are observable as
+// system.zetta_* read views (not GUI-only), computed at query time from the live
+// Node accessors — same as zetta_models / zetta_jobs.
+TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // Empty until the entities exist.
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_runs;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_principals;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_keys;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_audit;", "").rows.size(), 0u);
+
+    // A run.
+    auto run = node.create_run("churn", "g1");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::RunStatus::Succeeded);
+
+    // A principal with a scoped, capability-bearing key.
+    auto principal = node.create_principal("analyst", zetta::PrincipalKind::User);
+    ASSERT_TRUE(principal);
+    zetta::Scope scope;
+    scope.grant(zetta::ResourceKind::Project, "churn");
+    zetta::CapabilitySet capabilities;
+    capabilities.grant(zetta::CapabilityDomain::Orchestration, "start_run");
+    auto key = principal->create_key(scope, capabilities);
+    ASSERT_TRUE(key);
+
+    // An audit event (authorize records a data_access decision).
+    node.authorize(key->id(), zetta::Resource{zetta::ResourceKind::Project, "churn"});
+
+    // zetta_runs
+    auto runs = svc.run("SELECT * FROM system.zetta_runs;", "");
+    ASSERT_TRUE(runs.ok()) << runs.error;
+    ASSERT_EQ(runs.rows.size(), 1u);
+    EXPECT_EQ(runs.rows[0]["run_id"].get<std::string>(), run->id());
+    EXPECT_EQ(runs.rows[0]["status"].get<std::string>(), "succeeded");
+    EXPECT_EQ(runs.rows[0]["project"].get<std::string>(), "churn");
+
+    // zetta_principals
+    auto principals = svc.run("SELECT * FROM system.zetta_principals;", "");
+    ASSERT_TRUE(principals.ok()) << principals.error;
+    ASSERT_EQ(principals.rows.size(), 1u);
+    EXPECT_EQ(principals.rows[0]["name"].get<std::string>(), "analyst");
+    EXPECT_EQ(principals.rows[0]["kind"].get<std::string>(), "user");
+    EXPECT_EQ(principals.rows[0]["key_count"].get<int>(), 1);
+
+    // zetta_keys — scope + capabilities rendered as readable strings, no secrets.
+    auto keys = svc.run("SELECT * FROM system.zetta_keys;", "");
+    ASSERT_TRUE(keys.ok()) << keys.error;
+    ASSERT_EQ(keys.rows.size(), 1u);
+    EXPECT_EQ(keys.rows[0]["principal"].get<std::string>(), "analyst");
+    EXPECT_NE(keys.rows[0]["scope"].get<std::string>().find("project:churn"),
+              std::string::npos);
+    EXPECT_NE(keys.rows[0]["capabilities"].get<std::string>().find(
+                  "orchestration:start_run"),
+              std::string::npos);
+
+    // zetta_audit — the authorize decision landed in the trail.
+    auto audit = svc.run("SELECT * FROM system.zetta_audit;", "");
+    ASSERT_TRUE(audit.ok()) << audit.error;
+    ASSERT_GE(audit.rows.size(), 1u);
+    EXPECT_EQ(audit.rows[0]["action"].get<std::string>(), "data_access");
+
+    // WHERE + projection works over the new tables.
+    auto projected = svc.run(
+        "SELECT name FROM system.zetta_principals WHERE name = 'analyst';", "");
+    ASSERT_TRUE(projected.ok()) << projected.error;
+    ASSERT_EQ(projected.rows.size(), 1u);
+    EXPECT_EQ(projected.rows[0]["name"].get<std::string>(), "analyst");
+
     node.stop();
 }

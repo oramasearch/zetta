@@ -1,6 +1,7 @@
 #include "zetta/node.hpp"
 
 #include "zetta/executor.hpp"
+#include "zetta/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/project_graph.hpp"
@@ -273,6 +274,18 @@ void Node::load_principals() {
             !meta.contains("name") || !meta["name"].is_string()) {
             continue;
         }
+        // RULE-3: reject an unknown top-level field, matching the formal schema's
+        // additionalProperties:false (schemas/principal.schema.json) — a record
+        // carrying an unexpected key is malformed, so skip it rather than trust it.
+        bool unknown_field = false;
+        for (const auto& [field, ignored] : meta.items()) {
+            if (field != "id" && field != "kind" && field != "name" &&
+                field != "created") {
+                unknown_field = true;
+                break;
+            }
+        }
+        if (unknown_field) continue;
         const auto kind = principal_kind_from(meta["kind"].get<std::string>());
         if (!kind) continue;
         auto principal = std::make_shared<Principal>(
@@ -469,10 +482,27 @@ std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
                                                std::string graph_name) {
     // R1 places onto the local node only; k8s/cloud targets are deferred.
     if (!target.is_local()) return nullptr;
-    // A deployable graph must have something to place. Full semantic validation
-    // (acyclicity, legal stage transitions) is the gate — a separate slice;
-    // deploy_graph records an already-validated graph and guards the basics.
+    // A deployable graph must have something to place.
     if (graph.empty()) return nullptr;
+
+    // RULE-1: no deploy without a passing correctness gate. The gate runs at the
+    // deploy seam itself — so a *programmatic* deploy clears the same gate the GUI
+    // Deploy panel runs, and an ungated/failing graph can never be placed. A gate
+    // failure is a governed decision: record a blocked (allowed=false) deploy event
+    // and place nothing.
+    const ValidationReport report = default_gate().run(graph);
+    if (!report.passed()) {
+        std::string reason = "correctness gate failed";
+        for (const CheckResult& check : report.checks) {
+            if (check.status == CheckStatus::Fail) {
+                reason = "gate check '" + check.name + "' failed: " + check.reason;
+                break;
+            }
+        }
+        record_audit_event(
+            {AuditAction::GraphDeployed, {}, graph_name, false, reason, {}});
+        return nullptr;
+    }
 
     const std::string id = new_uuid();
     const std::string now = now_iso8601();
@@ -844,6 +874,24 @@ bool Node::materialize_drop_job(const std::string& id) {
     return true;
 }
 
+// ----- cloud inspections (ephemeral; not replicated, not persisted) ----------
+
+void Node::record_cloud_inspection(CloudInspectReport report) {
+    // Latest report per provider wins, so the cache holds one current row per
+    // provider for system.zetta_cloud_status. No CRDT capture, no disk write —
+    // this is session-local observed state (RULE-7).
+    const auto it = std::find_if(
+        cloud_inspections_.begin(), cloud_inspections_.end(),
+        [&](const CloudInspectReport& existing) {
+            return existing.provider_id == report.provider_id;
+        });
+    if (it == cloud_inspections_.end()) {
+        cloud_inspections_.push_back(std::move(report));
+    } else {
+        *it = std::move(report);
+    }
+}
+
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
 bool Node::drop_principal(const std::string& name) {
@@ -1157,7 +1205,26 @@ void Node::migrate_to_replication() {
 
 void Node::reconcile_from_replication() {
     const nlohmann::json snapshot = replication_->snapshot();
+    // Reconcile each replicated entity type from the same snapshot, parents
+    // before children (databases before tables/rows/large objects; projects
+    // before inputs/graphs; principals before access keys). Order matters.
+    reconcile_databases(snapshot);
+    reconcile_projects(snapshot);
+    reconcile_inputs(snapshot);
+    reconcile_graphs(snapshot);
+    reconcile_deployments(snapshot);
+    reconcile_runs(snapshot);
+    reconcile_models(snapshot);
+    reconcile_jobs(snapshot);
+    reconcile_principals(snapshot);
+    reconcile_access_keys(snapshot);
+    reconcile_audit_events(snapshot);
+}
 
+// Databases, tables, rows, and large objects reconcile together: they decode in
+// one shared pass over the snapshot, and table/large-object removals nest under
+// each kept database, so they don't split into independent helpers cleanly.
+void Node::reconcile_databases(const nlohmann::json& snapshot) {
     // Decode the flat catalog keys into desired databases / tables / rows.
     std::map<std::string, std::string> databases;             // id -> name
     std::map<std::string, std::pair<std::string, std::string>> tables;  // id -> (db, name)
@@ -1269,7 +1336,9 @@ void Node::reconcile_from_replication() {
         object.sha256 = entry.sha256;
         db->large_objects().materialize_object(std::move(object));
     }
+}
 
+void Node::reconcile_projects(const nlohmann::json& snapshot) {
     // Projects (top-level, no parent): project:<id> -> { name, created,
     // updated, owner }. Decode the desired set, then drop / add / update the
     // local projection to match the document — no re-capture.
@@ -1310,7 +1379,9 @@ void Node::reconcile_from_replication() {
                                   entry.owner);  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_inputs(const nlohmann::json& snapshot) {
     // Project inputs (owned by a project): input:<id> -> { project, kind,
     // source, filename, content_hash, size, created_by, created_at }. Inputs are
     // immutable provenance records (never renamed/edited), so reconcile only adds
@@ -1368,7 +1439,9 @@ void Node::reconcile_from_replication() {
                                        entry.created_at);
         }
     }
+}
 
+void Node::reconcile_graphs(const nlohmann::json& snapshot) {
     // Execution graphs (under a project): graph:<id> -> { project, name,
     // graph: {nodes, edges} }. Decode the desired set, parsing each graph
     // against the IR schema — a graph that doesn't parse is skipped, so a
@@ -1420,7 +1493,9 @@ void Node::reconcile_from_replication() {
                                    std::move(entry.graph));  // a peer changed it
         }
     }
+}
 
+void Node::reconcile_deployments(const nlohmann::json& snapshot) {
     // Deployments (top-level, no parent): deployment:<id> -> { graph_name,
     // target, node, node_count, edge_count, created }. Decode the desired set,
     // then drop / add the local projection to match the document. Deployments
@@ -1468,7 +1543,9 @@ void Node::reconcile_from_replication() {
                                    entry.edge_count, entry.created);
         }
     }
+}
 
+void Node::reconcile_runs(const nlohmann::json& snapshot) {
     // Runs (top-level, no parent): run:<id> -> the run value. Decode + validate
     // the desired set at the boundary (a malformed CRDT value is ignored, not
     // trusted), then drop / add / update the local projection to match — with no
@@ -1494,7 +1571,9 @@ void Node::reconcile_from_replication() {
             run->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_models(const nlohmann::json& snapshot) {
     // Models (top-level, no parent): model:<id> -> the model value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is
     // ignored, not trusted), then drop / add / update the local projection to
@@ -1522,7 +1601,9 @@ void Node::reconcile_from_replication() {
             model->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
     // not trusted), then drop / add / update the local projection to match — with
@@ -1551,7 +1632,9 @@ void Node::reconcile_from_replication() {
             job->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_principals(const nlohmann::json& snapshot) {
     // Principals (top-level, no parent): principal:<id> -> { kind, name,
     // created }. Decode the desired set, then drop / add / update the local
     // projection to match the document — no re-capture.
@@ -1592,7 +1675,9 @@ void Node::reconcile_from_replication() {
                                     entry.created);  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
     // Access keys (owned by a principal): key:<id> -> { principal, scope,
     // created }. Keys are immutable credentials (never edited), so reconcile only
     // adds them under their owning principal and drops the ones a peer removed.
@@ -1609,19 +1694,20 @@ void Node::reconcile_from_replication() {
             !value.contains("scope")) {
             continue;
         }
-        Scope scope;
-        if (!scope_from_json(value["scope"], scope)) continue;  // boundary
+        const auto scope = scope_from_json(value["scope"]);
+        if (!scope) continue;  // boundary
         // Capabilities are optional (a peer on an older shape omits them => no
         // rights); a present-yet-malformed set is rejected rather than applied.
         CapabilitySet capabilities;
-        if (value.contains("capabilities") &&
-            !capability_set_from_json(value["capabilities"], capabilities)) {
-            continue;
+        if (value.contains("capabilities")) {
+            const auto parsed = capability_set_from_json(value["capabilities"]);
+            if (!parsed) continue;
+            capabilities = *parsed;
         }
         access_keys.emplace(
             std::move(id),
-            AccessKeyEntry{value.value("principal", std::string{}),
-                           std::move(scope), std::move(capabilities),
+            AccessKeyEntry{value.value("principal", std::string{}), *scope,
+                           std::move(capabilities),
                            value.value("created", std::string{})});
     }
     // Removals first (a peer dropped a key, or its principal is gone).
@@ -1647,7 +1733,9 @@ void Node::reconcile_from_replication() {
                                        entry.created);
         }
     }
+}
 
+void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
     // Audit events (top-level, no parent): audit:<id> -> the event value. The
     // trail is immutable + append-only, so reconcile only *adds* events the
     // document has that we don't (a peer's, merged in via gossip) and never

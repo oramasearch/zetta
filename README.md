@@ -62,7 +62,9 @@ cloud you can **inspect** it from the headed **Cloud Inspector** panel
 (local/on-prem/Kubernetes/AWS/GCP/Azure/OCI) — but reading any provider's
 config/credentials or calling it is **permission-gated, deny-by-default, and
 asked every time** (a load-bearing consent gate naming exactly what an inspect
-would read/call; scaffold + gate, no real cloud access yet — see
+would read/call). On consent it runs the provider's read-only commands and shows
+your identity, regions, and nodes (never reading the credential files), also
+queryable as `system.zetta_cloud_providers` / `system.zetta_cloud_status` (see
 [docs/cloud-inspector.md](docs/cloud-inspector.md)). A **control plane**
 reconciles each local deployment desired→actual and **self-heals** a killed or
 failed run (see [docs/deployment-controller.md](docs/deployment-controller.md)).
@@ -74,7 +76,17 @@ read-only **Runs / Outputs / Lineage** panel — which also surfaces the trained
 [docs/runs.md](docs/runs.md)).
 It can **execute** a graph step-by-step into one of those runs
 (`zetta::GraphExecutor` / `Node::run_graph` — walk the steps in dependency order,
-produce outputs + lineage; see [docs/execution.md](docs/execution.md)).
+produce outputs + lineage; see [docs/execution.md](docs/execution.md)). For the UC-1
+churn pipeline a **real** per-step executor (`zetta::ChurnStepExecutor`) runs actual
+native distributed accelerated compute behind that same seam — connect→load to DDF,
+clean→featurize, model→train GBDT + calibrate, index→score/rank, serve→explain
+(TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob` — so the
+run's outputs reference a real **Model** + ranked at-risk list + drivers (see
+[docs/churn-step-executor.md](docs/churn-step-executor.md)). The catalog
+**churn-prediction** blueprint is wired to that real engine (`zetta::run_churn_solution`):
+the same graph that deploys also *runs* the full pipeline, and the Deploy panel's
+**Run on real engine** action trains a real Model on a built-in demo dataset (see
+[docs/churn-solution.md](docs/churn-solution.md)).
 It owns **models** (`zetta::Model`) — trained models registered on the node:
 metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
 serialized **weights** stored as a large-object body that transfers peer-to-peer
@@ -150,8 +162,10 @@ change, deploy, and data-access decision, replicated and JSON-Schema validated
 this read-only in an **Admin & Settings** panel — principals + keys, their scope
 + capability grants, and the audit log (see
 [docs/admin-panel.md](docs/admin-panel.md)). Query it all with basic
-Postgres-flavored SQL (DDL + INSERT/SELECT, plus the virtual `system` tables); the
-query engine is dialect-agnostic, so other SQL formats can be added as frontends.
+Postgres-flavored SQL (DDL + INSERT/SELECT with comparison `WHERE` and `GROUP BY`
+aggregation that runs through the DDF engine, plus the virtual `system` tables);
+the query engine is dialect-agnostic, so other SQL formats can be added as
+frontends.
 The async runtime is coroutine-native (C++
 Alliance Capy/Corosio), behind the `zetta::runtime` seam (which also exposes a
 `parallel_for` data-parallel primitive over a shared thread pool). Heavy numeric
@@ -186,8 +200,39 @@ identical results, and which also runs as a recorded `ddf` `ComputeJob`
 (`run_group_by_job`) so it appears in `system.zetta_jobs`. A **window / as-of
 (point-in-time) aggregation** (`zetta::ddf::as_of_aggregate`) closes the set — the
 leakage-free featurization primitive that reduces, per entity, only the rows at or
-before a cutoff ([docs/ddf-as-of.md](docs/ddf-as-of.md)). State replicates between
-nodes as an Automerge CRDT. See [docs/](docs/) for details.
+before a cutoff ([docs/ddf-as-of.md](docs/ddf-as-of.md)). Those ops compose into
+**point-in-time featurization** (`zetta::ddf::point_in_time_featurize`) — the churn
+`churn_features.sql` shape as a DDF graph, producing a leakage-free feature table
+([docs/ddf-featurize.md](docs/ddf-featurize.md)) — which feeds **distributed
+histogram GBDT training** (`zetta::ml::run_train_job`): gradient-boosted decision
+trees with a binary-logistic objective whose per-feature gradient/Hessian histograms
+are allreduced across nodes each round, so single-node and multi-node grow equivalent
+trees; it runs as a recorded `train` `ComputeJob` and produces a `Model`
+([docs/gbdt.md](docs/gbdt.md)). A trained model then drives **batch scoring /
+rank-at-risk** (`zetta::ml::run_score_job`): score entities to a calibrated churn risk
+and rank them into an at-risk list, distributed as a `score` `ComputeJob` whose
+ranking runs on the device `sort_by_key` operator — identical single-node and
+multi-node ([docs/gbdt-score.md](docs/gbdt-score.md)). The model's probabilities are
+**calibrated** (Platt scaling / isotonic regression fit on a held-out split,
+`zetta::ml::Calibrator`) so the churn risk scores are well-calibrated — Brier / ECE
+improve while the ranking is preserved ([docs/calibration.md](docs/calibration.md)),
+and the trained model is **explained** with **exact TreeSHAP**
+(`zetta::ml::run_explain_job`) — per-entity, per-feature attributions that reconstruct
+the prediction exactly (`base + Σ φ = predict_raw`), a per-entity dominant churn
+driver, and a distributed `explain` `ComputeJob` with a global driver ranking
+([docs/tree-shap.md](docs/tree-shap.md)). Because these algorithms are reimplemented
+from scratch — **no Python, no XGBoost, no foreign runtime** — a **native correctness
+oracle** proves they are right without running any reference: committed golden numeric
+fixtures, hand-computable analytic micro-tests, and single-node == multi-node
+equivalence, all self-contained C++ ([docs/native-oracle.md](docs/native-oracle.md)).
+On top of that the risk + dominant driver become a **CRM-ready retention playbook**
+(`zetta::ml::generate_playbook`) — a deterministic driver→action→owner dictionary, an
+expected-retained-value priority (`P(churn) × ARR × P(save | driver)`, computed and
+frozen in code), and a **constrained narrator** behind a seam (default Claude; writes
+the narrative + picks the play within a strict JSON schema and never invents numbers)
+with a deterministic rules-engine fallback so it always runs offline, plus an outcome
+log for the feedback loop ([docs/playbook.md](docs/playbook.md)). State replicates
+between nodes as an Automerge CRDT. See [docs/](docs/) for details.
 
 zetta **vendors its build dependencies** as git submodules under
 [`modules/`](modules/) (`capy`, `corosio`, and `automerge-cpp`).

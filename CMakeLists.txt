@@ -341,6 +341,7 @@ add_library(zetta-core STATIC
   src/core/job_autoscaler.cpp
   src/core/solution_catalog.cpp
   src/core/cloud_provider.cpp
+  src/core/cloud_inspector.cpp
   src/core/run.cpp
   src/core/model.cpp
   src/core/compute_job.cpp
@@ -358,7 +359,10 @@ add_library(zetta-core STATIC
   src/core/gate.cpp
   src/core/graph_checks.cpp
   src/core/checks/entity_resolution_check.cpp
+  src/core/entity_resolution.cpp
   src/core/executor.cpp
+  src/core/churn_step_executor.cpp
+  src/core/churn_solution.cpp
   src/core/intent_compiler.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
@@ -378,11 +382,30 @@ add_library(zetta-core STATIC
   src/core/ddf/group_by.cpp
   src/core/ddf/as_of.cpp
   src/core/ddf/group_by_job.cpp
+  src/core/ddf/featurize.cpp
+  src/core/ddf/featurize_job.cpp
+  src/core/ml/gbdt.cpp
+  src/core/ml/gbdt_train_job.cpp
+  src/core/ml/calibration.cpp
+  src/core/ml/tree_shap.cpp
+  src/core/ml/gbdt_explain_job.cpp
+  src/core/ml/gbdt_score.cpp
+  src/core/ml/gbdt_score_job.cpp
+  src/core/ml/golden_oracle.cpp
+  src/core/ml/playbook.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp
   src/core/compute/distributed_scheduler.cpp
   src/core/compute/job_coordinator.cpp
+  src/core/testkit/test_suite.cpp
+  src/core/testkit/harness.cpp
+  src/core/testkit/cases_compute.cpp
+  src/core/testkit/cases_ddf.cpp
+  src/core/testkit/cases_ml.cpp
+  src/core/testkit/cases_distributed.cpp
+  src/core/testkit/cases_governance.cpp
+  src/core/testkit/cases_pipeline.cpp
   src/core/runtime.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
@@ -421,6 +444,11 @@ target_link_libraries(zetta-core PRIVATE
 add_executable(zetta
   src/main.cpp
   src/gui/app.cpp
+  src/gui/app_home.cpp
+  src/gui/app_explorer.cpp
+  src/gui/app_pipeline.cpp
+  src/gui/app_operations.cpp
+  src/gui/app_governance.cpp
 )
 
 target_compile_features(zetta PRIVATE cxx_std_26)

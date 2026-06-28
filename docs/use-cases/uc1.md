@@ -126,6 +126,8 @@ Batching (N accounts per call) + forced JSON keeps it fast and cheap at book sca
 
 The division of labor is the whole point: **the model and the math do the quantitative work (probability, drivers, priority); the LLM does only language and play-selection.** That is what makes the output trustworthy.
 
+> **Built natively (#397).** This playbook step is implemented in zetta-core as `zetta::ml::generate_playbook` — the deterministic driver→action→owner dictionary (`PlaybookPolicy`), the frozen expected-retained-value priority, the constrained-narrator seam (`PlaybookNarrator`; the default-Claude `ConstrainedNarrator` over an injected completion, validated at the strict `playbook_entry` JSON-Schema boundary so it never invents numbers), the deterministic `RulesEngineNarrator` fallback, and the outcome log. See [`../playbook.md`](../playbook.md).
+
 ### 4.7 The outcome log (the feedback loop)
 
 Every recommendation is appended to an **outcome log** with `outcome = NULL` and `action_taken = NULL`. A later job fills in `renewed`/`churned` once the horizon resolves, and records what the owner actually did. This is the dataset that turns the static save-rate priors into **learned save-rate-by-driver** and, eventually, a contextual-bandit / uplift policy for *which* action to take — the bridge from "predict churn" to "act optimally on churn." (That learning layer is deferred; the log is laid down now so the data exists when we build it.)

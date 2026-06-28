@@ -30,10 +30,36 @@ struct ColumnDef {
     std::string type;
 };
 
-// The only predicate supported for now: WHERE <column> = <value>.
-struct WhereEq {
+// The comparison a WHERE clause applies. Equality is the default (and the only
+// one that works over non-numeric values); the ordering comparisons are numeric
+// (or lexicographic over strings) — see the executor.
+enum class CompareOp { Equal, NotEqual, Less, LessEqual, Greater, GreaterEqual };
+
+// A single-column WHERE predicate: WHERE <column> <op> <value>.
+struct WhereClause {
     std::string column;
+    CompareOp op = CompareOp::Equal;
     nlohmann::json value;
+};
+
+// An aggregate function in a GROUP BY query's select list. Maps 1:1 to the DDF
+// engine's aggregate ops (Avg -> ddf::AggregateOp::Mean); the mapping lives in the
+// executor so the AST stays independent of the DDF backend.
+enum class AggregateFunc { Count, Sum, Min, Max, Avg };
+
+// One aggregate item in a grouped SELECT: FUNC(column), or COUNT(*) (empty column).
+struct AggregateExpr {
+    AggregateFunc func = AggregateFunc::Count;
+    std::string column;   // the argument column; empty for COUNT(*)
+};
+
+// One item of an aggregating SELECT's projection, kept in select order so result
+// columns materialize in the order written. Either a grouping-key column
+// passthrough (`aggregate` unset, `column` is the key) or an aggregate.
+struct GroupedItem {
+    std::optional<AggregateExpr> aggregate;  // set => aggregate; unset => key column
+    std::string column;                      // the grouping-key column (when !aggregate)
+    std::string alias;                       // optional output-name override (AS ...)
 };
 
 struct CreateDatabaseStmt {
@@ -62,8 +88,18 @@ struct InsertStmt {
 struct SelectStmt {
     TableRef table;
     bool all = false;                  // SELECT *
-    std::vector<std::string> columns;  // projection when !all
-    std::optional<WhereEq> where;
+    std::vector<std::string> columns;  // projection when !all (and not grouped)
+    std::optional<WhereClause> where;
+
+    // GROUP BY (the DDF aggregation path). `group_by` holds the grouping-key
+    // columns (the DDF engine groups by exactly one); `items` is the ordered
+    // select list for the grouped query (key passthroughs + aggregates), so result
+    // columns come back in the order written. Both are empty for a plain SELECT.
+    std::vector<std::string> group_by;
+    std::vector<GroupedItem> items;
+
+    // Whether this is an aggregating query (routes through the DDF engine).
+    bool grouped() const { return !group_by.empty(); }
 };
 
 using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,

@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Forward declarations keep SDL3 + Dear ImGui headers out of this file — only
@@ -18,6 +20,7 @@ namespace zetta {
 class Node;
 class Cluster;
 struct ValidationReport;
+struct CloudProvider;
 class Project;
 class ProjectGraph;
 namespace ir {
@@ -26,6 +29,11 @@ class ExecutionGraph;
 namespace query {
 class QueryService;
 }
+namespace testkit {
+class TestOptions;
+struct TestResult;
+struct TestCase;
+}  // namespace testkit
 
 namespace gui {
 
@@ -65,6 +73,7 @@ private:
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
         Admin,     // principals / keys / audit
+        Tests,     // the in-app test suite (zetta::testkit catalog)
     };
 
     // A file to ingest, queued from a drop event or the native file dialog
@@ -104,11 +113,32 @@ private:
     void draw_query();       // the SQL text area + results
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
+    // Run the churn solution on the REAL engine (featurize → train → explain →
+    // rank → playbook) over a built-in demo dataset, registering a real Model +
+    // jobs on the node (#398). Synchronous on the UI thread (like run_cloud_inspect):
+    // spins up an isolated single-node loopback JobCoordinator so the SPMD
+    // collectives never block on this node's real peers, runs, then tears it down.
+    // Called only from the Deploy panel's explicit "Run on real engine" action.
+    void run_churn_demo();
     void draw_cluster();     // role, listen address, peers, join command
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
+    // Run a provider's read-only inspect (CloudInspector) and cache the result on
+    // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
+    // never on a passive render — this is the one place the GUI touches a cloud,
+    // and only after explicit consent. Synchronous (briefly blocks the UI thread,
+    // which owns the node, so no races); a deliberate per-click action.
+    void run_cloud_inspect(const CloudProvider& provider);
+    // Render the cached inspect result for `provider` (from the node). Read-only;
+    // triggers no cloud call. Shown inside the granted consent gate.
+    void draw_cloud_inspect_result(const CloudProvider& provider);
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
+    void draw_test_suite();  // the in-app test suite: canned cases + options + run
+    // Start the selected case on a worker thread (so distributed cases, which stand
+    // up a real loopback cluster, don't block the UI). Snapshots the current options
+    // + custom-data path; the worker writes the result + live log under test_mutex_.
+    void start_test(const testkit::TestCase& test_case);
 
     // Per-job objective/scaling controls inside the Jobs panel (FEAT-5 / SCR):
     // a live preview that scores a ScalingPolicy against an editable sample via
@@ -196,9 +226,32 @@ private:
     // user has *explicitly* consented to inspect right now — deny-by-default and
     // reset whenever the selection changes, so consent is never carried over to a
     // different provider or remembered across selections (CLAUDE.md hard rule).
-    // No real config-file read / cloud call happens in this slice regardless.
+    // Only after consent does run_cloud_inspect() run the provider's read-only
+    // commands; the result is cached on the node (system.zetta_cloud_status).
     std::string selected_cloud_provider_;
     std::string cloud_consent_provider_;
+
+    // Test suite panel (zetta::testkit). `selected_test_` is the case id selected in
+    // the catalog list; `test_options_` holds its editable option values (rebuilt
+    // from the case's defaults when the selection changes — tracked by
+    // `test_options_case_`); `test_custom_data_` is an optional dataset directory for
+    // the data-driven cases. A case runs on `test_worker_` so the distributed cases
+    // (which stand up a real loopback cluster, with blocking convergence waits) don't
+    // freeze the UI; the worker writes `test_result_` + the live `test_log_` under
+    // `test_mutex_`, and `test_running_` gates the Run button + list. `test_running_id_`
+    // names the case in flight. Held by unique_ptr with the testkit types forward-
+    // declared, to keep the testkit header out of app.hpp.
+    std::string selected_test_;
+    std::string test_options_case_;
+    std::unique_ptr<testkit::TestOptions> test_options_;
+    std::string test_custom_data_;
+    std::unique_ptr<std::thread> test_worker_;
+    std::atomic<bool> test_running_{false};
+    std::mutex test_mutex_;
+    std::unique_ptr<testkit::TestResult> test_result_;
+    std::vector<std::string> test_log_;
+    std::string test_running_id_;
+
     std::string new_db_input_;
     std::string new_table_input_;
     std::string rename_project_input_;
@@ -260,6 +313,9 @@ private:
     int deploy_placement_ = 0;       // DeploymentKind index; 0 = Local
     std::string deploy_status_;      // last deploy result (success or error)
     bool deploy_failed_ = false;     // colour deploy_status_ red vs. green
+    // "Run on real engine" (churn) result line + its colour. Set by run_churn_demo().
+    std::string churn_run_status_;
+    bool churn_run_failed_ = false;
 
     // Jobs panel — per-job objective/scaling controls (a live preview over the
     // built ScalingPolicy::evaluate(); see draw_job_scaling_controls). These hold

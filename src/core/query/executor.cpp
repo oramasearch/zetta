@@ -1,15 +1,28 @@
 #include "zetta/query/executor.hpp"
 
+#include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 
+#include "zetta/cloud_inspector.hpp"
+#include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
+#include "zetta/compute/cpu_device.hpp"
+#include "zetta/compute/data_type.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
+#include "zetta/ddf/data_frame.hpp"
+#include "zetta/ddf/group_by.hpp"
+#include "zetta/ddf/ops.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
@@ -27,12 +40,34 @@ namespace {
 //    their kind / metrics / weights fingerprint.
 //  - `zetta_jobs` — the compute-job registry (Node::jobs()): one row per unit of
 //    native distributed accelerated compute + its lifecycle (ARC-11 / ENT-31).
+//  - `zetta_cloud_providers` — the deployment-target / provider catalog
+//    (CloudProviderCatalog::builtin()): pure metadata, reads nothing from any
+//    cloud. Surfaces what the Cloud Inspector would touch (RULE-7).
+//  - `zetta_cloud_status` — cached results of consent-gated cloud inspects
+//    (Node::cloud_inspections()). Querying it NEVER triggers a cloud call: it
+//    only reflects inspects the user already consented to in the Cloud Inspector
+//    (empty until then). Ephemeral, not replicated.
+//  - `zetta_runs` — the run registry (Node::runs()): one row per graph execution
+//    + its lifecycle / pipeline refs / lineage (FEAT-5).
+//  - `zetta_principals` — the authenticated actors (Node::principals(); ENT-20).
+//  - `zetta_keys` — the access keys the principals own (ENT-21/22): each key's
+//    scope (resources) + capabilities (rights), no secret material.
+//  - `zetta_audit` — the immutable, append-only audit trail (Node::audit_events();
+//    ENT-23 / FEAT-9).
+// Together with the GUI Runs / Admin panels these satisfy RULE-7 (observable
+// state defaults to a system.zetta_* read view, never a GUI-only surface).
 // Future: system.zetta_leadership, etc.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
 constexpr std::string_view kDeploymentsTable = "zetta_deployments";
 constexpr std::string_view kModelsTable = "zetta_models";
 constexpr std::string_view kJobsTable = "zetta_jobs";
+constexpr std::string_view kCloudProvidersTable = "zetta_cloud_providers";
+constexpr std::string_view kCloudStatusTable = "zetta_cloud_status";
+constexpr std::string_view kRunsTable = "zetta_runs";
+constexpr std::string_view kPrincipalsTable = "zetta_principals";
+constexpr std::string_view kKeysTable = "zetta_keys";
+constexpr std::string_view kAuditTable = "zetta_audit";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -162,19 +197,230 @@ std::vector<nlohmann::json> compute_job_rows(const Node& node) {
     return rows;
 }
 
-// Apply a SELECT's WHERE equality + projection to in-memory rows (used by the
-// system table; regular tables stream straight from the storage engine).
+// Whether `cell` <op> `target` holds. Equality/inequality work over any JSON
+// value (nlohmann compares numbers across int/float); the ordering comparisons
+// apply numerically when both sides are numbers and lexicographically when both
+// are strings, and otherwise do not match (mixed/unsupported types).
+bool compare_cell(const nlohmann::json& cell, CompareOp op,
+                  const nlohmann::json& target) {
+    switch (op) {
+        case CompareOp::Equal:
+            return cell == target;
+        case CompareOp::NotEqual:
+            return cell != target;
+        default:
+            break;
+    }
+    if (cell.is_number() && target.is_number()) {
+        const double left = cell.get<double>();
+        const double right = target.get<double>();
+        switch (op) {
+            case CompareOp::Less:         return left < right;
+            case CompareOp::LessEqual:    return left <= right;
+            case CompareOp::Greater:      return left > right;
+            case CompareOp::GreaterEqual: return left >= right;
+            default:                      return false;
+        }
+    }
+    if (cell.is_string() && target.is_string()) {
+        const std::string& left = cell.get_ref<const std::string&>();
+        const std::string& right = target.get_ref<const std::string&>();
+        switch (op) {
+            case CompareOp::Less:         return left < right;
+            case CompareOp::LessEqual:    return left <= right;
+            case CompareOp::Greater:      return left > right;
+            case CompareOp::GreaterEqual: return left >= right;
+            default:                      return false;
+        }
+    }
+    return false;
+}
+
+// Whether a row satisfies an optional WHERE clause. A row lacking the column never
+// matches (it is excluded), preserving the original equality behavior.
+bool row_matches(const nlohmann::json& row,
+                 const std::optional<WhereClause>& where) {
+    if (!where) return true;
+    if (!row.contains(where->column)) return false;
+    return compare_cell(row.at(where->column), where->op, where->value);
+}
+
+// Join strings with ", " for the flat, scalar cells a SELECT row shows.
+std::string join_comma(const std::vector<std::string>& items) {
+    std::string joined;
+    for (const std::string& item : items) {
+        if (!joined.empty()) joined += ", ";
+        joined += item;
+    }
+    return joined;
+}
+
+// One JSON row per provider for the zetta_cloud_providers system table — the
+// deployment-target / provider catalog (CloudProviderCatalog::builtin()). **Pure
+// metadata: reads nothing from any cloud.** It surfaces, queryable via SQL, what
+// the Cloud Inspector would touch (the config files + read-only commands) and
+// whether inspecting requires consent / can run here (RULE-7).
+std::vector<nlohmann::json> cloud_provider_rows() {
+    std::vector<nlohmann::json> rows;
+    for (const CloudProvider& provider :
+         CloudProviderCatalog::builtin().providers()) {
+        std::vector<std::string> commands;
+        for (const InspectCommand& command : provider.inspect_commands) {
+            commands.push_back(command.display);
+        }
+        nlohmann::json row;
+        row["provider"] = provider.id;
+        row["name"] = provider.name;
+        row["category"] = provider.category;
+        row["cli"] = provider.cli;
+        row["requires_consent"] = provider.requires_consent();
+        row["runnable"] = provider.runnable();
+        row["config_paths"] = join_comma(provider.config_paths);
+        row["inspect_commands"] = join_comma(commands);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per cached cloud inspect for the zetta_cloud_status system table —
+// the results of consent-gated inspects (Node::cloud_inspections()). **Reading
+// this never triggers a cloud call**: it only reflects inspects the user already
+// ran (and consented to) in the Cloud Inspector, so it is empty until then.
+std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const CloudInspectReport& report : node.cloud_inspections()) {
+        std::size_t commands_ok = 0;
+        for (const CloudInspectCommand& command : report.commands) {
+            if (command.ok) ++commands_ok;
+        }
+        nlohmann::json row;
+        row["provider"] = report.provider_id;
+        row["name"] = report.provider_name;
+        row["reachable"] = report.reachable;
+        row["authenticated"] = report.authenticated;
+        row["identity"] = report.identity;
+        row["regions"] = join_comma(report.locations);
+        row["resources"] = join_comma(report.resources);
+        row["commands_ok"] = static_cast<int>(commands_ok);
+        row["commands_total"] = static_cast<int>(report.commands.size());
+        row["checked_at"] = report.checked_at;
+        row["detail"] = report.detail;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per run for the zetta_runs system table — the run registry
+// (FEAT-5). Sourced from Node::runs() (every run replicates, so each node sees the
+// same set). Exposes the run's identity + lifecycle + its place in the pipeline
+// (project / graph / deployment) and summary counts of its logs / outputs plus the
+// lineage confidence + freshness — the queryable read view of the GUI Runs panel.
+std::vector<nlohmann::json> run_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& run : node.runs()) {
+        nlohmann::json row;
+        row["run_id"] = run->id();
+        row["project"] = run->project();
+        row["graph"] = run->graph();
+        row["deployment"] = run->deployment();
+        row["status"] = std::string(to_string(run->status()));
+        row["created"] = run->created();
+        row["updated"] = run->updated();
+        row["log_count"] = static_cast<int>(run->logs().size());
+        row["output_count"] = static_cast<int>(run->outputs().size());
+        row["confidence"] = run->lineage().confidence;
+        row["freshness"] = run->lineage().freshness;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per principal for the zetta_principals system table — the
+// authenticated actors (ENT-20). Sourced from Node::principals(): identity + kind
+// + created + how many access keys it owns; the keys themselves are zetta_keys.
+std::vector<nlohmann::json> principal_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& principal : node.principals()) {
+        nlohmann::json row;
+        row["principal_id"] = principal->id();
+        row["name"] = principal->name();
+        row["kind"] = std::string(to_string(principal->kind()));
+        row["created"] = principal->created();
+        row["key_count"] = static_cast<int>(principal->key_count());
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per access key for the zetta_keys system table — the credentials
+// the principals own (ENT-21/22), the queryable read view of the Admin panel. Each
+// key's reach is two human-readable strings: its `scope` (the resources it may
+// touch — "*" for an unrestricted/admin key) and its `capabilities` (the rights it
+// may exercise, each "<domain>:<action>", with an "@<ttl>" suffix when TTL'd). A
+// key record holds no secret material (scope + capabilities only), so this exposes
+// nothing the Admin panel doesn't already show.
+std::vector<nlohmann::json> access_key_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& principal : node.principals()) {
+        for (const auto& key : principal->keys()) {
+            std::vector<std::string> scope_parts;
+            const Scope& scope = key->scope();
+            if (scope.unrestricted) {
+                scope_parts.push_back("*");
+            } else {
+                for (const Resource& resource : scope.grants) {
+                    scope_parts.push_back(std::string(to_string(resource.kind)) +
+                                          ":" + resource.name);
+                }
+            }
+            std::vector<std::string> capability_parts;
+            for (const Capability& capability : key->capabilities().grants) {
+                std::string text = std::string(to_string(capability.domain)) + ":" +
+                                   capability.action;
+                if (!capability.expires_at.empty()) text += "@" + capability.expires_at;
+                capability_parts.push_back(std::move(text));
+            }
+            nlohmann::json row;
+            row["key_id"] = key->id();
+            row["principal_id"] = key->principal_id();
+            row["principal"] = principal->name();
+            row["unrestricted"] = scope.unrestricted;
+            row["scope"] = join_comma(scope_parts);
+            row["capabilities"] = join_comma(capability_parts);
+            row["created"] = key->created();
+            rows.push_back(std::move(row));
+        }
+    }
+    return rows;
+}
+
+// One JSON row per audit event for the zetta_audit system table — the immutable,
+// append-only audit trail (ENT-23 / FEAT-9), the queryable read view of the Admin
+// panel's audit log. Sourced from Node::audit_events() (chronological).
+std::vector<nlohmann::json> audit_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& event : node.audit_events()) {
+        nlohmann::json row;
+        row["audit_id"] = event->id();
+        row["action"] = std::string(to_string(event->action()));
+        row["actor"] = event->actor();
+        row["target"] = event->target();
+        row["allowed"] = event->allowed();
+        row["detail"] = event->detail();
+        row["time"] = event->time();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// Apply a SELECT's WHERE + projection to in-memory rows (used by the system
+// table; regular tables stream straight from the storage engine).
 QueryResult select_over_rows(const SelectStmt& statement,
                              const std::vector<nlohmann::json>& source) {
     QueryResult result;
     if (!statement.all) result.columns = statement.columns;
     for (const nlohmann::json& row : source) {
-        if (statement.where) {
-            if (!row.contains(statement.where->column) ||
-                row.at(statement.where->column) != statement.where->value) {
-                continue;
-            }
-        }
+        if (!row_matches(row, statement.where)) continue;
         if (statement.all) {
             result.rows.push_back(row);
         } else {
@@ -185,6 +431,225 @@ QueryResult select_over_rows(const SelectStmt& statement,
             }
             result.rows.push_back(std::move(projected));
         }
+    }
+    result.message = "SELECT " + std::to_string(result.rows.size());
+    return result;
+}
+
+// --- GROUP BY via the DDF engine --------------------------------------------
+//
+// An aggregating SELECT runs through the DDF DataFrame engine: the referenced
+// numeric columns are loaded into a DataFrame (scan), WHERE is applied via
+// ddf::filter, ddf::group_by computes the per-group aggregates, and the columnar
+// result is materialized back into query rows. The DataFrame is numeric only, so a
+// grouped query over a non-numeric column returns a clear error. This builds the
+// already-validated DDF spec types directly (GroupBySpec / FilterPredicate); it
+// introduces no new JSON boundary — the SQL is validated by the parser and the DDF
+// types carry their own boundaries.
+
+// Whether a DDF column dtype is an integer type (so a whole-number value is emitted
+// as a JSON integer rather than a float).
+bool is_integer_dtype(compute::DataType dtype) {
+    switch (dtype) {
+        case compute::DataType::Int32:
+        case compute::DataType::Int64:
+        case compute::DataType::UInt32:
+        case compute::DataType::UInt64:
+        case compute::DataType::UInt8:
+            return true;
+        case compute::DataType::Float32:
+        case compute::DataType::Float64:
+            return false;
+    }
+    return false;
+}
+
+// A numeric result as JSON: a whole-number value of an integer column comes back as
+// a JSON integer; everything else (means, floats, non-integral values) as a double
+// — so result rows read naturally (`segment: 1`, not `segment: 1.0`).
+nlohmann::json number_json(double value, bool integral) {
+    if (integral && std::isfinite(value) && std::floor(value) == value &&
+        value >= -9.2e18 && value <= 9.2e18) {
+        return nlohmann::json(static_cast<std::int64_t>(value));
+    }
+    return nlohmann::json(value);
+}
+
+// Map the AST aggregate function to the DDF engine's op (Avg -> Mean).
+ddf::AggregateOp ddf_op_of(AggregateFunc func) {
+    switch (func) {
+        case AggregateFunc::Count: return ddf::AggregateOp::Count;
+        case AggregateFunc::Sum:   return ddf::AggregateOp::Sum;
+        case AggregateFunc::Min:   return ddf::AggregateOp::Min;
+        case AggregateFunc::Max:   return ddf::AggregateOp::Max;
+        case AggregateFunc::Avg:   return ddf::AggregateOp::Mean;
+    }
+    return ddf::AggregateOp::Count;
+}
+
+// Map the AST comparison to the DDF filter comparison (the two sets line up 1:1).
+ddf::Comparison ddf_comparison_of(CompareOp op) {
+    switch (op) {
+        case CompareOp::Equal:        return ddf::Comparison::Equal;
+        case CompareOp::NotEqual:     return ddf::Comparison::NotEqual;
+        case CompareOp::Less:         return ddf::Comparison::Less;
+        case CompareOp::LessEqual:    return ddf::Comparison::LessEqual;
+        case CompareOp::Greater:      return ddf::Comparison::Greater;
+        case CompareOp::GreaterEqual: return ddf::Comparison::GreaterEqual;
+    }
+    return ddf::Comparison::Equal;
+}
+
+// One materialized output column of a grouped SELECT, in select order.
+struct OutputColumn {
+    std::string name;                       // result column name
+    std::optional<std::size_t> aggregate;   // index into the result's aggregates;
+                                            //   nullopt => the grouping key
+    AggregateFunc func = AggregateFunc::Count;  // decides integrality, for aggregates
+    std::string column;                     // the aggregated source column
+};
+
+QueryResult execute_grouped(const SelectStmt& s, Table& table) {
+    // The DDF engine groups by exactly one numeric key column.
+    if (s.group_by.size() != 1) {
+        return error("GROUP BY supports exactly one key column");
+    }
+    const std::string& key = s.group_by.front();
+
+    // Validate the WHERE: the DDF filter is numeric, so the predicate value must be
+    // a number (string/bool/null predicates are not supported in the grouped path).
+    if (s.where && !s.where->value.is_number()) {
+        return error("GROUP BY queries support only numeric WHERE predicates");
+    }
+
+    // Build the DDF group-by spec and the ordered output plan from the select list.
+    // A non-aggregated select column must be the grouping key (standard SQL); a
+    // duplicate output name is rejected (use AS to disambiguate).
+    ddf::GroupBySpec spec;
+    spec.key = key;
+    std::vector<OutputColumn> plan;
+    std::unordered_set<std::string> output_names;
+    std::unordered_set<std::string> referenced{key};
+    for (const GroupedItem& item : s.items) {
+        if (item.aggregate) {
+            ddf::Aggregate aggregate;
+            aggregate.op = ddf_op_of(item.aggregate->func);
+            aggregate.column = item.aggregate->column;
+            aggregate.output = item.alias;  // empty => the DDF default name
+            const std::string name = aggregate.output_name();
+            if (!output_names.insert(name).second) {
+                return error("duplicate output column \"" + name +
+                             "\" (use AS to rename)");
+            }
+            if (!aggregate.column.empty()) referenced.insert(aggregate.column);
+            plan.push_back({name, spec.aggregates.size(), item.aggregate->func,
+                            aggregate.column});
+            spec.aggregates.push_back(std::move(aggregate));
+        } else {
+            if (item.column != key) {
+                return error("column \"" + item.column +
+                             "\" must appear in GROUP BY or be aggregated");
+            }
+            const std::string name = item.alias.empty() ? item.column : item.alias;
+            if (!output_names.insert(name).second) {
+                return error("duplicate output column \"" + name + "\"");
+            }
+            plan.push_back({name, std::nullopt, AggregateFunc::Count, item.column});
+        }
+    }
+    if (s.where) referenced.insert(s.where->column);
+
+    QueryResult result;
+    for (const OutputColumn& column : plan) result.columns.push_back(column.name);
+
+    // An empty table aggregates to no rows (Postgres-compatible) — short-circuit
+    // before touching the DDF engine.
+    const StorageEngine& store = table.store();
+    if (store.size() == 0) {
+        result.message = "SELECT 0";
+        return result;
+    }
+
+    // Resolve each referenced column's dtype from the table's dense numeric fields.
+    // A column that is missing or not dense-numeric can't be a DDF column.
+    const ddf::DataFrameSchema inferred = ddf::infer_schema(store);
+    ddf::DataFrameSchema schema;
+    std::unordered_map<std::string, compute::DataType> dtypes;
+    for (const std::string& name : referenced) {
+        const ddf::ColumnSchema* found = nullptr;
+        for (const ddf::ColumnSchema& column : inferred.columns) {
+            if (column.name == name) {
+                found = &column;
+                break;
+            }
+        }
+        if (found == nullptr) {
+            return error("column \"" + name +
+                         "\" is not a dense numeric column — GROUP BY runs over the "
+                         "DDF engine, which operates on numeric columns only");
+        }
+        schema.columns.push_back(*found);
+        dtypes.emplace(name, found->dtype);
+    }
+
+    // Scan the table into a DataFrame on a CPU device, filter (WHERE), then group.
+    compute::CpuDevice device;
+    ddf::DataFrameResult loaded = ddf::load_data_frame(store, schema, device);
+    if (!loaded.ok()) {
+        return error("GROUP BY scan failed: " + loaded.status.message);
+    }
+    ddf::DataFrame frame = std::move(loaded.frame);
+
+    if (s.where) {
+        ddf::FilterPredicate predicate;
+        predicate.column = s.where->column;
+        predicate.comparison = ddf_comparison_of(s.where->op);
+        predicate.value = s.where->value.get<double>();
+        ddf::DataFrameResult filtered = ddf::filter(frame, predicate);
+        if (!filtered.ok()) {
+            return error("GROUP BY filter failed: " + filtered.status.message);
+        }
+        frame = std::move(filtered.frame);
+    }
+
+    // No surviving rows -> no groups (and avoids grouping an empty frame).
+    if (frame.row_count() == 0) {
+        result.message = "SELECT 0";
+        return result;
+    }
+
+    const ddf::GroupByOutcome outcome = ddf::group_by(frame, spec);
+    if (!outcome.ok()) {
+        return error("GROUP BY failed: " + outcome.status.message);
+    }
+    const ddf::GroupByResult& grouped = outcome.result;
+
+    // Materialize one row per group, columns in select order. Integer columns emit
+    // whole numbers as JSON integers; means and float columns stay doubles.
+    const bool key_integral = is_integer_dtype(dtypes.at(key));
+    for (std::size_t group = 0; group < grouped.keys.size(); ++group) {
+        nlohmann::json row = nlohmann::json::object();
+        for (const OutputColumn& column : plan) {
+            if (!column.aggregate) {
+                row[column.name] = number_json(grouped.keys[group], key_integral);
+                continue;
+            }
+            const double value = grouped.values[*column.aggregate][group];
+            bool integral = false;
+            switch (column.func) {
+                case AggregateFunc::Count:
+                    integral = true;
+                    break;
+                case AggregateFunc::Avg:
+                    integral = false;
+                    break;
+                default:  // Sum / Min / Max inherit the source column's integrality
+                    integral = is_integer_dtype(dtypes.at(column.column));
+                    break;
+            }
+            row[column.name] = number_json(value, integral);
+        }
+        result.rows.push_back(std::move(row));
     }
     result.message = "SELECT " + std::to_string(result.rows.size());
     return result;
@@ -298,6 +763,9 @@ QueryResult Executor::execute(const Statement& stmt,
                 // Virtual `system` database (computed, read-only).
                 if (const std::string sys = system_table_of(s.table);
                     !sys.empty()) {
+                    if (s.grouped()) {
+                        return error("GROUP BY is not supported over system tables");
+                    }
                     if (sys == kDeploymentsTable) {
                         return select_over_rows(s, deployment_rows(node_));
                     }
@@ -307,12 +775,33 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kJobsTable) {
                         return select_over_rows(s, compute_job_rows(node_));
                     }
+                    if (sys == kCloudProvidersTable) {
+                        return select_over_rows(s, cloud_provider_rows());
+                    }
+                    if (sys == kCloudStatusTable) {
+                        return select_over_rows(s, cloud_status_rows(node_));
+                    }
+                    if (sys == kRunsTable) {
+                        return select_over_rows(s, run_rows(node_));
+                    }
+                    if (sys == kPrincipalsTable) {
+                        return select_over_rows(s, principal_rows(node_));
+                    }
+                    if (sys == kKeysTable) {
+                        return select_over_rows(s, access_key_rows(node_));
+                    }
+                    if (sys == kAuditTable) {
+                        return select_over_rows(s, audit_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
                                      "system.zetta_deployments, "
-                                     "system.zetta_models, or "
-                                     "system.zetta_jobs)");
+                                     "system.zetta_models, system.zetta_jobs, "
+                                     "system.zetta_runs, system.zetta_principals, "
+                                     "system.zetta_keys, system.zetta_audit, "
+                                     "system.zetta_cloud_providers, or "
+                                     "system.zetta_cloud_status)");
                     }
                     if (!cluster_) {
                         return error("system.zetta_nodes is unavailable here "
@@ -329,17 +818,14 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
+                // An aggregating SELECT (GROUP BY) runs through the DDF engine.
+                if (s.grouped()) return execute_grouped(s, *table);
                 QueryResult r;
                 if (!s.all) r.columns = s.columns;
                 const StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const nlohmann::json& row = store.at(i);
-                    if (s.where) {
-                        if (!row.contains(s.where->column) ||
-                            row.at(s.where->column) != s.where->value) {
-                            continue;
-                        }
-                    }
+                    if (!row_matches(row, s.where)) continue;
                     if (s.all) {
                         r.rows.push_back(row);
                     } else {

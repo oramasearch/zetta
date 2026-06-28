@@ -1,0 +1,276 @@
+{
+  "$defs": {
+    "aws_identity": {
+      "properties": {
+        "Account": {
+          "type": "string"
+        },
+        "Arn": {
+          "type": "string"
+        },
+        "UserId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "Account",
+        "Arn"
+      ],
+      "type": "object"
+    },
+    "aws_regions": {
+      "properties": {
+        "Regions": {
+          "items": {
+            "properties": {
+              "RegionName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "RegionName"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "Regions"
+      ],
+      "type": "object"
+    },
+    "azure_account": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "user": {
+          "properties": {
+            "name": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id"
+      ],
+      "type": "object"
+    },
+    "azure_locations": {
+      "items": {
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "gcp_config": {
+      "properties": {
+        "core": {
+          "properties": {
+            "account": {
+              "type": "string"
+            },
+            "project": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "gcp_regions": {
+      "items": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "k8s_config": {
+      "properties": {
+        "clusters": {
+          "items": {
+            "properties": {
+              "cluster": {
+                "properties": {
+                  "server": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": {
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "current-context": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "k8s_nodes": {
+      "properties": {
+        "items": {
+          "items": {
+            "properties": {
+              "metadata": {
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "type": "object"
+    },
+    "oci_namespace": {
+      "properties": {
+        "data": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    },
+    "oci_regions": {
+      "properties": {
+        "data": {
+          "items": {
+            "properties": {
+              "name": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "data"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "authenticated": {
+      "type": "boolean"
+    },
+    "checked_at": {
+      "type": "string"
+    },
+    "commands": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "display": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "exit_code": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "output": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "display",
+          "ok"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "identity": {
+      "type": "string"
+    },
+    "locations": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "provider_id": {
+      "type": "string"
+    },
+    "provider_name": {
+      "type": "string"
+    },
+    "ran": {
+      "type": "boolean"
+    },
+    "reachable": {
+      "type": "boolean"
+    },
+    "resources": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "provider_id",
+    "ran",
+    "reachable",
+    "authenticated"
+  ],
+  "title": "zetta.CloudInspectReport",
+  "type": "object"
+}

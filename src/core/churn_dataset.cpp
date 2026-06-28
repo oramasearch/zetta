@@ -421,23 +421,34 @@ ChurnDatasetResult load_churn_dataset(const fs::path& dir, ChurnDataFormat forma
     return result;
 }
 
-nlohmann::json entity_resolution_attribute(const ChurnDataset& dataset) {
+nlohmann::json entity_resolution_attribute(const ChurnDataset& dataset,
+                                           ResolutionStrategy strategy) {
+    // The candidate directory: every account (name + brand drive the match; entity
+    // is the ground-truth label, account_id the resolution target).
+    std::vector<ResolutionCandidate> candidates;
+    candidates.reserve(dataset.accounts.size());
+    for (const ChurnAccount& account : dataset.accounts) {
+        candidates.push_back(
+            {account.account_id, account.name, account.brand, account.entity});
+    }
+
+    // The labeled mentions: each comms event's raw `mention` paired with the
+    // ground-truth `entity` of the account it truly belongs to. The resolver sees
+    // only the mention; the entity is held out for the gate.
     std::unordered_map<std::string, const ChurnAccount*> by_id;
     by_id.reserve(dataset.accounts.size());
     for (const ChurnAccount& account : dataset.accounts) {
         by_id.emplace(account.account_id, &account);
     }
-
-    nlohmann::json records = nlohmann::json::array();
+    std::vector<LabeledMention> mentions;
     for (const ChurnEvent& event : dataset.events) {
         if (event.mention.empty()) continue;  // only comms rows carry a mention
         const auto account_it = by_id.find(event.account_id);
         if (account_it == by_id.end()) continue;  // dangling reference; skip
-        records.push_back({{"mention", event.mention},
-                           {"entity", account_it->second->entity},
-                           {"resolved", account_it->second->account_id}});
+        mentions.push_back({event.mention, account_it->second->entity});
     }
-    return nlohmann::json{{"entity_resolution", {{"records", std::move(records)}}}};
+
+    return entity_resolution_annotation(candidates, mentions, strategy);
 }
 
 }  // namespace zetta

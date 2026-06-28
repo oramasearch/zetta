@@ -43,7 +43,7 @@ over the `connect→clean→model→index→serve→act` taxonomy:
 
 | Solution | Category | Shape |
 |---|---|---|
-| Customer Churn Prediction | Customer Intelligence | connect×2 → clean → model → serve → act |
+| Customer Churn Prediction | Customer Intelligence | connect×2 → clean → model → index → serve → act |
 | Product Recommendations | Personalization | connect → clean → model → index → serve |
 | Semantic Document Search | Search | connect → clean → index → serve |
 | Sales Lead Scoring | Revenue | connect → clean → model → serve |
@@ -54,6 +54,14 @@ schema + IR boundary validation** as any external catalog would (a test asserts 
 parses and every blueprint passes the gate). If the embedded data ever failed to
 parse, `builtin()` logs to `stderr` and degrades to an empty library rather than
 crashing the headed app.
+
+The churn blueprint's shape (connect×2 → clean → model → **index** → serve → act)
+**matches the real churn pipeline** the engine runs, so the same graph that deploys
+also runs end-to-end on the real engine — see *[Run on the real
+engine](#run-on-the-real-engine-churn)* below and
+[churn-solution.md](churn-solution.md). The `index` step is the
+[score / rank-at-risk](gbdt-score.md) stage; without it there would be no ranked
+list for the `act` (retention playbook) step to act on.
 
 ## Boundary validation (schema + IR)
 
@@ -110,7 +118,29 @@ between Query and Cluster. Its flow realizes one-button deploy:
 
 The panel adds **no new persisted state of its own** — it composes the existing
 catalog, gate, and `deploy_graph` pieces. The only new state is UI selection
-(`selected_solution_`, `deploy_placement_`, `deploy_status_`, `deploy_failed_`).
+(`selected_solution_`, `deploy_placement_`, `deploy_status_`, `deploy_failed_`)
+and the run result line (`churn_run_status_`, `churn_run_failed_`).
+
+### Run on the real engine (churn)
+
+`deploy_graph` records a *placement*; it does not train anything (the
+deploy → reconcile → run control plane records run shells with the stubbed
+`DefaultStepExecutor`). For the churn blueprint the panel also offers a **"Run on
+real engine"** action (`App::run_churn_demo`) that runs the actual
+featurize → train → explain → rank → playbook pipeline over a built-in demo dataset
+— the real [`ChurnStepExecutor`](churn-step-executor.md), not the stub. On success
+it shows the registered model's short id, the number of accounts ranked, and the
+top churn driver; the run also registers a real [Model](models.md) + recorded
+[ComputeJobs](compute-jobs.md) on the node, so the [Runs](runs.md) and
+[Jobs](jobs-panel.md) panels reflect it.
+
+The action is offered **only for the churn solution** (the only blueprint wired to a
+real pipeline today) and runs **synchronously on the UI thread** that owns the node
+— the same deliberate per-click pattern as the [Cloud Inspector](cloud-inspector.md).
+It spins up an **isolated single-node loopback `JobCoordinator`** for the run so the
+SPMD collectives are trivially single-node and never block on this node's real
+peers, then tears it down. The wiring it calls — `zetta::run_churn_solution` — is a
+reusable core surface; see [churn-solution.md](churn-solution.md).
 
 ## What's deferred (later slices)
 

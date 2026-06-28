@@ -43,10 +43,31 @@ INSERT INTO shop.items (sku, qty) VALUES ('A1', 5), ('B2', 3);
 
 SELECT * FROM shop.items;
 SELECT sku, qty FROM shop.items WHERE sku = 'A1';
+SELECT sku, qty FROM shop.items WHERE qty >= 3;
 ```
 
 Values: single-quoted strings (`''` escapes a quote), integers, decimals,
 optional leading `-`, `true` / `false` / `null`.
+
+### Aggregation (GROUP BY)
+
+A `SELECT … GROUP BY` runs through the **[DDF engine](ddf.md)** (ARC-12 /
+API-2): the table is loaded into a typed, columnar `DataFrame`, the `WHERE` is
+applied with the DDF `filter` op, and `group_by` computes the per-group
+aggregates, materialized back into result rows.
+
+```sql
+SELECT segment, SUM(amount), COUNT(*) FROM churn.events GROUP BY segment;
+SELECT segment, SUM(amount) AS total, MIN(amount), MAX(amount)
+  FROM churn.events WHERE amount >= 10 GROUP BY segment;
+SELECT segment, AVG(score) AS avg_score FROM churn.events GROUP BY segment;
+SELECT segment FROM churn.events GROUP BY segment;   -- distinct keys (no aggregate)
+```
+
+Aggregate functions: `COUNT(*)`, `SUM(col)`, `MIN(col)`, `MAX(col)`,
+`AVG(col)` / `MEAN(col)` (mapped to the DDF op set; `AVG` → `mean`). The default
+result-column name follows DDF's convention — `count`, `sum_amount`,
+`min_amount`, `mean_score`, … — overridable per item with `AS alias`.
 
 ## Semantics
 
@@ -54,7 +75,19 @@ optional leading `-`, `true` / `false` / `null`.
   `VALUES` tuple becomes one JSON row `{col: value, ...}`.
 - `SELECT *` returns whole rows; `SELECT a, b` projects to those keys (missing
   keys come back as `null`).
-- `WHERE` supports a single `column = value` equality.
+- `WHERE` supports a single `column <op> value` predicate, where `<op>` is one of
+  `=`, `!=` / `<>`, `<`, `<=`, `>`, `>=`. Equality/inequality work over any value;
+  the ordering comparisons apply numerically (numbers) or lexicographically
+  (strings). A row lacking the column never matches.
+- **`GROUP BY`** routes through the DDF engine: it groups by **exactly one
+  numeric key column** and aggregates the referenced numeric columns. Because the
+  DataFrame is numeric only, the grouping key, every aggregated column, and a
+  `WHERE` column must be **dense numeric** fields (present + numeric in every row);
+  otherwise the query returns a clear error. Integer columns return whole numbers
+  as JSON integers; means and float columns return doubles. Groups come back in
+  ascending key order. (Not supported over `system` tables — they are computed,
+  non-numeric rows.) Building a new table from a grouped result (`CREATE TABLE AS`)
+  is a later slice.
 - Statements run in order; the first failure stops the batch and is reported.
 
 ## The `system` database
@@ -129,6 +162,53 @@ slice (the scheduler), so until then `node` is "which node's registry you
 queried", not a placement assignment. Qualified name only (no bare alias), like
 `system.zetta_deployments`.
 
+Two more tables back the [Cloud Inspector](cloud-inspector.md).
+**`system.zetta_cloud_providers`** is the provider catalog as a table — **pure
+metadata, it reads nothing from any cloud**:
+
+```sql
+SELECT * FROM system.zetta_cloud_providers;
+SELECT name, runnable FROM system.zetta_cloud_providers WHERE requires_consent = true;
+```
+
+Columns: `provider`, `name`, `category`, `cli`, `requires_consent`, `runnable`,
+`config_paths`, `inspect_commands`. **`system.zetta_cloud_status`** is the cached
+results of consent-gated inspects (sourced from `Node::cloud_inspections()`):
+
+```sql
+SELECT provider, reachable, authenticated, identity FROM system.zetta_cloud_status;
+```
+
+Columns: `provider`, `name`, `reachable`, `authenticated`, `identity`, `regions`,
+`resources`, `commands_ok`, `commands_total`, `checked_at`, `detail`. **Querying
+it never triggers a cloud call** — it only reflects inspects the user already ran
+(and consented to) in the Cloud Inspector panel, so it is empty until then; the
+cache is ephemeral (in-memory, not replicated). Both are qualified-name only.
+
+Four more tables surface the run + governance state as read views (RULE-7 — the
+queryable counterpart of the GUI Runs / Admin panels, so SQL and the GUI never
+diverge), each computed at query time from the live `Node` accessors:
+
+- **`system.zetta_runs`** — the run registry (`Node::runs()`): one row per graph
+  execution. Columns: `run_id`, `project`, `graph`, `deployment`, `status`,
+  `created`, `updated`, `log_count`, `output_count`, `confidence`, `freshness`.
+- **`system.zetta_principals`** — the authenticated actors (`Node::principals()`).
+  Columns: `principal_id`, `name`, `kind`, `created`, `key_count`.
+- **`system.zetta_keys`** — the access keys the principals own. Columns: `key_id`,
+  `principal_id`, `principal`, `unrestricted`, `scope`, `capabilities`, `created`.
+  `scope` + `capabilities` are readable strings (`project:churn`,
+  `orchestration:start_run`, an `@<ttl>` suffix when time-bounded); a key record
+  carries no secret material, so this exposes nothing the Admin panel doesn't.
+- **`system.zetta_audit`** — the immutable audit trail (`Node::audit_events()`).
+  Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`.
+
+```sql
+SELECT run_id, status FROM system.zetta_runs WHERE status = 'failed';
+SELECT action, actor, target FROM system.zetta_audit WHERE allowed = false;
+```
+
+All four are qualified-name only.
+
 Future system tables slot into the same database — notably **`system.zetta_leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).
@@ -143,9 +223,11 @@ magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
 
 ## Limitations (today)
 
-Single-equality `WHERE` only; no joins, ordering, aggregation, `UPDATE`,
-`DELETE`, or multi-table queries; column types are parsed but not stored or
-enforced. These land behind the same AST/executor seam.
+`WHERE` is a single-column predicate (no `AND`/`OR`); `GROUP BY` takes exactly
+one numeric key (no multi-key grouping, `HAVING`, or aggregating over `system`
+tables); no joins, ordering (`ORDER BY`), `UPDATE`, `DELETE`, multi-table queries,
+or `CREATE TABLE AS`; column types are parsed but not stored or enforced. These
+land behind the same AST/executor seam.
 
 ## Adding a dialect
 
