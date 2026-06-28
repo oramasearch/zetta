@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/churn_dataset.hpp"
+#include "zetta/churn_solution.hpp"  // the canonical churn encoding (reused, not copied)
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/featurize.hpp"
 #include "zetta/ml/gbdt.hpp"
@@ -80,23 +81,16 @@ private:
 // use. A custom dataset directory (load_churn_dataset) can override it in a case.
 ChurnDataset sample_churn_dataset();
 
-// The churn dataset encoded into the two numeric DDF input shards the pipeline
-// operates on (string ids / ISO dates / categorical event types -> the numeric
-// columns the schemas name), plus the as-of cutoff as a day-of-year. Mirrors the
-// encoding the GBDT / pipeline test suites use.
-struct ChurnNumeric {
-    std::vector<nlohmann::json> events;    // entity, ts, value, type
-    std::vector<nlohmann::json> accounts;  // entity, mrr, seats, tenure_days, churned
-    std::int64_t as_of = 0;
-    std::map<std::string, std::int64_t> entity_index;  // account_id -> entity key
-};
-ChurnNumeric encode_churn(const ChurnDataset& dataset);
+// The churn numeric encoding (a ChurnDataset -> the two numeric DDF input shards)
+// and the standard pipeline schemas / featurize spec are the **canonical** ones in
+// `zetta/churn_solution.hpp` (`zetta::encode_churn_dataset` -> `ChurnNumericShards`,
+// `zetta::churn_events_schema` / `churn_accounts_schema` / `churn_featurize_spec`).
+// The testkit reuses those directly rather than carrying its own copy — see
+// docs/test-suite.md. Only the testkit-specific extras live here:
 
-// The schemas + specs the encoded shards feed (the churn featurization graph + GBDT
-// knobs the pipeline uses). Exposed so the ML and pipeline cases share one source.
-ddf::DataFrameSchema churn_events_schema();
-ddf::DataFrameSchema churn_accounts_schema();
-ddf::FeaturizeSpec churn_featurize_spec(std::int64_t as_of);
+// A GBDT param set with the testkit's tunable knobs (the cases expose trees / depth
+// / bins / learning-rate options); `zetta::default_churn_gbdt_params()` is the
+// no-argument default.
 ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
                                  double learning_rate);
 
