@@ -1,0 +1,838 @@
+#include "gui/app.hpp"
+#include "gui/app_internal.hpp"
+
+#include "zetta/churn_solution.hpp"
+#include "zetta/cluster.hpp"
+#include "zetta/compute/cpu_device.hpp"
+#include "zetta/compute/job_coordinator.hpp"
+#include "zetta/deployment.hpp"
+#include "zetta/deployment_target.hpp"
+#include "zetta/gate.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/serialization.hpp"
+#include "zetta/ir/step_kind.hpp"
+#include "zetta/node.hpp"
+#include "zetta/project.hpp"
+#include "zetta/project_graph.hpp"
+#include "zetta/solution_catalog.hpp"
+#include "zetta/validation.hpp"
+
+#include <imgui.h>
+#include <imgui_stdlib.h>
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cfloat>
+#include <cmath>
+#include <cstddef>
+#include <memory>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace zetta::gui {
+namespace {
+
+// The gate status as an uppercase badge ("PASS" / "WARN" / "FAIL").
+std::string status_badge(CheckStatus status) {
+    std::string text = to_string(status);
+    for (char& character : text) {
+        character =
+            static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    }
+    return text;
+}
+
+// The text colour for a check status.
+ImVec4 status_color(CheckStatus status) {
+    switch (status) {
+        case CheckStatus::Pass: return kPassColor;
+        case CheckStatus::Warn: return kWarnColor;
+        case CheckStatus::Fail: return kFailColor;
+    }
+    return kFailColor;
+}
+
+// Graph-workspace canvas palette (ImU32, for the window draw list) — light
+// cards on the Orama canvas. Nodes are white boxes with hairline borders laid
+// out in columns by StepKind; the selected node gets a coral border (the "you
+// are here" accent). Edges are gray lines (data) / amber (control).
+constexpr ImU32 kCanvasHeaderColor = IM_COL32(95, 95, 92, 255);      // ink-muted
+constexpr ImU32 kNodeFill = IM_COL32(255, 255, 255, 255);           // white
+constexpr ImU32 kNodeFillHover = IM_COL32(242, 242, 240, 255);      // wash
+constexpr ImU32 kNodeFillSelected = IM_COL32(247, 238, 239, 255);   // coral wash
+constexpr ImU32 kNodeBorder = IM_COL32(224, 224, 224, 255);         // border
+constexpr ImU32 kNodeBorderSelected = IM_COL32(226, 84, 90, 255);   // coral
+constexpr ImU32 kNodeTextColor = IM_COL32(28, 28, 26, 255);         // ink-primary
+constexpr ImU32 kDataEdgeColor = IM_COL32(150, 150, 146, 220);      // gray line
+constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
+
+}  // namespace
+
+void App::draw_gate() {
+    ImGui::SeparatorText("Correctness gate");
+    ImGui::TextDisabled(
+        "Validate an execution graph before deploy. RULE-1: no deploy without a "
+        "passing gate.");
+
+    // Graph source. Fill a preset, load a stored graph from the selected
+    // project, or edit the IR JSON directly below. ir::from_json validates the
+    // document at the boundary, so a malformed graph is rejected with a reason.
+    if (ImGui::SmallButton("Passing example")) {
+        gate_graph_input_ = kExampleGraphJson;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Empty (fails)")) {
+        gate_graph_input_ = kEmptyGraphJson;
+    }
+
+    // Load a graph from the selected project's stored graphs (the real
+    // ProjectGraph data path), when the project has any.
+    if (const auto project = node_.find_project(selected_project_)) {
+        const std::vector<std::string> graph_names = project->graph_names();
+        if (!graph_names.empty()) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+            if (ImGui::BeginCombo("##loadgraph", "Load from project…")) {
+                for (const std::string& name : graph_names) {
+                    if (ImGui::Selectable(name.c_str())) {
+                        if (const auto graph = project->find_graph(name)) {
+                            gate_graph_input_ =
+                                ir::to_json(graph->graph()).dump(2);
+                        }
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        }
+    }
+
+    ImGui::InputTextMultiline("##gategraph", &gate_graph_input_,
+                              ImVec2(-FLT_MIN, ImGui::GetTextLineHeight() * 8));
+
+    if (primary_button("Run gate")) {
+        gate_error_.clear();
+        gate_report_.reset();
+        // Parse + validate at the boundary without exceptions: a malformed
+        // document yields a reason we show inline, never a thrown stack trace.
+        auto document = nlohmann::json::parse(gate_graph_input_, nullptr,
+                                              /*allow_exceptions=*/false);
+        if (document.is_discarded()) {
+            gate_error_ = "invalid JSON, could not parse the graph";
+        } else {
+            std::string parse_error;
+            std::optional<ir::ExecutionGraph> graph =
+                ir::from_json(document, &parse_error);
+            if (!graph) {
+                gate_error_ = "invalid graph: " + parse_error;
+            } else {
+                gate_report_ = std::make_unique<ValidationReport>(
+                    default_gate().run(*graph));
+            }
+        }
+    }
+
+    if (!gate_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", gate_error_.c_str());
+    }
+
+    if (!gate_report_) return;
+    const ValidationReport& report = *gate_report_;
+
+    // The block-on-fail banner is the headline state this panel exists to show.
+    ImGui::Spacing();
+    if (report.block_deploy) {
+        std::size_t failures = 0;
+        for (const CheckResult& check : report.checks) {
+            if (check.status == CheckStatus::Fail) ++failures;
+        }
+        ImGui::TextColored(kFailColor,
+                           "Deploy blocked: %zu check(s) failed (verdict: %s)",
+                           failures, to_string(report.verdict()).c_str());
+    } else {
+        ImGui::TextColored(kPassColor,
+                           "Deploy allowed: gate passed (verdict: %s)",
+                           to_string(report.verdict()).c_str());
+    }
+
+    // Per-check results: the check, its pass/warn/fail status, and the
+    // human-readable reason (never a stack trace).
+    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
+                                        ImGuiTableFlags_RowBg |
+                                        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("gate_checks", 3, table_flags)) {
+        ImGui::TableSetupColumn("Check", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+        ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch,
+                                0.15f);
+        ImGui::TableSetupColumn("Reason", ImGuiTableColumnFlags_WidthStretch,
+                                0.55f);
+        ImGui::TableHeadersRow();
+        for (const CheckResult& check : report.checks) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(check.name.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextColored(status_color(check.status), "%s",
+                               status_badge(check.status).c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TextWrapped("%s", check.reason.c_str());
+        }
+        ImGui::EndTable();
+    }
+    if (report.checks.empty()) {
+        ImGui::TextDisabled("(the gate ran no checks)");
+    }
+}
+
+void App::draw_deploy() {
+    ImGui::SeparatorText("Deploy");
+    ImGui::TextDisabled(
+        "Pick an AI solution, choose where to run it, and deploy. The "
+        "correctness gate must pass first; no deploy without it.");
+
+    const SolutionCatalog& catalog = SolutionCatalog::builtin();
+
+    // 1) Solution picker — the AI Solution Library blueprints (the GUI's source
+    //    of deployable graphs until a graph editor lands). Selection is by id.
+    const Solution* selected = catalog.find(selected_solution_);
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##solution",
+                          selected ? selected->name.c_str()
+                                   : "Select an AI solution...")) {
+        for (const Solution& solution : catalog.solutions()) {
+            const bool is_selected = solution.id == selected_solution_;
+            if (ImGui::Selectable(solution.name.c_str(), is_selected)) {
+                selected_solution_ = solution.id;
+                deploy_status_.clear();
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s · %s", solution.category.c_str(),
+                                  solution.summary.c_str());
+            }
+            if (is_selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    selected = catalog.find(selected_solution_);
+    if (selected) {
+        ImGui::TextDisabled("%s · %zu steps · %zu edges",
+                            selected->category.c_str(),
+                            selected->graph.node_count(),
+                            selected->graph.edge_count());
+    }
+
+    // 2) Placement dial — the local→kubernetes→vpc→cloud progression. R1 ships
+    //    Local only; the rest are shown disabled and labelled "(planned)" so the
+    //    dial communicates the roadmap without being choosable. The combo index
+    //    mirrors DeploymentKind's declaration order; deploy still guards on Local.
+    static constexpr std::array<DeploymentKind, 4> kDial{
+        DeploymentKind::Local, DeploymentKind::Kubernetes, DeploymentKind::Vpc,
+        DeploymentKind::Cloud};
+    const auto dial_label = [](DeploymentKind kind) -> std::string {
+        std::string label = to_string(kind);
+        if (!label.empty()) label[0] = static_cast<char>(std::toupper(label[0]));
+        return kind == DeploymentKind::Local ? label : label + " (planned)";
+    };
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo("##placement",
+                          dial_label(kDial[deploy_placement_]).c_str())) {
+        for (int index = 0; index < static_cast<int>(kDial.size()); ++index) {
+            const bool functional = kDial[index] == DeploymentKind::Local;
+            ImGui::BeginDisabled(!functional);
+            const bool is_selected = index == deploy_placement_;
+            if (ImGui::Selectable(dial_label(kDial[index]).c_str(),
+                                  is_selected)) {
+                deploy_placement_ = index;
+                deploy_status_.clear();
+            }
+            ImGui::EndDisabled();
+            if (is_selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    // 3) One-button deploy: run the correctness gate (RULE-1 — no deploy without
+    //    a passing gate), then place the blueprint onto the chosen target.
+    ImGui::BeginDisabled(selected == nullptr);
+    if (primary_button("Deploy")) {
+        const ir::ExecutionGraph& graph = selected->graph;
+        const ValidationReport report = default_gate().run(graph);
+        if (report.block_deploy) {
+            std::string reason;
+            for (const CheckResult& check : report.checks) {
+                if (check.status == CheckStatus::Fail) {
+                    reason = check.name + ": " + check.reason;
+                    break;
+                }
+            }
+            deploy_failed_ = true;
+            deploy_status_ = "Gate blocked deploy: " +
+                             (reason.empty() ? "graph failed validation" : reason);
+        } else {
+            const DeploymentTarget target{kDial[deploy_placement_], {}, {}};
+            const std::shared_ptr<Deployment> deployment =
+                node_.deploy_graph(graph, target, selected->name);
+            if (deployment) {
+                deploy_failed_ = false;
+                deploy_status_ = "Deployed \"" + selected->name + "\" to " +
+                                 to_string(target.kind) + " (deployment " +
+                                 deployment->id().substr(0, 8) + ")";
+            } else {
+                deploy_failed_ = true;
+                deploy_status_ =
+                    target.is_local()
+                        ? "Deploy failed: the gate passed but placement was "
+                          "rejected"
+                        : "Deploy failed: only the local target is available "
+                          "in R1";
+            }
+        }
+    }
+    ImGui::EndDisabled();
+    if (!deploy_status_.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(deploy_failed_ ? kErrorColor : kSuccessColor, "%s",
+                           deploy_status_.c_str());
+    }
+
+    // 3b) Run on the real engine — the churn solution actually trains a Model,
+    //     ranks the at-risk accounts, and explains the drivers (FEAT-4 / UC-1,
+    //     #398). Only the churn blueprint maps to the real churn pipeline today, so
+    //     the action is offered only for it; it runs over a built-in demo dataset.
+    if (selected != nullptr && selected->id == "churn-prediction") {
+        ImGui::Spacing();
+        if (primary_button("Run on real engine")) {
+            run_churn_demo();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("trains a real model on a built-in demo dataset");
+        if (!churn_run_status_.empty()) {
+            ImGui::TextColored(churn_run_failed_ ? kErrorColor : kSuccessColor,
+                               "%s", churn_run_status_.c_str());
+        }
+    }
+
+    // 4) Deployment status — the recorded placements (acceptance: "see its
+    //    status"). Sourced from the replicated deployments() list.
+    ImGui::SeparatorText("Deployments");
+    const std::vector<std::shared_ptr<Deployment>> deployments =
+        node_.deployments();
+    if (deployments.empty()) {
+        ImGui::TextDisabled("(none yet)");
+        return;
+    }
+    const ImGuiTableFlags table_flags =
+        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("deployments", 5, table_flags)) {
+        ImGui::TableSetupColumn("Graph");
+        ImGui::TableSetupColumn("Target");
+        ImGui::TableSetupColumn("Steps");
+        ImGui::TableSetupColumn("Edges");
+        ImGui::TableSetupColumn("Created");
+        ImGui::TableHeadersRow();
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        for (const std::shared_ptr<Deployment>& deployment : deployments) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(deployment->graph_name().c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextUnformatted(to_string(deployment->target().kind).c_str());
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%zu", deployment->node_count());
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%zu", deployment->edge_count());
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TextUnformatted(deployment->created().c_str());
+        }
+        if (mono_font_) ImGui::PopFont();
+        ImGui::EndTable();
+    }
+}
+
+void App::run_churn_demo() {
+    const Solution* selected = SolutionCatalog::builtin().find(selected_solution_);
+    if (selected == nullptr || selected->id != "churn-prediction") {
+        churn_run_failed_ = true;
+        churn_run_status_ = "Select the churn solution to run it.";
+        return;
+    }
+
+    // Run on an ISOLATED single-node loopback cluster + coordinator so the SPMD
+    // collectives are trivially single-node and never block on this node's real
+    // peers. The Model + jobs + Run still register on the App's node_ (so the Runs /
+    // Jobs / Admin panels reflect them). Synchronous on the UI thread that owns the
+    // node — the same deliberate per-click pattern as run_cloud_inspect.
+    ClusterConfig compute_cfg;
+    compute_cfg.listen_host = "127.0.0.1";
+    compute_cfg.listen_port = 47000;
+    compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse it)
+    Cluster compute_cluster("churn-run", compute_cfg);
+    compute_cluster.start();
+    compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
+    coordinator.start();
+    compute::CpuDevice device;
+
+    ChurnSolutionOptions options;
+    options.project = "deploy-panel";
+    options.graph = "churn-prediction";
+    const ChurnSolutionResult result = run_churn_solution(
+        node_, coordinator, device, selected->graph, demo_churn_dataset(), options);
+    coordinator.stop();
+
+    if (!result.ok()) {
+        churn_run_failed_ = true;
+        churn_run_status_ = "Run failed: " +
+                            (result.execution.error.empty()
+                                 ? std::string("the churn pipeline did not complete")
+                                 : result.execution.error);
+        return;
+    }
+    churn_run_failed_ = false;
+    std::string line = "Trained model " + result.model_id.substr(0, 8) + " · " +
+                       std::to_string(result.ranked.size()) + " accounts ranked";
+    if (!result.top_driver.empty()) line += " · top driver: " + result.top_driver;
+    churn_run_status_ = line;
+}
+
+void App::open_graph(const ProjectGraph& stored) {
+    // A fresh working copy: edits apply here and only land in the IR on Save, so
+    // an edit is a deliberate, atomic act (and Revert is just "drop this copy").
+    editing_graph_ = std::make_unique<ir::ExecutionGraph>(stored.graph());
+    selected_graph_ = stored.name();
+    graph_loaded_id_ = stored.id();
+    graph_dirty_ = false;
+    selected_node_id_.clear();
+    graph_error_.clear();
+    rename_graph_input_ = stored.name();
+    rename_node_input_.clear();
+    add_node_name_input_.clear();
+    add_edge_from_.clear();
+    add_edge_to_.clear();
+}
+
+void App::draw_graph_workspace() {
+    ImGui::SeparatorText("Graph workspace");
+
+    // The workspace edits the *currently selected* project's graphs (the same
+    // selection the explorer's Projects column drives). Re-resolved by name each
+    // frame so a dropped/renamed project never leaves a dangling handle.
+    const auto project = node_.find_project(selected_project_);
+    if (!project) {
+        editing_graph_.reset();
+        graph_panel_project_.clear();
+        selected_graph_.clear();
+        ImGui::TextDisabled("Select a project to view its execution graphs.");
+        return;
+    }
+
+    // When the selected project changes, drop any open working copy so we never
+    // show one project's graph under another.
+    if (graph_panel_project_ != project->id()) {
+        graph_panel_project_ = project->id();
+        editing_graph_.reset();
+        selected_graph_.clear();
+        graph_loaded_id_.clear();
+        selected_node_id_.clear();
+        graph_dirty_ = false;
+        graph_error_.clear();
+    }
+
+    // --- graph list + create ----------------------------------------------
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);
+    const bool submit = ImGui::InputTextWithHint(
+        "##newgraph", "new graph name", &new_graph_input_,
+        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ImGui::Button("New graph") || submit) {
+        if (new_graph_input_.empty()) {
+            graph_error_ = "graph name required";
+        } else if (auto created =
+                       project->create_graph(new_graph_input_, ir::ExecutionGraph{})) {
+            open_graph(*created);
+            new_graph_input_.clear();
+        } else {
+            graph_error_ = "a graph by that name already exists";
+        }
+    }
+
+    const std::vector<std::string> names = project->graph_names();
+    if (names.empty()) {
+        ImGui::TextDisabled("(this project has no graphs yet)");
+    }
+    for (const std::string& name : names) {
+        ImGui::PushID(name.c_str());
+        if (ImGui::SmallButton("x")) {
+            project->drop_graph(name);
+            if (selected_graph_ == name) {
+                editing_graph_.reset();
+                selected_graph_.clear();
+                graph_loaded_id_.clear();
+                selected_node_id_.clear();
+                graph_dirty_ = false;
+            }
+            ImGui::PopID();
+            continue;  // this name is gone; don't draw a selectable for it
+        }
+        ImGui::SameLine();
+        const bool is_open = editing_graph_ && selected_graph_ == name;
+        if (ImGui::Selectable(name.c_str(), is_open)) {
+            const auto stored = project->find_graph(name);
+            // Re-clicking the open graph keeps unsaved edits; opening a
+            // different one loads a fresh working copy (discarding edits).
+            if (stored && stored->id() != graph_loaded_id_) open_graph(*stored);
+        }
+        ImGui::PopID();
+    }
+
+    if (!editing_graph_) {
+        if (!graph_error_.empty()) {
+            ImGui::TextColored(kErrorColor, "%s", graph_error_.c_str());
+        }
+        ImGui::TextDisabled("Select or create a graph to view and edit it.");
+        return;
+    }
+
+    ImGui::Separator();
+    draw_graph_canvas();
+    draw_graph_editor(*project);
+}
+
+void App::draw_graph_canvas() {
+    ir::ExecutionGraph& graph = *editing_graph_;
+
+    const float font = ImGui::GetFontSize();
+    const float node_w = font * 9.0f;
+    const float node_h = font * 2.4f;
+    const float col_gap = font * 3.0f;
+    const float row_gap = font * 0.9f;
+    const float header_h = font * 1.8f;
+    const float pad = font * 0.6f;
+    const float rounding = font * 0.3f;
+
+    if (ImGui::BeginChild("##graph_canvas", ImVec2(0, font * 18.0f),
+                          ImGuiChildFlags_Borders,
+                          ImGuiWindowFlags_HorizontalScrollbar)) {
+        if (graph.empty()) {
+            ImGui::TextDisabled("(empty graph; add a step below)");
+        } else {
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            const ImVec2 origin = ImGui::GetCursorScreenPos();
+
+            // Pass 1: place each node in its StepKind column and remember its
+            // rect + center (so edges can be drawn between centers underneath).
+            struct Placed {
+                ImVec2 top_left;
+                ImVec2 bottom_right;
+                std::shared_ptr<ir::Node> node;
+            };
+            std::vector<Placed> placed;
+            std::unordered_map<std::string, ImVec2> center_of;
+            float content_right = origin.x;
+            float content_bottom = origin.y;
+
+            const auto kinds = ir::all_step_kinds();
+            for (std::size_t column = 0; column < kinds.size(); ++column) {
+                const float x =
+                    origin.x + static_cast<float>(column) * (node_w + col_gap);
+                // Column header as a mono uppercase eyebrow (the StepKind), the
+                // connect→…→act pipeline reading left to right.
+                const std::string header =
+                    to_upper(std::string{ir::to_string(kinds[column])});
+                const ImVec2 header_pos(x, origin.y);
+                if (mono_font_) {
+                    draw->AddText(mono_font_, ImGui::GetFontSize() * 0.92f,
+                                  header_pos, kCanvasHeaderColor, header.c_str());
+                } else {
+                    draw->AddText(header_pos, kCanvasHeaderColor, header.c_str());
+                }
+                float y = origin.y + header_h;
+                for (const auto& node : graph.nodes_of_kind(kinds[column])) {
+                    const ImVec2 top_left(x, y);
+                    const ImVec2 bottom_right(x + node_w, y + node_h);
+                    placed.push_back({top_left, bottom_right, node});
+                    center_of[node->id] =
+                        ImVec2(x + node_w * 0.5f, y + node_h * 0.5f);
+                    y += node_h + row_gap;
+                    content_bottom = std::max(content_bottom, y);
+                }
+                content_right = std::max(content_right, x + node_w);
+            }
+
+            // Pass 2: edges, clipped to each box's border with an arrowhead at
+            // the `to` end so direction reads even when an edge points backward.
+            const ImVec2 half(node_w * 0.5f, node_h * 0.5f);
+            const auto border_point = [&](ImVec2 center, ImVec2 toward) {
+                const ImVec2 d(toward.x - center.x, toward.y - center.y);
+                if (d.x == 0.0f && d.y == 0.0f) return center;
+                const float scale_x =
+                    d.x != 0.0f ? half.x / std::abs(d.x) : FLT_MAX;
+                const float scale_y =
+                    d.y != 0.0f ? half.y / std::abs(d.y) : FLT_MAX;
+                const float scale = std::min(scale_x, scale_y);
+                return ImVec2(center.x + d.x * scale, center.y + d.y * scale);
+            };
+            for (const ir::Edge& edge : graph.edges()) {
+                const auto from = center_of.find(edge.from);
+                const auto to = center_of.find(edge.to);
+                if (from == center_of.end() || to == center_of.end()) continue;
+                const ImU32 color = edge.kind == ir::EdgeKind::Control
+                                        ? kControlEdgeColor
+                                        : kDataEdgeColor;
+                const ImVec2 start = border_point(from->second, to->second);
+                const ImVec2 end = border_point(to->second, from->second);
+                draw->AddLine(start, end, color, font * 0.1f);
+                ImVec2 dir(end.x - start.x, end.y - start.y);
+                const float length =
+                    std::sqrt(dir.x * dir.x + dir.y * dir.y);
+                if (length > 0.001f) {
+                    dir.x /= length;
+                    dir.y /= length;
+                    const ImVec2 normal(-dir.y, dir.x);
+                    const float head = font * 0.55f;
+                    const ImVec2 base(end.x - dir.x * head, end.y - dir.y * head);
+                    draw->AddTriangleFilled(
+                        end,
+                        ImVec2(base.x + normal.x * head * 0.5f,
+                               base.y + normal.y * head * 0.5f),
+                        ImVec2(base.x - normal.x * head * 0.5f,
+                               base.y - normal.y * head * 0.5f),
+                        color);
+                }
+            }
+
+            // Pass 3: node boxes + click-to-select (invisible buttons hit-test).
+            for (const Placed& item : placed) {
+                ImGui::SetCursorScreenPos(item.top_left);
+                ImGui::InvisibleButton(item.node->id.c_str(),
+                                       ImVec2(node_w, node_h));
+                const bool hovered = ImGui::IsItemHovered();
+                if (ImGui::IsItemClicked()) {
+                    selected_node_id_ = item.node->id;
+                    rename_node_input_ = item.node->name;
+                }
+                const bool selected = item.node->id == selected_node_id_;
+                const ImU32 fill = selected ? kNodeFillSelected
+                                            : (hovered ? kNodeFillHover : kNodeFill);
+                draw->AddRectFilled(item.top_left, item.bottom_right, fill,
+                                    rounding);
+                draw->AddRect(item.top_left, item.bottom_right,
+                              selected ? kNodeBorderSelected : kNodeBorder,
+                              rounding, 0, selected ? 2.0f : 1.0f);
+                draw->PushClipRect(item.top_left, item.bottom_right, true);
+                draw->AddText(
+                    ImVec2(item.top_left.x + pad,
+                           item.top_left.y + (node_h - font) * 0.5f),
+                    kNodeTextColor, item.node->name.c_str());
+                draw->PopClipRect();
+            }
+
+            // Reserve the laid-out area so the child scrolls to fit it.
+            ImGui::SetCursorScreenPos(origin);
+            ImGui::Dummy(ImVec2(content_right - origin.x + col_gap,
+                                content_bottom - origin.y + row_gap));
+        }
+    }
+    ImGui::EndChild();
+}
+
+void App::draw_graph_editor(Project& project) {
+    ir::ExecutionGraph& graph = *editing_graph_;
+    const float font = ImGui::GetFontSize();
+
+    // --- summary, rename, save / revert -----------------------------------
+    ImGui::Text("%zu step(s), %zu edge(s)", graph.node_count(),
+                graph.edge_count());
+    if (graph_dirty_) {
+        ImGui::SameLine();
+        ImGui::TextColored(kUnsavedColor, "● unsaved edits");
+    }
+
+    ImGui::SetNextItemWidth(font * 12.0f);
+    ImGui::InputTextWithHint("##rengraph", "graph name", &rename_graph_input_);
+    ImGui::SameLine();
+    if (ImGui::Button("Save")) {
+        // Persist the working copy back to the IR (disk + CRDT) via update_graph.
+        // A name change in the field becomes a rename in the same call.
+        std::string new_name = rename_graph_input_ == selected_graph_
+                                   ? std::string{}
+                                   : rename_graph_input_;
+        if (auto updated =
+                project.update_graph(selected_graph_, graph, std::move(new_name))) {
+            selected_graph_ = updated->name();
+            graph_loaded_id_ = updated->id();
+            rename_graph_input_ = updated->name();
+            graph_dirty_ = false;
+            graph_error_.clear();
+            io_status_ = "Saved graph '" + updated->name() + "' (" +
+                         std::to_string(updated->graph().node_count()) +
+                         " steps, " +
+                         std::to_string(updated->graph().edge_count()) +
+                         " edges)";
+        } else {
+            graph_error_ = "save failed: name empty or already taken";
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Revert")) {
+        if (const auto stored = project.find_graph_by_id(graph_loaded_id_)) {
+            open_graph(*stored);
+        } else {
+            editing_graph_.reset();
+            selected_graph_.clear();
+            graph_loaded_id_.clear();
+        }
+    }
+    if (!graph_error_.empty()) {
+        ImGui::TextColored(kErrorColor, "%s", graph_error_.c_str());
+    }
+    if (!editing_graph_) return;  // Revert may have closed the graph
+
+    // --- add a step --------------------------------------------------------
+    ImGui::SeparatorText("Add a step");
+    ImGui::SetNextItemWidth(font * 10.0f);
+    ImGui::InputTextWithHint("##nodename", "step name", &add_node_name_input_);
+    ImGui::SameLine();
+    const auto kinds = ir::all_step_kinds();
+    ImGui::SetNextItemWidth(font * 7.0f);
+    if (ImGui::BeginCombo("##nodekind",
+                          std::string{ir::to_string(kinds[add_node_kind_])}
+                              .c_str())) {
+        for (std::size_t i = 0; i < kinds.size(); ++i) {
+            const std::string label{ir::to_string(kinds[i])};
+            if (ImGui::Selectable(label.c_str(),
+                                  static_cast<int>(i) == add_node_kind_)) {
+                add_node_kind_ = static_cast<int>(i);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Add step")) {
+        if (add_node_name_input_.empty()) {
+            graph_error_ = "step name required";
+        } else if (auto added = graph.add_node(kinds[add_node_kind_],
+                                               add_node_name_input_)) {
+            selected_node_id_ = added->id;
+            rename_node_input_ = added->name;
+            add_node_name_input_.clear();
+            graph_dirty_ = true;
+            graph_error_.clear();
+        } else {
+            graph_error_ = "could not add step";
+        }
+    }
+
+    // A picker over the graph's nodes, labelled "<name> [<kind>]".
+    const auto node_label = [](const ir::Node& node) {
+        return node.name + "  [" + std::string{ir::to_string(node.kind)} + "]";
+    };
+    const auto node_picker = [&](const char* combo_id, const char* placeholder,
+                                 std::string& selection) {
+        const auto current = graph.find_node(selection);
+        const std::string preview =
+            current ? node_label(*current) : std::string{placeholder};
+        ImGui::SetNextItemWidth(font * 11.0f);
+        if (ImGui::BeginCombo(combo_id, preview.c_str())) {
+            for (const auto& node : graph.nodes()) {
+                if (ImGui::Selectable(node_label(*node).c_str(),
+                                      node->id == selection)) {
+                    selection = node->id;
+                }
+            }
+            ImGui::EndCombo();
+        }
+    };
+
+    // --- add an edge -------------------------------------------------------
+    ImGui::SeparatorText("Add an edge");
+    if (graph.node_count() < 1) {
+        ImGui::TextDisabled("Add steps first.");
+    } else {
+        node_picker("##edgefrom", "(from)", add_edge_from_);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("→");
+        ImGui::SameLine();
+        node_picker("##edgeto", "(to)", add_edge_to_);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(font * 7.0f);
+        const char* edge_kind_names[] = {"data_flow", "control"};
+        ImGui::Combo("##edgekind", &add_edge_kind_, edge_kind_names, 2);
+        ImGui::SameLine();
+        if (ImGui::Button("Add edge")) {
+            const ir::EdgeKind kind = add_edge_kind_ == 1
+                                          ? ir::EdgeKind::Control
+                                          : ir::EdgeKind::DataFlow;
+            if (graph.add_edge(add_edge_from_, add_edge_to_, kind)) {
+                graph_dirty_ = true;
+                graph_error_.clear();
+            } else {
+                graph_error_ =
+                    "edge rejected: unknown step or duplicate edge";
+            }
+        }
+    }
+
+    // Existing edges, each with a delete button (remove_edge is the inverse).
+    if (!graph.edges().empty()) {
+        int remove_at = -1;
+        for (std::size_t i = 0; i < graph.edges().size(); ++i) {
+            const ir::Edge& edge = graph.edges()[i];
+            ImGui::PushID(static_cast<int>(i));
+            if (ImGui::SmallButton("x")) remove_at = static_cast<int>(i);
+            ImGui::SameLine();
+            const auto from = graph.find_node(edge.from);
+            const auto to = graph.find_node(edge.to);
+            ImGui::TextDisabled(
+                "%s → %s  (%s)",
+                from ? from->name.c_str() : edge.from.c_str(),
+                to ? to->name.c_str() : edge.to.c_str(),
+                std::string{ir::to_string(edge.kind)}.c_str());
+            ImGui::PopID();
+        }
+        if (remove_at >= 0) {
+            const ir::Edge edge = graph.edges()[remove_at];
+            graph.remove_edge(edge.from, edge.to, edge.kind);
+            graph_dirty_ = true;
+        }
+    }
+
+    // --- selected step -----------------------------------------------------
+    ImGui::SeparatorText("Selected step");
+    const auto selected = graph.find_node(selected_node_id_);
+    if (!selected) {
+        ImGui::TextDisabled("Click a step in the canvas to select it.");
+    } else {
+        const std::string short_id =
+            selected_node_id_.substr(0, selected_node_id_.find('-'));
+        ImGui::TextDisabled("id: %s   kind: %s", short_id.c_str(),
+                            std::string{ir::to_string(selected->kind)}.c_str());
+        ImGui::SetNextItemWidth(font * 12.0f);
+        const bool rename = ImGui::InputTextWithHint(
+            "##rennode", "step name", &rename_node_input_,
+            ImGuiInputTextFlags_EnterReturnsTrue);
+        ImGui::SameLine();
+        if (ImGui::Button("Rename step") || rename) {
+            if (rename_node_input_.empty()) {
+                graph_error_ = "step name required";
+            } else {
+                selected->name = rename_node_input_;  // mutate the working copy
+                graph_dirty_ = true;
+                graph_error_.clear();
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Delete step")) {
+            graph.remove_node(selected_node_id_);
+            selected_node_id_.clear();
+            graph_dirty_ = true;
+        }
+    }
+}
+
+}  // namespace zetta::gui
