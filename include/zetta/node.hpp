@@ -341,6 +341,23 @@ private:
     void persist_replication() const;  // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
     void reconcile_from_replication(); // apply the CRDT document to the projection
+    // Per-entity reconcile passes, called by reconcile_from_replication() in the
+    // order parent entities precede their children. Each scans the same CRDT
+    // snapshot for its keys, drops local entries the document no longer has, and
+    // materializes new/changed ones. reconcile_databases also covers tables, rows,
+    // and large objects — they decode in one shared pass and their removals nest
+    // under their owning database, so they don't split cleanly.
+    void reconcile_databases(const nlohmann::json& snapshot);
+    void reconcile_projects(const nlohmann::json& snapshot);
+    void reconcile_inputs(const nlohmann::json& snapshot);
+    void reconcile_graphs(const nlohmann::json& snapshot);
+    void reconcile_deployments(const nlohmann::json& snapshot);
+    void reconcile_runs(const nlohmann::json& snapshot);
+    void reconcile_models(const nlohmann::json& snapshot);
+    void reconcile_jobs(const nlohmann::json& snapshot);
+    void reconcile_principals(const nlohmann::json& snapshot);
+    void reconcile_access_keys(const nlohmann::json& snapshot);
+    void reconcile_audit_events(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<Database> materialize_database(std::string id,
                                                    std::string name);

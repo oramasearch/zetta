@@ -1193,7 +1193,26 @@ void Node::migrate_to_replication() {
 
 void Node::reconcile_from_replication() {
     const nlohmann::json snapshot = replication_->snapshot();
+    // Reconcile each replicated entity type from the same snapshot, parents
+    // before children (databases before tables/rows/large objects; projects
+    // before inputs/graphs; principals before access keys). Order matters.
+    reconcile_databases(snapshot);
+    reconcile_projects(snapshot);
+    reconcile_inputs(snapshot);
+    reconcile_graphs(snapshot);
+    reconcile_deployments(snapshot);
+    reconcile_runs(snapshot);
+    reconcile_models(snapshot);
+    reconcile_jobs(snapshot);
+    reconcile_principals(snapshot);
+    reconcile_access_keys(snapshot);
+    reconcile_audit_events(snapshot);
+}
 
+// Databases, tables, rows, and large objects reconcile together: they decode in
+// one shared pass over the snapshot, and table/large-object removals nest under
+// each kept database, so they don't split into independent helpers cleanly.
+void Node::reconcile_databases(const nlohmann::json& snapshot) {
     // Decode the flat catalog keys into desired databases / tables / rows.
     std::map<std::string, std::string> databases;             // id -> name
     std::map<std::string, std::pair<std::string, std::string>> tables;  // id -> (db, name)
@@ -1305,7 +1324,9 @@ void Node::reconcile_from_replication() {
         object.sha256 = entry.sha256;
         db->large_objects().materialize_object(std::move(object));
     }
+}
 
+void Node::reconcile_projects(const nlohmann::json& snapshot) {
     // Projects (top-level, no parent): project:<id> -> { name, created,
     // updated, owner }. Decode the desired set, then drop / add / update the
     // local projection to match the document — no re-capture.
@@ -1346,7 +1367,9 @@ void Node::reconcile_from_replication() {
                                   entry.owner);  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_inputs(const nlohmann::json& snapshot) {
     // Project inputs (owned by a project): input:<id> -> { project, kind,
     // source, filename, content_hash, size, created_by, created_at }. Inputs are
     // immutable provenance records (never renamed/edited), so reconcile only adds
@@ -1404,7 +1427,9 @@ void Node::reconcile_from_replication() {
                                        entry.created_at);
         }
     }
+}
 
+void Node::reconcile_graphs(const nlohmann::json& snapshot) {
     // Execution graphs (under a project): graph:<id> -> { project, name,
     // graph: {nodes, edges} }. Decode the desired set, parsing each graph
     // against the IR schema — a graph that doesn't parse is skipped, so a
@@ -1456,7 +1481,9 @@ void Node::reconcile_from_replication() {
                                    std::move(entry.graph));  // a peer changed it
         }
     }
+}
 
+void Node::reconcile_deployments(const nlohmann::json& snapshot) {
     // Deployments (top-level, no parent): deployment:<id> -> { graph_name,
     // target, node, node_count, edge_count, created }. Decode the desired set,
     // then drop / add the local projection to match the document. Deployments
@@ -1504,7 +1531,9 @@ void Node::reconcile_from_replication() {
                                    entry.edge_count, entry.created);
         }
     }
+}
 
+void Node::reconcile_runs(const nlohmann::json& snapshot) {
     // Runs (top-level, no parent): run:<id> -> the run value. Decode + validate
     // the desired set at the boundary (a malformed CRDT value is ignored, not
     // trusted), then drop / add / update the local projection to match — with no
@@ -1530,7 +1559,9 @@ void Node::reconcile_from_replication() {
             run->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_models(const nlohmann::json& snapshot) {
     // Models (top-level, no parent): model:<id> -> the model value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is
     // ignored, not trusted), then drop / add / update the local projection to
@@ -1558,7 +1589,9 @@ void Node::reconcile_from_replication() {
             model->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
     // not trusted), then drop / add / update the local projection to match — with
@@ -1587,7 +1620,9 @@ void Node::reconcile_from_replication() {
             job->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_principals(const nlohmann::json& snapshot) {
     // Principals (top-level, no parent): principal:<id> -> { kind, name,
     // created }. Decode the desired set, then drop / add / update the local
     // projection to match the document — no re-capture.
@@ -1628,7 +1663,9 @@ void Node::reconcile_from_replication() {
                                     entry.created);  // a peer changed it (no re-capture)
         }
     }
+}
 
+void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
     // Access keys (owned by a principal): key:<id> -> { principal, scope,
     // created }. Keys are immutable credentials (never edited), so reconcile only
     // adds them under their owning principal and drops the ones a peer removed.
@@ -1683,7 +1720,9 @@ void Node::reconcile_from_replication() {
                                        entry.created);
         }
     }
+}
 
+void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
     // Audit events (top-level, no parent): audit:<id> -> the event value. The
     // trail is immutable + append-only, so reconcile only *adds* events the
     // document has that we don't (a peer's, merged in via gossip) and never
