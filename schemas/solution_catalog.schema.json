@@ -1,86 +1,114 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://oramasearch.github.io/zetta/schemas/solution_catalog.schema.json",
-  "title": "zetta.SolutionCatalog",
-  "description": "The AI Solution Library: a catalog of ready-to-deploy ExecutionGraph blueprints. Mirrored by the embedded schema in src/core/solution_catalog.cpp and enforced by zetta::parse_solution_catalog() (include/zetta/solution_catalog.hpp) — keep the three in sync. The per-blueprint `graph` is the IR's canonical JSON form (see docs/execution-graph.md); its structural rules (unique node ids, no dangling/duplicate edges) are enforced by zetta::ir::from_json after this shape check.",
-  "type": "object",
-  "required": ["solutions"],
   "additionalProperties": false,
   "properties": {
     "solutions": {
-      "description": "The blueprints in the library. Ids must be unique within a catalog.",
-      "type": "array",
-      "items": { "$ref": "#/$defs/solution" }
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "graph": {
+            "additionalProperties": false,
+            "properties": {
+              "edges": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "from": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "data_flow",
+                        "control"
+                      ],
+                      "type": "string"
+                    },
+                    "to": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "nodes": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "attributes": {
+                      "type": "object"
+                    },
+                    "id": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "connect",
+                        "clean",
+                        "model",
+                        "index",
+                        "serve",
+                        "act"
+                      ],
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "name"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "nodes",
+              "edges"
+            ],
+            "type": "object"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "summary",
+          "category",
+          "graph"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     }
   },
-  "$defs": {
-    "solution": {
-      "type": "object",
-      "required": ["id", "name", "summary", "category", "graph"],
-      "additionalProperties": false,
-      "properties": {
-        "id": {
-          "description": "Stable slug, unique in the catalog (e.g. \"churn-prediction\").",
-          "type": "string",
-          "minLength": 1
-        },
-        "name": {
-          "description": "Human name shown in the Deploy panel.",
-          "type": "string",
-          "minLength": 1
-        },
-        "summary": {
-          "description": "One-line description of the outcome the solution delivers.",
-          "type": "string"
-        },
-        "category": {
-          "description": "Grouping label (e.g. \"Customer Intelligence\", \"Search\").",
-          "type": "string"
-        },
-        "graph": { "$ref": "#/$defs/graph" }
-      }
-    },
-    "graph": {
-      "description": "The deployable blueprint in the ExecutionGraph IR's canonical JSON form.",
-      "type": "object",
-      "required": ["nodes", "edges"],
-      "additionalProperties": false,
-      "properties": {
-        "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
-        "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }
-      }
-    },
-    "node": {
-      "type": "object",
-      "required": ["id", "kind", "name"],
-      "additionalProperties": false,
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "kind": {
-          "description": "The connect→clean→model→index→serve→act step taxonomy.",
-          "type": "string",
-          "enum": ["connect", "clean", "model", "index", "serve", "act"]
-        },
-        "name": { "type": "string" },
-        "attributes": {
-          "description": "Free-form configuration bag for the step.",
-          "type": "object"
-        }
-      }
-    },
-    "edge": {
-      "type": "object",
-      "required": ["from", "to"],
-      "additionalProperties": false,
-      "properties": {
-        "from": { "type": "string", "minLength": 1 },
-        "to": { "type": "string", "minLength": 1 },
-        "kind": {
-          "description": "Edge type; defaults to data_flow when omitted.",
-          "type": "string",
-          "enum": ["data_flow", "control"]
-        }
-      }
-    }
-  }
+  "required": [
+    "solutions"
+  ],
+  "title": "zetta.SolutionCatalog",
+  "type": "object"
 }

@@ -1,10 +1,55 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://oramasearch.github.io/zetta/schemas/playbook_entry.schema.json",
-  "title": "PlaybookNarration",
-  "description": "The strict JSON contract a constrained narrator (default Claude) must satisfy for one at-risk account (FEAT-6, #397; part of the native distributed accelerated compute pass for UC-1 churn — #264). The narrator is a Customer-Success strategist that writes the narrative and selects the play from the provided signed drivers — but it NEVER invents numbers: the churn probability, ARR, save-rate, and expected-retained-value priority are computed deterministically in code and are deliberately absent from this schema, so the narrator physically cannot change them. Validated at the boundary (the LLM/API response enters here) with the pboettch draft-07 validator, mirrored embedded in src/core/ml/playbook.cpp, the same pattern as the Run record; on any validation or semantic failure the playbook falls back to the deterministic rules engine so it always runs offline. See docs/playbook.md and docs/use-cases/uc1.md (4.6).",
-  "type": "object",
   "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "diagnosis": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "owner": {
+      "enum": [
+        "csm",
+        "account_manager",
+        "billing",
+        "support",
+        "marketing"
+      ],
+      "type": "string"
+    },
+    "primary_driver": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "recommended_play": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "talking_points": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 3,
+      "minItems": 3,
+      "type": "array"
+    },
+    "urgency": {
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "type": "string"
+    }
+  },
   "required": [
     "account_id",
     "primary_driver",
@@ -15,48 +60,5 @@
     "talking_points",
     "confidence"
   ],
-  "properties": {
-    "account_id": {
-      "description": "The account this narration is for — must echo the requested account_id (a mismatch fails the boundary, so a batched narrator can't cross-wire accounts).",
-      "type": "string"
-    },
-    "primary_driver": {
-      "description": "The single dominant churn driver the narrator selected, by feature name. Must be one of the provided candidate drivers (when several conflict, prioritize involuntary/billing first).",
-      "type": "string",
-      "minLength": 1
-    },
-    "recommended_play": {
-      "description": "The one primary retention play to run.",
-      "type": "string",
-      "minLength": 1
-    },
-    "owner": {
-      "description": "The role that owns the play.",
-      "type": "string",
-      "enum": ["csm", "account_manager", "billing", "support", "marketing"]
-    },
-    "urgency": {
-      "description": "How urgently to act (a qualitative band, not a number).",
-      "type": "string",
-      "enum": ["low", "medium", "high"]
-    },
-    "diagnosis": {
-      "description": "A concise diagnosis of the dominant churn story, in the strategist's own words, grounded only in the provided drivers and numbers.",
-      "type": "string",
-      "minLength": 1
-    },
-    "talking_points": {
-      "description": "Exactly three concrete talking points for the owner's outreach.",
-      "type": "array",
-      "minItems": 3,
-      "maxItems": 3,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "confidence": {
-      "description": "The narrator's own confidence in this play, in [0, 1]. This is a self-assessment, NOT a churn/ARR/priority metric — those are computed in code and never narrated.",
-      "type": "number",
-      "minimum": 0,
-      "maximum": 1
-    }
-  }
+  "type": "object"
 }

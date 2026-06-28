@@ -93,14 +93,17 @@ add_executable(zetta-tests
   test_data_replication.cpp
   test_large_object_replication.cpp
   test_integrity.cpp
+  test_schemas.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_26)
 target_include_directories(zetta-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 # Path to test fixture files (e.g. the n8n churn workflow) so tests can load
-# them at runtime without depending on the working directory.
+# them at runtime without depending on the working directory; and the repo's
+# schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).
 target_compile_definitions(zetta-tests PRIVATE
-  ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+  ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+  ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 target_link_libraries(zetta-tests PRIVATE zetta-core GTest::gtest_main)
 
 include(GoogleTest)

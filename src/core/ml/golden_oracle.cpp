@@ -12,9 +12,9 @@ namespace fs = std::filesystem;
 namespace {
 
 // ---- the draft-07 schema, embedded -----------------------------------------
-// A functional mirror of schemas/golden_oracle.schema.json — keep the two in sync.
-// The committed file is the documented source of truth; this is what runs at the
-// boundary (the validator is PRIVATE to zetta-core, like the Run / churn-dataset path).
+// This embedded schema is the source of truth (the validator is PRIVATE to
+// zetta-core, like the Run / churn-dataset path); schemas/golden_oracle.schema.json
+// is generated from it (tests/test_schemas.cpp) and a drift check keeps it in sync.
 const nlohmann::json& oracle_schema() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",

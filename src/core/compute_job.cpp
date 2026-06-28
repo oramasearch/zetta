@@ -20,8 +20,9 @@ namespace {
 // value shape carried by job.json (with an optional `id`) and the `job:<uuid>`
 // CRDT value (without it). `kind` / `status` are closed enums and the shape is
 // sealed (additionalProperties: false), so a malformed record fails validation at
-// the boundary instead of corrupting the tree. Mirrors
-// schemas/compute_job.schema.json — keep the two in sync.
+// the boundary instead of corrupting the tree. This embedded schema is the source
+// of truth; schemas/compute_job.schema.json is generated from it
+// (tests/test_schemas.cpp) and a drift check keeps it in sync.
 const nlohmann::json& schema_document() {
     static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",
