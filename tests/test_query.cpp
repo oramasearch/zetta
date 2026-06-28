@@ -523,3 +523,79 @@ TEST(QueryService, SelectsCloudStatusSystemTable) {
 
     node.stop();
 }
+
+// RULE-7: runs / principals / keys / the audit trail are observable as
+// system.zetta_* read views (not GUI-only), computed at query time from the live
+// Node accessors — same as zetta_models / zetta_jobs.
+TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // Empty until the entities exist.
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_runs;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_principals;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_keys;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_audit;", "").rows.size(), 0u);
+
+    // A run.
+    auto run = node.create_run("churn", "g1");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::RunStatus::Succeeded);
+
+    // A principal with a scoped, capability-bearing key.
+    auto principal = node.create_principal("analyst", zetta::PrincipalKind::User);
+    ASSERT_TRUE(principal);
+    zetta::Scope scope;
+    scope.grant(zetta::ResourceKind::Project, "churn");
+    zetta::CapabilitySet capabilities;
+    capabilities.grant(zetta::CapabilityDomain::Orchestration, "start_run");
+    auto key = principal->create_key(scope, capabilities);
+    ASSERT_TRUE(key);
+
+    // An audit event (authorize records a data_access decision).
+    node.authorize(key->id(), zetta::Resource{zetta::ResourceKind::Project, "churn"});
+
+    // zetta_runs
+    auto runs = svc.run("SELECT * FROM system.zetta_runs;", "");
+    ASSERT_TRUE(runs.ok()) << runs.error;
+    ASSERT_EQ(runs.rows.size(), 1u);
+    EXPECT_EQ(runs.rows[0]["run_id"].get<std::string>(), run->id());
+    EXPECT_EQ(runs.rows[0]["status"].get<std::string>(), "succeeded");
+    EXPECT_EQ(runs.rows[0]["project"].get<std::string>(), "churn");
+
+    // zetta_principals
+    auto principals = svc.run("SELECT * FROM system.zetta_principals;", "");
+    ASSERT_TRUE(principals.ok()) << principals.error;
+    ASSERT_EQ(principals.rows.size(), 1u);
+    EXPECT_EQ(principals.rows[0]["name"].get<std::string>(), "analyst");
+    EXPECT_EQ(principals.rows[0]["kind"].get<std::string>(), "user");
+    EXPECT_EQ(principals.rows[0]["key_count"].get<int>(), 1);
+
+    // zetta_keys — scope + capabilities rendered as readable strings, no secrets.
+    auto keys = svc.run("SELECT * FROM system.zetta_keys;", "");
+    ASSERT_TRUE(keys.ok()) << keys.error;
+    ASSERT_EQ(keys.rows.size(), 1u);
+    EXPECT_EQ(keys.rows[0]["principal"].get<std::string>(), "analyst");
+    EXPECT_NE(keys.rows[0]["scope"].get<std::string>().find("project:churn"),
+              std::string::npos);
+    EXPECT_NE(keys.rows[0]["capabilities"].get<std::string>().find(
+                  "orchestration:start_run"),
+              std::string::npos);
+
+    // zetta_audit — the authorize decision landed in the trail.
+    auto audit = svc.run("SELECT * FROM system.zetta_audit;", "");
+    ASSERT_TRUE(audit.ok()) << audit.error;
+    ASSERT_GE(audit.rows.size(), 1u);
+    EXPECT_EQ(audit.rows[0]["action"].get<std::string>(), "data_access");
+
+    // WHERE + projection works over the new tables.
+    auto projected = svc.run(
+        "SELECT name FROM system.zetta_principals WHERE name = 'analyst';", "");
+    ASSERT_TRUE(projected.ok()) << projected.error;
+    ASSERT_EQ(projected.rows.size(), 1u);
+    EXPECT_EQ(projected.rows[0]["name"].get<std::string>(), "analyst");
+
+    node.stop();
+}

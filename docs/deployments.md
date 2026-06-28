@@ -85,9 +85,11 @@ auto deployment = node.deploy_graph(graph, DeploymentTarget::local(), "churn");
 node.find_deployment(deployment->id());
 ```
 
-`deploy_graph` guards the **basics** — a non-empty graph and a local target. Full
-**semantic validation** (acyclicity, legal stage transitions) is the *gate*, a
-separate slice; `deploy_graph` records an already-validated graph.
+`deploy_graph` guards the **basics** — a non-empty graph and a local target — and
+then runs the [correctness gate](gate.md) (`default_gate()`) at the seam itself:
+a graph that fails the gate is **not** placed and records a blocked
+(`allowed=false`) deploy audit event (RULE-1 — no deploy without a passing gate,
+enforced for a programmatic deploy, not just the GUI Deploy panel).
 
 ## Persistence & replication
 
@@ -155,8 +157,9 @@ Deployments are queryable two ways:
 
 ## What's deferred (later slices)
 
-- **The gate** — semantic validation of the graph before placement (acyclicity,
-  legal stage transitions, required inputs).
+- **Deeper gate checks** — the gate now runs at the deploy seam (RULE-1), but its
+  semantic checks are still growing: acyclicity and legal stage-transition checks
+  are not yet among the `default_gate()` set.
 - **Cross-node failover** — the local reconcile/self-heal loop now exists (the
   [deployment controller](deployment-controller.md)), but a surviving node
   *adopting* a dead node's placements needs leadership/lease and is a later slice.

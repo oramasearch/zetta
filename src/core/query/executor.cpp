@@ -47,6 +47,15 @@ namespace {
 //    (Node::cloud_inspections()). Querying it NEVER triggers a cloud call: it
 //    only reflects inspects the user already consented to in the Cloud Inspector
 //    (empty until then). Ephemeral, not replicated.
+//  - `zetta_runs` — the run registry (Node::runs()): one row per graph execution
+//    + its lifecycle / pipeline refs / lineage (FEAT-5).
+//  - `zetta_principals` — the authenticated actors (Node::principals(); ENT-20).
+//  - `zetta_keys` — the access keys the principals own (ENT-21/22): each key's
+//    scope (resources) + capabilities (rights), no secret material.
+//  - `zetta_audit` — the immutable, append-only audit trail (Node::audit_events();
+//    ENT-23 / FEAT-9).
+// Together with the GUI Runs / Admin panels these satisfy RULE-7 (observable
+// state defaults to a system.zetta_* read view, never a GUI-only surface).
 // Future: system.zetta_leadership, etc.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
@@ -55,6 +64,10 @@ constexpr std::string_view kModelsTable = "zetta_models";
 constexpr std::string_view kJobsTable = "zetta_jobs";
 constexpr std::string_view kCloudProvidersTable = "zetta_cloud_providers";
 constexpr std::string_view kCloudStatusTable = "zetta_cloud_status";
+constexpr std::string_view kRunsTable = "zetta_runs";
+constexpr std::string_view kPrincipalsTable = "zetta_principals";
+constexpr std::string_view kKeysTable = "zetta_keys";
+constexpr std::string_view kAuditTable = "zetta_audit";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -292,6 +305,109 @@ std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
         row["commands_total"] = static_cast<int>(report.commands.size());
         row["checked_at"] = report.checked_at;
         row["detail"] = report.detail;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per run for the zetta_runs system table — the run registry
+// (FEAT-5). Sourced from Node::runs() (every run replicates, so each node sees the
+// same set). Exposes the run's identity + lifecycle + its place in the pipeline
+// (project / graph / deployment) and summary counts of its logs / outputs plus the
+// lineage confidence + freshness — the queryable read view of the GUI Runs panel.
+std::vector<nlohmann::json> run_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& run : node.runs()) {
+        nlohmann::json row;
+        row["run_id"] = run->id();
+        row["project"] = run->project();
+        row["graph"] = run->graph();
+        row["deployment"] = run->deployment();
+        row["status"] = std::string(to_string(run->status()));
+        row["created"] = run->created();
+        row["updated"] = run->updated();
+        row["log_count"] = static_cast<int>(run->logs().size());
+        row["output_count"] = static_cast<int>(run->outputs().size());
+        row["confidence"] = run->lineage().confidence;
+        row["freshness"] = run->lineage().freshness;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per principal for the zetta_principals system table — the
+// authenticated actors (ENT-20). Sourced from Node::principals(): identity + kind
+// + created + how many access keys it owns; the keys themselves are zetta_keys.
+std::vector<nlohmann::json> principal_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& principal : node.principals()) {
+        nlohmann::json row;
+        row["principal_id"] = principal->id();
+        row["name"] = principal->name();
+        row["kind"] = std::string(to_string(principal->kind()));
+        row["created"] = principal->created();
+        row["key_count"] = static_cast<int>(principal->key_count());
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per access key for the zetta_keys system table — the credentials
+// the principals own (ENT-21/22), the queryable read view of the Admin panel. Each
+// key's reach is two human-readable strings: its `scope` (the resources it may
+// touch — "*" for an unrestricted/admin key) and its `capabilities` (the rights it
+// may exercise, each "<domain>:<action>", with an "@<ttl>" suffix when TTL'd). A
+// key record holds no secret material (scope + capabilities only), so this exposes
+// nothing the Admin panel doesn't already show.
+std::vector<nlohmann::json> access_key_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& principal : node.principals()) {
+        for (const auto& key : principal->keys()) {
+            std::vector<std::string> scope_parts;
+            const Scope& scope = key->scope();
+            if (scope.unrestricted) {
+                scope_parts.push_back("*");
+            } else {
+                for (const Resource& resource : scope.grants) {
+                    scope_parts.push_back(std::string(to_string(resource.kind)) +
+                                          ":" + resource.name);
+                }
+            }
+            std::vector<std::string> capability_parts;
+            for (const Capability& capability : key->capabilities().grants) {
+                std::string text = std::string(to_string(capability.domain)) + ":" +
+                                   capability.action;
+                if (!capability.expires_at.empty()) text += "@" + capability.expires_at;
+                capability_parts.push_back(std::move(text));
+            }
+            nlohmann::json row;
+            row["key_id"] = key->id();
+            row["principal_id"] = key->principal_id();
+            row["principal"] = principal->name();
+            row["unrestricted"] = scope.unrestricted;
+            row["scope"] = join_comma(scope_parts);
+            row["capabilities"] = join_comma(capability_parts);
+            row["created"] = key->created();
+            rows.push_back(std::move(row));
+        }
+    }
+    return rows;
+}
+
+// One JSON row per audit event for the zetta_audit system table — the immutable,
+// append-only audit trail (ENT-23 / FEAT-9), the queryable read view of the Admin
+// panel's audit log. Sourced from Node::audit_events() (chronological).
+std::vector<nlohmann::json> audit_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& event : node.audit_events()) {
+        nlohmann::json row;
+        row["audit_id"] = event->id();
+        row["action"] = std::string(to_string(event->action()));
+        row["actor"] = event->actor();
+        row["target"] = event->target();
+        row["allowed"] = event->allowed();
+        row["detail"] = event->detail();
+        row["time"] = event->time();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -665,11 +781,25 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kCloudStatusTable) {
                         return select_over_rows(s, cloud_status_rows(node_));
                     }
+                    if (sys == kRunsTable) {
+                        return select_over_rows(s, run_rows(node_));
+                    }
+                    if (sys == kPrincipalsTable) {
+                        return select_over_rows(s, principal_rows(node_));
+                    }
+                    if (sys == kKeysTable) {
+                        return select_over_rows(s, access_key_rows(node_));
+                    }
+                    if (sys == kAuditTable) {
+                        return select_over_rows(s, audit_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
                                      "system.zetta_deployments, "
                                      "system.zetta_models, system.zetta_jobs, "
+                                     "system.zetta_runs, system.zetta_principals, "
+                                     "system.zetta_keys, system.zetta_audit, "
                                      "system.zetta_cloud_providers, or "
                                      "system.zetta_cloud_status)");
                     }

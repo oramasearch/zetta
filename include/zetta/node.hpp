@@ -219,6 +219,12 @@ public:
     bool rename_principal(const std::string& from, const std::string& to);
     std::vector<std::string> principal_names() const;
     std::size_t principal_count() const { return principals_.size(); }
+    // The principals in insertion order — the live source for the
+    // system.zetta_principals / system.zetta_keys read views (each principal owns
+    // its keys via Principal::keys()).
+    std::vector<std::shared_ptr<Principal>> principals() const {
+        return principals_;
+    }
 
     // Resolve the access key presented at login (by its id), or an empty handle.
     // Keys are globally identified by UUID; this searches every principal.
