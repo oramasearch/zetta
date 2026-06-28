@@ -274,6 +274,18 @@ void Node::load_principals() {
             !meta.contains("name") || !meta["name"].is_string()) {
             continue;
         }
+        // RULE-3: reject an unknown top-level field, matching the formal schema's
+        // additionalProperties:false (schemas/principal.schema.json) — a record
+        // carrying an unexpected key is malformed, so skip it rather than trust it.
+        bool unknown_field = false;
+        for (const auto& [field, ignored] : meta.items()) {
+            if (field != "id" && field != "kind" && field != "name" &&
+                field != "created") {
+                unknown_field = true;
+                break;
+            }
+        }
+        if (unknown_field) continue;
         const auto kind = principal_kind_from(meta["kind"].get<std::string>());
         if (!kind) continue;
         auto principal = std::make_shared<Principal>(
@@ -1682,19 +1694,20 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
             !value.contains("scope")) {
             continue;
         }
-        Scope scope;
-        if (!scope_from_json(value["scope"], scope)) continue;  // boundary
+        const auto scope = scope_from_json(value["scope"]);
+        if (!scope) continue;  // boundary
         // Capabilities are optional (a peer on an older shape omits them => no
         // rights); a present-yet-malformed set is rejected rather than applied.
         CapabilitySet capabilities;
-        if (value.contains("capabilities") &&
-            !capability_set_from_json(value["capabilities"], capabilities)) {
-            continue;
+        if (value.contains("capabilities")) {
+            const auto parsed = capability_set_from_json(value["capabilities"]);
+            if (!parsed) continue;
+            capabilities = *parsed;
         }
         access_keys.emplace(
             std::move(id),
-            AccessKeyEntry{value.value("principal", std::string{}),
-                           std::move(scope), std::move(capabilities),
+            AccessKeyEntry{value.value("principal", std::string{}), *scope,
+                           std::move(capabilities),
                            value.value("created", std::string{})});
     }
     // Removals first (a peer dropped a key, or its principal is gone).

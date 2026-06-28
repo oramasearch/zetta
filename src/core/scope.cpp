@@ -53,37 +53,39 @@ void to_json(nlohmann::json& document, const Scope& scope) {
                               {"grants", scope.grants}};
 }
 
-bool resource_from_json(const nlohmann::json& document, Resource& out) {
-    if (!document.is_object()) return false;
-    if (!document.contains("kind") || !document["kind"].is_string()) return false;
-    if (!document.contains("name") || !document["name"].is_string()) return false;
+std::optional<Resource> resource_from_json(const nlohmann::json& document) {
+    if (!document.is_object()) return std::nullopt;
+    if (!document.contains("kind") || !document["kind"].is_string()) {
+        return std::nullopt;
+    }
+    if (!document.contains("name") || !document["name"].is_string()) {
+        return std::nullopt;
+    }
     ResourceKind kind{};
     if (!resource_kind_from_string(document["kind"].get<std::string>(), kind)) {
-        return false;
+        return std::nullopt;
     }
-    out = Resource{kind, document["name"].get<std::string>()};
-    return true;
+    return Resource{kind, document["name"].get<std::string>()};
 }
 
-bool scope_from_json(const nlohmann::json& document, Scope& out) {
-    if (!document.is_object()) return false;
+std::optional<Scope> scope_from_json(const nlohmann::json& document) {
+    if (!document.is_object()) return std::nullopt;
     if (!document.contains("unrestricted") ||
         !document["unrestricted"].is_boolean()) {
-        return false;
+        return std::nullopt;
     }
     if (!document.contains("grants") || !document["grants"].is_array()) {
-        return false;
+        return std::nullopt;
     }
     Scope parsed;
     parsed.unrestricted = document["unrestricted"].get<bool>();
     parsed.grants.reserve(document["grants"].size());
     for (const auto& entry : document["grants"]) {
-        Resource resource;
-        if (!resource_from_json(entry, resource)) return false;
-        parsed.grants.push_back(std::move(resource));
+        const auto resource = resource_from_json(entry);
+        if (!resource) return std::nullopt;
+        parsed.grants.push_back(*resource);
     }
-    out = std::move(parsed);
-    return true;
+    return parsed;
 }
 
 }  // namespace zetta

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -105,11 +106,12 @@ void to_json(nlohmann::json& document, const CapabilitySet& capabilities);
 
 // Parse from JSON, validating the shape at the boundary so a malformed capability
 // fails fast instead of silently widening or narrowing access (a
-// security-sensitive boundary — see docs/access-control.md). Each returns false
-// and leaves `out` untouched on anything malformed: not an object/array, a
-// missing or wrong-typed field, or an unknown domain. Mirrors the `capability`
-// $def in schemas/access_key.schema.json — keep them in sync.
-bool capability_from_json(const nlohmann::json& document, Capability& out);
-bool capability_set_from_json(const nlohmann::json& document, CapabilitySet& out);
+// security-sensitive boundary — see docs/access-control.md). Each returns
+// std::nullopt on anything malformed: not an object/array, a missing or
+// wrong-typed field, or an unknown domain. Mirrors the `capability` $def in
+// schemas/access_key.schema.json — keep them in sync.
+std::optional<Capability> capability_from_json(const nlohmann::json& document);
+std::optional<CapabilitySet> capability_set_from_json(
+    const nlohmann::json& document);
 
 }  // namespace zetta

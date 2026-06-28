@@ -163,7 +163,7 @@ TEST(CorrectnessGate, ProducedReportRoundTripsThroughJson) {
     EXPECT_EQ(document.at("verdict"), "fail");
     EXPECT_EQ(document.at("block_deploy"), true);
 
-    ValidationReport parsed;
-    ASSERT_TRUE(zetta::validation_report_from_json(document, parsed));
-    EXPECT_EQ(parsed, report);
+    const auto parsed = zetta::validation_report_from_json(document);
+    ASSERT_TRUE(parsed);
+    EXPECT_EQ(*parsed, report);
 }
