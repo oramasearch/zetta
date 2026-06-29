@@ -20,6 +20,7 @@
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
@@ -56,9 +57,18 @@ namespace {
 //    scope (resources) + capabilities (rights), no secret material.
 //  - `zetta_audit` — the immutable, append-only audit trail (Node::audit_events();
 //    ENT-23 / FEAT-9).
+//  - `dataset_partitions` — the partition catalog (Node::dataset_partitions()):
+//    one row per recorded dataset partition (where a slice of a table's data lives
+//    — its table / blob / row range / stats / owner nodes). Replicate-to-all, so
+//    every node sees the same placement (ENT-36 / TBL-13).
 // Together with the GUI Runs / Admin panels these satisfy RULE-7 (observable
-// state defaults to a system.zetta_* read view, never a GUI-only surface).
-// Future: system.zetta_leadership, etc.
+// state defaults to a system.<table> read view, never a GUI-only surface).
+// Future: system.leadership, etc.
+//
+// Naming: the `system` database is reserved + zetta-controlled, so a `zetta_`
+// prefix on its tables is redundant — new system tables are named plainly
+// (`dataset_partitions`, not `zetta_dataset_partitions`). The legacy `zetta_*`
+// tables below predate this and are kept until the system-wide rename (#538).
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
 constexpr std::string_view kDeploymentsTable = "zetta_deployments";
@@ -71,6 +81,7 @@ constexpr std::string_view kRunsTable = "zetta_runs";
 constexpr std::string_view kPrincipalsTable = "zetta_principals";
 constexpr std::string_view kKeysTable = "zetta_keys";
 constexpr std::string_view kAuditTable = "zetta_audit";
+constexpr std::string_view kPartitionsTable = "dataset_partitions";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -434,6 +445,33 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
         row["allowed"] = event->allowed();
         row["detail"] = event->detail();
         row["time"] = event->time();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per dataset partition for the system.dataset_partitions table — the
+// partition catalog (ENT-36 / TBL-13). Sourced from Node::dataset_partitions()
+// (every partition replicates, so each node sees the same placement). Exposes the
+// partition's identity + owning table + the large-object body holding its bytes +
+// the row range it covers + its column stats (free-form object) + the owner nodes
+// (flattened to a readable string + a count) — the queryable read view of the
+// replicate-to-all catalog.
+std::vector<nlohmann::json> partition_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& partition : node.dataset_partitions()) {
+        const PartitionRowRange& range = partition->row_range();
+        nlohmann::json row;
+        row["partition_id"] = partition->id();
+        row["table"] = partition->table();
+        row["blob_ref"] = partition->blob_ref();
+        row["row_start"] = range.start;
+        row["row_end"] = range.end;
+        row["row_count"] = range.end >= range.start ? range.end - range.start : 0;
+        row["owner_nodes"] = join_comma(partition->owner_nodes());
+        row["owner_count"] = static_cast<int>(partition->owner_nodes().size());
+        row["stats"] = partition->stats();
+        row["created"] = partition->created();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -822,6 +860,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kAuditTable) {
                         return select_over_rows(s, audit_rows(node_));
                     }
+                    if (sys == kPartitionsTable) {
+                        return select_over_rows(s, partition_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
@@ -830,6 +871,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.zetta_jobs, "
                                      "system.zetta_runs, system.zetta_principals, "
                                      "system.zetta_keys, system.zetta_audit, "
+                                     "system.dataset_partitions, "
                                      "system.zetta_cloud_providers, or "
                                      "system.zetta_cloud_status)");
                     }

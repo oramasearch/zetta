@@ -10,6 +10,7 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/cloud_inspector.hpp"
 #include "zetta/compute_job.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
@@ -51,6 +52,8 @@ const std::vector<SchemaEntry>& schema_registry() {
         {"model.schema.json", &zetta::model_value_schema},
         {"index.schema.json", &zetta::index_value_schema},
         {"compute_job.schema.json", &zetta::compute_job_value_schema},
+        {"dataset_partition.schema.json",
+         &zetta::dataset_partition_value_schema},
         {"audit_event.schema.json", &zetta::audit_event_value_schema},
         {"cloud_inspect_report.schema.json", &zetta::cloud_inspect_report_schema},
         {"solution_catalog.schema.json", &zetta::solution_catalog_schema},

@@ -322,6 +322,23 @@ disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a future
 `:memory:` mode). **New engines implement `StorageEngine`; query/indexes land
 behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
 
+A node also owns a **partition catalog** (`zetta::DatasetPartition`) — a record of
+**where a slice of a table's data physically lives** (**ENT-36 / TBL-13**): its
+`table` (a `tbl:` id), the `blob_ref` large-object body (a `lo:` id) holding its
+bytes, the `row_range` it covers, free-form column `stats` for pruning, and the
+`owner_nodes` that hold a copy. Another top-level, replicated entity (flat key
+`part:<uuid>`, on-disk `<part-uuid>/partition.json`), **modeled exactly like
+`ComputeJob`** but keyed by id: `create_dataset_partition`/`find_dataset_partition`/
+`drop_dataset_partition`/`dataset_partitions`, boundary-validated against a formal
+JSON Schema (`parse_dataset_partition_value`, the same `pboettch` validator).
+The catalog is **replicate-to-all** so placement is **globally visible** — a
+partition recorded on one node reconciles onto every node (`reconcile_partitions`,
+alongside the `lo:` block) and is queryable everywhere via the read-only SQL
+**`system.dataset_partitions`** table (computed from `Node::dataset_partitions()`).
+This is storage + provenance + replication of the catalog only — the *partitioner*
+that splits a table and writes the bodies, locality-aware reads, and re-balancing
+placement are later slices. See [docs/dataset-partitions.md](docs/dataset-partitions.md).
+
 ### Partitioning (`zetta::Partitioner`)
 
 A table can be **partitioned** behind the **`Partitioner`** seam
@@ -1186,8 +1203,11 @@ only; its serialized weights body stays on disk like an `lo:` body),
 `job:<uuid>` (a compute job — ARC-11/ENT-31),
 `index:<uuid>` (a registered index over a table — metadata only; ENT-39/ENT-40),
 `principal:<uuid>` (an authenticated actor), `key:<uuid>` (an access key carrying
-its parent `principal` ref + its `scope` + its `capabilities`), and
-`audit:<uuid>` (an immutable, append-only audit event) — each entity owns its key
+its parent `principal` ref + its `scope` + its `capabilities`),
+`audit:<uuid>` (an immutable, append-only audit event), and
+`part:<uuid>` (a dataset partition — the partition catalog: `{table, blob_ref,
+row_range, stats, owner_nodes}`, replicate-to-all so placement is globally
+visible — ENT-36/TBL-13) — each entity owns its key
 by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
@@ -1229,6 +1249,9 @@ data_dir/
   <job-uuid>/                ← one folder per compute job (UUIDv4 = its id)
     job.json                 ← { id, kind, status, project, graph, run,
                                   scaling_policy, created, updated, detail }
+  <part-uuid>/               ← one folder per dataset partition (UUIDv4 = its id)
+    partition.json           ← { id, table, blob_ref, row_range:{start,end},
+                                  stats, owner_nodes, created }
   <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
     principal.json           ← { id, kind, name, created }
     keys/
@@ -1342,10 +1365,14 @@ querying it never triggers a cloud call) and the run + governance read views
 **`system.zetta_principals`** (authenticated actors, `Node::principals()`),
 **`system.zetta_keys`** (the access keys principals own — scope + capabilities as
 readable strings, no secret material) and **`system.zetta_audit`** (the immutable
-audit trail, `Node::audit_events()`). `system` is reserved (can't be
-created/dropped/written; no real db may be named it) and is where future system
-tables (e.g. `system.zetta_leadership`) live — **surfacing observable state as a
-`system.zetta_*` table is the default**, see the convention below. Full detail in
+audit trail, `Node::audit_events()`) — plus **`system.dataset_partitions`** (the
+partition catalog, `Node::dataset_partitions()`: where each table's data slices
+live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13). `system` is
+reserved (can't be created/dropped/written; no real db may be named it) and is
+where future system tables (e.g. `system.leadership`) live — **surfacing observable
+state as a `system.<table>` table is the default**, see the convention below
+(name them plainly — no `zetta_` prefix; the legacy `zetta_*` tables await the
+rename in [`#538`](https://github.com/oramasearch/zetta/issues/538)). Full detail in
 [docs/query.md](docs/query.md).
 
 ### REPL console (`zetta::repl::ConsoleModel` + `zetta::gui::ReplConsole`)
@@ -2114,7 +2141,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + principals; run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + dataset partitions + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2156,6 +2183,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     in_memory_index_backend.hpp zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
     index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
+  dataset_partition.hpp     zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all (ENT-36/TBL-13)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
@@ -2245,7 +2273,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     console_model.hpp       zetta::repl::ConsoleModel — the engine-agnostic REPL session (frontend + input + transcript + submit) behind the CMP-6 console; no SDL/ImGui, so it backs the GUI component AND a future CLI (#524)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
@@ -2289,6 +2317,7 @@ src/core/                   zetta-core impl
     index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
     in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
+  dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -2510,17 +2539,23 @@ Keep the query frontend and execution separate: dialects parse to the generic
 AST; the `Executor` only ever sees the generic AST. Add a database format by
 implementing `Dialect`, not by special-casing the executor or UI.
 
-### System tables — surface observable state as `system.zetta_*` by default
+### System tables — surface observable state as `system.<table>` by default
 **Any state the product exposes for inspection or observability defaults to a
 virtual, read-only table in the reserved `system` database** — the cluster/node
-list, deployments, models, compute jobs, and **cloud/provider state** (the Cloud
-Inspector, provisioned bursts, …) all belong as `system.zetta_*` tables (à la
-`pg_catalog`), the way `system.zetta_nodes` / `zetta_deployments` /
-`zetta_models` / `zetta_jobs` already do. A `system` table is **computed at query
-time from the live in-memory source** (`Node::…()` / a catalog), **never** a
-stored or hand-synced copy. Reach for a bespoke GUI-only panel or an ad-hoc
-structure only when a `system` table genuinely can't express the state — and even
-then, prefer a table plus a panel that renders it, so SQL and the GUI never drift.
+list, deployments, models, compute jobs, **dataset partitions**, and
+**cloud/provider state** (the Cloud Inspector, provisioned bursts, …) all belong
+as `system.<table>` tables (à la `pg_catalog`), the way `system.dataset_partitions`
+does. **Name system tables plainly — no `zetta_` prefix.** The `system` database is
+reserved and zetta-controlled, so a `zetta_` prefix is **redundant** (`system.jobs`,
+not `system.zetta_jobs`). The legacy `zetta_*` tables (`zetta_nodes`, `zetta_jobs`,
+…) predate this rule and are kept until the system-wide rename in
+[`#538`](https://github.com/oramasearch/zetta/issues/538) — new system tables follow
+the unprefixed convention now (`system.dataset_partitions` is the first). A `system`
+table is **computed at query time from the live in-memory source** (`Node::…()` / a
+catalog), **never** a stored or hand-synced copy. Reach for a bespoke GUI-only panel
+or an ad-hoc structure only when a `system` table genuinely can't express the state —
+and even then, prefer a table plus a panel that renders it, so SQL and the GUI never
+drift.
 This **composes with "EVERYTHING is replicated state"** (above), it doesn't
 contradict it: durable agreement still lives in the CRDT, and the `system` table
 is its read view; **ephemeral/observed** state (a live cloud inspect, the device
@@ -2596,6 +2631,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
+- [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (the partitioner / locality-aware reads / re-balancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.

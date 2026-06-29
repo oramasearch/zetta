@@ -96,6 +96,13 @@ metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
 serialized **weights** stored as a large-object body that transfers peer-to-peer
 and is SHA-256-verified; a `system.zetta_models` registry table lists them (see
 [docs/models.md](docs/models.md)).
+It owns a **partition catalog** (`zetta::DatasetPartition`) — a record of where a
+slice of a table's data physically lives (its table, the large-object body holding
+its bytes, the row range, column stats, and owner nodes) replicated as
+`part:<uuid>`. The catalog is **replicate-to-all** so placement is globally
+visible: a partition recorded on one node appears on every node, queryable via the
+read-only `system.dataset_partitions` table (see
+[docs/dataset-partitions.md](docs/dataset-partitions.md)).
 The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
 (`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
 distributed accelerated compute pass: provision N nodes against a capability spec,
