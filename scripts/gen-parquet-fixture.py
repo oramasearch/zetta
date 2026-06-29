@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Generate the committed Parquet metadata test fixture + golden (DEV-TIME ONLY).
+"""Generate the committed Parquet test fixtures + goldens (DEV-TIME ONLY).
 
-zetta's native Parquet footer/metadata parser (ADR-32, issue #505) is verified
-against a golden produced here by Apache Arrow's pyarrow — an *independent*
-reference for the schema + row-group / column-chunk layout the native parser
-extracts from the file's Thrift `FileMetaData`.
+zetta's native Parquet reader (ADR-32, issues #505–#508) is verified against
+goldens produced here by Apache Arrow's pyarrow — an *independent* reference for
+the schema + layout the native parser extracts, the decoded values, and the
+materialized DataFrame.
 
 This script is NOT part of the build or CI (ADR-17 — no foreign runtime in the
-engine / build / CI). It is run by hand, once, to (re)generate four committed
-artifacts under tests/fixtures/parquet/:
+engine / build / CI). It is run by hand, once, to (re)generate the committed
+artifacts under tests/fixtures/parquet/ (and the churn Parquet siblings under
+tests/fixtures/churn/):
 
   * churn_sample.parquet            — a small, representative Parquet file
   * churn_sample.metadata.json      — pyarrow's dump of its metadata, in the
@@ -25,6 +26,20 @@ artifacts under tests/fixtures/parquet/:
   * churn_decode.values.json        — the decoded values per column, in the shape
                                       zetta::parquet::to_json(DecodedColumn) emits;
                                       a null row is JSON null.
+  * saas_sample.parquet             — a scaled-down saas-sales-conversations file
+                                      (#508): engineered numeric columns + an
+                                      `outcome` label + a handful of embedding_*
+                                      float columns (the real dataset has
+                                      embedding_0..3071) — to exercise the reader's
+                                      column projection (drop the embeddings).
+  * saas_sample.dataframe.json      — the golden DataFrame for the projected
+                                      subset (engineered numeric + outcome only),
+                                      in the shape zetta::ddf::load_parquet_data_frame
+                                      materializes (TC-9 / #499 parity).
+  * ../churn/accounts.parquet       — the churn fixture's accounts/events as
+  * ../churn/events.parquet           Parquet (written from the canonical JSONL),
+                                      so load_churn_dataset(..., Parquet) round-trips
+                                      to the same dataset as JSONL/CSV (#508).
 
 Usage (needs pyarrow in a throwaway venv):
 
@@ -39,10 +54,15 @@ import pyarrow.parquet as pq
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.normpath(os.path.join(HERE, "..", "tests", "fixtures", "parquet"))
+CHURN_DIR = os.path.normpath(os.path.join(HERE, "..", "tests", "fixtures", "churn"))
 PARQUET_PATH = os.path.join(OUT_DIR, "churn_sample.parquet")
 GOLDEN_PATH = os.path.join(OUT_DIR, "churn_sample.metadata.json")
 DECODE_PARQUET_PATH = os.path.join(OUT_DIR, "churn_decode.parquet")
 DECODE_VALUES_PATH = os.path.join(OUT_DIR, "churn_decode.values.json")
+SAAS_PARQUET_PATH = os.path.join(OUT_DIR, "saas_sample.parquet")
+SAAS_GOLDEN_PATH = os.path.join(OUT_DIR, "saas_sample.dataframe.json")
+CHURN_ACCOUNTS_PARQUET = os.path.join(CHURN_DIR, "accounts.parquet")
+CHURN_EVENTS_PARQUET = os.path.join(CHURN_DIR, "events.parquet")
 
 # A churn-shaped table: a mix of physical types the UC-1 datasets use.
 TABLE = pa.table(
@@ -249,3 +269,127 @@ with open(DECODE_VALUES_PATH, "w") as f:
 print("wrote", DECODE_PARQUET_PATH, os.path.getsize(DECODE_PARQUET_PATH), "bytes")
 print("wrote", DECODE_VALUES_PATH)
 print(json.dumps(decode_golden, indent=2))
+
+
+# --- saas-sales-conversations sample (#508, TC-9) ---------------------------
+#
+# A scaled-down stand-in for the saas-sales-conversations dataset: a few
+# engineered numeric columns + an `outcome` label, plus a handful of embedding_*
+# float columns. The real dataset carries embedding_0..3071 (3072 columns); the
+# whole point of the reader's column projection is to load the engineered columns
+# + outcome WITHOUT decoding the embeddings, so the fixture only needs enough
+# embedding columns (8) to prove they are dropped.
+SAAS_NUM_ROWS = 12
+SAAS_EMBEDDING_DIMS = 8
+# The engineered numeric columns + the label, in the order the golden projects.
+SAAS_PROJECTION = [
+    ("messages", pa.int64(), "int64",
+     [12, 4, 31, 7, 19, 2, 26, 9, 14, 5, 22, 1]),
+    ("avg_response_seconds", pa.float64(), "float64",
+     [45.5, 320.0, 12.25, 88.75, 5.5, 600.0, 33.0, 410.5, 60.0, 150.25, 8.0, 720.0]),
+    ("sentiment", pa.float64(), "float64",
+     [0.82, -0.45, 0.91, 0.13, 0.77, -0.88, 0.5, -0.2, 0.66, 0.08, 0.95, -0.97]),
+    ("questions_asked", pa.int64(), "int64",
+     [3, 0, 6, 1, 4, 0, 5, 1, 2, 0, 7, 0]),
+    ("outcome", pa.int64(), "int64",
+     [1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0]),
+]
+
+saas_columns = {name: pa.array(values, type=pa_type)
+                for name, pa_type, _dtype, values in SAAS_PROJECTION}
+# The embedding columns we DROP — deterministic floats, exact in float32.
+for dim in range(SAAS_EMBEDDING_DIMS):
+    saas_columns[f"embedding_{dim}"] = pa.array(
+        [float((dim + (row * 0.0625)) % 1.0) for row in range(SAAS_NUM_ROWS)],
+        type=pa.float32(),
+    )
+
+SAAS_TABLE = pa.table(saas_columns)
+# Two row groups (6 + 6) so the reader concatenates chunks across row groups.
+pq.write_table(
+    SAAS_TABLE,
+    SAAS_PARQUET_PATH,
+    compression="snappy",
+    use_dictionary=False,
+    row_group_size=6,
+    version="2.6",
+)
+
+saas_golden = {
+    "num_rows": SAAS_NUM_ROWS,
+    "columns": [
+        {"name": name, "dtype": dtype, "values": values}
+        for name, _pa_type, dtype, values in SAAS_PROJECTION
+    ],
+}
+with open(SAAS_GOLDEN_PATH, "w") as f:
+    json.dump(saas_golden, f, indent=2)
+    f.write("\n")
+
+print("wrote", SAAS_PARQUET_PATH, os.path.getsize(SAAS_PARQUET_PATH), "bytes")
+print("wrote", SAAS_GOLDEN_PATH)
+
+
+# --- churn fixture as Parquet (#508) ----------------------------------------
+#
+# Write the canonical churn JSONL (the source of truth) to Parquet with explicit
+# types, so load_churn_dataset(..., Parquet) reads it through the native reader
+# and round-trips to the SAME dataset as JSONL/CSV. Uncompressed/snappy + page v1
+# only (the codecs/page version the native decoders read).
+def read_jsonl(path):
+    rows = []
+    with open(path) as handle:
+        for line in handle:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def write_records_parquet(rows, schema, out_path):
+    columns = {
+        field.name: pa.array([row[field.name] for row in rows], type=field.type)
+        for field in schema
+    }
+    table = pa.table(columns, schema=schema)
+    pq.write_table(
+        table,
+        out_path,
+        compression="snappy",
+        use_dictionary=True,
+        version="2.6",
+    )
+    print("wrote", out_path, os.path.getsize(out_path), "bytes")
+
+
+ACCOUNTS_SCHEMA = pa.schema([
+    pa.field("account_id", pa.string(), nullable=False),
+    pa.field("name", pa.string(), nullable=False),
+    pa.field("brand", pa.string(), nullable=False),
+    pa.field("entity", pa.string(), nullable=False),
+    pa.field("plan_tier", pa.string(), nullable=False),
+    pa.field("industry", pa.string(), nullable=False),
+    pa.field("region", pa.string(), nullable=False),
+    pa.field("mrr", pa.float64(), nullable=False),
+    pa.field("seats", pa.int64(), nullable=False),
+    pa.field("tenure_days", pa.int64(), nullable=False),
+    pa.field("renewal_date", pa.string(), nullable=False),
+    pa.field("churned", pa.bool_(), nullable=False),
+    pa.field("churn_date", pa.string(), nullable=False),
+])
+EVENTS_SCHEMA = pa.schema([
+    pa.field("event_id", pa.string(), nullable=False),
+    pa.field("account_id", pa.string(), nullable=False),
+    pa.field("event_ts", pa.string(), nullable=False),
+    pa.field("event_type", pa.string(), nullable=False),
+    pa.field("channel", pa.string(), nullable=False),
+    pa.field("mention", pa.string(), nullable=False),
+    pa.field("value", pa.float64(), nullable=False),
+])
+
+write_records_parquet(
+    read_jsonl(os.path.join(CHURN_DIR, "accounts.jsonl")),
+    ACCOUNTS_SCHEMA, CHURN_ACCOUNTS_PARQUET)
+write_records_parquet(
+    read_jsonl(os.path.join(CHURN_DIR, "events.jsonl")),
+    EVENTS_SCHEMA, CHURN_EVENTS_PARQUET)

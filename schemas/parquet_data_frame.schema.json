@@ -1,0 +1,55 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "columns": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "dtype": {
+            "enum": [
+              "float32",
+              "float64",
+              "int32",
+              "int64",
+              "uint32",
+              "uint64",
+              "uint8"
+            ],
+            "type": "string"
+          },
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": [
+                "integer",
+                "number"
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "dtype",
+          "values"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "num_rows": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "num_rows",
+    "columns"
+  ],
+  "title": "Parquet materialized DataFrame",
+  "type": "object"
+}

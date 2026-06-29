@@ -5,8 +5,8 @@
 top of the [footer / metadata parser](parquet-metadata.md) (#505) and the
 [Snappy page codec](parquet-snappy.md) (#507). **No Apache Arrow, no
 parquet-cpp.** This is the third of the four native Parquet slices (ADR-32 /
-#481); turning these typed columns into [DDF](ddf.md) columns is the next one
-(#508).
+#481); turning these typed columns into [DDF](ddf.md) columns is the
+[reader → DDF slice](parquet-reader.md) (#508).
 
 - **Code:** `include/zetta/parquet/column_decoder.hpp`,
   `src/core/parquet/column_decoder.cpp` (namespace `zetta::parquet`, in
@@ -59,8 +59,9 @@ column.valid_count();              // number of present values
 ```
 
 `DecodedColumn` stores values the **Arrow-native** way: dense, present-only
-typed vectors plus a validity bitmap — exactly the split the DDF projection
-(#508) consumes. Nulls are **not** stored in the value vectors; they are marked
+typed vectors plus a validity bitmap — exactly the split the
+[DDF projection](parquet-reader.md) (#508) consumes. Nulls are **not** stored in
+the value vectors; they are marked
 in `validity` and re-expanded only by `to_json`. `decode_column_chunk` decodes
 one row group's slice; `decode_column` decodes a whole leaf column across all row
 groups, concatenated in row-group order.
@@ -77,8 +78,8 @@ groups, concatenated in row-group order.
   zstd is the documented [Snappy](parquet-snappy.md) follow-up.
 - **Encodings:** PLAIN + dictionary. A **v2 data page**, or an unsupported value
   encoding (delta / byte-stream-split), fails with a reason.
-- **No DDF / SQL / run wiring** — projecting these columns into typed
-  [DDF](ddf.md) columns is #508.
+- **No DDF / SQL / run wiring in this slice** — projecting these columns into
+  typed [DDF](ddf.md) columns is the [reader → DDF slice](parquet-reader.md) (#508).
 
 Everything is **non-throwing** (zetta-core is `-fexperimental-library`): a
 malformed / truncated / unsupported page, or an out-of-range dictionary index,
@@ -166,8 +167,8 @@ different codec/encoding mix.
 
 The footer parser locates each column chunk's pages; these decoders read +
 decompress + decode them into typed values + a validity bitmap; the
-[reader → DDF wiring (#508)](https://github.com/oramasearch/zetta/issues/508)
-turns those into typed [DDF](ddf.md) columns and removes the
+[reader → DDF wiring](parquet-reader.md) (#508) turns those into typed
+[DDF](ddf.md) columns (with column projection) and removes the
 `ChurnDataFormat::Parquet` "not yet supported" error. zstd page decompression is
 the sibling codec to add behind the [Snappy](parquet-snappy.md) per-page seam
 when a target file needs it.
