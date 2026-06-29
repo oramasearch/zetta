@@ -431,6 +431,8 @@ add_library(zetta-core STATIC
   src/core/ddf/group_by.cpp
   src/core/ddf/as_of.cpp
   src/core/ddf/group_by_job.cpp
+  src/core/ddf/local_partitions.cpp
+  src/core/ddf/local_group_by_job.cpp
   src/core/ddf/featurize.cpp
   src/core/ddf/featurize_job.cpp
   src/core/ml/gbdt.cpp

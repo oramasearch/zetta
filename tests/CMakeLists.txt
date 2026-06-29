@@ -78,6 +78,7 @@ add_executable(zetta-tests
   test_group_by.cpp
   test_ddf_as_of.cpp
   test_ddf_group_by.cpp
+  test_ddf_local_partitions.cpp
   test_ddf_featurize.cpp
   test_gbdt.cpp
   test_calibration.cpp

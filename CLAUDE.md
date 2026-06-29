@@ -731,6 +731,30 @@ root alone. It introduces **no new JSON format** — the op spec rides the exist
 job record its own boundary. The remaining featurize op (as-of windowing), schedulable
 the same way, is a later issue. See [docs/ddf-groupby.md](docs/ddf-groupby.md).
 
+The distributed groupby (and any DDF op) now **executes over a node's LOCAL
+partitions** — **compute-near-data** (`zetta::ddf::load_local_partitions`,
+`include/zetta/ddf/local_partitions.hpp`; **ARC-12 / FEAT-8**, #516 — the engine half
+of TC-11 #501): instead of a shard handed in **out-of-band** (the `ComputeNode` /
+`shards[i]` pattern), a node **enumerates the partitions it owns** from the
+[partition catalog](#on-disk-layout) (every `DatasetPartition` whose `table` matches
+and whose `owner_nodes` contains `node.node_id()`, the in-memory source of
+`system.dataset_partitions`), reads only the partition **bodies it physically holds**
+from its **local** large-object store (the [sharded-blob-placement](#files-large-objects--import)
+guarantee — no `LOREQ`, no full-dataset pull), parses them (the existing JsonlStore
+`{"_zid","doc"}` line format the [partitioned write path](#the-partitioned-write-path-is)
+emits, sha256-verified at the blob layer — a structural fail-fast boundary, **no new
+JSON format**), and loads them into its local `DataFrame` shard. The op then runs over
+that shard, exchanging only the per-node **partial** over the collectives — the raw
+rows never cross the wire. `zetta::ddf::run_near_data_group_by_job`
+(`include/zetta/ddf/local_group_by_job.hpp`) is the first-class near-data op: load
+the local shard → `run_group_by_job`, reporting `local_bytes_read` (read near data)
+vs `wire_bytes_moved` (the partials, measured by the new `Collectives::wire_bytes()`
+meter). So the acceptance is directly checkable — **bytes-moved ≈ partials (not ≈
+dataset); result == the single-node oracle** — over a real loopback cluster. Group-by
+is wired end to end; `scan`/`filter`/`featurize` reuse the same `load_local_partitions`
+shard source; rebalancing (#517) + a locality-aware fetch of a missing owned body are
+later slices. See [docs/compute-near-data.md](docs/compute-near-data.md).
+
 Another DDF **op** is the **window / as-of (point-in-time) aggregation**
 (`include/zetta/ddf/as_of.hpp`, `zetta::ddf::as_of_aggregate`; **ARC-12**, #384) — the
 **leakage-free featurization primitive**: for each entity, reduce the values of only
@@ -2526,6 +2550,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by.hpp            zetta::ddf::group_by/distributed_group_by — DDF groupby-aggregate (count/sum/min/max/mean), partial-per-node + gather/merge/broadcast combine + GroupBySpec JSON boundary (ARC-12; #383)
     as_of.hpp               zetta::ddf::as_of_aggregate/AsOfAggregate — DDF window / as-of (point-in-time) op: per-entity reduce of rows in a time window (time <= as_of), the leakage-free featurization primitive + JSON boundary (ARC-12; #384)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
+    local_partitions.hpp    zetta::ddf::load_local_partitions/LocalShardResult — compute-near-data shard loader: enumerate this node's OWNED partitions of a table (owner_nodes ∋ node_id) from the catalog, read only the locally-held blob bodies, parse the JsonlStore {_zid,doc} lines, load into a local DataFrame; instrumented bytes_read (near data, not moved) (ARC-12/FEAT-8; #516)
+    local_group_by_job.hpp  zetta::ddf::run_near_data_group_by_job/NearDataGroupByResult — the first-class compute-near-data op: load the local shard via load_local_partitions → run_group_by_job, reporting local_bytes_read vs wire_bytes_moved (the partials, via Collectives::wire_bytes()); result == single-node oracle (ARC-12/FEAT-8; #516)
     featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
   ml/
@@ -2643,6 +2669,8 @@ src/core/                   zetta-core impl
   ddf/group_by.cpp          group_by/local_partial/GroupByPartial — groupby-aggregate accumulate/merge/finalize, the partial wire form + GroupBySpec JSON boundary (zetta-core; #383)
   ddf/as_of.cpp             as_of_aggregate — host-side per-entity windowed/point-in-time reduction (group key + time mask) + AsOfAggregate JSON boundary (zetta-core; #384)
   ddf/group_by_job.cpp      run_group_by_job — drive the distributed groupby-aggregate as a recorded ddf ComputeJob through the coordinator (calls distributed_group_by on the JobRound) (zetta-core; #387)
+  ddf/local_partitions.cpp  load_local_partitions — enumerate this node's owned partitions from Node::dataset_partitions(), read each owned blob body from the local LargeObjectStore, parse the JsonlStore lines, load into a DataFrame; instrumented bytes_read (zetta-core; #516)
+  ddf/local_group_by_job.cpp run_near_data_group_by_job — load the local shard via load_local_partitions then drive run_group_by_job, computing wire_bytes_moved from Collectives::wire_bytes() before/after (zetta-core; #516)
   ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
   ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -2959,6 +2987,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-distributed-sort.md`](docs/ddf-distributed-sort.md) — the DDF distributed sort (`zetta::ddf::DistributedSorter`): sample-partition + local sort + merge across the cluster — splitter agreement over the [collectives](docs/collectives.md), an all-to-all row shuffle over the [signal plane](docs/signal-plane.md) (schema-validated `PartitionMessage`), returning globally range-ordered, locally-sorted partitions; a single-node cluster returns the locally-sorted shard (ARC-12; #385).
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383) — and runs as a recorded `ddf` `ComputeJob` (`zetta::ddf::run_group_by_job`, `group_by_job.hpp`) through the [job coordinator](docs/job-coordinator.md), so it appears in `system.zetta_jobs` (FEAT-8; #387).
+- [`docs/compute-near-data.md`](docs/compute-near-data.md) — **compute-near-data**: a DDF op executes over a node's LOCAL partitions (`zetta::ddf::load_local_partitions` + `run_near_data_group_by_job`, ARC-12 / FEAT-8; #516, the engine half of TC-11 #501). A node enumerates the partitions it **owns** from the [catalog](docs/dataset-partitions.md) (`owner_nodes` ∋ its id), reads only the partition bodies it [physically holds](docs/sharded-blob-placement.md) from its local large-object store (no `LOREQ`, no full-dataset pull), runs the op over that local shard, and exchanges only the small per-node partial over the [collectives](docs/collectives.md) — replacing the "shard handed in out-of-band" path. Instrumented (`bytes_read` near-data vs `Collectives::wire_bytes()` moved) so the acceptance — **bytes-moved ≈ partials (not ≈ dataset); result == the single-node oracle** — is directly checkable; no new JSON format (the body is the existing JsonlStore line shape, sha256-verified). Group-by is wired end to end; scan/filter/[featurize](docs/ddf-featurize.md) reuse the same loader.
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
