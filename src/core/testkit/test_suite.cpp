@@ -18,6 +18,7 @@ std::string_view to_string(TestCategory category) {
         case TestCategory::Distributed: return "distributed";
         case TestCategory::Governance:  return "governance";
         case TestCategory::Pipeline:    return "pipeline";
+        case TestCategory::Examples:    return "examples";
     }
     return "unknown";
 }
@@ -30,6 +31,7 @@ std::string_view category_title(TestCategory category) {
         case TestCategory::Distributed: return "Distributed & cluster";
         case TestCategory::Governance:  return "Governance";
         case TestCategory::Pipeline:    return "UC-1 pipeline";
+        case TestCategory::Examples:    return "Example scripts";
     }
     return "Other";
 }
@@ -233,6 +235,7 @@ const TestSuite& TestSuite::builtin() {
         register_distributed_cases(built);
         register_governance_cases(built);
         register_pipeline_cases(built);
+        register_example_cases(built);
         return built;
     }();
     return suite;
