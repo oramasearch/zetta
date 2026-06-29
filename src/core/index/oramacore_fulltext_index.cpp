@@ -137,9 +137,14 @@ IndexQueryResult OramaCoreFulltextIndex::query(const IndexSpec& spec,
     const oramacore::index::SearchResult hits =
         built->second.index.search(*text, query.top_k);
     result.row_ids.reserve(hits.hits.size());
+    result.scores.reserve(hits.hits.size());
     for (const oramacore::index::Hit& hit : hits.hits) {
         if (hit.doc_id < built->second.rowid_by_docid.size()) {
             result.row_ids.push_back(built->second.rowid_by_docid[hit.doc_id]);
+            // Carry the BM25F relevance score (higher = better) aligned to
+            // row_ids, so a distributed scatter-gather can merge per-partition
+            // hits into one global ranking by score.
+            result.scores.push_back(hit.score);
         }
     }
     result.status = IndexStatus::success();

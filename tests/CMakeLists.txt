@@ -53,6 +53,7 @@ add_executable(zetta-tests
   test_index.cpp
   test_index_step_executor.cpp
   test_oramacore_fulltext_index.cpp
+  test_distributed_fulltext.cpp
   test_compute_job.cpp
   test_dataset_partition.cpp
   test_partition_writer.cpp

@@ -237,8 +237,17 @@ slice (#528)**: the `Node` now owns an `IndexRegistry`
 (`Node::index_registry()`, with the reference backends registered), and the
 `IndexStepExecutor` resolves an `index` step to its backend, builds the index over
 the source table's rows, records the `Index` entity, and leaves it queryable. The
-vector / semantic / feature backends (additive behind the same `IndexBackend`
-interface) and a distributed (fan-across-nodes) build are later slices.
+**distributed (fan-across-nodes) build + query** — a full-text sub-index per LOCAL
+partition, answered by scatter-gather + merge/rank — is the
+**[`DistributedFulltextIndex`](distributed-fulltext.md) slice (#529)**; the
+vector / semantic / feature backends are additive behind the same `IndexBackend`
+interface.
+
+`IndexQueryResult` carries an optional `scores` vector aligned to `row_ids` (higher =
+better) so a distributed merge can rank per-partition hits globally — a *ranked*
+backend (`OramaCoreFulltextIndex`'s BM25F) fills it; an *exact-match* backend
+(`InMemoryIndexBackend`) leaves it empty (the invariant: empty, or `row_ids.size()`
+long). See [distributed-fulltext.md](distributed-fulltext.md).
 
 ## Pointers
 

@@ -382,6 +382,7 @@ add_library(zetta-core STATIC
   src/core/index/index_step_executor.cpp
   src/core/index/in_memory_index_backend.cpp
   src/core/index/oramacore_fulltext_index.cpp
+  src/core/index/distributed_fulltext.cpp
   src/core/compute_job.cpp
   src/core/dataset_partition.cpp
   src/core/rendezvous_placement.cpp
