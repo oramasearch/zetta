@@ -53,7 +53,11 @@ language text into a templated `connect→clean→model→index→serve→act` p
 **Python** lowers to the same IR through the simulated-Python *language frontend*
 (`zetta::input::PythonFrontend` — `ds = load_dataset(...); m = train(ds, ...)` →
 typed steps + data-flow edges; zetta re-implements the shape, it never runs
-Python; see [docs/python-frontend.md](docs/python-frontend.md)). The headed
+Python; see [docs/python-frontend.md](docs/python-frontend.md)). The `datasets`
+shim makes `load_dataset("<path>", columns=[...])` real — it decodes the parquet
+with zetta's native reader into a (partitioned) table (HuggingFace `datasets` is
+the fidelity reference only, never run; see
+[docs/datasets-shim.md](docs/datasets-shim.md)). The headed
 **Console (REPL)** view runs SQL or simulated-Python against a node interactively
 and **governed**: every statement is capability-scoped against the acting key,
 simulated-Python lowers to the IR and must pass the correctness gate before it
@@ -117,7 +121,12 @@ stores it as a large object (peer-to-peer + SHA-256-verified), and records a
 owner set now drives **sharded blob placement**: a partition's large-object **body**
 is fetched + held only by its owner node(s) (`rf` owners → exactly `rf` copies),
 instead of replicate-to-all (see
-[docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)).
+[docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)). When the cluster
+gains a node, a **between-jobs rebalance** (`zetta::rebalance_partitions`) recomputes
+rendezvous placement so ≈`rf`/N partitions move onto it (whole partitions, no full
+rehash) and their bodies follow — auto-triggered from `Node::tick()` off the
+replicated membership keys (see
+[docs/partition-rebalance.md](docs/partition-rebalance.md)).
 The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
 (`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
 distributed accelerated compute pass: provision N nodes against a capability spec,

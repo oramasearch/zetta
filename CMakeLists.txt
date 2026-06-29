@@ -386,6 +386,7 @@ add_library(zetta-core STATIC
   src/core/dataset_partition.cpp
   src/core/rendezvous_placement.cpp
   src/core/partition_writer.cpp
+  src/core/partition_rebalance.cpp
   src/core/principal.cpp
   src/core/access_key.cpp
   src/core/scope.cpp
@@ -420,6 +421,7 @@ add_library(zetta-core STATIC
   src/core/parquet/reader.cpp
   src/core/input/python_frontend.cpp
   src/core/input/cluster_bindings.cpp
+  src/core/input/datasets_bindings.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
@@ -431,6 +433,8 @@ add_library(zetta-core STATIC
   src/core/ddf/group_by.cpp
   src/core/ddf/as_of.cpp
   src/core/ddf/group_by_job.cpp
+  src/core/ddf/local_partitions.cpp
+  src/core/ddf/local_group_by_job.cpp
   src/core/ddf/featurize.cpp
   src/core/ddf/featurize_job.cpp
   src/core/ml/gbdt.cpp

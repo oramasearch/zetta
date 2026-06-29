@@ -8,6 +8,7 @@
 #endif
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
+#include "zetta/partition_rebalance.hpp"
 #include "zetta/project_graph.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/sha256.hpp"
@@ -34,6 +35,24 @@
 
 namespace zetta {
 namespace fs = std::filesystem;
+
+namespace {
+
+// The cluster membership encoded in the document: the id of every node:<id> key,
+// sorted ascending so the set is order-independent and comparable across ticks.
+// Membership is replicated state (each node seeds its own node:<id> entry, peers
+// merge), so a join/leave shows up here — the signal the #517 rebalance keys on.
+std::vector<std::string> membership_from_snapshot(const nlohmann::json& snapshot) {
+    std::vector<std::string> members;
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kNodePrefix);
+        if (!id.empty()) members.push_back(std::move(id));
+    }
+    std::sort(members.begin(), members.end());
+    return members;
+}
+
+}  // namespace
 
 Node::Node(NodeConfig config, ReplicationManager* replication)
     : config_(std::move(config)), replication_(replication) {
@@ -68,7 +87,12 @@ bool Node::start() {
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
         migrate_to_replication();   // capture any local-only data into it
-        reconcile_from_replication();  // materialize anything only in the document
+        const nlohmann::json snapshot = replication_->snapshot();
+        reconcile_from_replication(snapshot);  // materialize document-only state
+        // Establish the membership baseline so a later join/leave is a detectable
+        // delta — but never rebalance on startup (the partitions just loaded
+        // already reflect their recorded placement).
+        last_membership_ = membership_from_snapshot(snapshot);
         persist_replication();
         last_seen_version_ = replication_->version();
     }
@@ -116,7 +140,12 @@ void Node::tick() {
     //    the on-disk projection to match it. Reconcile only materializes (never
     //    captures), so it doesn't move the version — no feedback loop.
     if (replication_ && replication_->version() != last_seen_version_) {
-        reconcile_from_replication();
+        const nlohmann::json snapshot = replication_->snapshot();
+        reconcile_from_replication(snapshot);
+        // 1b. Between jobs: when the cluster membership (node:<id> keys) changed,
+        //     rebalance partition placement (#517). This DOES capture updated
+        //     part: owners; step 3 persists the moved document.
+        rebalance_partitions_on_membership_change(snapshot);
     }
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
@@ -1436,8 +1465,7 @@ void Node::migrate_to_replication() {
 
 // ----- replication: apply the document to the local projection --------------
 
-void Node::reconcile_from_replication() {
-    const nlohmann::json snapshot = replication_->snapshot();
+void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     // Reconcile each replicated entity type from the same snapshot, parents
     // before children (databases before tables/rows/large objects; projects
     // before inputs/graphs; principals before access keys). Order matters.
@@ -1454,6 +1482,21 @@ void Node::reconcile_from_replication() {
     reconcile_principals(snapshot);
     reconcile_access_keys(snapshot);
     reconcile_audit_events(snapshot);
+}
+
+void Node::rebalance_partitions_on_membership_change(
+    const nlohmann::json& snapshot) {
+    std::vector<std::string> members = membership_from_snapshot(snapshot);
+    if (members == last_membership_) return;  // no membership delta — nothing to do
+    // The previous membership distinguishes replicate-to-all partitions (owned by
+    // exactly the old member set) from sharded ones, so rebalance leaves the
+    // former untouched. Move it out before overwriting the baseline.
+    std::vector<std::string> previous = std::move(last_membership_);
+    last_membership_ = members;
+    // First observation (baseline established in start(), but be defensive) — and
+    // a now-empty membership (nowhere to place) — never trigger a rebalance.
+    if (previous.empty() || members.empty()) return;
+    rebalance_partitions(*this, members, previous);
 }
 
 // Databases, tables, rows, and large objects reconcile together: they decode in

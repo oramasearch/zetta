@@ -56,6 +56,7 @@ add_executable(zetta-tests
   test_compute_job.cpp
   test_dataset_partition.cpp
   test_partition_writer.cpp
+  test_partition_rebalance.cpp
   test_access_control.cpp
   test_executor.cpp
   test_churn_step_executor.cpp
@@ -78,6 +79,7 @@ add_executable(zetta-tests
   test_group_by.cpp
   test_ddf_as_of.cpp
   test_ddf_group_by.cpp
+  test_ddf_local_partitions.cpp
   test_ddf_featurize.cpp
   test_gbdt.cpp
   test_calibration.cpp
@@ -100,6 +102,7 @@ add_executable(zetta-tests
   test_parquet_reader.cpp
   test_python_frontend.cpp
   test_python_engine_bindings.cpp
+  test_datasets_bindings.cpp
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp

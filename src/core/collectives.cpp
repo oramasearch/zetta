@@ -180,6 +180,7 @@ SignalResponse Collectives::on_request(const Signal& request) {
         if (!message) {
             return SignalResponse{.ok = false, .error = "contribute: " + error};
         }
+        account_wire_bytes(request.payload.size());  // bytes received over the wire
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             const std::string from =
@@ -196,6 +197,7 @@ SignalResponse Collectives::on_request(const Signal& request) {
         if (!message) {
             return SignalResponse{.ok = false, .error = "result: " + error};
         }
+        account_wire_bytes(request.payload.size());  // bytes received over the wire
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             Round& round = rounds_[message->tag];
@@ -247,6 +249,7 @@ bool Collectives::push_result(const std::string& tag,
     const std::string payload = encode_collective_message(message);
     for (const std::string& node_id : participants) {
         if (node_id == self) continue;
+        account_wire_bytes(payload.size());  // bytes sent over the wire (per peer)
         const SignalResponse response =
             cluster_.request(node_id, std::string{kResultMethod}, payload, timeout);
         if (!response.ok) return false;
@@ -260,9 +263,10 @@ std::optional<std::vector<double>> Collectives::participate(
     std::chrono::milliseconds timeout) {
     CollectiveMessage message{
         .tag = tag, .from = cluster_.node_id(), .values = values};
+    const std::string payload = encode_collective_message(message);
+    account_wire_bytes(payload.size());  // bytes sent over the wire (contribution)
     const SignalResponse ack = cluster_.request(
-        root, std::string{kContributeMethod}, encode_collective_message(message),
-        timeout);
+        root, std::string{kContributeMethod}, payload, timeout);
     if (!ack.ok) return std::nullopt;
     if (!expect_result) return std::vector<double>{};
 

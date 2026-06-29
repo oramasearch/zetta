@@ -31,6 +31,12 @@ ds = load_dataset("DeepMostInnovations/saas-sales-conversations")
   the dataset's examples as JSON rows — re-implemented in C++ (we fetch/parse
   the data ourselves through a clear IO seam; we do not import the Python
   library).
+- **Status: built** (#521) — `load_dataset(...)` lowers to an IR connect/load
+  step (the [Python frontend](../../../docs/python-frontend.md)) and
+  `zetta::input::run_load_dataset_step` executes it by decoding the parquet via
+  zetta's native reader into a (partitioned) table, with file/network IO behind
+  the injectable `DatasetResolver` seam. This *is* the canonical worked example of
+  this skill — see [docs/datasets-shim.md](../../../docs/datasets-shim.md).
 
 ## Follow the dialect-agnostic pattern
 

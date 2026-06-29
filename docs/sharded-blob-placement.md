@@ -81,9 +81,13 @@ slices, as with the rest of the [partition catalog](dataset-partitions.md)):
 - the **partitioner write path** ([#511](https://github.com/oramasearch/zetta/issues/511))
   that splits a table into partitions and writes their bodies in the first place
   (and records `owner_nodes` from the [placement strategy](partitioner.md)),
-- **locality-aware reads** that route a scan to a partition's owner,
-- **re-balancing** placement on a membership change (whole-partition moves), which
-  the [rendezvous placement](partitioner.md) keeps to ~1/N of partitions.
+- **locality-aware reads** that route a scan to a partition's owner.
+
+The **re-balancing** of placement on a membership change (whole-partition moves,
+which the [rendezvous placement](partitioner.md) keeps to ~1/N of partitions) is
+**built** — see [partition-rebalance.md](partition-rebalance.md): it updates a
+partition's `owner_nodes`, and this store moves the body to the new owners over the
+same seam.
 
 ## Tests
 

@@ -142,6 +142,17 @@ void DatasetPartition::apply_value(DatasetPartitionValue value) {
     persist_meta();  // projection only — no capture (no feedback loop)
 }
 
+void DatasetPartition::set_owner_nodes(std::vector<std::string> owner_nodes) {
+    value_.owner_nodes = std::move(owner_nodes);
+    // CRDT first (the source of truth), then the on-disk projection — the same
+    // order as Run::set_status. A standalone partition (no replication) just
+    // persists the projection.
+    if (replication_) {
+        replication_->set(catalog::partition_key(id_), to_json(value_));
+    }
+    persist_meta();
+}
+
 nlohmann::json DatasetPartition::metadata() const { return to_json(value_); }
 
 void DatasetPartition::persist_meta() const {

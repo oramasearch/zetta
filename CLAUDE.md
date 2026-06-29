@@ -378,8 +378,9 @@ never `LOREQ`s it) and `store_blob()` refuses it; a plain large object, an unpla
 partition (empty `owner_nodes`), and model weights keep replicate-to-all. The
 store reads `owner_nodes` from the CRDT `part:` snapshot through the validated
 boundary (network-thread-safe, no Node access). The *partitioner* that splits a
-table and writes the bodies, locality-aware reads, and re-balancing placement are
-later slices. See [docs/dataset-partitions.md](docs/dataset-partitions.md) and
+table and writes the bodies (#511) and the **rebalance** that re-places them on a
+membership change (#517) are built (see below); locality-aware reads (#516) are a
+later slice. See [docs/dataset-partitions.md](docs/dataset-partitions.md) and
 [docs/sharded-blob-placement.md](docs/sharded-blob-placement.md).
 
 ### Partitioning (`zetta::Partitioner`)
@@ -460,9 +461,36 @@ get a blob + catalog row (N blobs + N catalog rows — the acceptance). **No new
 format** is parsed back in: the catalog entry rides the existing `DatasetPartition`
 schema boundary, and the blob is an LO body (opaque, size+sha256-verified — reading
 partitions back is the locality-read slice, #516). A reusable library function
-today (like `import_records`); a load-triggering command/DDL, driving the table's
-`ReplicationStrategy` factor into placement, and rebalance (#517) are later slices.
+today (like `import_records`); a load-triggering command/DDL and driving the table's
+`ReplicationStrategy` factor into placement are later slices.
 See [docs/partitioned-write-path.md](docs/partitioned-write-path.md).
+
+The **between-jobs partition rebalance** is **`zetta::rebalance_partitions`**
+(`include/zetta/partition_rebalance.hpp`, **#517**; satisfies TC-10/#500) — the
+sibling of `write_partitioned` that **recomputes placement on a membership change**.
+When the cluster gains a node, for each **placed** catalog partition it re-runs
+**rendezvous (HRW)** placement (`rendezvous_owners(stats.partition, members, rf)`,
+the same core the write path placed with) **preserving the replication factor** the
+entry records (`rf = owner_nodes.size()`, clamped to the live membership — the
+catalog, not the table's declarative `ReplicationStrategy`, is the faithful `rf`
+signal since any `Partitioner` could have placed it), and on a change captures the
+new owners via the new **capturing** `DatasetPartition::set_owner_nodes` (rewrites
+the value, captures `part:<id>` into the CRDT, persists). So **≈rf/N partitions move
+onto the new node** (whole partitions, no full rehash) and every row stays readable
+exactly once with `rf` owners. The **bodies move for free**: an updated `owner_nodes`
+makes the new owner list the body in [`ReplicatedBlobStore::missing_blobs()`](docs/sharded-blob-placement.md)
+(it `LOREQ`s it) and a non-owner refuses it — no new transport. **Replicate-to-all**
+partitions (`SinglePartitioner`/`Hash`/`RoundRobin`, owned by exactly the previous
+membership) are **left untouched** (sharded rebalance is not their job). It is
+**auto-triggered inside `Node::tick()`**: membership is replicated state (each node
+seeds its own `node:<id>` key, peers merge), so `Node::rebalance_partitions_on_membership_change`
+reads the `node:` set from the snapshot it already reconciles, compares to the
+baseline set in `Node::start()`, and on a delta drives `rebalance_partitions` between
+jobs (no `Cluster` plumbing). Append-only `node:` keys today mean it fires on
+**joins** (leave-driven rebalance + physical GC of a demoted owner's stale body +
+mid-job/elastic rebalance are later slices). **No new JSON format** (the catalog
+entry rides the existing `DatasetPartition` boundary). See
+[docs/partition-rebalance.md](docs/partition-rebalance.md).
 
 ### Async runtime (`zetta::runtime`)
 
@@ -730,6 +758,30 @@ root alone. It introduces **no new JSON format** — the op spec rides the exist
 `GroupBySpec` boundary, the partials the schema-validated `CollectiveMessage`, and the
 job record its own boundary. The remaining featurize op (as-of windowing), schedulable
 the same way, is a later issue. See [docs/ddf-groupby.md](docs/ddf-groupby.md).
+
+The distributed groupby (and any DDF op) now **executes over a node's LOCAL
+partitions** — **compute-near-data** (`zetta::ddf::load_local_partitions`,
+`include/zetta/ddf/local_partitions.hpp`; **ARC-12 / FEAT-8**, #516 — the engine half
+of TC-11 #501): instead of a shard handed in **out-of-band** (the `ComputeNode` /
+`shards[i]` pattern), a node **enumerates the partitions it owns** from the
+[partition catalog](#on-disk-layout) (every `DatasetPartition` whose `table` matches
+and whose `owner_nodes` contains `node.node_id()`, the in-memory source of
+`system.dataset_partitions`), reads only the partition **bodies it physically holds**
+from its **local** large-object store (the [sharded-blob-placement](#files-large-objects--import)
+guarantee — no `LOREQ`, no full-dataset pull), parses them (the existing JsonlStore
+`{"_zid","doc"}` line format the [partitioned write path](#the-partitioned-write-path-is)
+emits, sha256-verified at the blob layer — a structural fail-fast boundary, **no new
+JSON format**), and loads them into its local `DataFrame` shard. The op then runs over
+that shard, exchanging only the per-node **partial** over the collectives — the raw
+rows never cross the wire. `zetta::ddf::run_near_data_group_by_job`
+(`include/zetta/ddf/local_group_by_job.hpp`) is the first-class near-data op: load
+the local shard → `run_group_by_job`, reporting `local_bytes_read` (read near data)
+vs `wire_bytes_moved` (the partials, measured by the new `Collectives::wire_bytes()`
+meter). So the acceptance is directly checkable — **bytes-moved ≈ partials (not ≈
+dataset); result == the single-node oracle** — over a real loopback cluster. Group-by
+is wired end to end; `scan`/`filter`/`featurize` reuse the same `load_local_partitions`
+shard source; rebalancing (#517) + a locality-aware fetch of a missing owned body are
+later slices. See [docs/compute-near-data.md](docs/compute-near-data.md).
 
 Another DDF **op** is the **window / as-of (point-in-time) aggregation**
 (`include/zetta/ddf/as_of.hpp`, `zetta::ddf::as_of_aggregate`; **ARC-12**, #384) — the
@@ -1758,6 +1810,26 @@ reads the count and drives the permanent-add control action
 **No new JSON format** (the provenance bag rides the validated IR boundary; the
 `AddNodesRequest` has its own). See [docs/python-frontend.md](docs/python-frontend.md).
 
+The **`datasets` library shim** (#521) is the data-load counterpart: a sim-Python
+`from datasets import load_dataset; load_dataset("<path>", columns=[…])` already
+lowers to a `connect` node carrying the parquet path + a `columns=` projection in the
+`python` bag, and the matching execution binding
+**`zetta::input::run_load_dataset_step`** (`include/zetta/input/datasets_bindings.hpp`)
+reproduces the *meaning* of `load_dataset` with zetta's own primitives — decode the
+referenced Parquet bytes with the native [Parquet reader](docs/parquet-reader.md)
+(`read_parquet_rows`, no Apache Arrow / parquet-cpp), apply the column projection, and
+populate a (optionally [partitioned](docs/partitioned-write-path.md)) table named for
+the dataset (via `write_partitioned` when a `Partitioner` is configured). The
+`DatasetStepExecutor` (a `StepExecutor` like `ChurnStepExecutor`/`IndexStepExecutor`)
+runs the load step inside a `GraphExecutor` (delegating non-load steps to
+`DefaultStepExecutor`). **HuggingFace `datasets` is the fidelity reference only —
+never run**: file/network IO lives behind the injectable **`DatasetResolver`** seam
+(offline default = a local filesystem path; a Hub-name resolver is a host-injected
+later slice), so the engine/build/CI never touch the network. **No new JSON format**
+(the spec rides the validated IR boundary; the Parquet bytes are bounds-checked by the
+native reader; rows are stored as ordinary free-form table rows). See
+[docs/datasets-shim.md](docs/datasets-shim.md).
+
 ### Correctness gate (`zetta::CorrectnessGate`)
 
 The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
@@ -2446,7 +2518,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     oramacore_fulltext_index.hpp zetta::OramaCoreFulltextIndex — the first real backend: a full-text (BM25F) Search backend over the native oramacore-cpp engine (name "oramacore_fulltext"); pImpl over the engine, ZETTA_WITH_ORAMACORE-guarded so a checkout without the private submodule still builds (#527)
     index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
-  dataset_partition.hpp     zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all (ENT-36/TBL-13)
+  dataset_partition.hpp     zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all; set_owner_nodes is the capturing re-placement mutator the rebalance uses (ENT-36/TBL-13; #517)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
@@ -2460,6 +2532,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
   rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
   partition_writer.hpp      zetta::write_partitioned/PartitionWriteResult — the partitioned write path: assign each row to a partition (Partitioner), serialize each non-empty partition to a JSON Lines blob, store it as a LargeObject (import_bytes), record a DatasetPartition catalog entry per partition (blob ref + cumulative row range + place_partition owners); N blobs + N catalog rows (ADR-31/ENT-37; #511)
+  partition_rebalance.hpp   zetta::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; auto-triggered in Node::tick off node:<id> membership keys; ≈rf/N move on a join (ADR-31/ENT-37; #517, TC-10/#500)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database); import_file (from a path) + import_bytes (from in-memory bytes, used by the partitioned write path)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
@@ -2469,6 +2542,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
     python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522)
     cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::add_nodes (provider injected, cloud consent-gated) (#522)
+    datasets_bindings.hpp   zetta::input::run_load_dataset_step/DatasetStepExecutor/dataset_load_spec/DatasetResolver — the `datasets` library shim: execute a lowered sim-Python load_dataset("<path>", columns=…) IR node by decoding the parquet via the native reader (read_parquet_rows) into a (partitioned) table; file/network IO behind the injectable DatasetResolver seam (offline default = local path); HF datasets is the fidelity reference only (#521)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -2526,6 +2600,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by.hpp            zetta::ddf::group_by/distributed_group_by — DDF groupby-aggregate (count/sum/min/max/mean), partial-per-node + gather/merge/broadcast combine + GroupBySpec JSON boundary (ARC-12; #383)
     as_of.hpp               zetta::ddf::as_of_aggregate/AsOfAggregate — DDF window / as-of (point-in-time) op: per-entity reduce of rows in a time window (time <= as_of), the leakage-free featurization primitive + JSON boundary (ARC-12; #384)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
+    local_partitions.hpp    zetta::ddf::load_local_partitions/LocalShardResult — compute-near-data shard loader: enumerate this node's OWNED partitions of a table (owner_nodes ∋ node_id) from the catalog, read only the locally-held blob bodies, parse the JsonlStore {_zid,doc} lines, load into a local DataFrame; instrumented bytes_read (near data, not moved) (ARC-12/FEAT-8; #516)
+    local_group_by_job.hpp  zetta::ddf::run_near_data_group_by_job/NearDataGroupByResult — the first-class compute-near-data op: load the local shard via load_local_partitions → run_group_by_job, reporting local_bytes_read vs wire_bytes_moved (the partials, via Collectives::wire_bytes()); result == single-node oracle (ARC-12/FEAT-8; #516)
     featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
   ml/
@@ -2558,6 +2634,7 @@ src/core/                   zetta-core impl
   input/
     python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the engine-faithful python_step_kind verb table (#520/#522)
     cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count — read the count from a lowered cluster.add_nodes IR node + drive zetta::add_nodes (#522)
+    datasets_bindings.cpp   zetta::input::run_load_dataset_step/DatasetStepExecutor — read the source + column projection from a lowered load_dataset IR node, resolve bytes via the DatasetResolver seam, decode with the native parquet reader, project, and populate a (partitioned) table (#521)
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
@@ -2597,6 +2674,7 @@ src/core/                   zetta-core impl
   dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
   partition_writer.cpp      zetta::write_partitioned — the partitioned write path: bucket rows by assign_partition (stamping the round-robin surrogate), serialize each non-empty partition to JSON Lines, store via LargeObjectStore::import_bytes, record a DatasetPartition per partition (cumulative row range + place_partition owners) (#511)
+  partition_rebalance.cpp   zetta::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger lives in node.cpp (#517)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -2643,6 +2721,8 @@ src/core/                   zetta-core impl
   ddf/group_by.cpp          group_by/local_partial/GroupByPartial — groupby-aggregate accumulate/merge/finalize, the partial wire form + GroupBySpec JSON boundary (zetta-core; #383)
   ddf/as_of.cpp             as_of_aggregate — host-side per-entity windowed/point-in-time reduction (group key + time mask) + AsOfAggregate JSON boundary (zetta-core; #384)
   ddf/group_by_job.cpp      run_group_by_job — drive the distributed groupby-aggregate as a recorded ddf ComputeJob through the coordinator (calls distributed_group_by on the JobRound) (zetta-core; #387)
+  ddf/local_partitions.cpp  load_local_partitions — enumerate this node's owned partitions from Node::dataset_partitions(), read each owned blob body from the local LargeObjectStore, parse the JsonlStore lines, load into a DataFrame; instrumented bytes_read (zetta-core; #516)
+  ddf/local_group_by_job.cpp run_near_data_group_by_job — load the local shard via load_local_partitions then drive run_group_by_job, computing wire_bytes_moved from Collectives::wire_bytes() before/after (zetta-core; #516)
   ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
   ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
@@ -2924,7 +3004,8 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (locality-aware reads / re-balancing are later slices). The producer that fills it is the partitioned write path below.
-- [`docs/partitioned-write-path.md`](docs/partitioned-write-path.md) — the **partitioned write path** (`zetta::write_partitioned`, **#511**): rows → partition → blob, placement recorded. For a table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to a partition (stamping the round-robin `_seq` surrogate onto the assignment record only), serializes each non-empty partition's rows to a JSON Lines blob (the `JsonlStore` `{"_zid",doc}` shape), stores the bytes as a [large object](docs/large-objects.md) (`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted + gossips peer-to-peer), and records a [`DatasetPartition`](docs/dataset-partitions.md) catalog entry per partition (`blob_ref` + the cumulative `row_range` tiling `[0, rows_written)` + `place_partition` owners + `stats`), visible in `system.dataset_partitions`. N non-empty partitions → N blobs + N catalog rows (the acceptance). Composes #510/#512–#514; no new JSON schema (the catalog entry is the existing `DatasetPartition` boundary, the blob is an LO body). A reusable library function today; a load-triggering command, `ReplicationStrategy`-driven placement, and rebalance (#517) are later slices.
+- [`docs/partitioned-write-path.md`](docs/partitioned-write-path.md) — the **partitioned write path** (`zetta::write_partitioned`, **#511**): rows → partition → blob, placement recorded. For a table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to a partition (stamping the round-robin `_seq` surrogate onto the assignment record only), serializes each non-empty partition's rows to a JSON Lines blob (the `JsonlStore` `{"_zid",doc}` shape), stores the bytes as a [large object](docs/large-objects.md) (`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted + gossips peer-to-peer), and records a [`DatasetPartition`](docs/dataset-partitions.md) catalog entry per partition (`blob_ref` + the cumulative `row_range` tiling `[0, rows_written)` + `place_partition` owners + `stats`), visible in `system.dataset_partitions`. N non-empty partitions → N blobs + N catalog rows (the acceptance). Composes #510/#512–#514; no new JSON schema (the catalog entry is the existing `DatasetPartition` boundary, the blob is an LO body). A reusable library function today; a load-triggering command and `ReplicationStrategy`-driven placement are later slices.
+- [`docs/partition-rebalance.md`](docs/partition-rebalance.md) — the **between-jobs partition rebalance on a membership change** (`zetta::rebalance_partitions`, **#517**; satisfies TC-10/#500): when a node joins, recompute [rendezvous (HRW)](docs/partitioner.md) placement for the sharded partitions and update each changed [`DatasetPartition`](docs/dataset-partitions.md)'s `owner_nodes` (via the capturing `set_owner_nodes` mutator that captures `part:<id>` into the CRDT), so **≈rf/N partitions move onto the new node** (whole partitions, no full rehash) and every row stays readable exactly once with `rf` owners — the **bodies move for free** over the [sharded-blob-placement](docs/sharded-blob-placement.md) (#515) seam (the new owner `LOREQ`s the body, a non-owner refuses it). `rf` is preserved from the catalog's current owner count (not the declarative `ReplicationStrategy`, since any `Partitioner` could have placed it); **replicate-to-all** partitions (owned by exactly the previous membership) are left untouched. **Auto-triggered inside `Node::tick()`** off the replicated `node:<id>` membership keys (no `Cluster` plumbing); fires on **joins** (append-only `node:` keys). No new JSON format. Out of scope: locality reads (#516), physical GC of a demoted owner's stale body, mid-job/elastic rebalance.
 - [`docs/sharded-blob-placement.md`](docs/sharded-blob-placement.md) — partition-aware large-object body replication (`zetta::ReplicatedBlobStore`, #515): a `Partitioned` / `PartitionedWithReplicas` table's partition body (the [catalog](docs/dataset-partitions.md) entry's `blob_ref`) is fetched + held **only by its owner node(s)** per `owner_nodes` + the replication factor (`rf` owners → exactly `rf` copies), instead of replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it never `LOREQ`s it), `store_blob()` refuses it; a plain large object, an unplaced partition (empty `owner_nodes`), and model weights keep replicate-to-all. Owner set read from the CRDT `part:` snapshot through the validated boundary (network-thread-safe, no Node access); no new JSON format. The first slice that *acts* on a non-default [replication strategy](docs/replication-strategy.md) at the body level (the partitioner write path / locality-aware reads / rebalancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Driving a deployed `index` step through it is the [index-step-executor](docs/index-step-executor.md) slice (#528); per-field BM25F params are a later slice.
@@ -2941,6 +3022,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520) **+ its cluster/ML engine bindings** (#522): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the engine-faithful `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The verbs bind to real engine ops — `train`→`model` ([GBDT](docs/gbdt.md)), `score`/`predict`/`rank`→`index` ([batch scoring](docs/gbdt-score.md)), `explain`→`serve` ([TreeSHAP](docs/tree-shap.md)) all run through the [`ChurnStepExecutor`](docs/churn-step-executor.md); `cluster.add_nodes(n, provider=)`→`act` runs through `zetta::input::run_add_nodes_step` → the permanent-add control action [`zetta::add_nodes`](docs/add-nodes.md) (cloud consent-gated: the `Provisioner&` is injected). The IR-targeting analogue of the query layer's `Dialect`.
+- [`docs/datasets-shim.md`](docs/datasets-shim.md) — the simulated HuggingFace **`datasets` library shim** (`zetta::input::run_load_dataset_step` + `DatasetStepExecutor` + `dataset_load_spec` + `DatasetResolver`, #521): a sim-Python `from datasets import load_dataset; load_dataset("<path>", columns=[…])` lowers to an IR `connect`/load step (parquet path + column projection), and the binding decodes the referenced Parquet bytes with the native [Parquet reader](docs/parquet-reader.md) (`read_parquet_rows`, no Apache Arrow / parquet-cpp / HF runtime / network — fidelity references only), applies the projection, and populates a (optionally [partitioned](docs/partitioned-write-path.md)) table; the `DatasetStepExecutor` runs the load inside a [`GraphExecutor`](docs/execution.md). File/network IO behind the injectable `DatasetResolver` seam (offline default = a local filesystem path; a Hub-name resolver is a host-injected later slice); **no new JSON format** (the spec rides the validated IR boundary; rows are stored as free-form table rows). The engine binding of the [new-input](.claude/skills/new-input/SKILL.md) worked example.
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
@@ -2959,6 +3041,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-distributed-sort.md`](docs/ddf-distributed-sort.md) — the DDF distributed sort (`zetta::ddf::DistributedSorter`): sample-partition + local sort + merge across the cluster — splitter agreement over the [collectives](docs/collectives.md), an all-to-all row shuffle over the [signal plane](docs/signal-plane.md) (schema-validated `PartitionMessage`), returning globally range-ordered, locally-sorted partitions; a single-node cluster returns the locally-sorted shard (ARC-12; #385).
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383) — and runs as a recorded `ddf` `ComputeJob` (`zetta::ddf::run_group_by_job`, `group_by_job.hpp`) through the [job coordinator](docs/job-coordinator.md), so it appears in `system.zetta_jobs` (FEAT-8; #387).
+- [`docs/compute-near-data.md`](docs/compute-near-data.md) — **compute-near-data**: a DDF op executes over a node's LOCAL partitions (`zetta::ddf::load_local_partitions` + `run_near_data_group_by_job`, ARC-12 / FEAT-8; #516, the engine half of TC-11 #501). A node enumerates the partitions it **owns** from the [catalog](docs/dataset-partitions.md) (`owner_nodes` ∋ its id), reads only the partition bodies it [physically holds](docs/sharded-blob-placement.md) from its local large-object store (no `LOREQ`, no full-dataset pull), runs the op over that local shard, and exchanges only the small per-node partial over the [collectives](docs/collectives.md) — replacing the "shard handed in out-of-band" path. Instrumented (`bytes_read` near-data vs `Collectives::wire_bytes()` moved) so the acceptance — **bytes-moved ≈ partials (not ≈ dataset); result == the single-node oracle** — is directly checkable; no new JSON format (the body is the existing JsonlStore line shape, sha256-verified). Group-by is wired end to end; scan/filter/[featurize](docs/ddf-featurize.md) reuse the same loader.
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
