@@ -407,6 +407,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
   src/core/runtime.cpp
+  src/core/repl/console_model.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
@@ -449,6 +450,7 @@ add_executable(zetta
   src/gui/app_pipeline.cpp
   src/gui/app_operations.cpp
   src/gui/app_governance.cpp
+  src/gui/repl_console.cpp
 )
 
 target_compile_features(zetta PRIVATE cxx_std_26)

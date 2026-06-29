@@ -1282,6 +1282,38 @@ tables (e.g. `system.zetta_leadership`) live — **surfacing observable state as
 `system.zetta_*` table is the default**, see the convention below. Full detail in
 [docs/query.md](docs/query.md).
 
+### REPL console (`zetta::repl::ConsoleModel` + `zetta::gui::ReplConsole`)
+
+The **REPL console** (**CMP-6**, #524) is the interactive SQL / simulated-Python
+console behind the headed **Data → Console** view. Like the
+[test suite](docs/test-suite.md) it is split **model-in-zetta-core /
+GUI-as-thin-renderer**, so the same REPL session backs the GUI component today and
+a **future CLI** unchanged. **`zetta::repl::ConsoleModel`**
+(`include/zetta/repl/console_model.hpp`) is the engine-agnostic *session* — the
+selected `Frontend` (`Sql` / `SimPython`), the input buffer, the scrollback
+**transcript**, and `submit(run)` — with **no SDL/ImGui** (it lives in zetta-core,
+so it is headless-testable, `tests/test_repl_console.cpp`). It **owns no engine**:
+running a statement is a host-supplied **`RunHandler`** callback — the "run event"
+the console emits — so the component is decoupled from any single frontend.
+`submit` invokes the handler with the selected frontend + input, appends the
+`(frontend, source, Result)` to the transcript, and resets the prompt; a
+blank/whitespace input or a null handler is a no-op (mirrors `capture_intent`
+rejecting empty intent), and both success and error results are recorded so errors
+show inline. The frontend-agnostic **`Result`** (messages + columns + grid rows +
+error + elapsed) holds SQL rows and sim-Python output alike;
+`format_result`/`format_transcript` are the reusable text projections a CLI
+prints. **`zetta::gui::ReplConsole`** (`src/gui/repl_console.hpp`) is the thin Dear
+ImGui renderer (frontend selector, multiline editor, run/clear, transcript, result
+grid); `App::draw_console` (`src/gui/app_explorer.cpp`) hosts it over the live
+node, wiring **SQL** through the [query service](docs/query.md) and **simulated-
+Python** to an **honest "not wired yet" seam** until the frontend→IR lowering layer
+lands (#522). It adds **no new JSON boundary** (the transcript is ephemeral session
+state; SQL still enters through `QueryService`). The **governed Console/REPL
+screen** (SCR-8, #525) — lowering each statement to the IR, running it through the
+[correctness gate](docs/gate.md), and recording it in the
+[audit trail](docs/audit-trail.md) — reuses this component unchanged. See
+[docs/repl-console.md](docs/repl-console.md).
+
 ### Execution graph IR (`zetta::ir`)
 
 The **ExecutionGraph IR** is the in-memory model of a data/AI system as a
@@ -2072,6 +2104,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   testkit/                  zetta::testkit — the in-app test-suite catalog (headless-runnable; #462)
     test_suite.hpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin() — the catalog model the GUI renders
     harness.hpp             ScratchDir + LoopbackCluster (a real N-node loopback cluster) + the in-code synthetic churn dataset + numeric encoding
+  repl/
+    console_model.hpp       zetta::repl::ConsoleModel — the engine-agnostic REPL session (frontend + input + transcript + submit) behind the CMP-6 console; no SDL/ImGui, so it backs the GUI component AND a future CLI (#524)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
@@ -2174,12 +2208,14 @@ src/core/                   zetta-core impl
     test_suite.cpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin()
     harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback) + sample_churn_dataset + numeric encoding
     cases_*.cpp             the canned cases per category (compute/ddf/ml/distributed/governance/pipeline)
+  repl/console_model.cpp    zetta::repl::ConsoleModel — submit/clear logic + Frontend names + format_result/format_transcript text projections (CMP-6; #524)
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
   app_internal.hpp          shared GUI-only helpers: the Orama design tokens + wash/status_dot/eyebrow/mono_line/primary_button + extern g_mono_font (not in the public include/zetta surface)
   app_home.cpp / app_explorer.cpp / app_pipeline.cpp / app_operations.cpp / app_governance.cpp
                             the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464)
+  repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
@@ -2420,6 +2456,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
+- [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python an honest "not wired yet" seam until the frontend→IR lowering layer lands (#522); results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it next.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
