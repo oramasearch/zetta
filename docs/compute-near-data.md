@@ -25,6 +25,7 @@ include/zetta/ddf/local_group_by_job.hpp  run_near_data_group_by_job + NearDataG
 src/core/ddf/local_group_by_job.cpp       load_local_partitions → run_group_by_job, reporting local-read vs wire-moved bytes
 include/zetta/collectives.hpp             Collectives::wire_bytes() — the "bytes moved over the wire" meter
 tests/test_ddf_local_partitions.cpp       the loader round-trip + the near-data == single-node-oracle + bytes acceptance
+src/core/testkit/cases_distributed.cpp    cluster.compute_near_data — TC-11 as a runnable test-suite case
 ```
 
 ## The loader — `zetta::ddf::load_local_partitions`
@@ -124,7 +125,16 @@ That is the **TC-11 / #501 acceptance**, asserted directly in
 `tests/test_ddf_local_partitions.cpp`: across a real 3-node loopback cluster, each
 node loads its shard from its own partitions, the near-data group-by matches the
 single-node oracle on every node, and the whole cluster moves under a fifth of what
-it read near data.
+it read near data. The same acceptance is also surfaced as a **runnable test-suite
+case** — `cluster.compute_near_data` in the [in-app test suite](test-suite.md)
+catalog (`zetta::testkit`, `TestCategory::Distributed`) — so TC-11 can be run + tuned
+(nodes / rows / groups / partitions per node) from the headed **Operations → Test
+suite** panel and headless (`tests/test_testkit.cpp`), reporting bytes-read-near-data
+vs bytes-moved-over-the-wire as live metrics. Two further gtests harden the loader:
+it is the reusable shard source for **other** DDF ops (a `filter` + group-by over the
+loaded shard equals the same over the full table), and a partition **owned** by this
+node whose body is missing locally **fails fast** rather than silently dropping rows
+(which would diverge from the oracle).
 
 ## Other ops
 
