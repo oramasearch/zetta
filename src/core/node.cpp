@@ -2,6 +2,10 @@
 
 #include "zetta/executor.hpp"
 #include "zetta/gate.hpp"
+#include "zetta/index/in_memory_index_backend.hpp"
+#ifdef ZETTA_WITH_ORAMACORE
+#include "zetta/index/oramacore_fulltext_index.hpp"
+#endif
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/project_graph.hpp"
@@ -32,7 +36,18 @@ namespace zetta {
 namespace fs = std::filesystem;
 
 Node::Node(NodeConfig config, ReplicationManager* replication)
-    : config_(std::move(config)), replication_(replication) {}
+    : config_(std::move(config)), replication_(replication) {
+    // Register the always-available index backends so an `index` step resolves
+    // out of the box (the per-node container the run path builds + queries
+    // through, #528). InMemoryIndexBackend ("memory_search") is the pure-host
+    // reference Search backend; OramaCoreFulltextIndex ("oramacore_fulltext") is
+    // the native full-text (BM25F) Search backend, registered only when its
+    // private submodule was built (ZETTA_WITH_ORAMACORE). A host may add more.
+    index_registry_.add(std::make_shared<InMemoryIndexBackend>());
+#ifdef ZETTA_WITH_ORAMACORE
+    index_registry_.add(std::make_shared<OramaCoreFulltextIndex>());
+#endif
+}
 
 bool Node::start() {
     if (running_) return false;

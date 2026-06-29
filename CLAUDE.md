@@ -206,10 +206,21 @@ the whole integration is **guarded on the submodule's presence** (`ZETTA_WITH_OR
 configures/builds/runs green (the backend degrades to `Unsupported`;
 `engine_available()` reports which). This slice is the **seam + registry + the
 in-memory reference + the first real (full-text) backend + the replicated/validated/
-queryable entity**; **no run/deploy wiring** — driving a deployed `index` step
-through the resolved backend (build over the real table, serve queries) is a later
-slice (the registry is standalone, like the `Provisioner`). See
-[docs/index-backend.md](docs/index-backend.md) and
+queryable entity**. **Running a deployed `index` step** through the resolved
+backend (build over the real table, serve queries) is the
+**`IndexStepExecutor` slice** (`include/zetta/index/index_step_executor.hpp`,
+**#528**): the `Node` now owns an `IndexRegistry` (`Node::index_registry()`, with
+the reference backends registered — `memory_search` always, `oramacore_fulltext`
+when `ZETTA_WITH_ORAMACORE`), and `IndexStepExecutor` is the `StepExecutor` that
+resolves an IR `index` step to its backend (`index_spec_from_node`), reads the
+source table's rows into partitions (`read_index_partitions`), **builds the real
+index**, records the `Index` entity, and emits an `index` Run output referencing
+the real id — leaving the index **queryable** for the node's lifetime
+(`node.index_registry().resolve(spec)->query(...)`). Other step kinds delegate to
+`DefaultStepExecutor`. The distributed (fan-across-nodes) build and the
+vector/semantic/feature backends remain later slices behind the same seam. See
+[docs/index-backend.md](docs/index-backend.md),
+[docs/index-step-executor.md](docs/index-step-executor.md) and
 [docs/oramacore-fulltext-index.md](docs/oramacore-fulltext-index.md).
 
 A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
@@ -2012,7 +2023,10 @@ seam and without touching the orchestrator**. It interprets the same
 recorded [`ComputeJob`](#job-coordinator-zettacompute): **connect→load to DDF**
 (`load_data_frame`), **clean→featurize** (`run_featurize_job`), **model→train GBDT +
 calibrate** (`run_train_job`, which **registers a real `Model`** on the node),
-**index→score/rank** (`run_score_job`, the at-risk list), **serve→explain**
+**index→build a real index + score/rank** (builds a real, queryable entity index
+over the accounts shard via the resolved `IndexBackend` —
+[docs/index-step-executor.md](docs/index-step-executor.md), **#528** — then
+`run_score_job` for the at-risk list), **serve→explain**
 (`run_explain_job` exact TreeSHAP — the per-entity + population churn drivers), and
 **act→retention playbook** (a host-side join of the at-risk list with each entity's
 dominant SHAP driver — the one non-job step). So `run_graph`'s churn graph produces a
@@ -2348,7 +2362,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + dataset partitions + principals; run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2386,7 +2400,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   index/
     index_kind.hpp          zetta::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
-    index_registry.hpp      zetta::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry)
+    index_registry.hpp      zetta::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry); the Node owns one (Node::index_registry(), #528)
+    index_step_executor.hpp zetta::IndexStepExecutor + read_index_partitions — the StepExecutor that runs a deployed IR `index` step: resolve backend → read table rows into partitions → build a real index → record the Index entity → emit an `index` output (queryable via the node registry); non-index kinds delegate to DefaultStepExecutor (#528)
     in_memory_index_backend.hpp zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
     oramacore_fulltext_index.hpp zetta::OramaCoreFulltextIndex — the first real backend: a full-text (BM25F) Search backend over the native oramacore-cpp engine (name "oramacore_fulltext"); pImpl over the engine, ZETTA_WITH_ORAMACORE-guarded so a checkout without the private submodule still builds (#527)
     index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
@@ -2399,7 +2414,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
-  churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
+  churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→build a real entity index (#528) + score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
   churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
   table.hpp                 zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
@@ -2533,6 +2548,7 @@ src/core/                   zetta-core impl
   index/
     index.cpp               zetta::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
+    index_step_executor.cpp zetta::IndexStepExecutor — run an IR `index` step: resolve backend (node registry) → read table rows into partitions → build → record Index entity → `index` output; + read_index_partitions (shared) (#528)
     in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
     oramacore_fulltext_index.cpp zetta::OramaCoreFulltextIndex — full-text BM25F build over partitions / ranked query / drop via the oramacore-cpp MemoryIndex (pImpl); ZETTA_WITH_ORAMACORE-guarded engine-absent stub (#527)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
@@ -2546,7 +2562,7 @@ src/core/                   zetta-core impl
   audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
   intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
-  churn_step_executor.cpp   ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain) (#396)
+  churn_step_executor.cpp   ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain); index step also builds a real entity index via the node registry (#396/#528)
   churn_solution.cpp        run_churn_solution — the ChurnDataset→numeric encoder + standard churn pipeline config + the runner (inject ChurnStepExecutor into a GraphExecutor) + demo_churn_dataset (#398)
   table.cpp
   partitioner.cpp          zetta::HashPartitioner/RoundRobinPartitioner assign_partition (FNV-1a key hash / surrogate mod) + to_json + partitioner_from_json config boundary (#513)
@@ -2866,7 +2882,8 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/partitioned-write-path.md`](docs/partitioned-write-path.md) — the **partitioned write path** (`zetta::write_partitioned`, **#511**): rows → partition → blob, placement recorded. For a table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to a partition (stamping the round-robin `_seq` surrogate onto the assignment record only), serializes each non-empty partition's rows to a JSON Lines blob (the `JsonlStore` `{"_zid",doc}` shape), stores the bytes as a [large object](docs/large-objects.md) (`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted + gossips peer-to-peer), and records a [`DatasetPartition`](docs/dataset-partitions.md) catalog entry per partition (`blob_ref` + the cumulative `row_range` tiling `[0, rows_written)` + `place_partition` owners + `stats`), visible in `system.dataset_partitions`. N non-empty partitions → N blobs + N catalog rows (the acceptance). Composes #510/#512–#514; no new JSON schema (the catalog entry is the existing `DatasetPartition` boundary, the blob is an LO body). A reusable library function today; a load-triggering command, `ReplicationStrategy`-driven placement, and rebalance (#517) are later slices.
 - [`docs/sharded-blob-placement.md`](docs/sharded-blob-placement.md) — partition-aware large-object body replication (`zetta::ReplicatedBlobStore`, #515): a `Partitioned` / `PartitionedWithReplicas` table's partition body (the [catalog](docs/dataset-partitions.md) entry's `blob_ref`) is fetched + held **only by its owner node(s)** per `owner_nodes` + the replication factor (`rf` owners → exactly `rf` copies), instead of replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it never `LOREQ`s it), `store_blob()` refuses it; a plain large object, an unplaced partition (empty `owner_nodes`), and model weights keep replicate-to-all. Owner set read from the CRDT `part:` snapshot through the validated boundary (network-thread-safe, no Node access); no new JSON format. The first slice that *acts* on a non-default [replication strategy](docs/replication-strategy.md) at the body level (the partitioner write path / locality-aware reads / rebalancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
-- [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Run/deploy wiring + per-field BM25F params are later slices.
+- [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Driving a deployed `index` step through it is the [index-step-executor](docs/index-step-executor.md) slice (#528); per-field BM25F params are a later slice.
+- [`docs/index-step-executor.md`](docs/index-step-executor.md) — the **run-path wiring** for an `index` step (`zetta::IndexStepExecutor` + `Node::index_registry()`, **#528**): the `Node` now owns an `IndexRegistry` (the reference backends registered — `memory_search` always, `oramacore_fulltext` when `ZETTA_WITH_ORAMACORE`), and `IndexStepExecutor` is the [`StepExecutor`](docs/execution.md) that resolves a deployed IR `index` step to its backend ([`index_spec_from_node`](docs/index-backend.md)), reads the source table's rows into partitions (`read_index_partitions`, chunked like the storage engine), **builds a real index**, records the [`Index`](docs/index-backend.md) entity, and emits an `index` Run output referencing the real id — leaving the index **queryable** for the node's lifetime (`node.index_registry().resolve(spec)->query(...)`). Other step kinds delegate to `DefaultStepExecutor`; churn's `index` step also builds a real entity index over the accounts shard (alongside the at-risk ranking). The acceptance "an index step builds a real index that is then queryable"; the distributed (fan-across-nodes) build + vector/semantic/feature backends remain later slices. No new JSON format.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
@@ -2888,7 +2905,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/deployments.md`](docs/deployments.md) — placing a graph onto a target (`DeploymentTarget`; R1 local), recorded + queryable.
 - [`docs/deployment-controller.md`](docs/deployment-controller.md) — the control plane (`zetta::DeploymentController`): reconcile a local deployment desired→actual + self-heal a killed/failed run (FEAT-4/TC-3; R1 local).
 - [`docs/execution.md`](docs/execution.md) — executing a graph into a Run (`zetta::GraphExecutor` / `Node::run_graph`, `StepExecutor` seam).
-- [`docs/churn-step-executor.md`](docs/churn-step-executor.md) — the **real** churn StepExecutor (`zetta::ChurnStepExecutor`, #396): real native distributed accelerated compute behind the `StepExecutor` seam (orchestrator untouched) — connect→load to DDF, clean→featurize, model→train GBDT + calibrate (registers a real `Model`), index→score/rank, serve→explain (TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob`; `run_graph` over the churn graph produces a Run whose outputs reference a real `Model` + ranked at-risk list + drivers (FEAT-5 / FEAT-6 / UC-1).
+- [`docs/churn-step-executor.md`](docs/churn-step-executor.md) — the **real** churn StepExecutor (`zetta::ChurnStepExecutor`, #396): real native distributed accelerated compute behind the `StepExecutor` seam (orchestrator untouched) — connect→load to DDF, clean→featurize, model→train GBDT + calibrate (registers a real `Model`), index→build a real entity index ([#528](docs/index-step-executor.md)) + score/rank, serve→explain (TreeSHAP), act→retention playbook, each heavy step a recorded `ComputeJob`; `run_graph` over the churn graph produces a Run whose outputs reference a real `Model` + ranked at-risk list + drivers (FEAT-5 / FEAT-6 / UC-1).
 - [`docs/compute-device.md`](docs/compute-device.md) — the `zetta::compute::ComputeDevice` accelerator seam: typed device buffers + memory model + the operator set + the host-memory stub (ADR-27 / ARC-9; #359), plus the `zetta-compute` build target + the optional CUDA backend (`CudaDevice`, `-DZETTA_ENABLE_CUDA=ON`; #363).
 - [`docs/cpu-device.md`](docs/cpu-device.md) — the `zetta::compute::CpuDevice` reference backend: every operator on host memory, multi-threaded via `runtime::parallel_for`, the numerical reference for CUDA (ADR-27 / ARC-9; #360).
 - [`docs/device-registry.md`](docs/device-registry.md) — the per-node device registry (`zetta::compute::DeviceRegistry`): enumerate a node's compute devices, report each one's capability, select a backend per op (accelerator-first / CPU fallback), with the `DeviceInfo` JSON boundary (ARC-9; #362).
