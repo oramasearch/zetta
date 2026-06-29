@@ -151,7 +151,14 @@ each tick it observes a running job's progress, scores the policy, and adds/remo
 nodes through the `Provisioner` seam within bounds — with hysteresis to avoid
 thrashing, an immediate shed on a cost-cap breach, live (elastic) membership read
 each tick, and best-effort max utilization when hardware is fixed (see
-[docs/job-autoscaler.md](docs/job-autoscaler.md)).
+[docs/job-autoscaler.md](docs/job-autoscaler.md)). The autoscaler's **permanent
+sibling** is **`zetta::add_nodes`** — the plain "add 10 nodes to this cluster"
+control action: it drives a `Provisioner` (the cloud-burst `AzureProvisioner`, or
+any backend) to bring up N nodes that auto-join via the seed-peer handshake and
+persist as ordinary cluster members, **provision-and-report only** (never tearing a
+member down or revoking; elastic / cost-cap burst is the autoscaler's job), behind a
+schema-validated `AddNodesRequest` control-command boundary (see
+[docs/add-nodes.md](docs/add-nodes.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see

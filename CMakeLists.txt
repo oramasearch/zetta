@@ -321,6 +321,7 @@ add_library(zetta-core STATIC
   src/core/deployment_controller.cpp
   src/core/node_capability.cpp
   src/core/provisioner.cpp
+  src/core/add_nodes.cpp
   src/core/local_provisioner.cpp
   src/core/command_runner.cpp
   src/core/azure_provisioner.cpp
