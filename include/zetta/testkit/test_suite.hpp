@@ -36,6 +36,7 @@ enum class TestCategory {
     Distributed,  // collectives / distributed ops over a real multi-node cluster
     Governance,   // key-scoped access / audit trail / the correctness gate
     Pipeline,     // the UC-1 churn end-to-end (gated + governed)
+    Examples,     // sim-Python example scripts run end to end (parse->IR->gate->run)
 };
 
 // The canonical lowercase name of a category ("compute", "ddf", …) and a short

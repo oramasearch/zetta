@@ -448,6 +448,8 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_distributed.cpp
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
+  src/core/testkit/cases_examples.cpp
+  src/core/testkit/example_script.cpp
   src/core/runtime.cpp
   src/core/repl/console_model.cpp
   src/core/query/postgres.cpp
