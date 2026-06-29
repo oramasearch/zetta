@@ -46,6 +46,7 @@ add_executable(zetta-tests
   test_cloud_inspector.cpp
   test_run.cpp
   test_model.cpp
+  test_index.cpp
   test_compute_job.cpp
   test_access_control.cpp
   test_executor.cpp

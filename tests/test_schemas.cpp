@@ -10,6 +10,7 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/cloud_inspector.hpp"
 #include "zetta/compute_job.hpp"
+#include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
@@ -48,6 +49,7 @@ const std::vector<SchemaEntry>& schema_registry() {
     static const std::vector<SchemaEntry> registry = {
         {"run.schema.json", &zetta::run_value_schema},
         {"model.schema.json", &zetta::model_value_schema},
+        {"index.schema.json", &zetta::index_value_schema},
         {"compute_job.schema.json", &zetta::compute_job_value_schema},
         {"audit_event.schema.json", &zetta::audit_event_value_schema},
         {"cloud_inspect_report.schema.json", &zetta::cloud_inspect_report_schema},

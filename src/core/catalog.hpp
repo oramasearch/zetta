@@ -41,6 +41,11 @@
 //                          created, updated, detail }  (a compute job — one unit
 //                          of native distributed accelerated compute (ARC-11 /
 //                          ENT-31); a top-level entity; see compute_job.hpp)
+//   index:<index_uuid> -> { table, kind, backend, fields, created }  (a registered
+//                          index over a table — search / vector / feature; a
+//                          top-level entity with no parent (ENT-39 / ENT-40);
+//                          metadata only — building the index is the IndexBackend
+//                          seam's job; see index/index.hpp)
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
@@ -72,6 +77,7 @@ inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kModelPrefix = "model:";
 inline constexpr std::string_view kJobPrefix = "job:";
+inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
@@ -111,6 +117,9 @@ inline std::string model_key(const std::string& model_id) {
 }
 inline std::string job_key(const std::string& job_id) {
     return std::string(kJobPrefix) + job_id;
+}
+inline std::string index_key(const std::string& index_id) {
+    return std::string(kIndexPrefix) + index_id;
 }
 inline std::string principal_key(const std::string& principal_id) {
     return std::string(kPrincipalPrefix) + principal_id;

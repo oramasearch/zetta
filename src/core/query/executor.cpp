@@ -38,6 +38,8 @@ namespace {
 //  - `zetta_deployments` — recorded graph→target placements (Node::deployments()).
 //  - `zetta_models` — the model registry (Node::models()): trained models +
 //    their kind / metrics / weights fingerprint.
+//  - `zetta_indexes` — the index registry (Node::indexes()): one row per registered
+//    index over a table — its kind / backend / fields (ENT-39 / ENT-40).
 //  - `zetta_jobs` — the compute-job registry (Node::jobs()): one row per unit of
 //    native distributed accelerated compute + its lifecycle (ARC-11 / ENT-31).
 //  - `zetta_cloud_providers` — the deployment-target / provider catalog
@@ -61,6 +63,7 @@ constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "zetta_nodes";
 constexpr std::string_view kDeploymentsTable = "zetta_deployments";
 constexpr std::string_view kModelsTable = "zetta_models";
+constexpr std::string_view kIndexesTable = "zetta_indexes";
 constexpr std::string_view kJobsTable = "zetta_jobs";
 constexpr std::string_view kCloudProvidersTable = "zetta_cloud_providers";
 constexpr std::string_view kCloudStatusTable = "zetta_cloud_status";
@@ -164,6 +167,29 @@ std::vector<nlohmann::json> model_rows(const Node& node) {
             has_weights ? nlohmann::json(model->weights()->sha256)
                         : nlohmann::json();
         row["weights_present"] = model->has_weights_body();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per registered index for the zetta_indexes system table — the
+// index registry (ENT-39 / ENT-40). Sourced from Node::indexes() (every index
+// replicates, so each node sees the same set). An index is metadata only: this
+// exposes its definition — the source table, the index kind (search / vector /
+// feature), the backend that builds it, and the fields it indexes. `fields` rides
+// as a JSON array (like model_rows' feature_schema), with `field_count` for a
+// quick scalar.
+std::vector<nlohmann::json> index_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& index : node.indexes()) {
+        nlohmann::json row;
+        row["index_id"] = index->id();
+        row["table"] = index->table();
+        row["kind"] = std::string(index->kind_name());
+        row["backend"] = index->backend();
+        row["fields"] = index->fields();
+        row["field_count"] = static_cast<int>(index->fields().size());
+        row["created"] = index->created();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -772,6 +798,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kModelsTable) {
                         return select_over_rows(s, model_rows(node_));
                     }
+                    if (sys == kIndexesTable) {
+                        return select_over_rows(s, index_rows(node_));
+                    }
                     if (sys == kJobsTable) {
                         return select_over_rows(s, compute_job_rows(node_));
                     }
@@ -797,7 +826,8 @@ QueryResult Executor::execute(const Statement& stmt,
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
                                      "system.zetta_deployments, "
-                                     "system.zetta_models, system.zetta_jobs, "
+                                     "system.zetta_models, system.zetta_indexes, "
+                                     "system.zetta_jobs, "
                                      "system.zetta_runs, system.zetta_principals, "
                                      "system.zetta_keys, system.zetta_audit, "
                                      "system.zetta_cloud_providers, or "
