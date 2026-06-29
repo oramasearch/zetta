@@ -2032,6 +2032,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     engine.hpp              zetta::StorageEngine interface
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
+  parquet/                  zetta::parquet — the native Parquet reader (ADR-32; no Arrow/parquet-cpp)
+    snappy.hpp              zetta::parquet::snappy_decompress — Snappy raw-block page decoder (Parquet's default codec), non-throwing + bounds-checked (#507)
   ir/
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
@@ -2132,6 +2134,7 @@ src/core/                   zetta-core impl
     entity_resolution_check.cpp  EntityResolutionCheck — conflation/fragmentation + schema boundary
   entity_resolution.cpp     EntityResolver — normalized full-name / brand matching + entity_resolution_annotation builder (FEAT-6/TC-4; #394)
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
+  parquet/snappy.cpp        zetta::parquet::snappy_decompress — Snappy raw-block decoder (preamble varint + literal/copy elements, bounds-checked) for Parquet data pages (#507)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
@@ -2410,6 +2413,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
+- [`docs/parquet-snappy.md`](docs/parquet-snappy.md) — Parquet Snappy page decompression (`zetta::parquet::snappy_decompress`, #507): a self-contained native decoder for the Snappy raw-block form Parquet uses for its default-codec data pages — non-throwing, bounds-checked at the binary boundary, with hand-built canonical spec vectors + a page-shaped golden as the byte-identical acceptance. The first slice of the native Parquet reader (ADR-32); the footer parser (#505), column-chunk decoders (#506), and reader→DDF wiring (#508) build on it. zstd is a follow-up codec.
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
