@@ -1,9 +1,14 @@
+#include <algorithm>
+#include <cstddef>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "cases.hpp"
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
+#include "zetta/azure_provisioner.hpp"
+#include "zetta/burst_identity.hpp"
 #include "zetta/capability.hpp"
 #include "zetta/churn_dataset.hpp"
 #include "zetta/deployment_target.hpp"
@@ -12,7 +17,9 @@
 #include "zetta/intent_compiler.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
+#include "zetta/node_capability.hpp"
 #include "zetta/principal.hpp"
+#include "zetta/provisioner.hpp"
 #include "zetta/scope.hpp"
 #include "zetta/testkit/harness.hpp"
 #include "zetta/testkit/test_suite.hpp"
@@ -157,6 +164,160 @@ TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& c
     return result;
 }
 
+// A fake AzureControlPlane modelling a burst pool: bring_up scales the pool to the
+// requested count, destroy removes one node, list reports what is up. It lets the
+// burst-identity lifecycle run against the **real** AzureProvisioner (the reference
+// ADR-20 ephemeral-burst backend) with no cloud SDK / CLI.
+class FakeBurstControlPlane : public AzureControlPlane {
+public:
+    ProvisionResult bring_up(const AzureConfig&,
+                             const ProvisionRequest& request) override {
+        pool_.clear();
+        for (std::size_t index = 0; index < request.count; ++index) {
+            ProvisionedNode node;
+            node.node_id = "burst-" + std::to_string(index);
+            node.address = "10.9.0." + std::to_string(index + 1) + ":7777";
+            node.capability = request.spec;
+            pool_.push_back(node);
+        }
+        ProvisionResult result;
+        result.nodes = pool_;
+        result.satisfied = pool_.size() == request.count;
+        result.detail = "scaled";
+        return result;
+    }
+
+    bool destroy(const AzureConfig&, const std::string& node_id) override {
+        const auto found = std::find_if(
+            pool_.begin(), pool_.end(),
+            [&](const ProvisionedNode& node) { return node.node_id == node_id; });
+        if (found == pool_.end()) return false;
+        pool_.erase(found);
+        return true;
+    }
+
+    std::vector<ProvisionedNode> list(const AzureConfig&) const override {
+        return pool_;
+    }
+
+private:
+    std::vector<ProvisionedNode> pool_;
+};
+
+std::size_t count_audit(const Node& node, AuditAction action) {
+    std::size_t total = 0;
+    for (const auto& event : node.audit_events()) {
+        if (event->action() == action) ++total;
+    }
+    return total;
+}
+
+// TC-6 — Bulk burst identity + teardown revocation (ADR-20 / RSK-9). Burst N nodes
+// through the **real** AzureProvisioner wired to a **real** BurstIdentityManager via
+// the IdentityHooks: provisioning mints N **distinct** short-lived service
+// identities (so the burst nodes can authenticate + join the cluster), and tearing
+// the burst down revokes them in bulk with **no orphans** left behind. Both edges
+// are audited (key_issued on mint, key_revoked on revoke).
+TestResult run_burst_identity(const TestOptions& options, TestContext& context) {
+    const auto count = static_cast<std::size_t>(std::max<long>(1, options.get_int("nodes", 3)));
+
+    ScratchDir dir;
+    Node node{scratch_config(dir)};
+    node.start();
+
+    FakeBurstControlPlane control_plane;
+    BurstIdentityManager identities{node};
+    const std::string job = "job-churn-burst";
+
+    // Scope each burst key to the job's project + a TTL'd orchestration right, so the
+    // identity is both narrow (only its job) and short-lived (expires with the burst).
+    Scope scope;
+    scope.grant(ResourceKind::Project, "churn");
+    CapabilitySet capabilities;
+    capabilities.grant(CapabilityDomain::Orchestration, "run",
+                       "2999-01-01T00:00:00.000Z");
+
+    // Bind the burst provisioner's identity hooks to the real manager: mint on
+    // provision, bulk-revoke on the teardown that drains the pool.
+    AzureProvisioner::IdentityHooks hooks;
+    hooks.mint = [&](const std::vector<ProvisionedNode>& nodes) {
+        identities.mint(job, nodes, scope, capabilities);
+    };
+    hooks.revoke = [&] { identities.revoke(job); };
+
+    AzureConfig config;
+    config.subscription_id = "sub-test";
+    config.resource_group = "zetta-rg";
+    config.location = "eastus";
+    AzureProvisioner provisioner{control_plane, config, hooks};
+
+    // ---- burst N nodes -> mint N distinct identities --------------------------
+    context.emit("bursting " + std::to_string(count) + " nodes");
+    NodeCapability spec;
+    spec.cores = 8;
+    const ProvisionResult burst =
+        provisioner.provision(ProvisionRequest{count, spec});
+    if (!burst.satisfied || burst.nodes.size() != count) {
+        node.stop();
+        return TestResult::fail("the burst did not bring up the requested nodes");
+    }
+
+    const std::vector<BurstIdentity> minted = identities.minted(job);
+    if (minted.size() != count) {
+        node.stop();
+        return TestResult::fail("provision did not mint one identity per burst node");
+    }
+
+    // The N identities are distinct: distinct nodes, distinct principals, distinct
+    // keys (no two burst nodes share a credential).
+    std::set<std::string> node_ids, principals, keys;
+    for (const BurstIdentity& identity : minted) {
+        node_ids.insert(identity.node_id);
+        principals.insert(identity.principal_id);
+        keys.insert(identity.key_id);
+    }
+    if (node_ids.size() != count || principals.size() != count || keys.size() != count) {
+        node.stop();
+        return TestResult::fail("the minted identities were not all distinct");
+    }
+    if (node.principal_count() != count ||
+        count_audit(node, AuditAction::KeyIssued) != count) {
+        node.stop();
+        return TestResult::fail("expected N service principals + N key_issued events");
+    }
+
+    // ---- tear the burst down -> revoke with no orphans ------------------------
+    context.emit("tearing the burst down");
+    std::vector<std::string> live_ids;
+    for (const ProvisionedNode& live : provisioner.provisioned()) {
+        live_ids.push_back(live.node_id);
+    }
+    for (const std::string& id : live_ids) provisioner.teardown(id);
+
+    const std::size_t orphan_principals = node.principal_count();
+    const std::size_t still_minted = identities.minted(job).size();
+    const std::size_t revoked_events = count_audit(node, AuditAction::KeyRevoked);
+    node.stop();
+
+    if (orphan_principals != 0 || still_minted != 0) {
+        return TestResult::fail("teardown left orphan identities behind");
+    }
+    if (revoked_events != count) {
+        return TestResult::fail("expected N key_revoked audit events on teardown");
+    }
+
+    TestResult result = TestResult::pass(
+        "burst of " + std::to_string(count) +
+        " minted N distinct identities; teardown revoked them with no orphans");
+    result.metric("burst nodes", std::to_string(count))
+        .metric("distinct principals", std::to_string(principals.size()))
+        .metric("distinct keys", std::to_string(keys.size()))
+        .metric("key_issued", std::to_string(count))
+        .metric("key_revoked", std::to_string(revoked_events))
+        .metric("orphans", "0");
+    return result;
+}
+
 }  // namespace
 
 void register_governance_cases(TestSuite& suite) {
@@ -191,6 +352,19 @@ void register_governance_cases(TestSuite& suite) {
                                        {"full_name (correct)", "brand (conflates)"}, 0,
                                        "which resolution strategy produced the annotation")},
         .run = run_entity_resolution_gate,
+    });
+    suite.add(TestCase{
+        .id = "governance.burst_identity",
+        .category = TestCategory::Governance,
+        .name = "Burst identity + teardown (TC-6)",
+        .description = "Burst N nodes through the real cloud-burst provisioner wired "
+                       "to a BurstIdentityManager: provisioning mints N distinct "
+                       "short-lived service identities, and tearing the burst down "
+                       "revokes them in bulk with no orphans (ADR-20 / RSK-9). Both "
+                       "edges are audited (key_issued / key_revoked).",
+        .options = {TestOption::integer("nodes", "Burst size", 3, 1, 16,
+                                        "how many nodes to burst (one identity each)")},
+        .run = run_burst_identity,
     });
 }
 

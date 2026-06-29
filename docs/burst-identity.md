@@ -88,6 +88,37 @@ identities.revoke(job_id);                                         // -> key_rev
 for (const auto& node : provisioner.provisioned()) provisioner.teardown(node.node_id);
 ```
 
+### Wired automatically: the cloud-burst `IdentityHooks`
+
+The example above mints + revokes by hand. The **production ephemeral-burst path**
+(ADR-20) wires the two edges into the cloud-burst provisioner itself so they fire
+automatically. Every cloud backend
+([`AzureProvisioner`](azure-provisioner.md), AWS, GCP, OCI, k8s, bare-metal) is a
+[`BurstProvisioner`](cloud-provisioner-pattern.md) carrying an optional
+**`IdentityHooks`** pair (`include/zetta/burst_provisioner.hpp`): `mint` is invoked
+with the nodes a `provision` brought up, and `revoke` is invoked once, when the
+burst's **last** node is torn down (the pool drains). Bind them to a
+`BurstIdentityManager` for the job and the whole lifecycle runs hands-off:
+
+```cpp
+BurstIdentityManager identities{node};
+AzureProvisioner::IdentityHooks hooks;
+hooks.mint   = [&](const std::vector<ProvisionedNode>& nodes) {
+    identities.mint(job_id, nodes, scope, caps);      // provision -> key_issued ×N
+};
+hooks.revoke = [&] { identities.revoke(job_id); };    // last teardown -> key_revoked ×N
+AzureProvisioner provisioner{control_plane, config, hooks};
+
+provisioner.provision(ProvisionRequest{N, spec});     // brings up N + mints N identities
+// ... run the job ...
+for (const auto& live : provisioner.provisioned()) provisioner.teardown(live.node_id);
+// the final teardown drains the pool -> revoke fires once -> no orphaned identities
+```
+
+Because `revoke` is **bulk** (drops every `burst/<job-id>/…` principal) and fires
+exactly on the transition to an empty pool, a fully torn-down burst leaves **no
+orphaned credentials** — the property TC-6 (`#253`) verifies.
+
 ## No parallel state: the job↔identity link is derived
 
 zetta's core rule is **everything is replicated state, and in-memory structures
@@ -136,6 +167,14 @@ seam (a `FakeProvisioner` like the one in `tests/test_provisioner.cpp`):
   principal + one job-scoped key each, 3 `key_issued` events), then `revoke` all 3
   (principals/keys gone, 3 `key_revoked` events) and tear the nodes down; revoking
   again is a no-op.
+- **the full burst lifecycle through the real provisioner (TC-6)** — wire the real
+  [`AzureProvisioner`](azure-provisioner.md)'s `IdentityHooks` to a real
+  `BurstIdentityManager` and burst fleets of 1 / 3 / 8: provisioning mints N
+  **distinct** identities (distinct nodes, principals, keys; N `key_issued`), no
+  identity is revoked until the **last** teardown drains the pool, and a fully
+  torn-down burst leaves **no orphans** (0 principals, N `key_revoked`). This proves
+  provision *triggers* the mint and teardown *triggers* the bulk revoke — the ADR-20
+  / RSK-9 acceptance — rather than calling mint/revoke by hand.
 - **service + job scope** — the minted principal is a `Service` actor, its key
   permits the job's project and denies others, and the TTL'd capability is denied
   once `now` passes `expires_at`.
@@ -146,6 +185,13 @@ seam (a `FakeProvisioner` like the one in `tests/test_provisioner.cpp`):
   not separately persisted).
 - **the new audit actions** round-trip through `to_string` / `audit_action_from`
   and pass schema validation.
+
+The same acceptance is a **runnable, parameterized in-app case**,
+`governance.burst_identity` in the [test suite](test-suite.md) catalog
+(`zetta::testkit`) — burst N nodes (a tunable burst-size option) through the real
+provisioner ↔ manager wiring and assert N distinct identities minted + revoked with
+no orphans, both headless (`tests/test_testkit.cpp`) and from the headed
+**Operations → Test suite** panel.
 
 ## Pointers
 

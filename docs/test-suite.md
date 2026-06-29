@@ -47,7 +47,7 @@ and a progress-log sink.
 | **DDF** | `ddf.scan_filter`, `ddf.group_by` | scan a table into a typed columnar frame, filter via the device gather op, and group-by aggregate — checked against a host computation |
 | **Machine learning** | `ml.gbdt_train`, `ml.tree_shap`, `ml.calibration` | train a histogram GBDT (AUC); exact TreeSHAP (the efficiency identity `base + Σφ = raw` + the dominant driver); probability calibration (Platt / isotonic) |
 | **Distributed & cluster** | `cluster.membership`, `cluster.allreduce`, `cluster.group_by_consistency` | a real N-node loopback cluster forms; an allreduce returns the identical global result on every node; a distributed group-by equals the single-node computation |
-| **Governance** | `governance.access_control`, `governance.audit`, `governance.entity_resolution_gate` | deny-by-default key-scoped access; the immutable audit trail; the entity-resolution gate (FullName passes, Brand conflates the FedEx siblings and is blocked — TC-4 / RULE-1) |
+| **Governance** | `governance.access_control`, `governance.audit`, `governance.entity_resolution_gate`, `governance.burst_identity` | deny-by-default key-scoped access; the immutable audit trail; the entity-resolution gate (FullName passes, Brand conflates the FedEx siblings and is blocked — TC-4 / RULE-1); bursting N nodes through the real cloud-burst provisioner mints N distinct short-lived identities and teardown revokes them with no orphans (TC-6 / ADR-20 / RSK-9) |
 | **UC-1 pipeline** | `pipeline.uc1_end_to_end` | the whole gated + governed churn pipeline (the [#399 end-to-end](uc1-end-to-end.md)) as one runnable case |
 | **Example scripts** | `examples.churn_pipeline`, `examples.minimal_train`, `examples.method_chain`, `examples.unterminated_string`, `examples.no_pipeline_steps` | sim-Python example programs run end to end (parse → IR → gate → run) and asserted on — *the example programs ARE the integration tests* ([example-scripts.md](example-scripts.md), #523) |
 
@@ -194,7 +194,6 @@ needs a test fake exposed to the testkit.
 - `governance.intent_compiler` — NL intent → churn / generic skeleton, deterministic, round-trips through `ir::from_json` (pure)
 - `governance.n8n` — import / compile an n8n workflow JSON → artifact input / ExecutionGraph IR (node)
 - `governance.deployment` — `deploy_graph` + the reconcile / self-heal control loop (start, kill, heal a run) (node)
-- `governance.burst_identity` — bulk-mint / revoke service `Principal` + `AccessKey` per burst node, audited (node)
 - `governance.burst_approval_gate` — an over-cap burst blocked pending approval + audited (`provision_requested`) (node)
 
 ### Provisioning (no real cloud calls)
