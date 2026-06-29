@@ -23,6 +23,7 @@ add_executable(zetta-tests
   test_entity_resolution.cpp
   test_duration.cpp
   test_jsonl_store.cpp
+  test_partitioner.cpp
   test_database.cpp
   test_project.cpp
   test_project_input.cpp

@@ -7,6 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/partitioner.hpp"
 #include "zetta/storage/engine.hpp"
 
 namespace zetta {
@@ -42,6 +43,18 @@ public:
 
     std::size_t row_count() const;
 
+    // Configure this table's partitioner — the per-table policy that maps a row
+    // to a partition and a partition to its owner node(s) (the Partitioner seam,
+    // ADR-31 / ENT-37). null = not partitioned (the default). This is in-memory
+    // configuration only in this slice; persisting/replicating the selection and
+    // the partition placements is the partition catalog (#510) and the
+    // partitioned write path (#511). See docs/partitioner.md.
+    void set_partitioner(std::shared_ptr<Partitioner> partitioner);
+
+    // The configured partitioner, or an empty handle when the table is not
+    // partitioned.
+    std::shared_ptr<Partitioner> partitioner() const { return partitioner_; }
+
     // Write this table's metadata (id, name) to dir/table.json.
     void persist_meta() const;
 
@@ -51,6 +64,7 @@ private:
     std::filesystem::path dir_;
     std::unique_ptr<StorageEngine> store_;
     ReplicationManager* replication_;  // null = not replicated
+    std::shared_ptr<Partitioner> partitioner_;  // null = not partitioned
 };
 
 }  // namespace zetta
