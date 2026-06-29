@@ -31,6 +31,7 @@ class QueryService;
 }
 namespace repl {
 class ConsoleModel;
+class GovernedConsole;
 }
 namespace testkit {
 class TestOptions;
@@ -304,16 +305,21 @@ private:
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
 
-    // Console panel (CMP-6 / #524): the reusable SQL/sim-Python REPL. The model
-    // (zetta-core, no ImGui) holds the session state — selected frontend, input
-    // buffer, scrollback transcript — so a future CLI can render the same model;
-    // the component is its thin ImGui renderer. The run handler (built in
-    // draw_console) maps SQL through query_ and surfaces simulated-Python as an
-    // honest "not wired yet" seam until the frontend→IR layer lands. Held by
-    // unique_ptr with both types forward-declared, to keep their headers out of
-    // app.hpp (like query_).
+    // Console panel — the governed Console/REPL screen (SCR-8 / #525), hosting the
+    // reusable CMP-6 component (#524). The model (zetta-core, no ImGui) holds the
+    // session state — selected frontend, input buffer, scrollback transcript — so a
+    // future CLI can render the same model; the component is its thin ImGui
+    // renderer. The run handler routes every statement through governed_console_
+    // (zetta-core): capability-scoped against the acting key, simulated-Python
+    // lowered to the IR + run through the correctness gate, and audited (FEAT-9).
+    // `console_session_key_` is the key id the console acts as ("" = an
+    // unauthenticated local session); it is set into governed_console_ each frame.
+    // Held by unique_ptr with the types forward-declared, to keep their headers out
+    // of app.hpp (like query_).
     std::unique_ptr<repl::ConsoleModel> console_model_;
     std::unique_ptr<ReplConsole> console_;
+    std::unique_ptr<repl::GovernedConsole> governed_console_;
+    std::string console_session_key_;  // acting key id ("" = unauthenticated local)
 
     // Correctness-gate panel (SCR-4 / CMP-2): the execution-graph IR in its
     // canonical JSON form to validate, an inline parse/validation error (a

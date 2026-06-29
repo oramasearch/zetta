@@ -10,6 +10,11 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/ddf/featurize_job.hpp"
+#include "zetta/index/in_memory_index_backend.hpp"
+#include "zetta/index/index.hpp"
+#include "zetta/index/index_backend.hpp"
+#include "zetta/index/index_registry.hpp"
+#include "zetta/index/index_step_executor.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/ml/gbdt_explain_job.hpp"
@@ -216,13 +221,43 @@ StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) const {
     return outcome;
 }
 
-// index -> score / rank. Run the distributed `score` ComputeJob to produce the
-// global at-risk list (highest risk first).
+// index -> build a real index + score / rank. Build a real, queryable entity index
+// over the accounts shard through the resolved IndexBackend (#528), then run the
+// distributed `score` ComputeJob to produce the global at-risk list (highest risk
+// first). The index lets a retention team resolve an at-risk `entity` back to its
+// account record; the ranked list is the at-risk deliverable the act step joins.
 StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) const {
     State& state = *state_;
     if (!state.model_ready) {
         return StepOutcome{/*ok=*/false,
                            "index step ran before the model was trained", {}, {}};
+    }
+
+    // Build the real index first — over the accounts shard, keyed by the entity
+    // column, through the node's IndexBackend registry. The output references the
+    // real Index id when built. When no Search backend is registered the build is
+    // skipped (the at-risk list is still produced) — backward compatible.
+    std::string index_ref;
+    IndexValue index_value;
+    index_value.table = "churn_accounts";
+    index_value.kind = IndexKind::Search;
+    index_value.backend = std::string(InMemoryIndexBackend::kName);
+    index_value.fields = {config_.entity_column};
+    if (const std::shared_ptr<IndexBackend> backend =
+            node_.index_registry().resolve(index_value.spec());
+        backend && config_.accounts_store != nullptr) {
+        const std::vector<IndexPartition> partitions =
+            read_index_partitions(*config_.accounts_store);
+        const IndexStatus status = backend->build(index_value.spec(), partitions);
+        if (!status.ok()) {
+            return StepOutcome{/*ok=*/false,
+                               "entity index build failed: " + status.message,
+                               {}, {}};
+        }
+        if (const std::shared_ptr<Index> index =
+                node_.create_index(index_value)) {
+            index_ref = index->id();
+        }
     }
 
     std::shared_ptr<ComputeJob> job =
@@ -241,8 +276,11 @@ StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) const {
     state.ranked_ready = true;
 
     StepOutcome outcome;
+    // Prefer the real Index id; fall back to the at-risk-list handle when no index
+    // backend was registered (so the run output is always well-formed).
     outcome.outputs.push_back(RunOutput{
-        "index", step_label(step), "atrisk:" + job->id()});
+        "index", step_label(step),
+        index_ref.empty() ? "atrisk:" + job->id() : index_ref});
     return outcome;
 }
 

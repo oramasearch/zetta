@@ -27,10 +27,12 @@ This is the **first of four** Parquet slices, all consuming this layout:
 
 1. **#505 (this)** — footer / metadata parser (schema + row-group / column-chunk
    layout).
-2. **#507** — Snappy page decompression (`zetta::parquet::snappy_decompress`).
-3. **#506** — column-chunk decoders (PLAIN + dictionary / RLE).
-4. **#508** — reader → DDF columns with projection; removes the
-   `ChurnDataFormat::Parquet` "not yet supported" error.
+2. **#507** — Snappy page decompression (`zetta::parquet::snappy_decompress`) —
+   built.
+3. **#506** — [column-chunk decoders](parquet-column-decoders.md) (PLAIN +
+   dictionary / RLE) — built.
+4. **#508** — [reader → DDF columns with projection](parquet-reader.md) — built;
+   removes the `ChurnDataFormat::Parquet` "not yet supported" error.
 
 ## The file layout it reads
 
@@ -90,7 +92,11 @@ for (const auto& group : meta.row_groups) {
 
 `FileMetaData::schema` holds the full flattened `SchemaElement` tree (root group
 first, depth-first preorder) faithfully; `leaf_columns()` is the data-bearing
-projection (with dotted paths) most callers want.
+projection (with dotted paths) most callers want. Each `LeafColumn` also carries
+its `max_definition_level` / `max_repetition_level` (computed during the same
+preorder walk), the per-column constants the
+[column-chunk decoders](parquet-column-decoders.md) need to read null markers —
+a flat OPTIONAL column has `max_definition_level` 1, a REQUIRED column 0.
 
 ### Scope (this slice)
 

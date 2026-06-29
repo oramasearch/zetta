@@ -32,6 +32,7 @@ Modeled on PostgreSQL's large object API. A `LargeObjectStore` belongs to a
 | zetta | Postgres analog | Notes |
 |---|---|---|
 | `import_file(path)` | `lo_import` | reads the file, assigns a UUID id, returns metadata |
+| `import_bytes(name, bytes)` | `lo_from_bytea` | stores in-memory bytes as a new object (no source file) — same fingerprint + CRDT capture as `import_file`; used by the [partitioned write path](partitioned-write-path.md) to store a partition's serialized rows |
 | `export_file(id, path)` | `lo_export` | writes the blob to a path |
 | `read(id)` | `lo_get` / `loread` | returns the raw bytes |
 | `unlink(id)` | `lo_unlink` | deletes the object |
@@ -75,6 +76,15 @@ UI marks it "syncing body". `read`/`export` return nothing until the body lands.
 The `BlobStore` seam (`include/zetta/blob_store.hpp`) is what the cluster uses to
 fetch/serve/verify bodies; `ReplicatedBlobStore` implements it purely from the
 CRDT metadata + on-disk paths (so it's safe to call from the network thread).
+
+- **Partition bodies place on their owners, not everyone.** The above is
+  replicate-to-all — every node fetches every body. A body that is the backing
+  blob of a [dataset partition](dataset-partitions.md) on a
+  [`Partitioned` / `PartitionedWithReplicas`](replication-strategy.md) table is the
+  exception: `ReplicatedBlobStore` fetches and holds it **only on the partition's
+  owner node(s)** (its `owner_nodes`, with `rf` owners → exactly `rf` copies), so a
+  non-owner never `LOREQ`s it. Plain large objects and model weights are unaffected.
+  See [sharded-blob-placement.md](sharded-blob-placement.md).
 
 ## Limits / future
 

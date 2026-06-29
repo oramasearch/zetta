@@ -1,0 +1,57 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "columns": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "boolean",
+              "int32",
+              "int64",
+              "float",
+              "double",
+              "byte_array",
+              "fixed_len_byte_array"
+            ],
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": [
+                "integer",
+                "number",
+                "boolean",
+                "string",
+                "null"
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "path",
+          "type",
+          "values"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "num_rows": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "num_rows",
+    "columns"
+  ],
+  "title": "Parquet decoded columns",
+  "type": "object"
+}

@@ -15,9 +15,9 @@
 // `index` step), return the registered backend that should build it — the
 // acceptance criterion "the IR index step can resolve to a backend".
 //
-// It is a standalone seam like the Provisioner / DeviceRegistry — no Node / SQL
-// wiring in this slice. Driving a deployed `index` step through the resolved
-// backend (build the real index, serve queries) is a later slice.
+// The Node owns one (`Node::index_registry()`, with the reference backends
+// registered) and the IndexStepExecutor (index/index_step_executor.hpp, #528)
+// resolves + builds a deployed `index` step through it — see docs/index-step-executor.md.
 namespace zetta {
 
 // Extract an IndexSpec from an IR `index` step's free-form `attributes` bag,

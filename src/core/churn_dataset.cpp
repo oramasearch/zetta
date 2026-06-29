@@ -11,6 +11,8 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
+#include "zetta/parquet/reader.hpp"
+
 namespace zetta {
 namespace fs = std::filesystem;
 
@@ -211,6 +213,30 @@ bool read_records(const fs::path& path, ChurnDataFormat format,
                   const std::unordered_map<std::string, ColumnType>& column_types,
                   std::vector<nlohmann::json>& out, std::string& error) {
     const std::string file = path.filename().string();
+
+    // Parquet is typed at the source, so it bypasses the line/CSV reader: read the
+    // whole file and decode it into JSON rows via the native Parquet reader (#508).
+    // `column_types` is unused here — the parquet schema carries the types.
+    if (format == ChurnDataFormat::Parquet) {
+        (void)column_types;
+        std::ifstream input(path, std::ios::binary);
+        if (!input) {
+            error = "churn dataset: cannot open " + file;
+            return false;
+        }
+        std::ostringstream buffer;
+        buffer << input.rdbuf();
+        const std::string bytes = buffer.str();
+        zetta::parquet::ParquetRowsResult rows =
+            zetta::parquet::read_parquet_rows(bytes);
+        if (!rows.ok()) {
+            error = file + ": " + rows.error;
+            return false;
+        }
+        for (nlohmann::json& row : rows.rows) out.push_back(std::move(row));
+        return true;
+    }
+
     std::ifstream input(path);
     if (!input) {
         error = "churn dataset: cannot open " + file;
@@ -369,14 +395,7 @@ std::string_view to_string(ChurnDataFormat format) {
 ChurnDatasetResult load_churn_dataset(const fs::path& dir, ChurnDataFormat format) {
     ChurnDatasetResult result;
 
-    if (format == ChurnDataFormat::Parquet) {
-        result.error =
-            "churn dataset: parquet format not yet supported "
-            "(pending an Arrow/parquet-cpp dependency)";
-        return result;
-    }
-
-    const std::string ext = format == ChurnDataFormat::Csv ? "csv" : "jsonl";
+    const std::string ext{to_string(format)};  // "jsonl" / "csv" / "parquet"
 
     if (!load_manifest(dir / "dataset.json", result.dataset, result.error)) {
         return result;

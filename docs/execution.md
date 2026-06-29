@@ -162,11 +162,18 @@ drivers), the executor is constructed with its dependencies (the node, a started
 coordinator, a compute device, the input shards) and used by injection into a
 `GraphExecutor`. See [churn-step-executor.md](churn-step-executor.md).
 
+The **`index` step** has its own real `StepExecutor` —
+[`zetta::IndexStepExecutor`](index-step-executor.md) (#528) — which resolves the
+step's backend from the node's `IndexRegistry`, builds a real index over the source
+table's rows, records the [`Index`](index-backend.md) entity, and emits an `index`
+output referencing the real id (other step kinds delegate to `DefaultStepExecutor`),
+so a built index is queryable. See [index-step-executor.md](index-step-executor.md).
+
 ## What's next (later slices)
 
 - **More real per-step compute** behind the `StepExecutor` seam for the other use
-  cases — building indexes, materializing datasets as real tables/large objects, and
-  recording their real refs in the run's outputs.
+  cases — materializing datasets as real tables/large objects, the distributed
+  (fan-across-nodes) index build, and recording their real refs in the run's outputs.
 - **Wiring the correctness gate** ([gate.md](gate.md)) as a pre-execution
   pre-flight (RULE-1), so a graph that fails semantic checks never runs.
 - **Streaming + monitoring** — the Runs / Outputs / Lineage UI panel (SCR-6) that

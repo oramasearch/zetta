@@ -41,7 +41,7 @@ TEST(Testkit, BuiltinCatalogSpansEveryCategory) {
     for (const TestCategory category :
          {TestCategory::Compute, TestCategory::Ddf, TestCategory::Ml,
           TestCategory::Distributed, TestCategory::Governance,
-          TestCategory::Pipeline}) {
+          TestCategory::Pipeline, TestCategory::Examples}) {
         EXPECT_FALSE(suite.in_category(category).empty())
             << "category " << zetta::testkit::to_string(category) << " has no cases";
     }
@@ -94,6 +94,10 @@ TEST(Testkit, GovernanceCasesPass) {
                   [](TestOptions& o) { o.set_choice("resolver", 1); })
                   .outcome,
               TestOutcome::Pass);
+    // TC-6: burst N nodes -> N distinct identities -> teardown revokes, no orphans.
+    const TestResult burst =
+        run("governance.burst_identity", [](TestOptions& o) { o.set_int("nodes", 4); });
+    EXPECT_EQ(burst.outcome, TestOutcome::Pass) << burst.error;
 }
 
 TEST(Testkit, DistributedCasesRunOnARealCluster) {
@@ -108,6 +112,21 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("rows", 400);
     });
     EXPECT_EQ(group_by.outcome, TestOutcome::Pass) << group_by.error;
+}
+
+TEST(Testkit, ExampleScriptCasesRunGreen) {
+    // Every sim-Python example script registered in the catalog runs end to end
+    // (parse -> IR -> gate -> run) and passes — the example programs ARE the tests.
+    const TestSuite& suite = TestSuite::builtin();
+    const auto examples = suite.in_category(TestCategory::Examples);
+    EXPECT_FALSE(examples.empty());
+    for (const auto* test_case : examples) {
+        TestContext context;
+        TestOptions options = test_case->defaults();
+        const TestResult result = run_test_case(*test_case, options, context);
+        EXPECT_EQ(result.outcome, TestOutcome::Pass)
+            << test_case->id << ": " << result.error;
+    }
 }
 
 TEST(Testkit, Uc1PipelineGatedAndGoverned) {

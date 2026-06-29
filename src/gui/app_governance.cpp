@@ -274,7 +274,8 @@ void App::draw_test_suite() {
     const testkit::TestCategory categories[] = {
         testkit::TestCategory::Compute,     testkit::TestCategory::Ddf,
         testkit::TestCategory::Ml,          testkit::TestCategory::Distributed,
-        testkit::TestCategory::Governance,  testkit::TestCategory::Pipeline};
+        testkit::TestCategory::Governance,  testkit::TestCategory::Pipeline,
+        testkit::TestCategory::Examples};
     for (const testkit::TestCategory category : categories) {
         const std::vector<const testkit::TestCase*> cases = suite.in_category(category);
         if (cases.empty()) continue;

@@ -227,15 +227,18 @@ SELECT index_id, kind FROM system.zetta_indexes WHERE kind = 'search';
 Columns: `index_id`, `table`, `kind`, `backend`, `fields` (a JSON array, like
 `system.zetta_models`' `feature_schema`), `field_count`, `created`.
 
-## What this slice is (and isn't)
+## Running an index step
 
-It is **the seam + the registry + a reference backend + a replicated, validated,
-queryable `Index` entity**. It is **not** yet wired into the run/deploy path: the
-`IndexRegistry` is a standalone seam (like the [Provisioner](provisioner.md) /
-[DeviceRegistry](device-registry.md)), and driving a deployed `index` step through
-the resolved backend — actually building the index over the table's partitions and
-serving queries from it — is a later slice. The vector / semantic / feature
-backends (additive behind the same `IndexBackend` interface) are also later slices.
+This slice delivered **the seam + the registry + a reference backend + a
+replicated, validated, queryable `Index` entity**. Driving a deployed `index` step
+through the resolved backend — actually building the index over the table's rows and
+serving queries from it — is the **[`IndexStepExecutor`](index-step-executor.md)
+slice (#528)**: the `Node` now owns an `IndexRegistry`
+(`Node::index_registry()`, with the reference backends registered), and the
+`IndexStepExecutor` resolves an `index` step to its backend, builds the index over
+the source table's rows, records the `Index` entity, and leaves it queryable. The
+vector / semantic / feature backends (additive behind the same `IndexBackend`
+interface) and a distributed (fan-across-nodes) build are later slices.
 
 ## Pointers
 

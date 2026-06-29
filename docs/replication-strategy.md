@@ -4,10 +4,14 @@
 > per-table / per-database replication strategy. The default — `ReplicateToAll` —
 > preserves today's behavior exactly. The **partitioned-placement engine** that
 > *acts* on a non-default strategy (storing only a subset of shards/replicas on
-> each node instead of a full copy everywhere) is a **later slice**. This is the
-> "record the choice now, drive it later" shape `DeploymentTarget` uses for its
-> placement dial (R1 Local only) and `ScalingPolicy` uses for the reward model
-> before the autoscaler that consumes it.
+> each node instead of a full copy everywhere) is being built incrementally: the
+> first piece, **sharded blob placement** ([#515](https://github.com/oramasearch/zetta/issues/515)),
+> already holds a partition's large-object **body** only on its owner node(s) per the
+> [partition catalog](dataset-partitions.md) + replication factor (see
+> [sharded-blob-placement.md](sharded-blob-placement.md)); the partitioner write path
+> and rebalancing are later slices. This is the "record the choice now, drive it
+> later" shape `DeploymentTarget` uses for its placement dial (R1 Local only) and
+> `ScalingPolicy` uses for the reward model before the autoscaler that consumes it.
 
 A `zetta::ReplicationStrategy` (`include/zetta/replication_strategy.hpp`) is the
 per-entity counterpart to `ReplicationManager`'s **node-wide** `ReplicationPolicy`

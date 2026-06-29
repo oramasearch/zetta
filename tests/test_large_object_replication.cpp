@@ -13,6 +13,7 @@
 #include "temp_dir.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/replicated_blob_store.hpp"
@@ -22,6 +23,7 @@
 
 using zetta::Cluster;
 using zetta::ClusterConfig;
+using zetta::DatasetPartitionValue;
 using zetta::LargeObject;
 using zetta::Node;
 using zetta::NodeConfig;
@@ -174,4 +176,127 @@ TEST(ReplicatedBlobStore, AcceptsLegacyObjectWithEmptyHash) {
     EXPECT_FALSE(blobs.store_blob(lo_id, "wrong length"));  // size still enforced
     EXPECT_TRUE(blobs.store_blob(lo_id, body));             // empty hash → accept
     EXPECT_EQ(blobs.read_blob(lo_id).value_or(""), body);
+}
+
+// ---- partition-aware blob placement (issue #515) ---------------------------
+
+namespace {
+
+bool contains(const std::vector<std::string>& ids, const std::string& id) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
+
+// Seed a large-object's metadata + a dataset partition whose body it is, with the
+// given owner set, into a (replicate-to-all) document. `blob_ref` is recorded in
+// the `lo:<uuid>` catalog-key form unless `bare_ref` is set.
+void seed_partition_blob(ReplicationManager& replication,
+                         const std::string& lo_id, const std::string& db_id,
+                         const std::string& body,
+                         const std::vector<std::string>& owner_nodes,
+                         bool bare_ref = false) {
+    replication.set("lo:" + lo_id, nlohmann::json{{"db", db_id},
+                                                  {"name", "part.bin"},
+                                                  {"size", body.size()},
+                                                  {"sha256", sha256_hex(body)}});
+    DatasetPartitionValue partition;
+    partition.table = "tbl:" + zetta::new_uuid();
+    partition.blob_ref = bare_ref ? lo_id : ("lo:" + lo_id);
+    partition.row_range = {0, 100};
+    partition.owner_nodes = owner_nodes;
+    partition.created = "2026-06-29T00:00:00Z";
+    replication.set("part:" + zetta::new_uuid(), zetta::to_json(partition));
+}
+
+}  // namespace
+
+TEST(ReplicatedBlobStore, PartitionBodyFetchedAndHeldOnlyByOwners) {
+    // A partition's body is fetched + stored only by its owner node(s); a
+    // non-owner neither lists it as missing nor accepts a pushed copy. Both
+    // stores see the same replicate-to-all catalog (so seed both documents).
+    TempDir owner_dir, other_dir;
+    const std::string owner_id = zetta::new_uuid();
+    const std::string other_id = zetta::new_uuid();
+    const std::string lo_id = zetta::new_uuid();
+    const std::string db_id = zetta::new_uuid();
+    const std::string body = sample_payload();
+
+    ReplicationManager repl_owner{owner_id};
+    ReplicationManager repl_other{other_id};
+    seed_partition_blob(repl_owner, lo_id, db_id, body, {owner_id});
+    seed_partition_blob(repl_other, lo_id, db_id, body, {owner_id});
+    ReplicatedBlobStore blobs_owner{owner_dir.path(), repl_owner};
+    ReplicatedBlobStore blobs_other{other_dir.path(), repl_other};
+
+    // Only the owner would fetch the body.
+    EXPECT_TRUE(contains(blobs_owner.missing_blobs(), lo_id));
+    EXPECT_FALSE(contains(blobs_other.missing_blobs(), lo_id));
+
+    // A non-owner refuses the body even on an (unsolicited) push; the owner
+    // accepts it and then no longer reports it missing.
+    EXPECT_FALSE(blobs_other.store_blob(lo_id, body));
+    EXPECT_FALSE(blobs_other.read_blob(lo_id).has_value());
+    EXPECT_TRUE(blobs_owner.store_blob(lo_id, body));
+    EXPECT_EQ(blobs_owner.read_blob(lo_id).value_or(""), body);
+    EXPECT_FALSE(contains(blobs_owner.missing_blobs(), lo_id));
+}
+
+TEST(ReplicatedBlobStore, ReplicationFactorPlacesBodyOnExactlyRfNodes) {
+    // With owner_nodes of size rf, exactly rf nodes fetch + hold the body.
+    TempDir dirs[3];
+    const std::string ids[3] = {zetta::new_uuid(), zetta::new_uuid(),
+                                zetta::new_uuid()};
+    const std::string lo_id = zetta::new_uuid();
+    const std::string db_id = zetta::new_uuid();
+    const std::string body = "partition body, rf=2";
+    const std::vector<std::string> owners = {ids[0], ids[1]};  // rf = 2
+
+    int fetchers = 0;
+    for (int node = 0; node < 3; ++node) {
+        ReplicationManager replication{ids[node]};
+        seed_partition_blob(replication, lo_id, db_id, body, owners);
+        ReplicatedBlobStore blobs{dirs[node].path(), replication};
+        const bool would_fetch = contains(blobs.missing_blobs(), lo_id);
+        const bool is_owner = contains(owners, ids[node]);
+        EXPECT_EQ(would_fetch, is_owner);
+        EXPECT_EQ(blobs.store_blob(lo_id, body), is_owner);
+        if (would_fetch) ++fetchers;
+    }
+    EXPECT_EQ(fetchers, 2);  // exactly rf nodes hold the body
+}
+
+TEST(ReplicatedBlobStore, UnplacedPartitionBodyReplicatesToAll) {
+    // A partition with no recorded owners (not yet placed) must not be stranded:
+    // its body falls back to replicate-to-all so any node still fetches it.
+    TempDir dir;
+    ReplicationManager replication{zetta::new_uuid()};
+    const std::string lo_id = zetta::new_uuid();
+    const std::string body = "unplaced partition body";
+    seed_partition_blob(replication, lo_id, zetta::new_uuid(), body,
+                        /*owner_nodes=*/{});
+    ReplicatedBlobStore blobs{dir.path(), replication};
+    EXPECT_TRUE(contains(blobs.missing_blobs(), lo_id));
+    EXPECT_TRUE(blobs.store_blob(lo_id, body));
+}
+
+TEST(ReplicatedBlobStore, OwnerCheckToleratesBareBlobRef) {
+    // blob_ref may be recorded as a bare uuid (no "lo:" prefix); placement must
+    // still resolve it to the right owner set.
+    TempDir owner_dir, other_dir;
+    const std::string owner_id = zetta::new_uuid();
+    const std::string other_id = zetta::new_uuid();
+    const std::string lo_id = zetta::new_uuid();
+    const std::string db_id = zetta::new_uuid();
+    const std::string body = "bare-ref partition body";
+
+    ReplicationManager repl_owner{owner_id};
+    ReplicationManager repl_other{other_id};
+    seed_partition_blob(repl_owner, lo_id, db_id, body, {owner_id},
+                        /*bare_ref=*/true);
+    seed_partition_blob(repl_other, lo_id, db_id, body, {owner_id},
+                        /*bare_ref=*/true);
+    ReplicatedBlobStore blobs_owner{owner_dir.path(), repl_owner};
+    ReplicatedBlobStore blobs_other{other_dir.path(), repl_other};
+
+    EXPECT_TRUE(contains(blobs_owner.missing_blobs(), lo_id));
+    EXPECT_FALSE(contains(blobs_other.missing_blobs(), lo_id));
 }

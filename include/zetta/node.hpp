@@ -17,6 +17,7 @@
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
 #include "zetta/index/index.hpp"
+#include "zetta/index/index_registry.hpp"
 #include "zetta/model.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
@@ -193,6 +194,20 @@ public:
     bool drop_index(const std::string& id);
     std::vector<std::shared_ptr<Index>> indexes() const { return indexes_; }
     std::size_t index_count() const { return indexes_.size(); }
+
+    // The per-node registry of IndexBackends — the container + selector the run
+    // path resolves an `index` step's IndexSpec to a concrete backend through
+    // (#528). Where `indexes()` is the durable *records* of which indexes exist
+    // (`index:<uuid>`), this is the live *machinery* that builds + serves them.
+    // Constructed with the always-available reference backends registered
+    // (InMemoryIndexBackend "memory_search", plus OramaCoreFulltextIndex
+    // "oramacore_fulltext" when ZETTA_WITH_ORAMACORE), the way a device registry
+    // enumerates the CPU device; a host may add more. The IndexStepExecutor
+    // (index/index_step_executor.hpp) resolves + builds through it, and a built
+    // index is queryable for the node's lifetime via
+    // `index_registry().resolve(spec)->query(spec, q)`. See docs/index-step-executor.md.
+    IndexRegistry& index_registry() { return index_registry_; }
+    const IndexRegistry& index_registry() const { return index_registry_; }
 
     // CRUD for compute jobs (one unit of native distributed accelerated compute —
     // ARC-11 / ENT-31; see compute_job.hpp / docs/compute-jobs.md). Like runs,
@@ -467,6 +482,7 @@ private:
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
+    IndexRegistry index_registry_;            // IndexBackend container (#528)
     DeploymentController controller_{*this};  // control plane (driven by tick())
 };
 

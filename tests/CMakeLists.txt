@@ -24,6 +24,7 @@ add_executable(zetta-tests
   test_duration.cpp
   test_jsonl_store.cpp
   test_partitioner.cpp
+  test_rendezvous_placement.cpp
   test_database.cpp
   test_replication_strategy.cpp
   test_project.cpp
@@ -50,19 +51,24 @@ add_executable(zetta-tests
   test_run.cpp
   test_model.cpp
   test_index.cpp
+  test_index_step_executor.cpp
+  test_oramacore_fulltext_index.cpp
   test_compute_job.cpp
   test_dataset_partition.cpp
+  test_partition_writer.cpp
   test_access_control.cpp
   test_executor.cpp
   test_churn_step_executor.cpp
   test_churn_solution.cpp
   test_uc1_end_to_end.cpp
   test_testkit.cpp
+  test_example_scripts.cpp
   test_audit.cpp
   test_intent_compiler.cpp
   test_node.cpp
   test_query.cpp
   test_repl_console.cpp
+  test_governed_console.cpp
   test_execution_graph.cpp
   test_data_frame.cpp
   test_ddf_ops.cpp
@@ -90,7 +96,10 @@ add_executable(zetta-tests
   test_n8n_compile.cpp
   test_parquet_metadata.cpp
   test_parquet_snappy.cpp
+  test_parquet_column_decoder.cpp
+  test_parquet_reader.cpp
   test_python_frontend.cpp
+  test_python_engine_bindings.cpp
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp

@@ -846,28 +846,37 @@ std::optional<ir::StepKind> python_step_kind(std::string_view verb) {
         {"groupby", StepKind::Clean},        {"aggregate", StepKind::Clean},
         {"encode", StepKind::Clean},         {"scale", StepKind::Clean},
         {"impute", StepKind::Clean},
-        // model — train / evaluate / apply a model
+        // model — train / evaluate / calibrate a model (the native GBDT trainer the
+        // ChurnStepExecutor runs in the model step). Applying a trained model to
+        // rank entities is the index stage below — not this one.
         {"train", StepKind::Model},          {"fit", StepKind::Model},
-        {"predict", StepKind::Model},        {"score", StepKind::Model},
         {"evaluate", StepKind::Model},       {"model", StepKind::Model},
         {"classify", StepKind::Model},       {"cluster", StepKind::Model},
         {"forecast", StepKind::Model},       {"calibrate", StepKind::Model},
-        {"explain", StepKind::Model},
-        // index — build a search / vector / feature index
+        // index — build a search / vector / feature index, and batch-score / rank
+        // entities through a trained model. `score`/`predict`/`rank` are inference,
+        // not training: they lower to the index step the ChurnStepExecutor runs the
+        // score job (the at-risk list) in.
         {"index", StepKind::Index},          {"build_index", StepKind::Index},
         {"embed", StepKind::Index},          {"vectorize", StepKind::Index},
-        {"upsert", StepKind::Index},
-        // serve — expose behind a query / API / endpoint
+        {"upsert", StepKind::Index},         {"rank", StepKind::Index},
+        {"score", StepKind::Index},          {"predict", StepKind::Index},
+        // serve — expose results behind a query / API / endpoint, incl. per-entity
+        // explanation. `explain` is TreeSHAP — the explain job the ChurnStepExecutor
+        // runs in the serve step (the churn drivers), not a model-training step.
         {"serve", StepKind::Serve},          {"deploy", StepKind::Serve},
         {"endpoint", StepKind::Serve},       {"expose", StepKind::Serve},
-        {"publish", StepKind::Serve},
-        // act — take an action on the world
+        {"publish", StepKind::Serve},        {"explain", StepKind::Serve},
+        // act — take an action on the world, incl. cluster control. `add_nodes` is
+        // the permanent-add control action (zetta::add_nodes): provisioning nodes is
+        // a side effect on the cluster, so it lowers to the act stage.
         {"notify", StepKind::Act},           {"alert", StepKind::Act},
         {"send", StepKind::Act},             {"act", StepKind::Act},
         {"write", StepKind::Act},            {"email", StepKind::Act},
         {"slack", StepKind::Act},            {"webhook", StepKind::Act},
         {"trigger", StepKind::Act},          {"export", StepKind::Act},
-        {"save", StepKind::Act},
+        {"save", StepKind::Act},             {"add_nodes", StepKind::Act},
+        {"add_node", StepKind::Act},
     };
     const auto found = table.find(verb);
     if (found == table.end()) return std::nullopt;

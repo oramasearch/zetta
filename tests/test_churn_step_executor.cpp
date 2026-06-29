@@ -175,11 +175,19 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
     ASSERT_TRUE(registered) << "model output ref does not resolve to a real Model";
     EXPECT_EQ(registered->kind(), "classifier");
 
-    // (2) An `index` output — the ranked at-risk list (highest risk first).
+    // (2) An `index` output referencing a REAL, queryable Index the run built over
+    // the accounts shard (#528), plus the ranked at-risk list (highest risk first).
     const auto index_output =
         std::find_if(outputs.begin(), outputs.end(),
                      [](const RunOutput& o) { return o.kind == "index"; });
     ASSERT_NE(index_output, outputs.end()) << "run has no index output";
+    std::shared_ptr<zetta::Index> built_index =
+        host.node.find_index(index_output->ref);
+    ASSERT_TRUE(built_index) << "index output ref does not resolve to a real Index";
+    EXPECT_EQ(built_index->kind(), zetta::IndexKind::Search);
+    // The built index resolves an entity id back to its account row.
+    auto index_backend = host.node.index_registry().resolve(built_index->spec());
+    ASSERT_TRUE(index_backend);
     const std::vector<EntityScore>& ranked = churn->ranked();
     ASSERT_FALSE(ranked.empty());
     EXPECT_EQ(ranked.size(), loaded.dataset.accounts.size());

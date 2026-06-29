@@ -13,5 +13,6 @@ void register_ml_cases(TestSuite& suite);
 void register_distributed_cases(TestSuite& suite);
 void register_governance_cases(TestSuite& suite);
 void register_pipeline_cases(TestSuite& suite);
+void register_example_cases(TestSuite& suite);
 
 }  // namespace zetta::testkit

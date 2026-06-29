@@ -234,6 +234,37 @@ if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
   target_compile_options(nlohmann_json_schema_validator PRIVATE -fexperimental-library)
 endif()
 
+# oramacore-cpp — the native C++23 full-text (BM25F) engine (modules/oramacore-cpp)
+# that backs the OramaCoreFulltextIndex search backend (ENT-39 / ENT-40, #527). It
+# is a *private* submodule, so a checkout that did not (or could not) initialize it
+# must still configure + build + run green: guard on the submodule's presence and
+# link the engine only when it is there. When absent, the backend degrades to
+# `Unsupported` (see src/core/index/oramacore_fulltext_index.cpp). CPU-only, no GPU.
+set(ZETTA_ORAMACORE_DIR "${CMAKE_SOURCE_DIR}/modules/oramacore-cpp")
+if(EXISTS "${ZETTA_ORAMACORE_DIR}/CMakeLists.txt")
+  # Don't build oramacore-cpp's own Catch2 tests/bench (zetta drives its own
+  # GoogleTest suite). Its tests gate on BUILD_TESTING via include(CTest); zetta
+  # uses its own ZETTA_BUILD_TESTS, not BUILD_TESTING, so forcing it OFF is safe.
+  set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+  set(ORAMACORE_CPP_BENCH OFF CACHE BOOL "" FORCE)
+  add_subdirectory("${ZETTA_ORAMACORE_DIR}" EXCLUDE_FROM_ALL)
+  # Match zetta-core's libc++ ABI on the engine. zetta-core compiles with
+  # -fexperimental-library (propagated PUBLIC from Boost::capy); the engine does
+  # not. Std containers cross the zetta-core -> oramacore-cpp link boundary, so
+  # compile it with the same flag to keep the libc++ ABI identical (the same guard
+  # the JSON-Schema validator gets above).
+  if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
+    target_compile_options(oramacore-cpp PRIVATE -fexperimental-library)
+  endif()
+  set(ZETTA_WITH_ORAMACORE ON)
+  message(STATUS "oramacore-cpp full-text index backend: ENABLED")
+else()
+  set(ZETTA_WITH_ORAMACORE OFF)
+  message(STATUS "oramacore-cpp full-text index backend: disabled "
+                 "(modules/oramacore-cpp not initialized — "
+                 "`git submodule update --init modules/oramacore-cpp` to enable)")
+endif()
+
 # -----------------------------------------------------------------------------
 # zetta-compute (the accelerated-compute backends — no SDL/ImGui, no CUDA leak)
 # -----------------------------------------------------------------------------
@@ -348,15 +379,20 @@ add_library(zetta-core STATIC
   src/core/model.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
+  src/core/index/index_step_executor.cpp
   src/core/index/in_memory_index_backend.cpp
+  src/core/index/oramacore_fulltext_index.cpp
   src/core/compute_job.cpp
   src/core/dataset_partition.cpp
+  src/core/rendezvous_placement.cpp
+  src/core/partition_writer.cpp
   src/core/principal.cpp
   src/core/access_key.cpp
   src/core/scope.cpp
   src/core/capability.cpp
   src/core/audit_event.cpp
   src/core/table.cpp
+  src/core/partitioner.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp
   src/core/sha256.cpp
@@ -380,10 +416,14 @@ add_library(zetta-core STATIC
   src/core/n8n_compile.cpp
   src/core/parquet/metadata.cpp
   src/core/parquet/snappy.cpp
+  src/core/parquet/column_decoder.cpp
+  src/core/parquet/reader.cpp
   src/core/input/python_frontend.cpp
+  src/core/input/cluster_bindings.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
+  src/core/ddf/parquet_reader.cpp
   src/core/ddf/ops.cpp
   src/core/ddf/join.cpp
   src/core/ddf/data_frame_ops.cpp
@@ -415,8 +455,11 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_distributed.cpp
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
+  src/core/testkit/cases_examples.cpp
+  src/core/testkit/example_script.cpp
   src/core/runtime.cpp
   src/core/repl/console_model.cpp
+  src/core/repl/governed_console.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
@@ -446,6 +489,16 @@ target_link_libraries(zetta-core PRIVATE
   Boost::corosio
   automerge-cpp::automerge-cpp
   nlohmann_json_schema_validator)
+
+# oramacore-cpp full-text engine — linked only when its submodule is present (see
+# the guarded block above). PRIVATE: only src/core/index/oramacore_fulltext_index.cpp
+# touches it, so its headers stay out of zetta-core's public surface (like the
+# JSON-Schema validator). The PUBLIC define lets the backend's .cpp and consumers
+# (tests) branch on engine availability (OramaCoreFulltextIndex::engine_available()).
+if(ZETTA_WITH_ORAMACORE)
+  target_link_libraries(zetta-core PRIVATE orama::oramacore-cpp)
+  target_compile_definitions(zetta-core PUBLIC ZETTA_WITH_ORAMACORE=1)
+endif()
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

@@ -1,12 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "temp_dir.hpp"
 #include "zetta/audit_event.hpp"
+#include "zetta/azure_provisioner.hpp"
 #include "zetta/burst_identity.hpp"
 #include "zetta/capability.hpp"
 #include "zetta/node.hpp"
@@ -17,6 +20,9 @@
 #include "zetta/timestamp.hpp"
 
 using zetta::AuditAction;
+using zetta::AzureConfig;
+using zetta::AzureControlPlane;
+using zetta::AzureProvisioner;
 using zetta::BurstIdentity;
 using zetta::BurstIdentityManager;
 using zetta::CapabilityDomain;
@@ -82,6 +88,55 @@ private:
     std::size_t next_id_ = 0;
     std::vector<ProvisionedNode> live_;
 };
+
+// A fake AzureControlPlane modelling a burst pool — so the burst-identity lifecycle
+// runs through the **real** AzureProvisioner (the reference ADR-20 ephemeral-burst
+// backend) with no cloud SDK / CLI. bring_up scales the pool to the requested count,
+// destroy removes one node, list reports what is up.
+class FakeBurstControlPlane : public AzureControlPlane {
+public:
+    ProvisionResult bring_up(const AzureConfig& /*config*/,
+                             const ProvisionRequest& request) override {
+        pool_.clear();
+        for (std::size_t index = 0; index < request.count; ++index) {
+            ProvisionedNode node;
+            node.node_id = "burst-" + std::to_string(index);
+            node.address = "10.9.0." + std::to_string(index + 1) + ":7777";
+            node.capability = request.spec;
+            pool_.push_back(node);
+        }
+        ProvisionResult result;
+        result.nodes = pool_;
+        result.satisfied = pool_.size() == request.count;
+        result.detail = "scaled";
+        return result;
+    }
+
+    bool destroy(const AzureConfig& /*config*/,
+                 const std::string& node_id) override {
+        const auto found = std::find_if(
+            pool_.begin(), pool_.end(),
+            [&](const ProvisionedNode& node) { return node.node_id == node_id; });
+        if (found == pool_.end()) return false;
+        pool_.erase(found);
+        return true;
+    }
+
+    std::vector<ProvisionedNode> list(const AzureConfig& /*config*/) const override {
+        return pool_;
+    }
+
+private:
+    std::vector<ProvisionedNode> pool_;
+};
+
+AzureConfig burst_config() {
+    AzureConfig config;
+    config.subscription_id = "sub-test";
+    config.resource_group = "zetta-rg";
+    config.location = "eastus";
+    return config;
+}
 
 NodeConfig config_for(const TempDir& tmp) {
     NodeConfig cfg;
@@ -176,6 +231,81 @@ TEST(BurstIdentity, BulkMintAndRevokeViaTheProvisionerSeam) {
     EXPECT_EQ(count_action(node, AuditAction::KeyRevoked), 3u);
 
     node.stop();
+}
+
+// ---- TC-6: the full burst lifecycle through the real BurstProvisioner --------
+//
+// The acceptance the test_case (#253 / TC-6, ADR-20 / RSK-9) names: bursting N
+// nodes mints N **distinct** identities, and teardown revokes them with **no
+// orphans**. Unlike the test above (which calls mint/revoke by hand), this wires the
+// real cloud-burst provisioner's IdentityHooks to a real BurstIdentityManager — so
+// provisioning *triggers* the mint and the draining teardown *triggers* the bulk
+// revoke, exactly as the production ephemeral-burst path runs.
+
+TEST(BurstIdentity, BurstProvisionerMintsDistinctIdentitiesAndRevokesOnTeardown) {
+    for (const std::size_t fleet : {1u, 3u, 8u}) {
+        TempDir tmp;
+        Node node{config_for(tmp)};
+        node.start();
+
+        FakeBurstControlPlane control_plane;
+        BurstIdentityManager identities{node};
+        const std::string job = "job-burst-" + std::to_string(fleet);
+
+        // Hooks bound to the real manager: mint on provision, bulk-revoke on drain.
+        AzureProvisioner::IdentityHooks hooks;
+        hooks.mint = [&](const std::vector<ProvisionedNode>& nodes) {
+            identities.mint(job, nodes, job_scope("churn"), short_lived_caps());
+        };
+        hooks.revoke = [&] { identities.revoke(job); };
+
+        AzureProvisioner provisioner{control_plane, burst_config(), hooks};
+
+        // Burst the fleet — provision mints one identity per node that came up.
+        const ProvisionResult burst =
+            provisioner.provision(ProvisionRequest{fleet, gpu_spec()});
+        ASSERT_TRUE(burst.satisfied);
+        ASSERT_EQ(burst.nodes.size(), fleet);
+
+        // N distinct identities: distinct nodes, principals, and keys.
+        const std::vector<BurstIdentity> minted = identities.minted(job);
+        ASSERT_EQ(minted.size(), fleet);
+        std::set<std::string> node_ids, principals, keys;
+        for (const BurstIdentity& identity : minted) {
+            node_ids.insert(identity.node_id);
+            principals.insert(identity.principal_id);
+            keys.insert(identity.key_id);
+            EXPECT_FALSE(identity.principal_id.empty());
+            EXPECT_FALSE(identity.key_id.empty());
+        }
+        EXPECT_EQ(node_ids.size(), fleet);     // one per distinct burst node
+        EXPECT_EQ(principals.size(), fleet);   // no shared principal
+        EXPECT_EQ(keys.size(), fleet);         // no shared key
+        EXPECT_EQ(node.principal_count(), fleet);
+        EXPECT_EQ(count_action(node, AuditAction::KeyIssued), fleet);
+        EXPECT_EQ(count_action(node, AuditAction::KeyRevoked), 0u);
+
+        // Tear the burst down node by node. The bulk revoke fires only when the last
+        // teardown drains the pool — until then the identities stay live.
+        std::vector<std::string> live_ids;
+        for (const ProvisionedNode& live : provisioner.provisioned()) {
+            live_ids.push_back(live.node_id);
+        }
+        ASSERT_EQ(live_ids.size(), fleet);
+        for (std::size_t index = 0; index < live_ids.size(); ++index) {
+            EXPECT_TRUE(provisioner.teardown(live_ids[index]));
+            const bool drained = index + 1 == live_ids.size();
+            // No identity is revoked until the pool drains on the final teardown.
+            EXPECT_EQ(identities.minted(job).size(), drained ? 0u : fleet);
+        }
+
+        // No orphans: every principal + key is gone, and each was audited.
+        EXPECT_EQ(node.principal_count(), 0u);
+        EXPECT_TRUE(identities.minted(job).empty());
+        EXPECT_EQ(count_action(node, AuditAction::KeyRevoked), fleet);
+
+        node.stop();
+    }
 }
 
 // ---- the minted principal is a short-lived service actor ---------------------
