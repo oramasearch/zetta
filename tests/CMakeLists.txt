@@ -56,6 +56,7 @@ add_executable(zetta-tests
   test_compute_job.cpp
   test_dataset_partition.cpp
   test_partition_writer.cpp
+  test_partition_rebalance.cpp
   test_access_control.cpp
   test_executor.cpp
   test_churn_step_executor.cpp

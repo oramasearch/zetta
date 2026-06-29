@@ -134,11 +134,14 @@ This slice is the **write path + recorded placement**. Out of scope (later
 slices): a top-level command/DDL that triggers it on load (it is a reusable
 library function today, like `import_records` and `run_churn_solution`), driving a
 table's [`ReplicationStrategy`](replication-strategy.md) replication factor into
-the placement (the write path uses the partitioner's own `place_partition`),
+the placement (the write path uses the partitioner's own `place_partition`), and
 locality-aware **reads** that route a scan to a partition's owner and read the blob
-back (#516), and **rebalance** on a membership change (#517). `ReplicationStrategy`
-remains the *declarative* intent recorded on the table; the `Partitioner` is the
-*mechanism* this path drives.
+back (#516). **Rebalance on a membership change (#517) is built** — see
+[partition-rebalance.md](partition-rebalance.md): when a node joins, rendezvous
+placement is re-run and the changed partitions' `owner_nodes` updated (so their
+bodies move to the new owners). `ReplicationStrategy` remains the *declarative*
+intent recorded on the table; the `Partitioner` is the *mechanism* this path
+drives.
 
 ## Tests
 

@@ -21,10 +21,14 @@ only** — recording and replicating where data lives.
 The catalog's `owner_nodes` is now **acted on** by blob replication
 ([#515](https://github.com/oramasearch/zetta/issues/515)): a partition's backing
 body (`blob_ref`) is fetched and held **only by its owner node(s)**, not replicated
-to all — see [sharded-blob-placement.md](sharded-blob-placement.md). **Still out of
-scope** (later slices): locality-aware reads that route a scan to a partition's
-owner and read its blob back (`#516`), and re-balancing placement across the fleet
-(`#517`).
+to all — see [sharded-blob-placement.md](sharded-blob-placement.md). The
+`owner_nodes` is now also **recomputed on a membership change** by the between-jobs
+rebalance ([#517](https://github.com/oramasearch/zetta/issues/517)) — when a node
+joins, rendezvous placement is re-run and the changed catalog entries' owners are
+updated (so the bodies move to their new owners over the same #515 seam); see
+[partition-rebalance.md](partition-rebalance.md). **Still out of scope** (a later
+slice): locality-aware reads that route a scan to a partition's owner and read its
+blob back (`#516`).
 
 It is modeled **exactly like** [`zetta::ComputeJob`](compute-jobs.md) /
 [`zetta::Run`](runs.md): a top-level entity keyed by id, a flat CRDT key + on-disk
@@ -80,10 +84,11 @@ value.owner_nodes = {node.node_id()};
 auto partition = node.create_dataset_partition(value);
 ```
 
-There is no user-facing mutator in this slice — a partition is recorded once and
-replicates. (Re-placement that mutates `owner_nodes` / `stats` over time lands with
-the partitioner / re-balancer; the entity already supports `apply_value`, which the
-reconcile path uses for any peer-side change.)
+Re-placement mutates `owner_nodes` over time: `DatasetPartition::set_owner_nodes`
+is the **capturing** owner mutator the rebalance ([#517](partition-rebalance.md))
+uses — it rewrites the value, captures the `part:<id>` key into the CRDT (so the
+re-placement replicates like a create), and rewrites the projection (the
+`apply_value` reconcile path stays capture-free, for any peer-side change).
 
 ## Queryable via SQL (`system.dataset_partitions`)
 

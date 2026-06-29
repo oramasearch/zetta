@@ -405,7 +405,16 @@ private:
     void load_replication();           // read the persisted CRDT document
     void persist_replication() const;  // write the CRDT document to disk
     void migrate_to_replication();     // capture local-only data into the CRDT
-    void reconcile_from_replication(); // apply the CRDT document to the projection
+    // apply the CRDT document (the given snapshot) to the projection
+    void reconcile_from_replication(const nlohmann::json& snapshot);
+    // Between-jobs partition rebalance on a cluster membership change (#517):
+    // membership lives in the document as node:<id> keys, so a join/leave shows
+    // up here. When the set differs from the last observed membership, recompute
+    // rendezvous placement for the sharded partitions (rebalance_partitions),
+    // which captures the new owner_nodes into the document so the bodies move to
+    // their new owners. No-op on the first observation (it sets the baseline) and
+    // when membership is unchanged.
+    void rebalance_partitions_on_membership_change(const nlohmann::json& snapshot);
     // Per-entity reconcile passes, called by reconcile_from_replication() in the
     // order parent entities precede their children. Each scans the same CRDT
     // snapshot for its keys, drops local entries the document no longer has, and
@@ -466,6 +475,7 @@ private:
     ReplicationManager* replication_;  // null = standalone (not replicated)
     std::string node_id_;              // this node's stable UUID (set by start())
     std::string last_seen_version_;    // CRDT version last reconciled/persisted
+    std::vector<std::string> last_membership_;  // node:<id> set last seen (#517)
     IntegrityReport integrity_;        // last preflight result
     bool running_ = false;
     Clock::time_point started_at_{};
