@@ -1458,9 +1458,10 @@ out the Thrift `FileMetaData` blob, and decodes it — the file's **schema**
 groups**, and per-**column-chunk** layout (offsets / sizes / encodings / codecs /
 dictionary-page presence). It decodes **no data** itself — decompressing the page
 bodies (the **Snappy** decoder #507) and projecting the decoded values into DDF
-columns (#508, which removes the `ChurnDataFormat::Parquet` "not yet supported"
-error) are the sibling / later slices; reading the page bodies into typed values
-is the **column-chunk decoders** (#506, below). The
+columns (the [reader → DDF slice](docs/parquet-reader.md) #508, which removes the
+`ChurnDataFormat::Parquet` "not yet supported" error) are the sibling slices;
+reading the page bodies into typed values is the **column-chunk decoders** (#506,
+below). The
 parser carries a small, self-contained **Thrift compact-protocol** decoder
 (varint field-id deltas, zigzag ints, length-prefixed binary, compact
 list/map framing) that dispatches on the parquet.thrift field ids it models and
@@ -1514,6 +1515,42 @@ zstd/gzip-mixing metadata fixture) and matches a pyarrow-authored values golden
 field for field — every dtype, PLAIN + dictionary, required + optional, across 2
 row groups. **No DDF/SQL/run wiring** (that is #508). See
 [docs/parquet-column-decoders.md](docs/parquet-column-decoders.md).
+
+The **reader → DDF columns** slice (`zetta::ddf::load_parquet_data_frame`,
+`include/zetta/ddf/parquet_reader.hpp`, #508) is the **capstone**: it assembles
+the footer parser (#505) + column decoders (#506) + Snappy codec (#507) into a
+reader that materializes a **requested subset** of a file's columns straight into
+a typed, chunked [DDF `DataFrame`](docs/ddf.md) (DeviceBuffer-backed columns).
+**Column projection** is the point — the `DataFrameSchema` names *which* leaf
+columns to read (and their target dtype), and **only those column chunks are
+decoded** — so it loads the engineered numeric columns + `outcome` of the
+saas-sales-conversations dataset while **dropping `embedding_0..3071`** (3072
+columns) without paying to decode them (each `ColumnSchema`'s `source_field()` is
+the parquet leaf path, `name` the frame column; the chunk layout matches
+`load_data_frame`). A DataFrame is **numeric + dense**, so each column converts to
+its target dtype validated at the boundary (integer widens into float; a
+real-into-integer / negative-into-unsigned / out-of-range / byte_array-into-numeric
+/ **null** value fails with a reason), and `infer_parquet_schema` is the
+metadata-only "load every number" convenience. Its untyped sibling
+**`zetta::parquet::read_parquet_rows`** (`include/zetta/parquet/reader.hpp`)
+decodes **every** leaf and transposes the values into one `nlohmann::json` object
+per row — the inverse of the JsonlStore row shape — so a `.parquet` file drops
+into any JSON-row consumer. That is how the **churn dataset loader**
+(`load_churn_dataset(..., ChurnDataFormat::Parquet)`) now reads Parquet
+(`accounts.parquet`/`events.parquet` → `read_parquet_rows` → the same validators +
+`from_json` as JSONL/CSV; the `parquet format not yet supported` error is gone),
+all three formats round-tripping to the identical `ChurnDataset`. The TC-9 golden
+(`{num_rows,columns:[{name,dtype,values}]}`) carries a schema —
+`parquet_data_frame_schema()` (schema-as-code, generated to
+`schemas/parquet_data_frame.schema.json`, drift-checked by `test_schemas`) +
+`validate_parquet_data_frame_json` — and the input projection rides the existing
+validated `DataFrameSchema` boundary (no new runtime JSON format). The acceptance
+(`tests/test_parquet_reader.cpp`, **TC-9 / #499 parity**) loads the projected
+subset of `tests/fixtures/parquet/saas_sample.parquet` (5 engineered/outcome
+columns + 8 `embedding_*`, scaled down from 3072) and matches a pyarrow-authored
+DataFrame golden field for field, asserting the embeddings are dropped; the churn
+parity is `ParquetFormatLoadsIdentically`. No deploy/`ddf`-kind wiring yet; zstd is
+the follow-up codec. See [docs/parquet-reader.md](docs/parquet-reader.md).
 
 ### Query layer
 
@@ -1827,8 +1864,11 @@ sibling subsidiaries as **separate accounts**). `load_churn_dataset(dir, format)
 is **non-throwing** and **schema-validates every record at the boundary** (three
 draft-07 schemas — `schemas/churn_{dataset,account,event}.schema.json`, embedded
 in the `.cpp` like the Run record); `ChurnDataFormat` is `{ Jsonl (canonical),
-Csv (a flat sibling), Parquet (planned — an honest seam that errors until an
-Arrow/parquet-cpp dependency lands) }`. `entity_resolution_attribute(dataset)`
+Csv (a flat sibling), Parquet (read by the native no-Arrow
+[Parquet reader](docs/parquet-reader.md) via `read_parquet_rows`, #508) }` — all
+three round-trip to the identical dataset (no foreign runtime: the `.parquet`
+fixtures are generated dev-time by `scripts/gen-parquet-fixture.py`, not at
+build/CI). `entity_resolution_attribute(dataset)`
 builds the division-correct `entity_resolution` payload from the comms mentions,
 ready to feed `EntityResolutionCheck` (TC-4); the JSONL also imports straight into
 a zetta table via `import_records`. See [docs/churn-dataset.md](docs/churn-dataset.md).
@@ -2463,6 +2503,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   parquet/                  zetta::parquet — native (no Arrow) Parquet reader (ADR-32/#481)
     metadata.hpp            zetta::parquet::parse_parquet_metadata — read a file's Thrift FileMetaData (schema + row-group/column-chunk layout, incl. per-leaf max def/rep levels); Thrift compact decoder, non-throwing, JSON projection + schema boundary (#505)
     column_decoder.hpp      zetta::parquet::decode_column/decode_column_chunk — read a column's data pages into typed values + a validity bitmap: PLAIN (int/float/bool/byte_array) + dictionary (RLE/bit-packed indices) + definition levels; uncompressed + snappy codecs (zstd/gzip rejected); non-throwing, JSON projection + schema boundary (#506)
+    reader.hpp              zetta::parquet::read_parquet_rows — assemble metadata+decoders into a whole-file reader: decode every leaf column → one JSON object per row (the inverse of the JsonlStore row shape); the untyped-rows reader the churn loader uses (#508)
   compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA in headers)
     data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
     compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
@@ -2477,6 +2518,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
+    parquet_reader.hpp      zetta::ddf::load_parquet_data_frame/infer_parquet_schema — native Parquet → DataFrame reader with column projection: decode only the requested leaf columns into DeviceBuffers (drop embedding_0..3071), numeric/dense boundary + parquet_data_frame schema for the golden (ADR-32; #508)
     ops.hpp                 zetta::ddf::scan/filter/project — DDF ops over a DataFrame, built on the ComputeDevice seam (gather-based filter, map/elementwise computed columns) + FilterPredicate/Projection JSON boundaries (ARC-12; #381)
     join.hpp                zetta::ddf::distributed_join — DDF distributed inner equi-join: repartition by key via collectives (gather+broadcast) then local hash/sort-merge join per shard (ARC-12; #382)
     data_frame_ops.hpp      zetta::ddf::sort/concat/slice — frame-shaping DDF ops: order by a key column (device sort_by_key), row-wise union, contiguous row range (ARC-12; #385)
@@ -2581,6 +2623,7 @@ src/core/                   zetta-core impl
   parquet/metadata.cpp      zetta::parquet — Thrift compact-protocol decoder + FileMetaData footer decode + to_json + parquet_metadata_schema/validate boundary (zetta-core; #505)
   parquet/snappy.cpp        zetta::parquet::snappy_decompress — Snappy raw-block decoder (preamble varint + literal/copy elements, bounds-checked) for Parquet data pages (#507)
   parquet/column_decoder.cpp zetta::parquet — page-header parse + RLE/bit-packed-hybrid + PLAIN/dictionary value decode + definition levels → DecodedColumn (dense values + validity); parquet_columns_schema/validate boundary (zetta-core; #506)
+  parquet/reader.cpp        zetta::parquet::read_parquet_rows — decode every leaf column + transpose to one JSON object per row (the untyped whole-file reader; powers load_churn_dataset Parquet) (zetta-core; #508)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
@@ -2592,6 +2635,7 @@ src/core/                   zetta-core impl
   compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
   compute/job_coordinator.cpp  JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
   ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
+  ddf/parquet_reader.cpp    load_parquet_data_frame (decode requested leaf columns → DeviceBuffers, column projection + numeric/dense boundary), infer_parquet_schema, parquet_data_frame_schema/validate boundary (zetta-core; #508)
   ddf/ops.cpp               DDF scan/filter/project ops over a DataFrame (gather-based filter + repack, map/elementwise computed columns) + FilterPredicate/Projection JSON boundaries (zetta-core; #381)
   ddf/join.cpp              distributed_join + to_host_relation + hash/sort-merge join + collective repartition (gather/broadcast all-to-all) + deserialize boundary check (zetta-core; #382)
   ddf/data_frame_ops.cpp    zetta::ddf::sort/concat/slice + the internal HostFrame host-staging (data_frame_internal.hpp) shared with the distributed sort (zetta-core; #385)
@@ -2873,7 +2917,8 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
 - [`docs/parquet-metadata.md`](docs/parquet-metadata.md) — the native (no Arrow) Parquet footer / metadata parser (`zetta::parquet::parse_parquet_metadata`, ADR-32 / #481 / #505): read a `.parquet` file's Thrift `FileMetaData` — schema (column names/types), row groups, per-column-chunk offsets/sizes/encodings/codecs — via a self-contained Thrift compact-protocol decoder; no data decode (the layout foundation the #506 decoders / #507 Snappy / #508 DDF wiring consume), non-throwing + bounds-checked, with a schema-validated JSON projection tested against a dev-time pyarrow golden (no foreign runtime in build/CI).
 - [`docs/parquet-snappy.md`](docs/parquet-snappy.md) — Parquet Snappy page decompression (`zetta::parquet::snappy_decompress`, #507): a self-contained native decoder for the Snappy raw-block form Parquet uses for its default-codec data pages — non-throwing, bounds-checked at the binary boundary, with hand-built canonical spec vectors + a page-shaped golden as the byte-identical acceptance. The first slice of the native Parquet reader (ADR-32); the footer parser (#505), column-chunk decoders (#506), and reader→DDF wiring (#508) build on it. zstd is a follow-up codec.
-- [`docs/parquet-column-decoders.md`](docs/parquet-column-decoders.md) — the native (no Arrow) Parquet column-chunk decoders (`zetta::parquet::decode_column` / `decode_column_chunk`, ADR-32 / #506): read a column's data pages into typed values + a validity bitmap, on top of the [footer parser](docs/parquet-metadata.md) (#505) + [Snappy codec](docs/parquet-snappy.md) (#507). Decodes **PLAIN** (fixed-width LE int32/int64/float/double, bit-packed bool, length-prefixed byte_array) + **dictionary** (PLAIN dict page + RLE/bit-packed indices), and **definition levels** (RLE/bit-packed hybrid) into per-row validity for the (mostly non-null) columns; flat columns / page v1 / uncompressed + snappy codecs (zstd/gzip rejected with a reason until their decoder lands). A `DecodedColumn` is the Arrow-native dense values + validity bitmap the #508 DDF projection consumes; non-throwing + bounds-checked, schema-validated JSON projection tested against a dedicated pyarrow golden fixture. No DDF/SQL/run wiring (that is #508).
+- [`docs/parquet-column-decoders.md`](docs/parquet-column-decoders.md) — the native (no Arrow) Parquet column-chunk decoders (`zetta::parquet::decode_column` / `decode_column_chunk`, ADR-32 / #506): read a column's data pages into typed values + a validity bitmap, on top of the [footer parser](docs/parquet-metadata.md) (#505) + [Snappy codec](docs/parquet-snappy.md) (#507). Decodes **PLAIN** (fixed-width LE int32/int64/float/double, bit-packed bool, length-prefixed byte_array) + **dictionary** (PLAIN dict page + RLE/bit-packed indices), and **definition levels** (RLE/bit-packed hybrid) into per-row validity for the (mostly non-null) columns; flat columns / page v1 / uncompressed + snappy codecs (zstd/gzip rejected with a reason until their decoder lands). A `DecodedColumn` is the Arrow-native dense values + validity bitmap the [#508 DDF projection](docs/parquet-reader.md) consumes; non-throwing + bounds-checked, schema-validated JSON projection tested against a dedicated pyarrow golden fixture. No DDF/SQL/run wiring (that is #508).
+- [`docs/parquet-reader.md`](docs/parquet-reader.md) — the native (no Arrow) Parquet **reader → DDF columns with column projection** (`zetta::ddf::load_parquet_data_frame` + `zetta::parquet::read_parquet_rows`, ADR-32 / #508): the capstone that assembles the [footer parser](docs/parquet-metadata.md) (#505) + [column decoders](docs/parquet-column-decoders.md) (#506) + [Snappy codec](docs/parquet-snappy.md) (#507) into a reader that materializes a **requested subset** of columns straight into a typed, chunked [DDF `DataFrame`](docs/ddf.md) (DeviceBuffers). **Column projection** decodes only the selected column chunks, so it loads the engineered numeric columns + `outcome` of the saas-sales-conversations dataset while **dropping `embedding_0..3071`** (3072 columns) without decoding them; numeric/dense boundary (nulls / byte_array / real-into-int rejected), `infer_parquet_schema` for "load every number", schema-validated golden (`parquet_data_frame_schema`). The untyped sibling `read_parquet_rows` (decode every leaf → one JSON object per row) wires Parquet into the [churn loader](docs/churn-dataset.md) (`load_churn_dataset(..., Parquet)`), removing the `ChurnDataFormat::Parquet` "not yet supported" error — all three formats round-trip identically. TC-9 (#499) parity vs a dev-time pyarrow golden (no foreign runtime in build/CI); no deploy/`ddf`-kind wiring yet, zstd a follow-up codec.
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.

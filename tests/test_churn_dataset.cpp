@@ -281,10 +281,41 @@ TEST(ChurnDataset, MalformedCsvCellFailsAtTheBoundary) {
     EXPECT_NE(result.error.find("boolean"), std::string::npos);
 }
 
-// ---- the Parquet seam is declared but not yet wired -------------------------
+// ---- the Parquet form is the same dataset (native reader, #508) -------------
 
-TEST(ChurnDataset, ParquetFormatIsNotYetSupported) {
-    const auto result = load_churn_dataset(churn_dir(), ChurnDataFormat::Parquet);
-    EXPECT_FALSE(result.ok());
-    EXPECT_NE(result.error.find("parquet"), std::string::npos);
+TEST(ChurnDataset, ParquetFormatLoadsIdentically) {
+    const auto from_jsonl = load_churn_dataset(churn_dir(), ChurnDataFormat::Jsonl);
+    const auto from_parquet = load_churn_dataset(churn_dir(), ChurnDataFormat::Parquet);
+    ASSERT_TRUE(from_jsonl.ok()) << from_jsonl.error;
+    ASSERT_TRUE(from_parquet.ok()) << from_parquet.error;
+
+    const ChurnDataset& a = from_jsonl.dataset;
+    const ChurnDataset& b = from_parquet.dataset;
+    ASSERT_EQ(a.accounts.size(), b.accounts.size());
+    ASSERT_EQ(a.events.size(), b.events.size());
+
+    for (std::size_t i = 0; i < a.accounts.size(); ++i) {
+        EXPECT_EQ(a.accounts[i].account_id, b.accounts[i].account_id);
+        EXPECT_EQ(a.accounts[i].name, b.accounts[i].name);
+        EXPECT_EQ(a.accounts[i].entity, b.accounts[i].entity);
+        EXPECT_EQ(a.accounts[i].brand, b.accounts[i].brand);
+        EXPECT_EQ(a.accounts[i].plan_tier, b.accounts[i].plan_tier);
+        EXPECT_EQ(a.accounts[i].industry, b.accounts[i].industry);
+        EXPECT_EQ(a.accounts[i].region, b.accounts[i].region);
+        EXPECT_DOUBLE_EQ(a.accounts[i].mrr, b.accounts[i].mrr);
+        EXPECT_EQ(a.accounts[i].seats, b.accounts[i].seats);
+        EXPECT_EQ(a.accounts[i].tenure_days, b.accounts[i].tenure_days);
+        EXPECT_EQ(a.accounts[i].renewal_date, b.accounts[i].renewal_date);
+        EXPECT_EQ(a.accounts[i].churned, b.accounts[i].churned);
+        EXPECT_EQ(a.accounts[i].churn_date, b.accounts[i].churn_date);
+    }
+    for (std::size_t i = 0; i < a.events.size(); ++i) {
+        EXPECT_EQ(a.events[i].event_id, b.events[i].event_id);
+        EXPECT_EQ(a.events[i].account_id, b.events[i].account_id);
+        EXPECT_EQ(a.events[i].event_ts, b.events[i].event_ts);
+        EXPECT_EQ(a.events[i].event_type, b.events[i].event_type);
+        EXPECT_EQ(a.events[i].channel, b.events[i].channel);
+        EXPECT_EQ(a.events[i].mention, b.events[i].mention);
+        EXPECT_DOUBLE_EQ(a.events[i].value, b.events[i].value);
+    }
 }

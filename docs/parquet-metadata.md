@@ -27,11 +27,12 @@ This is the **first of four** Parquet slices, all consuming this layout:
 
 1. **#505 (this)** — footer / metadata parser (schema + row-group / column-chunk
    layout).
-2. **#507** — Snappy page decompression (`zetta::parquet::snappy_decompress`).
+2. **#507** — Snappy page decompression (`zetta::parquet::snappy_decompress`) —
+   built.
 3. **#506** — [column-chunk decoders](parquet-column-decoders.md) (PLAIN +
    dictionary / RLE) — built.
-4. **#508** — reader → DDF columns with projection; removes the
-   `ChurnDataFormat::Parquet` "not yet supported" error.
+4. **#508** — [reader → DDF columns with projection](parquet-reader.md) — built;
+   removes the `ChurnDataFormat::Parquet` "not yet supported" error.
 
 ## The file layout it reads
 

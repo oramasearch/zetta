@@ -87,18 +87,17 @@ struct ChurnDatasetResult {
 };
 
 // On-disk row format of a churn dataset. JSONL is canonical; CSV is a committed
-// flat sibling (both round-trip to the same dataset). Parquet (Arrow) is the
-// planned columnar format — declared here but not yet supported, since it needs an
-// Arrow/parquet-cpp dependency the repo deliberately doesn't carry yet (ADR-17).
+// flat sibling, and Parquet is read by the native (no-Arrow) Parquet reader
+// (#508) — all three round-trip to the same dataset (ADR-17: no foreign runtime).
 enum class ChurnDataFormat { Jsonl, Csv, Parquet };
 
 std::string_view to_string(ChurnDataFormat format);
 
 // Load + schema-validate a churn dataset from `dir`. Expects dataset.json (always
-// JSON) plus accounts.<ext> + events.<ext> for the chosen `format` (jsonl/csv).
-// Every record is validated against its draft-07 schema at the boundary; the first
-// malformed record fails the load with a path-qualified reason. Never throws.
-// A Parquet `format` returns a not-yet-supported error (see ChurnDataFormat).
+// JSON) plus accounts.<ext> + events.<ext> for the chosen `format`
+// (jsonl/csv/parquet). Every record is validated against its draft-07 schema at
+// the boundary; the first malformed record fails the load with a path-qualified
+// reason. Never throws.
 ChurnDatasetResult load_churn_dataset(const std::filesystem::path& dir,
                                       ChurnDataFormat format = ChurnDataFormat::Jsonl);
 

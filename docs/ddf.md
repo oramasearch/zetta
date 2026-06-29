@@ -91,6 +91,16 @@ auto schema = zetta::ddf::infer_schema(table.store());
 auto frame  = zetta::ddf::load_data_frame(table.store(), schema, device);
 ```
 
+### Loading from a Parquet file
+
+`load_data_frame` reads a [`StorageEngine`](storage.md) (JSON rows); the sibling
+[`ddf::load_parquet_data_frame`](parquet-reader.md) reads a **Parquet file's
+bytes** directly into a frame, with **column projection** — its `DataFrameSchema`
+selects *which* columns to decode, so it can load the engineered numeric columns +
+a label while **dropping** the embedding columns entirely (only the selected
+column chunks are read). It shares this section's value boundary and chunk layout.
+See [parquet-reader.md](parquet-reader.md).
+
 ## The value boundary
 
 The conversion from a JSON value to a typed column element is a **trust boundary**,

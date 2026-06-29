@@ -417,11 +417,13 @@ add_library(zetta-core STATIC
   src/core/parquet/metadata.cpp
   src/core/parquet/snappy.cpp
   src/core/parquet/column_decoder.cpp
+  src/core/parquet/reader.cpp
   src/core/input/python_frontend.cpp
   src/core/input/cluster_bindings.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
+  src/core/ddf/parquet_reader.cpp
   src/core/ddf/ops.cpp
   src/core/ddf/join.cpp
   src/core/ddf/data_frame_ops.cpp

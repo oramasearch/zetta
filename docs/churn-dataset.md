@@ -134,27 +134,34 @@ embedded copy is what runs); keep the committed file and the embedded copy in
 sync. CSV cells are coerced to the typed JSON shape and validated against the
 **same** schema, so both formats share one boundary.
 
-## Formats: JSONL, CSV, and (planned) Parquet
+## Formats: JSONL, CSV, and Parquet
 
-`ChurnDataFormat` is `{ Jsonl, Csv, Parquet }`:
+`ChurnDataFormat` is `{ Jsonl, Csv, Parquet }` — all three round-trip to the
+identical `ChurnDataset`:
 
 - **JSONL** — canonical; round-trips through `import_records` into a zetta table
   with no extra parser.
 - **CSV** — a committed flat sibling, read by a small RFC-4180 parser with typed
   coercion; loads to the identical dataset.
-- **Parquet** — the planned **columnar** format for when zetta adopts Arrow. The
-  enum value exists as an honest seam, but `load_churn_dataset(..., Parquet)`
-  returns a *not-yet-supported* error: a real `.parquet` file needs an
-  Arrow/parquet-cpp dependency the repo deliberately doesn't carry yet (ADR-17).
-  Tracked separately.
+- **Parquet** — the **columnar** format, read by zetta's own native (no-Arrow)
+  [Parquet reader](parquet-reader.md) (#508): `load_churn_dataset(..., Parquet)`
+  reads `accounts.parquet` / `events.parquet` via `zetta::parquet::read_parquet_rows`,
+  then runs the rows through the same schema validators + `from_json` mappers as
+  the other formats. Still **no foreign runtime** (ADR-17) — the reader is
+  hand-rolled, and the committed `.parquet` fixtures are regenerated dev-time by
+  `scripts/gen-parquet-fixture.py` (pyarrow), not at build/CI. The
+  `ParquetFormatLoadsIdentically` test proves parity with JSONL.
 
 ## Regenerating the data
 
-The fixture is authored by a throwaway generator that emits all five files from
-one source so the JSONL and CSV forms can't drift. That generator is **not
-committed** and is **not a build/CI dependency** — only its output is checked in
-(ADR-17). To change the data, regenerate all five files together and re-run the
-tests (`JsonlAndCsvLoadIdentically` guards drift).
+The JSONL + CSV fixture is authored by a throwaway generator that emits both
+forms from one source so they can't drift. That generator is **not committed** and
+is **not a build/CI dependency** — only its output is checked in (ADR-17). The
+**Parquet** siblings (`accounts.parquet` / `events.parquet`) are written **from
+the canonical JSONL** by `scripts/gen-parquet-fixture.py` (pyarrow, dev-time only;
+also not a build/CI dependency). To change the data, regenerate the JSONL/CSV, then
+re-run the parquet generator, and re-run the tests (`JsonlAndCsvLoadIdentically` +
+`ParquetFormatLoadsIdentically` guard drift).
 
 ## How the tests consume it
 
