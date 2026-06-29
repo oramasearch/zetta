@@ -38,13 +38,21 @@ like amaro-bridge, which has no code of its own — zetta has both.)
   replication (`src/core/replication.cpp`). Has its **own** nested submodules
   (`upstream/json`, which also provides zetta's nlohmann/json) — so the
   `--recursive` clone matters.
+- `modules/oramacore-cpp` — the **C++23 port of OramaCore's full-text engine**
+  (BM25F); backs the `OramaCoreFulltextIndex` search backend
+  (`src/core/index/oramacore_fulltext_index.cpp`). It is a **private** repo, so its
+  CMake link is **guarded** on the submodule's presence (`ZETTA_WITH_ORAMACORE`): a
+  checkout without it still builds/runs green (the backend degrades to
+  `Unsupported`). CPU-only.
 
-Both track `develop` and need **Clang 17+** (hence the Homebrew-Clang toolchain).
-**Clone with submodules** — `git clone --recurse-submodules`, or
-`git submodule update --init --recursive` in an existing checkout — or the build
-fails at `add_subdirectory(modules/capy)`. Update a vendored module with
-`git submodule update --remote modules/<name>` and commit the new gitlink.
-`modules/README.md` is the index.
+The first three track their upstream branches and need **Clang 17+** (hence the
+Homebrew-Clang toolchain). **Clone with submodules** — `git clone
+--recurse-submodules`, or `git submodule update --init --recursive` in an existing
+checkout — or the build fails at `add_subdirectory(modules/capy)`. (`oramacore-cpp`
+is the exception: its link is guarded, so missing it only disables the full-text
+backend, not the build.) Update a vendored module with `git submodule update
+--remote modules/<name>` and commit the new gitlink. `modules/README.md` is the
+index.
 
 ## Architecture
 
@@ -183,11 +191,26 @@ backend whose `name()` **and** `kind()` match. The **`InMemoryIndexBackend`**
 in-memory **Search** reference backend (an inverted field-value→row-ids index over
 the partitions; the `HostStubDevice`/`CpuDevice` role for this seam), so the seam
 + registry are end-to-end usable; vector/semantic/feature backends are additive
-behind the same interface. This slice is the **seam + registry + reference backend
-+ the replicated/validated/queryable entity**; **no run/deploy wiring** — driving
-a deployed `index` step through the resolved backend (build over the real table,
-serve queries) is a later slice (the registry is standalone, like the
-`Provisioner`). See [docs/index-backend.md](docs/index-backend.md).
+behind the same interface. The **first *real* backend** is
+**`zetta::OramaCoreFulltextIndex`** (`oramacore_fulltext_index.hpp`, name
+`oramacore_fulltext`, kind `Search`, **#527**) — a **full-text (BM25F)** Search
+backend backed by the native **oramacore-cpp** engine (the C++23 port of
+OramaCore's full-text core, vendored at `modules/oramacore-cpp`): where
+`InMemoryIndexBackend` is exact-value lookup, this tokenizes + stems + stop-word-
+filters both sides and **ranks** rows by BM25F relevance (`build` indexes each row's
+field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as the
+free-text query and returns row ids ranked by score). The heavy engine is held
+behind a **pImpl** (no oramacore-cpp type in the header) and linked **PRIVATE**, and
+the whole integration is **guarded on the submodule's presence** (`ZETTA_WITH_ORAMACORE`)
+— oramacore-cpp is a *private* submodule, so a CPU-only checkout that lacks it still
+configures/builds/runs green (the backend degrades to `Unsupported`;
+`engine_available()` reports which). This slice is the **seam + registry + the
+in-memory reference + the first real (full-text) backend + the replicated/validated/
+queryable entity**; **no run/deploy wiring** — driving a deployed `index` step
+through the resolved backend (build over the real table, serve queries) is a later
+slice (the registry is standalone, like the `Provisioner`). See
+[docs/index-backend.md](docs/index-backend.md) and
+[docs/oramacore-fulltext-index.md](docs/oramacore-fulltext-index.md).
 
 A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
 of native distributed accelerated compute** (the foundational entity of the
@@ -2245,6 +2268,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     index_backend.hpp       zetta::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
     index_registry.hpp      zetta::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry)
     in_memory_index_backend.hpp zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
+    oramacore_fulltext_index.hpp zetta::OramaCoreFulltextIndex — the first real backend: a full-text (BM25F) Search backend over the native oramacore-cpp engine (name "oramacore_fulltext"); pImpl over the engine, ZETTA_WITH_ORAMACORE-guarded so a checkout without the private submodule still builds (#527)
     index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
   dataset_partition.hpp     zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all (ENT-36/TBL-13)
@@ -2384,6 +2408,7 @@ src/core/                   zetta-core impl
     index.cpp               zetta::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
     in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
+    oramacore_fulltext_index.cpp zetta::OramaCoreFulltextIndex — full-text BM25F build over partitions / ranked query / drop via the oramacore-cpp MemoryIndex (pImpl); ZETTA_WITH_ORAMACORE-guarded engine-absent stub (#527)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
@@ -2705,6 +2730,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (the partitioner / locality-aware reads / re-balancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
+- [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Run/deploy wiring + per-field BM25F params are later slices.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
