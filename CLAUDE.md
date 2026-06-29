@@ -356,14 +356,28 @@ is what lets the leaderless cluster agree. A `Table` is **configured per-table**
 with one via `set_partitioner`/`partitioner` (empty handle = not partitioned, the
 default). The trivial baseline `zetta::SinglePartitioner` is the identity — one
 partition holding every row, owned by **every** member (replicate-to-all) — so
-configuring it changes nothing while exercising both halves of the seam. This
-slice is the **seam + trivial impl + in-memory config only**, with **no new JSON
-boundary**: the concrete strategies (`HashPartitioner`/`RoundRobinPartitioner`
-#513, `RendezvousPlacement` #514), the replicated **partition catalog**
-(`system.dataset_partitions`, #510), and the **partitioned write path** (#511 —
-which persists the selection + records placements) are dependent slices; a learned
-**model-as-partitioner** is a documented future direction behind the same seam.
-See [docs/partitioner.md](docs/partitioner.md).
+configuring it changes nothing while exercising both halves of the seam. The
+first non-trivial **partition→node** strategy is **`zetta::RendezvousPlacement`**
+(`include/zetta/rendezvous_placement.hpp`, **#514**) — **rendezvous /
+highest-random-weight (HRW)** placement: each member is scored
+`hash(partition, member)` (FNV-1a, zetta-core's hashing idiom) and the
+`replication_factor` highest-weight members own the partition (highest = primary,
+rest = replicas). Because a node only steals a partition when its weight is
+highest, **adding/removing one node out of N reassigns only ~1/N of partitions**
+(whole partitions move, no full rehash; the acceptance), and the result is a pure,
+deterministic, **order-independent** function of `(partition, members,
+replication_factor)` so the leaderless cluster agrees with no election (ties break
+by node id). It is a **complete** partitioner — the reusable HRW core is the free
+function `zetta::rendezvous_owners`, while `assign_partition` is a documented
+FNV-1a hash-of-record stand-in (the real key-column record→partition strategies,
+`HashPartitioner`/`RoundRobinPartitioner` #513, can reuse `rendezvous_owners` for
+placement without subclassing). **No new JSON boundary** — config is constructor
+args; serializing *which* partitioner a table uses is the polymorphic concern of
+the **partitioned write path** (#511, which persists the selection + records
+placements) and the replicated **partition catalog**
+(`system.dataset_partitions`, #510) — dependent slices, along with rebalance on
+membership change (#517); a learned **model-as-partitioner** is a documented
+future direction behind the same seam. See [docs/partitioner.md](docs/partitioner.md).
 
 ### Async runtime (`zetta::runtime`)
 
@@ -2245,6 +2259,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
   table.hpp                 zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512)
+  rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
@@ -2371,6 +2386,7 @@ src/core/                   zetta-core impl
     in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
+  rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -2694,7 +2710,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
-- [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. Interface + the trivial `SinglePartitioner` baseline + `Table::set_partitioner`; the concrete strategies (Hash/RoundRobin #513, Rendezvous placement #514), the partition catalog (#510), and the partitioned write path (#511) are dependent slices. No new JSON boundary in this slice.
+- [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. Interface + the trivial `SinglePartitioner` baseline + `Table::set_partitioner`; **`zetta::RendezvousPlacement`** (`rendezvous_placement.hpp`, #514) is the first concrete partition→node strategy — rendezvous / highest-random-weight (HRW) placement (FNV-1a weight per `(partition, member)`, top-`replication_factor` by weight), so adding/removing one node reassigns only ~1/N of partitions, deterministic + leaderless + order-independent; the reusable HRW core is the free `rendezvous_owners` function. The record→partition strategies (Hash/RoundRobin #513), the partition catalog (#510), and the partitioned write path (#511, which adds the polymorphic persisted-config JSON boundary) are dependent slices. No new JSON boundary in #514.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
 - [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python an honest "not wired yet" seam until the frontend→IR lowering layer lands (#522); results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it next.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).

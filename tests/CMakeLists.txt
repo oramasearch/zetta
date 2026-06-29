@@ -24,6 +24,7 @@ add_executable(zetta-tests
   test_duration.cpp
   test_jsonl_store.cpp
   test_partitioner.cpp
+  test_rendezvous_placement.cpp
   test_database.cpp
   test_replication_strategy.cpp
   test_project.cpp
