@@ -414,6 +414,7 @@ add_library(zetta-core STATIC
   src/core/parquet/metadata.cpp
   src/core/parquet/snappy.cpp
   src/core/input/python_frontend.cpp
+  src/core/input/cluster_bindings.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
