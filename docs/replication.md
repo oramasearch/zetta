@@ -165,6 +165,12 @@ are a materialized *projection* of it.** Concretely:
     serialized **weights body** stays on disk and transfers peer-to-peer over the
     LO body seam, verified against `weights.size` + `weights.sha256`. The value is
     **JSON-Schema validated** at both entry points. See [models.md](models.md).
+  - `part:<part_uuid>` → `{ table, blob_ref, row_range: { start, end }, stats,
+    owner_nodes, created }` — a dataset partition: where a slice of a table's data
+    lives (a top-level entity). The catalog is **replicate-to-all**, so every node
+    materializes the same partition set and placement is globally visible. The
+    value is **JSON-Schema validated** at both entry points. See
+    [dataset-partitions.md](dataset-partitions.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,

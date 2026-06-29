@@ -47,6 +47,7 @@ bool Node::start() {
     load_models();
     load_indexes();
     load_jobs();
+    load_dataset_partitions();
     load_principals();
     load_audit_events();
     if (replication_) {
@@ -59,10 +60,10 @@ bool Node::start() {
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
         "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
-        "%zu principals, %zu audit events)\n",
+        "%zu partitions, %zu principals, %zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
-        indexes_.size(), jobs_.size(),
+        indexes_.size(), jobs_.size(), dataset_partitions_.size(),
         principals_.size(), audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
@@ -962,6 +963,107 @@ bool Node::materialize_drop_job(const std::string& id) {
     return true;
 }
 
+// ----- dataset partitions (the partition catalog; replicated part:<uuid>) -----
+
+void Node::load_dataset_partitions() {
+    dataset_partitions_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "partition.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a partition.json that fails the DatasetPartition
+        // JSON Schema is rejected here (with a logged reason) rather than allowed
+        // to corrupt the in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<DatasetPartitionValue> value =
+            meta.is_discarded() ? std::nullopt
+                                : parse_dataset_partition_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid partition %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON"
+                                            : error.c_str());
+            continue;
+        }
+        dataset_partitions_.push_back(std::make_shared<DatasetPartition>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(dataset_partitions_.begin(), dataset_partitions_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->created() != b->created())
+                      return a->created() < b->created();
+                  return a->id() < b->id();
+              });
+}
+
+std::shared_ptr<DatasetPartition> Node::create_dataset_partition(
+    DatasetPartitionValue value) {
+    // A partition must reference a table — that ref is the catalog's anchor.
+    if (value.table.empty()) return nullptr;
+    const std::string id = new_uuid();
+    if (value.created.empty()) value.created = now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::partition_key(id), to_json(value));
+    }
+    return materialize_dataset_partition(id, std::move(value));
+}
+
+std::shared_ptr<DatasetPartition> Node::materialize_dataset_partition(
+    std::string id, DatasetPartitionValue value) {
+    if (auto existing = find_dataset_partition(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto partition = std::make_shared<DatasetPartition>(
+        std::move(id), std::move(value), dir, replication_);
+    partition->persist_meta();
+    dataset_partitions_.push_back(partition);
+    std::sort(dataset_partitions_.begin(), dataset_partitions_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->created() != b->created())
+                      return a->created() < b->created();
+                  return a->id() < b->id();
+              });
+    return partition;
+}
+
+std::shared_ptr<DatasetPartition> Node::find_dataset_partition(
+    const std::string& id) const {
+    for (const auto& partition : dataset_partitions_) {
+        if (partition->id() == id) return partition;
+    }
+    return nullptr;
+}
+
+bool Node::drop_dataset_partition(const std::string& id) {
+    if (!find_dataset_partition(id)) return false;
+    if (replication_) replication_->remove(catalog::partition_key(id));
+    return materialize_drop_dataset_partition(id);
+}
+
+bool Node::materialize_drop_dataset_partition(const std::string& id) {
+    const auto it = std::find_if(
+        dataset_partitions_.begin(), dataset_partitions_.end(),
+        [&](const std::shared_ptr<DatasetPartition>& p) {
+            return p->id() == id;
+        });
+    if (it == dataset_partitions_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    dataset_partitions_.erase(it);
+    return true;
+}
+
 // ----- cloud inspections (ephemeral; not replicated, not persisted) ----------
 
 void Node::record_cloud_inspection(CloudInspectReport report) {
@@ -1275,6 +1377,12 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::job_key(job->id()), job->metadata());
         }
     }
+    for (const auto& partition : dataset_partitions_) {
+        if (!snapshot.contains(catalog::partition_key(partition->id()))) {
+            replication_->set(catalog::partition_key(partition->id()),
+                              partition->metadata());
+        }
+    }
     for (const auto& principal : principals_) {
         if (!snapshot.contains(catalog::principal_key(principal->id()))) {
             replication_->set(catalog::principal_key(principal->id()),
@@ -1311,6 +1419,7 @@ void Node::reconcile_from_replication() {
     reconcile_models(snapshot);
     reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
+    reconcile_partitions(snapshot);
     reconcile_principals(snapshot);
     reconcile_access_keys(snapshot);
     reconcile_audit_events(snapshot);
@@ -1754,6 +1863,42 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
             materialize_job(id, std::move(value));
         } else if (job->metadata() != to_json(value)) {
             job->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_partitions(const nlohmann::json& snapshot) {
+    // Dataset partitions (top-level, no parent): part:<id> -> the partition value.
+    // The catalog is replicate-to-all, so each node materializes the same set.
+    // Decode + validate the desired set at the boundary (a malformed CRDT value is
+    // ignored, not trusted), then drop / add / update the local projection to match
+    // — with no re-capture (apply_value / materialize_dataset_partition do not write
+    // back to the CRDT).
+    std::map<std::string, DatasetPartitionValue> partitions;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kPartitionPrefix);
+        if (id.empty()) continue;
+        if (std::optional<DatasetPartitionValue> parsed =
+                parse_dataset_partition_value(value)) {
+            partitions.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_partition_ids;
+    for (const auto& partition : dataset_partitions_) {
+        local_partition_ids.push_back(partition->id());
+    }
+    for (const std::string& partition_id : local_partition_ids) {
+        if (!partitions.contains(partition_id)) {
+            materialize_drop_dataset_partition(partition_id);
+        }
+    }
+    for (auto& [id, value] : partitions) {
+        auto partition = find_dataset_partition(id);
+        if (!partition) {
+            materialize_dataset_partition(id, std::move(value));
+        } else if (partition->metadata() != to_json(value)) {
+            partition->apply_value(
+                std::move(value));  // a peer changed it (no re-capture)
         }
     }
 }

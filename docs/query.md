@@ -209,7 +209,28 @@ SELECT action, actor, target FROM system.zetta_audit WHERE allowed = false;
 
 All four are qualified-name only.
 
-Future system tables slot into the same database — notably **`system.zetta_leadership`**
+One more table surfaces the **partition catalog** (see
+[dataset-partitions.md](dataset-partitions.md), ENT-36 / TBL-13) — where each
+table's data slices live, replicate-to-all so every node sees the same placement:
+
+- **`system.dataset_partitions`** — the partition catalog
+  (`Node::dataset_partitions()`): one row per recorded dataset partition. Columns:
+  `partition_id`, `table`, `blob_ref`, `row_start`, `row_end`, `row_count`,
+  `owner_nodes` (comma-joined), `owner_count`, `stats` (the free-form per-column
+  stats object), `created`. Qualified-name only.
+
+```sql
+SELECT partition_id, table, owner_count FROM system.dataset_partitions;
+SELECT * FROM system.dataset_partitions WHERE table = '<tbl-uuid>';
+```
+
+> **Naming.** `system.dataset_partitions` is the **first system table without the
+> `zetta_` prefix**: the `system` database is reserved + zetta-controlled, so the
+> prefix is redundant. New system tables are named plainly; the legacy `zetta_*`
+> tables above are kept until the system-wide rename in
+> [#538](https://github.com/oramasearch/zetta/issues/538).
+
+Future system tables slot into the same database — notably **`system.leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is
 **planned, not built** (see [replication.md](replication.md) → *Consistency model*).
 

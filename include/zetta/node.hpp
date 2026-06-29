@@ -13,6 +13,7 @@
 #include "zetta/cloud_inspector.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
 #include "zetta/index/index.hpp"
@@ -209,6 +210,29 @@ public:
     std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
     std::size_t job_count() const { return jobs_.size(); }
 
+    // CRUD for dataset partitions — the partition catalog (ENT-36 / TBL-13; see
+    // dataset_partition.hpp / docs/dataset-partitions.md). A partition records
+    // where a slice of a table's data physically lives (its table id, the
+    // large-object body holding its bytes, the row range, column stats, and the
+    // owner nodes). Like jobs, partitions have no human name: they are keyed by id,
+    // so find / drop take the id. create stamps `created` (when unset) and requires
+    // a non-empty `table` ref (empty handle otherwise); it **captures the
+    // `part:<uuid>` key into the CRDT** so the catalog is replicate-to-all — the
+    // partition is visible on every node (via dataset_partitions() + the
+    // system.dataset_partitions SQL table). dataset_partitions() is in a stable
+    // order (created, then id).
+    std::shared_ptr<DatasetPartition> create_dataset_partition(
+        DatasetPartitionValue value);
+    std::shared_ptr<DatasetPartition> find_dataset_partition(
+        const std::string& id) const;
+    bool drop_dataset_partition(const std::string& id);
+    std::vector<std::shared_ptr<DatasetPartition>> dataset_partitions() const {
+        return dataset_partitions_;
+    }
+    std::size_t dataset_partition_count() const {
+        return dataset_partitions_.size();
+    }
+
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
     // docs/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
@@ -345,6 +369,9 @@ private:
     // Rebuild jobs_ by scanning config_.data_dir. Called from start().
     void load_jobs();
 
+    // Rebuild dataset_partitions_ by scanning config_.data_dir. Called from start().
+    void load_dataset_partitions();
+
     // Rebuild audit_events_ by scanning config_.data_dir/audit. Called from
     // start(). Malformed event files are skipped at the boundary (schema).
     void load_audit_events();
@@ -375,6 +402,7 @@ private:
     void reconcile_models(const nlohmann::json& snapshot);
     void reconcile_indexes(const nlohmann::json& snapshot);
     void reconcile_jobs(const nlohmann::json& snapshot);
+    void reconcile_partitions(const nlohmann::json& snapshot);
     void reconcile_principals(const nlohmann::json& snapshot);
     void reconcile_access_keys(const nlohmann::json& snapshot);
     void reconcile_audit_events(const nlohmann::json& snapshot);
@@ -402,6 +430,9 @@ private:
     std::shared_ptr<ComputeJob> materialize_job(std::string id,
                                                 ComputeJobValue value);
     bool materialize_drop_job(const std::string& id);
+    std::shared_ptr<DatasetPartition> materialize_dataset_partition(
+        std::string id, DatasetPartitionValue value);
+    bool materialize_drop_dataset_partition(const std::string& id);
     std::shared_ptr<Principal> materialize_principal(std::string id,
                                                      PrincipalKind kind,
                                                      std::string name,
@@ -427,6 +458,8 @@ private:
     std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
     std::vector<std::shared_ptr<Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
+    std::vector<std::shared_ptr<DatasetPartition>>
+        dataset_partitions_;                                // sorted (created, id)
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)

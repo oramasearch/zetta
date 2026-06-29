@@ -59,6 +59,15 @@
 //                          change / deploy / data-access decision; a top-level
 //                          entity with no parent, never edited or removed; see
 //                          audit_event.hpp)
+//   part:<uuid>        -> { table, blob_ref, row_range:{start,end}, stats,
+//                          owner_nodes }  (a dataset partition — a record of where
+//                          a slice of a table's data physically lives: its table
+//                          (tbl:) id, the large-object body (lo:) holding its
+//                          bytes, the row range it covers, free-form column stats,
+//                          and the nodes that own a copy. The catalog is
+//                          replicate-to-all so placement is globally visible
+//                          (ENT-36 / TBL-13); a top-level entity — see
+//                          dataset_partition.hpp / docs/dataset-partitions.md)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -81,6 +90,7 @@ inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
+inline constexpr std::string_view kPartitionPrefix = "part:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -129,6 +139,9 @@ inline std::string access_key_key(const std::string& access_key_id) {
 }
 inline std::string audit_key(const std::string& audit_id) {
     return std::string(kAuditPrefix) + audit_id;
+}
+inline std::string partition_key(const std::string& partition_id) {
+    return std::string(kPartitionPrefix) + partition_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.
