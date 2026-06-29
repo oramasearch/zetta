@@ -417,6 +417,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_pipeline.cpp
   src/core/runtime.cpp
   src/core/repl/console_model.cpp
+  src/core/repl/governed_console.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp

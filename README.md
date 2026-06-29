@@ -53,7 +53,12 @@ language text into a templated `connect→clean→model→index→serve→act` p
 **Python** lowers to the same IR through the simulated-Python *language frontend*
 (`zetta::input::PythonFrontend` — `ds = load_dataset(...); m = train(ds, ...)` →
 typed steps + data-flow edges; zetta re-implements the shape, it never runs
-Python; see [docs/python-frontend.md](docs/python-frontend.md)). In headed mode the **Graph
+Python; see [docs/python-frontend.md](docs/python-frontend.md)). The headed
+**Console (REPL)** view runs SQL or simulated-Python against a node interactively
+and **governed**: every statement is capability-scoped against the acting key,
+simulated-Python lowers to the IR and must pass the correctness gate before it
+runs, and each statement is recorded in the audit trail (see
+[docs/governed-console.md](docs/governed-console.md)). In headed mode the **Graph
 Workspace** panel renders a project's graph as an editable node/edge canvas
 (steps in columns by stage, edges between them) and persists edits back to the IR
 (see [docs/projects.md](docs/projects.md#graph-workspace)). A node can also **deploy** a
