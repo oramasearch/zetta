@@ -4,7 +4,10 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "zetta/blob_store.hpp"
 
@@ -23,6 +26,17 @@ class ReplicationManager;
 //     `model:` entry carrying a `weights:{size,sha256}` descriptor.
 // "Missing" = the document has the metadata but the body file isn't on disk.
 // `store_blob` verifies length + SHA-256 against that metadata before writing.
+//
+// Partition-aware placement (issue #515). A large-object body that is the
+// backing blob of a dataset partition (a `part:` catalog entry's `blob_ref`,
+// see dataset_partition.hpp) is held **only by that partition's owner nodes**
+// (its `owner_nodes`, recorded by placement and visible globally via
+// `system.dataset_partitions`) rather than replicated to all: a non-owner does
+// not list it in `missing_blobs()` (so it never fetches it) and refuses it in
+// `store_blob()`. With a replication factor of `rf` (rf owner nodes) the body
+// therefore lives on exactly `rf` nodes. A plain large object, an unplaced
+// partition (empty `owner_nodes`), and model weights all keep the default
+// replicate-to-all behavior.
 class ReplicatedBlobStore final : public BlobStore {
 public:
     ReplicatedBlobStore(std::filesystem::path data_dir,
@@ -48,7 +62,16 @@ private:
         std::string sha256;
         bool has_sha256 = false;
     };
-    std::optional<BlobTarget> resolve(const std::string& id) const;
+    std::optional<BlobTarget> resolve(const nlohmann::json& snapshot,
+                                      const std::string& id) const;
+
+    // Partition placement: should this node hold `large_object_id`'s body? True
+    // unless the blob backs a partition (a `part:` entry's `blob_ref`) whose
+    // recorded `owner_nodes` set is non-empty and does not include this node.
+    // `owners` is the partition-owner index built once per call from `snapshot`.
+    bool node_holds_partition_blob(
+        const std::unordered_map<std::string, std::vector<std::string>>& owners,
+        const std::string& large_object_id) const;
 
     std::filesystem::path data_dir_;
     ReplicationManager& replication_;

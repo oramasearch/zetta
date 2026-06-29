@@ -358,9 +358,18 @@ The catalog is **replicate-to-all** so placement is **globally visible** — a
 partition recorded on one node reconciles onto every node (`reconcile_partitions`,
 alongside the `lo:` block) and is queryable everywhere via the read-only SQL
 **`system.dataset_partitions`** table (computed from `Node::dataset_partitions()`).
-This is storage + provenance + replication of the catalog only — the *partitioner*
-that splits a table and writes the bodies, locality-aware reads, and re-balancing
-placement are later slices. See [docs/dataset-partitions.md](docs/dataset-partitions.md).
+The catalog's `owner_nodes` is now **acted on** by **sharded blob placement**
+(`zetta::ReplicatedBlobStore`, **#515**): a `Partitioned`/`PartitionedWithReplicas`
+table's partition **body** (`blob_ref`) is fetched + held **only by its owner
+node(s)** per the catalog + replication factor (`rf` owners → exactly `rf` copies),
+not replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it
+never `LOREQ`s it) and `store_blob()` refuses it; a plain large object, an unplaced
+partition (empty `owner_nodes`), and model weights keep replicate-to-all. The
+store reads `owner_nodes` from the CRDT `part:` snapshot through the validated
+boundary (network-thread-safe, no Node access). The *partitioner* that splits a
+table and writes the bodies, locality-aware reads, and re-balancing placement are
+later slices. See [docs/dataset-partitions.md](docs/dataset-partitions.md) and
+[docs/sharded-blob-placement.md](docs/sharded-blob-placement.md).
 
 ### Partitioning (`zetta::Partitioner`)
 
@@ -1357,8 +1366,12 @@ the window (routed by extension):
   document) — it transfers peer-to-peer (`LOREQ`/`LORES`) and is **verified
   against size + sha256** before being written. The cluster moves bodies through
   the `zetta::BlobStore` seam; `ReplicatedBlobStore` implements it from the CRDT
-  metadata + on-disk paths (no Node access → safe on the network thread). Detail
-  in [docs/large-objects.md](docs/large-objects.md).
+  metadata + on-disk paths (no Node access → safe on the network thread). Bodies
+  default to **replicate-to-all**, except a body backing a
+  [dataset partition](docs/dataset-partitions.md) on a `Partitioned`/`PartitionedWithReplicas`
+  table, which is held **only on the partition's owner node(s)** — **sharded blob
+  placement** (#515; [docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)).
+  Detail in [docs/large-objects.md](docs/large-objects.md).
 
 A third, **typed-artifact** ingestion path captures a file into a *project*
 (not a table or database) as a `ProjectInput`:
@@ -2386,7 +2399,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
   replication_strategy.hpp  zetta::ReplicationStrategy — per-table/db replication strategy (ReplicateToAll | Partitioned | PartitionedWithReplicas(factor)) + JSON boundary; recorded/persisted/replicated, default ReplicateToAll (ENT-35; #509)
   blob_store.hpp            zetta::BlobStore — large-object body transfer seam
-  replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
+  replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk; partition-aware placement: a partition body is fetched/held only by its owner node(s) per the catalog + replication factor, not replicate-to-all (#515)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   storage/
@@ -2816,6 +2829,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (the partitioner / locality-aware reads / re-balancing are later slices).
+- [`docs/sharded-blob-placement.md`](docs/sharded-blob-placement.md) — partition-aware large-object body replication (`zetta::ReplicatedBlobStore`, #515): a `Partitioned` / `PartitionedWithReplicas` table's partition body (the [catalog](docs/dataset-partitions.md) entry's `blob_ref`) is fetched + held **only by its owner node(s)** per `owner_nodes` + the replication factor (`rf` owners → exactly `rf` copies), instead of replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it never `LOREQ`s it), `store_blob()` refuses it; a plain large object, an unplaced partition (empty `owner_nodes`), and model weights keep replicate-to-all. Owner set read from the CRDT `part:` snapshot through the validated boundary (network-thread-safe, no Node access); no new JSON format. The first slice that *acts* on a non-default [replication strategy](docs/replication-strategy.md) at the body level (the partitioner write path / locality-aware reads / rebalancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Run/deploy wiring + per-field BM25F params are later slices.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).

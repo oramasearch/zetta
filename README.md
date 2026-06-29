@@ -107,7 +107,11 @@ its bytes, the row range, column stats, and owner nodes) replicated as
 `part:<uuid>`. The catalog is **replicate-to-all** so placement is globally
 visible: a partition recorded on one node appears on every node, queryable via the
 read-only `system.dataset_partitions` table (see
-[docs/dataset-partitions.md](docs/dataset-partitions.md)).
+[docs/dataset-partitions.md](docs/dataset-partitions.md)). The catalog's owner set
+now drives **sharded blob placement**: a partition's large-object **body** is
+fetched + held only by its owner node(s) (`rf` owners → exactly `rf` copies),
+instead of replicate-to-all (see
+[docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)).
 The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
 (`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
 distributed accelerated compute pass: provision N nodes against a capability spec,
@@ -300,8 +304,10 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
 (replicate-to-all by default — each database/table can also carry a per-entity
 [replication strategy](docs/replication-strategy.md): `ReplicateToAll` |
-`Partitioned` | `PartitionedWithReplicas(factor)`, recorded + replicated, the
-partitioned-placement engine a later slice; each node has a UUIDv4 actor id):
+`Partitioned` | `PartitionedWithReplicas(factor)`, recorded + replicated, with a
+partitioned table's large-object bodies already placed on their
+[owner nodes only](docs/sharded-blob-placement.md); each node has a UUIDv4 actor
+id):
 **databases, tables,
 rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
 [runs](docs/runs.md), [models](docs/models.md),

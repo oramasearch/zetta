@@ -76,6 +76,15 @@ The `BlobStore` seam (`include/zetta/blob_store.hpp`) is what the cluster uses t
 fetch/serve/verify bodies; `ReplicatedBlobStore` implements it purely from the
 CRDT metadata + on-disk paths (so it's safe to call from the network thread).
 
+- **Partition bodies place on their owners, not everyone.** The above is
+  replicate-to-all — every node fetches every body. A body that is the backing
+  blob of a [dataset partition](dataset-partitions.md) on a
+  [`Partitioned` / `PartitionedWithReplicas`](replication-strategy.md) table is the
+  exception: `ReplicatedBlobStore` fetches and holds it **only on the partition's
+  owner node(s)** (its `owner_nodes`, with `rf` owners → exactly `rf` copies), so a
+  non-owner never `LOREQ`s it. Plain large objects and model weights are unaffected.
+  See [sharded-blob-placement.md](sharded-blob-placement.md).
+
 ## Limits / future
 
 - Whole-file in memory on import/read/export and per-transfer; streaming /
