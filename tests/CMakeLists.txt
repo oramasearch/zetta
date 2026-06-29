@@ -23,13 +23,16 @@ add_executable(zetta-tests
   test_entity_resolution.cpp
   test_duration.cpp
   test_jsonl_store.cpp
+  test_partitioner.cpp
   test_database.cpp
+  test_replication_strategy.cpp
   test_project.cpp
   test_project_input.cpp
   test_project_graph.cpp
   test_deployment.cpp
   test_deployment_controller.cpp
   test_provisioner.cpp
+  test_add_nodes.cpp
   test_local_provisioner.cpp
   test_azure_provisioner.cpp
   test_aws_provisioner.cpp
@@ -46,7 +49,9 @@ add_executable(zetta-tests
   test_cloud_inspector.cpp
   test_run.cpp
   test_model.cpp
+  test_index.cpp
   test_compute_job.cpp
+  test_dataset_partition.cpp
   test_access_control.cpp
   test_executor.cpp
   test_churn_step_executor.cpp
@@ -57,6 +62,7 @@ add_executable(zetta-tests
   test_intent_compiler.cpp
   test_node.cpp
   test_query.cpp
+  test_repl_console.cpp
   test_execution_graph.cpp
   test_data_frame.cpp
   test_ddf_ops.cpp
@@ -82,6 +88,9 @@ add_executable(zetta-tests
   test_churn_dataset.cpp
   test_n8n_import.cpp
   test_n8n_compile.cpp
+  test_parquet_metadata.cpp
+  test_parquet_snappy.cpp
+  test_python_frontend.cpp
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp

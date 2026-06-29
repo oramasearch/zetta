@@ -60,6 +60,20 @@ the node currently holds, keyed by resource.
 policy is **`ReplicateToAllNodes`** — every node keeps a full copy of all state.
 Future policies (sharded, quorum, …) plug in behind the same enum/seam.
 
+### Per-table / per-database replication strategy (ENT-35)
+
+Alongside the node-wide policy, each **database and table** carries a
+**`zetta::ReplicationStrategy`** describing how *its* replicated state is laid out:
+`ReplicateToAll` (the default — a full copy everywhere), `Partitioned` (sharded,
+one copy per shard), or `PartitionedWithReplicas(replication_factor)` (sharded with
+N total copies, default 3). The choice is **recorded, persisted, and replicated**
+(an optional `"replication"` field on `database.json` / `table.json` and the
+`db:` / `tbl:` CRDT values), and the default is **omitted** so the representation
+stays byte-identical to before — the default preserves current behavior exactly.
+This slice records the choice; the partitioned-placement engine that *acts* on a
+non-default strategy is a later slice. See
+[replication-strategy.md](replication-strategy.md).
+
 ## Actor identity
 
 Each node's **UUIDv4 is its Automerge actor id** (a UUID is 16 bytes — exactly
@@ -165,6 +179,12 @@ are a materialized *projection* of it.** Concretely:
     serialized **weights body** stays on disk and transfers peer-to-peer over the
     LO body seam, verified against `weights.size` + `weights.sha256`. The value is
     **JSON-Schema validated** at both entry points. See [models.md](models.md).
+  - `part:<part_uuid>` → `{ table, blob_ref, row_range: { start, end }, stats,
+    owner_nodes, created }` — a dataset partition: where a slice of a table's data
+    lives (a top-level entity). The catalog is **replicate-to-all**, so every node
+    materializes the same partition set and placement is globally visible. The
+    value is **JSON-Schema validated** at both entry points. See
+    [dataset-partitions.md](dataset-partitions.md).
 - **Capture (local write):** every mutation writes the CRDT **first** (the source
   of truth), then materializes to disk/memory. Capture lives at the data-model
   layer (`Node`/`Database`/`Table`), so *all* paths replicate — query executor,

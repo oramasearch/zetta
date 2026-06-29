@@ -8,8 +8,13 @@
 // the on-disk store + in-memory Node tree are a projection of these keys.
 //
 //   node:<node_id>     -> { address }                  (cluster membership)
-//   db:<db_uuid>       -> { name }                      (a database)
-//   tbl:<tbl_uuid>     -> { db: <db_uuid>, name }       (a table)
+//   db:<db_uuid>       -> { name, replication? }        (a database; the optional
+//                          replication field is the per-db ReplicationStrategy —
+//                          ENT-35, omitted when the default ReplicateToAll; see
+//                          replication_strategy.hpp)
+//   tbl:<tbl_uuid>     -> { db: <db_uuid>, name, replication? }  (a table; the
+//                          optional replication field is its ReplicationStrategy,
+//                          omitted when default — ENT-35)
 //   row:<row_uuid>     -> { tbl: <tbl_uuid>, data: {…} } (a row)
 //   lo:<lo_uuid>       -> { db, name, size, sha256 }    (large-object metadata;
 //                          the body is NOT in the document — it transfers
@@ -41,6 +46,11 @@
 //                          created, updated, detail }  (a compute job — one unit
 //                          of native distributed accelerated compute (ARC-11 /
 //                          ENT-31); a top-level entity; see compute_job.hpp)
+//   index:<index_uuid> -> { table, kind, backend, fields, created }  (a registered
+//                          index over a table — search / vector / feature; a
+//                          top-level entity with no parent (ENT-39 / ENT-40);
+//                          metadata only — building the index is the IndexBackend
+//                          seam's job; see index/index.hpp)
 //   principal:<uuid>   -> { kind, name, created }          (an authenticated
 //                          actor — user/service/node; a top-level entity with
 //                          no parent — see principal.hpp)
@@ -54,6 +64,15 @@
 //                          change / deploy / data-access decision; a top-level
 //                          entity with no parent, never edited or removed; see
 //                          audit_event.hpp)
+//   part:<uuid>        -> { table, blob_ref, row_range:{start,end}, stats,
+//                          owner_nodes }  (a dataset partition — a record of where
+//                          a slice of a table's data physically lives: its table
+//                          (tbl:) id, the large-object body (lo:) holding its
+//                          bytes, the row range it covers, free-form column stats,
+//                          and the nodes that own a copy. The catalog is
+//                          replicate-to-all so placement is globally visible
+//                          (ENT-36 / TBL-13); a top-level entity — see
+//                          dataset_partition.hpp / docs/dataset-partitions.md)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -72,9 +91,11 @@ inline constexpr std::string_view kDeploymentPrefix = "deployment:";
 inline constexpr std::string_view kRunPrefix = "run:";
 inline constexpr std::string_view kModelPrefix = "model:";
 inline constexpr std::string_view kJobPrefix = "job:";
+inline constexpr std::string_view kIndexPrefix = "index:";
 inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
+inline constexpr std::string_view kPartitionPrefix = "part:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -112,6 +133,9 @@ inline std::string model_key(const std::string& model_id) {
 inline std::string job_key(const std::string& job_id) {
     return std::string(kJobPrefix) + job_id;
 }
+inline std::string index_key(const std::string& index_id) {
+    return std::string(kIndexPrefix) + index_id;
+}
 inline std::string principal_key(const std::string& principal_id) {
     return std::string(kPrincipalPrefix) + principal_id;
 }
@@ -120,6 +144,9 @@ inline std::string access_key_key(const std::string& access_key_id) {
 }
 inline std::string audit_key(const std::string& audit_id) {
     return std::string(kAuditPrefix) + audit_id;
+}
+inline std::string partition_key(const std::string& partition_id) {
+    return std::string(kPartitionPrefix) + partition_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

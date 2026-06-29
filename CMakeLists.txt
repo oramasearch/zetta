@@ -311,6 +311,7 @@ add_library(zetta-core STATIC
   src/core/signal.cpp
   src/core/collectives.cpp
   src/core/replication.cpp
+  src/core/replication_strategy.cpp
   src/core/node.cpp
   src/core/database.cpp
   src/core/project.cpp
@@ -321,6 +322,7 @@ add_library(zetta-core STATIC
   src/core/deployment_controller.cpp
   src/core/node_capability.cpp
   src/core/provisioner.cpp
+  src/core/add_nodes.cpp
   src/core/local_provisioner.cpp
   src/core/command_runner.cpp
   src/core/azure_provisioner.cpp
@@ -344,7 +346,11 @@ add_library(zetta-core STATIC
   src/core/cloud_inspector.cpp
   src/core/run.cpp
   src/core/model.cpp
+  src/core/index/index.cpp
+  src/core/index/index_registry.cpp
+  src/core/index/in_memory_index_backend.cpp
   src/core/compute_job.cpp
+  src/core/dataset_partition.cpp
   src/core/principal.cpp
   src/core/access_key.cpp
   src/core/scope.cpp
@@ -372,6 +378,9 @@ add_library(zetta-core STATIC
   src/core/churn_dataset.cpp
   src/core/n8n_import.cpp
   src/core/n8n_compile.cpp
+  src/core/parquet/metadata.cpp
+  src/core/parquet/snappy.cpp
+  src/core/input/python_frontend.cpp
   src/core/ir/execution_graph.cpp
   src/core/ir/serialization.cpp
   src/core/ddf/data_frame.cpp
@@ -407,6 +416,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
   src/core/runtime.cpp
+  src/core/repl/console_model.cpp
   src/core/query/postgres.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
@@ -449,6 +459,7 @@ add_executable(zetta
   src/gui/app_pipeline.cpp
   src/gui/app_operations.cpp
   src/gui/app_governance.cpp
+  src/gui/repl_console.cpp
 )
 
 target_compile_features(zetta PRIVATE cxx_std_26)

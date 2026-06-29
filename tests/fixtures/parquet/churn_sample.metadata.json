@@ -1,0 +1,194 @@
+{
+  "version": 2,
+  "created_by": "parquet-cpp-arrow version 24.0.0",
+  "num_rows": 6,
+  "num_columns": 5,
+  "columns": [
+    {
+      "path": "account_id",
+      "type": "int64"
+    },
+    {
+      "path": "risk_score",
+      "type": "double"
+    },
+    {
+      "path": "failed_payments",
+      "type": "int64"
+    },
+    {
+      "path": "is_churned",
+      "type": "boolean"
+    },
+    {
+      "path": "segment",
+      "type": "byte_array"
+    }
+  ],
+  "row_groups": [
+    {
+      "num_rows": 3,
+      "total_byte_size": 427,
+      "columns": [
+        {
+          "path": "account_id",
+          "type": "int64",
+          "codec": "snappy",
+          "encodings": [
+            "plain",
+            "rle",
+            "rle_dictionary"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 111,
+          "total_compressed_size": 112,
+          "data_page_offset": 41,
+          "file_offset": 0,
+          "dictionary_page_offset": 4
+        },
+        {
+          "path": "risk_score",
+          "type": "double",
+          "codec": "zstd",
+          "encodings": [
+            "plain",
+            "rle",
+            "rle_dictionary"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 111,
+          "total_compressed_size": 129,
+          "data_page_offset": 163,
+          "file_offset": 0,
+          "dictionary_page_offset": 116
+        },
+        {
+          "path": "failed_payments",
+          "type": "int64",
+          "codec": "uncompressed",
+          "encodings": [
+            "rle",
+            "plain"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 93,
+          "total_compressed_size": 93,
+          "data_page_offset": 245,
+          "file_offset": 0
+        },
+        {
+          "path": "is_churned",
+          "type": "boolean",
+          "codec": "gzip",
+          "encodings": [
+            "rle",
+            "plain"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 42,
+          "total_compressed_size": 62,
+          "data_page_offset": 338,
+          "file_offset": 0
+        },
+        {
+          "path": "segment",
+          "type": "byte_array",
+          "codec": "snappy",
+          "encodings": [
+            "plain",
+            "rle",
+            "rle_dictionary"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 70,
+          "total_compressed_size": 74,
+          "data_page_offset": 430,
+          "file_offset": 0,
+          "dictionary_page_offset": 400
+        }
+      ]
+    },
+    {
+      "num_rows": 3,
+      "total_byte_size": 435,
+      "columns": [
+        {
+          "path": "account_id",
+          "type": "int64",
+          "codec": "snappy",
+          "encodings": [
+            "plain",
+            "rle",
+            "rle_dictionary"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 111,
+          "total_compressed_size": 112,
+          "data_page_offset": 511,
+          "file_offset": 0,
+          "dictionary_page_offset": 474
+        },
+        {
+          "path": "risk_score",
+          "type": "double",
+          "codec": "zstd",
+          "encodings": [
+            "plain",
+            "rle",
+            "rle_dictionary"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 111,
+          "total_compressed_size": 129,
+          "data_page_offset": 633,
+          "file_offset": 0,
+          "dictionary_page_offset": 586
+        },
+        {
+          "path": "failed_payments",
+          "type": "int64",
+          "codec": "uncompressed",
+          "encodings": [
+            "rle",
+            "plain"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 93,
+          "total_compressed_size": 93,
+          "data_page_offset": 715,
+          "file_offset": 0
+        },
+        {
+          "path": "is_churned",
+          "type": "boolean",
+          "codec": "gzip",
+          "encodings": [
+            "rle",
+            "plain"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 42,
+          "total_compressed_size": 62,
+          "data_page_offset": 808,
+          "file_offset": 0
+        },
+        {
+          "path": "segment",
+          "type": "byte_array",
+          "codec": "snappy",
+          "encodings": [
+            "plain",
+            "rle",
+            "rle_dictionary"
+          ],
+          "num_values": 3,
+          "total_uncompressed_size": 78,
+          "total_compressed_size": 82,
+          "data_page_offset": 907,
+          "file_offset": 0,
+          "dictionary_page_offset": 870
+        }
+      ]
+    }
+  ]
+}

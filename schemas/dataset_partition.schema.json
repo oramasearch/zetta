@@ -1,0 +1,50 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "blob_ref": {
+      "type": "string"
+    },
+    "created": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "owner_nodes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "row_range": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "start": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "type": "object"
+    },
+    "stats": {
+      "type": "object"
+    },
+    "table": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "table"
+  ],
+  "title": "zetta.DatasetPartition",
+  "type": "object"
+}

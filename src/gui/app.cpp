@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/repl_console.hpp"
 
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
@@ -166,7 +167,17 @@ App::App(Node& node, Cluster& cluster)
     : node_(node),
       cluster_(cluster),
       query_(std::make_unique<query::QueryService>(node, &cluster)),
-      gate_graph_input_(kExampleGraphJson) {}
+      console_model_(std::make_unique<repl::ConsoleModel>()),
+      console_(std::make_unique<ReplConsole>()),
+      gate_graph_input_(kExampleGraphJson) {
+    // Seed the console with a runnable SQL example so the passing path is one
+    // click away (cleared on first Run, like any REPL prompt).
+    console_model_->input() =
+        "CREATE DATABASE shop;\n"
+        "CREATE TABLE shop.items (sku text, qty int);\n"
+        "INSERT INTO shop.items (sku, qty) VALUES ('A1', 5), ('B2', 3);\n"
+        "SELECT * FROM shop.items;";
+}
 
 App::~App() {
     // Wait out any in-flight test run (the worker borrows `this`).
@@ -332,6 +343,7 @@ void App::draw_menu_bar() {
     if (ImGui::BeginMenu("Data")) {
         view_item("Explorer", View::Explorer);
         view_item("SQL query", View::Query);
+        view_item("Console", View::Console);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Pipeline")) {
@@ -391,6 +403,7 @@ void App::draw_active_view() {
         case View::Home:     draw_home();            break;
         case View::Explorer: draw_explorer();        break;
         case View::Query:    draw_query();           break;
+        case View::Console:  draw_console();          break;
         case View::Graph:    draw_graph_workspace(); break;
         case View::Gate:     draw_gate();            break;
         case View::Deploy:   draw_deploy();          break;

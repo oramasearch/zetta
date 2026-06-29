@@ -45,7 +45,9 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_models();
+    load_indexes();
     load_jobs();
+    load_dataset_partitions();
     load_principals();
     load_audit_events();
     if (replication_) {
@@ -57,11 +59,11 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu jobs, %zu principals, "
-        "%zu audit events)\n",
+        "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
+        "%zu partitions, %zu principals, %zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
-        jobs_.size(),
+        indexes_.size(), jobs_.size(), dataset_partitions_.size(),
         principals_.size(), audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
@@ -144,7 +146,8 @@ void Node::load_databases() {
         if (meta.is_discarded() || !meta.contains("name")) continue;
         auto db = std::make_shared<Database>(
             entry.path().filename().string(),
-            meta["name"].get<std::string>(), entry.path(), replication_);
+            meta["name"].get<std::string>(), entry.path(), replication_,
+            replication_strategy_from_meta(meta));
         db->load();
         databases_.push_back(std::move(db));
     }
@@ -308,27 +311,34 @@ std::shared_ptr<Principal> Node::find_principal_by_id(
     return nullptr;
 }
 
-std::shared_ptr<Database> Node::create_database(std::string name) {
+std::shared_ptr<Database> Node::create_database(
+    std::string name, ReplicationStrategy replication_strategy) {
     // "system" is reserved for the virtual system database (computed system
     // tables like system.zetta_nodes); never a real on-disk database.
     if (name.empty() || name == "system" || find_database(name)) return nullptr;
     const std::string id = new_uuid();
     if (replication_) {
-        replication_->set(catalog::database_key(id),
-                          nlohmann::json{{"name", name}});
+        // The default (ReplicateToAll) is omitted, so the db: value is unchanged
+        // from before databases carried a strategy (ENT-35).
+        nlohmann::json value{{"name", name}};
+        if (!replication_strategy.is_default()) {
+            value["replication"] = replication_strategy.to_json();
+        }
+        replication_->set(catalog::database_key(id), value);
     }
-    return materialize_database(id, std::move(name));
+    return materialize_database(id, std::move(name),
+                               std::move(replication_strategy));
 }
 
-std::shared_ptr<Database> Node::materialize_database(std::string id,
-                                                     std::string name) {
+std::shared_ptr<Database> Node::materialize_database(
+    std::string id, std::string name, ReplicationStrategy strategy) {
     if (auto existing = find_database_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
     auto db = std::make_shared<Database>(std::move(id), std::move(name), dir,
-                                         replication_);
+                                         replication_, std::move(strategy));
     db->persist_meta();
     databases_.push_back(db);
     return db;
@@ -768,6 +778,93 @@ bool Node::materialize_drop_model(const std::string& id) {
     return true;
 }
 
+// ----- indexes (a registered index over a table; replicated as index:<uuid>) --
+
+void Node::load_indexes() {
+    indexes_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "index.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: an index.json that fails the Index JSON Schema is
+        // rejected here (with a logged reason) rather than allowed to corrupt the
+        // in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<IndexValue> value =
+            meta.is_discarded() ? std::nullopt : parse_index_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid index %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        indexes_.push_back(std::make_shared<Index>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(indexes_.begin(), indexes_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<Index> Node::create_index(IndexValue value) {
+    // Basic guards (the schema enforces the rest at persist/reconcile): a usable
+    // index needs a source table, a backend to build it, and at least one field.
+    if (value.table.empty() || value.backend.empty() || value.fields.empty()) {
+        return nullptr;
+    }
+    const std::string id = new_uuid();
+    value.created = now_iso8601();
+    if (replication_) replication_->set(catalog::index_key(id), to_json(value));
+    return materialize_index(id, std::move(value));
+}
+
+std::shared_ptr<Index> Node::materialize_index(std::string id, IndexValue value) {
+    if (auto existing = find_index(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto index = std::make_shared<Index>(std::move(id), std::move(value), dir,
+                                         replication_);
+    index->persist_meta();
+    indexes_.push_back(index);
+    return index;
+}
+
+std::shared_ptr<Index> Node::find_index(const std::string& id) const {
+    for (const auto& index : indexes_) {
+        if (index->id() == id) return index;
+    }
+    return nullptr;
+}
+
+bool Node::drop_index(const std::string& id) {
+    if (!find_index(id)) return false;
+    if (replication_) replication_->remove(catalog::index_key(id));
+    return materialize_drop_index(id);
+}
+
+bool Node::materialize_drop_index(const std::string& id) {
+    const auto it = std::find_if(
+        indexes_.begin(), indexes_.end(),
+        [&](const std::shared_ptr<Index>& i) { return i->id() == id; });
+    if (it == indexes_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    indexes_.erase(it);
+    return true;
+}
+
 // ----- compute jobs (one unit of accelerated compute; replicated job:<uuid>) --
 
 void Node::load_jobs() {
@@ -871,6 +968,107 @@ bool Node::materialize_drop_job(const std::string& id) {
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
     jobs_.erase(it);
+    return true;
+}
+
+// ----- dataset partitions (the partition catalog; replicated part:<uuid>) -----
+
+void Node::load_dataset_partitions() {
+    dataset_partitions_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "partition.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: a partition.json that fails the DatasetPartition
+        // JSON Schema is rejected here (with a logged reason) rather than allowed
+        // to corrupt the in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<DatasetPartitionValue> value =
+            meta.is_discarded() ? std::nullopt
+                                : parse_dataset_partition_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid partition %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON"
+                                            : error.c_str());
+            continue;
+        }
+        dataset_partitions_.push_back(std::make_shared<DatasetPartition>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(dataset_partitions_.begin(), dataset_partitions_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->created() != b->created())
+                      return a->created() < b->created();
+                  return a->id() < b->id();
+              });
+}
+
+std::shared_ptr<DatasetPartition> Node::create_dataset_partition(
+    DatasetPartitionValue value) {
+    // A partition must reference a table — that ref is the catalog's anchor.
+    if (value.table.empty()) return nullptr;
+    const std::string id = new_uuid();
+    if (value.created.empty()) value.created = now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::partition_key(id), to_json(value));
+    }
+    return materialize_dataset_partition(id, std::move(value));
+}
+
+std::shared_ptr<DatasetPartition> Node::materialize_dataset_partition(
+    std::string id, DatasetPartitionValue value) {
+    if (auto existing = find_dataset_partition(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto partition = std::make_shared<DatasetPartition>(
+        std::move(id), std::move(value), dir, replication_);
+    partition->persist_meta();
+    dataset_partitions_.push_back(partition);
+    std::sort(dataset_partitions_.begin(), dataset_partitions_.end(),
+              [](const auto& a, const auto& b) {
+                  if (a->created() != b->created())
+                      return a->created() < b->created();
+                  return a->id() < b->id();
+              });
+    return partition;
+}
+
+std::shared_ptr<DatasetPartition> Node::find_dataset_partition(
+    const std::string& id) const {
+    for (const auto& partition : dataset_partitions_) {
+        if (partition->id() == id) return partition;
+    }
+    return nullptr;
+}
+
+bool Node::drop_dataset_partition(const std::string& id) {
+    if (!find_dataset_partition(id)) return false;
+    if (replication_) replication_->remove(catalog::partition_key(id));
+    return materialize_drop_dataset_partition(id);
+}
+
+bool Node::materialize_drop_dataset_partition(const std::string& id) {
+    const auto it = std::find_if(
+        dataset_partitions_.begin(), dataset_partitions_.end(),
+        [&](const std::shared_ptr<DatasetPartition>& p) {
+            return p->id() == id;
+        });
+    if (it == dataset_partitions_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    dataset_partitions_.erase(it);
     return true;
 }
 
@@ -1111,14 +1309,22 @@ void Node::migrate_to_replication() {
     const nlohmann::json snapshot = replication_->snapshot();
     for (const auto& db : databases_) {
         if (!snapshot.contains(catalog::database_key(db->id()))) {
-            replication_->set(catalog::database_key(db->id()),
-                              nlohmann::json{{"name", db->name()}});
+            // Carry the strategy (ENT-35); the default is omitted, so a
+            // ReplicateToAll database migrates to the same db: value as before.
+            nlohmann::json value{{"name", db->name()}};
+            if (!db->replication_strategy().is_default()) {
+                value["replication"] = db->replication_strategy().to_json();
+            }
+            replication_->set(catalog::database_key(db->id()), value);
         }
         for (const auto& table : db->tables()) {
             if (!snapshot.contains(catalog::table_key(table->id()))) {
-                replication_->set(
-                    catalog::table_key(table->id()),
-                    nlohmann::json{{"db", db->id()}, {"name", table->name()}});
+                nlohmann::json value{{"db", db->id()}, {"name", table->name()}};
+                if (!table->replication_strategy().is_default()) {
+                    value["replication"] =
+                        table->replication_strategy().to_json();
+                }
+                replication_->set(catalog::table_key(table->id()), value);
             }
             const StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
@@ -1176,9 +1382,21 @@ void Node::migrate_to_replication() {
                               model->metadata());
         }
     }
+    for (const auto& index : indexes_) {
+        if (!snapshot.contains(catalog::index_key(index->id()))) {
+            replication_->set(catalog::index_key(index->id()),
+                              index->metadata());
+        }
+    }
     for (const auto& job : jobs_) {
         if (!snapshot.contains(catalog::job_key(job->id()))) {
             replication_->set(catalog::job_key(job->id()), job->metadata());
+        }
+    }
+    for (const auto& partition : dataset_partitions_) {
+        if (!snapshot.contains(catalog::partition_key(partition->id()))) {
+            replication_->set(catalog::partition_key(partition->id()),
+                              partition->metadata());
         }
     }
     for (const auto& principal : principals_) {
@@ -1215,7 +1433,9 @@ void Node::reconcile_from_replication() {
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
     reconcile_models(snapshot);
+    reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
+    reconcile_partitions(snapshot);
     reconcile_principals(snapshot);
     reconcile_access_keys(snapshot);
     reconcile_audit_events(snapshot);
@@ -1226,8 +1446,14 @@ void Node::reconcile_from_replication() {
 // each kept database, so they don't split into independent helpers cleanly.
 void Node::reconcile_databases(const nlohmann::json& snapshot) {
     // Decode the flat catalog keys into desired databases / tables / rows.
-    std::map<std::string, std::string> databases;             // id -> name
-    std::map<std::string, std::pair<std::string, std::string>> tables;  // id -> (db, name)
+    struct DatabaseEntry { std::string name; ReplicationStrategy strategy; };
+    std::map<std::string, DatabaseEntry> databases;           // id -> entry
+    struct TableEntry {
+        std::string database_id;
+        std::string name;
+        ReplicationStrategy strategy;
+    };
+    std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; };
     std::map<std::string, RowEntry> rows;                     // id -> entry
     struct LargeObjectEntry {
@@ -1241,14 +1467,17 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     for (const auto& [key, value] : snapshot.items()) {
         if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
             !id.empty() && value.is_object() && value.contains("name")) {
-            databases.emplace(std::move(id), value["name"].get<std::string>());
+            databases.emplace(std::move(id),
+                              DatabaseEntry{value["name"].get<std::string>(),
+                                            replication_strategy_from_meta(value)});
         } else if (std::string table_id =
                        catalog::id_after(key, catalog::kTablePrefix);
                    !table_id.empty() && value.is_object() &&
                    value.contains("db") && value.contains("name")) {
             tables.emplace(std::move(table_id),
-                           std::pair{value["db"].get<std::string>(),
-                                     value["name"].get<std::string>()});
+                           TableEntry{value["db"].get<std::string>(),
+                                      value["name"].get<std::string>(),
+                                      replication_strategy_from_meta(value)});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -1284,7 +1513,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
         for (const std::string& table_id : local_table_ids) {
             const auto it = tables.find(table_id);
-            if (it == tables.end() || it->second.first != db_id) {
+            if (it == tables.end() || it->second.database_id != db_id) {
                 db->materialize_drop_table(table_id);
             }
         }
@@ -1300,19 +1529,21 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
     }
 
-    // Additions / renames.
-    for (const auto& [id, name] : databases) {
+    // Additions / renames. The strategy (ENT-35) is applied when a database/table
+    // is first materialized from a peer; a peer rename only updates the name (the
+    // strategy is fixed at create time in this slice — there is no update path).
+    for (const auto& [id, entry] : databases) {
         auto db = find_database_by_id(id);
         if (!db) {
-            materialize_database(id, name);
-        } else if (db->name() != name) {
-            db->set_name(name);  // a peer renamed it (no re-capture)
+            materialize_database(id, entry.name, entry.strategy);
+        } else if (db->name() != entry.name) {
+            db->set_name(entry.name);  // a peer renamed it (no re-capture)
         }
     }
-    for (const auto& [id, db_and_name] : tables) {
-        auto db = find_database_by_id(db_and_name.first);
+    for (const auto& [id, entry] : tables) {
+        auto db = find_database_by_id(entry.database_id);
         if (db && !db->find_table_by_id(id)) {
-            db->materialize_table(id, db_and_name.second);
+            db->materialize_table(id, entry.name, entry.strategy);
         }
     }
     for (auto& [id, entry] : rows) {
@@ -1603,6 +1834,35 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     }
 }
 
+void Node::reconcile_indexes(const nlohmann::json& snapshot) {
+    // Indexes (top-level, no parent): index:<id> -> the index value. Decode +
+    // validate the desired set at the boundary (a malformed CRDT value is ignored,
+    // not trusted), then drop / add / update the local projection to match — with
+    // no re-capture. An index is metadata only (no body), so apply_value rewrites
+    // index.json and nothing more.
+    std::map<std::string, IndexValue> indexes;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kIndexPrefix);
+        if (id.empty()) continue;
+        if (std::optional<IndexValue> parsed = parse_index_value(value)) {
+            indexes.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_index_ids;
+    for (const auto& index : indexes_) local_index_ids.push_back(index->id());
+    for (const std::string& index_id : local_index_ids) {
+        if (!indexes.contains(index_id)) materialize_drop_index(index_id);
+    }
+    for (auto& [id, value] : indexes) {
+        auto index = find_index(id);
+        if (!index) {
+            materialize_index(id, std::move(value));
+        } else if (index->metadata() != to_json(value)) {
+            index->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
 void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     // Compute jobs (top-level, no parent): job:<id> -> the job value. Decode +
     // validate the desired set at the boundary (a malformed CRDT value is ignored,
@@ -1630,6 +1890,42 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
             materialize_job(id, std::move(value));
         } else if (job->metadata() != to_json(value)) {
             job->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_partitions(const nlohmann::json& snapshot) {
+    // Dataset partitions (top-level, no parent): part:<id> -> the partition value.
+    // The catalog is replicate-to-all, so each node materializes the same set.
+    // Decode + validate the desired set at the boundary (a malformed CRDT value is
+    // ignored, not trusted), then drop / add / update the local projection to match
+    // — with no re-capture (apply_value / materialize_dataset_partition do not write
+    // back to the CRDT).
+    std::map<std::string, DatasetPartitionValue> partitions;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kPartitionPrefix);
+        if (id.empty()) continue;
+        if (std::optional<DatasetPartitionValue> parsed =
+                parse_dataset_partition_value(value)) {
+            partitions.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_partition_ids;
+    for (const auto& partition : dataset_partitions_) {
+        local_partition_ids.push_back(partition->id());
+    }
+    for (const std::string& partition_id : local_partition_ids) {
+        if (!partitions.contains(partition_id)) {
+            materialize_drop_dataset_partition(partition_id);
+        }
+    }
+    for (auto& [id, value] : partitions) {
+        auto partition = find_dataset_partition(id);
+        if (!partition) {
+            materialize_dataset_partition(id, std::move(value));
+        } else if (partition->metadata() != to_json(value)) {
+            partition->apply_value(
+                std::move(value));  // a peer changed it (no re-capture)
         }
     }
 }

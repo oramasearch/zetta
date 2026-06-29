@@ -49,7 +49,11 @@ its **execution graphs**
 into a reviewable graph skeleton — `zetta::compile_intent` turns the natural-
 language text into a templated `connect→clean→model→index→serve→act` pipeline
 (the churn shape today), editable in the workspace rather than a black box (see
-[docs/intent-compiler.md](docs/intent-compiler.md)). In headed mode the **Graph
+[docs/intent-compiler.md](docs/intent-compiler.md)). A pipeline written as
+**Python** lowers to the same IR through the simulated-Python *language frontend*
+(`zetta::input::PythonFrontend` — `ds = load_dataset(...); m = train(ds, ...)` →
+typed steps + data-flow edges; zetta re-implements the shape, it never runs
+Python; see [docs/python-frontend.md](docs/python-frontend.md)). In headed mode the **Graph
 Workspace** panel renders a project's graph as an editable node/edge canvas
 (steps in columns by stage, edges between them) and persists edits back to the IR
 (see [docs/projects.md](docs/projects.md#graph-workspace)). A node can also **deploy** a
@@ -92,6 +96,13 @@ metadata (kind, feature schema, metrics) replicated as `model:<uuid>`, with the
 serialized **weights** stored as a large-object body that transfers peer-to-peer
 and is SHA-256-verified; a `system.zetta_models` registry table lists them (see
 [docs/models.md](docs/models.md)).
+It owns a **partition catalog** (`zetta::DatasetPartition`) — a record of where a
+slice of a table's data physically lives (its table, the large-object body holding
+its bytes, the row range, column stats, and owner nodes) replicated as
+`part:<uuid>`. The catalog is **replicate-to-all** so placement is globally
+visible: a partition recorded on one node appears on every node, queryable via the
+read-only `system.dataset_partitions` table (see
+[docs/dataset-partitions.md](docs/dataset-partitions.md)).
 The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
 (`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
 distributed accelerated compute pass: provision N nodes against a capability spec,
@@ -151,7 +162,14 @@ each tick it observes a running job's progress, scores the policy, and adds/remo
 nodes through the `Provisioner` seam within bounds — with hysteresis to avoid
 thrashing, an immediate shed on a cost-cap breach, live (elastic) membership read
 each tick, and best-effort max utilization when hardware is fixed (see
-[docs/job-autoscaler.md](docs/job-autoscaler.md)).
+[docs/job-autoscaler.md](docs/job-autoscaler.md)). The autoscaler's **permanent
+sibling** is **`zetta::add_nodes`** — the plain "add 10 nodes to this cluster"
+control action: it drives a `Provisioner` (the cloud-burst `AzureProvisioner`, or
+any backend) to bring up N nodes that auto-join via the seed-peer handshake and
+persist as ordinary cluster members, **provision-and-report only** (never tearing a
+member down or revoking; elastic / cost-cap burst is the autoscaler's job), behind a
+schema-validated `AddNodesRequest` control-command boundary (see
+[docs/add-nodes.md](docs/add-nodes.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see
@@ -275,7 +293,11 @@ zetta --listen 127.0.0.1:7777        # restrict to loopback (not network-reachab
 ```
 
 Data replicates between nodes as an [Automerge](docs/replication.md) CRDT
-(replicate-to-all policy; each node has a UUIDv4 actor id): **databases, tables,
+(replicate-to-all by default — each database/table can also carry a per-entity
+[replication strategy](docs/replication-strategy.md): `ReplicateToAll` |
+`Partitioned` | `PartitionedWithReplicas(factor)`, recorded + replicated, the
+partitioned-placement engine a later slice; each node has a UUIDv4 actor id):
+**databases, tables,
 rows, [projects](docs/projects.md), [project inputs](docs/project-inputs.md),
 [runs](docs/runs.md), [models](docs/models.md),
 [compute jobs](docs/compute-jobs.md),

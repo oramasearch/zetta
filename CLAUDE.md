@@ -156,6 +156,39 @@ is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
 provenance + replication only — training/inference (and producing the weights) is
 a later slice. See [docs/models.md](docs/models.md).
 
+A node also owns **indexes** (`zetta::Index`) — a registered **index over a
+table** (**ENT-39 / ENT-40, ADR-34**): its definition `{ table, kind, backend,
+fields }`, where `kind` is the index type (`search`/`vector`/`feature`, mirroring
+the `StepKind::Index` "build a search / vector / feature index" taxonomy) and
+`backend` names the `IndexBackend` that builds it. Another top-level entity keyed
+by id (like `Model`, **minus the weights body** — an index is metadata only):
+`create_index`/`find_index`/`drop_index`/`indexes`, **no value mutators** (an
+index is *rebuilt*, not re-specified — changing what it indexes is a new index).
+Replicated state (flat key `index:<uuid>`, on-disk `<index-uuid>/index.json`,
+projection reconciled like `Model`), **boundary-validated against a formal JSON
+Schema** (`parse_index_value`, the same `pboettch` path as Run/Model; `table` +
+`backend` required + non-empty, `kind` a closed enum, `fields` a non-empty array
+of unique non-empty strings). The registry is `Node::indexes()` + the read-only
+SQL **`system.zetta_indexes`** table. **Building / querying an index is the
+pluggable `IndexBackend` seam** (`include/zetta/index/index_backend.hpp`,
+namespace `zetta`) — a pure-virtual **build (over a table's partitions) / query /
+drop** interface, the same shape as `StorageEngine`/`ComputeDevice`, every call
+returning an `IndexStatus` rather than throwing. The **`IndexRegistry`**
+(`index_registry.hpp`) is the per-node container + selector over the seam (like
+`compute::DeviceRegistry`): backends register into it and it **resolves** an
+`IndexSpec` — or an **IR `index` step** (`index_spec_from_node` reads the step's
+`{table,kind,backend,fields}` attributes at the boundary) — to the registered
+backend whose `name()` **and** `kind()` match. The **`InMemoryIndexBackend`**
+(`in_memory_index_backend.hpp`, name `memory_search`) is the from-scratch
+in-memory **Search** reference backend (an inverted field-value→row-ids index over
+the partitions; the `HostStubDevice`/`CpuDevice` role for this seam), so the seam
++ registry are end-to-end usable; vector/semantic/feature backends are additive
+behind the same interface. This slice is the **seam + registry + reference backend
++ the replicated/validated/queryable entity**; **no run/deploy wiring** — driving
+a deployed `index` step through the resolved backend (build over the real table,
+serve queries) is a later slice (the registry is standalone, like the
+`Provisioner`). See [docs/index-backend.md](docs/index-backend.md).
+
 A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
 of native distributed accelerated compute** (the foundational entity of the
 accelerated-compute pass for UC-1, **ARC-11 / ENT-31**): a `kind`
@@ -288,6 +321,49 @@ no dangling. See `docs/storage.md`. Two storage engines exist behind the
 disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a future
 `:memory:` mode). **New engines implement `StorageEngine`; query/indexes land
 behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
+
+A node also owns a **partition catalog** (`zetta::DatasetPartition`) — a record of
+**where a slice of a table's data physically lives** (**ENT-36 / TBL-13**): its
+`table` (a `tbl:` id), the `blob_ref` large-object body (a `lo:` id) holding its
+bytes, the `row_range` it covers, free-form column `stats` for pruning, and the
+`owner_nodes` that hold a copy. Another top-level, replicated entity (flat key
+`part:<uuid>`, on-disk `<part-uuid>/partition.json`), **modeled exactly like
+`ComputeJob`** but keyed by id: `create_dataset_partition`/`find_dataset_partition`/
+`drop_dataset_partition`/`dataset_partitions`, boundary-validated against a formal
+JSON Schema (`parse_dataset_partition_value`, the same `pboettch` validator).
+The catalog is **replicate-to-all** so placement is **globally visible** — a
+partition recorded on one node reconciles onto every node (`reconcile_partitions`,
+alongside the `lo:` block) and is queryable everywhere via the read-only SQL
+**`system.dataset_partitions`** table (computed from `Node::dataset_partitions()`).
+This is storage + provenance + replication of the catalog only — the *partitioner*
+that splits a table and writes the bodies, locality-aware reads, and re-balancing
+placement are later slices. See [docs/dataset-partitions.md](docs/dataset-partitions.md).
+
+### Partitioning (`zetta::Partitioner`)
+
+A table can be **partitioned** behind the **`Partitioner`** seam
+(`include/zetta/partitioner.hpp`, **ADR-31 / ENT-37**, #512) — the pluggable,
+per-table policy that decides **data placement**, the way `StorageEngine` decides
+how rows are stored. It has two pure, non-throwing responsibilities over a
+**fixed partition count `P` (chosen `P >> nodes`)**: **record → partition**
+(`assign_partition(record) -> PartitionId`, always in `[0, P)`) and **partition →
+node(s)** (`place_partition(partition, members) -> owner node id(s)`, the first
+the primary owner + any replicas, given the current cluster `members` from
+`Cluster::nodes()`). Holding `P` fixed is what lets rebalancing move whole
+partitions (as blobs) between nodes on a membership change rather than rehashing
+every row, and determinism (every node computes the same placement, no election)
+is what lets the leaderless cluster agree. A `Table` is **configured per-table**
+with one via `set_partitioner`/`partitioner` (empty handle = not partitioned, the
+default). The trivial baseline `zetta::SinglePartitioner` is the identity — one
+partition holding every row, owned by **every** member (replicate-to-all) — so
+configuring it changes nothing while exercising both halves of the seam. This
+slice is the **seam + trivial impl + in-memory config only**, with **no new JSON
+boundary**: the concrete strategies (`HashPartitioner`/`RoundRobinPartitioner`
+#513, `RendezvousPlacement` #514), the replicated **partition catalog**
+(`system.dataset_partitions`, #510), and the **partitioned write path** (#511 —
+which persists the selection + records placements) are dependent slices; a learned
+**model-as-partitioner** is a documented future direction behind the same seam.
+See [docs/partitioner.md](docs/partitioner.md).
 
 ### Async runtime (`zetta::runtime`)
 
@@ -1119,24 +1195,39 @@ changes) — the same UUID as its cluster node id, **persisted in
 `data_dir/node_id`** so it's stable across restarts (a fresh id each run would
 fragment the change history and accumulate `node:` keys). The document uses
 **flat keys**
-(`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
+(`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`
+(each carrying an optional `replication` field — the per-db/table
+`ReplicationStrategy`, ENT-35, omitted when the default `ReplicateToAll`),
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
 `deployment:<uuid>`, `run:<uuid>`, `model:<uuid>` (a trained model — metadata
 only; its serialized weights body stays on disk like an `lo:` body),
 `job:<uuid>` (a compute job — ARC-11/ENT-31),
+`index:<uuid>` (a registered index over a table — metadata only; ENT-39/ENT-40),
 `principal:<uuid>` (an authenticated actor), `key:<uuid>` (an access key carrying
-its parent `principal` ref + its `scope` + its `capabilities`), and
-`audit:<uuid>` (an immutable, append-only audit event) — each entity owns its key
+its parent `principal` ref + its `scope` + its `capabilities`),
+`audit:<uuid>` (an immutable, append-only audit event), and
+`part:<uuid>` (a dataset partition — the partition catalog: `{table, blob_ref,
+row_range, stats, owner_nodes}`, replicate-to-all so placement is globally
+visible — ENT-36/TBL-13) — each entity owns its key
 by UUID so concurrent edits never collide.
 `Node` is the integration point: it **captures** local DDL/row mutations into the
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
 changes land on disk), and **persists** it to `data_dir/replication.automerge`.
-Policies plug in via `ReplicationPolicy`; the first is `ReplicateToAllNodes`
-(full copy on every node). Done + tested: CRDT core, cluster gossip + per-node
-status, **and full DDL+row data replication to disk** (`tests/test_data_replication.cpp`).
-See [docs/replication.md](docs/replication.md).
+Node-wide policies plug in via `ReplicationPolicy`; the first is
+`ReplicateToAllNodes` (full copy on every node). Each **database/table** also
+carries a per-entity **`zetta::ReplicationStrategy`** (ENT-35 —
+`ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(replication_factor)`,
+default `ReplicateToAll`, a validated JSON boundary), recorded + persisted +
+replicated in its `db:`/`tbl:` value (default omitted, so today's representation
+is unchanged); a table inherits its database's strategy unless it overrides. This
+slice records the choice — the partitioned-placement engine that *acts* on a
+non-default strategy is a later slice. See
+[docs/replication-strategy.md](docs/replication-strategy.md). Done + tested: CRDT
+core, cluster gossip + per-node status, **and full DDL+row data replication to
+disk** (`tests/test_data_replication.cpp`). See
+[docs/replication.md](docs/replication.md).
 
 ### On-disk layout
 
@@ -1163,9 +1254,15 @@ data_dir/
                                   metrics, created, weights:{ size, sha256 } }
     weights                  ← raw serialized bytes (NOT in the CRDT; on-disk
                                  like an LO body — transfers peer-to-peer)
+  <index-uuid>/              ← one folder per index (UUIDv4 = its id)
+    index.json               ← { id, table, kind, backend, fields, created }
+                                 (metadata only — no body)
   <job-uuid>/                ← one folder per compute job (UUIDv4 = its id)
     job.json                 ← { id, kind, status, project, graph, run,
                                   scaling_policy, created, updated, detail }
+  <part-uuid>/               ← one folder per dataset partition (UUIDv4 = its id)
+    partition.json           ← { id, table, blob_ref, row_range:{start,end},
+                                  stats, owner_nodes, created }
   <principal-uuid>/          ← one folder per principal (UUIDv4 = its id)
     principal.json           ← { id, kind, name, created }
     keys/
@@ -1177,9 +1274,11 @@ data_dir/
     <audit-uuid>.json        ← { id, action, actor, target, allowed, detail,
                                  time }  (one file per event, never edited)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
-    database.json            ← { id, name }
+    database.json            ← { id, name, replication? }  (replication = the
+                                ReplicationStrategy, ENT-35; omitted when default)
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
-      table.json             ← { id, name }
+      table.json             ← { id, name, replication? }  (replication strategy,
+                                omitted when the default ReplicateToAll)
       000000.jsonl           ← rows 0..9999    ({ "_zid": row-uuid, "doc": row })
       000001.jsonl           ← rows 10000..19999
       ...                    ← JsonlStore::kRecordsPerChunk = 10k per chunk
@@ -1242,6 +1341,43 @@ A third, **typed-artifact** ingestion path captures a file into a *project*
   persisting it as a `ProjectGraph` / GUI wiring is a later slice. Detail in
   [docs/n8n-compile.md](docs/n8n-compile.md).
 
+### Parquet reader (`zetta::parquet`)
+
+The native, read-only **Parquet reader** (ADR-32, #481 — hand-rolled, **no
+Apache Arrow / parquet-cpp**; refines ADR-17's no-foreign-runtime rule) lives in
+its own `parquet/` module (`include/zetta/parquet/`, `src/core/parquet/`,
+namespace `zetta::parquet`, in `zetta-core`). Its first slice is the
+**footer / metadata parser** (`zetta::parquet::parse_parquet_metadata`,
+`include/zetta/parquet/metadata.hpp`, #505): given the **whole file's bytes**, it
+checks the `PAR1` magic, reads the trailing little-endian footer length, slices
+out the Thrift `FileMetaData` blob, and decodes it — the file's **schema**
+(column names + physical types via `FileMetaData::leaf_columns()`), its **row
+groups**, and per-**column-chunk** layout (offsets / sizes / encodings / codecs /
+dictionary-page presence). It decodes **no data** — reading the page bodies
+(#506), decompressing them (the **Snappy** decoder #507), and projecting them
+into DDF columns (#508, which removes the `ChurnDataFormat::Parquet`
+"not yet supported" error) are the later slices that consume this layout. The
+parser carries a small, self-contained **Thrift compact-protocol** decoder
+(varint field-id deltas, zigzag ints, length-prefixed binary, compact
+list/map framing) that dispatches on the parquet.thrift field ids it models and
+**skips** the rest (statistics, logical types, column orders, encryption …), so
+files carrying fields this slice ignores still parse. The footer bytes are a
+**trust boundary**: zetta-core is `-fexperimental-library` (no exceptions across
+the seam), so it is **non-throwing** and every read is bounds-checked — a
+too-small / wrong-magic / encrypted-footer (`PARE`) / truncated / malformed file
+returns a failing `ParquetMetadataResult` with a reason instead of reading out of
+bounds (the binary-format analog of schema-at-the-boundary). The JSON projection
+`to_json` emits **does** carry a schema — `parquet_metadata_schema()` (the
+schema-as-code source of truth, generated to
+`schemas/parquet_metadata.schema.json`, drift-checked by `test_schemas`) +
+`validate_parquet_metadata_json` (the pboettch boundary the committed test golden
+re-enters through). The acceptance (`tests/test_parquet_metadata.cpp`) parses a
+committed fixture (`tests/fixtures/parquet/churn_sample.parquet`) and asserts its
+`to_json` matches a **pyarrow-dumped golden** field for field — an *independent*
+reference, regenerated by the dev-time-only `scripts/gen-parquet-fixture.py`
+(needs pyarrow; **not** a build/CI dependency). See
+[docs/parquet-metadata.md](docs/parquet-metadata.md).
+
 ### Query layer
 
 Queries are **dialect-agnostic**: text → a `Dialect` parser → a generic,
@@ -1264,7 +1400,10 @@ wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
 **`system.zetta_deployments`** (recorded graph→target placements, sourced from
 `Node::deployments()`; qualified name only) and **`system.zetta_models`** (the
 model registry — trained models + their kind / metrics / weights fingerprint,
-sourced from `Node::models()`; qualified name only) and **`system.zetta_jobs`**
+sourced from `Node::models()`; qualified name only) and **`system.zetta_indexes`**
+(the index registry — one row per registered index over a table + its kind /
+backend / fields, sourced from `Node::indexes()`; qualified name only) and
+**`system.zetta_jobs`**
 (the compute-job registry — one row per unit of accelerated compute + its
 lifecycle, sourced from `Node::jobs()`; qualified name only) and
 **`system.zetta_cloud_providers`** (the Cloud Inspector's provider catalog — pure
@@ -1276,11 +1415,47 @@ querying it never triggers a cloud call) and the run + governance read views
 **`system.zetta_principals`** (authenticated actors, `Node::principals()`),
 **`system.zetta_keys`** (the access keys principals own — scope + capabilities as
 readable strings, no secret material) and **`system.zetta_audit`** (the immutable
-audit trail, `Node::audit_events()`). `system` is reserved (can't be
-created/dropped/written; no real db may be named it) and is where future system
-tables (e.g. `system.zetta_leadership`) live — **surfacing observable state as a
-`system.zetta_*` table is the default**, see the convention below. Full detail in
+audit trail, `Node::audit_events()`) — plus **`system.dataset_partitions`** (the
+partition catalog, `Node::dataset_partitions()`: where each table's data slices
+live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13). `system` is
+reserved (can't be created/dropped/written; no real db may be named it) and is
+where future system tables (e.g. `system.leadership`) live — **surfacing observable
+state as a `system.<table>` table is the default**, see the convention below
+(name them plainly — no `zetta_` prefix; the legacy `zetta_*` tables await the
+rename in [`#538`](https://github.com/oramasearch/zetta/issues/538)). Full detail in
 [docs/query.md](docs/query.md).
+
+### REPL console (`zetta::repl::ConsoleModel` + `zetta::gui::ReplConsole`)
+
+The **REPL console** (**CMP-6**, #524) is the interactive SQL / simulated-Python
+console behind the headed **Data → Console** view. Like the
+[test suite](docs/test-suite.md) it is split **model-in-zetta-core /
+GUI-as-thin-renderer**, so the same REPL session backs the GUI component today and
+a **future CLI** unchanged. **`zetta::repl::ConsoleModel`**
+(`include/zetta/repl/console_model.hpp`) is the engine-agnostic *session* — the
+selected `Frontend` (`Sql` / `SimPython`), the input buffer, the scrollback
+**transcript**, and `submit(run)` — with **no SDL/ImGui** (it lives in zetta-core,
+so it is headless-testable, `tests/test_repl_console.cpp`). It **owns no engine**:
+running a statement is a host-supplied **`RunHandler`** callback — the "run event"
+the console emits — so the component is decoupled from any single frontend.
+`submit` invokes the handler with the selected frontend + input, appends the
+`(frontend, source, Result)` to the transcript, and resets the prompt; a
+blank/whitespace input or a null handler is a no-op (mirrors `capture_intent`
+rejecting empty intent), and both success and error results are recorded so errors
+show inline. The frontend-agnostic **`Result`** (messages + columns + grid rows +
+error + elapsed) holds SQL rows and sim-Python output alike;
+`format_result`/`format_transcript` are the reusable text projections a CLI
+prints. **`zetta::gui::ReplConsole`** (`src/gui/repl_console.hpp`) is the thin Dear
+ImGui renderer (frontend selector, multiline editor, run/clear, transcript, result
+grid); `App::draw_console` (`src/gui/app_explorer.cpp`) hosts it over the live
+node, wiring **SQL** through the [query service](docs/query.md) and **simulated-
+Python** to an **honest "not wired yet" seam** until the frontend→IR lowering layer
+lands (#522). It adds **no new JSON boundary** (the transcript is ephemeral session
+state; SQL still enters through `QueryService`). The **governed Console/REPL
+screen** (SCR-8, #525) — lowering each statement to the IR, running it through the
+[correctness gate](docs/gate.md), and recording it in the
+[audit trail](docs/audit-trail.md) — reuses this component unchanged. See
+[docs/repl-console.md](docs/repl-console.md).
 
 ### Execution graph IR (`zetta::ir`)
 
@@ -1337,6 +1512,46 @@ graph). It adds **no new JSON format** — the input is plain text and the outpu
 is the already-schema-validated IR JSON form, so the skeleton round-trips through
 `ir::from_json` and passes `default_gate()` by construction. See
 [docs/intent-compiler.md](docs/intent-compiler.md).
+
+### Language frontends (input language → ExecutionGraph IR)
+
+A **`zetta::input::LanguageFrontend`** (`include/zetta/input/language_frontend.hpp`,
+**ENT-38 / ADR-33**) turns a source snippet in some input language into the
+`ir::ExecutionGraph` — the **IR-targeting analogue of the query layer's
+`zetta::query::Dialect`** (which turns SQL text into the generic query AST). Add a
+new input language by implementing the interface (`name()` + `compile(source) →
+FrontendResult{graph, error}`); everything downstream (the gate, the
+`GraphExecutor`, the GUI) is reused as-is. **Non-throwing** like the rest of
+zetta-core.
+
+The first implementation is the **simulated-Python frontend**
+(`include/zetta/input/python_frontend.hpp`, `zetta::input::PythonFrontend`, **#520**):
+it parses a small Python subset — **assignments, function calls, attribute/method
+access + chaining, literals** (strings incl. triple/`f`/`r`-prefix, numbers,
+`True`/`False`/`None`, lists, dicts), plus `import`/`from-import` (recorded as
+nothing) — and lowers it to the IR. It is **not** a Python interpreter (runs no
+Python, no libraries — the [new-input](.claude/skills/new-input/SKILL.md)
+principle: re-implement, don't run), the way `compile_n8n_workflow` maps an n8n
+workflow. Two lowering rules: (1) **every call becomes a typed step** — its
+`StepKind` from the called verb via `python_step_kind` (the documented verb table,
+like `n8n_step_kind`; an unmapped verb defaults to `Clean`, a generic transform, so
+an arbitrary script still yields a well-formed graph), node id a deterministic
+unique slug from the verb; (2) **data flow becomes `DataFlow` edges** — an
+assignment binds a variable to the node a call produces, and a later call
+referencing it (as an argument, inside a list/dict argument, or as a **method
+receiver**) gets an edge from the producer (so `a = f(); b = g(a)` is `f → g`, and
+`read_csv(…).dropna().fillna(0)` is `read_csv → dropna → fillna`). Parsed call
+arguments ride under a namespaced **`python`** attribute bag (`call`/`assigned_to`/
+`args`/`kwargs`, like n8n's `n8n` provenance). Unsupported constructs
+(`def`/`for`/`if`/binary operators) are **explicitly rejected** with a reason, not
+mis-parsed. It is built like `PostgresDialect` — a tokenizer + recursive-descent
+parser — but **non-throwing** (a parse failure is an error string, never an
+exception). It adds **no new JSON format**: the input is Python source text and the
+only JSON it emits is the already-schema-validated IR JSON form (the `ir::from_json`
+trust boundary), so the output round-trips through `ir::from_json` and passes
+`default_gate()` by construction, executing through `Node::run_graph` like any
+other frontend's. Wiring it into a top-level input dispatch (GUI auto-detect
+Python vs SQL) is a later slice. See [docs/python-frontend.md](docs/python-frontend.md).
 
 ### Correctness gate (`zetta::CorrectnessGate`)
 
@@ -1696,6 +1911,24 @@ returns the current cluster nodes); `teardown` is a **no-op returning false**
 The autoscaler that consumes the seam is unbuilt, and nothing here
 persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
+The **permanent-add control entry point** is **`zetta::add_nodes`**
+(`include/zetta/add_nodes.hpp`, **#518**) — the plain "add 10 nodes to this
+cluster" action over the `Provisioner` seam. `add_nodes(provider, count, spec)`
+drives a provisioner (the cloud-burst `AzureProvisioner`, or any backend) to bring
+up N nodes that **auto-join via the seed-peer handshake and persist as ordinary
+`node:<id>` members** — the existing cluster-membership + replication path (so it
+keeps **no parallel roster**), now automatic with the cloud provisioner. It is the
+**permanent sibling** of the [job autoscaler](#job-autoscaler-zettajobautoscaler):
+both consume the same `Provisioner&`, but `add_nodes` **only provisions and reports
+— it never tears a member down or revokes an identity**, so the members it adds
+stay (elastic / autoscaler / cost-cap burst is deliberately deferred). Identity is
+the provisioner's concern (its `IdentityHooks`, unrevoked because nothing is torn
+down). Vendor-neutral (programs against the abstract seam); best-effort (the
+`AddNodesResult` lists what came up). The control command rides a validated
+`AddNodesRequest` (`{ count, spec }`) JSON boundary (the hand-written non-throwing
+`from_json` pattern of `NodeCapability`/`AzureConfig`, mirroring
+`schemas/add_nodes_request.schema.json`). See [docs/add-nodes.md](docs/add-nodes.md).
+
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
 consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
 guarding **RSK-9** "runaway burst cost"; #379). It is a `Provisioner` **decorator**
@@ -1958,7 +2191,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + principals; run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + jobs + dataset partitions + principals; run_graph; the audit sink
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -1968,6 +2201,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
+  add_nodes.hpp             zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518)
   burst_provisioner.hpp     zetta::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
@@ -1992,7 +2226,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   cloud_inspector.hpp       zetta::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+  index/
+    index_kind.hpp          zetta::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
+    index_backend.hpp       zetta::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
+    index_registry.hpp      zetta::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry)
+    in_memory_index_backend.hpp zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
+    index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
+  dataset_partition.hpp     zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all (ENT-36/TBL-13)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
   scope.hpp                 zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
@@ -2002,12 +2243,16 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
   churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
-  table.hpp                 zetta::Table — owns a storage engine (its rows)
+  table.hpp                 zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
+  partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
   n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
   n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
+  input/
+    language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
+    python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the verb table, refs/receivers→data-flow edges); not a Python runtime (#520)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -2024,6 +2269,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   signal.hpp                zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
   collectives.hpp           zetta::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365)
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
+  replication_strategy.hpp  zetta::ReplicationStrategy — per-table/db replication strategy (ReplicateToAll | Partitioned | PartitionedWithReplicas(factor)) + JSON boundary; recorded/persisted/replicated, default ReplicateToAll (ENT-35; #509)
   blob_store.hpp            zetta::BlobStore — large-object body transfer seam
   replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
   headless.hpp              zetta::run_headless(Node&, Cluster&)
@@ -2032,10 +2278,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     engine.hpp              zetta::StorageEngine interface
     json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
+  parquet/                  zetta::parquet — the native Parquet reader (ADR-32; no Arrow/parquet-cpp)
+    snappy.hpp              zetta::parquet::snappy_decompress — Snappy raw-block page decoder (Parquet's default codec), non-throwing + bounds-checked (#507)
   ir/
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
     serialization.hpp       zetta::ir::to_json/from_json — the graph's JSON form
+  parquet/                  zetta::parquet — native (no Arrow) Parquet reader (ADR-32/#481)
+    metadata.hpp            zetta::parquet::parse_parquet_metadata — read a file's Thrift FileMetaData (schema + row-group/column-chunk layout); Thrift compact decoder, non-throwing, JSON projection + schema boundary (#505)
   compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA in headers)
     data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
     compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
@@ -2072,9 +2322,11 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   testkit/                  zetta::testkit — the in-app test-suite catalog (headless-runnable; #462)
     test_suite.hpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin() — the catalog model the GUI renders
     harness.hpp             ScratchDir + LoopbackCluster (a real N-node loopback cluster) + the in-code synthetic churn dataset + numeric encoding
+  repl/
+    console_model.hpp       zetta::repl::ConsoleModel — the engine-agnostic REPL session (frontend + input + transcript + submit) behind the CMP-6 console; no SDL/ImGui, so it backs the GUI component AND a future CLI (#524)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
-  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs() + replication capture/reconcile/persist
+  node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
@@ -2082,11 +2334,14 @@ src/core/                   zetta-core impl
   churn_dataset.cpp         load_churn_dataset — JSONL/CSV churn fixture reader + 3 embedded draft-07 schemas (boundary validation)
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
+  input/
+    python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the python_step_kind verb table (#520)
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
+  add_nodes.cpp             zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518)
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
   azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
   azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
@@ -2110,7 +2365,12 @@ src/core/                   zetta-core impl
   cloud_inspector.cpp       zetta::CloudInspector — run a provider's read-only commands, per-vendor JSON parse + boundary validation → CloudInspectReport, report JSON boundary (#445)
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+  index/
+    index.cpp               zetta::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
+    index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
+    in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
+  dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -2132,6 +2392,8 @@ src/core/                   zetta-core impl
     entity_resolution_check.cpp  EntityResolutionCheck — conflation/fragmentation + schema boundary
   entity_resolution.cpp     EntityResolver — normalized full-name / brand matching + entity_resolution_annotation builder (FEAT-6/TC-4; #394)
   replicated_blob_store.cpp large-object body transfer (CRDT metadata + disk)
+  parquet/metadata.cpp      zetta::parquet — Thrift compact-protocol decoder + FileMetaData footer decode + to_json + parquet_metadata_schema/validate boundary (zetta-core; #505)
+  parquet/snappy.cpp        zetta::parquet::snappy_decompress — Snappy raw-block decoder (preamble varint + literal/copy elements, bounds-checked) for Parquet data pages (#507)
   ir/execution_graph.cpp    ExecutionGraph IR build + traversal
   ir/serialization.cpp      ExecutionGraph IR ↔ JSON (+ boundary validation)
   compute/device_buffer.cpp DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
@@ -2168,18 +2430,21 @@ src/core/                   zetta-core impl
   collectives.cpp           zetta::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
+  replication_strategy.cpp  zetta::ReplicationStrategy — kind names, JSON boundary validation, replication_strategy_from_meta reader (ENT-35; #509)
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
   testkit/                  zetta::testkit — the in-app test-suite catalog (no SDL; #462)
     test_suite.cpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin()
     harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback) + sample_churn_dataset + numeric encoding
     cases_*.cpp             the canned cases per category (compute/ddf/ml/distributed/governance/pipeline)
+  repl/console_model.cpp    zetta::repl::ConsoleModel — submit/clear logic + Frontend names + format_result/format_transcript text projections (CMP-6; #524)
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
   app_internal.hpp          shared GUI-only helpers: the Orama design tokens + wash/status_dot/eyebrow/mono_line/primary_button + extern g_mono_font (not in the public include/zetta surface)
   app_home.cpp / app_explorer.cpp / app_pipeline.cpp / app_operations.cpp / app_governance.cpp
                             the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464)
+  repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
 modules/                    vendored deps as git submodules (capy, corosio)
 tests/                      GoogleTest unit tests (CTest); link zetta-core
@@ -2329,17 +2594,23 @@ Keep the query frontend and execution separate: dialects parse to the generic
 AST; the `Executor` only ever sees the generic AST. Add a database format by
 implementing `Dialect`, not by special-casing the executor or UI.
 
-### System tables — surface observable state as `system.zetta_*` by default
+### System tables — surface observable state as `system.<table>` by default
 **Any state the product exposes for inspection or observability defaults to a
 virtual, read-only table in the reserved `system` database** — the cluster/node
-list, deployments, models, compute jobs, and **cloud/provider state** (the Cloud
-Inspector, provisioned bursts, …) all belong as `system.zetta_*` tables (à la
-`pg_catalog`), the way `system.zetta_nodes` / `zetta_deployments` /
-`zetta_models` / `zetta_jobs` already do. A `system` table is **computed at query
-time from the live in-memory source** (`Node::…()` / a catalog), **never** a
-stored or hand-synced copy. Reach for a bespoke GUI-only panel or an ad-hoc
-structure only when a `system` table genuinely can't express the state — and even
-then, prefer a table plus a panel that renders it, so SQL and the GUI never drift.
+list, deployments, models, compute jobs, **dataset partitions**, and
+**cloud/provider state** (the Cloud Inspector, provisioned bursts, …) all belong
+as `system.<table>` tables (à la `pg_catalog`), the way `system.dataset_partitions`
+does. **Name system tables plainly — no `zetta_` prefix.** The `system` database is
+reserved and zetta-controlled, so a `zetta_` prefix is **redundant** (`system.jobs`,
+not `system.zetta_jobs`). The legacy `zetta_*` tables (`zetta_nodes`, `zetta_jobs`,
+…) predate this rule and are kept until the system-wide rename in
+[`#538`](https://github.com/oramasearch/zetta/issues/538) — new system tables follow
+the unprefixed convention now (`system.dataset_partitions` is the first). A `system`
+table is **computed at query time from the live in-memory source** (`Node::…()` / a
+catalog), **never** a stored or hand-synced copy. Reach for a bespoke GUI-only panel
+or an ad-hoc structure only when a `system` table genuinely can't express the state —
+and even then, prefer a table plus a panel that renders it, so SQL and the GUI never
+drift.
 This **composes with "EVERYTHING is replicated state"** (above), it doesn't
 contradict it: durable agreement still lives in the CRDT, and the `system` table
 is its read view; **ephemeral/observed** state (a live cloud inspect, the device
@@ -2410,18 +2681,25 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/project-inputs.md`](docs/project-inputs.md) — project inputs (`zetta::ProjectInput`): raw intent/artifact ingestion + provenance (replicated).
 - [`docs/n8n-import.md`](docs/n8n-import.md) — importing an n8n workflow JSON as an artifact input (raw bytes + sha256, schema-validated at the boundary).
 - [`docs/n8n-compile.md`](docs/n8n-compile.md) — compiling an imported n8n workflow JSON into the ExecutionGraph IR (`zetta::compile_n8n_workflow`: nodes→typed steps, connections→edges; FEAT-2 / #308).
+- [`docs/parquet-metadata.md`](docs/parquet-metadata.md) — the native (no Arrow) Parquet footer / metadata parser (`zetta::parquet::parse_parquet_metadata`, ADR-32 / #481 / #505): read a `.parquet` file's Thrift `FileMetaData` — schema (column names/types), row groups, per-column-chunk offsets/sizes/encodings/codecs — via a self-contained Thrift compact-protocol decoder; no data decode (the layout foundation the #506 decoders / #507 Snappy / #508 DDF wiring consume), non-throwing + bounds-checked, with a schema-validated JSON projection tested against a dev-time pyarrow golden (no foreign runtime in build/CI).
+- [`docs/parquet-snappy.md`](docs/parquet-snappy.md) — Parquet Snappy page decompression (`zetta::parquet::snappy_decompress`, #507): a self-contained native decoder for the Snappy raw-block form Parquet uses for its default-codec data pages — non-throwing, bounds-checked at the binary boundary, with hand-built canonical spec vectors + a page-shaped golden as the byte-identical acceptance. The first slice of the native Parquet reader (ADR-32); the footer parser (#505), column-chunk decoders (#506), and reader→DDF wiring (#508) build on it. zstd is a follow-up codec.
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
+- [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (the partitioner / locality-aware reads / re-balancing are later slices).
+- [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
+- [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. Interface + the trivial `SinglePartitioner` baseline + `Table::set_partitioner`; the concrete strategies (Hash/RoundRobin #513, Rendezvous placement #514), the partition catalog (#510), and the partitioned write path (#511) are dependent slices. No new JSON boundary in this slice.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
+- [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python an honest "not wired yet" seam until the frontend→IR lowering layer lands (#522); results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it next.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
+- [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The IR-targeting analogue of the query layer's `Dialect`.
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
@@ -2467,6 +2745,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
 - [`docs/job-autoscaler.md`](docs/job-autoscaler.md) — the autoscaler control loop (`zetta::JobAutoscaler`): each tick observe a running `ComputeJob`'s progress, score it with the job's `ScalingPolicy`, and add/remove nodes through the `Provisioner` seam within bounds, with hysteresis (anti-thrash) + immediate cost-cap shed; reads live membership each tick (elastic) and degrades to best-effort max utilization on given hardware; schema-validated `AutoscalerConfig` (ADR-29 / ARC-11, #371).
+- [`docs/add-nodes.md`](docs/add-nodes.md) — the **permanent-add control entry point** (`zetta::add_nodes`, #518): the "add 10 nodes to this cluster" action over the `Provisioner` seam — drive a provisioner (the cloud-burst `AzureProvisioner`, or any backend) to bring up N nodes that auto-join via the seed-peer handshake and persist as ordinary `node:<id>` members (the existing membership + replication path, no parallel roster). The *permanent* sibling of the [autoscaler](docs/job-autoscaler.md): provision-and-report only, **never** tearing a member down or revoking — elastic / cost-cap burst deferred; vendor-neutral; validated `AddNodesRequest` JSON boundary.
 - [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
 - [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.
