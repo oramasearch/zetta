@@ -13,13 +13,22 @@ time and not vendored.
 | `capy` | [cppalliance/capy](https://github.com/cppalliance/capy) | `develop` | C++ Alliance **Capy** — coroutine foundation (`task<T>`, executors, thread pools). Backs the `zetta::runtime` seam. | yes |
 | `corosio` | [cppalliance/corosio](https://github.com/cppalliance/corosio) | `develop` | **Corosio** — coroutine-native networking (the Boost.Asio successor). | yes (backs the cluster, `src/core/cluster.cpp`) |
 | `automerge-cpp` | [homer6/automerge-cpp](https://github.com/homer6/automerge-cpp) | `main` | From-scratch **C++23 CRDT** (no Rust). Has its own nested submodules (`upstream/json` + `upstream/automerge`). | yes (backs replication, `src/core/replication.cpp`) |
+| `oramacore-cpp` | [oramasearch/oramacore-cpp](https://github.com/oramasearch/oramacore-cpp) (**private**) | `main` | **C++23 port of OramaCore's full-text engine** (BM25F first). Backs the `OramaCoreFulltextIndex` search backend. | yes (CPU-only, `src/core/index/oramacore_fulltext_index.cpp`) — **guarded** |
 
-Both are **beta** (C++ Alliance "rts"/Beast2 family, ~2026) and require
-**Clang 17+** — which is why zetta builds with Homebrew Clang, not Apple Clang.
-zetta only ever touches them through `include/zetta/runtime.hpp` (`zetta::runtime`), so the
-backend can be swapped or replaced (e.g. with Boost.Asio) by editing that one
-header. See [`docs/runtime.md`](../docs/runtime.md) and
+`capy` / `corosio` are **beta** (C++ Alliance "rts"/Beast2 family, ~2026) and, with
+`automerge-cpp`, require **Clang 17+** — which is why zetta builds with Homebrew
+Clang, not Apple Clang. zetta only ever touches the coroutine/networking pair
+through `include/zetta/runtime.hpp` (`zetta::runtime`), so the backend can be swapped
+or replaced (e.g. with Boost.Asio) by editing that one header. See
+[`docs/runtime.md`](../docs/runtime.md) and
 [`docs/research/coroutines.md`](../docs/research/coroutines.md).
+
+`oramacore-cpp` is a **private** repo and its CMake link is **guarded** on the
+submodule's presence (`ZETTA_WITH_ORAMACORE`): a checkout that did not (or could
+not) initialize it still configures, builds, and runs green — the full-text backend
+just degrades to `Unsupported`. Initialize it with
+`git submodule update --init modules/oramacore-cpp`. See
+[`docs/oramacore-fulltext-index.md`](../docs/oramacore-fulltext-index.md).
 
 ## Working with submodules
 
