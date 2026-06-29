@@ -9,3 +9,6 @@
 [submodule "modules/automerge-cpp"]
 	path = modules/automerge-cpp
 	url = git@github.com:homer6/automerge-cpp.git
+[submodule "modules/oramacore-cpp"]
+	path = modules/oramacore-cpp
+	url = git@github.com:oramasearch/oramacore-cpp.git
