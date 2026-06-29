@@ -22,6 +22,7 @@
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/local_group_by_job.hpp"
 #include "zetta/ddf/local_partitions.hpp"
+#include "zetta/ddf/ops.hpp"
 #include "zetta/node.hpp"
 #include "zetta/partition_writer.hpp"
 #include "zetta/partitioner.hpp"
@@ -192,6 +193,98 @@ TEST(DdfLocalPartitions, LoaderReadsOnlyOwnedPartitions) {
     ASSERT_TRUE(truth.ok());
     ASSERT_TRUE(from_partitions.ok());
     EXPECT_TRUE(results_match(from_partitions.result, truth.result));
+}
+
+// The loader is the reusable shard source for ANY DDF op, not just group-by (the
+// issue lists group-by / featurize / GBDT round). A filter — then a group-by — over
+// the locally-loaded shard equals the same ops over the full table.
+TEST(DdfLocalPartitions, LoaderFeedsOtherDdfOps) {
+    TempDir dir;
+    Node node(node_config(dir));
+    node.start();
+
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
+
+    constexpr std::size_t kRows = 60;
+    constexpr int kGroups = 5;
+    for (std::size_t i = 0; i < kRows; ++i) table->add_row(make_row(i, kGroups));
+    ASSERT_TRUE(zetta::write_partitioned(node, *database, *table).ok());
+
+    CpuDevice device;
+    zetta::ddf::LocalShardResult shard =
+        zetta::ddf::load_local_partitions(node, table->id(), churn_schema(), device);
+    ASSERT_TRUE(shard.ok()) << shard.status.message;
+    ASSERT_EQ(shard.rows_read, kRows);
+
+    // amount = (i % 9) + 1.0, so this keeps a strict subset of the rows.
+    const zetta::ddf::FilterPredicate keep_high{
+        .column = "amount", .comparison = zetta::ddf::Comparison::GreaterEqual, .value = 5.0};
+
+    zetta::ddf::DataFrameResult filtered_shard = zetta::ddf::filter(shard.frame, keep_high);
+    ASSERT_TRUE(filtered_shard.ok()) << filtered_shard.status.message;
+
+    zetta::JsonStore full;
+    for (std::size_t i = 0; i < kRows; ++i) {
+        full.add("row-" + std::to_string(i), make_row(i, kGroups));
+    }
+    zetta::ddf::DataFrameResult full_frame =
+        zetta::ddf::load_data_frame(full, churn_schema(), device);
+    ASSERT_TRUE(full_frame.ok()) << full_frame.status.message;
+    zetta::ddf::DataFrameResult filtered_full =
+        zetta::ddf::filter(full_frame.frame, keep_high);
+    ASSERT_TRUE(filtered_full.ok()) << filtered_full.status.message;
+
+    EXPECT_GT(filtered_shard.frame.row_count(), 0u);
+    EXPECT_LT(filtered_shard.frame.row_count(), kRows);  // a real subset
+    EXPECT_EQ(filtered_shard.frame.row_count(), filtered_full.frame.row_count());
+
+    // A group-by over the filtered near-data shard equals the same over the full
+    // table — the loader feeds the downstream op transparently.
+    const GroupByOutcome from_shard =
+        zetta::ddf::group_by(filtered_shard.frame, sum_count_mean());
+    const GroupByOutcome truth = zetta::ddf::group_by(filtered_full.frame, sum_count_mean());
+    ASSERT_TRUE(from_shard.ok());
+    ASSERT_TRUE(truth.ok());
+    EXPECT_TRUE(results_match(from_shard.result, truth.result));
+}
+
+// A partition OWNED BY THIS NODE whose body is missing locally is a fail-fast error,
+// not a silent drop — a dropped row would diverge from the single-node oracle. (The
+// sibling LoaderReadsOnlyOwnedPartitions check covers the opposite: a *foreign*-owned
+// entry is skipped, since its body legitimately lives elsewhere.)
+TEST(DdfLocalPartitions, MissingOwnedBodyFailsFast) {
+    TempDir dir;
+    Node node(node_config(dir));
+    node.start();
+
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
+
+    constexpr std::size_t kRows = 40;
+    for (std::size_t i = 0; i < kRows; ++i) table->add_row(make_row(i, 5));
+    ASSERT_TRUE(zetta::write_partitioned(node, *database, *table).ok());
+
+    // A catalog entry owned by THIS node, but whose body was never stored locally.
+    DatasetPartitionValue missing;
+    missing.table = table->id();
+    missing.blob_ref = "lo-missing-body";  // absent from this node's LO store
+    missing.row_range = {1000, 1010};
+    missing.owner_nodes = {node.node_id()};  // owned by self
+    ASSERT_TRUE(node.create_dataset_partition(missing));
+
+    CpuDevice device;
+    zetta::ddf::LocalShardResult shard =
+        zetta::ddf::load_local_partitions(node, table->id(), churn_schema(), device);
+    EXPECT_FALSE(shard.ok());  // fail-fast, not a silent partial load
+    EXPECT_NE(shard.status.message.find("not present locally"), std::string::npos)
+        << shard.status.message;
 }
 
 namespace {

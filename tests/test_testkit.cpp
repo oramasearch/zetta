@@ -112,6 +112,13 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("rows", 400);
     });
     EXPECT_EQ(group_by.outcome, TestOutcome::Pass) << group_by.error;
+    // TC-11: a DDF op runs over each node's locally-owned partitions; only the
+    // partials cross the wire and the result matches the single-node oracle.
+    const TestResult near_data = run("cluster.compute_near_data", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("rows", 600);
+    });
+    EXPECT_EQ(near_data.outcome, TestOutcome::Pass) << near_data.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {
