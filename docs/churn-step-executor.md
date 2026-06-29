@@ -31,7 +31,7 @@ to derive *logical* artifacts. `ChurnStepExecutor` interprets the same taxonomy 
 | `connect` | **load to DDF** — `load_data_frame` reads this node's numeric shard into a typed, chunked, device-backed [`DataFrame`](ddf.md) | `dataset` + a lineage source |
 | `clean`   | **featurize** — [`run_featurize_job`](ddf-featurize.md) builds the leakage-free point-in-time feature table (a `featurize` job), materialized to a device feature frame | `dataset` |
 | `model`   | **train + calibrate** — [`run_train_job`](gbdt.md) trains a histogram GBDT (a `train` job) and **registers a real [`Model`](models.md)** on the node; opt-in held-out [calibration](calibration.md) | `model` (ref = the **real Model id**) |
-| `index`   | **score / rank** — [`run_score_job`](gbdt-score.md) produces the global **at-risk list** (a `score` job), highest risk first | `index` |
+| `index`   | **build index + score / rank** — builds a real, queryable entity index over the accounts shard via the resolved [`IndexBackend`](index-step-executor.md) (#528), then [`run_score_job`](gbdt-score.md) produces the global **at-risk list** (a `score` job), highest risk first | `index` (ref = the **real [`Index`](index-backend.md) id**) |
 | `serve`   | **explain** — [`run_explain_job`](tree-shap.md) computes per-entity TreeSHAP + the population mean-\|φ\| **driver ranking** (an `explain` job) | `dataset` |
 | `act`     | **retention playbook** — host-side join of the at-risk list with each entity's dominant SHAP driver (who to contact + why) | `dataset` |
 
