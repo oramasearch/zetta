@@ -74,6 +74,17 @@ TEST(Testkit, DdfCasesPass) {
     EXPECT_EQ(group_by.outcome, TestOutcome::Pass) << group_by.error;
 }
 
+// The TC-9 (#499) Parquet reader parity case runs over the embedded pyarrow
+// fixture + golden — both at the default chunk size and at a tiny one (so each
+// column splits across chunks while still matching the golden exactly).
+TEST(Testkit, ParquetReaderParityCasePasses) {
+    const TestResult whole = run("ddf.parquet_reader_parity");
+    EXPECT_EQ(whole.outcome, TestOutcome::Pass) << whole.error;
+    const TestResult chunked =
+        run("ddf.parquet_reader_parity", [](TestOptions& o) { o.set_int("chunk_rows", 5); });
+    EXPECT_EQ(chunked.outcome, TestOutcome::Pass) << chunked.error;
+}
+
 TEST(Testkit, MlCasesPass) {
     EXPECT_EQ(run("ml.gbdt_train").outcome, TestOutcome::Pass);
     EXPECT_EQ(run("ml.tree_shap").outcome, TestOutcome::Pass);
