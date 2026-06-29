@@ -102,6 +102,7 @@ add_executable(zetta-tests
   test_parquet_reader.cpp
   test_python_frontend.cpp
   test_python_engine_bindings.cpp
+  test_datasets_bindings.cpp
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp

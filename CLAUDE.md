@@ -1810,6 +1810,26 @@ reads the count and drives the permanent-add control action
 **No new JSON format** (the provenance bag rides the validated IR boundary; the
 `AddNodesRequest` has its own). See [docs/python-frontend.md](docs/python-frontend.md).
 
+The **`datasets` library shim** (#521) is the data-load counterpart: a sim-Python
+`from datasets import load_dataset; load_dataset("<path>", columns=[…])` already
+lowers to a `connect` node carrying the parquet path + a `columns=` projection in the
+`python` bag, and the matching execution binding
+**`zetta::input::run_load_dataset_step`** (`include/zetta/input/datasets_bindings.hpp`)
+reproduces the *meaning* of `load_dataset` with zetta's own primitives — decode the
+referenced Parquet bytes with the native [Parquet reader](docs/parquet-reader.md)
+(`read_parquet_rows`, no Apache Arrow / parquet-cpp), apply the column projection, and
+populate a (optionally [partitioned](docs/partitioned-write-path.md)) table named for
+the dataset (via `write_partitioned` when a `Partitioner` is configured). The
+`DatasetStepExecutor` (a `StepExecutor` like `ChurnStepExecutor`/`IndexStepExecutor`)
+runs the load step inside a `GraphExecutor` (delegating non-load steps to
+`DefaultStepExecutor`). **HuggingFace `datasets` is the fidelity reference only —
+never run**: file/network IO lives behind the injectable **`DatasetResolver`** seam
+(offline default = a local filesystem path; a Hub-name resolver is a host-injected
+later slice), so the engine/build/CI never touch the network. **No new JSON format**
+(the spec rides the validated IR boundary; the Parquet bytes are bounds-checked by the
+native reader; rows are stored as ordinary free-form table rows). See
+[docs/datasets-shim.md](docs/datasets-shim.md).
+
 ### Correctness gate (`zetta::CorrectnessGate`)
 
 The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
@@ -2522,6 +2542,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
     python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522)
     cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::add_nodes (provider injected, cloud consent-gated) (#522)
+    datasets_bindings.hpp   zetta::input::run_load_dataset_step/DatasetStepExecutor/dataset_load_spec/DatasetResolver — the `datasets` library shim: execute a lowered sim-Python load_dataset("<path>", columns=…) IR node by decoding the parquet via the native reader (read_parquet_rows) into a (partitioned) table; file/network IO behind the injectable DatasetResolver seam (offline default = local path); HF datasets is the fidelity reference only (#521)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -2613,6 +2634,7 @@ src/core/                   zetta-core impl
   input/
     python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the engine-faithful python_step_kind verb table (#520/#522)
     cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count — read the count from a lowered cluster.add_nodes IR node + drive zetta::add_nodes (#522)
+    datasets_bindings.cpp   zetta::input::run_load_dataset_step/DatasetStepExecutor — read the source + column projection from a lowered load_dataset IR node, resolve bytes via the DatasetResolver seam, decode with the native parquet reader, project, and populate a (partitioned) table (#521)
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
@@ -3000,6 +3022,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520) **+ its cluster/ML engine bindings** (#522): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the engine-faithful `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The verbs bind to real engine ops — `train`→`model` ([GBDT](docs/gbdt.md)), `score`/`predict`/`rank`→`index` ([batch scoring](docs/gbdt-score.md)), `explain`→`serve` ([TreeSHAP](docs/tree-shap.md)) all run through the [`ChurnStepExecutor`](docs/churn-step-executor.md); `cluster.add_nodes(n, provider=)`→`act` runs through `zetta::input::run_add_nodes_step` → the permanent-add control action [`zetta::add_nodes`](docs/add-nodes.md) (cloud consent-gated: the `Provisioner&` is injected). The IR-targeting analogue of the query layer's `Dialect`.
+- [`docs/datasets-shim.md`](docs/datasets-shim.md) — the simulated HuggingFace **`datasets` library shim** (`zetta::input::run_load_dataset_step` + `DatasetStepExecutor` + `dataset_load_spec` + `DatasetResolver`, #521): a sim-Python `from datasets import load_dataset; load_dataset("<path>", columns=[…])` lowers to an IR `connect`/load step (parquet path + column projection), and the binding decodes the referenced Parquet bytes with the native [Parquet reader](docs/parquet-reader.md) (`read_parquet_rows`, no Apache Arrow / parquet-cpp / HF runtime / network — fidelity references only), applies the projection, and populates a (optionally [partitioned](docs/partitioned-write-path.md)) table; the `DatasetStepExecutor` runs the load inside a [`GraphExecutor`](docs/execution.md). File/network IO behind the injectable `DatasetResolver` seam (offline default = a local filesystem path; a Hub-name resolver is a host-injected later slice); **no new JSON format** (the spec rides the validated IR boundary; rows are stored as free-form table rows). The engine binding of the [new-input](.claude/skills/new-input/SKILL.md) worked example.
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).

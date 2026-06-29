@@ -157,6 +157,7 @@ seams that already exist:
 
 | Sim-Python | Lowers to | Executes as | Engine operation |
 |---|---|---|---|
+| `load_dataset("<path>", columns=…)` | `connect` | [`zetta::input::run_load_dataset_step`](datasets-shim.md) / `DatasetStepExecutor` | decode the Parquet file with the native [Parquet reader](parquet-reader.md) → a (partitioned) table |
 | `train(ds, target=…)` | `model` | [`ChurnStepExecutor`](churn-step-executor.md)`::run_model` | native distributed [GBDT train](gbdt.md) → a real [`Model`](models.md) |
 | `rank(model)` / `score(…)` | `index` | `ChurnStepExecutor::run_index` | distributed [batch scoring / rank-at-risk](gbdt-score.md) |
 | `explain(model)` | `serve` | `ChurnStepExecutor::run_serve` | exact [TreeSHAP](tree-shap.md) (per-entity + population drivers) |
@@ -181,6 +182,17 @@ const auto* step = lowered.graph.find_node("add_nodes").get();
 zetta::AddNodesResult added = zetta::input::run_add_nodes_step(*step, provisioner);
 // added.members.size() == 3 (best-effort)
 ```
+
+`load_dataset` is the **`datasets` library shim** (#521): the frontend already
+lowers it to a `connect` node carrying the parquet path + a `columns=` projection,
+and the binding [`zetta::input::run_load_dataset_step`](datasets-shim.md)
+(`include/zetta/input/datasets_bindings.hpp`) reproduces the *meaning* of
+`load_dataset` with zetta's own primitives — decode the referenced Parquet bytes
+with the native [Parquet reader](parquet-reader.md) and populate a (partitioned)
+table. HuggingFace `datasets` is the fidelity reference only; file/network IO lives
+behind an injectable `DatasetResolver` (offline default = a local path), so the
+engine / build / CI never touch the network. The `DatasetStepExecutor` runs it inside
+a `GraphExecutor`. See [datasets-shim.md](datasets-shim.md).
 
 **Cloud stays consent-gated.** The `provider="azure"` argument names *which*
 backend the author intended and rides as provenance only; `run_add_nodes_step`
@@ -213,6 +225,12 @@ the existing [`GraphExecutor`](execution.md) / `ChurnStepExecutor` and passes th
   `src/core/input/cluster_bindings.cpp` — the cluster control binding:
   `run_add_nodes_step` (a lowered `cluster.add_nodes` IR node → `zetta::add_nodes`)
   + `add_nodes_count` (#522).
+- `include/zetta/input/datasets_bindings.hpp` /
+  `src/core/input/datasets_bindings.cpp` — the `datasets` shim binding:
+  `dataset_load_spec` + `run_load_dataset_step` + `DatasetStepExecutor` (a lowered
+  `load_dataset(...)` IR node → a (partitioned) table via the native Parquet reader),
+  behind the injectable `DatasetResolver` IO seam (#521). See
+  [datasets-shim.md](datasets-shim.md).
 - `tests/test_python_frontend.cpp` — the lowering acceptance + the subset coverage.
 - `tests/test_python_engine_bindings.cpp` — the #522 end-to-end acceptance: a
   lowered sim-Python churn script runs through the real engine, and a lowered
@@ -221,6 +239,8 @@ the existing [`GraphExecutor`](execution.md) / `ChurnStepExecutor` and passes th
 ## See also
 
 - [execution-graph.md](execution-graph.md) — the ExecutionGraph IR this lowers to.
+- [datasets-shim.md](datasets-shim.md) — the `load_dataset(...)` engine binding
+  (parquet path + column projection → a (partitioned) table; #521).
 - [n8n-compile.md](n8n-compile.md) — the sibling compiler (n8n workflow → IR).
 - [intent-compiler.md](intent-compiler.md) — NL intent → templated IR skeleton.
 - [query.md](query.md) — the `Dialect` interface (SQL text → the query AST), the
