@@ -1195,7 +1195,9 @@ changes) — the same UUID as its cluster node id, **persisted in
 `data_dir/node_id`** so it's stable across restarts (a fresh id each run would
 fragment the change history and accumulate `node:` keys). The document uses
 **flat keys**
-(`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`,
+(`src/core/catalog.hpp`): `node:<id>` (membership), `db:<uuid>`, `tbl:<uuid>`
+(each carrying an optional `replication` field — the per-db/table
+`ReplicationStrategy`, ENT-35, omitted when the default `ReplicateToAll`),
 `row:<uuid>`, `lo:<uuid>`, `project:<uuid>`, `input:<uuid>` (a project input —
 metadata only; its payload body stays on disk), `graph:<uuid>`,
 `deployment:<uuid>`, `run:<uuid>`, `model:<uuid>` (a trained model — metadata
@@ -1213,10 +1215,19 @@ by UUID so concurrent edits never collide.
 document (via `Node`/`Database`/`Table`, which hold the `ReplicationManager*`),
 **reconciles** the on-disk projection from the document on each `tick()` (so peer
 changes land on disk), and **persists** it to `data_dir/replication.automerge`.
-Policies plug in via `ReplicationPolicy`; the first is `ReplicateToAllNodes`
-(full copy on every node). Done + tested: CRDT core, cluster gossip + per-node
-status, **and full DDL+row data replication to disk** (`tests/test_data_replication.cpp`).
-See [docs/replication.md](docs/replication.md).
+Node-wide policies plug in via `ReplicationPolicy`; the first is
+`ReplicateToAllNodes` (full copy on every node). Each **database/table** also
+carries a per-entity **`zetta::ReplicationStrategy`** (ENT-35 —
+`ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(replication_factor)`,
+default `ReplicateToAll`, a validated JSON boundary), recorded + persisted +
+replicated in its `db:`/`tbl:` value (default omitted, so today's representation
+is unchanged); a table inherits its database's strategy unless it overrides. This
+slice records the choice — the partitioned-placement engine that *acts* on a
+non-default strategy is a later slice. See
+[docs/replication-strategy.md](docs/replication-strategy.md). Done + tested: CRDT
+core, cluster gossip + per-node status, **and full DDL+row data replication to
+disk** (`tests/test_data_replication.cpp`). See
+[docs/replication.md](docs/replication.md).
 
 ### On-disk layout
 
@@ -1263,9 +1274,11 @@ data_dir/
     <audit-uuid>.json        ← { id, action, actor, target, allowed, detail,
                                  time }  (one file per event, never edited)
   <db-uuid>/                 ← one folder per database (UUIDv4 = its id)
-    database.json            ← { id, name }
+    database.json            ← { id, name, replication? }  (replication = the
+                                ReplicationStrategy, ENT-35; omitted when default)
     <table-uuid>/            ← one folder per table (UUIDv4 = its id)
-      table.json             ← { id, name }
+      table.json             ← { id, name, replication? }  (replication strategy,
+                                omitted when the default ReplicateToAll)
       000000.jsonl           ← rows 0..9999    ({ "_zid": row-uuid, "doc": row })
       000001.jsonl           ← rows 10000..19999
       ...                    ← JsonlStore::kRecordsPerChunk = 10k per chunk
@@ -2256,6 +2269,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   signal.hpp                zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
   collectives.hpp           zetta::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365)
   replication.hpp           zetta::ReplicationManager — Automerge CRDT state
+  replication_strategy.hpp  zetta::ReplicationStrategy — per-table/db replication strategy (ReplicateToAll | Partitioned | PartitionedWithReplicas(factor)) + JSON boundary; recorded/persisted/replicated, default ReplicateToAll (ENT-35; #509)
   blob_store.hpp            zetta::BlobStore — large-object body transfer seam
   replicated_blob_store.hpp zetta::ReplicatedBlobStore — BlobStore from CRDT + disk
   headless.hpp              zetta::run_headless(Node&, Cluster&)
@@ -2416,6 +2430,7 @@ src/core/                   zetta-core impl
   collectives.cpp           zetta::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
   base64.hpp                shared base64 (gossip blobs + signal payloads; internal)
   replication.cpp           replication CRDT adapter (the one automerge-cpp user)
+  replication_strategy.cpp  zetta::ReplicationStrategy — kind names, JSON boundary validation, replication_strategy_from_meta reader (ENT-35; #509)
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
   testkit/                  zetta::testkit — the in-app test-suite catalog (no SDL; #462)

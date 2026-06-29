@@ -60,6 +60,20 @@ the node currently holds, keyed by resource.
 policy is **`ReplicateToAllNodes`** — every node keeps a full copy of all state.
 Future policies (sharded, quorum, …) plug in behind the same enum/seam.
 
+### Per-table / per-database replication strategy (ENT-35)
+
+Alongside the node-wide policy, each **database and table** carries a
+**`zetta::ReplicationStrategy`** describing how *its* replicated state is laid out:
+`ReplicateToAll` (the default — a full copy everywhere), `Partitioned` (sharded,
+one copy per shard), or `PartitionedWithReplicas(replication_factor)` (sharded with
+N total copies, default 3). The choice is **recorded, persisted, and replicated**
+(an optional `"replication"` field on `database.json` / `table.json` and the
+`db:` / `tbl:` CRDT values), and the default is **omitted** so the representation
+stays byte-identical to before — the default preserves current behavior exactly.
+This slice records the choice; the partitioned-placement engine that *acts* on a
+non-default strategy is a later slice. See
+[replication-strategy.md](replication-strategy.md).
+
 ## Actor identity
 
 Each node's **UUIDv4 is its Automerge actor id** (a UUID is 16 bytes — exactly

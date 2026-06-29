@@ -104,8 +104,12 @@ public:
     void stop();
 
     // CRUD for databases. create/rename yield an empty handle / false on an
-    // empty name or a name clash; the UI surfaces that inline.
-    std::shared_ptr<Database> create_database(std::string name);
+    // empty name or a name clash; the UI surfaces that inline. An optional
+    // replication strategy (ENT-35) is recorded + persisted + replicated; the
+    // default ReplicateToAll preserves current behavior. Tables created in the
+    // database inherit it unless they override (see Database::create_table).
+    std::shared_ptr<Database> create_database(
+        std::string name, ReplicationStrategy replication_strategy = {});
     std::shared_ptr<Database> find_database(const std::string& name) const;
     bool drop_database(const std::string& name);
     bool rename_database(const std::string& from, const std::string& to);
@@ -407,8 +411,8 @@ private:
     void reconcile_access_keys(const nlohmann::json& snapshot);
     void reconcile_audit_events(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
-    std::shared_ptr<Database> materialize_database(std::string id,
-                                                   std::string name);
+    std::shared_ptr<Database> materialize_database(
+        std::string id, std::string name, ReplicationStrategy strategy = {});
     bool materialize_drop_database(const std::string& id);
     std::shared_ptr<Project> materialize_project(std::string id,
                                                  std::string name,

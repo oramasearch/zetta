@@ -79,6 +79,7 @@ This directory documents the system; keep it in sync as the system changes.
 - [signal-plane.md](signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [collectives.md](collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
 - [replication.md](replication.md) — Automerge-CRDT replicated state, policies (replicate-to-all), and actor identity.
+- [replication-strategy.md](replication-strategy.md) — the per-table / per-database replication strategy (`zetta::ReplicationStrategy`, ENT-35): `ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(replication_factor)`, recorded + persisted + replicated, default `ReplicateToAll` (the partitioned-placement engine is a later slice); validated JSON boundary.
 - [validation.md](validation.md) — the `ValidationReport` correctness-gate result type (per-check results, verdict, block-deploy).
 - [gate.md](gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): register checks, run them over a graph, block deploy on failure (RULE-1).
 - [gate-checks.md](gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).

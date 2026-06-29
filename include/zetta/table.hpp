@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/partitioner.hpp"
+#include "zetta/replication_strategy.hpp"
 #include "zetta/storage/engine.hpp"
 
 namespace zetta {
@@ -24,11 +25,20 @@ class ReplicationManager;
 class Table {
 public:
     Table(std::string id, std::string name, std::filesystem::path dir,
-          ReplicationManager* replication = nullptr);
+          ReplicationManager* replication = nullptr,
+          ReplicationStrategy replication_strategy = {});
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
     const std::filesystem::path& dir() const { return dir_; }
+
+    // How this table's replicated state is laid out across the cluster (ENT-35).
+    // Defaults to ReplicateToAll — the behavior every table has today. Recorded +
+    // persisted + replicated; the partitioned-placement engine that acts on a
+    // non-default strategy is a later slice. See replication_strategy.hpp.
+    const ReplicationStrategy& replication_strategy() const {
+        return replication_strategy_;
+    }
 
     StorageEngine& store() { return *store_; }
     const StorageEngine& store() const { return *store_; }
@@ -65,6 +75,7 @@ private:
     std::unique_ptr<StorageEngine> store_;
     ReplicationManager* replication_;  // null = not replicated
     std::shared_ptr<Partitioner> partitioner_;  // null = not partitioned
+    ReplicationStrategy replication_strategy_;  // ENT-35; default ReplicateToAll
 };
 
 }  // namespace zetta

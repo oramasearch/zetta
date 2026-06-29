@@ -311,6 +311,7 @@ add_library(zetta-core STATIC
   src/core/signal.cpp
   src/core/collectives.cpp
   src/core/replication.cpp
+  src/core/replication_strategy.cpp
   src/core/node.cpp
   src/core/database.cpp
   src/core/project.cpp

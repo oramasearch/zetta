@@ -8,8 +8,13 @@
 // the on-disk store + in-memory Node tree are a projection of these keys.
 //
 //   node:<node_id>     -> { address }                  (cluster membership)
-//   db:<db_uuid>       -> { name }                      (a database)
-//   tbl:<tbl_uuid>     -> { db: <db_uuid>, name }       (a table)
+//   db:<db_uuid>       -> { name, replication? }        (a database; the optional
+//                          replication field is the per-db ReplicationStrategy —
+//                          ENT-35, omitted when the default ReplicateToAll; see
+//                          replication_strategy.hpp)
+//   tbl:<tbl_uuid>     -> { db: <db_uuid>, name, replication? }  (a table; the
+//                          optional replication field is its ReplicationStrategy,
+//                          omitted when default — ENT-35)
 //   row:<row_uuid>     -> { tbl: <tbl_uuid>, data: {…} } (a row)
 //   lo:<lo_uuid>       -> { db, name, size, sha256 }    (large-object metadata;
 //                          the body is NOT in the document — it transfers
