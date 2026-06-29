@@ -25,9 +25,11 @@
 // *compact* protocol) into a typed, JSON-serializable layout — the file's
 // schema (column names + physical types), its row groups, and per-column-chunk
 // offsets / sizes / encodings / codecs. It does **not** decode any data:
-// reading the page bodies (PLAIN / dictionary / RLE), decompressing them
-// (#507 — Snappy) and projecting them into DDF columns (#508) are separate
-// slices that consume this layout.
+// reading the page bodies into typed values (PLAIN / dictionary / RLE) is the
+// column-chunk decoders (#506, column_decoder.hpp), decompressing them is the
+// Snappy codec (#507), and projecting them into DDF columns is #508 — separate
+// slices that consume this layout (this header also exposes the per-leaf max
+// definition / repetition levels those decoders need, on LeafColumn).
 //
 // The footer bytes arrive from disk or a peer, so they are a **trust boundary**:
 // zetta-core is compiled `-fexperimental-library` (no exceptions across the
@@ -115,9 +117,15 @@ struct SchemaElement {
 
 // A leaf (data-bearing) column: its dotted path through the schema and its
 // physical type — the "schema (column names/types)" the acceptance asks for.
+// The max definition / repetition levels are the per-column constants the
+// page decoders (#506) need: a flat OPTIONAL column has `max_definition_level`
+// 1 (its def-level stream marks nulls), a REQUIRED column has 0 (no def levels
+// are stored at all); `max_repetition_level` > 0 marks a nested/repeated column.
 struct LeafColumn {
     std::string path;       // dotted, e.g. "account_id" or "address.city"
     PhysicalType type = PhysicalType::Unknown;
+    int max_definition_level = 0;
+    int max_repetition_level = 0;
 };
 
 // One column chunk in one row group (parquet.thrift `ColumnChunk` +

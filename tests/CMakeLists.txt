@@ -94,6 +94,7 @@ add_executable(zetta-tests
   test_n8n_compile.cpp
   test_parquet_metadata.cpp
   test_parquet_snappy.cpp
+  test_parquet_column_decoder.cpp
   test_python_frontend.cpp
   test_python_engine_bindings.cpp
   test_runtime.cpp
