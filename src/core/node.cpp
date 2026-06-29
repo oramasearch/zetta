@@ -45,6 +45,7 @@ bool Node::start() {
     load_deployments();
     load_runs();
     load_models();
+    load_indexes();
     load_jobs();
     load_principals();
     load_audit_events();
@@ -57,11 +58,11 @@ bool Node::start() {
     }
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
-        "%zu deployments, %zu runs, %zu models, %zu jobs, %zu principals, "
-        "%zu audit events)\n",
+        "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
+        "%zu principals, %zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
-        jobs_.size(),
+        indexes_.size(), jobs_.size(),
         principals_.size(), audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
@@ -768,6 +769,93 @@ bool Node::materialize_drop_model(const std::string& id) {
     return true;
 }
 
+// ----- indexes (a registered index over a table; replicated as index:<uuid>) --
+
+void Node::load_indexes() {
+    indexes_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "index.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr,
+                                                /*allow_exceptions=*/false);
+        // Boundary validation: an index.json that fails the Index JSON Schema is
+        // rejected here (with a logged reason) rather than allowed to corrupt the
+        // in-memory tree — fail fast, don't propagate bad state.
+        std::string error;
+        const std::optional<IndexValue> value =
+            meta.is_discarded() ? std::nullopt : parse_index_value(meta, &error);
+        if (!value) {
+            std::printf("zetta: skipping invalid index %s (%s)\n",
+                        entry.path().filename().string().c_str(),
+                        meta.is_discarded() ? "unparseable JSON" : error.c_str());
+            continue;
+        }
+        indexes_.push_back(std::make_shared<Index>(
+            entry.path().filename().string(), *value, entry.path(),
+            replication_));
+    }
+    // Stable order (directory iteration order is unspecified): chronological by
+    // creation stamp (fixed-width ISO-8601 sorts as text), then id to break ties.
+    std::sort(indexes_.begin(), indexes_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<Index> Node::create_index(IndexValue value) {
+    // Basic guards (the schema enforces the rest at persist/reconcile): a usable
+    // index needs a source table, a backend to build it, and at least one field.
+    if (value.table.empty() || value.backend.empty() || value.fields.empty()) {
+        return nullptr;
+    }
+    const std::string id = new_uuid();
+    value.created = now_iso8601();
+    if (replication_) replication_->set(catalog::index_key(id), to_json(value));
+    return materialize_index(id, std::move(value));
+}
+
+std::shared_ptr<Index> Node::materialize_index(std::string id, IndexValue value) {
+    if (auto existing = find_index(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto index = std::make_shared<Index>(std::move(id), std::move(value), dir,
+                                         replication_);
+    index->persist_meta();
+    indexes_.push_back(index);
+    return index;
+}
+
+std::shared_ptr<Index> Node::find_index(const std::string& id) const {
+    for (const auto& index : indexes_) {
+        if (index->id() == id) return index;
+    }
+    return nullptr;
+}
+
+bool Node::drop_index(const std::string& id) {
+    if (!find_index(id)) return false;
+    if (replication_) replication_->remove(catalog::index_key(id));
+    return materialize_drop_index(id);
+}
+
+bool Node::materialize_drop_index(const std::string& id) {
+    const auto it = std::find_if(
+        indexes_.begin(), indexes_.end(),
+        [&](const std::shared_ptr<Index>& i) { return i->id() == id; });
+    if (it == indexes_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    indexes_.erase(it);
+    return true;
+}
+
 // ----- compute jobs (one unit of accelerated compute; replicated job:<uuid>) --
 
 void Node::load_jobs() {
@@ -1176,6 +1264,12 @@ void Node::migrate_to_replication() {
                               model->metadata());
         }
     }
+    for (const auto& index : indexes_) {
+        if (!snapshot.contains(catalog::index_key(index->id()))) {
+            replication_->set(catalog::index_key(index->id()),
+                              index->metadata());
+        }
+    }
     for (const auto& job : jobs_) {
         if (!snapshot.contains(catalog::job_key(job->id()))) {
             replication_->set(catalog::job_key(job->id()), job->metadata());
@@ -1215,6 +1309,7 @@ void Node::reconcile_from_replication() {
     reconcile_deployments(snapshot);
     reconcile_runs(snapshot);
     reconcile_models(snapshot);
+    reconcile_indexes(snapshot);
     reconcile_jobs(snapshot);
     reconcile_principals(snapshot);
     reconcile_access_keys(snapshot);
@@ -1599,6 +1694,35 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
             materialize_model(id, std::move(value));
         } else if (model->metadata() != to_json(value)) {
             model->apply_value(std::move(value));  // a peer changed it (no re-capture)
+        }
+    }
+}
+
+void Node::reconcile_indexes(const nlohmann::json& snapshot) {
+    // Indexes (top-level, no parent): index:<id> -> the index value. Decode +
+    // validate the desired set at the boundary (a malformed CRDT value is ignored,
+    // not trusted), then drop / add / update the local projection to match — with
+    // no re-capture. An index is metadata only (no body), so apply_value rewrites
+    // index.json and nothing more.
+    std::map<std::string, IndexValue> indexes;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kIndexPrefix);
+        if (id.empty()) continue;
+        if (std::optional<IndexValue> parsed = parse_index_value(value)) {
+            indexes.emplace(std::move(id), std::move(*parsed));
+        }
+    }
+    std::vector<std::string> local_index_ids;
+    for (const auto& index : indexes_) local_index_ids.push_back(index->id());
+    for (const std::string& index_id : local_index_ids) {
+        if (!indexes.contains(index_id)) materialize_drop_index(index_id);
+    }
+    for (auto& [id, value] : indexes) {
+        auto index = find_index(id);
+        if (!index) {
+            materialize_index(id, std::move(value));
+        } else if (index->metadata() != to_json(value)) {
+            index->apply_value(std::move(value));  // a peer changed it (no re-capture)
         }
     }
 }

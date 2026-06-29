@@ -345,6 +345,9 @@ add_library(zetta-core STATIC
   src/core/cloud_inspector.cpp
   src/core/run.cpp
   src/core/model.cpp
+  src/core/index/index.cpp
+  src/core/index/index_registry.cpp
+  src/core/index/in_memory_index_backend.cpp
   src/core/compute_job.cpp
   src/core/principal.cpp
   src/core/access_key.cpp

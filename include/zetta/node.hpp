@@ -15,6 +15,7 @@
 #include "zetta/database.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
+#include "zetta/index/index.hpp"
 #include "zetta/model.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
@@ -173,6 +174,21 @@ public:
     std::vector<std::shared_ptr<Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
 
+    // CRUD for indexes (a registered index over a table — search / vector /
+    // feature; ENT-39 / ENT-40, see index/index.hpp / docs/index-backend.md). Like
+    // models, indexes are keyed by id (no human name), so find / drop take the id;
+    // the registry is indexes() + the system.zetta_indexes SQL table. create stamps
+    // `created` and requires a non-empty `table` / `backend` and at least one field
+    // (empty handle otherwise — the IndexValue is validated at the schema boundary
+    // on persist/reconcile). An index is metadata only: this records its
+    // definition; building it is the IndexBackend seam's job (index_backend.hpp).
+    // indexes() is in a stable order (created, then id).
+    std::shared_ptr<Index> create_index(IndexValue value);
+    std::shared_ptr<Index> find_index(const std::string& id) const;
+    bool drop_index(const std::string& id);
+    std::vector<std::shared_ptr<Index>> indexes() const { return indexes_; }
+    std::size_t index_count() const { return indexes_.size(); }
+
     // CRUD for compute jobs (one unit of native distributed accelerated compute —
     // ARC-11 / ENT-31; see compute_job.hpp / docs/compute-jobs.md). Like runs,
     // jobs have no human name: they are keyed by id, so find / drop take the id.
@@ -323,6 +339,9 @@ private:
     // Rebuild models_ by scanning config_.data_dir. Called from start().
     void load_models();
 
+    // Rebuild indexes_ by scanning config_.data_dir. Called from start().
+    void load_indexes();
+
     // Rebuild jobs_ by scanning config_.data_dir. Called from start().
     void load_jobs();
 
@@ -354,6 +373,7 @@ private:
     void reconcile_deployments(const nlohmann::json& snapshot);
     void reconcile_runs(const nlohmann::json& snapshot);
     void reconcile_models(const nlohmann::json& snapshot);
+    void reconcile_indexes(const nlohmann::json& snapshot);
     void reconcile_jobs(const nlohmann::json& snapshot);
     void reconcile_principals(const nlohmann::json& snapshot);
     void reconcile_access_keys(const nlohmann::json& snapshot);
@@ -377,6 +397,8 @@ private:
     bool materialize_drop_run(const std::string& id);
     std::shared_ptr<Model> materialize_model(std::string id, ModelValue value);
     bool materialize_drop_model(const std::string& id);
+    std::shared_ptr<Index> materialize_index(std::string id, IndexValue value);
+    bool materialize_drop_index(const std::string& id);
     std::shared_ptr<ComputeJob> materialize_job(std::string id,
                                                 ComputeJobValue value);
     bool materialize_drop_job(const std::string& id);
@@ -403,6 +425,7 @@ private:
     std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
     std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
     std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<Index>> indexes_;           // sorted (created, id)
     std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order

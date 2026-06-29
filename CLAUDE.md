@@ -156,6 +156,39 @@ is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
 provenance + replication only — training/inference (and producing the weights) is
 a later slice. See [docs/models.md](docs/models.md).
 
+A node also owns **indexes** (`zetta::Index`) — a registered **index over a
+table** (**ENT-39 / ENT-40, ADR-34**): its definition `{ table, kind, backend,
+fields }`, where `kind` is the index type (`search`/`vector`/`feature`, mirroring
+the `StepKind::Index` "build a search / vector / feature index" taxonomy) and
+`backend` names the `IndexBackend` that builds it. Another top-level entity keyed
+by id (like `Model`, **minus the weights body** — an index is metadata only):
+`create_index`/`find_index`/`drop_index`/`indexes`, **no value mutators** (an
+index is *rebuilt*, not re-specified — changing what it indexes is a new index).
+Replicated state (flat key `index:<uuid>`, on-disk `<index-uuid>/index.json`,
+projection reconciled like `Model`), **boundary-validated against a formal JSON
+Schema** (`parse_index_value`, the same `pboettch` path as Run/Model; `table` +
+`backend` required + non-empty, `kind` a closed enum, `fields` a non-empty array
+of unique non-empty strings). The registry is `Node::indexes()` + the read-only
+SQL **`system.zetta_indexes`** table. **Building / querying an index is the
+pluggable `IndexBackend` seam** (`include/zetta/index/index_backend.hpp`,
+namespace `zetta`) — a pure-virtual **build (over a table's partitions) / query /
+drop** interface, the same shape as `StorageEngine`/`ComputeDevice`, every call
+returning an `IndexStatus` rather than throwing. The **`IndexRegistry`**
+(`index_registry.hpp`) is the per-node container + selector over the seam (like
+`compute::DeviceRegistry`): backends register into it and it **resolves** an
+`IndexSpec` — or an **IR `index` step** (`index_spec_from_node` reads the step's
+`{table,kind,backend,fields}` attributes at the boundary) — to the registered
+backend whose `name()` **and** `kind()` match. The **`InMemoryIndexBackend`**
+(`in_memory_index_backend.hpp`, name `memory_search`) is the from-scratch
+in-memory **Search** reference backend (an inverted field-value→row-ids index over
+the partitions; the `HostStubDevice`/`CpuDevice` role for this seam), so the seam
++ registry are end-to-end usable; vector/semantic/feature backends are additive
+behind the same interface. This slice is the **seam + registry + reference backend
++ the replicated/validated/queryable entity**; **no run/deploy wiring** — driving
+a deployed `index` step through the resolved backend (build over the real table,
+serve queries) is a later slice (the registry is standalone, like the
+`Provisioner`). See [docs/index-backend.md](docs/index-backend.md).
+
 A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
 of native distributed accelerated compute** (the foundational entity of the
 accelerated-compute pass for UC-1, **ARC-11 / ENT-31**): a `kind`
@@ -1151,6 +1184,7 @@ metadata only; its payload body stays on disk), `graph:<uuid>`,
 `deployment:<uuid>`, `run:<uuid>`, `model:<uuid>` (a trained model — metadata
 only; its serialized weights body stays on disk like an `lo:` body),
 `job:<uuid>` (a compute job — ARC-11/ENT-31),
+`index:<uuid>` (a registered index over a table — metadata only; ENT-39/ENT-40),
 `principal:<uuid>` (an authenticated actor), `key:<uuid>` (an access key carrying
 its parent `principal` ref + its `scope` + its `capabilities`), and
 `audit:<uuid>` (an immutable, append-only audit event) — each entity owns its key
@@ -1189,6 +1223,9 @@ data_dir/
                                   metrics, created, weights:{ size, sha256 } }
     weights                  ← raw serialized bytes (NOT in the CRDT; on-disk
                                  like an LO body — transfers peer-to-peer)
+  <index-uuid>/              ← one folder per index (UUIDv4 = its id)
+    index.json               ← { id, table, kind, backend, fields, created }
+                                 (metadata only — no body)
   <job-uuid>/                ← one folder per compute job (UUIDv4 = its id)
     job.json                 ← { id, kind, status, project, graph, run,
                                   scaling_policy, created, updated, detail }
@@ -1290,7 +1327,10 @@ wired into the `Executor`/`QueryService`; bare `zetta_nodes` still resolves) and
 **`system.zetta_deployments`** (recorded graph→target placements, sourced from
 `Node::deployments()`; qualified name only) and **`system.zetta_models`** (the
 model registry — trained models + their kind / metrics / weights fingerprint,
-sourced from `Node::models()`; qualified name only) and **`system.zetta_jobs`**
+sourced from `Node::models()`; qualified name only) and **`system.zetta_indexes`**
+(the index registry — one row per registered index over a table + its kind /
+backend / fields, sourced from `Node::indexes()`; qualified name only) and
+**`system.zetta_jobs`**
 (the compute-job registry — one row per unit of accelerated compute + its
 lifecycle, sourced from `Node::jobs()`; qualified name only) and
 **`system.zetta_cloud_providers`** (the Cloud Inspector's provider catalog — pure
@@ -2037,6 +2077,12 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   cloud_inspector.hpp       zetta::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
   run.hpp                   zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
   model.hpp                 zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+  index/
+    index_kind.hpp          zetta::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
+    index_backend.hpp       zetta::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
+    index_registry.hpp      zetta::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry)
+    in_memory_index_backend.hpp zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
+    index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
   principal.hpp             zetta::Principal — an authenticated actor; owns access keys
   access_key.hpp            zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
@@ -2159,6 +2205,10 @@ src/core/                   zetta-core impl
   cloud_inspector.cpp       zetta::CloudInspector — run a provider's read-only commands, per-vendor JSON parse + boundary validation → CloudInspectReport, report JSON boundary (#445)
   run.cpp                   zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
   model.cpp                 zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+  index/
+    index.cpp               zetta::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
+    index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
+    in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
@@ -2465,6 +2515,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
+- [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
