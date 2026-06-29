@@ -133,6 +133,14 @@ public:
     // restarts (persisted in data_dir/node_id). Set by start(); empty before it.
     const std::string& node_id() const { return node_id_; }
 
+    // The cluster membership this node currently observes: the sorted, unique set
+    // of node ids from the replicated node:<id> keys (the source of
+    // system.zetta_nodes and the #517 rebalance baseline). A standalone node (no
+    // replication) reports just itself; before start() it is empty. Used by the
+    // add_nodes(Node&, …) overload to feed the previous membership into the
+    // between-jobs rebalance (#519).
+    std::vector<std::string> cluster_members() const;
+
     // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
     // target and record it. R1 supports a **Local** target only; deploy_graph
     // returns an empty handle for a non-local target or an empty graph. The

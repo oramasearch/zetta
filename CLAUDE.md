@@ -481,13 +481,21 @@ exactly once with `rf` owners. The **bodies move for free**: an updated `owner_n
 makes the new owner list the body in [`ReplicatedBlobStore::missing_blobs()`](docs/sharded-blob-placement.md)
 (it `LOREQ`s it) and a non-owner refuses it — no new transport. **Replicate-to-all**
 partitions (`SinglePartitioner`/`Hash`/`RoundRobin`, owned by exactly the previous
-membership) are **left untouched** (sharded rebalance is not their job). It is
-**auto-triggered inside `Node::tick()`**: membership is replicated state (each node
+membership) are **left untouched** (sharded rebalance is not their job). It fires
+from **two composing triggers**. (1) The **direct trigger** — the `add_nodes(Node&,
+…)` overload (**#519**, below) calls `rebalance_partitions` straight after a
+provision, so the data spreads onto the new permanent members **synchronously**
+(`previous_members` = `Node::cluster_members()`, `members` = that set + the
+just-provisioned ids) — verifiable immediately in `system.dataset_partitions`. (2)
+The **auto-trigger inside `Node::tick()`**: membership is replicated state (each node
 seeds its own `node:<id>` key, peers merge), so `Node::rebalance_partitions_on_membership_change`
 reads the `node:` set from the snapshot it already reconciles, compares to the
 baseline set in `Node::start()`, and on a delta drives `rebalance_partitions` between
-jobs (no `Cluster` plumbing). Append-only `node:` keys today mean it fires on
-**joins** (leave-driven rebalance + physical GC of a demoted owner's stale body +
+jobs (no `Cluster` plumbing) — the **safety net** that re-confirms against the real
+replicated membership once the new nodes gossip in (idempotent; the direct pass
+leaves `last_membership_` untouched so its own document change doesn't re-fire it).
+Append-only `node:` keys today mean the auto-trigger fires on **joins**
+(leave-driven rebalance + physical GC of a demoted owner's stale body +
 mid-job/elastic rebalance are later slices). **No new JSON format** (the catalog
 entry rides the existing `DatasetPartition` boundary). See
 [docs/partition-rebalance.md](docs/partition-rebalance.md).
@@ -2210,7 +2218,15 @@ down). Vendor-neutral (programs against the abstract seam); best-effort (the
 `AddNodesResult` lists what came up). The control command rides a validated
 `AddNodesRequest` (`{ count, spec }`) JSON boundary (the hand-written non-throwing
 `from_json` pattern of `NodeCapability`/`AzureConfig`, mirroring
-`schemas/add_nodes_request.schema.json`). See [docs/add-nodes.md](docs/add-nodes.md).
+`schemas/add_nodes_request.schema.json`). The **`Node`-aware overloads**
+(`add_nodes(node, provider, …)`, **#519**) additionally **wire the membership change
+to the [between-jobs rebalance](#the-between-jobs-partition-rebalance-is)**: after
+the provision they drive `rebalance_partitions(node, grown, previous)`
+(`previous` = `Node::cluster_members()`, `grown` = that set + the new member ids) so
+**sharded partitions spread onto the new permanent nodes** — visible immediately in
+`system.dataset_partitions`, with the bodies following over the sharded-blob-placement
+seam (#515). Skipped when nothing new came up; the `tick()` auto-trigger stays the
+safety net. See [docs/add-nodes.md](docs/add-nodes.md).
 
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
 consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
@@ -2474,7 +2490,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519)
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2484,7 +2500,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
-  add_nodes.hpp             zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518)
+  add_nodes.hpp             zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518). The add_nodes(Node&, …) overloads also trigger the between-jobs partition rebalance onto the new members (#519)
   burst_provisioner.hpp     zetta::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
@@ -2532,7 +2548,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
   rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
   partition_writer.hpp      zetta::write_partitioned/PartitionWriteResult — the partitioned write path: assign each row to a partition (Partitioner), serialize each non-empty partition to a JSON Lines blob, store it as a LargeObject (import_bytes), record a DatasetPartition catalog entry per partition (blob ref + cumulative row range + place_partition owners); N blobs + N catalog rows (ADR-31/ENT-37; #511)
-  partition_rebalance.hpp   zetta::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; auto-triggered in Node::tick off node:<id> membership keys; ≈rf/N move on a join (ADR-31/ENT-37; #517, TC-10/#500)
+  partition_rebalance.hpp   zetta::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; ≈rf/N move on a join. Two triggers: directly from add_nodes(Node&, …) (#519) and auto-triggered in Node::tick off node:<id> membership keys (ADR-31/ENT-37; #517, TC-10/#500)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database); import_file (from a path) + import_bytes (from in-memory bytes, used by the partitioned write path)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
@@ -2640,7 +2656,7 @@ src/core/                   zetta-core impl
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
-  add_nodes.cpp             zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518)
+  add_nodes.cpp             zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518); the Node& overloads drive rebalance_partitions onto the new members (#519)
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
   azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
   azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
@@ -2674,7 +2690,7 @@ src/core/                   zetta-core impl
   dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
   partition_writer.cpp      zetta::write_partitioned — the partitioned write path: bucket rows by assign_partition (stamping the round-robin surrogate), serialize each non-empty partition to JSON Lines, store via LargeObjectStore::import_bytes, record a DatasetPartition per partition (cumulative row range + place_partition owners) (#511)
-  partition_rebalance.cpp   zetta::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger lives in node.cpp (#517)
+  partition_rebalance.cpp   zetta::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger + Node::cluster_members live in node.cpp (#517); the add_nodes direct trigger lives in add_nodes.cpp (#519)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation

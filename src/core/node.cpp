@@ -263,6 +263,16 @@ std::string Node::resolve_node_id() {
     return id;
 }
 
+std::vector<std::string> Node::cluster_members() const {
+    // Membership is replicated state — the node:<id> keys in the document (the
+    // same set the tick() rebalance keys on). Recompute from the live snapshot so
+    // it reflects the current cluster, not a stale baseline.
+    if (replication_) return membership_from_snapshot(replication_->snapshot());
+    // A standalone node (no replication) is its own sole member.
+    if (!node_id_.empty()) return {node_id_};
+    return {};
+}
+
 void Node::load_deployments() {
     deployments_.clear();
     const fs::path root = config_.data_dir;
