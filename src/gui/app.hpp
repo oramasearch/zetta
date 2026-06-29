@@ -29,6 +29,9 @@ class ExecutionGraph;
 namespace query {
 class QueryService;
 }
+namespace repl {
+class ConsoleModel;
+}
 namespace testkit {
 class TestOptions;
 struct TestResult;
@@ -36,6 +39,8 @@ struct TestCase;
 }  // namespace testkit
 
 namespace gui {
+
+class ReplConsole;  // the CMP-6 REPL component (src/gui/repl_console.hpp)
 
 // The headed run mode: an SDL3 + Dear ImGui window rendering a live view of a
 // zetta::Node. Owns the window, renderer, and ImGui context for its lifetime —
@@ -65,6 +70,7 @@ private:
         Home,      // project-first landing (the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
         Query,     // the SQL console
+        Console,   // the SQL / simulated-Python REPL console (CMP-6)
         Graph,     // the execution-graph workspace
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
@@ -111,6 +117,7 @@ private:
     void draw_rows();
     void draw_large_objects();
     void draw_query();       // the SQL text area + results
+    void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
     // Run the churn solution on the REAL engine (featurize → train → explain →
@@ -296,6 +303,17 @@ private:
     std::string query_status_;
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
+
+    // Console panel (CMP-6 / #524): the reusable SQL/sim-Python REPL. The model
+    // (zetta-core, no ImGui) holds the session state — selected frontend, input
+    // buffer, scrollback transcript — so a future CLI can render the same model;
+    // the component is its thin ImGui renderer. The run handler (built in
+    // draw_console) maps SQL through query_ and surfaces simulated-Python as an
+    // honest "not wired yet" seam until the frontend→IR layer lands. Held by
+    // unique_ptr with both types forward-declared, to keep their headers out of
+    // app.hpp (like query_).
+    std::unique_ptr<repl::ConsoleModel> console_model_;
+    std::unique_ptr<ReplConsole> console_;
 
     // Correctness-gate panel (SCR-4 / CMP-2): the execution-graph IR in its
     // canonical JSON form to validate, an inline parse/validation error (a

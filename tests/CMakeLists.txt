@@ -60,6 +60,7 @@ add_executable(zetta-tests
   test_intent_compiler.cpp
   test_node.cpp
   test_query.cpp
+  test_repl_console.cpp
   test_execution_graph.cpp
   test_data_frame.cpp
   test_ddf_ops.cpp

@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/repl_console.hpp"
 
 #include "zetta/bytes.hpp"
 #include "zetta/database.hpp"
@@ -413,6 +414,90 @@ void App::draw_query() {
         if (mono_font_) ImGui::PopFont();
     }
     ImGui::EndChild();
+}
+
+namespace {
+
+// Stringify one JSON cell for the result grid: a string verbatim (no quotes),
+// null as blank, anything else as its compact JSON dump.
+std::string json_cell(const nlohmann::json& value) {
+    if (value.is_string()) return value.get<std::string>();
+    if (value.is_null()) return "";
+    return value.dump();
+}
+
+// Run `source` as SQL and map the query service's Outcome onto the frontend-
+// agnostic repl::Result the console renders: status messages + a column-aligned
+// row grid on success, the first parse/execute error otherwise.
+repl::Result sql_result(query::QueryService& query, const std::string& source,
+                        const std::string& database) {
+    const query::QueryService::Outcome outcome = query.run(source, database);
+    repl::Result result;
+    result.elapsed = format_duration(outcome.elapsed);
+    if (!outcome.ok()) {
+        result.error = outcome.error;
+        return result;
+    }
+    result.messages = outcome.messages;
+    result.columns = outcome.columns;
+    result.rows.reserve(outcome.rows.size());
+    for (const nlohmann::json& row : outcome.rows) {
+        std::vector<std::string> cells;
+        cells.reserve(result.columns.size());
+        for (const std::string& column : result.columns) {
+            if (row.is_object() && row.contains(column)) {
+                cells.push_back(json_cell(row.at(column)));
+            } else if (result.columns.size() == 1 && !row.is_object()) {
+                cells.push_back(json_cell(row));  // a single scalar projection
+            } else {
+                cells.push_back("");
+            }
+        }
+        result.rows.push_back(std::move(cells));
+    }
+    return result;
+}
+
+// The simulated-Python frontend is selectable + emits a run event, but the
+// frontend→IR lowering layer (ADR-33 / ARC-15) isn't in this branch yet, so a
+// run reports an honest "not wired" result inline rather than pretending. Real
+// execution is the governed Console/REPL screen's job (#525); the lowering is
+// #522.
+repl::Result sim_python_seam() {
+    return repl::Result::failure(
+        "Simulated-Python isn't wired to the engine yet. Statements will lower "
+        "to the ExecutionGraph IR once the frontend layer lands (see #525); use "
+        "the SQL frontend for now.");
+}
+
+}  // namespace
+
+// The Console (REPL) view (CMP-6 / #524): host the reusable ReplConsole
+// component over this node. The App only supplies the run handler (the "run
+// event" sink) — SQL through the query service, simulated-Python through the
+// honest seam — and the component owns the rest (selector, editor, transcript,
+// grid). Held state lives in console_model_, so a future CLI renders the same
+// session.
+void App::draw_console() {
+    ImGui::SeparatorText("Console (REPL)");
+    ImGui::TextDisabled(
+        "Run SQL or simulated-Python against this node. Unqualified SQL names "
+        "use the selected database (%s); use db.table to target another.",
+        selected_db_.empty() ? "none" : selected_db_.c_str());
+
+    const repl::RunHandler run =
+        [this](repl::Frontend frontend,
+               const std::string& source) -> repl::Result {
+        switch (frontend) {
+            case repl::Frontend::Sql:
+                return sql_result(*query_, source, selected_db_);
+            case repl::Frontend::SimPython:
+                return sim_python_seam();
+        }
+        return repl::Result::failure("unknown frontend");
+    };
+
+    console_->draw(*console_model_, run, mono_font_);
 }
 
 void App::draw_large_objects() {
