@@ -152,6 +152,29 @@ produced `Model` when a `CalibrationConfig` is passed — via a content-hash hel
 split that keeps single-node and multi-node equivalent. See
 [docs/calibration.md](calibration.md).
 
+## Checkpoint / restart (eviction tolerance)
+
+Distributed training is the long-running job most exposed to a **spot eviction** —
+its many boosting rounds run for minutes across burst nodes. `run_train_job` is the
+first consumer of the [checkpoint / restart](job-checkpoint.md) capability (RULE-5 /
+RSK-9, #468): pass a `TrainCheckpointConfig{ store, checkpoint_every }` and the
+boosting loop **checkpoints the partial model** (its committed trees + accumulated
+feature gains) after each round and, on (re)start, **resumes from the latest
+checkpoint** instead of re-growing the committed trees. So an evicted node costs at
+most the trees grown since the last checkpoint, not the whole ensemble.
+
+The checkpoint is keyed by the job's `round_tag` (the cross-node-agreed logical job
+key), and the resume round is **agreed across the cluster** with an allreduce-min:
+since the per-round histogram allreduce is lock-step, every node must resume from the
+same round, and a node lacking a checkpoint (e.g. a replacement burst node) simply
+forces a fresh start rather than desyncing the rounds. Because the trees up to a
+given round are identical on every node (grown off the global histograms), seeding +
+truncating to the agreed round is safe and the resumed model is **byte-identical to
+an uninterrupted run** (the acceptance, `GbdtCheckpoint.*` in `tests/test_gbdt.cpp`).
+Disabled by default (no store) — the loop is then exactly the trainer above. The
+mechanics of the seam (the durable `JobCheckpoint`, the store, the resume driver)
+live in [docs/job-checkpoint.md](job-checkpoint.md).
+
 ## Scope + what's next
 
 - **Objective:** binary logistic (log-loss) only. Other objectives (multiclass,

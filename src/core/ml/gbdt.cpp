@@ -458,7 +458,7 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
                            const std::vector<std::string>& feature_names,
                            const std::vector<double>& labels,
                            const GbdtParams& params, const AllReduce& allreduce,
-                           const std::string& tag) {
+                           const std::string& tag, const TrainHooks& hooks) {
     GbdtTrainResult result;
     const std::size_t feature_count = feature_names.size();
     const std::size_t local_rows = labels.size();
@@ -573,9 +573,35 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
     std::vector<double> gradient(local_rows);
     std::vector<double> hessian(local_rows);
 
+    // Resume from a checkpoint (RULE-5 / #468): seed the committed trees + their
+    // accumulated gains, recompute the running predictions from them, and continue
+    // boosting where we left off. The global bin edges + base rate above are
+    // recomputed identically (deterministic), so the resumed trees line up with the
+    // ones a fresh run grows. A resumed model with a different feature ordering is a
+    // shape mismatch and fails at the boundary rather than training garbage.
+    int start_tree = 0;
+    if (hooks.resume_model && !hooks.resume_model->trees.empty()) {
+        if (hooks.resume_model->feature_names != feature_names) {
+            result.status = ComputeStatus::invalid_argument(
+                "train_gbdt: resume model feature ordering does not match");
+            return result;
+        }
+        model.trees = hooks.resume_model->trees;
+        if (hooks.resume_feature_importances.size() == feature_count) {
+            result.feature_importances = hooks.resume_feature_importances;
+        }
+        for (std::size_t row = 0; row < local_rows; ++row) {
+            for (const RegressionTree& tree : model.trees) {
+                raw[row] += predict_local_row(tree.nodes, columns, row);
+            }
+        }
+        start_tree = static_cast<int>(model.trees.size());
+    }
+
     const std::size_t node_stride = feature_count * bin_count * 2;
 
-    for (int tree_index = 0; tree_index < params.num_trees; ++tree_index) {
+    for (int tree_index = start_tree; tree_index < params.num_trees;
+         ++tree_index) {
         // Gradients + Hessians at the current predictions.
         for (std::size_t row = 0; row < local_rows; ++row) {
             const double p = sigmoid(raw[row]);
@@ -702,6 +728,15 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
             raw[row] += predict_local_row(tree.nodes, columns, row);
         }
         model.trees.push_back(std::move(tree));
+
+        // Checkpoint hook (RULE-5 / #468): record the partial model after this tree.
+        // Returning false stops early with the partial model (a graceful drain).
+        if (hooks.on_round) {
+            const bool keep_going =
+                hooks.on_round(static_cast<int>(model.trees.size()), model,
+                               result.feature_importances);
+            if (!keep_going) break;
+        }
     }
 
     result.status = ComputeStatus::success();
