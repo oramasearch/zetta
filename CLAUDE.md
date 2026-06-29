@@ -813,10 +813,17 @@ rows never cross the wire. `zetta::ddf::run_near_data_group_by_job`
 the local shard → `run_group_by_job`, reporting `local_bytes_read` (read near data)
 vs `wire_bytes_moved` (the partials, measured by the new `Collectives::wire_bytes()`
 meter). So the acceptance is directly checkable — **bytes-moved ≈ partials (not ≈
-dataset); result == the single-node oracle** — over a real loopback cluster. Group-by
-is wired end to end; `scan`/`filter`/`featurize` reuse the same `load_local_partitions`
-shard source; rebalancing (#517) + a locality-aware fetch of a missing owned body are
-later slices. See [docs/compute-near-data.md](docs/compute-near-data.md).
+dataset); result == the single-node oracle** — over a real loopback cluster. **Featurize
+is wired the same way** (`zetta::ddf::run_near_data_featurize_job`,
+`include/zetta/ddf/local_featurize_job.hpp`, **#532**): load this node's shard of a
+single partitioned table → `run_featurize_job` over it (used as the accounts frame),
+reporting the same near-data instrumentation — the featurize slice of UC-1 at scale
+(the saas-sales-conversations **engineered columns** featurized point-in-time over the
+partitioned table; the dropped embeddings never cross the wire, the broadcast feature
+table matches a single-node oracle, leakage-free). Group-by + featurize are wired end
+to end; `scan`/`filter` reuse the same `load_local_partitions` shard source;
+rebalancing (#517) + a locality-aware fetch of a missing owned body are later slices.
+See [docs/compute-near-data.md](docs/compute-near-data.md).
 
 Another DDF **op** is the **window / as-of (point-in-time) aggregation**
 (`include/zetta/ddf/as_of.hpp`, `zetta::ddf::as_of_aggregate`; **ARC-12**, #384) — the
@@ -875,7 +882,24 @@ every feature matches a leakage-free ground truth — the deliberate post-`t0` e
 (`acct_fedex_office`'s 4th payment failure, `acct_globex`'s 2nd support ticket) never
 enter a feature. Training a `Model` from the table is the **GBDT trainer**
 (`zetta::ml`, below); explaining its predictions is the **exact TreeSHAP** slice
-(`zetta::ml::tree_shap`, below). See [docs/ddf-featurize.md](docs/ddf-featurize.md).
+(`zetta::ml::tree_shap`, below).
+The spec also has a **static (carry-through) mode** (**#532**): `event_features` may be
+empty — a featurization of already-engineered numeric columns (the
+saas-sales-conversations **engineered columns**: `customer_engagement` /
+`sales_effectiveness` / …, embeddings dropped) where each row is one entity, the
+`account_features` are carried through, and `label_column` is the target. The
+point-in-time guarantee still holds **where applicable**: with a `time_column` set the
+row universe is filtered to `time <= as_of` (a post-cutoff row is excluded — no
+leakage); with none there is no time dimension. In static mode `time_column` is optional
+and the events frame/join are skipped; with windowed `event_features` (the churn shape)
+a `time_column` is required — and a spec must produce at least one feature column (an
+event or account feature). The **compute-near-data** variant over a single partitioned
+table is `zetta::ddf::run_near_data_featurize_job`
+(`include/zetta/ddf/local_featurize_job.hpp`, **#532**) — load this node's owned
+partitions → `run_featurize_job` over the local shard, reporting the same
+`local_bytes_read`/`wire_bytes_moved` instrumentation, matching a single-node oracle
+(the UC-1-at-scale featurize slice; siblings #530/#533 train, #531 E2E). See
+[docs/ddf-featurize.md](docs/ddf-featurize.md).
 
 ### Model training — distributed histogram GBDT (`zetta::ml`)
 
@@ -2646,8 +2670,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
     local_partitions.hpp    zetta::ddf::load_local_partitions/LocalShardResult — compute-near-data shard loader: enumerate this node's OWNED partitions of a table (owner_nodes ∋ node_id) from the catalog, read only the locally-held blob bodies, parse the JsonlStore {_zid,doc} lines, load into a local DataFrame; instrumented bytes_read (near data, not moved) (ARC-12/FEAT-8; #516)
     local_group_by_job.hpp  zetta::ddf::run_near_data_group_by_job/NearDataGroupByResult — the first-class compute-near-data op: load the local shard via load_local_partitions → run_group_by_job, reporting local_bytes_read vs wire_bytes_moved (the partials, via Collectives::wire_bytes()); result == single-node oracle (ARC-12/FEAT-8; #516)
-    featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
+    featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary; also a static carry-through mode (empty event_features → carry engineered columns + label, point-in-time row filter where a time_column is set, #532) (ARC-12/FEAT-6; #388)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
+    local_featurize_job.hpp zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
     gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig (FEAT-6/ENT-14; #390/#391)
@@ -2769,7 +2794,8 @@ src/core/                   zetta-core impl
   ddf/local_partitions.cpp  load_local_partitions — enumerate this node's owned partitions from Node::dataset_partitions(), read each owned blob body from the local LargeObjectStore, parse the JsonlStore lines, load into a DataFrame; instrumented bytes_read (zetta-core; #516)
   ddf/local_group_by_job.cpp run_near_data_group_by_job — load the local shard via load_local_partitions then drive run_group_by_job, computing wire_bytes_moved from Collectives::wire_bytes() before/after (zetta-core; #516)
   ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
-  ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
+  ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
+  ddf/local_featurize_job.cpp run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
   ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast) (zetta-core; #390/#391)
   ml/gbdt_score.cpp         zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)

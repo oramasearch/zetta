@@ -103,25 +103,53 @@ DistributedFeaturizeResult run_featurize_job(compute::JobCoordinator& coordinato
     using Outcome = compute::JobCoordinator::Outcome;
     out.status = coordinator.run(job, [&](JobRound& round) -> Outcome {
         out.is_root = round.is_root();
-        compute::ComputeDevice* device = events.device() != nullptr ? events.device()
-                                                                    : accounts.device();
+        compute::ComputeDevice* device = accounts.device() != nullptr
+                                             ? accounts.device()
+                                             : events.device();
         if (device == nullptr) {
             return {.ok = false, .detail = "featurize: input frames have no device"};
         }
 
-        // 1. Repartition + enrich: join the events shard with the accounts shard on
-        // the entity key. After the join every event of an entity, carrying that
-        // entity's static account columns, is co-located on one node.
-        DistributedJoinResult enriched = distributed_join(
-            round, events, spec.entity_column, accounts, spec.entity_column,
-            JoinAlgorithm::Hash, tag + ".join");
-        if (!enriched.ok()) {
-            return {.ok = false, .detail = "featurize join: " + enriched.status.message};
-        }
-        DataFrameResult enriched_frame = joined_to_frame(enriched.rows, *device);
-        if (!enriched_frame.ok()) {
-            return {.ok = false,
-                    .detail = "featurize materialize: " + enriched_frame.status.message};
+        // 1. Resolve the dimension input — the frame the static account columns + label
+        // are read per entity from.
+        //  * Static (no event features): the accounts shard itself (each row one
+        //    entity's engineered feature record), point-in-time filtered to
+        //    `time <= as_of` when a time_column is set (no events to enrich — no join).
+        //  * Churn (event features): the join of the events shard with the accounts
+        //    shard on the entity key, so every event of an entity carries that entity's
+        //    static account columns, co-located on one node.
+        DataFrame enriched_storage;
+        const DataFrame* dim_input = nullptr;
+        if (spec.event_features.empty()) {
+            if (!spec.time_column.empty()) {
+                DataFrameResult filtered =
+                    filter(accounts, FilterPredicate{.column = spec.time_column,
+                                                     .comparison = Comparison::LessEqual,
+                                                     .value = spec.as_of});
+                if (!filtered.ok()) {
+                    return {.ok = false,
+                            .detail = "featurize filter: " + filtered.status.message};
+                }
+                enriched_storage = std::move(filtered.frame);
+                dim_input = &enriched_storage;
+            } else {
+                dim_input = &accounts;
+            }
+        } else {
+            DistributedJoinResult enriched = distributed_join(
+                round, events, spec.entity_column, accounts, spec.entity_column,
+                JoinAlgorithm::Hash, tag + ".join");
+            if (!enriched.ok()) {
+                return {.ok = false,
+                        .detail = "featurize join: " + enriched.status.message};
+            }
+            DataFrameResult enriched_frame = joined_to_frame(enriched.rows, *device);
+            if (!enriched_frame.ok()) {
+                return {.ok = false,
+                        .detail = "featurize materialize: " + enriched_frame.status.message};
+            }
+            enriched_storage = std::move(enriched_frame.frame);
+            dim_input = &enriched_storage;
         }
 
         // 2a. The static account dimension (+ label): constant per entity, so a Min
@@ -141,7 +169,7 @@ DistributedFeaturizeResult run_featurize_job(compute::JobCoordinator& coordinato
             dim_spec.aggregates.push_back(Aggregate{
                 .op = AggregateOp::Min, .column = spec.label_column, .output = spec.label_column});
         }
-        GroupByOutcome dimension = distributed_group_by(enriched_frame.frame, dim_spec,
+        GroupByOutcome dimension = distributed_group_by(*dim_input, dim_spec,
                                                         round, tag + ".dim", timeout);
         if (!dimension.ok()) {
             return {.ok = false, .detail = "featurize dim: " + dimension.status.message};
@@ -155,7 +183,7 @@ DistributedFeaturizeResult run_featurize_job(compute::JobCoordinator& coordinato
         std::vector<std::vector<double>> feature_columns(spec.event_features.size());
         for (std::size_t index = 0; index < spec.event_features.size(); ++index) {
             const WindowedFeature& feature = spec.event_features[index];
-            DataFrameResult windowed = window_filter(enriched_frame.frame, spec, feature);
+            DataFrameResult windowed = window_filter(*dim_input, spec, feature);
             if (!windowed.ok()) {
                 return {.ok = false,
                         .detail = "featurize filter '" + feature.name + "': " +

@@ -80,12 +80,24 @@ struct WindowedFeature {
 // A point-in-time featurization spec: per-entity windowed event features joined onto
 // a static account dimension, all windowed against a single as-of cutoff. Mirrors
 // schemas/featurize_spec.schema.json.
+//
+// **Static (carry-through) mode.** `event_features` may be empty — a featurization of
+// already-engineered numeric columns (e.g. the saas-sales-conversations engineered
+// columns: customer_engagement / sales_effectiveness / …, embeddings dropped) where
+// each row is one entity. The `account_features` are carried through unchanged and
+// `label_column` is the target; there is no windowed aggregation. The point-in-time
+// guarantee still holds "where applicable": when a `time_column` is set, the row
+// universe is filtered to `time <= as_of` (a row after the cutoff is excluded — no
+// leakage); with no `time_column` there is no time dimension to filter. In this mode
+// `time_column` is optional and `event_features` empty; with windowed event features
+// (the churn shape) a `time_column` is required.
 struct FeaturizeSpec {
     std::string entity_column;   // integer entity key in BOTH frames (the join key)
-    std::string time_column;     // numeric timestamp column in the events frame
-    double as_of = 0.0;          // t0: only events with time <= as_of contribute
+    std::string time_column;     // numeric timestamp column; optional in static mode
+    double as_of = 0.0;          // t0: only rows/events with time <= as_of contribute
 
     std::vector<WindowedFeature> event_features;   // windowed per-entity event features
+                                                   // (empty => static carry-through)
 
     // Static columns carried through unchanged from the accounts frame (mrr, seats,
     // tenure_days, …), joined onto the event features by entity key.
@@ -102,13 +114,15 @@ struct FeaturizeSpec {
 
     // Parse + validate a spec at the boundary; the non-throwing inverse of to_json
     // (std::optional, like AsOfAggregate::from_json / GroupBySpec::from_json).
-    // std::nullopt unless `value` is an object with non-empty string entity_column /
-    // time_column, a numeric as_of, a non-empty event_features array of well-formed
-    // features (non-empty name, known agg, a value_column whenever the agg needs one,
-    // an optional window_start <= as_of, type_column and type_value together or not at
-    // all), an optional account_features array of non-empty strings, an optional
-    // non-empty label_column, all output column names (features + account columns)
-    // unique, and no unknown keys.
+    // std::nullopt unless `value` is an object with a non-empty string entity_column;
+    // an optional non-empty time_column (required iff event_features are present)
+    // carrying a numeric as_of when set; an optional event_features array of
+    // well-formed features (non-empty name, known agg, a value_column whenever the agg
+    // needs one, an optional window_start <= as_of, type_column and type_value
+    // together or not at all); an optional account_features array of non-empty
+    // strings; an optional non-empty label_column; at least one feature column (an
+    // event feature or an account feature — a label alone is not a feature table); all
+    // output column names (features + account columns) unique; and no unknown keys.
     static std::optional<FeaturizeSpec> from_json(const nlohmann::json& value);
 };
 
@@ -159,10 +173,19 @@ struct FeaturizeResult {
 // dimension with the equi-join op. Output is dense over the accounts' entity universe
 // (one row per account, missing event features filled to 0).
 //
+// **Static mode** (`spec.event_features` empty): no events are read — the engineered
+// `account_features` (+ optional label) of the `accounts` frame are carried through,
+// one row per entity. When `spec.time_column` is set the `accounts` rows are first
+// point-in-time filtered to `time <= as_of` (a post-cutoff row is excluded — no
+// leakage); with no `time_column` there is no time filter. (The `events` frame is
+// ignored; a caller may pass the same frame for both.)
+//
 // Non-throwing. Fails with InvalidArgument when: a named column is absent; the entity
-// column is not an integer dtype in either frame; or a feature's window/value is
-// malformed. A device read-back error is surfaced as that device's status. The
-// distributed equivalent is run_featurize_job (featurize_job.hpp).
+// column is not an integer dtype in either frame; the spec has no feature column; or a
+// feature's window/value is malformed. A device read-back error is surfaced as that
+// device's status. The distributed equivalent is run_featurize_job (featurize_job.hpp);
+// the compute-near-data variant over a partitioned table is run_near_data_featurize_job
+// (local_featurize_job.hpp).
 FeaturizeResult point_in_time_featurize(const DataFrame& events,
                                         const DataFrame& accounts,
                                         const FeaturizeSpec& spec);

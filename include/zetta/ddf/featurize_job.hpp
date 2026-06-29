@@ -71,6 +71,13 @@ struct DistributedFeaturizeResult {
 // Call **concurrently on every participating node** (the collectives need all
 // participants); `coordinator.start()` must have run.
 //
+// **Static mode** (`spec.event_features` empty): the join is skipped — the engineered
+// `account_features` (+ label) of the `accounts` shard are carried through per entity
+// via the dimension `distributed_group_by`, point-in-time filtered to `time <= as_of`
+// when a `time_column` is set (the `events` shard is then ignored). The
+// compute-near-data variant over a partitioned table is `run_near_data_featurize_job`
+// (local_featurize_job.hpp, #532).
+//
 // `round_tag` names the collective rounds and **must be identical on every
 // participating node** (a node's own `job` id cannot serve — each node holds a
 // distinct `ComputeJob` for the same logical work). When empty it defaults to a

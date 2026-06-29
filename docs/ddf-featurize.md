@@ -12,12 +12,15 @@ leaf DDF ops were built toward: it composes the
 (#382) into one featurization.
 
 ```
-include/zetta/ddf/featurize.hpp      FeaturizeSpec / WindowedFeature / FeatureTable + point_in_time_featurize()
-include/zetta/ddf/featurize_job.hpp  run_featurize_job() — the distributed `featurize` ComputeJob
-src/core/ddf/featurize.cpp           the single-node op (as-of + group-by + filter + join) + the spec JSON boundary
-src/core/ddf/featurize_job.cpp       the distributed op (distributed_join + distributed_group_by on a JobRound)
-schemas/featurize_spec.schema.json   the featurization-spec JSON boundary (draft-07)
-tests/test_ddf_featurize.cpp         JSON boundary, single-node + the churn fixture (leakage assertion), distributed
+include/zetta/ddf/featurize.hpp          FeaturizeSpec / WindowedFeature / FeatureTable + point_in_time_featurize()
+include/zetta/ddf/featurize_job.hpp      run_featurize_job() — the distributed `featurize` ComputeJob
+include/zetta/ddf/local_featurize_job.hpp run_near_data_featurize_job() — compute-near-data over a partitioned table (#532)
+src/core/ddf/featurize.cpp               the single-node op (as-of + group-by + filter + join; the static carry-through) + the spec JSON boundary
+src/core/ddf/featurize_job.cpp           the distributed op (distributed_join + distributed_group_by on a JobRound)
+src/core/ddf/local_featurize_job.cpp     load the local partitions, then drive run_featurize_job (compute-near-data)
+schemas/featurize_spec.schema.json       the featurization-spec JSON boundary (draft-07)
+tests/test_ddf_featurize.cpp             JSON boundary, single-node (churn + static) + the churn fixture (leakage assertion), distributed
+tests/test_ddf_featurize_partitions.cpp  the near-data featurize over a partitioned loopback cluster (#532)
 ```
 
 ## No leakage — the non-negotiable property
@@ -126,6 +129,43 @@ with its event features filled to **0** — the SQL `COALESCE(agg, 0)`. A `min` 
 over an empty window also collapses to 0 (not the reduction's `±inf` identity), so
 every feature is a real number a model can consume.
 
+## Static mode — engineered columns, no windowed events (#532)
+
+Not every dataset is event-shaped. The **saas-sales-conversations** dataset (UC-1 at
+scale) is a flat per-conversation table of **already-engineered numeric columns**
+(`customer_engagement`, `sales_effectiveness`, `conversation_length`, …; the 3072
+`embedding_*` columns are dropped at load) plus an `outcome` label. Featurizing it is
+not a windowed aggregation — it is a **carry-through**: each row is one entity, the
+engineered columns are the features, and `outcome` is the target.
+
+A **static** `FeaturizeSpec` expresses this — `event_features` is empty, so there are
+no events to read and no join:
+
+```cpp
+zetta::ddf::FeaturizeSpec spec;
+spec.entity_column    = "conversation_id";   // the per-row entity key
+spec.account_features = {"customer_engagement", "sales_effectiveness",
+                         "conversation_length"};  // carried through as X
+spec.label_column     = "outcome";           // the target y
+// (no event_features; time_column optional — see below)
+```
+
+**Point-in-time, "where applicable".** When the spec sets a `time_column`, the row
+universe is point-in-time filtered to `time <= as_of` before the carry-through — a
+conversation after the decision cutoff is **excluded entirely** (no leakage), exactly
+the same `event_ts <= as_of` guarantee the windowed path gives. With no `time_column`
+there is no time dimension to filter (the engineered columns are taken as-is). With
+windowed `event_features` (the churn shape) a `time_column` is required.
+
+```cpp
+spec.time_column = "event_ts";  // optional; when set, drop rows with event_ts > as_of
+spec.as_of       = 1000.0;
+```
+
+In static mode `point_in_time_featurize` ignores the `events` frame (pass the same
+frame for both `events` and `accounts`); the output `FeatureTable` carries the
+engineered columns + label, one row per entity, ascending.
+
 ## Distributed — the `featurize` ComputeJob
 
 `run_featurize_job` runs the *same* featurization across the cluster through the
@@ -168,6 +208,38 @@ true left join, emitting zero-event accounts with `COALESCE`-0 features, lands w
 `distributed_join` gains outer-join support, behind this same entry. The single-node
 `point_in_time_featurize` is already left-join (it drives off the accounts universe).
 
+## Compute-near-data over a partitioned table (#532)
+
+`run_near_data_featurize_job` (`include/zetta/ddf/local_featurize_job.hpp`) is the
+**compute-near-data** variant — the featurize sibling of
+[`run_near_data_group_by_job`](compute-near-data.md). Where `run_featurize_job` takes
+the shards the caller built however it liked, this runner **loads this node's shard
+from its OWNED partitions** of a single [partitioned table](partitioned-write-path.md)
+(via [`load_local_partitions`](compute-near-data.md)) and then drives the same
+distributed featurization + ComputeJob lifecycle over it. It is how the
+saas-sales-conversations engineered columns are featurized over the partitioned
+dataset (the static spec above):
+
+```cpp
+auto job = node.create_job(zetta::JobKind::Featurize);
+auto out = zetta::ddf::run_near_data_featurize_job(
+    coordinator, node, *job, table_id, engineered_schema, spec, device);
+// out.table is the GLOBAL feature table, identical on every node and equal to a
+// single-node featurize over the whole dataset (the acceptance);
+// out.partitions_read / rows_read / local_bytes_read = data read NEAR the node;
+// out.wire_bytes_moved = the per-entity partials that crossed the wire.
+```
+
+Each node reads only the partition bodies it physically holds (no `LOREQ`, no
+full-dataset pull — the dropped embeddings never even reach disk here), runs the
+featurization over that local shard, and exchanges only the per-entity partials over
+the collectives. The global feature table is broadcast, so it is identical on every
+node and matches a single-node oracle. Call it **concurrently on every participating
+node** after `coordinator.start()`. The single-table runner targets the **static**
+engineered-columns shape; a windowed/churn featurize over two partitioned tables runs
+through `run_featurize_job` directly with two `load_local_partitions` calls. See
+[compute-near-data.md](compute-near-data.md).
+
 ## Errors (non-throwing)
 
 Like the rest of the compute seam, neither entry point throws across the zetta-core
@@ -203,13 +275,25 @@ non-throwing `to_json` / `from_json` pattern as
   "label_column": "churned" }
 ```
 
+A **static** spec omits `time_column` / `as_of` / `event_features` (the canonical
+`to_json` form drops them when empty):
+
+```json
+{ "entity_column": "conversation_id",
+  "account_features": ["customer_engagement", "sales_effectiveness", "conversation_length"],
+  "label_column": "outcome" }
+```
+
 `from_json` returns `std::nullopt` (never throws) unless the document is an object
-with non-empty string `entity_column` / `time_column`, a numeric `as_of`, a non-empty
-`event_features` array of well-formed features (non-empty `name`, known `agg`, a
-`value_column` whenever the agg needs one, an optional `window_start` no greater than
-`as_of`, `type_column` and `type_value` together or not at all), an optional
-`account_features` array of non-empty strings, an optional non-empty `label_column`,
-all output column names unique, and no unknown keys.
+with a non-empty string `entity_column`; an **optional** non-empty `time_column`
+(**required** iff `event_features` are present) carrying a numeric `as_of` when set; an
+**optional** `event_features` array of well-formed features (non-empty `name`, known
+`agg`, a `value_column` whenever the agg needs one, an optional `window_start` no
+greater than `as_of`, `type_column` and `type_value` together or not at all); an
+optional `account_features` array of non-empty strings; an optional non-empty
+`label_column`; **at least one feature column** (an event feature or an account
+feature — a label alone is not a feature table); all output column names unique; and no
+unknown keys.
 
 ## This slice — and what's next
 
@@ -217,10 +301,13 @@ This is the **reference featurization**: the single-node op reads the columns ba
 from the frame's device and composes the leaf ops in host code (correctness over
 throughput, the way [`CpuDevice`](cpu-device.md) is the numerical reference for
 [`CudaDevice`](compute-device.md)); the distributed op runs it as a recorded
-`featurize` ComputeJob. The next slices build on the feature table: **training** a
-model from it (FEAT-6 / the [`Model`](models.md) entity) and **explaining** it (SHAP
-drivers), and the left-join distributed path once `distributed_join` gains outer-join
-support.
+`featurize` ComputeJob; and `run_near_data_featurize_job` runs it compute-near-data
+over a partitioned table. The next slices build on the feature table: **training** a
+model from it over the partitioned dataset
+([#530](https://github.com/oramasearch/zetta/issues/530) /
+[#533](https://github.com/oramasearch/zetta/issues/533)) and the
+[UC-1-at-scale E2E](https://github.com/oramasearch/zetta/issues/531), plus the
+left-join distributed path once `distributed_join` gains outer-join support.
 
 See also [ddf.md](ddf.md) (the DataFrame substrate), [ddf-as-of.md](ddf-as-of.md)
 (the windowing primitive), [ddf-groupby.md](ddf-groupby.md) (the aggregate op),
