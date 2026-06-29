@@ -40,6 +40,16 @@ public:
     // assigned metadata, or nullopt if the source can't be read / written.
     std::optional<LargeObject> import_file(const std::filesystem::path& src);
 
+    // Import in-memory bytes as a new large object, the body supplied directly
+    // (no source file). Identical to import_file in every other respect — assigns
+    // a UUID id + `name`, fingerprints the body with SHA-256, writes blob +
+    // meta.json, and captures the metadata into the CRDT — so the body still
+    // transfers peer-to-peer and is verified against size + sha256. Used by the
+    // partitioned write path (#511) to store a partition's serialized rows as a
+    // blob. Returns nullopt only if the body can't be written to disk.
+    std::optional<LargeObject> import_bytes(std::string name,
+                                            const std::string& bytes);
+
     // Register metadata for a replicated object (from a peer), without capturing
     // it again. The body may not be here yet. Returns the registered object.
     LargeObject materialize_object(LargeObject object);

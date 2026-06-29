@@ -421,6 +421,38 @@ write path's (#511) holistic concern, alongside the **partition catalog**
 learned **model-as-partitioner** is a documented future direction behind the same
 seam. See [docs/partitioner.md](docs/partitioner.md).
 
+The **partitioned write path** is **`zetta::write_partitioned`**
+(`include/zetta/partition_writer.hpp`, **#511**) — rows → partition → blob,
+placement recorded: the slice where the seam (#512–#514), the
+[large-object store](docs/large-objects.md), and the [partition catalog](docs/dataset-partitions.md)
+(#510) meet. For a table configured with a `Partitioner` (the operational signal a
+table is partitioned), it **assigns each row to a partition** (`assign_partition`;
+stamping a monotonic `_seq` surrogate = the row's table ordinal onto the
+assignment record only, so `RoundRobinPartitioner` distributes evenly without the
+caller pre-stamping — `HashPartitioner`/`SinglePartitioner` ignore it),
+**serializes each non-empty partition's rows** to a JSON Lines blob (one
+`{"_zid",doc}` line per row, the `JsonlStore` shape — a self-describing slice of
+the table), **stores the bytes as a large object** (the new
+`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted, its `lo:`
+metadata rides in the CRDT, and it gossips peer-to-peer like any LO body), and
+**records placement** as a `DatasetPartition` catalog entry per partition
+(`Node::create_dataset_partition` → `part:<uuid>`, visible in
+`system.dataset_partitions`): `blob_ref` (the body id), `row_range`, `owner_nodes`
+(from the partitioner's `place_partition` over the cluster `members`, defaulting to
+this node), and `stats` (`{partition, rows}`). The **`row_range` is the
+partition's cumulative slice in partition-id order** — partition 0 = `[0, n0)`, the
+next = `[n0, n0+n1)`, … so the ranges tile `[0, rows_written)` (and reduce to the
+whole table for `SinglePartitioner`); a hash partition scatters its rows across the
+table's original ordinals, which a single range can't name, so the catalog names
+the slice in the partitioned/re-numbered row space. Only **non-empty** partitions
+get a blob + catalog row (N blobs + N catalog rows — the acceptance). **No new JSON
+format** is parsed back in: the catalog entry rides the existing `DatasetPartition`
+schema boundary, and the blob is an LO body (opaque, size+sha256-verified — reading
+partitions back is the locality-read slice, #516). A reusable library function
+today (like `import_records`); a load-triggering command/DDL, driving the table's
+`ReplicationStrategy` factor into placement, and rebalance (#517) are later slices.
+See [docs/partitioned-write-path.md](docs/partitioned-write-path.md).
+
 ### Async runtime (`zetta::runtime`)
 
 zetta's async / coroutine / networking layer lives behind
@@ -2372,7 +2404,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   table.hpp                 zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
   rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
-  large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
+  partition_writer.hpp      zetta::write_partitioned/PartitionWriteResult — the partitioned write path: assign each row to a partition (Partitioner), serialize each non-empty partition to a JSON Lines blob, store it as a LargeObject (import_bytes), record a DatasetPartition catalog entry per partition (blob ref + cumulative row range + place_partition owners); N blobs + N catalog rows (ADR-31/ENT-37; #511)
+  large_object.hpp          zetta::LargeObjectStore — files as blobs (per database); import_file (from a path) + import_bytes (from in-memory bytes, used by the partitioned write path)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
   n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
@@ -2505,6 +2538,7 @@ src/core/                   zetta-core impl
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
+  partition_writer.cpp      zetta::write_partitioned — the partitioned write path: bucket rows by assign_partition (stamping the round-robin surrogate), serialize each non-empty partition to JSON Lines, store via LargeObjectStore::import_bytes, record a DatasetPartition per partition (cumulative row range + place_partition owners) (#511)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -2828,7 +2862,8 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
-- [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (the partitioner / locality-aware reads / re-balancing are later slices).
+- [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (locality-aware reads / re-balancing are later slices). The producer that fills it is the partitioned write path below.
+- [`docs/partitioned-write-path.md`](docs/partitioned-write-path.md) — the **partitioned write path** (`zetta::write_partitioned`, **#511**): rows → partition → blob, placement recorded. For a table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to a partition (stamping the round-robin `_seq` surrogate onto the assignment record only), serializes each non-empty partition's rows to a JSON Lines blob (the `JsonlStore` `{"_zid",doc}` shape), stores the bytes as a [large object](docs/large-objects.md) (`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted + gossips peer-to-peer), and records a [`DatasetPartition`](docs/dataset-partitions.md) catalog entry per partition (`blob_ref` + the cumulative `row_range` tiling `[0, rows_written)` + `place_partition` owners + `stats`), visible in `system.dataset_partitions`. N non-empty partitions → N blobs + N catalog rows (the acceptance). Composes #510/#512–#514; no new JSON schema (the catalog entry is the existing `DatasetPartition` boundary, the blob is an LO body). A reusable library function today; a load-triggering command, `ReplicationStrategy`-driven placement, and rebalance (#517) are later slices.
 - [`docs/sharded-blob-placement.md`](docs/sharded-blob-placement.md) — partition-aware large-object body replication (`zetta::ReplicatedBlobStore`, #515): a `Partitioned` / `PartitionedWithReplicas` table's partition body (the [catalog](docs/dataset-partitions.md) entry's `blob_ref`) is fetched + held **only by its owner node(s)** per `owner_nodes` + the replication factor (`rf` owners → exactly `rf` copies), instead of replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it never `LOREQ`s it), `store_blob()` refuses it; a plain large object, an unplaced partition (empty `owner_nodes`), and model weights keep replicate-to-all. Owner set read from the CRDT `part:` snapshot through the validated boundary (network-thread-safe, no Node access); no new JSON format. The first slice that *acts* on a non-default [replication strategy](docs/replication-strategy.md) at the body level (the partitioner write path / locality-aware reads / rebalancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Run/deploy wiring + per-field BM25F params are later slices.
