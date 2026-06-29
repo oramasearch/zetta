@@ -1,7 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -133,6 +136,19 @@ public:
     // sorted by node id (so the root — front() — is the same on every node).
     std::vector<std::string> participants() const;
 
+    // Total collective-plane payload bytes this node has moved over the wire —
+    // the size of every `collective.contribute` / `collective.result` RPC body
+    // it has sent or received, summed across rounds. This is the "bytes moved"
+    // the compute-near-data path keeps small: only each node's small per-group
+    // partial crosses the wire, never the source rows (read near data from a
+    // node's owned partitions — see zetta::ddf::load_local_partitions). Exposed
+    // for observability / the near-data acceptance (bytes-moved ≈ partials, not
+    // ≈ dataset). Cumulative; thread-safe (incremented on both the application
+    // send path and the network-thread receive path).
+    std::uint64_t wire_bytes() const noexcept {
+        return wire_bytes_.load(std::memory_order_relaxed);
+    }
+
     // --- SignalHandler (runs on the cluster network thread) -----------------
     SignalResponse on_request(const Signal& request) override;
     void on_event(const Signal& event) override;
@@ -171,8 +187,16 @@ private:
     // Drop a finished round's state.
     void clear_round(const std::string& tag);
 
+    // Add `bytes` to the moved-bytes meter (a collective payload sent/received).
+    void account_wire_bytes(std::size_t bytes) {
+        wire_bytes_.fetch_add(bytes, std::memory_order_relaxed);
+    }
+
     Cluster& cluster_;
     SignalHandler* delegate_ = nullptr;
+
+    // The "bytes moved over the wire" meter (see wire_bytes()).
+    std::atomic<std::uint64_t> wire_bytes_{0};
 
     std::mutex mutex_;
     std::condition_variable cv_;
