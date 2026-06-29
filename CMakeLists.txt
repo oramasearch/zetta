@@ -386,6 +386,7 @@ add_library(zetta-core STATIC
   src/core/dataset_partition.cpp
   src/core/rendezvous_placement.cpp
   src/core/partition_writer.cpp
+  src/core/partition_rebalance.cpp
   src/core/principal.cpp
   src/core/access_key.cpp
   src/core/scope.cpp

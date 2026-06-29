@@ -117,7 +117,12 @@ stores it as a large object (peer-to-peer + SHA-256-verified), and records a
 owner set now drives **sharded blob placement**: a partition's large-object **body**
 is fetched + held only by its owner node(s) (`rf` owners → exactly `rf` copies),
 instead of replicate-to-all (see
-[docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)).
+[docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)). When the cluster
+gains a node, a **between-jobs rebalance** (`zetta::rebalance_partitions`) recomputes
+rendezvous placement so ≈`rf`/N partitions move onto it (whole partitions, no full
+rehash) and their bodies follow — auto-triggered from `Node::tick()` off the
+replicated membership keys (see
+[docs/partition-rebalance.md](docs/partition-rebalance.md)).
 The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**
 (`zetta::NodeCapability` — cores / GPU type+throughput / memory) open the native
 distributed accelerated compute pass: provision N nodes against a capability spec,

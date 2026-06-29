@@ -8,10 +8,13 @@
 > first piece, **sharded blob placement** ([#515](https://github.com/oramasearch/zetta/issues/515)),
 > already holds a partition's large-object **body** only on its owner node(s) per the
 > [partition catalog](dataset-partitions.md) + replication factor (see
-> [sharded-blob-placement.md](sharded-blob-placement.md)); the partitioner write path
-> and rebalancing are later slices. This is the "record the choice now, drive it
-> later" shape `DeploymentTarget` uses for its placement dial (R1 Local only) and
-> `ScalingPolicy` uses for the reward model before the autoscaler that consumes it.
+> [sharded-blob-placement.md](sharded-blob-placement.md)); the
+> [partitioned write path](partitioned-write-path.md) ([#511](https://github.com/oramasearch/zetta/issues/511))
+> and the [between-jobs rebalance](partition-rebalance.md)
+> ([#517](https://github.com/oramasearch/zetta/issues/517)) build on it. This is the
+> "record the choice now, drive it later" shape `DeploymentTarget` uses for its
+> placement dial (R1 Local only) and `ScalingPolicy` uses for the reward model before
+> the autoscaler that consumes it.
 
 A `zetta::ReplicationStrategy` (`include/zetta/replication_strategy.hpp`) is the
 per-entity counterpart to `ReplicationManager`'s **node-wide** `ReplicationPolicy`

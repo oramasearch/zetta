@@ -97,6 +97,16 @@ public:
     // partition.json — with NO capture (used by reconciliation).
     void apply_value(DatasetPartitionValue value);
 
+    // Re-place this partition: replace its `owner_nodes` (the nodes that hold a
+    // copy of the body), **capture** the change into the `part:<id>` CRDT key, and
+    // rewrite partition.json. This is the "update" half a rebalance uses (#517) —
+    // unlike apply_value it DOES capture, so a re-placement replicates like a
+    // create and the body moves to its new owners over the existing large-object
+    // body seam (ReplicatedBlobStore reads owner_nodes; see #515). Mirrors
+    // Run::set_status. No-op-cheap when the owners are unchanged is the caller's
+    // concern (rebalance_partitions only calls this on a real change).
+    void set_owner_nodes(std::vector<std::string> owner_nodes);
+
     // Write this partition's value (+ id) to dir/partition.json.
     void persist_meta() const;
 

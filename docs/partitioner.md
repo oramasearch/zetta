@@ -20,8 +20,11 @@ persistence/replication and the placement half are separate, dependent slices:
   **`#511`, built** (`zetta::write_partitioned`, see
   [partitioned-write-path.md](partitioned-write-path.md)): it drives both halves of
   this seam over a partitioned table's rows.
-- **rebalance on membership change** — `#517`; **compute-near-data** (a DDF op
-  runs over the node's local partitions) — `#516`.
+- **rebalance on membership change** — `#517`, **built**
+  (`zetta::rebalance_partitions`, see
+  [partition-rebalance.md](partition-rebalance.md)): on a join it re-runs the
+  partition→node half over the new membership and moves only the changed partitions.
+  **compute-near-data** (a DDF op runs over the node's local partitions) — `#516`.
 
 A **learned model-as-partitioner** (a trained model performs the
 record→partition / partition→node assignment) is a documented future direction
@@ -203,7 +206,10 @@ exactly that:
 
 This is the rebalancing guarantee in the [seam intro](#why-a-fixed-partition-count),
 made concrete. Contrast a naive `member[hash(partition) % N]`: changing `N`
-remaps almost every partition.
+remaps almost every partition. The between-jobs
+[rebalance](partition-rebalance.md) (#517) acts on this guarantee — on a membership
+change it re-runs `rendezvous_owners` per partition and updates only the changed
+catalog entries.
 
 ### Deterministic + leaderless
 
