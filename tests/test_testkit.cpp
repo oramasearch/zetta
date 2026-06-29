@@ -94,6 +94,10 @@ TEST(Testkit, GovernanceCasesPass) {
                   [](TestOptions& o) { o.set_choice("resolver", 1); })
                   .outcome,
               TestOutcome::Pass);
+    // TC-6: burst N nodes -> N distinct identities -> teardown revokes, no orphans.
+    const TestResult burst =
+        run("governance.burst_identity", [](TestOptions& o) { o.set_int("nodes", 4); });
+    EXPECT_EQ(burst.outcome, TestOutcome::Pass) << burst.error;
 }
 
 TEST(Testkit, DistributedCasesRunOnARealCluster) {
