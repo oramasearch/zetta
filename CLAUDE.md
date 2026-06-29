@@ -1436,6 +1436,46 @@ is the already-schema-validated IR JSON form, so the skeleton round-trips throug
 `ir::from_json` and passes `default_gate()` by construction. See
 [docs/intent-compiler.md](docs/intent-compiler.md).
 
+### Language frontends (input language → ExecutionGraph IR)
+
+A **`zetta::input::LanguageFrontend`** (`include/zetta/input/language_frontend.hpp`,
+**ENT-38 / ADR-33**) turns a source snippet in some input language into the
+`ir::ExecutionGraph` — the **IR-targeting analogue of the query layer's
+`zetta::query::Dialect`** (which turns SQL text into the generic query AST). Add a
+new input language by implementing the interface (`name()` + `compile(source) →
+FrontendResult{graph, error}`); everything downstream (the gate, the
+`GraphExecutor`, the GUI) is reused as-is. **Non-throwing** like the rest of
+zetta-core.
+
+The first implementation is the **simulated-Python frontend**
+(`include/zetta/input/python_frontend.hpp`, `zetta::input::PythonFrontend`, **#520**):
+it parses a small Python subset — **assignments, function calls, attribute/method
+access + chaining, literals** (strings incl. triple/`f`/`r`-prefix, numbers,
+`True`/`False`/`None`, lists, dicts), plus `import`/`from-import` (recorded as
+nothing) — and lowers it to the IR. It is **not** a Python interpreter (runs no
+Python, no libraries — the [new-input](.claude/skills/new-input/SKILL.md)
+principle: re-implement, don't run), the way `compile_n8n_workflow` maps an n8n
+workflow. Two lowering rules: (1) **every call becomes a typed step** — its
+`StepKind` from the called verb via `python_step_kind` (the documented verb table,
+like `n8n_step_kind`; an unmapped verb defaults to `Clean`, a generic transform, so
+an arbitrary script still yields a well-formed graph), node id a deterministic
+unique slug from the verb; (2) **data flow becomes `DataFlow` edges** — an
+assignment binds a variable to the node a call produces, and a later call
+referencing it (as an argument, inside a list/dict argument, or as a **method
+receiver**) gets an edge from the producer (so `a = f(); b = g(a)` is `f → g`, and
+`read_csv(…).dropna().fillna(0)` is `read_csv → dropna → fillna`). Parsed call
+arguments ride under a namespaced **`python`** attribute bag (`call`/`assigned_to`/
+`args`/`kwargs`, like n8n's `n8n` provenance). Unsupported constructs
+(`def`/`for`/`if`/binary operators) are **explicitly rejected** with a reason, not
+mis-parsed. It is built like `PostgresDialect` — a tokenizer + recursive-descent
+parser — but **non-throwing** (a parse failure is an error string, never an
+exception). It adds **no new JSON format**: the input is Python source text and the
+only JSON it emits is the already-schema-validated IR JSON form (the `ir::from_json`
+trust boundary), so the output round-trips through `ir::from_json` and passes
+`default_gate()` by construction, executing through `Node::run_graph` like any
+other frontend's. Wiring it into a top-level input dispatch (GUI auto-detect
+Python vs SQL) is a later slice. See [docs/python-frontend.md](docs/python-frontend.md).
+
 ### Correctness gate (`zetta::CorrectnessGate`)
 
 The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
@@ -2132,6 +2172,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
   n8n_import.hpp            zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
   n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
+  input/
+    language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
+    python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the verb table, refs/receivers→data-flow edges); not a Python runtime (#520)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -2210,6 +2253,8 @@ src/core/                   zetta-core impl
   churn_dataset.cpp         load_churn_dataset — JSONL/CSV churn fixture reader + 3 embedded draft-07 schemas (boundary validation)
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
+  input/
+    python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the python_step_kind verb table (#520)
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
@@ -2562,6 +2607,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python an honest "not wired yet" seam until the frontend→IR lowering layer lands (#522); results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it next.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
+- [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The IR-targeting analogue of the query layer's `Dialect`.
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).
