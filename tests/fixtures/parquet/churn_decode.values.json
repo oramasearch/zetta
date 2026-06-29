@@ -1,0 +1,89 @@
+{
+  "num_rows": 6,
+  "columns": [
+    {
+      "path": "account_id",
+      "type": "int64",
+      "values": [
+        101,
+        102,
+        103,
+        104,
+        105,
+        106
+      ]
+    },
+    {
+      "path": "risk_score",
+      "type": "double",
+      "values": [
+        0.1,
+        0.92,
+        0.55,
+        0.71,
+        0.18,
+        0.83
+      ]
+    },
+    {
+      "path": "score_f32",
+      "type": "float",
+      "values": [
+        0.5,
+        0.25,
+        0.75,
+        1.0,
+        0.125,
+        0.625
+      ]
+    },
+    {
+      "path": "failed_payments",
+      "type": "int32",
+      "values": [
+        0,
+        4,
+        1,
+        2,
+        0,
+        3
+      ]
+    },
+    {
+      "path": "is_churned",
+      "type": "boolean",
+      "values": [
+        false,
+        true,
+        false,
+        true,
+        false,
+        true
+      ]
+    },
+    {
+      "path": "segment",
+      "type": "byte_array",
+      "values": [
+        "smb",
+        "ent",
+        "smb",
+        "ent",
+        "mid",
+        "smb"
+      ]
+    },
+    {
+      "path": "tenure_days",
+      "type": "int64",
+      "values": [
+        10,
+        null,
+        30,
+        40,
+        null,
+        60
+      ]
+    }
+  ]
+}

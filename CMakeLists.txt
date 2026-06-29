@@ -414,6 +414,7 @@ add_library(zetta-core STATIC
   src/core/n8n_compile.cpp
   src/core/parquet/metadata.cpp
   src/core/parquet/snappy.cpp
+  src/core/parquet/column_decoder.cpp
   src/core/input/python_frontend.cpp
   src/core/input/cluster_bindings.cpp
   src/core/ir/execution_graph.cpp
