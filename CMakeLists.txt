@@ -358,6 +358,7 @@ add_library(zetta-core STATIC
   src/core/capability.cpp
   src/core/audit_event.cpp
   src/core/table.cpp
+  src/core/partitioner.cpp
   src/core/jsonl_store.cpp
   src/core/uuid.cpp
   src/core/sha256.cpp
