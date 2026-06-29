@@ -1494,15 +1494,23 @@ error + elapsed) holds SQL rows and sim-Python output alike;
 `format_result`/`format_transcript` are the reusable text projections a CLI
 prints. **`zetta::gui::ReplConsole`** (`src/gui/repl_console.hpp`) is the thin Dear
 ImGui renderer (frontend selector, multiline editor, run/clear, transcript, result
-grid); `App::draw_console` (`src/gui/app_explorer.cpp`) hosts it over the live
-node, wiring **SQL** through the [query service](docs/query.md) and **simulated-
-Python** to an **honest "not wired yet" seam** until the frontend→IR lowering layer
-lands (#522). It adds **no new JSON boundary** (the transcript is ephemeral session
-state; SQL still enters through `QueryService`). The **governed Console/REPL
-screen** (SCR-8, #525) — lowering each statement to the IR, running it through the
-[correctness gate](docs/gate.md), and recording it in the
-[audit trail](docs/audit-trail.md) — reuses this component unchanged. See
-[docs/repl-console.md](docs/repl-console.md).
+grid); `App::draw_console` (`src/gui/app_explorer.cpp`) hosts it over the live node
+and is the **governed Console/REPL screen** (SCR-8, #525, realizing UC-3): it routes
+every statement through the **`zetta::repl::GovernedConsole`**
+(`include/zetta/repl/governed_console.hpp`, also zetta-core / no-SDL) run handler —
+**capability-scoped** against the acting key (ENT-22; `api:query` for SQL,
+`orchestration:start_run` for sim-Python; an empty key is an *unauthenticated local*
+session that still audits), **simulated-Python lowered to the IR** (`PythonFrontend`)
++ run through the [correctness gate](docs/gate.md) (RULE-1, a failing gate blocks)
+then executed via `Node::run_graph` (a real Run), and **every statement recorded in
+the [audit trail](docs/audit-trail.md)** as one `data_access` event
+(allowed/blocked + a summary; reuses the existing audit action, so **no audit-schema
+change**). The screen adds a **"Run as"** selector over the node's keys (default
+*unauthenticated local*). It adds **no new JSON boundary** (the transcript is
+ephemeral; SQL enters through `QueryService`, sim-Python through `ir::from_json` +
+the gate, audit through the AuditEvent schema). See
+[docs/repl-console.md](docs/repl-console.md) (the component) and
+[docs/governed-console.md](docs/governed-console.md) (the governed screen).
 
 ### Execution graph IR (`zetta::ir`)
 
@@ -2398,6 +2406,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     example_script.hpp      zetta::testkit::ExampleScript/ExampleExpectations/ExampleRunReport + run_example_script + example_scripts() — the sim-Python example-script harness: run a script end to end (parse->IR->gate->run) + assert on outputs, surfacing the offending statement on failure (the example programs ARE the integration tests; #523)
   repl/
     console_model.hpp       zetta::repl::ConsoleModel — the engine-agnostic REPL session (frontend + input + transcript + submit) behind the CMP-6 console; no SDL/ImGui, so it backs the GUI component AND a future CLI (#524)
+    governed_console.hpp    zetta::repl::GovernedConsole — the governed run handler behind the SCR-8 Console/REPL screen: capability-scope a statement, lower sim-Python to the IR + run the correctness gate, execute (SQL via QueryService / sim-Python via run_graph), record one data_access audit event; zetta-core / no-SDL (#525)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist
@@ -2518,6 +2527,7 @@ src/core/                   zetta-core impl
     example_script.cpp      run_example_script — parse->IR->gate->run + expectation checks + offending-statement reconstruction (#523)
     cases_examples.cpp      example_scripts() built-in catalog + register_example_cases (each sim-Python example a TestCase under TestCategory::Examples)
   repl/console_model.cpp    zetta::repl::ConsoleModel — submit/clear logic + Frontend names + format_result/format_transcript text projections (CMP-6; #524)
+  repl/governed_console.cpp zetta::repl::GovernedConsole — the governance pipeline (capability check → sim-Python lower+gate → execute → data_access audit) + required_operation + the SQL Outcome→Result grid mapping (SCR-8; #525)
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
@@ -2777,7 +2787,8 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. The seam + the trivial `SinglePartitioner` baseline + `Table::set_partitioner` (#512); the two **record→partition** strategies (#513): `HashPartitioner` (`hash(key columns) % P` — deterministic shard-by-key via a stable FNV-1a, balanced for a typical key) and `RoundRobinPartitioner` (`surrogate % P` — even balance regardless of key skew), with the `partitioner_from_json`/`to_json` JSON config boundary (`schemas/partitioner.schema.json`, the hand-written value-type pattern); and the **partition→node** strategy `zetta::RendezvousPlacement` (`rendezvous_placement.hpp`/`rendezvous_owners`, #514) — rendezvous / highest-random-weight (HRW) placement (FNV-1a weight per `(partition, member)`, top-`replication_factor` by weight), so adding/removing one node reassigns only ~1/N of partitions, deterministic + leaderless + order-independent. Dependent slices: the partition catalog (#510) and the partitioned write path (#511, which composes assignment + placement and owns the universal polymorphic persisted-config JSON boundary).
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
-- [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python an honest "not wired yet" seam until the frontend→IR lowering layer lands (#522); results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it next.
+- [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python lowered to the IR + gated + executed by the governed screen below; results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it.
+- [`docs/governed-console.md`](docs/governed-console.md) — the **governed Console/REPL screen** (SCR-8 / #525, realizes UC-3): the headed screen (`App::draw_console`) hosting the [REPL console](docs/repl-console.md), routing every statement through `zetta::repl::GovernedConsole` (zetta-core / no-SDL): **capability-scoped** against the acting key (`api:query` SQL / `orchestration:start_run` sim-Python; empty key = unauthenticated local, still audited), **simulated-Python lowered to the IR + run through the [correctness gate](docs/gate.md)** (RULE-1) then executed via `Node::run_graph` (a real Run), and **each statement recorded in the [audit trail](docs/audit-trail.md)** as a `data_access` event (reuses the existing audit action — no schema change). SQL keeps its own validated [query](docs/query.md) executor. Tabular results for both frontends; a "Run as" key selector; no new JSON boundary; headless-tested (`tests/test_governed_console.cpp`).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520) **+ its cluster/ML engine bindings** (#522): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the engine-faithful `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The verbs bind to real engine ops — `train`→`model` ([GBDT](docs/gbdt.md)), `score`/`predict`/`rank`→`index` ([batch scoring](docs/gbdt-score.md)), `explain`→`serve` ([TreeSHAP](docs/tree-shap.md)) all run through the [`ChurnStepExecutor`](docs/churn-step-executor.md); `cluster.add_nodes(n, provider=)`→`act` runs through `zetta::input::run_add_nodes_step` → the permanent-add control action [`zetta::add_nodes`](docs/add-nodes.md) (cloud consent-gated: the `Provisioner&` is injected). The IR-targeting analogue of the query layer's `Dialect`.

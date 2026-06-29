@@ -35,10 +35,11 @@ using RunHandler =
 `ConsoleModel::submit(run)` invokes the handler with the selected frontend + the
 current input, appends the `(frontend, source, result)` to the transcript, and
 resets the input for the next statement. This keeps the component decoupled from
-any single frontend: the App wires SQL to the [query service](query.md) and
-simulated-Python to an honest seam; the governed screen (#525) will instead route
-both through the frontend→IR lowering layer + the [correctness gate](gate.md) +
-the [audit trail](audit-trail.md).
+any single frontend: the headed screen wires the handler to the **governed run
+handler** (`zetta::repl::GovernedConsole`), which routes SQL through the
+[query service](query.md) and simulated-Python through the frontend→IR lowering
+layer + the [correctness gate](gate.md), capability-scoped + recorded in the
+[audit trail](audit-trail.md) — see [governed-console.md](governed-console.md).
 
 `submit` is a **no-op (returns `false`, records nothing)** when the input is
 blank/whitespace-only or the handler is null — mirroring
@@ -71,15 +72,15 @@ instead of a grid.
 `repl::frontends()`. Each is meant to lower to the same ExecutionGraph IR core
 (ADR-33 / ARC-15); the selector only tells the run handler how to read the source.
 
-- **SQL** is wired — the App's handler runs it through `query::QueryService` (the
-  same Postgres subset the [SQL query](query.md) view uses) and maps the
-  `Outcome` onto a `Result` (a JSON row becomes a column-aligned cell vector).
-- **Simulated-Python** is an **honest seam**: it is selectable and *emits a run
-  event*, but the frontend→IR lowering layer is not in this slice, so a run
-  returns a clear "not wired yet" result inline rather than pretending. Real
-  execution lands with the lowering layer (#522) and the governed screen (#525) —
-  the same way the [churn dataset](churn-dataset.md)'s Parquet format is an honest
-  seam until its dependency arrives.
+- **SQL** runs through `query::QueryService` (the same Postgres subset the
+  [SQL query](query.md) view uses), mapping the `Outcome` onto a `Result` (a JSON
+  row becomes a column-aligned cell vector).
+- **Simulated-Python** lowers to the [ExecutionGraph IR](execution-graph.md)
+  through [`input::PythonFrontend`](python-frontend.md), passes the
+  [correctness gate](gate.md), then executes via `Node::run_graph` — wired by the
+  [governed screen](governed-console.md) (SCR-8 / #525). (In the standalone CMP-6
+  component a host may still supply any handler, e.g. an honest "not wired" seam;
+  the governed handler is the one the headed app uses.)
 
 ## CLI reuse
 
@@ -115,7 +116,9 @@ project's convention — tests never link SDL/ImGui).
 
 This slice is the **component** only — it renders, emits run events, and displays
 results + errors inline (the #524 acceptance). The **governed Console/REPL
-screen** (SCR-8, #525) — lowering every statement to the IR, running it through
-the correctness gate, and recording it in the capability-scoped audit trail — is
-the next slice, and reuses this component unchanged. Wiring the simulated-Python
-frontend to a real evaluator is #522.
+screen** (SCR-8, #525) — capability-scoping every statement, lowering
+simulated-Python to the IR + running it through the correctness gate, and
+recording each statement in the audit trail — is **built** and reuses this
+component unchanged; see [governed-console.md](governed-console.md). Wiring the
+simulated-Python frontend to a richer evaluator (beyond `Node::run_graph`'s
+default orchestration) is #522.

@@ -2,6 +2,7 @@
 #include "gui/app_internal.hpp"
 #include "gui/repl_console.hpp"
 
+#include "zetta/access_key.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/database.hpp"
 #include "zetta/duration.hpp"
@@ -9,8 +10,10 @@
 #include "zetta/large_object.hpp"
 #include "zetta/n8n_import.hpp"
 #include "zetta/node.hpp"
+#include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/repl/governed_console.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/table.hpp"
 
@@ -416,85 +419,72 @@ void App::draw_query() {
     ImGui::EndChild();
 }
 
-namespace {
-
-// Stringify one JSON cell for the result grid: a string verbatim (no quotes),
-// null as blank, anything else as its compact JSON dump.
-std::string json_cell(const nlohmann::json& value) {
-    if (value.is_string()) return value.get<std::string>();
-    if (value.is_null()) return "";
-    return value.dump();
-}
-
-// Run `source` as SQL and map the query service's Outcome onto the frontend-
-// agnostic repl::Result the console renders: status messages + a column-aligned
-// row grid on success, the first parse/execute error otherwise.
-repl::Result sql_result(query::QueryService& query, const std::string& source,
-                        const std::string& database) {
-    const query::QueryService::Outcome outcome = query.run(source, database);
-    repl::Result result;
-    result.elapsed = format_duration(outcome.elapsed);
-    if (!outcome.ok()) {
-        result.error = outcome.error;
-        return result;
-    }
-    result.messages = outcome.messages;
-    result.columns = outcome.columns;
-    result.rows.reserve(outcome.rows.size());
-    for (const nlohmann::json& row : outcome.rows) {
-        std::vector<std::string> cells;
-        cells.reserve(result.columns.size());
-        for (const std::string& column : result.columns) {
-            if (row.is_object() && row.contains(column)) {
-                cells.push_back(json_cell(row.at(column)));
-            } else if (result.columns.size() == 1 && !row.is_object()) {
-                cells.push_back(json_cell(row));  // a single scalar projection
-            } else {
-                cells.push_back("");
-            }
-        }
-        result.rows.push_back(std::move(cells));
-    }
-    return result;
-}
-
-// The simulated-Python frontend is selectable + emits a run event, but the
-// frontend→IR lowering layer (ADR-33 / ARC-15) isn't in this branch yet, so a
-// run reports an honest "not wired" result inline rather than pretending. Real
-// execution is the governed Console/REPL screen's job (#525); the lowering is
-// #522.
-repl::Result sim_python_seam() {
-    return repl::Result::failure(
-        "Simulated-Python isn't wired to the engine yet. Statements will lower "
-        "to the ExecutionGraph IR once the frontend layer lands (see #525); use "
-        "the SQL frontend for now.");
-}
-
-}  // namespace
-
-// The Console (REPL) view (CMP-6 / #524): host the reusable ReplConsole
-// component over this node. The App only supplies the run handler (the "run
-// event" sink) — SQL through the query service, simulated-Python through the
-// honest seam — and the component owns the rest (selector, editor, transcript,
-// grid). Held state lives in console_model_, so a future CLI renders the same
-// session.
+// The governed Console/REPL screen (SCR-8 / #525): host the reusable CMP-6
+// ReplConsole component over this node, routing every statement through the
+// governed run handler (zetta-core repl::GovernedConsole). Governance — the
+// capability check against the acting key, the simulated-Python → IR lowering +
+// correctness gate, and the audit record — lives in the core component, so this
+// screen only supplies the session inputs (acting key + current database) and the
+// "Run as" selector. Held state lives in console_model_, so a future CLI renders
+// the same session against the same GovernedConsole.
 void App::draw_console() {
-    ImGui::SeparatorText("Console (REPL)");
+    ImGui::SeparatorText("Console (REPL) · governed");
     ImGui::TextDisabled(
-        "Run SQL or simulated-Python against this node. Unqualified SQL names "
-        "use the selected database (%s); use db.table to target another.",
+        "Run SQL or simulated-Python against this node, governed: every statement "
+        "is capability-scoped against the acting key and recorded in the audit "
+        "trail; simulated-Python lowers to the execution-graph IR and must pass the "
+        "correctness gate before it runs. Unqualified SQL names use the selected "
+        "database (%s).",
         selected_db_.empty() ? "none" : selected_db_.c_str());
 
+    // "Run as" — the acting key the session is capability-scoped against. The
+    // default is an unauthenticated local session ("" key id): statements run + are
+    // audited with no enforcement, so the basic path is frictionless. Selecting a
+    // key enforces its capabilities (a key lacking the right blocks the statement,
+    // which is still audited). Keys are listed straight off the node's principals
+    // (the same source as the Admin panel), re-read each frame so a freshly issued
+    // key appears and a dropped one can't leave a dangling selection.
+    struct KeyChoice {
+        std::string id;     // "" = unauthenticated local
+        std::string label;  // selector display
+    };
+    std::vector<KeyChoice> choices;
+    choices.push_back({"", "(unauthenticated local)"});
+    bool selection_live = console_session_key_.empty();
+    for (const auto& principal : node_.principals()) {
+        for (const auto& key : principal->keys()) {
+            const std::string short_key = key->id().substr(0, key->id().find('-'));
+            std::string label = principal->name() + " · key " + short_key;
+            if (key->id() == console_session_key_) selection_live = true;
+            choices.push_back({key->id(), std::move(label)});
+        }
+    }
+    // A previously selected key that has since been dropped falls back to local.
+    if (!selection_live) console_session_key_.clear();
+
+    std::string current_label = "(unauthenticated local)";
+    for (const KeyChoice& choice : choices) {
+        if (choice.id == console_session_key_) current_label = choice.label;
+    }
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 22.0f);
+    if (ImGui::BeginCombo("Run as", current_label.c_str())) {
+        for (const KeyChoice& choice : choices) {
+            const bool selected = choice.id == console_session_key_;
+            if (ImGui::Selectable(choice.label.c_str(), selected)) {
+                console_session_key_ = choice.id;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    // Feed the session inputs into the governed runner, then forward the run.
+    governed_console_->set_session_key(console_session_key_);
+    governed_console_->set_database(selected_db_);
     const repl::RunHandler run =
         [this](repl::Frontend frontend,
                const std::string& source) -> repl::Result {
-        switch (frontend) {
-            case repl::Frontend::Sql:
-                return sql_result(*query_, source, selected_db_);
-            case repl::Frontend::SimPython:
-                return sim_python_seam();
-        }
-        return repl::Result::failure("unknown frontend");
+        return governed_console_->run(frontend, source);
     };
 
     console_->draw(*console_model_, run, mono_font_);

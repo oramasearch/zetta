@@ -30,6 +30,7 @@
 #include "zetta/project.hpp"
 #include "zetta/project_graph.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/repl/governed_console.hpp"
 #include "zetta/run.hpp"
 #include "zetta/scaling_policy.hpp"
 #include "zetta/scope.hpp"
@@ -169,6 +170,8 @@ App::App(Node& node, Cluster& cluster)
       query_(std::make_unique<query::QueryService>(node, &cluster)),
       console_model_(std::make_unique<repl::ConsoleModel>()),
       console_(std::make_unique<ReplConsole>()),
+      governed_console_(
+          std::make_unique<repl::GovernedConsole>(node, *query_)),
       gate_graph_input_(kExampleGraphJson) {
     // Seed the console with a runnable SQL example so the passing path is one
     // click away (cleared on first Run, like any REPL prompt).
