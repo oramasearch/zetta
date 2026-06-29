@@ -53,7 +53,11 @@ language text into a templated `connect→clean→model→index→serve→act` p
 **Python** lowers to the same IR through the simulated-Python *language frontend*
 (`zetta::input::PythonFrontend` — `ds = load_dataset(...); m = train(ds, ...)` →
 typed steps + data-flow edges; zetta re-implements the shape, it never runs
-Python; see [docs/python-frontend.md](docs/python-frontend.md)). The headed
+Python; see [docs/python-frontend.md](docs/python-frontend.md)). The `datasets`
+shim makes `load_dataset("<path>", columns=[...])` real — it decodes the parquet
+with zetta's native reader into a (partitioned) table (HuggingFace `datasets` is
+the fidelity reference only, never run; see
+[docs/datasets-shim.md](docs/datasets-shim.md)). The headed
 **Console (REPL)** view runs SQL or simulated-Python against a node interactively
 and **governed**: every statement is capability-scoped against the acting key,
 simulated-Python lowers to the IR and must pass the correctness gate before it
