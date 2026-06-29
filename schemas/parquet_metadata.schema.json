@@ -1,0 +1,130 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "columns": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "type"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "created_by": {
+      "type": "string"
+    },
+    "num_columns": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "num_rows": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "row_groups": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "columns": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "codec": {
+                  "type": "string"
+                },
+                "data_page_offset": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "dictionary_page_offset": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "encodings": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "file_offset": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "num_values": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "total_compressed_size": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_uncompressed_size": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "type": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "type",
+                "codec",
+                "encodings",
+                "num_values",
+                "total_uncompressed_size",
+                "total_compressed_size",
+                "data_page_offset",
+                "file_offset"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "num_rows": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "total_byte_size": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "num_rows",
+          "total_byte_size",
+          "columns"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "version": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "created_by",
+    "num_rows",
+    "num_columns",
+    "columns",
+    "row_groups"
+  ],
+  "title": "Parquet FileMetaData",
+  "type": "object"
+}
