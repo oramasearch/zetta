@@ -19,6 +19,7 @@
 #include "zetta/partition_writer.hpp"
 #include "zetta/partitioner.hpp"
 #include "zetta/provisioner.hpp"
+#include "zetta/query/service.hpp"
 #include "zetta/rendezvous_placement.hpp"
 #include "zetta/replicated_blob_store.hpp"
 #include "zetta/replication.hpp"
@@ -37,6 +38,7 @@ using zetta::ReplicationManager;
 using zetta::ReplicationStrategy;
 using zetta::SinglePartitioner;
 using zetta::Table;
+using zetta::query::QueryService;
 using zetta::test::TempDir;
 
 namespace {
@@ -425,4 +427,192 @@ TEST(PartitionRebalance, AddNodesWithNoNewMemberLeavesPlacement) {
     EXPECT_TRUE(result.members.empty());
 
     EXPECT_EQ(owners_by_id(*fx.node), before);  // placement unchanged
+}
+
+// ---- TC-10 (#500): the catalog reflects the new placement on EVERY node ---------
+//
+// The single-node tests above prove the rebalance *mechanism*; TC-10's make-or-break
+// clause is that, in a real cluster, after a node joins the
+// `system.dataset_partitions` catalog converges to the *identical* new placement on
+// **every** node — partitions replicate through the CRDT, so a re-placement captured
+// on the writer reconciles onto its peers. Two replicated nodes here: the writer (A)
+// partitions a table and drives the join via the production tick auto-trigger; the
+// peer (B) inherits the rebalanced catalog by merging A's document and ticking. We
+// then assert both nodes' SQL views agree, the new node took ~1/N, the replication
+// factor held, and the row ranges still tile [0, total) on both.
+
+namespace {
+
+// A node's placement read through the queryable `system.dataset_partitions` view —
+// the catalog as the product exposes it. Keyed by the catalog row id (`part:<uuid>`,
+// stable across nodes since it is the CRDT key), so two nodes' maps compare directly.
+struct SqlPlacement {
+    std::map<std::string, std::string> owners_by_part;  // part id -> "n1, n2"
+    std::map<std::string, int> rf_by_part;              // part id -> owner_count
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;  // [start, end)
+    std::size_t owned_by(const std::string& node_id) const {
+        std::size_t count = 0;
+        for (const auto& [part, owners] : owners_by_part) {
+            if (owners.find(node_id) != std::string::npos) ++count;
+        }
+        return count;
+    }
+};
+
+SqlPlacement placement_via_sql(Node& node) {
+    QueryService service{node};
+    const auto out = service.run(
+        "SELECT partition_id, owner_nodes, owner_count, row_start, row_end "
+        "FROM system.dataset_partitions;",
+        "");
+    EXPECT_TRUE(out.ok()) << out.error;
+    SqlPlacement placement;
+    for (const nlohmann::json& row : out.rows) {
+        const std::string part = row.at("partition_id").get<std::string>();
+        placement.owners_by_part[part] = row.at("owner_nodes").get<std::string>();
+        placement.rf_by_part[part] = row.at("owner_count").get<int>();
+        placement.ranges.emplace_back(row.at("row_start").get<std::uint64_t>(),
+                                      row.at("row_end").get<std::uint64_t>());
+    }
+    std::sort(placement.ranges.begin(), placement.ranges.end());
+    return placement;
+}
+
+// Assert a set of [start, end) ranges tiles [0, total) with no gap or overlap.
+void expect_sql_ranges_tile(const SqlPlacement& placement, std::uint64_t total) {
+    std::uint64_t expected_start = 0;
+    for (const auto& [start, end] : placement.ranges) {
+        EXPECT_EQ(start, expected_start) << "ranges must be contiguous";
+        EXPECT_GT(end, start) << "a recorded partition holds at least one row";
+        expected_start = end;
+    }
+    EXPECT_EQ(expected_start, total) << "ranges must cover the whole table";
+}
+
+}  // namespace
+
+TEST(PartitionRebalance, CatalogConvergesOnEveryNodeAfterJoin) {
+    // --- the writer (A): a partitioned table over 3 members ----------------------
+    TempDir dir_a;
+    Fixture fx{dir_a, /*count=*/60};
+    fx.table->set_partitioner(std::make_shared<RendezvousPlacement>(
+        /*partition_count=*/64, /*replication_factor=*/1));
+
+    const std::vector<std::string> members{"node-a", "node-b", "node-c"};
+    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+                                                members);
+    ASSERT_TRUE(write.ok()) << write.error;
+    ASSERT_GT(write.partitions.size(), 3u);
+    const std::uint64_t total_rows = write.rows_written;
+
+    // --- a peer (B): converges to A's initial placement --------------------------
+    TempDir dir_b;
+    const std::string id_b = zetta::new_uuid();
+    ReplicationManager repl_b{id_b};
+    Node node_b{config_for(dir_b), &repl_b};
+    node_b.start();
+
+    auto gossip_a_to_b = [&] {
+        repl_b.merge(fx.replication.save());
+        node_b.tick();  // reconcile merged part:/lo: keys into B's catalog
+    };
+    gossip_a_to_b();
+
+    const SqlPlacement a_initial = placement_via_sql(*fx.node);
+    const SqlPlacement b_initial = placement_via_sql(node_b);
+    ASSERT_FALSE(a_initial.owners_by_part.empty());
+    EXPECT_EQ(a_initial.owners_by_part, b_initial.owners_by_part)
+        << "initial placement must already match on every node";
+
+    // --- a node joins: the production tick auto-trigger rebalances on A ----------
+    // Membership is replicated `node:<id>` state. Seed the write-time members and
+    // tick to baseline them (the first observation never rebalances, and the
+    // partitions were placed over exactly these members → a no-op recompute).
+    for (const auto& member : members) {
+        fx.replication.set("node:" + member,
+                           nlohmann::json{{"address", member + ":7777"}});
+    }
+    fx.node->tick();
+
+    // node-d joins → membership delta → rebalance between jobs, captured into A's
+    // CRDT and gossiped to B.
+    fx.replication.set("node:node-d",
+                       nlohmann::json{{"address", "node-d:7777"}});
+    fx.node->tick();
+    gossip_a_to_b();
+
+    // --- the acceptance: identical new placement on every node -------------------
+    const SqlPlacement a_after = placement_via_sql(*fx.node);
+    const SqlPlacement b_after = placement_via_sql(node_b);
+
+    // Same set of partitions, same owners, same replication factor — on both nodes.
+    EXPECT_EQ(a_after.owners_by_part, b_after.owners_by_part)
+        << "the rebalanced catalog must be identical on every node";
+    EXPECT_EQ(a_after.rf_by_part, b_after.rf_by_part);
+    EXPECT_EQ(a_after.owners_by_part.size(), a_initial.owners_by_part.size())
+        << "no partition is lost or invented by a rebalance";
+
+    // The new node took a share, but only ~1/N (the HRW win), on both nodes.
+    const std::size_t a_owned_by_d = a_after.owned_by("node-d");
+    EXPECT_GT(a_owned_by_d, 0u) << "the joiner took a share of the partitions";
+    EXPECT_LT(a_owned_by_d, a_after.owners_by_part.size()) << "not a full rehash";
+    EXPECT_EQ(b_after.owned_by("node-d"), a_owned_by_d);
+
+    // Replication factor preserved (rf = 1), every owner a live member, on both.
+    for (const auto& [part, count] : a_after.rf_by_part) {
+        EXPECT_EQ(count, 1) << "rf preserved for " << part;
+    }
+
+    // Every row remains readable exactly once — the ranges still tile, on both.
+    expect_sql_ranges_tile(a_after, total_rows);
+    expect_sql_ranges_tile(b_after, total_rows);
+
+    node_b.stop();
+}
+
+// ---- the "(or leaves)" clause: a departing node sheds its partitions ------------
+//
+// The auto-trigger fires on joins today (append-only node:<id> keys — the documented
+// membership debt), but the rebalance library function handles any membership delta.
+// When a node leaves, its partitions must re-place onto the survivors (no row is
+// stranded on the departed node) while rf and the row tiling hold.
+
+TEST(PartitionRebalance, LeaveReassignsPartitionsAwayFromDepartedNode) {
+    TempDir tmp;
+    Fixture fx{tmp, /*count=*/60};
+    fx.table->set_partitioner(std::make_shared<RendezvousPlacement>(
+        /*partition_count=*/64, /*replication_factor=*/2));
+
+    const std::vector<std::string> members{"node-a", "node-b", "node-c", "node-d"};
+    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+                                                members);
+    ASSERT_TRUE(write.ok()) << write.error;
+
+    // Before: node-d owns a share of the (rf=2) partitions.
+    std::size_t owned_by_d_before = 0;
+    for (const auto& partition : fx.node->dataset_partitions()) {
+        if (as_set(partition->owner_nodes()).count("node-d")) ++owned_by_d_before;
+    }
+    ASSERT_GT(owned_by_d_before, 0u);
+
+    // node-d leaves: rebalance against the survivors.
+    const std::vector<std::string> survivors{"node-a", "node-b", "node-c"};
+    const RebalanceResult result =
+        zetta::rebalance_partitions(*fx.node, survivors, members);
+    EXPECT_GT(result.moved, 0u);
+
+    const std::set<std::string> survivor_set = as_set(survivors);
+    for (const auto& partition : fx.node->dataset_partitions()) {
+        const std::set<std::string> owners = as_set(partition->owner_nodes());
+        // No partition references the departed node...
+        EXPECT_FALSE(owners.count("node-d")) << "no row stranded on the departed node";
+        // ...rf is preserved (still two distinct live owners)...
+        EXPECT_EQ(partition->owner_nodes().size(), 2u);
+        EXPECT_EQ(owners.size(), 2u) << "owners are distinct";
+        for (const auto& owner : owners) {
+            EXPECT_TRUE(survivor_set.count(owner)) << owner << " is a survivor";
+        }
+    }
+    // ...and every row still tiles exactly once.
+    expect_ranges_tile(*fx.node, write.rows_written);
 }
