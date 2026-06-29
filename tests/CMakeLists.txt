@@ -30,6 +30,7 @@ add_executable(zetta-tests
   test_deployment.cpp
   test_deployment_controller.cpp
   test_provisioner.cpp
+  test_add_nodes.cpp
   test_local_provisioner.cpp
   test_azure_provisioner.cpp
   test_aws_provisioner.cpp

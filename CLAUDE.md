@@ -1696,6 +1696,24 @@ returns the current cluster nodes); `teardown` is a **no-op returning false**
 The autoscaler that consumes the seam is unbuilt, and nothing here
 persists/replicates yet. See [docs/provisioner.md](docs/provisioner.md).
 
+The **permanent-add control entry point** is **`zetta::add_nodes`**
+(`include/zetta/add_nodes.hpp`, **#518**) — the plain "add 10 nodes to this
+cluster" action over the `Provisioner` seam. `add_nodes(provider, count, spec)`
+drives a provisioner (the cloud-burst `AzureProvisioner`, or any backend) to bring
+up N nodes that **auto-join via the seed-peer handshake and persist as ordinary
+`node:<id>` members** — the existing cluster-membership + replication path (so it
+keeps **no parallel roster**), now automatic with the cloud provisioner. It is the
+**permanent sibling** of the [job autoscaler](#job-autoscaler-zettajobautoscaler):
+both consume the same `Provisioner&`, but `add_nodes` **only provisions and reports
+— it never tears a member down or revokes an identity**, so the members it adds
+stay (elastic / autoscaler / cost-cap burst is deliberately deferred). Identity is
+the provisioner's concern (its `IdentityHooks`, unrevoked because nothing is torn
+down). Vendor-neutral (programs against the abstract seam); best-effort (the
+`AddNodesResult` lists what came up). The control command rides a validated
+`AddNodesRequest` (`{ count, spec }`) JSON boundary (the hand-written non-throwing
+`from_json` pattern of `NodeCapability`/`AzureConfig`, mirroring
+`schemas/add_nodes_request.schema.json`). See [docs/add-nodes.md](docs/add-nodes.md).
+
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
 consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
 guarding **RSK-9** "runaway burst cost"; #379). It is a `Provisioner` **decorator**
@@ -1968,6 +1986,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
+  add_nodes.hpp             zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518)
   burst_provisioner.hpp     zetta::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
@@ -2087,6 +2106,7 @@ src/core/                   zetta-core impl
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
+  add_nodes.cpp             zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518)
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
   azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
   azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
@@ -2467,6 +2487,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/scaling-policy.md`](docs/scaling-policy.md) — the job objective / reward model (`zetta::ScalingPolicy`): a per-job autoscaler objective (minimize cost / runtime-latency target / data shape) with bounds (min/max nodes, cost cap) + objective evaluation over (progress, elapsed, cost) samples (ADR-29 / ENT-34, #370).
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
 - [`docs/job-autoscaler.md`](docs/job-autoscaler.md) — the autoscaler control loop (`zetta::JobAutoscaler`): each tick observe a running `ComputeJob`'s progress, score it with the job's `ScalingPolicy`, and add/remove nodes through the `Provisioner` seam within bounds, with hysteresis (anti-thrash) + immediate cost-cap shed; reads live membership each tick (elastic) and degrades to best-effort max utilization on given hardware; schema-validated `AutoscalerConfig` (ADR-29 / ARC-11, #371).
+- [`docs/add-nodes.md`](docs/add-nodes.md) — the **permanent-add control entry point** (`zetta::add_nodes`, #518): the "add 10 nodes to this cluster" action over the `Provisioner` seam — drive a provisioner (the cloud-burst `AzureProvisioner`, or any backend) to bring up N nodes that auto-join via the seed-peer handshake and persist as ordinary `node:<id>` members (the existing membership + replication path, no parallel roster). The *permanent* sibling of the [autoscaler](docs/job-autoscaler.md): provision-and-report only, **never** tearing a member down or revoking — elastic / cost-cap burst deferred; vendor-neutral; validated `AddNodesRequest` JSON boundary.
 - [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
 - [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.
