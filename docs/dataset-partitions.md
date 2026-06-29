@@ -11,11 +11,16 @@ This page documents the **replicate-to-all slice** built in
 [#510](https://github.com/oramasearch/zetta/issues/510): the `DatasetPartition`
 type, its `part:<uuid>` CRDT key, how it reconciles onto every node, its
 JSON-Schema boundary, and the read-only **`system.dataset_partitions`** SQL view
-that exposes it. **Out of scope here** (later slices): the *partitioner* that
-actually splits a table into partitions and writes their bodies, locality-aware
-reads that route a scan to a partition's owner, and re-balancing placement across
-the fleet. This slice is **storage + provenance + replication of the catalog
-only** — recording and replicating where data lives, not moving it.
+that exposes it. This slice is **storage + provenance + replication of the catalog
+only** — recording and replicating where data lives.
+
+The catalog's `owner_nodes` is now **acted on** by blob replication
+([#515](https://github.com/oramasearch/zetta/issues/515)): a partition's backing
+body (`blob_ref`) is fetched and held **only by its owner node(s)**, not replicated
+to all — see [sharded-blob-placement.md](sharded-blob-placement.md). **Out of scope
+here** (later slices): the *partitioner* that actually splits a table into
+partitions and writes their bodies, locality-aware reads that route a scan to a
+partition's owner, and re-balancing placement across the fleet.
 
 It is modeled **exactly like** [`zetta::ComputeJob`](compute-jobs.md) /
 [`zetta::Run`](runs.md): a top-level entity keyed by id, a flat CRDT key + on-disk

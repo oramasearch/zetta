@@ -1,13 +1,17 @@
 #include "zetta/replicated_blob_store.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <system_error>
+#include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/dataset_partition.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/sha256.hpp"
 
@@ -16,9 +20,56 @@
 namespace zetta {
 namespace fs = std::filesystem;
 
+namespace {
+
+// Build the partition-owner index from a CRDT snapshot: maps a large object's
+// body id (the bare uuid, no `lo:` prefix) to the node ids that own the
+// partition backed by it. Reads the replicate-to-all partition catalog (`part:`
+// keys — the same source `system.dataset_partitions` is computed from) through
+// the validated boundary, so a malformed catalog entry is ignored, not trusted.
+//
+// Only partitions whose placement is recorded (a non-empty `owner_nodes`) and
+// that name a backing blob (`blob_ref`) appear. An unplaced partition (empty
+// `owner_nodes`) is absent, so its body falls back to the default
+// replicate-to-all rule rather than being stranded with no owner to fetch it.
+// `blob_ref` is normalized to the bare id, tolerating either the `lo:<uuid>`
+// catalog-key form or a bare `<uuid>`.
+std::unordered_map<std::string, std::vector<std::string>> partition_owner_index(
+    const nlohmann::json& snapshot) {
+    std::unordered_map<std::string, std::vector<std::string>> owners;
+    for (const auto& [key, value] : snapshot.items()) {
+        if (catalog::id_after(key, catalog::kPartitionPrefix).empty()) continue;
+        const std::optional<DatasetPartitionValue> partition =
+            parse_dataset_partition_value(value);
+        if (!partition || partition->owner_nodes.empty() ||
+            partition->blob_ref.empty()) {
+            continue;
+        }
+        const std::string bare =
+            catalog::id_after(partition->blob_ref, catalog::kLargeObjectPrefix);
+        const std::string& large_object_id =
+            bare.empty() ? partition->blob_ref : bare;
+        std::vector<std::string>& nodes = owners[large_object_id];
+        nodes.insert(nodes.end(), partition->owner_nodes.begin(),
+                     partition->owner_nodes.end());
+    }
+    return owners;
+}
+
+}  // namespace
+
 ReplicatedBlobStore::ReplicatedBlobStore(fs::path data_dir,
                                          ReplicationManager& replication)
     : data_dir_(std::move(data_dir)), replication_(replication) {}
+
+bool ReplicatedBlobStore::node_holds_partition_blob(
+    const std::unordered_map<std::string, std::vector<std::string>>& owners,
+    const std::string& large_object_id) const {
+    const auto it = owners.find(large_object_id);
+    if (it == owners.end()) return true;  // not a placed partition body
+    return std::find(it->second.begin(), it->second.end(),
+                     replication_.node_id()) != it->second.end();
+}
 
 fs::path ReplicatedBlobStore::blob_path(const std::string& database_id,
                                         const std::string& id) const {
@@ -30,8 +81,7 @@ fs::path ReplicatedBlobStore::weights_path(const std::string& model_id) const {
 }
 
 std::optional<ReplicatedBlobStore::BlobTarget> ReplicatedBlobStore::resolve(
-    const std::string& id) const {
-    const nlohmann::json snapshot = replication_.snapshot();
+    const nlohmann::json& snapshot, const std::string& id) const {
     // Build a target from a body path + the metadata to verify against. `size` /
     // `sha256` are optional — an object imported before SHA-256 existed carries
     // an empty hash, verified by size only.
@@ -64,11 +114,17 @@ std::optional<ReplicatedBlobStore::BlobTarget> ReplicatedBlobStore::resolve(
 
 std::vector<std::string> ReplicatedBlobStore::missing_blobs() const {
     const nlohmann::json snapshot = replication_.snapshot();
+    const std::unordered_map<std::string, std::vector<std::string>> owners =
+        partition_owner_index(snapshot);
     std::vector<std::string> missing;
     for (const auto& [key, value] : snapshot.items()) {
         std::error_code ec;
         if (std::string id = catalog::id_after(key, catalog::kLargeObjectPrefix);
             !id.empty() && value.is_object() && value.contains("db")) {
+            // Partition-aware placement: a partition's body is fetched only by
+            // its owner nodes; a plain object (or unplaced partition) still
+            // replicates to all.
+            if (!node_holds_partition_blob(owners, id)) continue;
             if (!fs::exists(blob_path(value["db"].get<std::string>(), id), ec)) {
                 missing.push_back(std::move(id));
             }
@@ -86,7 +142,7 @@ std::vector<std::string> ReplicatedBlobStore::missing_blobs() const {
 
 std::optional<std::string> ReplicatedBlobStore::read_blob(
     const std::string& id) const {
-    const std::optional<BlobTarget> target = resolve(id);
+    const std::optional<BlobTarget> target = resolve(replication_.snapshot(), id);
     if (!target) return std::nullopt;
     std::ifstream in(target->path, std::ios::binary);
     if (!in) return std::nullopt;
@@ -96,8 +152,15 @@ std::optional<std::string> ReplicatedBlobStore::read_blob(
 
 bool ReplicatedBlobStore::store_blob(const std::string& id,
                                      const std::string& bytes) {
-    const std::optional<BlobTarget> target = resolve(id);
+    const nlohmann::json snapshot = replication_.snapshot();
+    const std::optional<BlobTarget> target = resolve(snapshot, id);
     if (!target) return false;  // no metadata for this id — refuse
+    // Partition-aware placement: only a partition's owner nodes hold its body.
+    // Defense-in-depth — a non-owner never requests it, so this rejects only an
+    // unsolicited push, keeping a partition body off non-owners.
+    if (!node_holds_partition_blob(partition_owner_index(snapshot), id)) {
+        return false;
+    }
     // Verify against the replicated metadata; a mismatch is dropped, not stored.
     if (target->has_size && bytes.size() != target->size) return false;
     // Only enforce the hash when one was recorded. Objects imported before
