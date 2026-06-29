@@ -137,6 +137,14 @@ appended to `example_scripts()` (and, for a real-engine pipeline, a custom
 `StepExecutor` is the natural next extension to `run_example_script`, the way
 [`ChurnStepExecutor`](churn-step-executor.md) injects into a `GraphExecutor`).
 
+Some of those cases land first as **non-example** test-suite cases, where the engine
+binding already exists but the *sim-Python* verb does not. **TC-10** is the first:
+the [partition rebalance](partition-rebalance.md) is a real engine path (#517), so it
+ships now as the `cluster.partition_rebalance` distributed case
+([test-suite.md](test-suite.md)) + the `CatalogConvergesOnEveryNodeAfterJoin` gtest,
+not an example script — a sim-Python rendering follows whenever a partitioning verb
+joins the [frontend](python-frontend.md).
+
 ## Run it
 
 ```bash

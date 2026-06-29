@@ -119,6 +119,14 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("rows", 600);
     });
     EXPECT_EQ(near_data.outcome, TestOutcome::Pass) << near_data.error;
+    // TC-10: a partitioned table rebalances on a node join and the catalog converges
+    // on every node (run with replicas to exercise the rf-preserved path).
+    const TestResult rebalance = run("cluster.partition_rebalance", [](TestOptions& o) {
+        o.set_int("nodes", 3);
+        o.set_int("rf", 2);
+        o.set_int("rows", 120);
+    });
+    EXPECT_EQ(rebalance.outcome, TestOutcome::Pass) << rebalance.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {

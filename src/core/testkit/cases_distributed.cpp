@@ -1,7 +1,10 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,17 +18,24 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/local_group_by_job.hpp"
 #include "zetta/ddf/ops.hpp"
 #include "zetta/node.hpp"
+#include "zetta/partition_rebalance.hpp"
 #include "zetta/partition_writer.hpp"
 #include "zetta/partitioner.hpp"
+#include "zetta/query/service.hpp"
+#include "zetta/rendezvous_placement.hpp"
+#include "zetta/replication.hpp"
+#include "zetta/replication_strategy.hpp"
 #include "zetta/storage/json_store.hpp"
 #include "zetta/table.hpp"
 #include "zetta/testkit/harness.hpp"
 #include "zetta/testkit/test_suite.hpp"
+#include "zetta/uuid.hpp"
 
 // Distributed & cluster cases — run on a real, fully-connected multi-node loopback
 // cluster (TCP on 127.0.0.1), not a simulation: cluster membership formation, the
@@ -366,6 +376,183 @@ TestResult run_compute_near_data(const TestOptions& options, TestContext& contex
     return result;
 }
 
+// --- TC-10 (#500): partition placement + rebalance-on-node-join ------------------
+
+// A node's placement read through the queryable `system.dataset_partitions` view,
+// keyed by the catalog row id (`part:<uuid>`, the CRDT key — stable across nodes).
+struct Placement {
+    std::map<std::string, std::string> owners;  // part id -> "n1, n2"
+    std::map<std::string, int> rf;              // part id -> owner_count
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;  // [start, end)
+
+    std::size_t owned_by(const std::string& node_id) const {
+        std::size_t count = 0;
+        for (const auto& [part, owner_list] : owners) {
+            if (owner_list.find(node_id) != std::string::npos) ++count;
+        }
+        return count;
+    }
+    // Do the ranges tile [0, total) with no gap / overlap (every row readable once)?
+    bool tiles(std::uint64_t total) const {
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> sorted = ranges;
+        std::sort(sorted.begin(), sorted.end());
+        std::uint64_t expected = 0;
+        for (const auto& [start, end] : sorted) {
+            if (start != expected || end <= start) return false;
+            expected = end;
+        }
+        return expected == total;
+    }
+};
+
+std::optional<Placement> read_placement(Node& node) {
+    query::QueryService service{node};
+    const auto out = service.run(
+        "SELECT partition_id, owner_nodes, owner_count, row_start, row_end "
+        "FROM system.dataset_partitions;",
+        "");
+    if (!out.ok()) return std::nullopt;
+    Placement placement;
+    for (const nlohmann::json& row : out.rows) {
+        const std::string part = row.at("partition_id").get<std::string>();
+        placement.owners[part] = row.at("owner_nodes").get<std::string>();
+        placement.rf[part] = row.at("owner_count").get<int>();
+        placement.ranges.emplace_back(row.at("row_start").get<std::uint64_t>(),
+                                      row.at("row_end").get<std::uint64_t>());
+    }
+    return placement;
+}
+
+// A partitioned table on a writer node converges its catalog to a peer (both
+// replicated); when a node joins, the rebalance re-places ~1/N of the partitions
+// and the new placement reflects on **every** node, with rows still readable. This
+// is the cluster-level acceptance of TC-10 (#500) — the gtest counterpart is
+// tests/test_partition_rebalance.cpp::CatalogConvergesOnEveryNodeAfterJoin.
+TestResult run_partition_rebalance(const TestOptions& options, TestContext& context) {
+    const std::size_t write_members =
+        static_cast<std::size_t>(std::min<long>(6, std::max<long>(1,
+            options.get_int("nodes", 3))));
+    const std::size_t replication_factor =
+        static_cast<std::size_t>(std::min<long>(static_cast<long>(write_members),
+            std::max<long>(1, options.get_int("rf", 1))));
+    const std::size_t rows =
+        static_cast<std::size_t>(std::max<long>(1, options.get_int("rows", 120)));
+
+    // Two replicated nodes: the writer (A) and a peer (B). No TCP — convergence is
+    // driven by merging A's CRDT document into B and reconciling on tick(), the
+    // deterministic form of the gossip path.
+    ScratchDir dir_a;
+    ScratchDir dir_b;
+    ReplicationManager repl_a{new_uuid()};
+    ReplicationManager repl_b{new_uuid()};
+    NodeConfig cfg_a;
+    cfg_a.data_dir = dir_a.path().string();
+    cfg_a.preflight = false;
+    NodeConfig cfg_b;
+    cfg_b.data_dir = dir_b.path().string();
+    cfg_b.preflight = false;
+    Node writer{cfg_a, &repl_a};
+    Node peer{cfg_b, &repl_b};
+    writer.start();
+    peer.start();
+
+    auto gossip = [&] {
+        repl_b.merge(repl_a.save());
+        peer.tick();
+    };
+
+    // The writer partitions a table over `write_members`.
+    context.emit("partitioning " + std::to_string(rows) + " rows over " +
+                 std::to_string(write_members) + " members (rf=" +
+                 std::to_string(replication_factor) + ")");
+    std::shared_ptr<Database> database = writer.create_database("warehouse");
+    std::shared_ptr<Table> table =
+        database->create_table("events", ReplicationStrategy::partitioned());
+    table->set_partitioner(std::make_shared<RendezvousPlacement>(
+        /*partition_count=*/64, replication_factor));
+    for (std::size_t i = 0; i < rows; ++i) {
+        table->add_row(nlohmann::json{{"id", "row-" + std::to_string(i)},
+                                      {"n", static_cast<long>(i)}});
+    }
+
+    std::vector<std::string> members;
+    for (std::size_t i = 0; i < write_members; ++i) {
+        members.push_back("node-" + std::to_string(i));
+    }
+    const auto write =
+        zetta::write_partitioned(writer, *database, *table, members);
+    if (!write.ok()) return TestResult::fail("partitioned write failed: " + write.error);
+    if (write.partitions.size() < 2) {
+        return TestResult::fail("expected a spread of partitions, got " +
+                                std::to_string(write.partitions.size()));
+    }
+    const std::uint64_t total_rows = write.rows_written;
+
+    // The peer converges to the initial placement.
+    gossip();
+    const auto a_initial = read_placement(writer);
+    const auto b_initial = read_placement(peer);
+    if (!a_initial || !b_initial) return TestResult::fail("could not read the catalog");
+    if (a_initial->owners != b_initial->owners) {
+        return TestResult::fail("initial placement diverged across nodes");
+    }
+
+    // A node joins; the writer rebalances and the peer reconciles the new placement.
+    const std::string joiner = "node-" + std::to_string(write_members);
+    std::vector<std::string> grown = members;
+    grown.push_back(joiner);
+    context.emit(joiner + " joins — rebalancing between jobs");
+    const RebalanceResult rebalanced =
+        zetta::rebalance_partitions(writer, grown, members);
+    if (rebalanced.moved == 0) {
+        return TestResult::fail("the join moved no partitions");
+    }
+    gossip();
+
+    // The acceptance: the new placement is identical on every node, the joiner took
+    // ~1/N (not a full rehash), rf held, and the rows still tile [0, total).
+    const auto a_after = read_placement(writer);
+    const auto b_after = read_placement(peer);
+    if (!a_after || !b_after) return TestResult::fail("could not read the catalog");
+    if (a_after->owners != b_after->owners) {
+        return TestResult::fail("the rebalanced catalog diverged across nodes");
+    }
+    if (a_after->owners.size() != a_initial->owners.size()) {
+        return TestResult::fail("a rebalance lost or invented a partition");
+    }
+    const std::size_t owned_by_joiner = a_after->owned_by(joiner);
+    if (owned_by_joiner == 0) {
+        return TestResult::fail("the joiner took no partitions");
+    }
+    if (owned_by_joiner >= a_after->owners.size()) {
+        return TestResult::fail("the join triggered a full rehash, not ~1/N");
+    }
+    if (b_after->owned_by(joiner) != owned_by_joiner) {
+        return TestResult::fail("the joiner's share disagreed across nodes");
+    }
+    for (const auto& [part, count] : a_after->rf) {
+        if (static_cast<std::size_t>(count) != replication_factor) {
+            return TestResult::fail("replication factor not preserved for " + part);
+        }
+    }
+    if (!a_after->tiles(total_rows) || !b_after->tiles(total_rows)) {
+        return TestResult::fail("rows no longer tile [0, total) after the rebalance");
+    }
+
+    peer.stop();
+    writer.stop();
+
+    TestResult result = TestResult::pass(
+        "the rebalanced catalog is identical on every node; the joiner took ~1/N "
+        "and every row stays readable");
+    result.metric("write members", std::to_string(write_members))
+        .metric("replication factor", std::to_string(replication_factor))
+        .metric("partitions", std::to_string(a_after->owners.size()))
+        .metric("moved to joiner", std::to_string(owned_by_joiner))
+        .metric("rows", std::to_string(total_rows));
+    return result;
+}
+
 }  // namespace
 
 void register_distributed_cases(TestSuite& suite) {
@@ -414,6 +601,20 @@ void register_distributed_cases(TestSuite& suite) {
                     TestOption::integer("groups", "Distinct groups", 5, 1, 512),
                     TestOption::integer("partitions", "Partitions per node", 8, 1, 256)},
         .run = run_compute_near_data,
+    });
+    suite.add(TestCase{
+        .id = "cluster.partition_rebalance",
+        .category = TestCategory::Distributed,
+        .name = "Partition rebalance on node join (TC-10)",
+        .description = "Partition a table across the cluster; when a node joins, the "
+                       "rendezvous rebalance re-places ~1/N of the partitions and the "
+                       "new placement reflects in system.dataset_partitions on every "
+                       "node, with the replication factor preserved and every row "
+                       "still readable exactly once.",
+        .options = {TestOption::integer("nodes", "Write members", 3, 1, 6),
+                    TestOption::integer("rf", "Replication factor", 1, 1, 3),
+                    TestOption::integer("rows", "Rows", 120, 1, 1000000)},
+        .run = run_partition_rebalance,
     });
 }
 

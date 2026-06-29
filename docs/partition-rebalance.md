@@ -19,9 +19,16 @@ After adding one node to a cluster of N:
   property: a partition only moves if the new node wins its top-`rf` weight, which
   happens for a `~rf/(N+1)` fraction of partitions. (The classic "≈1/N" is the
   `rf = 1` case.)
+- **The new placement reflects on every node.** A re-placement captured on the node
+  that ran the rebalance is replicated state (`part:<id>` in the CRDT), so it
+  reconciles onto every peer — the [`system.dataset_partitions`](dataset-partitions.md)
+  catalog converges to the *identical* placement on each node, with no per-node
+  coordination (the recompute is deterministic, so a peer that observes the same
+  membership delta independently arrives at the same answer).
 - **Every row remains readable exactly once** — the catalog keeps tiling every row
   with exactly `rf` owners apiece (rebalance never touches `row_range`; it only
-  re-places ownership).
+  re-places ownership). On a node **leave**, the same recompute sheds the departed
+  node's partitions onto the survivors (no row stranded), `rf` and the tiling held.
 
 ## How it works
 
@@ -157,6 +164,22 @@ validated field.
   tears a member down.
 - **`AddNodesWithNoNewMemberLeavesPlacement`** — a zero / best-effort-short add brings
   up no new member, so there is no membership delta and the catalog is unchanged.
+- **`CatalogConvergesOnEveryNodeAfterJoin`** (**TC-10** / [#500](https://github.com/oramasearch/zetta/issues/500))
+  — two **replicated** nodes: the writer partitions a table over 3 members, the peer
+  converges to the initial catalog, then a join drives the production tick rebalance
+  on the writer; after the peer reconciles, **both nodes' `system.dataset_partitions`
+  views are queried and asserted identical** — same partitions, same owners, same
+  `rf` — with the joiner owning a non-trivial-but-not-all share and the row ranges
+  still tiling `[0, total)` on every node.
+- **`LeaveReassignsPartitionsAwayFromDepartedNode`** — the "(or leaves)" clause at
+  the library level: after a node leaves, no partition references it, `rf` is
+  preserved across the survivors, and the rows still tile.
+
+The same acceptance is also a runnable **in-app test-suite case** —
+`cluster.partition_rebalance` ("Partition rebalance on node join (TC-10)") under
+**Operations → Test suite** ([docs/test-suite.md](test-suite.md)) — so it can be
+exercised headless (`tests/test_testkit.cpp`) and from the GUI with tunable members
+/ replication-factor / rows.
 
 ## Where it lives
 
