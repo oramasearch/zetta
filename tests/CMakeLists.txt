@@ -87,6 +87,7 @@ add_executable(zetta-tests
   test_n8n_import.cpp
   test_n8n_compile.cpp
   test_parquet_snappy.cpp
+  test_python_frontend.cpp
   test_runtime.cpp
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp
