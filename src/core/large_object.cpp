@@ -88,19 +88,23 @@ void LargeObjectStore::sort_objects() {
 std::optional<LargeObject> LargeObjectStore::import_file(const fs::path& src) {
     const auto bytes = read_bytes(src);
     if (!bytes) return std::nullopt;
+    return import_bytes(src.filename().string(), *bytes);
+}
 
+std::optional<LargeObject> LargeObjectStore::import_bytes(std::string name,
+                                                          const std::string& bytes) {
     LargeObject lo;
     lo.id = new_uuid();
-    lo.name = src.filename().string();
-    lo.size = bytes->size();
-    lo.sha256 = sha256_hex(*bytes);
+    lo.name = std::move(name);
+    lo.size = bytes.size();
+    lo.sha256 = sha256_hex(bytes);
     lo.body_present = true;
 
     const fs::path obj = object_dir(lo.id);
     std::error_code ec;
     fs::create_directories(obj, ec);
     if (ec) return std::nullopt;
-    if (!write_bytes(obj / "blob", *bytes)) return std::nullopt;
+    if (!write_bytes(obj / "blob", bytes)) return std::nullopt;
     write_meta(lo);
 
     // Capture the metadata into the CRDT (the body transfers separately).

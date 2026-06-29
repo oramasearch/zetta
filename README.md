@@ -107,9 +107,15 @@ its bytes, the row range, column stats, and owner nodes) replicated as
 `part:<uuid>`. The catalog is **replicate-to-all** so placement is globally
 visible: a partition recorded on one node appears on every node, queryable via the
 read-only `system.dataset_partitions` table (see
-[docs/dataset-partitions.md](docs/dataset-partitions.md)). The catalog's owner set
-now drives **sharded blob placement**: a partition's large-object **body** is
-fetched + held only by its owner node(s) (`rf` owners → exactly `rf` copies),
+[docs/dataset-partitions.md](docs/dataset-partitions.md)). The
+**partitioned write path** (`zetta::write_partitioned`) fills that catalog: for a
+table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to
+a partition, serializes each non-empty partition's rows to a JSON Lines blob,
+stores it as a large object (peer-to-peer + SHA-256-verified), and records a
+`DatasetPartition` entry per partition — N blobs + N catalog rows (see
+[docs/partitioned-write-path.md](docs/partitioned-write-path.md)). The catalog's
+owner set now drives **sharded blob placement**: a partition's large-object **body**
+is fetched + held only by its owner node(s) (`rf` owners → exactly `rf` copies),
 instead of replicate-to-all (see
 [docs/sharded-blob-placement.md](docs/sharded-blob-placement.md)).
 The **`Provisioner`** seam (`zetta::Provisioner`) plus a node **capability model**

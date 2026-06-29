@@ -17,7 +17,9 @@ persistence/replication and the placement half are separate, dependent slices:
 - **the partition catalog** — `system.dataset_partitions`, the replicated record
   of where each partition landed — `#510`.
 - **the partitioned write path** — rows → partition → blob, placement recorded —
-  `#511`.
+  **`#511`, built** (`zetta::write_partitioned`, see
+  [partitioned-write-path.md](partitioned-write-path.md)): it drives both halves of
+  this seam over a partitioned table's rows.
 - **rebalance on membership change** — `#517`; **compute-near-data** (a DDF op
   runs over the node's local partitions) — `#516`.
 
@@ -263,10 +265,13 @@ std::shared_ptr<Partitioner> Table::partitioner() const;  // empty = not partiti
 The default is an **empty handle** — a table is *not partitioned* until one is
 set, and `set_partitioner(nullptr)` un-partitions it. This is **in-memory
 configuration only**: persisting the selection (so a table is still partitioned
-after restart) and recording the resulting placements are the partition catalog
-(`#510`) and the partitioned write path (`#511`). Nothing is written to disk or
-the CRDT here — but the partitioner's *config* now serializes (below) so `#511`
-can persist + replicate the choice.
+after restart) is still a later slice, but the resulting placements **are**
+recorded — the [partitioned write path](partitioned-write-path.md) (`#511`) reads a
+configured table's rows and lays them out as partitions (blobs + a
+[`system.dataset_partitions`](dataset-partitions.md) catalog entry each). Setting a
+partitioner writes nothing to disk or the CRDT here — but the partitioner's
+*config* serializes (below), and the write path is what turns the configured
+table into recorded partitions.
 
 ## JSON config boundary (`#513`)
 

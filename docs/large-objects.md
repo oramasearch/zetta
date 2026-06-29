@@ -32,6 +32,7 @@ Modeled on PostgreSQL's large object API. A `LargeObjectStore` belongs to a
 | zetta | Postgres analog | Notes |
 |---|---|---|
 | `import_file(path)` | `lo_import` | reads the file, assigns a UUID id, returns metadata |
+| `import_bytes(name, bytes)` | `lo_from_bytea` | stores in-memory bytes as a new object (no source file) — same fingerprint + CRDT capture as `import_file`; used by the [partitioned write path](partitioned-write-path.md) to store a partition's serialized rows |
 | `export_file(id, path)` | `lo_export` | writes the blob to a path |
 | `read(id)` | `lo_get` / `loread` | returns the raw bytes |
 | `unlink(id)` | `lo_unlink` | deletes the object |
