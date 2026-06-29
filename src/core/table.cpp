@@ -38,6 +38,10 @@ bool Table::materialize_row(std::string row_id, nlohmann::json doc) {
 
 std::size_t Table::row_count() const { return store_->size(); }
 
+void Table::set_partitioner(std::shared_ptr<Partitioner> partitioner) {
+    partitioner_ = std::move(partitioner);
+}
+
 void Table::persist_meta() const {
     const nlohmann::json meta{{"id", id_}, {"name", name_}};
     std::ofstream out(dir_ / "table.json", std::ios::trunc);

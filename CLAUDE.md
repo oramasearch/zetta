@@ -289,6 +289,32 @@ disk, chunked) and `zetta::JsonStore` (in-memory only; kept for a future
 `:memory:` mode). **New engines implement `StorageEngine`; query/indexes land
 behind it** — and don't let SDL/ImGui types leak into `zetta-core`.
 
+### Partitioning (`zetta::Partitioner`)
+
+A table can be **partitioned** behind the **`Partitioner`** seam
+(`include/zetta/partitioner.hpp`, **ADR-31 / ENT-37**, #512) — the pluggable,
+per-table policy that decides **data placement**, the way `StorageEngine` decides
+how rows are stored. It has two pure, non-throwing responsibilities over a
+**fixed partition count `P` (chosen `P >> nodes`)**: **record → partition**
+(`assign_partition(record) -> PartitionId`, always in `[0, P)`) and **partition →
+node(s)** (`place_partition(partition, members) -> owner node id(s)`, the first
+the primary owner + any replicas, given the current cluster `members` from
+`Cluster::nodes()`). Holding `P` fixed is what lets rebalancing move whole
+partitions (as blobs) between nodes on a membership change rather than rehashing
+every row, and determinism (every node computes the same placement, no election)
+is what lets the leaderless cluster agree. A `Table` is **configured per-table**
+with one via `set_partitioner`/`partitioner` (empty handle = not partitioned, the
+default). The trivial baseline `zetta::SinglePartitioner` is the identity — one
+partition holding every row, owned by **every** member (replicate-to-all) — so
+configuring it changes nothing while exercising both halves of the seam. This
+slice is the **seam + trivial impl + in-memory config only**, with **no new JSON
+boundary**: the concrete strategies (`HashPartitioner`/`RoundRobinPartitioner`
+#513, `RendezvousPlacement` #514), the replicated **partition catalog**
+(`system.dataset_partitions`, #510), and the **partitioned write path** (#511 —
+which persists the selection + records placements) are dependent slices; a learned
+**model-as-partitioner** is a documented future direction behind the same seam.
+See [docs/partitioner.md](docs/partitioner.md).
+
 ### Async runtime (`zetta::runtime`)
 
 zetta's async / coroutine / networking layer lives behind
@@ -2002,7 +2028,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
   churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
-  table.hpp                 zetta::Table — owns a storage engine (its rows)
+  table.hpp                 zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
+  partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
@@ -2423,6 +2450,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
 - [`docs/jobs-panel.md`](docs/jobs-panel.md) — the headed **Compute Jobs panel** (`App::draw_jobs`, FEAT-5 / SCR): live `system.zetta_jobs` (ComputeJobs + status) + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (set the reward, add/remove nodes); pairs with the trained-Model + metrics + ranked drivers in the Runs panel.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
+- [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. Interface + the trivial `SinglePartitioner` baseline + `Table::set_partitioner`; the concrete strategies (Hash/RoundRobin #513, Rendezvous placement #514), the partition catalog (#510), and the partitioned write path (#511) are dependent slices. No new JSON boundary in this slice.
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
