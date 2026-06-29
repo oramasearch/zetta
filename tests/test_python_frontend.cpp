@@ -140,6 +140,37 @@ TEST(PythonFrontend, MapsKnownVerbsAndMissesUnknown) {
     EXPECT_FALSE(python_step_kind("totally_made_up").has_value());
 }
 
+// The cluster + ML bindings (#522) lower to the stage whose engine op they name:
+// `train` trains a model (model), inference ranks entities (index), `explain` is
+// TreeSHAP (serve), and `add_nodes` is a cluster control action (act).
+TEST(PythonFrontend, BindsClusterAndMlVerbsToTheRightStages) {
+    EXPECT_EQ(python_step_kind("train"), StepKind::Model);    // native GBDT
+    EXPECT_EQ(python_step_kind("rank"), StepKind::Index);     // batch scoring / rank
+    EXPECT_EQ(python_step_kind("score"), StepKind::Index);    // inference, not training
+    EXPECT_EQ(python_step_kind("predict"), StepKind::Index);  // inference, not training
+    EXPECT_EQ(python_step_kind("explain"), StepKind::Serve);  // TreeSHAP
+    EXPECT_EQ(python_step_kind("add_nodes"), StepKind::Act);  // permanent-add control
+}
+
+// `cluster.add_nodes(n, provider=)` lowers to a single `act`-stage step keyed by
+// the method name — the receiver `cluster` (an unbound name) creates no spurious
+// node — carrying the count + provider as `python` provenance.
+TEST(PythonFrontend, ClusterAddNodesLowersToASingleActStep) {
+    const FrontendResult result =
+        compile_python("cluster.add_nodes(3, provider='azure')\n");
+    ASSERT_TRUE(result.ok()) << result.error;
+
+    EXPECT_EQ(result.graph.node_count(), 1u);
+    EXPECT_EQ(result.graph.edge_count(), 0u);
+    const auto add = result.graph.find_node("add_nodes");
+    ASSERT_TRUE(add);
+    EXPECT_EQ(add->kind, StepKind::Act);
+    const auto& python = add->attributes["python"];
+    EXPECT_EQ(python["call"], "add_nodes");
+    EXPECT_EQ(python["args"][0], 3);
+    EXPECT_EQ(python["kwargs"]["provider"], "azure");
+}
+
 // An unmapped verb still becomes a step, defaulting to Clean — so an arbitrary
 // script lowers to a well-formed graph rather than failing.
 TEST(PythonFrontend, UnknownVerbDefaultsToClean) {

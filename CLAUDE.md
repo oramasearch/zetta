@@ -1553,6 +1553,29 @@ trust boundary), so the output round-trips through `ir::from_json` and passes
 other frontend's. Wiring it into a top-level input dispatch (GUI auto-detect
 Python vs SQL) is a later slice. See [docs/python-frontend.md](docs/python-frontend.md).
 
+The **cluster + ML verbs are bound to the engine** (#522): the verb table is
+**engine-faithful**, lowering each verb to the stage whose real operation it names,
+so the lowered step runs the right work end-to-end. Training and inference are
+**different stages** — `train`/`fit`/`calibrate` → `model` (the native
+[GBDT trainer](docs/gbdt.md) the [`ChurnStepExecutor`](#graph-execution-run-a-graph--a-run)
+runs in the model step), while `score`/`predict`/`rank` → `index` (the distributed
+[batch-scoring / rank-at-risk](docs/gbdt-score.md) job it runs in the index step) —
+`explain` → `serve` (exact [TreeSHAP](docs/tree-shap.md), the churn-driver job it
+runs in the serve step), and `add_nodes` → `act` (provisioning is a cluster side
+effect). The three ML verbs need **no new execution code** — a lowered sim-Python
+churn script runs through [`run_churn_solution`](docs/churn-solution.md) like the
+catalog blueprint, producing a real `Model` + ranked at-risk list + drivers.
+`cluster.add_nodes(n, provider=)` is the one **control** verb (not a data step): the
+frontend lowers it to an `act` node (recording `n` + `provider=` in the `python`
+provenance bag), and the matching execution binding
+**`zetta::input::run_add_nodes_step`** (`include/zetta/input/cluster_bindings.hpp`)
+reads the count and drives the permanent-add control action
+[`zetta::add_nodes`](docs/add-nodes.md). **Cloud stays consent-gated** — the
+`provider=` value is provenance only; the `Provisioner&` is **injected** by the host
+(which owns the per-action cloud consent gate), never constructed from the string.
+**No new JSON format** (the provenance bag rides the validated IR boundary; the
+`AddNodesRequest` has its own). See [docs/python-frontend.md](docs/python-frontend.md).
+
 ### Correctness gate (`zetta::CorrectnessGate`)
 
 The **correctness-gate runner** (`include/zetta/gate.hpp`) is the piece that joins
@@ -2252,7 +2275,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   n8n_compile.hpp           zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
   input/
     language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
-    python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the verb table, refs/receivers→data-flow edges); not a Python runtime (#520)
+    python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522)
+    cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::add_nodes (provider injected, cloud consent-gated) (#522)
   uuid.hpp                  zetta::new_uuid() — v4 UUID for folder names
   sha256.hpp                zetta::sha256_hex — large-object body fingerprint
   timestamp.hpp             zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
@@ -2335,7 +2359,8 @@ src/core/                   zetta-core impl
   n8n_import.cpp            zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
   n8n_compile.cpp           zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
   input/
-    python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the python_step_kind verb table (#520)
+    python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the engine-faithful python_step_kind verb table (#520/#522)
+    cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count — read the count from a lowered cluster.add_nodes IR node + drive zetta::add_nodes (#522)
   deployment_target.cpp     zetta::DeploymentTarget — names + JSON (boundary-validated)
   deployment.cpp            zetta::Deployment — persist deployment.json
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
@@ -2699,7 +2724,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python an honest "not wired yet" seam until the frontend→IR lowering layer lands (#522); results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it next.
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
-- [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The IR-targeting analogue of the query layer's `Dialect`.
+- [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520) **+ its cluster/ML engine bindings** (#522): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the engine-faithful `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The verbs bind to real engine ops — `train`→`model` ([GBDT](docs/gbdt.md)), `score`/`predict`/`rank`→`index` ([batch scoring](docs/gbdt-score.md)), `explain`→`serve` ([TreeSHAP](docs/tree-shap.md)) all run through the [`ChurnStepExecutor`](docs/churn-step-executor.md); `cluster.add_nodes(n, provider=)`→`act` runs through `zetta::input::run_add_nodes_step` → the permanent-add control action [`zetta::add_nodes`](docs/add-nodes.md) (cloud consent-gated: the `Provisioner&` is injected). The IR-targeting analogue of the query layer's `Dialect`.
 - [`docs/validation.md`](docs/validation.md) — the `ValidationReport` correctness-gate result type (ENT-5/FEAT-3).
 - [`docs/gate.md`](docs/gate.md) — the correctness-gate runner (`zetta::CorrectnessGate`): checks → report, block deploy on failure (RULE-1).
 - [`docs/gate-checks.md`](docs/gate-checks.md) — the concrete graph checks (`schema_type`, `data_leakage`): schema/type vs. source profiles + data-leakage / point-in-time for ML steps (#309).

@@ -132,19 +132,75 @@ verb is a hard miss (`std::nullopt`) — `PythonFrontend` then defaults it to
 |---|---|
 | `connect` | `load_dataset`, `load`, `read_csv`, `read_sql`, `read_json`, `read_parquet`, `read_table`, `connect`, `source`, `fetch`, `extract`, `open` |
 | `clean` | `clean`, `dropna`, `fillna`, `normalize`, `dedupe`, `transform`, `featurize`, `features`, `prepare`, `preprocess`, `filter`, `select`, `join`, `merge`, `groupby`, `aggregate`, `encode`, `scale`, `impute` |
-| `model` | `train`, `fit`, `predict`, `score`, `evaluate`, `model`, `classify`, `cluster`, `forecast`, `calibrate`, `explain` |
-| `index` | `index`, `build_index`, `embed`, `vectorize`, `upsert` |
-| `serve` | `serve`, `deploy`, `endpoint`, `expose`, `publish` |
-| `act` | `notify`, `alert`, `send`, `act`, `write`, `email`, `slack`, `webhook`, `trigger`, `export`, `save` |
+| `model` | `train`, `fit`, `evaluate`, `model`, `classify`, `cluster`, `forecast`, `calibrate` |
+| `index` | `index`, `build_index`, `embed`, `vectorize`, `upsert`, `rank`, `score`, `predict` |
+| `serve` | `serve`, `deploy`, `endpoint`, `expose`, `publish`, `explain` |
+| `act` | `notify`, `alert`, `send`, `act`, `write`, `email`, `slack`, `webhook`, `trigger`, `export`, `save`, `add_nodes`, `add_node` |
+
+The mapping is **engine-faithful**, not just lexical — each verb lowers to the
+stage whose engine operation it names, so the lowered step runs the right work
+(see [Engine bindings](#engine-bindings) below). In particular, training and
+inference are **different stages**: `train` / `fit` / `calibrate` lower to `model`
+(the native GBDT trainer the [`ChurnStepExecutor`](churn-step-executor.md) runs in
+the model step), while applying a trained model — `score` / `predict` / `rank` —
+lowers to `index` (the score job / at-risk list the executor runs in the index
+step). `explain` lowers to `serve` (TreeSHAP — the churn-driver explain job the
+executor runs in the serve step), and `add_nodes` lowers to `act` (provisioning is
+a side effect on the cluster).
+
+## Engine bindings
+
+Lowering is only half the story — a verb has to **execute the right work**, not
+just carry the right `StepKind` label (#522, "bind the sim-Python surface to the
+engine"). The cluster + ML verbs bind to their engine operations through the
+seams that already exist:
+
+| Sim-Python | Lowers to | Executes as | Engine operation |
+|---|---|---|---|
+| `train(ds, target=…)` | `model` | [`ChurnStepExecutor`](churn-step-executor.md)`::run_model` | native distributed [GBDT train](gbdt.md) → a real [`Model`](models.md) |
+| `rank(model)` / `score(…)` | `index` | `ChurnStepExecutor::run_index` | distributed [batch scoring / rank-at-risk](gbdt-score.md) |
+| `explain(model)` | `serve` | `ChurnStepExecutor::run_serve` | exact [TreeSHAP](tree-shap.md) (per-entity + population drivers) |
+| `cluster.add_nodes(n, provider=…)` | `act` | `zetta::input::run_add_nodes_step` | the permanent-add control action [`zetta::add_nodes`](add-nodes.md) |
+
+The three ML verbs need **no new execution code**: because they lower to the
+`model` / `index` / `serve` steps the `ChurnStepExecutor` already interprets, a
+lowered sim-Python churn script runs end-to-end through
+[`run_churn_solution`](churn-solution.md) exactly like the catalog blueprint —
+producing a real trained `Model`, the ranked at-risk list, and the churn drivers.
+
+`cluster.add_nodes` is the one verb that is **not** a data-pipeline step — it is a
+cluster control action. The frontend lowers it to an `act`-stage node (recording
+`n` + `provider=` in the `python` provenance bag), and the matching execution
+binding `zetta::input::run_add_nodes_step` (`include/zetta/input/cluster_bindings.hpp`)
+reads the count from that node and drives `zetta::add_nodes`:
+
+```cpp
+zetta::input::FrontendResult lowered =
+    zetta::input::PythonFrontend{}.compile("cluster.add_nodes(3, provider='azure')");
+const auto* step = lowered.graph.find_node("add_nodes").get();
+zetta::AddNodesResult added = zetta::input::run_add_nodes_step(*step, provisioner);
+// added.members.size() == 3 (best-effort)
+```
+
+**Cloud stays consent-gated.** The `provider="azure"` argument names *which*
+backend the author intended and rides as provenance only; `run_add_nodes_step`
+does **not** construct a cloud provisioner from it. The `Provisioner&` is injected
+by the host — the layer that owns the per-action [cloud consent gate](../CLAUDE.md)
+— so the binding only ever drives a provisioner it was handed (a fake in tests, a
+real one a consenting caller already holds). And it adds **no new JSON format**:
+the `python` provenance bag rides inside the IR node's free-form `attributes`,
+already validated by the [IR JSON boundary](execution-graph.md), and the
+[`AddNodesRequest`](add-nodes.md) it drives has its own validated boundary.
 
 ## Scope / later slices
 
-This slice is the **parser + lowering** only. Wiring it into a top-level input
-dispatch (so the GUI query box / new-project import auto-detects Python vs SQL and
-routes to the right frontend) is a later slice, as is growing the grammar (binary
-expressions, control flow as control edges, richer literal capture). The produced
-IR already executes through the existing [`GraphExecutor`](execution.md) and
-passes the [gate](gate.md) — no executor changes are needed.
+This frontend is the **parser + lowering**, plus the cluster control binding
+above. Wiring it into a top-level input dispatch (so the GUI query box /
+new-project import auto-detects Python vs SQL and routes to the right frontend) is
+a later slice, as is growing the grammar (binary expressions, control flow as
+control edges, richer literal capture). The produced IR already executes through
+the existing [`GraphExecutor`](execution.md) / `ChurnStepExecutor` and passes the
+[gate](gate.md) — no orchestrator changes are needed.
 
 ## Files
 
@@ -152,8 +208,15 @@ passes the [gate](gate.md) — no executor changes are needed.
   `FrontendResult` (ENT-38 / ADR-33).
 - `include/zetta/input/python_frontend.hpp` — `PythonFrontend` + `python_step_kind`.
 - `src/core/input/python_frontend.cpp` — the non-throwing tokenizer +
-  recursive-descent parser + the AST → IR lowering.
-- `tests/test_python_frontend.cpp` — the acceptance + the subset coverage.
+  recursive-descent parser + the AST → IR lowering + the verb table.
+- `include/zetta/input/cluster_bindings.hpp` /
+  `src/core/input/cluster_bindings.cpp` — the cluster control binding:
+  `run_add_nodes_step` (a lowered `cluster.add_nodes` IR node → `zetta::add_nodes`)
+  + `add_nodes_count` (#522).
+- `tests/test_python_frontend.cpp` — the lowering acceptance + the subset coverage.
+- `tests/test_python_engine_bindings.cpp` — the #522 end-to-end acceptance: a
+  lowered sim-Python churn script runs through the real engine, and a lowered
+  `cluster.add_nodes` step drives `zetta::add_nodes`.
 
 ## See also
 
