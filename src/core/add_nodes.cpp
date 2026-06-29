@@ -1,7 +1,12 @@
 #include "zetta/add_nodes.hpp"
 
 #include <cstdint>
+#include <set>
 #include <utility>
+#include <vector>
+
+#include "zetta/node.hpp"
+#include "zetta/partition_rebalance.hpp"
 
 namespace zetta {
 
@@ -71,6 +76,39 @@ AddNodesResult add_nodes(Provisioner& provider, const AddNodesRequest& request) 
 AddNodesResult add_nodes(Provisioner& provider, std::size_t count,
                          const NodeCapability& spec) {
     return add_nodes(provider, AddNodesRequest{count, spec});
+}
+
+AddNodesResult add_nodes(Node& node, Provisioner& provider,
+                         const AddNodesRequest& request) {
+    // Provision first (the Provisioner-only path), then wire the membership change
+    // to the between-jobs rebalance (#519).
+    AddNodesResult result = add_nodes(provider, request);
+
+    // The previous membership is this node's current replicated node:<id> set; the
+    // grown membership adds the just-provisioned members (their node_id IS the
+    // cluster/CRDT id). Dedup into a sorted set so a re-add of an already-present
+    // member doesn't double-count, and so we can tell whether anything new came up.
+    const std::vector<std::string> previous = node.cluster_members();
+    std::set<std::string> grown(previous.begin(), previous.end());
+    bool added_member = false;
+    for (const ProvisionedNode& member : result.members) {
+        if (!member.node_id.empty() && grown.insert(member.node_id).second) {
+            added_member = true;
+        }
+    }
+
+    // Nothing new joined (a zero / best-effort-short add, or an idempotent re-add)
+    // — there is no membership delta, so leave placement untouched.
+    if (added_member) {
+        const std::vector<std::string> members(grown.begin(), grown.end());
+        rebalance_partitions(node, members, previous);
+    }
+    return result;
+}
+
+AddNodesResult add_nodes(Node& node, Provisioner& provider, std::size_t count,
+                         const NodeCapability& spec) {
+    return add_nodes(node, provider, AddNodesRequest{count, spec});
 }
 
 }  // namespace zetta

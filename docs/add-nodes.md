@@ -65,6 +65,52 @@ provision simply persists (it is never revoked). A burst provisioner mints
 *short-lived* identities; a provisioner configured for permanent members mints
 durable ones. `add_nodes` is identity-agnostic and stays out of that choice.
 
+## Rebalance partitions onto the new members (#519)
+
+Adding nodes changes the cluster membership — but the
+[partition catalog](dataset-partitions.md) still records the **old** owners, so the
+existing data stays on the original nodes until something re-places it. The
+`Node`-aware overloads **wire the node-management action to the
+[between-jobs rebalance pass](partition-rebalance.md)** so the data spreads onto the
+new nodes as a direct, synchronous consequence of the add:
+
+```cpp
+AddNodesResult add_nodes(Node& node, Provisioner& provider,
+                         const AddNodesRequest& request);
+AddNodesResult add_nodes(Node& node, Provisioner& provider, std::size_t count,
+                         const NodeCapability& spec = {});
+
+AddNodesResult added = add_nodes(node, azure, 10);  // add 10 nodes AND rebalance
+```
+
+After the provision, the overload recomputes **sharded** partition placement
+([rendezvous / HRW](partitioner.md)) against the grown membership via
+[`rebalance_partitions`](partition-rebalance.md):
+
+- **previous membership** = `node`'s current replicated `node:<id>` set
+  ([`Node::cluster_members()`](architecture.md)), which is also what leaves
+  replicate-to-all partitions untouched;
+- **grown membership** = the previous set **plus** the just-provisioned members
+  (each `ProvisionedNode::node_id` is the cluster / CRDT id), de-duplicated.
+
+So **≈ rf/N of the partitions move onto each new node** (whole partitions, no full
+rehash), and the re-placement is visible **immediately** in
+`node.dataset_partitions()` / [`system.dataset_partitions`](query.md) — the
+acceptance. The catalog moves are captured into the CRDT (so they replicate), and
+the partition **bodies follow for free** over the existing
+[sharded-blob-placement](sharded-blob-placement.md) seam (the new owner `LOREQ`s
+the body; a non-owner refuses it). When nothing new came up — a zero / best-effort-
+short add, or an idempotent re-add of already-present members — there is no
+membership delta and the rebalance is **skipped**.
+
+The existing [`Node::tick()` membership auto-trigger](partition-rebalance.md#the-auto-trigger-between-jobs)
+(#517) stays as the **safety net**: once the new nodes actually boot, join, and
+gossip their `node:<id>` keys in, the next `tick()` re-confirms the placement against
+the **real** replicated membership — idempotent, moving nothing the direct pass
+already placed (and correcting it should a reported member never actually join). The
+Provisioner-only overloads above are unchanged (no `Node`, no rebalance) for callers
+that only want to bring nodes up.
+
 ## Behaviour
 
 | | |
@@ -126,7 +172,15 @@ fake `Provisioner`:
   rejects malformed documents (non-object, missing / negative / wrong-typed `count`,
   an invalid embedded `spec`).
 
+The **rebalance wiring** (#519) is covered in
+`tests/test_partition_rebalance.cpp` (alongside the rebalance pass it drives):
+`add_nodes(node, …)` over a partitioned table spreads ≈ rf/N of the partitions onto
+the new member (verified through `node.dataset_partitions()`), keeps every row
+covered exactly once, and never tears a member down; a zero / best-effort-short add
+leaves placement untouched.
+
 See also [provisioner.md](provisioner.md) (the seam + the Local backend),
 [azure-provisioner.md](azure-provisioner.md) (the reference cloud backend
-`add_nodes` drives), [job-autoscaler.md](job-autoscaler.md) (the elastic sibling),
-and [cluster.md](cluster.md) (the membership the added nodes join).
+`add_nodes` drives), [partition-rebalance.md](partition-rebalance.md) (the rebalance
+pass `add_nodes(node, …)` triggers), [job-autoscaler.md](job-autoscaler.md) (the
+elastic sibling), and [cluster.md](cluster.md) (the membership the added nodes join).

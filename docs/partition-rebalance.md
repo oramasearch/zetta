@@ -63,7 +63,24 @@ catalog defines ownership, so "readable exactly once / `rf` owners" holds at the
 catalog level. Physical garbage collection of the demoted copy is a possible
 follow-up.
 
-## The auto-trigger (between jobs)
+## Two triggers
+
+The rebalance pass fires from two places, which compose:
+
+### The direct trigger — `add_nodes` (#519)
+
+[`add_nodes(node, provider, …)`](add-nodes.md#rebalance-partitions-onto-the-new-members-519)
+calls `rebalance_partitions` **directly** after a successful provision, so the data
+spreads onto the new permanent members as a **synchronous, deterministic**
+consequence of the control action — `previous_members` is `node.cluster_members()`
+(the current `node:<id>` set) and `members` is that set plus the just-provisioned
+member ids. This is what makes the acceptance ("after `add_nodes(azure, N)`,
+partitions are rebalanced onto the new members") verifiable immediately, without
+waiting for the new nodes to boot and gossip their membership in. It captures the
+moved `part:` owners into the CRDT (so they replicate); `Node::tick()`'s persist step
+writes the moved document on the next tick.
+
+### The auto-trigger — `Node::tick()` (#517)
 
 Cluster membership is **replicated state** — each node seeds its own `node:<id>` key
 into the document (with its address; peers merge), so a join shows up in the CRDT
@@ -78,6 +95,14 @@ snapshot the [`Node`](architecture.md) already reconciles each `tick()`.
   with the new membership and the previous membership, then `tick()`'s persist step
   writes the moved document. A steady membership is a no-op (cheap — gated on the
   document version), so there is no feedback loop.
+
+The two compose: the direct trigger places onto the **reported** new members now; the
+auto-trigger is the **safety net** that re-confirms against the **real** replicated
+membership once those nodes actually join and gossip in — idempotent (it moves
+nothing the direct pass already placed), and self-correcting if a reported member
+never actually joins. The direct pass does not touch the tick baseline
+(`last_membership_`), so the auto-trigger's own document-version change doesn't
+re-fire it (the `node:<id>` set hasn't changed yet).
 
 The `previous_members` is used to leave **replicate-to-all** partitions untouched —
 see Scope.
@@ -125,6 +150,13 @@ validated field.
 - **`TickRebalancesWhenAMemberJoins`** — the auto-trigger end to end: a `node:<id>`
   key appearing in the document drives a rebalance on the next `tick()`, and a
   further tick with no change is idempotent.
+- **`AddNodesRebalancesOntoNewMembers`** — the #519 direct trigger:
+  `add_nodes(node, provider, N)` over a partitioned table spreads ≈ rf/N of the
+  partitions onto the new member (verified through `node.dataset_partitions()`),
+  keeps every untouched partition's exact owner, keeps the ranges tiling, and never
+  tears a member down.
+- **`AddNodesWithNoNewMemberLeavesPlacement`** — a zero / best-effort-short add brings
+  up no new member, so there is no membership delta and the catalog is unchanged.
 
 ## Where it lives
 
@@ -135,7 +167,10 @@ validated field.
   `DatasetPartition::set_owner_nodes`, the capturing owner mutator.
 - `src/core/node.cpp` — the auto-trigger
   (`Node::rebalance_partitions_on_membership_change`, driven by `Node::tick()`; the
-  membership baseline in `Node::start()`).
+  membership baseline in `Node::start()`) + `Node::cluster_members()` (the current
+  `node:<id>` membership the direct trigger feeds in as `previous_members`).
+- `include/zetta/add_nodes.hpp` / `src/core/add_nodes.cpp` — the #519 direct trigger:
+  the `add_nodes(Node&, …)` overloads that provision then drive `rebalance_partitions`.
 
 See [dataset-partitions.md](dataset-partitions.md),
 [partitioned-write-path.md](partitioned-write-path.md),
