@@ -11,6 +11,7 @@
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
 #include "zetta/cloud_inspector.hpp"
+#include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
 #include "zetta/dataset_partition.hpp"
@@ -236,6 +237,21 @@ public:
     bool drop_job(const std::string& id);
     std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
     std::size_t job_count() const { return jobs_.size(); }
+
+    // This node's durable **checkpoint store** for burst-job eviction tolerance
+    // (RULE-5 / RSK-9; see compute/checkpoint.hpp / docs/job-checkpoint.md), rooted
+    // at `<data_dir>/checkpoints`. A long-running job body (e.g. the distributed
+    // GBDT trainer) checkpoints its progress here and **resumes from the last
+    // checkpoint** after the node's process restarts. Checkpoints are **local,
+    // ephemeral** durability artifacts — NOT replicated state (a finished job's
+    // outputs are durable elsewhere; a *replacement* burst node needing a shared
+    // store is a later slice). checkpoints() lists the latest checkpoint per job —
+    // the source for the read-only `system.checkpoints` view (RULE-7).
+    compute::CheckpointStore& checkpoint_store() { return checkpoint_store_; }
+    const compute::CheckpointStore& checkpoint_store() const {
+        return checkpoint_store_;
+    }
+    std::vector<compute::JobCheckpoint> checkpoints() const;
 
     // CRUD for dataset partitions — the partition catalog (ENT-36 / TBL-13; see
     // dataset_partition.hpp / docs/dataset-partitions.md). A partition records
@@ -501,6 +517,9 @@ private:
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     IndexRegistry index_registry_;            // IndexBackend container (#528)
+    // Durable, local (non-replicated) checkpoint store for eviction tolerance
+    // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.
+    compute::FileCheckpointStore checkpoint_store_;
     DeploymentController controller_{*this};  // control plane (driven by tick())
 };
 

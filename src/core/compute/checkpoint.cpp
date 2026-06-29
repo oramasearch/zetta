@@ -235,7 +235,7 @@ CheckpointStatus FileCheckpointStore::save(const JobCheckpoint& checkpoint) {
 }
 
 std::optional<JobCheckpoint> FileCheckpointStore::latest(
-    const std::string& job_id, CheckpointStatus* status) {
+    const std::string& job_id, CheckpointStatus* status) const {
     auto set_status = [&](CheckpointStatus s) {
         if (status) *status = std::move(s);
     };

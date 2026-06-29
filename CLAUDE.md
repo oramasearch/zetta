@@ -1749,7 +1749,11 @@ querying it never triggers a cloud call) and the run + governance read views
 readable strings, no secret material) and **`system.zetta_audit`** (the immutable
 audit trail, `Node::audit_events()`) — plus **`system.dataset_partitions`** (the
 partition catalog, `Node::dataset_partitions()`: where each table's data slices
-live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13). `system` is
+live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13) and
+**`system.checkpoints`** (burst-job eviction-tolerance checkpoints,
+`Node::checkpoints()`: the latest resume checkpoint per job in this node's local
+store — kind / sequence / total / progress; ephemeral + local + not replicated, like
+`system.zetta_cloud_status`; RULE-5/#468). `system` is
 reserved (can't be created/dropped/written; no real db may be named it) and is
 where future system tables (e.g. `system.leadership`) live — **surfacing observable
 state as a `system.<table>` table is the default**, see the convention below
@@ -2588,7 +2592,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519)
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519)
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance

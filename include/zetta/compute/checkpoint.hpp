@@ -155,9 +155,9 @@ public:
     // The latest valid checkpoint for `job_id` (highest `sequence`, schema-valid,
     // hash-verified), or nullopt when none exists / all are corrupt. On a non-Ok
     // outcome `status` (when non-null) carries the reason (NotFound is expected and
-    // simply means "start fresh").
+    // simply means "start fresh"). A read — `const` so a const holder can resume.
     virtual std::optional<JobCheckpoint> latest(
-        const std::string& job_id, CheckpointStatus* status = nullptr) = 0;
+        const std::string& job_id, CheckpointStatus* status = nullptr) const = 0;
 
     // Discard every checkpoint for `job_id` (called once the job's outputs are
     // durable elsewhere, so a restart of a finished job does not resume). An
@@ -190,8 +190,9 @@ public:
     explicit FileCheckpointStore(std::filesystem::path root);
 
     CheckpointStatus save(const JobCheckpoint& checkpoint) override;
-    std::optional<JobCheckpoint> latest(const std::string& job_id,
-                                        CheckpointStatus* status = nullptr) override;
+    std::optional<JobCheckpoint> latest(
+        const std::string& job_id,
+        CheckpointStatus* status = nullptr) const override;
     CheckpointStatus clear(const std::string& job_id) override;
     std::vector<std::string> job_ids() const override;
 

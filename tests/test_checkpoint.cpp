@@ -12,9 +12,14 @@
 #include "temp_dir.hpp"
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute_job.hpp"
+#include "zetta/node.hpp"
+#include "zetta/query/service.hpp"
 #include "zetta/sha256.hpp"
 
 using zetta::JobKind;
+using zetta::Node;
+using zetta::NodeConfig;
+using zetta::query::QueryService;
 using zetta::sha256_hex;
 using zetta::compute::CheckpointCode;
 using zetta::compute::CheckpointStatus;
@@ -296,4 +301,41 @@ TEST(RunResumableRounds, PeriodicCheckpointEveryNRounds) {
     const std::optional<JobCheckpoint> latest = store.latest("p");
     ASSERT_TRUE(latest);
     EXPECT_EQ(latest->sequence, 7u);
+}
+
+// ---- system.checkpoints (RULE-7 observability view) ------------------------
+
+TEST(SystemCheckpoints, ExposesNodeCheckpointsAsAReadOnlyTable) {
+    TempDir tmp;
+    NodeConfig cfg;
+    cfg.data_dir = tmp.path().string();
+    Node node{cfg};
+    node.start();
+
+    // A node owns a local checkpoint store under <data_dir>/checkpoints.
+    ASSERT_TRUE(node.checkpoint_store().save(
+        JobCheckpoint::make("job-x", JobKind::Train, 3, 10, "state-x")));
+    ASSERT_TRUE(node.checkpoint_store().save(
+        JobCheckpoint::make("job-y", JobKind::Ddf, 1, 4, "state-y")));
+
+    QueryService svc{node};
+    auto sel = svc.run("SELECT * FROM system.checkpoints;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 2u);
+    // checkpoints() is sorted by job id (job-x before job-y).
+    EXPECT_EQ(sel.rows[0]["job_id"].get<std::string>(), "job-x");
+    EXPECT_EQ(sel.rows[0]["kind"].get<std::string>(), "train");
+    EXPECT_EQ(sel.rows[0]["sequence"].get<int>(), 3);
+    EXPECT_EQ(sel.rows[0]["total"].get<int>(), 10);
+    EXPECT_DOUBLE_EQ(sel.rows[0]["progress"].get<double>(), 0.3);
+    EXPECT_EQ(sel.rows[1]["kind"].get<std::string>(), "ddf");
+
+    // Projection + WHERE work over the computed rows like any system table.
+    auto filtered =
+        svc.run("SELECT job_id FROM system.checkpoints WHERE kind = 'ddf';", "");
+    ASSERT_TRUE(filtered.ok()) << filtered.error;
+    ASSERT_EQ(filtered.rows.size(), 1u);
+    EXPECT_EQ(filtered.rows[0]["job_id"].get<std::string>(), "job-y");
+
+    node.stop();
 }

@@ -55,7 +55,9 @@ std::vector<std::string> membership_from_snapshot(const nlohmann::json& snapshot
 }  // namespace
 
 Node::Node(NodeConfig config, ReplicationManager* replication)
-    : config_(std::move(config)), replication_(replication) {
+    : config_(std::move(config)),
+      replication_(replication),
+      checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
     // Register the always-available index backends so an `index` step resolves
     // out of the box (the per-node container the run path builds + queries
     // through, #528). InMemoryIndexBackend ("memory_search") is the pure-host
@@ -66,6 +68,22 @@ Node::Node(NodeConfig config, ReplicationManager* replication)
 #ifdef ZETTA_WITH_ORAMACORE
     index_registry_.add(std::make_shared<OramaCoreFulltextIndex>());
 #endif
+}
+
+std::vector<compute::JobCheckpoint> Node::checkpoints() const {
+    // The latest valid checkpoint per job — the read view behind system.checkpoints
+    // (RULE-7). Sorted by job id for a stable order; a checkpoint that fails to load
+    // (corrupt) is skipped, so the view shows only resumable jobs.
+    std::vector<compute::JobCheckpoint> result;
+    std::vector<std::string> ids = checkpoint_store_.job_ids();
+    std::sort(ids.begin(), ids.end());
+    for (const std::string& id : ids) {
+        if (std::optional<compute::JobCheckpoint> latest =
+                checkpoint_store_.latest(id)) {
+            result.push_back(std::move(*latest));
+        }
+    }
+    return result;
 }
 
 bool Node::start() {

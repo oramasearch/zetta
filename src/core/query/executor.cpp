@@ -61,6 +61,9 @@ namespace {
 //    one row per recorded dataset partition (where a slice of a table's data lives
 //    — its table / blob / row range / stats / owner nodes). Replicate-to-all, so
 //    every node sees the same placement (ENT-36 / TBL-13).
+//  - `checkpoints` — burst-job eviction tolerance (Node::checkpoints()): one row per
+//    job with a durable resume checkpoint in this node's LOCAL store (its kind /
+//    sequence / total / progress). Ephemeral, local, NOT replicated (RULE-5 / #468).
 // Together with the GUI Runs / Admin panels these satisfy RULE-7 (observable
 // state defaults to a system.<table> read view, never a GUI-only surface).
 // Future: system.leadership, etc.
@@ -82,6 +85,7 @@ constexpr std::string_view kPrincipalsTable = "zetta_principals";
 constexpr std::string_view kKeysTable = "zetta_keys";
 constexpr std::string_view kAuditTable = "zetta_audit";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
+constexpr std::string_view kCheckpointsTable = "checkpoints";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -477,6 +481,27 @@ std::vector<nlohmann::json> partition_rows(const Node& node) {
     return rows;
 }
 
+// One JSON row per checkpointed job for the system.checkpoints table — burst-job
+// eviction tolerance (RULE-5 / #468). Sourced from Node::checkpoints() (the latest
+// checkpoint per job in this node's LOCAL store), so it shows what is durably
+// resumable here. Checkpoints are ephemeral, local durability artifacts — NOT
+// replicated state (like system.zetta_cloud_status), so this view has no CRDT
+// backing and querying it touches only the local filesystem.
+std::vector<nlohmann::json> checkpoint_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::compute::JobCheckpoint& checkpoint : node.checkpoints()) {
+        nlohmann::json row;
+        row["job_id"] = checkpoint.job_id;
+        row["kind"] = std::string(zetta::to_string(checkpoint.kind));
+        row["sequence"] = checkpoint.sequence;
+        row["total"] = checkpoint.total;
+        row["progress"] = checkpoint.progress();
+        row["created"] = checkpoint.created;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
 QueryResult select_over_rows(const SelectStmt& statement,
@@ -863,6 +888,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kPartitionsTable) {
                         return select_over_rows(s, partition_rows(node_));
                     }
+                    if (sys == kCheckpointsTable) {
+                        return select_over_rows(s, checkpoint_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
@@ -872,6 +900,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.zetta_runs, system.zetta_principals, "
                                      "system.zetta_keys, system.zetta_audit, "
                                      "system.dataset_partitions, "
+                                     "system.checkpoints, "
                                      "system.zetta_cloud_providers, or "
                                      "system.zetta_cloud_status)");
                     }
