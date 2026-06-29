@@ -1,14 +1,20 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "temp_dir.hpp"
 #include "zetta/database.hpp"
+#include "zetta/replication_strategy.hpp"
 
 namespace fs = std::filesystem;
 using zetta::Database;
+using zetta::ReplicationStrategy;
+using zetta::ReplicationStrategyKind;
 using zetta::test::TempDir;
 
 TEST(Database, CreateFindDropTable) {
@@ -57,6 +63,62 @@ TEST(Database, DropTableRemovesFolder) {
 
     EXPECT_TRUE(db.drop_table("t"));
     EXPECT_FALSE(fs::exists(dir));
+}
+
+TEST(Database, TablesDefaultToReplicateToAll) {
+    TempDir tmp;
+    Database db{"id", "d", tmp.path()};
+    auto table = db.create_table("t");
+    ASSERT_TRUE(table);
+    EXPECT_TRUE(table->replication_strategy().is_default());
+    EXPECT_EQ(table->replication_strategy().kind(),
+              ReplicationStrategyKind::ReplicateToAll);
+    // The default is omitted from table.json (byte-identical to before).
+    std::ifstream in(table->dir() / "table.json");
+    const auto meta = nlohmann::json::parse(in);
+    EXPECT_FALSE(meta.contains("replication"));
+}
+
+TEST(Database, CreateTableWithExplicitStrategyPersistsAndReloads) {
+    TempDir tmp;
+    {
+        Database db{"id", "d", tmp.path()};
+        auto table = db.create_table(
+            "t", ReplicationStrategy::partitioned_with_replicas(2));
+        ASSERT_TRUE(table);
+        EXPECT_EQ(table->replication_strategy(),
+                  ReplicationStrategy::partitioned_with_replicas(2));
+        std::ifstream in(table->dir() / "table.json");
+        const auto meta = nlohmann::json::parse(in);
+        ASSERT_TRUE(meta.contains("replication"));
+        EXPECT_EQ(meta["replication"]["kind"], "partitioned_with_replicas");
+        EXPECT_EQ(meta["replication"]["replication_factor"], 2);
+    }
+    Database reloaded{"id", "d", tmp.path()};
+    reloaded.load();
+    auto table = reloaded.find_table("t");
+    ASSERT_TRUE(table);
+    EXPECT_EQ(table->replication_strategy(),
+              ReplicationStrategy::partitioned_with_replicas(2));
+}
+
+TEST(Database, TablesInheritDatabaseStrategyUnlessOverridden) {
+    TempDir tmp;
+    // A partitioned database: a table created with no explicit strategy inherits.
+    Database db{"id", "d", tmp.path(), nullptr,
+                ReplicationStrategy::partitioned()};
+    EXPECT_EQ(db.replication_strategy(), ReplicationStrategy::partitioned());
+
+    auto inherited = db.create_table("inherited");
+    ASSERT_TRUE(inherited);
+    EXPECT_EQ(inherited->replication_strategy(),
+              ReplicationStrategy::partitioned());
+
+    // An explicit strategy overrides the inherited default.
+    auto overridden = db.create_table(
+        "overridden", ReplicationStrategy::replicate_to_all());
+    ASSERT_TRUE(overridden);
+    EXPECT_TRUE(overridden->replication_strategy().is_default());
 }
 
 TEST(Database, LoadRebuildsTablesSortedByName) {

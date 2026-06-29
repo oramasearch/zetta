@@ -146,7 +146,8 @@ void Node::load_databases() {
         if (meta.is_discarded() || !meta.contains("name")) continue;
         auto db = std::make_shared<Database>(
             entry.path().filename().string(),
-            meta["name"].get<std::string>(), entry.path(), replication_);
+            meta["name"].get<std::string>(), entry.path(), replication_,
+            replication_strategy_from_meta(meta));
         db->load();
         databases_.push_back(std::move(db));
     }
@@ -310,27 +311,34 @@ std::shared_ptr<Principal> Node::find_principal_by_id(
     return nullptr;
 }
 
-std::shared_ptr<Database> Node::create_database(std::string name) {
+std::shared_ptr<Database> Node::create_database(
+    std::string name, ReplicationStrategy replication_strategy) {
     // "system" is reserved for the virtual system database (computed system
     // tables like system.zetta_nodes); never a real on-disk database.
     if (name.empty() || name == "system" || find_database(name)) return nullptr;
     const std::string id = new_uuid();
     if (replication_) {
-        replication_->set(catalog::database_key(id),
-                          nlohmann::json{{"name", name}});
+        // The default (ReplicateToAll) is omitted, so the db: value is unchanged
+        // from before databases carried a strategy (ENT-35).
+        nlohmann::json value{{"name", name}};
+        if (!replication_strategy.is_default()) {
+            value["replication"] = replication_strategy.to_json();
+        }
+        replication_->set(catalog::database_key(id), value);
     }
-    return materialize_database(id, std::move(name));
+    return materialize_database(id, std::move(name),
+                               std::move(replication_strategy));
 }
 
-std::shared_ptr<Database> Node::materialize_database(std::string id,
-                                                     std::string name) {
+std::shared_ptr<Database> Node::materialize_database(
+    std::string id, std::string name, ReplicationStrategy strategy) {
     if (auto existing = find_database_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
     auto db = std::make_shared<Database>(std::move(id), std::move(name), dir,
-                                         replication_);
+                                         replication_, std::move(strategy));
     db->persist_meta();
     databases_.push_back(db);
     return db;
@@ -1301,14 +1309,22 @@ void Node::migrate_to_replication() {
     const nlohmann::json snapshot = replication_->snapshot();
     for (const auto& db : databases_) {
         if (!snapshot.contains(catalog::database_key(db->id()))) {
-            replication_->set(catalog::database_key(db->id()),
-                              nlohmann::json{{"name", db->name()}});
+            // Carry the strategy (ENT-35); the default is omitted, so a
+            // ReplicateToAll database migrates to the same db: value as before.
+            nlohmann::json value{{"name", db->name()}};
+            if (!db->replication_strategy().is_default()) {
+                value["replication"] = db->replication_strategy().to_json();
+            }
+            replication_->set(catalog::database_key(db->id()), value);
         }
         for (const auto& table : db->tables()) {
             if (!snapshot.contains(catalog::table_key(table->id()))) {
-                replication_->set(
-                    catalog::table_key(table->id()),
-                    nlohmann::json{{"db", db->id()}, {"name", table->name()}});
+                nlohmann::json value{{"db", db->id()}, {"name", table->name()}};
+                if (!table->replication_strategy().is_default()) {
+                    value["replication"] =
+                        table->replication_strategy().to_json();
+                }
+                replication_->set(catalog::table_key(table->id()), value);
             }
             const StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
@@ -1430,8 +1446,14 @@ void Node::reconcile_from_replication() {
 // each kept database, so they don't split into independent helpers cleanly.
 void Node::reconcile_databases(const nlohmann::json& snapshot) {
     // Decode the flat catalog keys into desired databases / tables / rows.
-    std::map<std::string, std::string> databases;             // id -> name
-    std::map<std::string, std::pair<std::string, std::string>> tables;  // id -> (db, name)
+    struct DatabaseEntry { std::string name; ReplicationStrategy strategy; };
+    std::map<std::string, DatabaseEntry> databases;           // id -> entry
+    struct TableEntry {
+        std::string database_id;
+        std::string name;
+        ReplicationStrategy strategy;
+    };
+    std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; };
     std::map<std::string, RowEntry> rows;                     // id -> entry
     struct LargeObjectEntry {
@@ -1445,14 +1467,17 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     for (const auto& [key, value] : snapshot.items()) {
         if (std::string id = catalog::id_after(key, catalog::kDatabasePrefix);
             !id.empty() && value.is_object() && value.contains("name")) {
-            databases.emplace(std::move(id), value["name"].get<std::string>());
+            databases.emplace(std::move(id),
+                              DatabaseEntry{value["name"].get<std::string>(),
+                                            replication_strategy_from_meta(value)});
         } else if (std::string table_id =
                        catalog::id_after(key, catalog::kTablePrefix);
                    !table_id.empty() && value.is_object() &&
                    value.contains("db") && value.contains("name")) {
             tables.emplace(std::move(table_id),
-                           std::pair{value["db"].get<std::string>(),
-                                     value["name"].get<std::string>()});
+                           TableEntry{value["db"].get<std::string>(),
+                                      value["name"].get<std::string>(),
+                                      replication_strategy_from_meta(value)});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -1488,7 +1513,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
         for (const std::string& table_id : local_table_ids) {
             const auto it = tables.find(table_id);
-            if (it == tables.end() || it->second.first != db_id) {
+            if (it == tables.end() || it->second.database_id != db_id) {
                 db->materialize_drop_table(table_id);
             }
         }
@@ -1504,19 +1529,21 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
     }
 
-    // Additions / renames.
-    for (const auto& [id, name] : databases) {
+    // Additions / renames. The strategy (ENT-35) is applied when a database/table
+    // is first materialized from a peer; a peer rename only updates the name (the
+    // strategy is fixed at create time in this slice — there is no update path).
+    for (const auto& [id, entry] : databases) {
         auto db = find_database_by_id(id);
         if (!db) {
-            materialize_database(id, name);
-        } else if (db->name() != name) {
-            db->set_name(name);  // a peer renamed it (no re-capture)
+            materialize_database(id, entry.name, entry.strategy);
+        } else if (db->name() != entry.name) {
+            db->set_name(entry.name);  // a peer renamed it (no re-capture)
         }
     }
-    for (const auto& [id, db_and_name] : tables) {
-        auto db = find_database_by_id(db_and_name.first);
+    for (const auto& [id, entry] : tables) {
+        auto db = find_database_by_id(entry.database_id);
         if (db && !db->find_table_by_id(id)) {
-            db->materialize_table(id, db_and_name.second);
+            db->materialize_table(id, entry.name, entry.strategy);
         }
     }
     for (auto& [id, entry] : rows) {

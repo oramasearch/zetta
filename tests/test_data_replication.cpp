@@ -119,6 +119,75 @@ TEST(DataReplication, DataCreatedOnOneNodeAppearsOnAnothersDisk) {
     b.stop();
 }
 
+TEST(DataReplication, ReplicationStrategyTravelsToAPeerAndDisk) {
+    TempDir dir_a;
+    TempDir dir_b;
+    const std::string id_a = zetta::new_uuid();
+    const std::string id_b = zetta::new_uuid();
+
+    ReplicationManager repl_a{id_a};
+    ReplicationManager repl_b{id_b};
+    Node a{config_for(dir_a), &repl_a};
+    Node b{config_for(dir_b), &repl_b};
+    a.start();
+    b.start();
+
+    ClusterConfig cfg_a;
+    cfg_a.listen_host = "127.0.0.1";
+    cfg_a.listen_port = 43302;
+    cfg_a.port_range = 1;
+    Cluster cluster_a{id_a, cfg_a, &repl_a};
+    cluster_a.start();
+
+    ClusterConfig cfg_b;
+    cfg_b.listen_host = "127.0.0.1";
+    cfg_b.listen_port = 43303;
+    cfg_b.port_range = 1;
+    cfg_b.seeds = {"127.0.0.1:43302"};
+    Cluster cluster_b{id_b, cfg_b, &repl_b};
+    cluster_b.start();
+
+    // A partitioned-with-replicas database (ENT-35) created on node A only, plus a
+    // table that inherits its strategy.
+    using zetta::ReplicationStrategy;
+    auto shop = a.create_database(
+        "shop", ReplicationStrategy::partitioned_with_replicas(2));
+    ASSERT_TRUE(shop);
+    auto items = shop->create_table("items");  // inherits the db's strategy
+    ASSERT_TRUE(items);
+
+    // Node B converges to the same strategy on both the database and the table.
+    const bool converged = converge(a, b, [&] {
+        auto db = b.find_database("shop");
+        if (!db) return false;
+        auto table = db->find_table("items");
+        return table && db->replication_strategy() ==
+                            ReplicationStrategy::partitioned_with_replicas(2) &&
+               table->replication_strategy() ==
+                   ReplicationStrategy::partitioned_with_replicas(2);
+    });
+    ASSERT_TRUE(converged);
+
+    cluster_b.stop();
+    cluster_a.stop();
+
+    // ...and the strategy is on B's DISK: a fresh, non-replicated node reading B's
+    // data dir sees the same strategy on the database and the table.
+    Node b_reloaded{config_for(dir_b)};
+    b_reloaded.start();
+    auto reloaded_db = b_reloaded.find_database("shop");
+    ASSERT_TRUE(reloaded_db);
+    EXPECT_EQ(reloaded_db->replication_strategy(),
+              ReplicationStrategy::partitioned_with_replicas(2));
+    auto reloaded_items = reloaded_db->find_table("items");
+    ASSERT_TRUE(reloaded_items);
+    EXPECT_EQ(reloaded_items->replication_strategy(),
+              ReplicationStrategy::partitioned_with_replicas(2));
+
+    a.stop();
+    b.stop();
+}
+
 TEST(DataReplication, ReplicatedDocumentPersistsAcrossRestart) {
     TempDir dir;
     const std::string node_id = zetta::new_uuid();

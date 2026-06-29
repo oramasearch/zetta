@@ -3,10 +3,12 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "zetta/large_object.hpp"
+#include "zetta/replication_strategy.hpp"
 #include "zetta/table.hpp"
 
 namespace zetta {
@@ -22,11 +24,21 @@ class ReplicationManager;
 class Database {
 public:
     Database(std::string id, std::string name, std::filesystem::path dir,
-             ReplicationManager* replication = nullptr);
+             ReplicationManager* replication = nullptr,
+             ReplicationStrategy replication_strategy = {});
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
     const std::filesystem::path& dir() const { return dir_; }
+
+    // How this database's replicated state is laid out across the cluster
+    // (ENT-35). Defaults to ReplicateToAll — the behavior every database has
+    // today. A table created without its own strategy inherits the database's.
+    // Recorded + persisted + replicated; the partitioned-placement engine that
+    // acts on a non-default strategy is a later slice. See replication_strategy.hpp.
+    const ReplicationStrategy& replication_strategy() const {
+        return replication_strategy_;
+    }
 
     // Rename the database (rewrites database.json; the folder/id is unchanged).
     void set_name(std::string name);
@@ -38,11 +50,17 @@ public:
     void persist_meta() const;
 
     // Create a table (folder + table.json on disk + captured into the CRDT);
-    // returns an empty handle if the name is empty or already taken.
-    std::shared_ptr<Table> create_table(std::string name);
+    // returns an empty handle if the name is empty or already taken. With no
+    // explicit strategy the table inherits this database's replication strategy
+    // (ENT-35); pass one to override per table.
+    std::shared_ptr<Table> create_table(
+        std::string name,
+        std::optional<ReplicationStrategy> replication_strategy = std::nullopt);
     // Apply a replicated table (from a peer) with a given id, without capturing.
-    // Returns the existing handle if already present.
-    std::shared_ptr<Table> materialize_table(std::string id, std::string name);
+    // Returns the existing handle if already present. The strategy carried in the
+    // replicated value is passed through (default ReplicateToAll).
+    std::shared_ptr<Table> materialize_table(
+        std::string id, std::string name, ReplicationStrategy strategy = {});
     // Find a table by name, or an empty handle.
     std::shared_ptr<Table> find_table(const std::string& name) const;
     // Find a table by its id (UUID), or an empty handle.
@@ -68,6 +86,7 @@ private:
     std::vector<std::shared_ptr<Table>> tables_;
     LargeObjectStore large_objects_;
     ReplicationManager* replication_;  // null = not replicated
+    ReplicationStrategy replication_strategy_;  // ENT-35; default ReplicateToAll
 };
 
 }  // namespace zetta
