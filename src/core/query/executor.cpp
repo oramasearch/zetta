@@ -61,6 +61,12 @@ namespace {
 //    one row per recorded dataset partition (where a slice of a table's data lives
 //    — its table / blob / row range / stats / owner nodes). Replicate-to-all, so
 //    every node sees the same placement (ENT-36 / TBL-13).
+//  - `datasets` — datasets surfaced as a first-class primitive (Node::datasets();
+//    #585). One row per dataset (a table + its data) aggregating its schema, row
+//    count, on-disk size, storage format, replication strategy, and partition
+//    placement across the cluster (which node owns which partition — joined from the
+//    replicate-to-all partition catalog). Computed live from the tree + the catalog,
+//    so it never drifts (RULE-7).
 //  - `checkpoints` — burst-job eviction tolerance (Node::checkpoints()): one row per
 //    job with a durable resume checkpoint in this node's LOCAL store (its kind /
 //    sequence / total / progress). Ephemeral, local, NOT replicated (RULE-5 / #468).
@@ -85,6 +91,7 @@ constexpr std::string_view kPrincipalsTable = "zetta_principals";
 constexpr std::string_view kKeysTable = "zetta_keys";
 constexpr std::string_view kAuditTable = "zetta_audit";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
+constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
@@ -476,6 +483,57 @@ std::vector<nlohmann::json> partition_rows(const Node& node) {
         row["owner_count"] = static_cast<int>(partition->owner_nodes().size());
         row["stats"] = partition->stats();
         row["created"] = partition->created();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per dataset for the system.datasets table — datasets surfaced as a
+// first-class primitive (#585; the engine source for the area-3 dataset view in epic
+// #575). Sourced from Node::datasets() (computed live from the tree + the
+// replicate-to-all partition catalog), so every node reports the same per-dataset
+// schema / row count / on-disk size / storage format / replication strategy and the
+// cross-cluster partition placement. `columns` is the inferred schema (comma-joined
+// field names) with `column_count` for a scalar; `placement` flattens each partition
+// to "[start,end)@owner1|owner2" (which slice → which owners) joined with ", " (empty
+// for a non-partitioned, replicate-to-all dataset), and `owner_nodes` is the
+// de-duplicated set of nodes holding any of its partitions. It reads already-built
+// DatasetSummary values, so it adds no new JSON boundary.
+std::vector<nlohmann::json> dataset_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const DatasetSummary& dataset : node.datasets()) {
+        // Flatten the per-partition placement into a readable per-slice string plus
+        // the de-duplicated union of owner nodes (in first-seen order).
+        std::vector<std::string> owner_union;
+        std::unordered_set<std::string> owner_seen;
+        std::vector<std::string> placement_parts;
+        for (const DatasetPlacement& placement : dataset.partitions) {
+            std::string owners;
+            for (const std::string& owner : placement.owner_nodes) {
+                if (!owners.empty()) owners += "|";
+                owners += owner;
+                if (owner_seen.insert(owner).second) owner_union.push_back(owner);
+            }
+            placement_parts.push_back(
+                "[" + std::to_string(placement.row_start) + "," +
+                std::to_string(placement.row_end) + ")@" +
+                (owners.empty() ? std::string("unplaced") : owners));
+        }
+
+        nlohmann::json row;
+        row["dataset"] = dataset.name;
+        row["database"] = dataset.database;
+        row["table_id"] = dataset.table_id;
+        row["format"] = dataset.format;
+        row["replication"] = dataset.replication;
+        row["rows"] = dataset.rows;
+        row["columns"] = join_comma(dataset.columns);
+        row["column_count"] = static_cast<int>(dataset.columns.size());
+        row["size_bytes"] = dataset.size_bytes;
+        row["partitioned"] = !dataset.partitions.empty();
+        row["partition_count"] = static_cast<int>(dataset.partitions.size());
+        row["owner_nodes"] = join_comma(owner_union);
+        row["placement"] = join_comma(placement_parts);
         rows.push_back(std::move(row));
     }
     return rows;
@@ -888,6 +946,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kPartitionsTable) {
                         return select_over_rows(s, partition_rows(node_));
                     }
+                    if (sys == kDatasetsTable) {
+                        return select_over_rows(s, dataset_rows(node_));
+                    }
                     if (sys == kCheckpointsTable) {
                         return select_over_rows(s, checkpoint_rows(node_));
                     }
@@ -900,6 +961,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.zetta_runs, system.zetta_principals, "
                                      "system.zetta_keys, system.zetta_audit, "
                                      "system.dataset_partitions, "
+                                     "system.datasets, "
                                      "system.checkpoints, "
                                      "system.zetta_cloud_providers, or "
                                      "system.zetta_cloud_status)");
