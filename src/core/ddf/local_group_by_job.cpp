@@ -3,6 +3,10 @@
 #include <cstdint>
 #include <string>
 
+#include "zetta/node.hpp"
+#include "zetta/pipeline_instrumentation.hpp"
+#include "zetta/timestamp.hpp"
+
 namespace zetta::ddf {
 
 NearDataGroupByResult run_near_data_group_by_job(
@@ -11,6 +15,20 @@ NearDataGroupByResult run_near_data_group_by_job(
     const GroupBySpec& spec, compute::ComputeDevice& device,
     const std::string& round_tag, std::chrono::milliseconds timeout) {
     NearDataGroupByResult out;
+
+    // Record this job's near-data instrumentation into the node before returning,
+    // so the counters survive the call and surface in system.pipeline_jobs (#589).
+    auto record_instrumentation = [&] {
+        node.record_pipeline_job({.job_id = job.id(),
+                                  .kind = NearDataJobKind::GroupBy,
+                                  .node = node.node_id(),
+                                  .partitions_read = out.partitions_read,
+                                  .rows_read = out.rows_read,
+                                  .local_bytes_read = out.local_bytes_read,
+                                  .wire_bytes_moved = out.wire_bytes_moved,
+                                  .status = out.status,
+                                  .recorded_at = now_iso8601()});
+    };
 
     // (1) Compute near data: materialize this node's shard from its OWNED
     // partitions of `table` — only the bodies it physically holds, read from local
@@ -31,6 +49,7 @@ NearDataGroupByResult run_near_data_group_by_job(
                               shard.status.message};
         });
         out.status = job.status();
+        record_instrumentation();
         return out;
     }
 
@@ -44,6 +63,7 @@ NearDataGroupByResult run_near_data_group_by_job(
     out.result = std::move(distributed.result);
     out.status = distributed.status;
     out.is_root = distributed.is_root;
+    record_instrumentation();
     return out;
 }
 

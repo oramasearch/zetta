@@ -94,6 +94,25 @@ std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     return result;
 }
 
+void Node::record_pipeline_job(PipelineJobInstrumentation instrumentation) {
+    // Append the recorded near-data job, bounding the ring to the most-recent
+    // kMaxPipelineJobs (drop oldest) so this ephemeral, observed registry can't grow
+    // without limit over a long-lived node. The source for system.pipeline_jobs.
+    std::lock_guard<std::mutex> lock(pipeline_jobs_mutex_);
+    pipeline_jobs_.push_back(std::move(instrumentation));
+    if (pipeline_jobs_.size() > kMaxPipelineJobs) {
+        const std::size_t excess = pipeline_jobs_.size() - kMaxPipelineJobs;
+        pipeline_jobs_.erase(pipeline_jobs_.begin(),
+                             pipeline_jobs_.begin() +
+                                 static_cast<std::ptrdiff_t>(excess));
+    }
+}
+
+std::vector<PipelineJobInstrumentation> Node::pipeline_jobs() const {
+    std::lock_guard<std::mutex> lock(pipeline_jobs_mutex_);
+    return pipeline_jobs_;
+}
+
 std::vector<DatasetSummary> Node::datasets() const {
     // One dataset per table across every database — computed live from the tree +
     // the partition catalog, so the system.datasets view never drifts from the
