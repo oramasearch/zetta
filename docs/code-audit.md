@@ -33,7 +33,7 @@ compliance verdict: ✅ built · 🟡 partial / enforced in only one place · �
 | **RULE-1** | No deploy without a passing correctness gate (a graph can't deploy unless its `ValidationReport` passes). | 🟡 The gate exists and the **GUI Deploy panel** runs it first, but `Node::deploy_graph` does **not** run the gate — a programmatic deploy bypasses RULE-1. Wire the gate into the `deploy_graph` seam (or a `deploy_graph` that refuses an ungated graph). |
 | **RULE-2 / NFR-1 / CTL-4 / TB-1** | No data egress by default; any outbound network is explicitly configured + audited; verifiable execution locality. | 🔭 The cloud-provider **permission gate** (deny-by-default, ask-every-time) is built for config/CLI reads. A general egress control over graph/extension execution + packet-capture verification is unbuilt (depends on the extension sandbox, TB-2/CTL-1). |
 | **RULE-3 / PERM-1 / ADR-6** | Key-scoped access (V1): a principal operates over exactly what its login key permits. | ✅ Built (`Principal`/`AccessKey`/`Scope`/`Capability`, deny-by-default). 🟡 **but** `Principal`/`AccessKey` records (replicated `principal:`/`key:` keys — auth credentials) enter via ad-hoc `contains()` checks, **not** the formal schema boundary their siblings Run/Model/Job/Audit use. See §2.1. |
-| **RULE-5 / RSK-9** | Burst jobs must be eviction-tolerant (checkpoint/restart to survive Spot eviction). | ⛔ Not built — the provisioners burst spot/preemptible nodes but nothing checkpoints. A real gap behind the all-cloud burst story. |
+| **RULE-5 / RSK-9** | Burst jobs must be eviction-tolerant (checkpoint/restart to survive Spot eviction). | 🟡 The **checkpoint/restart capability is built** ([job-checkpoint.md](job-checkpoint.md), #468): a durable, sha256-fingerprinted `JobCheckpoint` (validated boundary) + a `CheckpointStore` seam (`FileCheckpointStore`, atomic + crash-safe) + `run_resumable_rounds` (resume from the last checkpoint with no recompute, graceful spot-drain), wired into per-round [GBDT](gbdt.md) model checkpointing + a `system.checkpoints` view. Remaining: a **shared/replicated** store so a *replacement* burst node resumes a distributed job, and **auto-restart** from the autoscaler on a *detected* eviction. |
 | **RULE-6 / CTL-3 / ENT-17** | Secrets stored as vault references, never inline in project/run records or logs. | ✅ No inline secrets found — cloud configs reference profiles / managed identities / a credentials-ref, not embedded credentials. (No vault integration yet, but nothing violates the rule.) |
 | **RULE-7** | Observable state defaults to a virtual, read-only `system.zetta_*` table computed at query time — not a GUI-only panel or hand-synced copy. | 🟡 **Drift.** `system.zetta_nodes/_deployments/_models/_jobs/_cloud_providers/_cloud_status` comply, but **Runs, Principals, Keys, and the Audit trail are GUI-only with no table** — though Model and Job (Run's siblings) both have one. The rule itself warns this is exactly how "SQL and the GUI drift." **Decision: add all four.** See §2.2. |
 | **PERM-2 / CTL-6** | Only principals holding the orchestration capability may provision infra / deploy nodes. | 🟡 The capability model exists (`CapabilityDomain::Orchestration`); whether `deploy_graph` / the provisioners actually *check* it is not yet wired (they're not behind an `authorize(operation)` call). |
@@ -45,9 +45,10 @@ compliance verdict: ✅ built · 🟡 partial / enforced in only one place · �
 **Net:** the *data-plane and governance primitives* are largely built and faithful
 to the blueprint; the gaps cluster in (a) **enforcement wiring** (RULE-1 not at the
 `deploy_graph` seam, PERM-2 not checked), (b) **the security hardening track**
-(CTL-2 mTLS, CTL-1 sandbox, RULE-5 eviction tolerance), and (c) **one concrete
-RULE-7 drift** (missing system tables). (a) and (c) are cheap to close now; (b) is a
-planned epic.
+(CTL-2 mTLS, CTL-1 sandbox; RULE-5 eviction tolerance now has its
+[checkpoint/restart primitive](job-checkpoint.md), with a shared store + auto-restart
+trigger remaining), and (c) **one concrete RULE-7 drift** (missing system tables).
+(a) and (c) are cheap to close now; (b) is a planned epic.
 
 ---
 

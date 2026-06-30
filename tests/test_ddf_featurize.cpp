@@ -134,6 +134,48 @@ TEST(DdfFeaturizeJson, OmitsEmptyOptionals) {
     EXPECT_TRUE(parsed->label_column.empty());
 }
 
+// A static carry-through spec (#532): engineered columns carried through, no event
+// features, no time dimension. It round-trips and omits time_column / as_of /
+// event_features in the canonical form.
+TEST(DdfFeaturizeJson, StaticSpecRoundTrips) {
+    FeaturizeSpec spec;
+    spec.entity_column = "conversation_id";
+    spec.account_features = {"customer_engagement", "sales_effectiveness",
+                             "conversation_length"};
+    spec.label_column = "outcome";
+
+    const Json json = spec.to_json();
+    EXPECT_FALSE(json.contains("time_column"));
+    EXPECT_FALSE(json.contains("as_of"));
+    EXPECT_FALSE(json.contains("event_features"));
+
+    const auto parsed = FeaturizeSpec::from_json(json);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->entity_column, "conversation_id");
+    EXPECT_TRUE(parsed->time_column.empty());
+    EXPECT_TRUE(parsed->event_features.empty());
+    EXPECT_EQ(parsed->account_features, spec.account_features);
+    EXPECT_EQ(parsed->label_column, "outcome");
+}
+
+// A static spec MAY carry a point-in-time cutoff (time_column + as_of) for the row
+// filter "where applicable" — that round-trips too.
+TEST(DdfFeaturizeJson, StaticSpecWithCutoffRoundTrips) {
+    FeaturizeSpec spec;
+    spec.entity_column = "conversation_id";
+    spec.time_column = "event_ts";
+    spec.as_of = 1000.0;
+    spec.account_features = {"customer_engagement"};
+    spec.label_column = "outcome";
+
+    const auto parsed = FeaturizeSpec::from_json(spec.to_json());
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->time_column, "event_ts");
+    EXPECT_DOUBLE_EQ(parsed->as_of, 1000.0);
+    EXPECT_TRUE(parsed->event_features.empty());
+    EXPECT_EQ(parsed->account_features, spec.account_features);
+}
+
 TEST(DdfFeaturizeJson, RejectsBadInput) {
     const Json good = sample_spec().to_json();
     ASSERT_TRUE(FeaturizeSpec::from_json(good).has_value());
@@ -144,9 +186,20 @@ TEST(DdfFeaturizeJson, RejectsBadInput) {
         bad.erase("entity_column");
         EXPECT_FALSE(FeaturizeSpec::from_json(bad).has_value());
     }
-    {  // empty event_features
+    {  // no feature columns at all (empty event_features AND no account_features)
         Json bad = good;
         bad["event_features"] = Json::array();
+        bad.erase("account_features");
+        EXPECT_FALSE(FeaturizeSpec::from_json(bad).has_value());
+    }
+    {  // windowed event features without a time_column
+        Json bad = good;
+        bad.erase("time_column");
+        EXPECT_FALSE(FeaturizeSpec::from_json(bad).has_value());
+    }
+    {  // a time_column without an as_of cutoff
+        Json bad = good;
+        bad.erase("as_of");
         EXPECT_FALSE(FeaturizeSpec::from_json(bad).has_value());
     }
     {  // sum feature without a value_column
@@ -301,6 +354,98 @@ TEST(DdfFeaturize, ToDataFrameMaterializesColumns) {
     EXPECT_NE(frame.frame.column("mrr"), nullptr);
     EXPECT_NE(frame.frame.column("payments"), nullptr);
     EXPECT_NE(frame.frame.column("churned"), nullptr);  // the label rides into the frame
+}
+
+// =====================================================================
+// Static featurize — engineered numeric columns, no windowed events (#532)
+// =====================================================================
+
+// The saas-sales-conversations shape: each row is one conversation (entity) carrying
+// already-engineered numeric columns + an outcome label. A schema with an integer
+// entity key, three engineered columns, an event timestamp, and the label.
+DataFrameSchema engineered_schema() {
+    DataFrameSchema schema;
+    schema.columns = {
+        ColumnSchema{.name = "conversation_id", .dtype = DataType::Int64},
+        ColumnSchema{.name = "customer_engagement", .dtype = DataType::Float64},
+        ColumnSchema{.name = "sales_effectiveness", .dtype = DataType::Float64},
+        ColumnSchema{.name = "conversation_length", .dtype = DataType::Int64},
+        ColumnSchema{.name = "event_ts", .dtype = DataType::Int64},
+        ColumnSchema{.name = "outcome", .dtype = DataType::Int64}};
+    return schema;
+}
+
+std::vector<Json> engineered_rows() {
+    return {
+        {{"conversation_id", 1}, {"customer_engagement", 0.80}, {"sales_effectiveness", 0.50},
+         {"conversation_length", 12}, {"event_ts", 10}, {"outcome", 1}},
+        {{"conversation_id", 2}, {"customer_engagement", 0.30}, {"sales_effectiveness", 0.90},
+         {"conversation_length", 4}, {"event_ts", 20}, {"outcome", 0}},
+        // event_ts 99 is AFTER the as_of cutoff (60) — the leakage trap (dropped).
+        {{"conversation_id", 3}, {"customer_engagement", 0.60}, {"sales_effectiveness", 0.20},
+         {"conversation_length", 31}, {"event_ts", 99}, {"outcome", 1}},
+        {{"conversation_id", 4}, {"customer_engagement", 0.95}, {"sales_effectiveness", 0.77},
+         {"conversation_length", 7}, {"event_ts", 50}, {"outcome", 0}},
+    };
+}
+
+FeaturizeSpec engineered_spec(bool with_cutoff) {
+    FeaturizeSpec spec;
+    spec.entity_column = "conversation_id";
+    if (with_cutoff) {
+        spec.time_column = "event_ts";
+        spec.as_of = 60.0;
+    }
+    spec.account_features = {"customer_engagement", "sales_effectiveness",
+                             "conversation_length"};
+    spec.label_column = "outcome";
+    return spec;
+}
+
+// A static spec with no time dimension carries every engineered column through, one
+// row per entity (ascending), with the outcome as the label.
+TEST(DdfFeaturize, StaticCarriesEngineeredColumns) {
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(engineered_rows()), engineered_schema(), device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+
+    // events frame is ignored in static mode — pass the same frame for both.
+    const auto result =
+        point_in_time_featurize(frame.frame, frame.frame, engineered_spec(false));
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    const FeatureTable& table = result.table;
+
+    EXPECT_EQ(table.entities, (std::vector<std::int64_t>{1, 2, 3, 4}));
+    EXPECT_EQ(table.feature_names,
+              (std::vector<std::string>{"customer_engagement", "sales_effectiveness",
+                                        "conversation_length"}));
+    EXPECT_EQ(*table.feature("customer_engagement"),
+              (std::vector<double>{0.80, 0.30, 0.60, 0.95}));
+    EXPECT_EQ(*table.feature("conversation_length"),
+              (std::vector<double>{12.0, 4.0, 31.0, 7.0}));
+    EXPECT_EQ(table.label_name, "outcome");
+    EXPECT_EQ(table.labels, (std::vector<double>{1.0, 0.0, 1.0, 0.0}));
+}
+
+// "Point-in-time, no leakage where applicable": with a time_column the row universe is
+// filtered to event_ts <= as_of, so the post-cutoff conversation is excluded entirely.
+TEST(DdfFeaturize, StaticPointInTimeFilterDropsFutureRows) {
+    CpuDevice device;
+    auto frame = load_data_frame(make_store(engineered_rows()), engineered_schema(), device);
+    ASSERT_TRUE(frame.ok()) << frame.status.message;
+
+    const auto result =
+        point_in_time_featurize(frame.frame, frame.frame, engineered_spec(true));
+    ASSERT_TRUE(result.ok()) << result.status.message;
+    const FeatureTable& table = result.table;
+
+    // Conversation 3 (event_ts 99 > as_of 60) is dropped — no leakage.
+    EXPECT_EQ(table.entities, (std::vector<std::int64_t>{1, 2, 4}));
+    EXPECT_EQ(*table.feature("customer_engagement"),
+              (std::vector<double>{0.80, 0.30, 0.95}));
+    EXPECT_EQ(*table.feature("sales_effectiveness"),
+              (std::vector<double>{0.50, 0.90, 0.77}));
+    EXPECT_EQ(table.labels, (std::vector<double>{1.0, 0.0, 0.0}));
 }
 
 // =====================================================================

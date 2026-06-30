@@ -1,9 +1,11 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <string>
 #include <vector>
 
+#include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
@@ -69,6 +71,23 @@ struct CalibrationConfig {
     double holdout_fraction = 0.2;  // share of rows reserved for the calibration fit
 };
 
+// Opt-in checkpoint / restart for eviction tolerance (RULE-5 / RSK-9, #468). When a
+// `store` is given, the boosting loop checkpoints the partial model (+ its feature
+// gains) after every `checkpoint_every` rounds, and on (re)start **resumes from the
+// latest checkpoint** instead of re-growing the committed trees — so an evicted spot
+// node costs at most the trees grown since the last checkpoint. The checkpoint is
+// keyed by the job's `round_tag` (the cross-node-agreed logical job key), and the
+// resume round is **agreed across the cluster** (an allreduce-min, so a node lacking
+// a checkpoint simply forces a fresh start rather than desyncing the lock-step
+// histogram rounds). The config must be **uniform across participants** (like
+// `round_tag` / calibration). Disabled by default (`store == nullptr`) — the loop is
+// then exactly the unchanged trainer. See docs/job-checkpoint.md.
+struct TrainCheckpointConfig {
+    compute::CheckpointStore* store = nullptr;  // null = checkpointing off (default)
+    std::uint32_t checkpoint_every = 1;   // checkpoint after every N boosting rounds
+    bool clear_on_success = true;         // discard checkpoints once training succeeds
+};
+
 // The outcome of running distributed GBDT training as a ComputeJob.
 struct DistributedTrainResult {
     // The trained model — identical on every participating node (the trees are
@@ -90,6 +109,9 @@ struct DistributedTrainResult {
     JobStatus status = JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
+    // The boosting round training resumed from (0 = trained from scratch). Non-zero
+    // only when a TrainCheckpointConfig store held a checkpoint for this job.
+    std::uint64_t resumed_from_round = 0;
 
     bool ok() const noexcept { return status == JobStatus::Succeeded; }
 };
@@ -109,6 +131,8 @@ struct DistributedTrainResult {
 // When `calibration.enabled`, the produced model carries a fitted probability
 // calibration (held-out split + gather/fit-at-root/broadcast, above); otherwise the
 // model is uncalibrated (the default, unchanged behavior).
+// When `checkpoint.store` is set, training checkpoints per round and resumes from
+// the latest checkpoint (eviction tolerance, RULE-5 / #468); disabled by default.
 DistributedTrainResult run_train_job(
     compute::JobCoordinator& coordinator, ComputeJob& job,
     const ddf::DataFrame& features,
@@ -117,6 +141,7 @@ DistributedTrainResult run_train_job(
     Node* node = nullptr, const std::string& model_name = {},
     const std::string& round_tag = {},
     CalibrationConfig calibration = {},
-    std::chrono::milliseconds timeout = kDefaultGbdtTimeout);
+    std::chrono::milliseconds timeout = kDefaultGbdtTimeout,
+    TrainCheckpointConfig checkpoint = {});
 
 }  // namespace zetta::ml

@@ -231,10 +231,13 @@ const TestSuite& TestSuite::builtin() {
         TestSuite built;
         register_compute_cases(built);
         register_ddf_cases(built);
+        register_parquet_cases(built);
         register_ml_cases(built);
         register_distributed_cases(built);
+        register_fulltext_cases(built);
         register_governance_cases(built);
         register_pipeline_cases(built);
+        register_uc1_scale_cases(built);
         register_example_cases(built);
         return built;
     }();

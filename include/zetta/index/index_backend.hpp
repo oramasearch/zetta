@@ -130,9 +130,19 @@ struct IndexQuery {
 
 // What a query returned: a status plus the matching row ids in a deterministic
 // order (so a query is reproducible). On a failing status `row_ids` is empty.
+//
+// `scores` is the per-hit relevance score, **higher = better**, aligned to
+// `row_ids` (scores[i] is the score of row_ids[i]). A *ranked* backend
+// (OramaCoreFulltextIndex's BM25F) fills it so a distributed scatter-gather can
+// merge per-partition hits into one global ranking by score; an *exact-match*
+// backend (InMemoryIndexBackend) has no ranking signal and leaves it **empty**.
+// The invariant: `scores` is either empty (unranked) or exactly `row_ids.size()`
+// long. A consumer that needs scores treats an empty vector as "no ranking"
+// (every hit equally relevant).
 struct IndexQueryResult {
     IndexStatus status;
     std::vector<std::string> row_ids;
+    std::vector<double> scores;  // empty (unranked) or aligned to row_ids
 };
 
 // The backend seam: build an index over partitions, query it, drop it. Concrete

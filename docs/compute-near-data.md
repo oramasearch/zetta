@@ -21,10 +21,14 @@ partitions reads them from local disk — no `LOREQ`, no full-dataset pull.
 ```
 include/zetta/ddf/local_partitions.hpp    load_local_partitions + LocalShardResult — the reusable near-data shard loader
 src/core/ddf/local_partitions.cpp         enumerate owned partitions → read bodies locally → parse JSONL → DataFrame
-include/zetta/ddf/local_group_by_job.hpp  run_near_data_group_by_job + NearDataGroupByResult — the first-class near-data op
+include/zetta/ddf/local_group_by_job.hpp  run_near_data_group_by_job + NearDataGroupByResult — the first-class near-data group-by
 src/core/ddf/local_group_by_job.cpp       load_local_partitions → run_group_by_job, reporting local-read vs wire-moved bytes
+include/zetta/ddf/local_featurize_job.hpp run_near_data_featurize_job + NearDataFeaturizeResult — near-data featurize over a partitioned table (#532)
+src/core/ddf/local_featurize_job.cpp      load_local_partitions → run_featurize_job, reporting local-read vs wire-moved bytes
 include/zetta/collectives.hpp             Collectives::wire_bytes() — the "bytes moved over the wire" meter
-tests/test_ddf_local_partitions.cpp       the loader round-trip + the near-data == single-node-oracle + bytes acceptance
+tests/test_ddf_local_partitions.cpp       the loader round-trip + the near-data group-by == single-node-oracle + bytes acceptance
+tests/test_ddf_featurize_partitions.cpp   the near-data featurize == single-node-oracle, leakage-free (#532)
+src/core/testkit/cases_distributed.cpp    cluster.compute_near_data — TC-11 as a runnable test-suite case
 ```
 
 ## The loader — `zetta::ddf::load_local_partitions`
@@ -124,21 +128,48 @@ That is the **TC-11 / #501 acceptance**, asserted directly in
 `tests/test_ddf_local_partitions.cpp`: across a real 3-node loopback cluster, each
 node loads its shard from its own partitions, the near-data group-by matches the
 single-node oracle on every node, and the whole cluster moves under a fifth of what
-it read near data.
+it read near data. The same acceptance is also surfaced as a **runnable test-suite
+case** — `cluster.compute_near_data` in the [in-app test suite](test-suite.md)
+catalog (`zetta::testkit`, `TestCategory::Distributed`) — so TC-11 can be run + tuned
+(nodes / rows / groups / partitions per node) from the headed **Operations → Test
+suite** panel and headless (`tests/test_testkit.cpp`), reporting bytes-read-near-data
+vs bytes-moved-over-the-wire as live metrics. Two further gtests harden the loader:
+it is the reusable shard source for **other** DDF ops (a `filter` + group-by over the
+loaded shard equals the same over the full table), and a partition **owned** by this
+node whose body is missing locally **fails fast** rather than silently dropping rows
+(which would diverge from the oracle).
 
 ## Other ops
 
 `load_local_partitions` is the shared primitive — `scan` / `filter` /
 [featurize](ddf-featurize.md) and any other distributed DDF op compose it the same
 way: load the local shard from the node's owned partitions, run the op, and let the
-op's existing collective combine exchange only the partial. This slice wires the
-canonical group-by (which has a clean single-node oracle) end to end; the other ops
-reuse the loader as their shard source as they are driven through the
-[job coordinator](job-coordinator.md).
+op's existing collective combine exchange only the partial. The group-by
+(`run_near_data_group_by_job`) and **featurize**
+(`run_near_data_featurize_job`, [#532](https://github.com/oramasearch/zetta/issues/532)
+— see below) are wired end to end; the remaining ops reuse the loader as their shard
+source as they are driven through the [job coordinator](job-coordinator.md).
+
+### Near-data featurize — `zetta::ddf::run_near_data_featurize_job`
+
+The featurize sibling (`include/zetta/ddf/local_featurize_job.hpp`,
+`src/core/ddf/local_featurize_job.cpp`) loads a node's shard from its owned partitions
+of a single [partitioned table](partitioned-write-path.md), then drives
+[`run_featurize_job`](ddf-featurize.md) over it. It is how the
+saas-sales-conversations **engineered columns** are featurized over the partitioned
+dataset (a static [`FeaturizeSpec`](ddf-featurize.md#static-mode--engineered-columns-no-windowed-events-532)
+— engineered columns carried through, `outcome` the label, point-in-time filtered to
+`event_ts <= as_of`). Each node reads only the partition bodies it holds (the dropped
+embeddings never reach the wire), exchanges only the per-entity partials, and the
+broadcast feature table matches a single-node oracle on every node.
+`tests/test_ddf_featurize_partitions.cpp` proves it over a real 3-node loopback
+cluster (no leakage; matches the oracle); the in-app **Distributed →
+Featurize over partitions == single-node** test-suite case
+(`cluster.featurize_partitions`) runs it interactively.
 
 ## Scope / later slices
 
-- **Group-by is wired end to end**; `scan`/`filter`/`featurize` reuse the loader as
+- **Group-by + featurize are wired end to end**; `scan`/`filter` reuse the loader as
   their shard source (the composition is the same — load local, op, combine).
 - The loader reads a node's owned partitions; **rebalancing** placement on a
   membership change ([#517](https://github.com/oramasearch/zetta/issues/517)) and a

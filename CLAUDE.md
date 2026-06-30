@@ -217,11 +217,34 @@ source table's rows into partitions (`read_index_partitions`), **builds the real
 index**, records the `Index` entity, and emits an `index` Run output referencing
 the real id — leaving the index **queryable** for the node's lifetime
 (`node.index_registry().resolve(spec)->query(...)`). Other step kinds delegate to
-`DefaultStepExecutor`. The distributed (fan-across-nodes) build and the
-vector/semantic/feature backends remain later slices behind the same seam. See
+`DefaultStepExecutor`. The vector/semantic/feature backends remain later slices
+behind the same seam. See
 [docs/index-backend.md](docs/index-backend.md),
 [docs/index-step-executor.md](docs/index-step-executor.md) and
 [docs/oramacore-fulltext-index.md](docs/oramacore-fulltext-index.md).
+
+The **distributed (fan-across-nodes) build + query** is the
+**`zetta::DistributedFulltextIndex` slice** (`include/zetta/index/distributed_fulltext.hpp`,
+**#529**, the engine half of TC-13 #503) — the **approved per-partition topology**:
+where `IndexStepExecutor` builds **one consolidated** index, this builds a full-text
+**sub-index per LOCAL partition** (compute-near-data — each node enumerates the
+[partitions it OWNS](docs/compute-near-data.md), reads each body from local disk,
+builds one sub-index per partition into an owned `IndexBackend`) and answers a query
+by **scatter-gather + merge/rank**: query the node's own sub-indexes, **scatter** the
+query to every peer over the `fulltext.query` [signal-plane](docs/signal-plane.md) RPC
+(no new wire verb; request/response schema-validated like the `CollectiveMessage`),
+**gather** each node's ranked hits, and **merge** into one global ranking (identical on
+every node, an unreachable peer fails the round). The pure `merge_fulltext_hits`
+(score desc, row id asc, dedup-by-max, `top_k`) is the core both the per-node and
+cross-node merges run through, so single-node == multi-node. The acceptance is that
+the distributed ranking **matches a single consolidated-index oracle** (the standard
+sharded-search local-IDF query-then-fetch — exact for the global top-k when ranking is
+tf-unambiguous; a global-statistics `dfs_query_then_fetch` pass is a later
+optimization). To support the merge, the seam's `IndexQueryResult` now carries per-hit
+`scores` (a ranked backend fills them, exact-match leaves them empty). It is a usable
+building block alongside (not yet a replacement for) the consolidated index-step path;
+wiring it as the default `index`-step behaviour is a later slice. See
+[docs/distributed-fulltext.md](docs/distributed-fulltext.md).
 
 A node also owns **compute jobs** (`zetta::ComputeJob`) — the record of **one unit
 of native distributed accelerated compute** (the foundational entity of the
@@ -481,16 +504,28 @@ exactly once with `rf` owners. The **bodies move for free**: an updated `owner_n
 makes the new owner list the body in [`ReplicatedBlobStore::missing_blobs()`](docs/sharded-blob-placement.md)
 (it `LOREQ`s it) and a non-owner refuses it — no new transport. **Replicate-to-all**
 partitions (`SinglePartitioner`/`Hash`/`RoundRobin`, owned by exactly the previous
-membership) are **left untouched** (sharded rebalance is not their job). It is
-**auto-triggered inside `Node::tick()`**: membership is replicated state (each node
+membership) are **left untouched** (sharded rebalance is not their job). It fires
+from **two composing triggers**. (1) The **direct trigger** — the `add_nodes(Node&,
+…)` overload (**#519**, below) calls `rebalance_partitions` straight after a
+provision, so the data spreads onto the new permanent members **synchronously**
+(`previous_members` = `Node::cluster_members()`, `members` = that set + the
+just-provisioned ids) — verifiable immediately in `system.dataset_partitions`. (2)
+The **auto-trigger inside `Node::tick()`**: membership is replicated state (each node
 seeds its own `node:<id>` key, peers merge), so `Node::rebalance_partitions_on_membership_change`
 reads the `node:` set from the snapshot it already reconciles, compares to the
 baseline set in `Node::start()`, and on a delta drives `rebalance_partitions` between
-jobs (no `Cluster` plumbing). Append-only `node:` keys today mean it fires on
-**joins** (leave-driven rebalance + physical GC of a demoted owner's stale body +
+jobs (no `Cluster` plumbing) — the **safety net** that re-confirms against the real
+replicated membership once the new nodes gossip in (idempotent; the direct pass
+leaves `last_membership_` untouched so its own document change doesn't re-fire it).
+Append-only `node:` keys today mean the auto-trigger fires on **joins**
+(leave-driven rebalance + physical GC of a demoted owner's stale body +
 mid-job/elastic rebalance are later slices). **No new JSON format** (the catalog
-entry rides the existing `DatasetPartition` boundary). See
-[docs/partition-rebalance.md](docs/partition-rebalance.md).
+entry rides the existing `DatasetPartition` boundary). **TC-10/#500** is verified
+end to end by `tests/test_partition_rebalance.cpp::CatalogConvergesOnEveryNodeAfterJoin`
+(two replicated nodes — the rebalanced placement converges, identical, in each
+node's `system.dataset_partitions`) + `LeaveReassignsPartitionsAwayFromDepartedNode`
+(the library-level leave path), and as the runnable `cluster.partition_rebalance`
+test-suite case. See [docs/partition-rebalance.md](docs/partition-rebalance.md).
 
 ### Async runtime (`zetta::runtime`)
 
@@ -778,10 +813,17 @@ rows never cross the wire. `zetta::ddf::run_near_data_group_by_job`
 the local shard → `run_group_by_job`, reporting `local_bytes_read` (read near data)
 vs `wire_bytes_moved` (the partials, measured by the new `Collectives::wire_bytes()`
 meter). So the acceptance is directly checkable — **bytes-moved ≈ partials (not ≈
-dataset); result == the single-node oracle** — over a real loopback cluster. Group-by
-is wired end to end; `scan`/`filter`/`featurize` reuse the same `load_local_partitions`
-shard source; rebalancing (#517) + a locality-aware fetch of a missing owned body are
-later slices. See [docs/compute-near-data.md](docs/compute-near-data.md).
+dataset); result == the single-node oracle** — over a real loopback cluster. **Featurize
+is wired the same way** (`zetta::ddf::run_near_data_featurize_job`,
+`include/zetta/ddf/local_featurize_job.hpp`, **#532**): load this node's shard of a
+single partitioned table → `run_featurize_job` over it (used as the accounts frame),
+reporting the same near-data instrumentation — the featurize slice of UC-1 at scale
+(the saas-sales-conversations **engineered columns** featurized point-in-time over the
+partitioned table; the dropped embeddings never cross the wire, the broadcast feature
+table matches a single-node oracle, leakage-free). Group-by + featurize are wired end
+to end; `scan`/`filter` reuse the same `load_local_partitions` shard source;
+rebalancing (#517) + a locality-aware fetch of a missing owned body are later slices.
+See [docs/compute-near-data.md](docs/compute-near-data.md).
 
 Another DDF **op** is the **window / as-of (point-in-time) aggregation**
 (`include/zetta/ddf/as_of.hpp`, `zetta::ddf::as_of_aggregate`; **ARC-12**, #384) — the
@@ -840,7 +882,24 @@ every feature matches a leakage-free ground truth — the deliberate post-`t0` e
 (`acct_fedex_office`'s 4th payment failure, `acct_globex`'s 2nd support ticket) never
 enter a feature. Training a `Model` from the table is the **GBDT trainer**
 (`zetta::ml`, below); explaining its predictions is the **exact TreeSHAP** slice
-(`zetta::ml::tree_shap`, below). See [docs/ddf-featurize.md](docs/ddf-featurize.md).
+(`zetta::ml::tree_shap`, below).
+The spec also has a **static (carry-through) mode** (**#532**): `event_features` may be
+empty — a featurization of already-engineered numeric columns (the
+saas-sales-conversations **engineered columns**: `customer_engagement` /
+`sales_effectiveness` / …, embeddings dropped) where each row is one entity, the
+`account_features` are carried through, and `label_column` is the target. The
+point-in-time guarantee still holds **where applicable**: with a `time_column` set the
+row universe is filtered to `time <= as_of` (a post-cutoff row is excluded — no
+leakage); with none there is no time dimension. In static mode `time_column` is optional
+and the events frame/join are skipped; with windowed `event_features` (the churn shape)
+a `time_column` is required — and a spec must produce at least one feature column (an
+event or account feature). The **compute-near-data** variant over a single partitioned
+table is `zetta::ddf::run_near_data_featurize_job`
+(`include/zetta/ddf/local_featurize_job.hpp`, **#532**) — load this node's owned
+partitions → `run_featurize_job` over the local shard, reporting the same
+`local_bytes_read`/`wire_bytes_moved` instrumentation, matching a single-node oracle
+(the UC-1-at-scale featurize slice; siblings #530/#533 train, #531 E2E). See
+[docs/ddf-featurize.md](docs/ddf-featurize.md).
 
 ### Model training — distributed histogram GBDT (`zetta::ml`)
 
@@ -898,6 +957,23 @@ validated at their own boundaries. Trained on the
 strong AUC and surfaces `failed_payments` as a churn driver. Per-prediction SHAP
 explanation is the **exact TreeSHAP** slice below; device-native histograms are a
 later slice. See [docs/gbdt.md](docs/gbdt.md).
+
+The **compute-near-data train slice (UC-1 at scale)** is
+`zetta::ml::run_near_data_train_job` (`include/zetta/ml/local_train_job.hpp`,
+**#533**) — the **train** sibling of `run_near_data_featurize_job` (#532). It trains
+the GBDT on the binary `outcome` label **over a partitioned feature table** (the
+saas-sales-conversations engineered columns): load this node's shard from its
+[owned partitions](docs/compute-near-data.md) once, then run the whole
+**train (+ calibrate) → explain → rank** pipeline over it — `run_train_job` (registers
+a calibrated `Model` with AUC/log-loss/accuracy + drivers) → `run_explain_job` (per-row
+TreeSHAP drivers + global driver ranking) → `run_score_job` (the ranked at-risk list),
+each a recorded `ComputeJob`. **No new ML math** (it composes the existing GBDT /
+calibration / TreeSHAP / scoring engine, the `ChurnStepExecutor` "one frame, three
+jobs" pattern with the frame loaded near data) and **no new JSON/wire format**. SPMD —
+single-node == multi-node (matches a single-node oracle within fp tolerance); near-data
+instrumented (`local_bytes_read` vs `wire_bytes_moved`). Composing featurize → train end
+to end over partitions is #530; the sim-Python UC-1-at-scale E2E is #531. See
+[docs/uc1-train-over-partitions.md](docs/uc1-train-over-partitions.md).
 
 ### Model explanation — exact TreeSHAP (`zetta::ml`)
 
@@ -1195,6 +1271,42 @@ it by id only); the one JSON boundary is the **`AutoscalerConfig`** DTO
 `schemas/autoscaler_config.schema.json`). Wiring the observation source to a real
 progress/cost meter + mounting the tick into the coordinator/`Node::tick()` for a
 live job are later slices. See [docs/job-autoscaler.md](docs/job-autoscaler.md).
+
+### Burst-job eviction tolerance — checkpoint/restart (`zetta::compute`)
+
+zetta bursts compute onto **spot/preemptible** nodes (every cloud backend requests
+spot), which can be **reclaimed mid-job**. The **checkpoint/restart** capability
+(`include/zetta/compute/checkpoint.hpp`, **RULE-5 / RSK-9**, #468) is the
+**job-level** complement to the [work-stealing scheduler](#work-stealing-scheduler-zettacompute)'s
+**task-level** lost-peer re-queue: it durably snapshots a long-running job's progress
+and **resumes from the last snapshot** after the driving node dies, instead of
+restarting from round 0. A **standalone seam** (no `Node`/SQL/cluster wiring of its
+own — the altitude of `Provisioner`/`DeviceRegistry`); the long-running job bodies +
+the restart trigger compose it. Three pieces: (1) **`JobCheckpoint`** — the durable
+snapshot `{ job_id, kind, sequence (= units completed = the resume point), total,
+state (opaque application bytes, base64'd + sha256-fingerprinted), state_sha256,
+created }`, **boundary-validated like Run/Model/ComputeJob** (schema-as-code
+`job_checkpoint_schema()` → generated `schemas/job_checkpoint.schema.json`,
+drift-checked) **plus** a cross-field SHA-256 **integrity check** (`parse_job_checkpoint`
+rejects a torn/corrupt body, the large-object-body pattern); the `job_id` is the
+ComputeJob id for a single-node job but the cross-node-agreed **`round_tag`** for a
+distributed (SPMD) job. (2) **`CheckpointStore`** — the durability seam
+(`save`/`latest`/`clear`/`job_ids`, non-throwing `CheckpointStatus`), with the
+reference **`FileCheckpointStore`** writing per-job folders under a root dir
+(atomic temp-write + rename so an eviction mid-write can't corrupt the last good
+checkpoint; `latest` falls back past a corrupt head; only the 2 newest retained) —
+local to one node's filesystem (a *shared/replicated* store for a *replacement*
+burst node is a later slice; the store is **injected** so that swap is transparent).
+(3) **`run_resumable_rounds`** — the driver: load the latest checkpoint and resume
+from its `sequence` (a corrupt checkpoint fails hard, not silently from scratch),
+run the remaining rounds checkpointing every N, and **drain gracefully** when an
+optional `stop_requested()` fires (the spot-eviction-notice pattern — finish the
+round in flight, checkpoint, exit). Re-running over the same store resumes with **no
+recompute** of committed rounds. The first consumer is per-round
+[GBDT](#model-training--distributed-histogram-gbdt-zettaml) model checkpointing; the
+node owns a store under `<data_dir>/checkpoints` surfaced as `system.checkpoints`
+(ephemeral, no CRDT backing); auto-restart from the autoscaler on a *detected*
+eviction is a later slice. See [docs/job-checkpoint.md](docs/job-checkpoint.md).
 
 ### Cluster (equal peers)
 
@@ -1600,9 +1712,20 @@ validated `DataFrameSchema` boundary (no new runtime JSON format). The acceptanc
 (`tests/test_parquet_reader.cpp`, **TC-9 / #499 parity**) loads the projected
 subset of `tests/fixtures/parquet/saas_sample.parquet` (5 engineered/outcome
 columns + 8 `embedding_*`, scaled down from 3072) and matches a pyarrow-authored
-DataFrame golden field for field, asserting the embeddings are dropped; the churn
-parity is `ParquetFormatLoadsIdentically`. No deploy/`ddf`-kind wiring yet; zstd is
-the follow-up codec. See [docs/parquet-reader.md](docs/parquet-reader.md).
+DataFrame golden **on all four axes TC-9 names — schema (column names + order),
+row count, dtypes, and values** — where dtype parity is both *produced* (the
+reader's `dtype()` per column equals the golden's) **and** *inferred*
+(`InfersDtypesMatchingGolden` asserts `infer_parquet_schema`, footer-only, agrees
+with pyarrow per column, so the check isn't circular on the golden-imposed load),
+asserting the embeddings are dropped (yet *seen* by inference as `float32`); the
+churn parity is `ParquetFormatLoadsIdentically`. The **same parity is a
+GUI-runnable [in-app test-suite](docs/test-suite.md) case**
+(`ddf.parquet_reader_parity`, #462): the testkit runs headless / in the shipped GUI
+with no on-disk fixture, so the `saas_sample.parquet` bytes (base64) + golden JSON
+are **embedded** in `src/core/testkit/parquet_fixture_data.hpp` (generated by
+`gen-parquet-fixture.py` from the same fixture — one source of truth). No
+deploy/`ddf`-kind wiring yet; zstd is the follow-up codec. See
+[docs/parquet-reader.md](docs/parquet-reader.md).
 
 ### Query layer
 
@@ -1643,7 +1766,11 @@ querying it never triggers a cloud call) and the run + governance read views
 readable strings, no secret material) and **`system.zetta_audit`** (the immutable
 audit trail, `Node::audit_events()`) — plus **`system.dataset_partitions`** (the
 partition catalog, `Node::dataset_partitions()`: where each table's data slices
-live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13). `system` is
+live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13) and
+**`system.checkpoints`** (burst-job eviction-tolerance checkpoints,
+`Node::checkpoints()`: the latest resume checkpoint per job in this node's local
+store — kind / sequence / total / progress; ephemeral + local + not replicated, like
+`system.zetta_cloud_status`; RULE-5/#468). `system` is
 reserved (can't be created/dropped/written; no real db may be named it) and is
 where future system tables (e.g. `system.leadership`) live — **surfacing observable
 state as a `system.<table>` table is the default**, see the convention below
@@ -2210,7 +2337,15 @@ down). Vendor-neutral (programs against the abstract seam); best-effort (the
 `AddNodesResult` lists what came up). The control command rides a validated
 `AddNodesRequest` (`{ count, spec }`) JSON boundary (the hand-written non-throwing
 `from_json` pattern of `NodeCapability`/`AzureConfig`, mirroring
-`schemas/add_nodes_request.schema.json`). See [docs/add-nodes.md](docs/add-nodes.md).
+`schemas/add_nodes_request.schema.json`). The **`Node`-aware overloads**
+(`add_nodes(node, provider, …)`, **#519**) additionally **wire the membership change
+to the [between-jobs rebalance](#the-between-jobs-partition-rebalance-is)**: after
+the provision they drive `rebalance_partitions(node, grown, previous)`
+(`previous` = `Node::cluster_members()`, `grown` = that set + the new member ids) so
+**sharded partitions spread onto the new permanent nodes** — visible immediately in
+`system.dataset_partitions`, with the bodies following over the sharded-blob-placement
+seam (#515). Skipped when nothing new came up; the `tick()` auto-trigger stays the
+safety net. See [docs/add-nodes.md](docs/add-nodes.md).
 
 The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) is the first
 consumer built on the seam — the **large-burst cost-cap approval gate** (APR-3,
@@ -2474,7 +2609,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); run_graph; the audit sink
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519)
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2484,7 +2619,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   deployment_controller.hpp zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
   node_capability.hpp       zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
   provisioner.hpp           zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
-  add_nodes.hpp             zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518)
+  add_nodes.hpp             zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518). The add_nodes(Node&, …) overloads also trigger the between-jobs partition rebalance onto the new members (#519)
   burst_provisioner.hpp     zetta::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
   local_provisioner.hpp     zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
   azure_provisioner.hpp     zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
@@ -2516,6 +2651,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     index_step_executor.hpp zetta::IndexStepExecutor + read_index_partitions — the StepExecutor that runs a deployed IR `index` step: resolve backend → read table rows into partitions → build a real index → record the Index entity → emit an `index` output (queryable via the node registry); non-index kinds delegate to DefaultStepExecutor (#528)
     in_memory_index_backend.hpp zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
     oramacore_fulltext_index.hpp zetta::OramaCoreFulltextIndex — the first real backend: a full-text (BM25F) Search backend over the native oramacore-cpp engine (name "oramacore_fulltext"); pImpl over the engine, ZETTA_WITH_ORAMACORE-guarded so a checkout without the private submodule still builds (#527)
+    distributed_fulltext.hpp zetta::DistributedFulltextIndex/merge_fulltext_hits/FulltextHit — per-partition distributed full-text: build a sub-index per LOCAL owned partition (compute-near-data) into an owned IndexBackend, answer a query by scatter-gather (the fulltext.query signal-plane RPC, schema-validated) + merge/rank across nodes → a global ranking matching the consolidated-index oracle; the SignalHandler chained over a delegate (DistributedSorter pattern) (#529, TC-13 #503)
     index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   compute_job.hpp           zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
   dataset_partition.hpp     zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all; set_owner_nodes is the capturing re-placement mutator the rebalance uses (ENT-36/TBL-13; #517)
@@ -2532,7 +2668,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
   rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
   partition_writer.hpp      zetta::write_partitioned/PartitionWriteResult — the partitioned write path: assign each row to a partition (Partitioner), serialize each non-empty partition to a JSON Lines blob, store it as a LargeObject (import_bytes), record a DatasetPartition catalog entry per partition (blob ref + cumulative row range + place_partition owners); N blobs + N catalog rows (ADR-31/ENT-37; #511)
-  partition_rebalance.hpp   zetta::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; auto-triggered in Node::tick off node:<id> membership keys; ≈rf/N move on a join (ADR-31/ENT-37; #517, TC-10/#500)
+  partition_rebalance.hpp   zetta::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; ≈rf/N move on a join. Two triggers: directly from add_nodes(Node&, …) (#519) and auto-triggered in Node::tick off node:<id> membership keys (ADR-31/ENT-37; #517, TC-10/#500)
   large_object.hpp          zetta::LargeObjectStore — files as blobs (per database); import_file (from a path) + import_bytes (from in-memory bytes, used by the partitioned write path)
   import.hpp                zetta::import_records — JSON/JSONL files → table rows
   churn_dataset.hpp         zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
@@ -2590,6 +2726,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
     distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
     job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
+    checkpoint.hpp  zetta::compute::JobCheckpoint/CheckpointStore/FileCheckpointStore/run_resumable_rounds — burst-job eviction tolerance: durable sha256-fingerprinted progress snapshot (validated boundary) + a durable store seam + a resume-from-last-checkpoint driver (graceful spot-drain), so an evicted job resumes without recomputing committed rounds (RULE-5/RSK-9; #468)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
     parquet_reader.hpp      zetta::ddf::load_parquet_data_frame/infer_parquet_schema — native Parquet → DataFrame reader with column projection: decode only the requested leaf columns into DeviceBuffers (drop embedding_0..3071), numeric/dense boundary + parquet_data_frame schema for the golden (ADR-32; #508)
@@ -2602,13 +2739,15 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     group_by_job.hpp        zetta::ddf::run_group_by_job — run the distributed groupby-aggregate as a recorded ComputeJob (kind ddf) through the job coordinator (drives distributed_group_by on the JobRound; result on every node) (FEAT-8; #387)
     local_partitions.hpp    zetta::ddf::load_local_partitions/LocalShardResult — compute-near-data shard loader: enumerate this node's OWNED partitions of a table (owner_nodes ∋ node_id) from the catalog, read only the locally-held blob bodies, parse the JsonlStore {_zid,doc} lines, load into a local DataFrame; instrumented bytes_read (near data, not moved) (ARC-12/FEAT-8; #516)
     local_group_by_job.hpp  zetta::ddf::run_near_data_group_by_job/NearDataGroupByResult — the first-class compute-near-data op: load the local shard via load_local_partitions → run_group_by_job, reporting local_bytes_read vs wire_bytes_moved (the partials, via Collectives::wire_bytes()); result == single-node oracle (ARC-12/FEAT-8; #516)
-    featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary (ARC-12/FEAT-6; #388)
+    featurize.hpp           zetta::ddf::point_in_time_featurize/FeaturizeSpec/FeatureTable — point-in-time (leakage-free) featurization: churn_features.sql as a DDF graph (as-of + group-by + filter + join) → a feature table for training (time <= as_of) + JSON boundary; also a static carry-through mode (empty event_features → carry engineered columns + label, point-in-time row filter where a time_column is set, #532) (ARC-12/FEAT-6; #388)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
+    local_featurize_job.hpp zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
-    gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig (FEAT-6/ENT-14; #390/#391)
+    gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig; opt-in per-round checkpoint/restart via TrainCheckpointConfig (resume the partial model from the last checkpoint after a spot eviction, cluster-agreed resume round; RULE-5/#468) (FEAT-6/ENT-14; #390/#391)
     gbdt_score.hpp          zetta::ml — batch scoring / rank-at-risk: score_gbdt/predict_risk (calibrated risk = predict_proba, ranked desc) + load_gbdt_model (weights body read back through the GbdtModel JSON Schema boundary) (FEAT-6/CMD-10; #392)
     gbdt_score_job.hpp      zetta::ml::run_score_job — run distributed batch scoring as a recorded `score` ComputeJob through the job coordinator: SPMD per-shard predict, gather + device sort_by_key rank + broadcast → identical global at-risk list on every node (FEAT-6/CMD-10; #392)
+    local_train_job.hpp     zetta::ml::run_near_data_train_job/NearDataTrainResult — compute-near-data GBDT train over a partitioned feature table (the train sibling of run_near_data_featurize_job): load this node's owned partitions once → train (+calibrate, registers a Model with AUC/log-loss/accuracy + drivers) → explain (per-row TreeSHAP drivers) → rank (at-risk list), each a recorded ComputeJob; SPMD, near-data instrumented, no new ML math (FEAT-6/FEAT-8; #533)
     calibration.hpp         zetta::ml — probability calibration: Calibrator (Platt sigmoid(a·raw+b) / isotonic PAVA step) + fit_calibrator + Brier/ECE metrics + JSON/wire boundaries; attaches to a GbdtModel (predict_proba applies it) via calibrate_model (FEAT-6; #391)
     tree_shap.hpp           zetta::ml — exact path-dependent TreeSHAP over a GbdtModel: tree_shap (per-feature φ + cover-weighted base_value, raw/margin space — efficiency base+Σφ=predict_raw), dominant_driver; pure, uses TreeNode::cover, no new JSON boundary (FEAT-6; #393)
     gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
@@ -2640,7 +2779,7 @@ src/core/                   zetta-core impl
   deployment_controller.cpp zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
   node_capability.cpp       zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
   provisioner.cpp           zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
-  add_nodes.cpp             zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518)
+  add_nodes.cpp             zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518); the Node& overloads drive rebalance_partitions onto the new members (#519)
   local_provisioner.cpp     zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
   azure_provisioner.cpp     zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
   azure_cli_control_plane.cpp zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
@@ -2669,12 +2808,13 @@ src/core/                   zetta-core impl
     index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
     index_step_executor.cpp zetta::IndexStepExecutor — run an IR `index` step: resolve backend (node registry) → read table rows into partitions → build → record Index entity → `index` output; + read_index_partitions (shared) (#528)
     in_memory_index_backend.cpp zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
-    oramacore_fulltext_index.cpp zetta::OramaCoreFulltextIndex — full-text BM25F build over partitions / ranked query / drop via the oramacore-cpp MemoryIndex (pImpl); ZETTA_WITH_ORAMACORE-guarded engine-absent stub (#527)
+    oramacore_fulltext_index.cpp zetta::OramaCoreFulltextIndex — full-text BM25F build over partitions / ranked query (now carrying per-hit scores) / drop via the oramacore-cpp MemoryIndex (pImpl); ZETTA_WITH_ORAMACORE-guarded engine-absent stub (#527)
+    distributed_fulltext.cpp zetta::DistributedFulltextIndex — per-partition build from owned partitions, scatter-gather query over the fulltext.query RPC, merge_fulltext_hits + the request/response JSON-Schema boundary (#529)
   compute_job.cpp           zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
   dataset_partition.cpp     zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
   rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
   partition_writer.cpp      zetta::write_partitioned — the partitioned write path: bucket rows by assign_partition (stamping the round-robin surrogate), serialize each non-empty partition to JSON Lines, store via LargeObjectStore::import_bytes, record a DatasetPartition per partition (cumulative row range + place_partition owners) (#511)
-  partition_rebalance.cpp   zetta::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger lives in node.cpp (#517)
+  partition_rebalance.cpp   zetta::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger + Node::cluster_members live in node.cpp (#517); the add_nodes direct trigger lives in add_nodes.cpp (#519)
   principal.cpp             zetta::Principal — persist/rename principal.json + key CRUD
   access_key.cpp            zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
   scope.cpp                 zetta::Scope — permits() + JSON boundary validation
@@ -2712,6 +2852,7 @@ src/core/                   zetta-core impl
   compute/work_stealing_scheduler.cpp  WorkStealingScheduler — worker threads, per-worker deques + the steal loop (zetta-core; #366)
   compute/distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
   compute/job_coordinator.cpp  JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
+  compute/checkpoint.cpp  JobCheckpoint value + JSON-Schema + sha256 integrity boundary, FileCheckpointStore (atomic save / latest / clear / job_ids), run_resumable_rounds (resume + checkpoint + graceful drain) (zetta-core; #468)
   ddf/data_frame.cpp        DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
   ddf/parquet_reader.cpp    load_parquet_data_frame (decode requested leaf columns → DeviceBuffers, column projection + numeric/dense boundary), infer_parquet_schema, parquet_data_frame_schema/validate boundary (zetta-core; #508)
   ddf/ops.cpp               DDF scan/filter/project ops over a DataFrame (gather-based filter + repack, map/elementwise computed columns) + FilterPredicate/Projection JSON boundaries (zetta-core; #381)
@@ -2724,11 +2865,13 @@ src/core/                   zetta-core impl
   ddf/local_partitions.cpp  load_local_partitions — enumerate this node's owned partitions from Node::dataset_partitions(), read each owned blob body from the local LargeObjectStore, parse the JsonlStore lines, load into a DataFrame; instrumented bytes_read (zetta-core; #516)
   ddf/local_group_by_job.cpp run_near_data_group_by_job — load the local shard via load_local_partitions then drive run_group_by_job, computing wire_bytes_moved from Collectives::wire_bytes() before/after (zetta-core; #516)
   ddf/featurize.cpp         point_in_time_featurize — the single-node featurization (as-of + group-by + filter + hash-join composition), FeatureTable::to_data_frame + FeaturizeSpec JSON boundary (zetta-core; #388)
-  ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by) through the coordinator (zetta-core; #388)
+  ddf/featurize_job.cpp     run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
+  ddf/local_featurize_job.cpp run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/gbdt.cpp               zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
-  ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast) (zetta-core; #390/#391)
+  ml/gbdt_train_job.cpp     run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast); opt-in checkpoint/restart (resume the partial model, allreduce-min the cluster resume round, checkpoint each round via TrainHooks; #468) (zetta-core; #390/#391)
   ml/gbdt_score.cpp         zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
   ml/gbdt_score_job.cpp     run_score_job — read device-backed columns, predict the shard, gather (entity,risk) to root, rank on the device (sort_by_key), broadcast the global at-risk list (zetta-core; #392)
+  ml/local_train_job.cpp    run_near_data_train_job — load the local shard via load_local_partitions then drive run_train_job (+calibration) → run_explain_job → run_score_job over it, summing wire_bytes across the phases (zetta-core; #533)
   ml/feature_columns.hpp    zetta::ml::detail::read_column_as_double — shared device-download helper (frame column → host doubles, dtype-widening) used by the train + score + explain job bodies (zetta-core internal; #392/#393)
   ml/calibration.cpp        zetta::ml — Platt (robust Newton, Lin et al. 2007) + isotonic (PAVA) fit, Calibrator apply/JSON/wire boundary, Brier/ECE metrics (zetta-core; #391)
   ml/tree_shap.cpp          zetta::ml — exact TreeSHAP recursion (extend/unwind/unwound_path_sum), model_base_value (cover-weighted expectation), dominant_driver (zetta-core; #393)
@@ -2747,7 +2890,7 @@ src/core/                   zetta-core impl
   testkit/                  zetta::testkit — the in-app test-suite catalog (no SDL; #462)
     test_suite.cpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin()
     harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback) + sample_churn_dataset + numeric encoding
-    cases_*.cpp             the canned cases per category (compute/ddf/ml/distributed/governance/pipeline/examples)
+    cases_*.cpp             the canned cases per category (compute/ddf/parquet/ml/distributed/fulltext/governance/pipeline/examples; cases_fulltext.cpp = the TC-13 cluster.fulltext_index distributed case, #503)
     example_script.cpp      run_example_script — parse->IR->gate->run + expectation checks + offending-statement reconstruction (#523)
     cases_examples.cpp      example_scripts() built-in catalog + register_example_cases (each sim-Python example a TestCase under TestCategory::Examples)
   repl/console_model.cpp    zetta::repl::ConsoleModel — submit/clear logic + Frontend names + format_result/format_transcript text projections (CMP-6; #524)
@@ -3009,7 +3152,8 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/sharded-blob-placement.md`](docs/sharded-blob-placement.md) — partition-aware large-object body replication (`zetta::ReplicatedBlobStore`, #515): a `Partitioned` / `PartitionedWithReplicas` table's partition body (the [catalog](docs/dataset-partitions.md) entry's `blob_ref`) is fetched + held **only by its owner node(s)** per `owner_nodes` + the replication factor (`rf` owners → exactly `rf` copies), instead of replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it never `LOREQ`s it), `store_blob()` refuses it; a plain large object, an unplaced partition (empty `owner_nodes`), and model weights keep replicate-to-all. Owner set read from the CRDT `part:` snapshot through the validated boundary (network-thread-safe, no Node access); no new JSON format. The first slice that *acts* on a non-default [replication strategy](docs/replication-strategy.md) at the body level (the partitioner write path / locality-aware reads / rebalancing are later slices).
 - [`docs/index-backend.md`](docs/index-backend.md) — the **`IndexBackend` seam** (`zetta::IndexBackend`: build over a table's partitions / query / drop, no-throw `IndexStatus`) + the **`IndexRegistry`** (resolve an `IndexSpec` — or an IR `index` step via `index_spec_from_node` — to a registered backend whose name + kind match, like `compute::DeviceRegistry`) + the in-memory **`InMemoryIndexBackend`** Search reference backend, and the top-level replicated **`Index` entity** (`zetta::Index`/`IndexValue` `{table,kind,backend,fields}`, `index:<uuid>`, `pboettch`-validated, `system.zetta_indexes` registry). Vector/semantic/feature backends are additive behind the same seam; run/deploy wiring is a later slice (ENT-39 / ENT-40, ADR-34).
 - [`docs/oramacore-fulltext-index.md`](docs/oramacore-fulltext-index.md) — the **`OramaCoreFulltextIndex`** backend (`zetta::OramaCoreFulltextIndex`, ENT-39 / ENT-40, ADR-34, #527): the **first real `IndexBackend`** — a **full-text (BM25F)** Search backend (name `oramacore_fulltext`, kind `Search`) over the native **oramacore-cpp** engine (the vendored C++23 OramaCore full-text port, `modules/oramacore-cpp`). `build` indexes each row's field text into an `oramacore::index::MemoryIndex`; `query` reads `term` as a free-text query and returns row ids **ranked** by BM25F relevance (tokenize + stem + stop-word filter both sides), capped by `top_k`. The engine is held behind a **pImpl** (no oramacore-cpp type in the header) + linked **PRIVATE**, and the whole integration is **guarded on the (private) submodule's presence** (`ZETTA_WITH_ORAMACORE`) so a CPU-only checkout still builds/runs green (the backend degrades to `Unsupported`; `engine_available()` reports which). No new JSON boundary (operates over already-validated specs + stored rows). Driving a deployed `index` step through it is the [index-step-executor](docs/index-step-executor.md) slice (#528); per-field BM25F params are a later slice.
-- [`docs/index-step-executor.md`](docs/index-step-executor.md) — the **run-path wiring** for an `index` step (`zetta::IndexStepExecutor` + `Node::index_registry()`, **#528**): the `Node` now owns an `IndexRegistry` (the reference backends registered — `memory_search` always, `oramacore_fulltext` when `ZETTA_WITH_ORAMACORE`), and `IndexStepExecutor` is the [`StepExecutor`](docs/execution.md) that resolves a deployed IR `index` step to its backend ([`index_spec_from_node`](docs/index-backend.md)), reads the source table's rows into partitions (`read_index_partitions`, chunked like the storage engine), **builds a real index**, records the [`Index`](docs/index-backend.md) entity, and emits an `index` Run output referencing the real id — leaving the index **queryable** for the node's lifetime (`node.index_registry().resolve(spec)->query(...)`). Other step kinds delegate to `DefaultStepExecutor`; churn's `index` step also builds a real entity index over the accounts shard (alongside the at-risk ranking). The acceptance "an index step builds a real index that is then queryable"; the distributed (fan-across-nodes) build + vector/semantic/feature backends remain later slices. No new JSON format.
+- [`docs/index-step-executor.md`](docs/index-step-executor.md) — the **run-path wiring** for an `index` step (`zetta::IndexStepExecutor` + `Node::index_registry()`, **#528**): the `Node` now owns an `IndexRegistry` (the reference backends registered — `memory_search` always, `oramacore_fulltext` when `ZETTA_WITH_ORAMACORE`), and `IndexStepExecutor` is the [`StepExecutor`](docs/execution.md) that resolves a deployed IR `index` step to its backend ([`index_spec_from_node`](docs/index-backend.md)), reads the source table's rows into partitions (`read_index_partitions`, chunked like the storage engine), **builds a real index**, records the [`Index`](docs/index-backend.md) entity, and emits an `index` Run output referencing the real id — leaving the index **queryable** for the node's lifetime (`node.index_registry().resolve(spec)->query(...)`). Other step kinds delegate to `DefaultStepExecutor`; churn's `index` step also builds a real entity index over the accounts shard (alongside the at-risk ranking). The acceptance "an index step builds a real index that is then queryable"; the vector/semantic/feature backends remain later slices. No new JSON format.
+- [`docs/distributed-fulltext.md`](docs/distributed-fulltext.md) — **per-partition distributed full-text** (`zetta::DistributedFulltextIndex`, ENT-39 / ENT-40, ADR-34, **#529**, the engine half of TC-13 #503): the **approved per-partition topology** — where the [index-step-executor](docs/index-step-executor.md) builds **one consolidated** index, this builds a full-text **sub-index per LOCAL owned partition** ([compute-near-data](docs/compute-near-data.md): enumerate owned partitions → read each body from local disk → build one sub-index per partition into an owned [`IndexBackend`](docs/index-backend.md)) and answers a query by **scatter-gather + merge/rank**: query the node's own sub-indexes, **scatter** to every peer over the `fulltext.query` [signal-plane](docs/signal-plane.md) RPC (no new wire verb; request/response schema-validated like the `CollectiveMessage`), **gather** each node's ranked hits, **merge** into one global ranking (identical on every node; an unreachable peer fails the round). The pure `merge_fulltext_hits` (score desc, row id asc, dedup-by-max, `top_k`) is the core both merges run through → single-node == multi-node. The acceptance: the distributed ranking **matches a single consolidated-index oracle** (the standard sharded-search local-IDF query-then-fetch — exact for the global top-k when ranking is tf-unambiguous; a global-stats `dfs_query_then_fetch` pass is a later optimization). The seam's `IndexQueryResult` now carries per-hit `scores` (a ranked backend fills them, exact-match leaves them empty). Tested engine-agnostically (a partition-independent reference scorer over a real loopback cluster) with the real [BM25F](docs/oramacore-fulltext-index.md) path skipped when the submodule is absent. A building block alongside the consolidated path; wiring it as the default `index`-step behaviour is a later slice.
 - [`docs/access-control.md`](docs/access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default authorization (RULE-3 / ENT-22).
 - [`docs/audit-trail.md`](docs/audit-trail.md) — the immutable, append-only `AuditEvent` (ENT-23 / FEAT-9): graph change / deploy / data-access events, replicated + JSON-Schema validated.
 - [`docs/admin-panel.md`](docs/admin-panel.md) — the headed **Admin & Settings panel** (`App::draw_admin`, SCR-7 / CMP-5): read-only view of principals + keys, scope + capability grants, and the audit log.
@@ -3041,20 +3185,24 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/ddf-distributed-sort.md`](docs/ddf-distributed-sort.md) — the DDF distributed sort (`zetta::ddf::DistributedSorter`): sample-partition + local sort + merge across the cluster — splitter agreement over the [collectives](docs/collectives.md), an all-to-all row shuffle over the [signal plane](docs/signal-plane.md) (schema-validated `PartitionMessage`), returning globally range-ordered, locally-sorted partitions; a single-node cluster returns the locally-sorted shard (ARC-12; #385).
 - [`docs/ddf-join.md`](docs/ddf-join.md) — the DDF distributed equi-join (`zetta::ddf::distributed_join`): a distributed DDF op — repartition two frames by key across the cluster via collectives (gather + broadcast all-to-all), then a local hash / sort-merge join per shard, so single-node and multi-node yield identical results; rides the schema-validated `CollectiveMessage` with a range-checked deserialize boundary, no new wire format (ARC-12; #382).
 - [`docs/ddf-groupby.md`](docs/ddf-groupby.md) — the DDF distributed groupby-aggregate (`zetta::ddf::group_by` / `distributed_group_by`): groupby + count/sum/min/max/mean (an extensible op set) over a frame's columns, partial-per-node combined via gather/merge/broadcast over the collectives — results identical single- and multi-node; a DDF operator + schema-validated `GroupBySpec` boundary (ARC-12; #383) — and runs as a recorded `ddf` `ComputeJob` (`zetta::ddf::run_group_by_job`, `group_by_job.hpp`) through the [job coordinator](docs/job-coordinator.md), so it appears in `system.zetta_jobs` (FEAT-8; #387).
-- [`docs/compute-near-data.md`](docs/compute-near-data.md) — **compute-near-data**: a DDF op executes over a node's LOCAL partitions (`zetta::ddf::load_local_partitions` + `run_near_data_group_by_job`, ARC-12 / FEAT-8; #516, the engine half of TC-11 #501). A node enumerates the partitions it **owns** from the [catalog](docs/dataset-partitions.md) (`owner_nodes` ∋ its id), reads only the partition bodies it [physically holds](docs/sharded-blob-placement.md) from its local large-object store (no `LOREQ`, no full-dataset pull), runs the op over that local shard, and exchanges only the small per-node partial over the [collectives](docs/collectives.md) — replacing the "shard handed in out-of-band" path. Instrumented (`bytes_read` near-data vs `Collectives::wire_bytes()` moved) so the acceptance — **bytes-moved ≈ partials (not ≈ dataset); result == the single-node oracle** — is directly checkable; no new JSON format (the body is the existing JsonlStore line shape, sha256-verified). Group-by is wired end to end; scan/filter/[featurize](docs/ddf-featurize.md) reuse the same loader.
+- [`docs/compute-near-data.md`](docs/compute-near-data.md) — **compute-near-data**: a DDF op executes over a node's LOCAL partitions (`zetta::ddf::load_local_partitions` + `run_near_data_group_by_job`, ARC-12 / FEAT-8; #516, the engine half of TC-11 #501). A node enumerates the partitions it **owns** from the [catalog](docs/dataset-partitions.md) (`owner_nodes` ∋ its id), reads only the partition bodies it [physically holds](docs/sharded-blob-placement.md) from its local large-object store (no `LOREQ`, no full-dataset pull), runs the op over that local shard, and exchanges only the small per-node partial over the [collectives](docs/collectives.md) — replacing the "shard handed in out-of-band" path. Instrumented (`bytes_read` near-data vs `Collectives::wire_bytes()` moved) so the acceptance — **bytes-moved ≈ partials (not ≈ dataset); result == the single-node oracle** — is directly checkable; no new JSON format (the body is the existing JsonlStore line shape, sha256-verified). Group-by is wired end to end; scan/filter/[featurize](docs/ddf-featurize.md) reuse the same loader. The TC-11 acceptance is verified as a gtest (`tests/test_ddf_local_partitions.cpp`) **and** surfaced as the runnable [test-suite](docs/test-suite.md) case `cluster.compute_near_data` (#501).
 - [`docs/ddf-as-of.md`](docs/ddf-as-of.md) — the DDF window / as-of (point-in-time) op (`zetta::ddf::as_of_aggregate`): per-entity reduction of only the rows inside a time window (`time <= as_of`, optionally `>= window_start`) over a numeric DataFrame — the leakage-free featurization primitive over the DDF substrate, with a validated `AsOfAggregate` JSON boundary (ARC-12; #384).
 - [`docs/ddf-featurize.md`](docs/ddf-featurize.md) — point-in-time featurization (`zetta::ddf::point_in_time_featurize` + `run_featurize_job`): the churn `churn_features.sql` shape expressed as a DDF graph (as-of window + groupby-aggregate + filter + equi-join) producing a leakage-free `FeatureTable` for training (every feature uses `time <= as_of`, dense/left-join over the account universe); distributed as a recorded `featurize` `ComputeJob` (distributed_join + distributed_group_by), proved against the synthetic churn fixture's deliberate post-t0 leakage trap, with a validated `FeaturizeSpec` JSON boundary (ARC-12 / FEAT-6; #388).
 - [`docs/gbdt.md`](docs/gbdt.md) — distributed histogram GBDT training (`zetta::ml::train_gbdt` + `run_train_job`): histogram gradient-boosted decision trees with a binary-logistic objective — per-feature gradient/Hessian histograms over bins, **allreduced** across nodes each round to find splits, so single-node and multi-node grow equivalent trees; a host-side reference over device-backed feature columns; runs as a recorded `train` `ComputeJob` and **produces a `Model`** (schema-validated weights body + metrics + ranked drivers), trained on the [synthetic churn fixture](docs/churn-dataset.md) to a target AUC (FEAT-6 / ENT-14; #390).
 - [`docs/gbdt-score.md`](docs/gbdt-score.md) — batch scoring / rank-at-risk over a trained `Model` (`zetta::ml::score_gbdt` + `run_score_job`): score entities through a GBDT model to a **calibrated risk** (the binary-logistic `predict_proba`) and rank them into an **at-risk list**; the distributed `score` `ComputeJob` is SPMD (per-shard predict, gather + device `sort_by_key` rank + broadcast → identical global ranking single-node == multi-node), `load_gbdt_model` re-validates the weights body at the GBDT model JSON Schema boundary; the inference counterpart to the trainer, GPU-native / CPU-fallback / distributed (FEAT-6 / CMD-10; #392).
+- [`docs/uc1-train-over-partitions.md`](docs/uc1-train-over-partitions.md) — **train GBDT(outcome) over partitions** (`zetta::ml::run_near_data_train_job`, FEAT-6 / FEAT-8; #533): the **train** sibling of the [near-data featurize job](docs/ddf-featurize.md) — train the histogram GBDT on the binary `outcome` label **compute-near-data** over a partitioned feature table (the saas-sales-conversations engineered columns), calibrate, and produce **per-row TreeSHAP drivers + a ranked at-risk list**. Loads this node's shard from its [owned partitions](docs/compute-near-data.md) once, then runs the whole [train](docs/gbdt.md) (+ [calibrate](docs/calibration.md)) → [explain](docs/tree-shap.md) → [rank](docs/gbdt-score.md) pipeline over it, each a recorded `ComputeJob` — registering a calibrated [`Model`](docs/models.md) with AUC/log-loss/accuracy + drivers (the `ChurnStepExecutor` "one frame, three jobs" pattern, frame loaded near data). SPMD (single-node == multi-node, matches a single-node oracle within fp tolerance); near-data instrumented (`local_bytes_read` vs `wire_bytes_moved`); **no new ML math** (composes the existing engine) and **no new JSON/wire format**. Composing featurize → train over partitions is #530; the sim-Python UC-1-at-scale E2E is #531.
 - [`docs/calibration.md`](docs/calibration.md) — probability calibration (`zetta::ml::Calibrator` + `fit_calibrator` + `calibrate_model`): Platt scaling + isotonic regression fit on a held-out split so the GBDT's risk scores are well-calibrated (Brier / ECE improve, AUC preserved); attaches to a `GbdtModel` (predict_proba applies it, rides inside the weights body) and wires into the distributed `train` job via a sharding-invariant content-hash held-out split, schema-validated boundary (FEAT-6; #391).
 - [`docs/tree-shap.md`](docs/tree-shap.md) — exact TreeSHAP explanation (`zetta::ml::tree_shap` + `run_explain_job`): exact path-dependent TreeSHAP over the trained GBDT trees (Lundberg 2018, Algorithm 2) using the per-node cover the trainer records on each `TreeNode` — per-entity per-feature attributions in raw/margin space with the efficiency invariant `base_value + Σ φ = predict_raw`, a per-entity dominant churn driver, and a distributed `explain` `ComputeJob` (per-entity SHAP over a shard + an allreduced global mean-|φ| driver ranking, single-node == multi-node) (FEAT-6; #393).
 - [`docs/native-oracle.md`](docs/native-oracle.md) — the native correctness oracle (`zetta::ml::load_golden_oracle` + `tests/test_native_oracle.cpp`, RSK-8 / #395): proves the native featurize / GBDT-train / TreeSHAP reimplementations are numerically correct **without running any reference** (no Python/XGBoost/foreign runtime, in the engine, build, or CI) via three self-contained C++ layers over the [churn fixture](docs/churn-dataset.md) — committed **golden numeric fixtures** (cross-checked against a leakage-free ground truth + the SHAP efficiency identity `base_value + Σ φ = predicted`), **analytic** closed-form GBDT-split + TreeSHAP micro-tests, and single-node == 2-node == 3-node **equivalence**; the golden is a `pboettch`-validated boundary (`schemas/golden_oracle.schema.json`), regenerated offline via `ZETTA_WRITE_GOLDEN=1` (the generator is not a repo/CI dependency).
 - [`docs/playbook.md`](docs/playbook.md) — the UC-1 retention playbook (`zetta::ml::generate_playbook`): turn the model's [calibrated risk](docs/gbdt-score.md) + [dominant churn driver](docs/tree-shap.md) into a **CRM-ready playbook** — a deterministic **driver→action→owner** dictionary (`PlaybookPolicy`, a hand-written JSON boundary), an **expected-retained-value priority** `P(churn) × ARR × P(save | dominant driver)` computed and **frozen in code**, and a **constrained narrator behind a seam** (`PlaybookNarrator`; default **Claude** via an injected `NarratorCompletion`, writes the narrative + picks the play within a strict schema validated at the `playbook_entry` boundary, **never invents numbers**) with a deterministic `RulesEngineNarrator` **fallback** so it runs end-to-end offline; plus an **outcome log** for the feedback loop. A pure library proven on the [churn fixture](docs/churn-dataset.md) deterministically (FEAT-6; #397).
 - [`docs/uc1-end-to-end.md`](docs/uc1-end-to-end.md) — the **UC-1 end-to-end** integration test (`tests/test_uc1_end_to_end.cpp`, #399; realizes UC-1 / satisfies TP-1): drives the whole churn pipeline on the [synthetic fixture](docs/churn-dataset.md) in one test — synthetic data → [featurize](docs/ddf-featurize.md) (point-in-time, [entity-resolved](docs/entity-resolution.md)) → [train GBDT](docs/gbdt.md) → [explain (TreeSHAP)](docs/tree-shap.md) → ranked at-risk + drivers → playbook, behind the real [`ChurnStepExecutor`](docs/churn-step-executor.md) — asserting a **calibrated ranked list** + **division-correct resolution** + a **gated** ([correctness gate](docs/gate.md) incl. [`EntityResolutionCheck`](docs/entity-resolution-check.md), RULE-1) **governed** ([key-scoped access](docs/access-control.md) + [audit trail](docs/audit-trail.md)) run; a conflating resolver is shown to block the gate. Composes the already-built pieces (real StepExecutors, playbook, entity resolution, oracle parity) — no new engine code.
-- [`docs/test-suite.md`](docs/test-suite.md) — the in-app **test suite** (`zetta::testkit`, #462): a **headless-runnable catalog of canned, parameterized test cases** over the real engine (`TestCase` = id + category + typed `TestOption`s + a `run(TestOptions, TestContext) -> TestResult` body; `TestSuite::builtin()`), spanning **compute/device** (CpuDevice ops; CUDA build state), **DDF** (scan/filter/group-by), **ML** (GBDT AUC / exact TreeSHAP efficiency identity / calibration), **distributed/cluster** over a **real multi-node loopback cluster** (`testkit::LoopbackCluster` — membership / allreduce / distributed-group-by == single-node), **governance** (key-scoped access / audit / the entity-resolution gate / the [bulk burst identity + teardown revocation](docs/burst-identity.md) lifecycle — TC-6), and the whole **UC-1 pipeline** (the [#399 end-to-end](docs/uc1-end-to-end.md)). The catalog lives in **zetta-core** (no SDL — runnable headless, `tests/test_testkit.cpp`); the headed **Operations → Test suite** panel (`App::draw_test_suite`) is a **thin renderer** that runs a selected case on a **worker thread** (so the loopback-cluster cases don't block the UI) with a per-test options modal + custom-data field. Self-contained data (`testkit::sample_churn_dataset`); `run_test_case` converts a thrown exception into a clean `Error` so a case can't crash the app; no new JSON format. The doc carries an **"adding a case" how-to** + an **inventory of candidate cases** (the backlog of engine surfaces — compute/DDF/ML/cluster/governance/provisioning/storage/query — that could become runnable cases, with effort/infra markers); extend the catalog there as new engine slices land. See [`docs/test-suite.md`](docs/test-suite.md).
-- [`docs/example-scripts.md`](docs/example-scripts.md) — the **sim-Python example-script harness** (`zetta::testkit::run_example_script` + `example_scripts()`, #523): run a sim-Python **example program end to end as an integration test** — **parse** ([PythonFrontend](docs/python-frontend.md)) → **IR** → **gate** ([default_gate](docs/gate.md), RULE-1) → **run** ([Node::run_graph](docs/execution.md)) — and **assert on the outputs** (node/edge shape, step kinds, data-flow edges, produced `dataset`/`model`/`index` outputs), so *the example programs ARE the integration tests*. A green script doubles as a canonical usage example; a negative script proves a failure **surfaces the offending statement** (the parser's locator at compile, or the failing step's statement reconstructed from its `python` provenance bag). Each example is a `TestCase` under the new **`TestCategory::Examples`**, runnable headless (`tests/test_example_scripts.cpp`) and in the **Operations → Test suite** panel; non-throwing; **no new JSON format** (only the validated IR/Run boundaries). The catalog ships the green churn-pipeline + minimal + method-chain samples and the failure-surfacing negatives; the flagship TC-9/10/11/13 + UC-1-at-scale ([#531](https://github.com/oramasearch/zetta/issues/531)) scripts land as their engine bindings ([#522](https://github.com/oramasearch/zetta/issues/522) cluster+ML, parquet→DDF, partitioning, fulltext) do.
+- [`docs/uc1-at-scale-e2e.md`](docs/uc1-at-scale-e2e.md) — the **UC-1-at-scale sim-Python E2E** (the capstone scale test, TC-12 / **#531**, realizes #502): one canonical sim-Python program (`cluster.add_nodes` → `load_dataset` → `train(target='outcome')` → `explain` → `rank`) drives the whole pipeline at scale over a **real, manually-sized loopback cluster** — load the [saas-sales-conversations parquet](docs/parquet-reader.md) as a [partitioned](docs/partitioned-write-path.md) table (embeddings dropped, scaled up), [add permanent nodes](docs/add-nodes.md) via an **injected** `LocalProvisioner` (the cloud burst stays consent-gated; `provider=` is provenance only), then [train a calibrated GBDT on `outcome`](docs/uc1-train-over-partitions.md) [compute-near-data](docs/compute-near-data.md) → [explain (TreeSHAP)](docs/tree-shap.md) → [rank](docs/gbdt-score.md), SPMD across the cluster. **Gated** (RULE-1) and **governed** ([key-scoped access](docs/access-control.md) + [audit trail](docs/audit-trail.md)); asserts a real model identical on every node, the raw data read near data (only training partials cross the wire), every conversation ranked + explained once. The same script is the canonical usage example (`examples.uc1_at_scale`) an operator runs for real in the headed app; the runnable case is `cluster.uc1_at_scale` (`src/core/testkit/cases_uc1_scale.cpp`, headless `tests/test_testkit.cpp`). Composes the already-built near-data train (#533) / featurize (#532) / [partition](docs/compute-near-data.md) (#516) slices + the [cluster/ML sim-Python bindings](docs/python-frontend.md) (#522) — no new engine code, no new JSON format; sets up UC-4 (#267).
+- [`docs/test-suite.md`](docs/test-suite.md) — the in-app **test suite** (`zetta::testkit`, #462): a **headless-runnable catalog of canned, parameterized test cases** over the real engine (`TestCase` = id + category + typed `TestOption`s + a `run(TestOptions, TestContext) -> TestResult` body; `TestSuite::builtin()`), spanning **compute/device** (CpuDevice ops; CUDA build state), **DDF** (scan/filter/group-by + the native [Parquet reader](docs/parquet-reader.md) TC-9 parity vs an embedded pyarrow golden — `ddf.parquet_reader_parity`, #499), **ML** (GBDT AUC / exact TreeSHAP efficiency identity / calibration), **distributed/cluster** over a **real multi-node loopback cluster** (`testkit::LoopbackCluster` — membership / allreduce / distributed-group-by == single-node / **compute-near-data** == single-node-oracle with only partials over the wire, TC-11; plus `cluster.partition_rebalance` — TC-10/#500 partition placement + rebalance-on-join converging `system.dataset_partitions` on every node; plus `cluster.fulltext_index` — TC-13/#503 a [per-partition full-text index](docs/distributed-fulltext.md) built over each node's owned partitions whose scatter-gather ranking matches a consolidated-index oracle on every node, via the `oramacore_fulltext` BM25F backend when compiled in else a partition-independent reference scorer; plus `cluster.uc1_at_scale` — the [TC-12/#531 capstone](docs/uc1-at-scale-e2e.md): one sim-Python program loads the saas parquet partitioned, adds nodes, and trains a calibrated `outcome` model compute-near-data across the cluster, gated + governed, identical on every node), **governance** (key-scoped access / audit / the entity-resolution gate / the [bulk burst identity + teardown revocation](docs/burst-identity.md) lifecycle — TC-6), and the whole **UC-1 pipeline** (the [#399 end-to-end](docs/uc1-end-to-end.md)). The catalog lives in **zetta-core** (no SDL — runnable headless, `tests/test_testkit.cpp`); the headed **Operations → Test suite** panel (`App::draw_test_suite`) is a **thin renderer** that runs a selected case on a **worker thread** (so the loopback-cluster cases don't block the UI) with a per-test options modal + custom-data field. Self-contained data (`testkit::sample_churn_dataset`); `run_test_case` converts a thrown exception into a clean `Error` so a case can't crash the app; no new JSON format. The doc carries an **"adding a case" how-to** + an **inventory of candidate cases** (the backlog of engine surfaces — compute/DDF/ML/cluster/governance/provisioning/storage/query — that could become runnable cases, with effort/infra markers); extend the catalog there as new engine slices land. See [`docs/test-suite.md`](docs/test-suite.md).
+- [`docs/example-scripts.md`](docs/example-scripts.md) — the **sim-Python example-script harness** (`zetta::testkit::run_example_script` + `example_scripts()`, #523): run a sim-Python **example program end to end as an integration test** — **parse** ([PythonFrontend](docs/python-frontend.md)) → **IR** → **gate** ([default_gate](docs/gate.md), RULE-1) → **run** ([Node::run_graph](docs/execution.md)) — and **assert on the outputs** (node/edge shape, step kinds, data-flow edges, produced `dataset`/`model`/`index` outputs), so *the example programs ARE the integration tests*. A green script doubles as a canonical usage example; a negative script proves a failure **surfaces the offending statement** (the parser's locator at compile, or the failing step's statement reconstructed from its `python` provenance bag). Each example is a `TestCase` under the new **`TestCategory::Examples`**, runnable headless (`tests/test_example_scripts.cpp`) and in the **Operations → Test suite** panel; non-throwing; **no new JSON format** (only the validated IR/Run boundaries). The catalog ships the green churn-pipeline + minimal + method-chain samples, the **UC-1-at-scale** program (`examples.uc1_at_scale`, [#531](https://github.com/oramasearch/zetta/issues/531) — whose real distributed near-data run is the [`cluster.uc1_at_scale`](docs/uc1-at-scale-e2e.md) case), and the failure-surfacing negatives; the remaining flagship TC-9/10/13 scripts land as their engine bindings ([#522](https://github.com/oramasearch/zetta/issues/522) cluster+ML, parquet→DDF, partitioning, fulltext) do.
+- [`docs/runbooks/test-cases/`](docs/runbooks/test-cases/README.md) — **per-test runbooks**: one doc per [test-suite](docs/test-suite.md) case (compute / DDF / ML / distributed / governance / pipeline / examples) explaining what it does, how to run it (the headed **Operations → Test suite** panel + the headless gtest), its options, and what it asserts. The [index](docs/runbooks/test-cases/README.md) lists every case by category. Add a runbook alongside each new test-suite case.
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
 - [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
+- [`docs/job-checkpoint.md`](docs/job-checkpoint.md) — **burst-job eviction tolerance** (`zetta::compute` checkpoint / restart, RULE-5 / RSK-9, #468): the **job-level** complement to the work-stealing scheduler's task-level lost-peer recovery — durably snapshot a long-running job's progress (`JobCheckpoint`: opaque sha256-fingerprinted state + a schema-validated boundary with a cross-field integrity check) behind a `CheckpointStore` seam (`FileCheckpointStore` reference: atomic temp-write+rename, corrupt-head fallback), so `run_resumable_rounds` **resumes from the last checkpoint** after a spot eviction — no recompute of committed rounds, graceful drain on a termination notice. Standalone seam (no Node/SQL/cluster wiring); first consumer is per-round [GBDT](docs/gbdt.md) model checkpointing, observable via `system.checkpoints`; a shared/replicated store + auto-restart on a detected eviction are later slices.
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/churn-solution.md`](docs/churn-solution.md) — wiring the catalog **churn-prediction** blueprint to the **real engine** (`zetta::run_churn_solution`, FEAT-4 / UC-1 / #398): the catalog churn graph gains the `index` step to match the real pipeline, and a reusable bridge encodes a [`ChurnDataset`](docs/churn-dataset.md) → numeric DDF shards, builds the standard featurize spec + GBDT params, injects a [`ChurnStepExecutor`](docs/churn-step-executor.md), and runs the blueprint → a real trained `Model` + ranked at-risk list + churn drivers + playbook (not the stubbed `DefaultStepExecutor`); the Deploy panel's "Run on real engine" action (`demo_churn_dataset`, isolated single-node coordinator) + the acceptance test drive it; no new JSON format.
 - [`docs/cloud-inspector.md`](docs/cloud-inspector.md) — the headed **Cloud Inspector** (`zetta::CloudProviderCatalog` + `zetta::CloudInspector` + `App::draw_cloud`): permission-gated inspection of deployment targets (local/on-prem/k8s/AWS/GCP/Azure/OCI) — a deny-by-default, ask-every-time consent gate that, on consent, runs the provider's read-only commands via the shared `CommandRunner`, parses each vendor's JSON at a validated boundary into identity/regions/nodes (no creds read), and surfaces it in the panel + `system.zetta_cloud_providers` / `system.zetta_cloud_status` (#445).

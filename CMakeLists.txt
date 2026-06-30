@@ -382,6 +382,7 @@ add_library(zetta-core STATIC
   src/core/index/index_step_executor.cpp
   src/core/index/in_memory_index_backend.cpp
   src/core/index/oramacore_fulltext_index.cpp
+  src/core/index/distributed_fulltext.cpp
   src/core/compute_job.cpp
   src/core/dataset_partition.cpp
   src/core/rendezvous_placement.cpp
@@ -437,6 +438,7 @@ add_library(zetta-core STATIC
   src/core/ddf/local_group_by_job.cpp
   src/core/ddf/featurize.cpp
   src/core/ddf/featurize_job.cpp
+  src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
   src/core/ml/gbdt_train_job.cpp
   src/core/ml/calibration.cpp
@@ -444,6 +446,7 @@ add_library(zetta-core STATIC
   src/core/ml/gbdt_explain_job.cpp
   src/core/ml/gbdt_score.cpp
   src/core/ml/gbdt_score_job.cpp
+  src/core/ml/local_train_job.cpp
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
   src/core/compute/cpu_device.cpp
@@ -451,14 +454,18 @@ add_library(zetta-core STATIC
   src/core/compute/work_stealing_scheduler.cpp
   src/core/compute/distributed_scheduler.cpp
   src/core/compute/job_coordinator.cpp
+  src/core/compute/checkpoint.cpp
   src/core/testkit/test_suite.cpp
   src/core/testkit/harness.cpp
   src/core/testkit/cases_compute.cpp
   src/core/testkit/cases_ddf.cpp
+  src/core/testkit/cases_parquet.cpp
   src/core/testkit/cases_ml.cpp
   src/core/testkit/cases_distributed.cpp
+  src/core/testkit/cases_fulltext.cpp
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
+  src/core/testkit/cases_uc1_scale.cpp
   src/core/testkit/cases_examples.cpp
   src/core/testkit/example_script.cpp
   src/core/runtime.cpp

@@ -74,6 +74,17 @@ TEST(Testkit, DdfCasesPass) {
     EXPECT_EQ(group_by.outcome, TestOutcome::Pass) << group_by.error;
 }
 
+// The TC-9 (#499) Parquet reader parity case runs over the embedded pyarrow
+// fixture + golden — both at the default chunk size and at a tiny one (so each
+// column splits across chunks while still matching the golden exactly).
+TEST(Testkit, ParquetReaderParityCasePasses) {
+    const TestResult whole = run("ddf.parquet_reader_parity");
+    EXPECT_EQ(whole.outcome, TestOutcome::Pass) << whole.error;
+    const TestResult chunked =
+        run("ddf.parquet_reader_parity", [](TestOptions& o) { o.set_int("chunk_rows", 5); });
+    EXPECT_EQ(chunked.outcome, TestOutcome::Pass) << chunked.error;
+}
+
 TEST(Testkit, MlCasesPass) {
     EXPECT_EQ(run("ml.gbdt_train").outcome, TestOutcome::Pass);
     EXPECT_EQ(run("ml.tree_shap").outcome, TestOutcome::Pass);
@@ -112,6 +123,42 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("rows", 400);
     });
     EXPECT_EQ(group_by.outcome, TestOutcome::Pass) << group_by.error;
+    // TC-11: a DDF op runs over each node's locally-owned partitions; only the
+    // partials cross the wire and the result matches the single-node oracle.
+    const TestResult near_data = run("cluster.compute_near_data", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("rows", 600);
+    });
+    EXPECT_EQ(near_data.outcome, TestOutcome::Pass) << near_data.error;
+    // TC-10: a partitioned table rebalances on a node join and the catalog converges
+    // on every node (run with replicas to exercise the rf-preserved path).
+    const TestResult rebalance = run("cluster.partition_rebalance", [](TestOptions& o) {
+        o.set_int("nodes", 3);
+        o.set_int("rf", 2);
+        o.set_int("rows", 120);
+    });
+    EXPECT_EQ(rebalance.outcome, TestOutcome::Pass) << rebalance.error;
+    const TestResult featurize = run("cluster.featurize_partitions", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("rows", 140);
+    });
+    EXPECT_EQ(featurize.outcome, TestOutcome::Pass) << featurize.error;
+    // TC-13: build a full-text index over each node's owned partitions and assert the
+    // scatter-gather ranking matches a consolidated-index oracle on every node (the
+    // oramacore-cpp backend when compiled in, else the reference scorer).
+    const TestResult fulltext = run("cluster.fulltext_index", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("copies", 3);
+    });
+    EXPECT_EQ(fulltext.outcome, TestOutcome::Pass) << fulltext.error;
+    // TC-12: the capstone UC-1-at-scale E2E — one sim-Python program loads the saas
+    // parquet partitioned, adds nodes, and trains a calibrated `outcome` model
+    // compute-near-data across a real cluster, gated + governed, identical on every node.
+    const TestResult uc1 = run("cluster.uc1_at_scale", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("rows", 96);
+    });
+    EXPECT_EQ(uc1.outcome, TestOutcome::Pass) << uc1.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {

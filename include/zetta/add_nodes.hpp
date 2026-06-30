@@ -12,6 +12,8 @@
 
 namespace zetta {
 
+class Node;
+
 // AddNodesRequest — the control-command payload for "add N permanent nodes to
 // this cluster" (#518). It is the *permanent* counterpart to a burst
 // ProvisionRequest: bring up `count` nodes, each meeting the per-node capability
@@ -76,6 +78,35 @@ AddNodesResult add_nodes(Provisioner& provider, const AddNodesRequest& request);
 // permanent nodes meeting `spec` (default no-floor). Equivalent to building an
 // AddNodesRequest and calling the overload above.
 AddNodesResult add_nodes(Provisioner& provider, std::size_t count,
+                         const NodeCapability& spec = {});
+
+// Node-aware overloads — **add nodes AND rebalance partitions onto them** (#519).
+// After the provision, the new permanent members change the cluster membership,
+// so this drives the **between-jobs rebalance pass**
+// ([rebalance_partitions](partition_rebalance.hpp)) to spread sharded partition
+// placement (rendezvous / HRW) onto them: data moves to the new nodes instead of
+// staying on the original ones. The previous membership is `node`'s current
+// replicated `node:<id>` set ([Node::cluster_members](node.hpp)); the grown
+// membership adds the just-provisioned members (each `ProvisionedNode::node_id` is
+// the cluster / CRDT id). When nothing new came up (a zero / best-effort-short add,
+// or an idempotent re-add of already-present members) the rebalance is skipped.
+//
+// The rebalanced placement is visible **immediately** in `node.dataset_partitions()`
+// / `system.dataset_partitions` — the acceptance. The catalog moves are captured
+// into the CRDT (so they replicate) and the partition bodies follow over the
+// existing sharded-blob-placement seam (#515). The existing `Node::tick()`
+// membership auto-trigger (#517) remains the safety net: it re-confirms against the
+// *real* replicated membership once the new nodes gossip in (idempotent — it moves
+// nothing the direct pass already placed).
+//
+// Returns the same `AddNodesResult` as the Provisioner-only overloads (the
+// rebalance is a side effect on the catalog). Best-effort and vendor-neutral like
+// the others. `node` and `provider` must outlive the call.
+AddNodesResult add_nodes(Node& node, Provisioner& provider,
+                         const AddNodesRequest& request);
+
+// Convenience overload matching the issue's `add_nodes(node, azure, N)` UX.
+AddNodesResult add_nodes(Node& node, Provisioner& provider, std::size_t count,
                          const NodeCapability& spec = {});
 
 }  // namespace zetta

@@ -53,7 +53,9 @@ add_executable(zetta-tests
   test_index.cpp
   test_index_step_executor.cpp
   test_oramacore_fulltext_index.cpp
+  test_distributed_fulltext.cpp
   test_compute_job.cpp
+  test_checkpoint.cpp
   test_dataset_partition.cpp
   test_partition_writer.cpp
   test_partition_rebalance.cpp
@@ -81,7 +83,9 @@ add_executable(zetta-tests
   test_ddf_group_by.cpp
   test_ddf_local_partitions.cpp
   test_ddf_featurize.cpp
+  test_ddf_featurize_partitions.cpp
   test_gbdt.cpp
+  test_gbdt_train_partitions.cpp
   test_calibration.cpp
   test_tree_shap.cpp
   test_native_oracle.cpp

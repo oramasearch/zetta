@@ -2,29 +2,32 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/featurize_spec.schema.json",
   "title": "FeaturizeSpec",
-  "description": "A point-in-time (leakage-free) featurization spec for churn-style data (ARC-12 / FEAT-6, #388; part of the native distributed accelerated compute pass for UC-1 churn — #264). It expresses the shape of churn_features.sql as a DDF graph: per-entity windowed event aggregates (every feature uses time <= as_of, so a feature computed as of t0 never sees a future event) joined onto a static account dimension. Realized by zetta::ddf::point_in_time_featurize via the as-of window op (as_of.hpp), the groupby-aggregate op (group_by.hpp), the filter op (ops.hpp), and the equi-join op (join.hpp); distributed via run_featurize_job (featurize_job.hpp). Mirrored by zetta::ddf::FeaturizeSpec in include/zetta/ddf/featurize.hpp and enforced by FeaturizeSpec::from_json() in src/core/ddf/featurize.cpp — keep them in sync.",
+  "description": "A point-in-time (leakage-free) featurization spec (ARC-12 / FEAT-6, #388; part of the native distributed accelerated compute pass for UC-1 — #264). Two shapes: (1) the churn shape — per-entity windowed event aggregates (every feature uses time <= as_of, so a feature computed as of t0 never sees a future event) joined onto a static account dimension; (2) a static carry-through of already-engineered numeric columns (e.g. the saas-sales-conversations engineered columns; #532) where event_features is empty, the account_features are carried through unchanged, and the point-in-time row filter time <= as_of applies 'where applicable' (only when a time_column is set). Realized by zetta::ddf::point_in_time_featurize via the as-of window op (as_of.hpp), the groupby-aggregate op (group_by.hpp), the filter op (ops.hpp), and the equi-join op (join.hpp); distributed via run_featurize_job (featurize_job.hpp); compute-near-data over a partitioned table via run_near_data_featurize_job (local_featurize_job.hpp). Mirrored by zetta::ddf::FeaturizeSpec in include/zetta/ddf/featurize.hpp and enforced by FeaturizeSpec::from_json() in src/core/ddf/featurize.cpp — keep them in sync.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["entity_column", "time_column", "as_of", "event_features"],
+  "required": ["entity_column"],
+  "dependencies": {
+    "time_column": ["as_of"],
+    "event_features": ["time_column"]
+  },
   "properties": {
     "entity_column": {
-      "description": "The integer-dtype entity-key column, present in BOTH the events frame and the accounts frame (the join key). Each distinct value is one entity (account) — the row unit of the feature table.",
+      "description": "The integer-dtype entity-key column. With event features it is present in BOTH the events frame and the accounts frame (the join key); in the static case it is the per-row entity key of the engineered table. Each distinct value is one entity — the row unit of the feature table.",
       "type": "string",
       "minLength": 1
     },
     "time_column": {
-      "description": "The numeric timestamp column in the events frame (e.g. epoch seconds, or any monotonic encoding of time). Compared against as_of / window_start to window each feature.",
+      "description": "The numeric timestamp column (e.g. epoch seconds, or any monotonic encoding of time). Required with windowed event features (each feature compares it against as_of / window_start). Optional for a static carry-through featurization: when set, the row universe is point-in-time filtered to time <= as_of (no leakage); when omitted there is no time dimension.",
       "type": "string",
       "minLength": 1
     },
     "as_of": {
-      "description": "The point-in-time cutoff t0 (inclusive): every event feature aggregates only the rows whose timestamp is <= as_of. The single, global no-leakage boundary.",
+      "description": "The point-in-time cutoff t0 (inclusive): a row/event qualifies only when its timestamp is <= as_of. The single, global no-leakage boundary. Required whenever a time_column is set.",
       "type": "number"
     },
     "event_features": {
-      "description": "The windowed per-entity event features. Each aggregates an events column over the window [window_start, as_of] (always <= as_of), optionally restricted to one event type.",
+      "description": "The windowed per-entity event features. Each aggregates an events column over the window [window_start, as_of] (always <= as_of), optionally restricted to one event type. Optional / empty for a static carry-through featurization; the canonical (to_json) form omits it when empty. When present it requires a time_column.",
       "type": "array",
-      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -62,7 +65,7 @@
       }
     },
     "account_features": {
-      "description": "Static account-dimension columns carried through unchanged from the accounts frame (e.g. mrr, seats, tenure_days), joined onto the windowed event features by entity. Names must be unique and not collide with an event-feature name.",
+      "description": "Static account-dimension columns carried through unchanged from the accounts frame (e.g. mrr, seats, tenure_days, or the engineered numeric columns in the static case), joined onto the windowed event features by entity. Names must be unique and not collide with an event-feature name. A spec must produce at least one feature column (an event feature or an account feature).",
       "type": "array",
       "items": {
         "type": "string",
@@ -70,7 +73,7 @@
       }
     },
     "label_column": {
-      "description": "Optional training-target column from the accounts frame (e.g. churned). Carried into the output feature table as the label y, never treated as a feature X. Omitted when the feature table is for scoring rather than training.",
+      "description": "Optional training-target column from the accounts frame (e.g. churned, or the saas outcome). Carried into the output feature table as the label y, never treated as a feature X. Omitted when the feature table is for scoring rather than training.",
       "type": "string",
       "minLength": 1
     }

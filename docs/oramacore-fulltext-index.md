@@ -129,11 +129,14 @@ the boundaries that produce a spec.
 It is the **first real index backend**: a full-text BM25F Search backend, usable
 end-to-end through the registry (resolve an IR `index` step naming `oramacore_fulltext`
 → build over partitions → query for a ranked list), plus the CMake build/link of the
-`oramacore-cpp` submodule, guarded so CPU-only CI stays green. It is **not** yet
-wired into the run/deploy path — driving a *deployed* `index` step through the
-resolved backend (building the index over the live table's partitions on every node,
-serving queries from a deployed graph) is a later slice, the same gap the seam
-itself documents. Per-field BM25F weights/params are defaults today (the `IndexSpec`
+`oramacore-cpp` submodule, guarded so CPU-only CI stays green. Driving a *deployed*
+`index` step through the resolved backend (one consolidated index over the table's
+partitions) is the [`IndexStepExecutor`](index-step-executor.md) slice (#528); the
+**per-partition distributed** form — a sub-index per LOCAL partition answered by
+scatter-gather + merge/rank, the default backend of
+[`DistributedFulltextIndex`](distributed-fulltext.md) — is #529. The seam's `query`
+now returns per-hit BM25F **scores** (aligned to `row_ids`) so the distributed merge
+can rank globally. Per-field BM25F weights/params are defaults today (the `IndexSpec`
 carries only `fields`); exposing them is a future, additive change. Other index
 types (vector / semantic / feature) remain additive behind the same `IndexBackend`
 interface.

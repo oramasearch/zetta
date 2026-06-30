@@ -17,6 +17,7 @@
 #include "zetta/churn_dataset.hpp"
 #include "zetta/churn_solution.hpp"
 #include "zetta/cluster.hpp"
+#include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/job_coordinator.hpp"
@@ -580,6 +581,114 @@ TEST(GbdtChurn, SingleNodeEqualsMultiNode) {
     ASSERT_EQ(single.model.tree_count(), multi.model.tree_count());
     EXPECT_NEAR(single.model.base_score, multi.model.base_score, 1e-9);
     EXPECT_NEAR(single.metrics.auc, multi.metrics.auc, 1e-9);
+}
+
+// =====================================================================
+// Checkpoint / restart (RULE-5 / #468)
+// =====================================================================
+
+// Run a single-node `train` job over `rows`, optionally checkpointing through
+// `store`. Returns the result (the produced model lives on it).
+zetta::ml::DistributedTrainResult run_single_node_train(
+    ComputeNode& cn, const std::vector<Json>& rows,
+    const std::vector<std::string>& features, const std::string& label,
+    const GbdtParams& params, const std::string& round_tag,
+    zetta::ml::TrainCheckpointConfig checkpoint) {
+    CpuDevice device;
+    auto frame =
+        load_data_frame(make_store(rows), training_schema(features, label), device);
+    EXPECT_TRUE(frame.ok()) << frame.status.message;
+    std::shared_ptr<ComputeJob> job = cn.node.create_job(JobKind::Train);
+    return run_train_job(cn.coordinator, *job, frame.frame, features, label, params,
+                         nullptr, {}, round_tag, {}, zetta::ml::kDefaultGbdtTimeout,
+                         checkpoint);
+}
+
+// The headline acceptance: a `train` job that is checkpointed and then "evicted"
+// (its process restarts) resumes from the last checkpoint, growing only the
+// remaining trees, and produces a model **identical** to an uninterrupted run.
+TEST(GbdtCheckpoint, ResumesTrainingFromCheckpointWithoutRecompute) {
+    const Synthetic data = make_synthetic(80);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    const std::string tag = "ckpt-test";
+
+    GbdtParams params;
+    params.max_depth = 3;
+
+    ComputeNode cn("node-ckpt", 22300, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+
+    TempDir store_dir;
+    zetta::compute::FileCheckpointStore store(store_dir.path() / "checkpoints");
+
+    // Attempt 1 ("evicted" after 4 of 10 trees): a short run that keeps its
+    // checkpoint, standing in for a node reclaimed partway through.
+    GbdtParams partial = params;
+    partial.num_trees = 4;
+    zetta::ml::TrainCheckpointConfig keep{
+        .store = &store, .checkpoint_every = 1, .clear_on_success = false};
+    const auto first =
+        run_single_node_train(cn, rows, data.names, "y", partial, tag, keep);
+    ASSERT_TRUE(first.ok()) << "first attempt should succeed";
+    EXPECT_EQ(first.resumed_from_round, 0u);  // started fresh
+    // A checkpoint at round 4 survived.
+    const std::optional<zetta::compute::JobCheckpoint> mid = store.latest(tag);
+    ASSERT_TRUE(mid);
+    EXPECT_EQ(mid->sequence, 4u);
+
+    // Attempt 2 (the "restart"): the full 10-tree job over the SAME store resumes
+    // from the round-4 checkpoint.
+    params.num_trees = 10;
+    zetta::ml::TrainCheckpointConfig resume{
+        .store = &store, .checkpoint_every = 1, .clear_on_success = false};
+    const auto resumed =
+        run_single_node_train(cn, rows, data.names, "y", params, tag, resume);
+    ASSERT_TRUE(resumed.ok());
+    EXPECT_EQ(resumed.resumed_from_round, 4u);  // picked up where it left off
+    EXPECT_EQ(resumed.model.tree_count(), 10u);
+
+    // The result is identical to an uninterrupted from-scratch 10-tree run.
+    ComputeNode control_node("node-ctrl", 22310, {}, 2);
+    control_node.cluster.start();
+    control_node.coordinator.start();
+    TempDir control_dir;
+    zetta::compute::FileCheckpointStore control_store(control_dir.path() / "cp");
+    const auto control = run_single_node_train(control_node, rows, data.names, "y",
+                                               params, "control", {});
+    ASSERT_TRUE(control.ok());
+    EXPECT_EQ(control.resumed_from_round, 0u);
+    EXPECT_EQ(resumed.model.to_json(), control.model.to_json());
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
+    control_node.coordinator.stop();
+    control_node.cluster.stop();
+}
+
+// clear_on_success (the default) discards a job's checkpoints once it completes, so
+// a restart of a finished job does not resume (it has its durable Model instead).
+TEST(GbdtCheckpoint, ClearsCheckpointsOnSuccess) {
+    const Synthetic data = make_synthetic(40);
+    const std::vector<Json> rows = synthetic_rows(data, "y");
+    GbdtParams params;
+    params.num_trees = 5;
+    params.max_depth = 2;
+
+    ComputeNode cn("node-clear", 22320, {}, 2);
+    cn.cluster.start();
+    cn.coordinator.start();
+
+    TempDir store_dir;
+    zetta::compute::FileCheckpointStore store(store_dir.path() / "cp");
+    zetta::ml::TrainCheckpointConfig config{.store = &store};  // clear_on_success=true
+    const auto result =
+        run_single_node_train(cn, rows, data.names, "y", params, "clear-tag", config);
+    ASSERT_TRUE(result.ok());
+    EXPECT_FALSE(store.latest("clear-tag"));  // cleared once training finished
+
+    cn.coordinator.stop();
+    cn.cluster.stop();
 }
 
 }  // namespace
