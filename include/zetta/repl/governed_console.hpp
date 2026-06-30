@@ -1,8 +1,10 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include "zetta/capability.hpp"
+#include "zetta/executor.hpp"
 #include "zetta/gate.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/repl/console_model.hpp"
@@ -28,7 +30,12 @@
 //     audit** (SQL does not lower to the IR; the query layer is its boundary).
 //   - **Simulated-Python** lowers to the IR through `input::PythonFrontend`, is run
 //     through the **correctness gate** (RULE-1 — a failing gate blocks the run),
-//     then executes via `Node::run_graph`, producing a real (audited) Run.
+//     then executes via the **graph runner** — by default `Node::run_graph` (the
+//     structural DefaultStepExecutor), but a host may inject one that routes a
+//     churn-shaped graph through the **real** churn engine on the node's live
+//     `JobCoordinator` (#580; `run_churn_solution_on_node`), so an interactive run
+//     trains a real Model over the live cluster. Either way it produces a real
+//     (audited) Run, governed identically.
 //
 // It adds **no new JSON boundary**: SQL enters through `QueryService` (already
 // validated at the query boundary), sim-Python through `ir::from_json` (the IR
@@ -77,6 +84,18 @@ public:
     void set_database(std::string database) { database_ = std::move(database); }
     const std::string& database() const { return database_; }
 
+    // How a gate-passed simulated-Python graph is executed into a Run. The seam the
+    // sim-Python path runs the lowered graph through (after the capability check +
+    // gate, before the audit record), so the governance chain is unchanged whether the
+    // run is the structural placeholder or real compute. Defaults to `Node::run_graph`
+    // (DefaultStepExecutor). A host injects one to route a churn-shaped graph through
+    // the real churn engine on the node's live JobCoordinator (#580) — see
+    // `run_churn_solution_on_node` / `is_churn_graph` in churn_solution.hpp.
+    using GraphRunner = std::function<ExecutionResult(const ir::ExecutionGraph&)>;
+    void set_graph_runner(GraphRunner runner) {
+        graph_runner_ = std::move(runner);
+    }
+
     // Run one statement end-to-end, governed: capability check → (sim-python:
     // lower to IR + gate) → execute → record one `data_access` audit event. The
     // returned Result drives the console's transcript + result grid; a blocked
@@ -88,6 +107,7 @@ private:
     query::QueryService& query_;
     input::PythonFrontend python_;
     CorrectnessGate gate_;
+    GraphRunner graph_runner_;  // how a gate-passed sim-Python graph runs (default: run_graph)
     std::string session_key_;  // "" = unauthenticated local session
     std::string database_;     // current database for unqualified SQL names
 };

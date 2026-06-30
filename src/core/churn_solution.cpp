@@ -11,8 +11,11 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/churn_step_executor.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/executor.hpp"
 #include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/step_kind.hpp"
+#include "zetta/node.hpp"
 #include "zetta/storage/json_store.hpp"
 
 namespace zetta {
@@ -208,6 +211,41 @@ ChurnSolutionResult run_churn_solution(Node& node,
     result.top_driver = churn->top_driver();
     result.playbook = churn->playbook();
     return result;
+}
+
+ChurnSolutionResult run_churn_solution_on_node(
+    Node& node, compute::ComputeDevice& device,
+    const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
+    const ChurnSolutionOptions& options) {
+    // Resolve the node's live compute spine (#579). A node that has not been
+    // attach_cluster'd has none — fail clearly rather than silently no-op, so the
+    // caller can surface the reason or fall back to its own coordinator.
+    compute::JobCoordinator* coordinator = node.job_coordinator();
+    if (coordinator == nullptr) {
+        ChurnSolutionResult result;
+        result.execution.ok = false;
+        result.execution.error =
+            "no compute plane attached to this node (attach a cluster first) — "
+            "cannot run over the live cluster";
+        return result;
+    }
+    return run_churn_solution(node, *coordinator, device, graph, dataset, options);
+}
+
+bool is_churn_graph(const ir::ExecutionGraph& graph) {
+    // The featurize -> train backbone the ChurnStepExecutor pipeline needs: a source
+    // to load (connect), a featurize (clean), and a train (model). A graph missing any
+    // of these can't drive the real churn run and stays on DefaultStepExecutor.
+    bool connect = false, clean = false, model = false;
+    for (const std::shared_ptr<ir::Node>& step : graph.nodes()) {
+        switch (step->kind) {
+            case ir::StepKind::Connect: connect = true; break;
+            case ir::StepKind::Clean:   clean = true; break;
+            case ir::StepKind::Model:   model = true; break;
+            default: break;
+        }
+    }
+    return connect && clean && model;
 }
 
 ChurnDataset demo_churn_dataset() {

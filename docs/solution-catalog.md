@@ -125,8 +125,8 @@ and the run result line (`churn_run_status_`, `churn_run_failed_`).
 
 `deploy_graph` records a *placement*; it does not train anything (the
 deploy → reconcile → run control plane records run shells with the stubbed
-`DefaultStepExecutor`). For the churn blueprint the panel also offers a **"Run on
-real engine"** action (`App::run_churn_demo`) that runs the actual
+`DefaultStepExecutor`). For the churn blueprint the panel also offers a **"Run over
+the cluster"** action (`App::run_churn_demo`) that runs the actual
 featurize → train → explain → rank → playbook pipeline over a built-in demo dataset
 — the real [`ChurnStepExecutor`](churn-step-executor.md), not the stub. On success
 it shows the registered model's short id, the number of accounts ranked, and the
@@ -137,10 +137,13 @@ top churn driver; the run also registers a real [Model](models.md) + recorded
 The action is offered **only for the churn solution** (the only blueprint wired to a
 real pipeline today) and runs **synchronously on the UI thread** that owns the node
 — the same deliberate per-click pattern as the [Cloud Inspector](cloud-inspector.md).
-It spins up an **isolated single-node loopback `JobCoordinator`** for the run so the
-SPMD collectives are trivially single-node and never block on this node's real
-peers, then tears it down. The wiring it calls — `zetta::run_churn_solution` — is a
-reusable core surface; see [churn-solution.md](churn-solution.md).
+It runs over the node's **live `JobCoordinator`** — the long-lived
+[#579 compute spine](job-coordinator.md) over the real cluster
+(`run_churn_solution_on_node`, #580), not an isolated loopback — so the produced
+Model + Run land on the live node; a throwaway single-node loopback is used only as a
+fallback when no cluster is attached. The wiring it calls — `zetta::run_churn_solution`
+/ `run_churn_solution_on_node` — is a reusable core surface; see
+[churn-solution.md](churn-solution.md#run-over-the-live-cluster-580).
 
 ## What's deferred (later slices)
 

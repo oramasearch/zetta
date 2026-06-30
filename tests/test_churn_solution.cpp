@@ -17,6 +17,8 @@
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_target.hpp"
 #include "zetta/gate.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/step_kind.hpp"
 #include "zetta/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/run.hpp"
@@ -207,6 +209,96 @@ TEST(ChurnSolution, DemoDatasetRunsEndToEnd) {
     EXPECT_FALSE(result.drivers.empty());
     // The demo's only class-separating signal is payment failures.
     EXPECT_EQ(result.top_driver, "failed_payments");
+}
+
+// =====================================================================
+// #580: run over the node's LIVE JobCoordinator (the #579 spine), not an
+// isolated loopback. A node that has been attach_cluster'd owns a coordinator;
+// run_churn_solution_on_node resolves it and runs the real pipeline there.
+// =====================================================================
+
+// A node with its OWN long-lived coordinator over its cluster — the #579 spine,
+// the way main wires a running node (node.attach_cluster after cluster.start()).
+struct AttachedNode {
+    explicit AttachedNode(std::uint16_t port)
+        : node(ComputeNode::node_config(temp_dir)),
+          cluster("churn-attached-node", ComputeNode::cluster_config(port)) {
+        node.start();
+        cluster.start();
+        node.attach_cluster(cluster);  // brings up node.job_coordinator()
+    }
+    ~AttachedNode() { node.stop(); }  // tears the coordinator down while cluster alive
+    zetta::test::TempDir temp_dir;    // declared first so it outlives `node`
+    Node node;
+    Cluster cluster;
+};
+
+TEST(ChurnSolution, RunOnNodeOverLiveCoordinatorProducesRealModel) {
+    const Solution* solution =
+        SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    AttachedNode host(24520);
+    ASSERT_NE(host.node.job_coordinator(), nullptr)
+        << "attach_cluster must bring up the live coordinator";
+
+    CpuDevice device;
+    const zetta::ChurnDataset demo = zetta::demo_churn_dataset();
+    // No coordinator argument — it runs on the node's OWN live spine.
+    const ChurnSolutionResult result = zetta::run_churn_solution_on_node(
+        host.node, device, solution->graph, demo);
+
+    ASSERT_TRUE(result.ok()) << result.execution.error;
+    ASSERT_TRUE(result.execution.run);
+    EXPECT_EQ(result.execution.run->status(), RunStatus::Succeeded);
+    EXPECT_FALSE(result.model_id.empty());
+    EXPECT_EQ(result.ranked.size(), demo.accounts.size());
+    EXPECT_EQ(result.top_driver, "failed_payments");
+
+    // The Model + Run register on the LIVE node (visible in the Runs / Models
+    // surfaces — the #580 acceptance), not some throwaway loopback node.
+    const std::shared_ptr<Model> registered = host.node.find_model(result.model_id);
+    ASSERT_TRUE(registered) << "model must register on the live node";
+    EXPECT_EQ(registered->kind(), "classifier");
+    EXPECT_FALSE(host.node.runs().empty());
+}
+
+TEST(ChurnSolution, RunOnNodeWithoutClusterFailsClearly) {
+    const Solution* solution =
+        SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    // A standalone node — never attach_cluster'd — has no live coordinator.
+    zetta::test::TempDir tmp;
+    Node node(ComputeNode::node_config(tmp));
+    node.start();
+    ASSERT_EQ(node.job_coordinator(), nullptr);
+
+    CpuDevice device;
+    const ChurnSolutionResult result = zetta::run_churn_solution_on_node(
+        node, device, solution->graph, zetta::demo_churn_dataset());
+
+    EXPECT_FALSE(result.ok());
+    EXPECT_FALSE(result.execution.error.empty());
+    EXPECT_FALSE(result.execution.run) << "nothing should run without a coordinator";
+    EXPECT_TRUE(node.models().empty()) << "no Model should register on failure";
+    node.stop();
+}
+
+TEST(ChurnSolution, IsChurnGraphRecognizesBackbone) {
+    const Solution* solution =
+        SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+    // The catalog churn blueprint has the connect -> clean -> model backbone.
+    EXPECT_TRUE(zetta::is_churn_graph(solution->graph));
+
+    // A graph missing the featurize (clean) step is not churn-shaped.
+    zetta::ir::ExecutionGraph load_then_train;
+    load_then_train.add_node(zetta::ir::StepKind::Connect, "load");
+    load_then_train.add_node(zetta::ir::StepKind::Model, "train");
+    EXPECT_FALSE(zetta::is_churn_graph(load_then_train));
+
+    EXPECT_FALSE(zetta::is_churn_graph(zetta::ir::ExecutionGraph{}));
 }
 
 }  // namespace

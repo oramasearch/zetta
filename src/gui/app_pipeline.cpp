@@ -300,17 +300,20 @@ void App::draw_deploy() {
                            deploy_status_.c_str());
     }
 
-    // 3b) Run on the real engine — the churn solution actually trains a Model,
-    //     ranks the at-risk accounts, and explains the drivers (FEAT-4 / UC-1,
-    //     #398). Only the churn blueprint maps to the real churn pipeline today, so
-    //     the action is offered only for it; it runs over a built-in demo dataset.
+    // 3b) Run over the cluster — the churn solution actually trains a Model, ranks
+    //     the at-risk accounts, and explains the drivers (FEAT-4 / UC-1, #398) on the
+    //     node's LIVE JobCoordinator (the #579 compute spine over the real cluster, not
+    //     an isolated loopback — #580). Only the churn blueprint maps to the real churn
+    //     pipeline today, so the action is offered only for it; it runs over a built-in
+    //     demo dataset.
     if (selected != nullptr && selected->id == "churn-prediction") {
         ImGui::Spacing();
-        if (primary_button("Run on real engine")) {
+        if (primary_button("Run over the cluster")) {
             run_churn_demo();
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("trains a real model on a built-in demo dataset");
+        ImGui::TextDisabled(
+            "trains a real model on a built-in demo dataset, over the live cluster");
         if (!churn_run_status_.empty()) {
             ImGui::TextColored(churn_run_failed_ ? kErrorColor : kSuccessColor,
                                "%s", churn_run_status_.c_str());
@@ -363,27 +366,37 @@ void App::run_churn_demo() {
         return;
     }
 
-    // Run on an ISOLATED single-node loopback cluster + coordinator so the SPMD
-    // collectives are trivially single-node and never block on this node's real
-    // peers. The Model + jobs + Run still register on the App's node_ (so the Runs /
-    // Jobs / Admin panels reflect them). Synchronous on the UI thread that owns the
-    // node — the same deliberate per-click pattern as run_cloud_inspect.
-    ClusterConfig compute_cfg;
-    compute_cfg.listen_host = "127.0.0.1";
-    compute_cfg.listen_port = 47000;
-    compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse it)
-    Cluster compute_cluster("churn-run", compute_cfg);
-    compute_cluster.start();
-    compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
-    coordinator.start();
     compute::CpuDevice device;
-
     ChurnSolutionOptions options;
     options.project = "deploy-panel";
     options.graph = "churn-prediction";
-    const ChurnSolutionResult result = run_churn_solution(
-        node_, coordinator, device, selected->graph, demo_churn_dataset(), options);
-    coordinator.stop();
+
+    // Run over the node's **live** JobCoordinator — the long-lived compute spine the
+    // running node owns over its real Cluster (#579/#580). The featurize / train /
+    // explain / rank jobs combine over the real cluster membership (single-node here
+    // in the common headed deployment), and the produced Model + jobs + Run register
+    // on the App's node_ (so the Runs / Models / Jobs / Admin panels reflect them).
+    // Synchronous on the UI thread that owns the node — the same deliberate per-click
+    // pattern as run_cloud_inspect.
+    ChurnSolutionResult result = run_churn_solution_on_node(
+        node_, device, selected->graph, demo_churn_dataset(), options);
+
+    // Defensive fallback: a node with no compute plane attached (no cluster) can't run
+    // over the live spine. The headed app always attaches a cluster, so this is just a
+    // safety net — bring up a throwaway single-node loopback so the demo still works.
+    if (node_.job_coordinator() == nullptr) {
+        ClusterConfig compute_cfg;
+        compute_cfg.listen_host = "127.0.0.1";
+        compute_cfg.listen_port = 47000;
+        compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse)
+        Cluster compute_cluster("churn-run", compute_cfg);
+        compute_cluster.start();
+        compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
+        coordinator.start();
+        result = run_churn_solution(node_, coordinator, device, selected->graph,
+                                    demo_churn_dataset(), options);
+        coordinator.stop();
+    }
 
     if (!result.ok()) {
         churn_run_failed_ = true;
