@@ -25,7 +25,9 @@ root.
 ```
 include/zetta/compute/job_coordinator.hpp   JobCoordinator + JobRound
 src/core/compute/job_coordinator.cpp        lifecycle driving + handler wiring
+include/zetta/node.hpp + src/core/node.cpp  Node::attach_cluster / job_coordinator (the node-owned spine, #579)
 tests/test_job_coordinator.cpp              the distributed-sum acceptance + edges
+tests/test_node_job_coordinator.cpp         the node-owned coordinator acceptance (#579)
 ```
 
 ## The execution model: SPMD, with map as the alternative
@@ -83,6 +85,49 @@ zetta::JobStatus status = coordinator.run(*job, [&](zetta::compute::JobRound& ro
     return zetta::compute::JobCoordinator::Outcome{.ok = true, .detail = "done"};
 });
 ```
+
+### The node-owned coordinator (the long-lived spine, #579)
+
+The example above constructs a coordinator **ad-hoc** — fine for a test or a
+one-shot job. A **running [`Node`](architecture.md) owns one long-lived
+coordinator over its real `Cluster`**, so the distributed compute algorithms have
+a standing place to submit work without each building (and tearing down) their own
+coordinator. This is the "spine" of the compute epic
+([#575](https://github.com/oramasearch/zetta/issues/575) / ARC-11):
+
+```cpp
+// main() builds the Node + the Cluster, then attaches the compute plane:
+node.attach_cluster(cluster);            // construct + start the coordinator
+…
+zetta::compute::JobCoordinator* coordinator = node.job_coordinator();  // or nullptr
+```
+
+- **`Node::attach_cluster(Cluster&, unsigned worker_count = 0)`** constructs the
+  coordinator over the cluster's signal plane and `start()`s it. It is called
+  **after** both are up (in `main`, right after `cluster.start()` + the membership
+  seed) because the Node is constructed and started *before* the Cluster exists —
+  so the cluster can't be a constructor argument. `worker_count == 0` (the default)
+  picks the local pool size from the hardware concurrency (one per core, leaving
+  one for the node loop + the cluster's network thread); the SPMD `parallel_map`
+  path always has at least one worker.
+- **`Node::job_coordinator()`** returns the owned coordinator, or `nullptr` for a
+  standalone node (no cluster attached) or before `attach_cluster`. A job submitted
+  through it runs **SPMD across the live cluster membership**, exactly like an
+  ad-hoc coordinator — it *is* the node's, over its real cluster.
+- **Lifecycle.** `Node::stop()` tears the coordinator down (joins the steal loop,
+  restores the cluster's signal handler) **before** the cluster shuts down, so the
+  unwind never touches a dead cluster — which is why `main` keeps `cluster.stop()`
+  then `node.stop()` and why the in-process test stops the node before the cluster.
+  A `stop()` / `start()` cycle re-establishes the coordinator from the remembered
+  attachment. It is **headless** (zetta-core, no SDL), so both `--headless` and the
+  headed app get it for free. The coordinator's only standing background work is
+  the scheduler's steal loop, a cheap ~25 ms poll (a no-op until a `map` executor
+  is registered) that fits inside the node's tick cadence.
+
+The GUI's churn demo (`App::run_churn_demo`) still spins up its **own** isolated
+single-node loopback coordinator on purpose, so its SPMD collectives never block on
+this node's real peers; routing that (and other in-process job submitters) through
+the node-owned coordinator is follow-up work this spine enables.
 
 ### The job body (`Algorithm`) and `Outcome`
 
@@ -169,6 +214,13 @@ audit events). Further tests cover the cross-node `map` path through the
 coordinator (an idle peer steals and runs every task of a zero-worker source), a
 single-node cluster degenerating cleanly, and a failing job body marking the job
 `Failed` with its reason.
+
+`tests/test_node_job_coordinator.cpp` proves the **node-owned** path (#579): three
+loopback nodes each `attach_cluster` and then run the same distributed sum
+**through `Node::job_coordinator()`** — every node reaches the same global sum and
+records its job `Succeeded` — plus the lifecycle edges (a single-node cluster, that
+`stop()` releases the coordinator and a restart re-attaches it, and that an
+unattached standalone node has no coordinator).
 
 ## Limits / future
 

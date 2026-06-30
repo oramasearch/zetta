@@ -65,10 +65,11 @@ server.
 
 ```
 main()                       picks the mode, owns the Node + Cluster lifecycle
-  │  builds zetta::Node + zetta::Cluster, starts both
+  │  builds zetta::Node + zetta::Cluster, starts both, then
+  │  node.attach_cluster(cluster)  # the long-lived JobCoordinator spine (#579)
   ├── --headless ─→ zetta::run_headless(node, cluster)   # core only, no SDL
   └── --headed   ─→ zetta::gui::App(node, cluster).run() # SDL3 + ImGui over them
-  ...then cluster.stop(), node.stop()
+  ...then cluster.stop(), node.stop()   # node.stop() releases the coordinator
 ```
 
 A node owns **databases**, each database owns **tables**, and each table holds
@@ -1231,10 +1232,23 @@ fallback) — member declaration order makes construction register it and
 destruction unwind it cleanly, which is why it owns (not references) those pieces.
 It introduces **no new JSON format** — `map` rides the schema-validated steal
 messages, the collectives ride the schema-validated `CollectiveMessage`, and the
-job record is schema-validated at its own boundary. The autoscaler that sizes the
-fleet from a job's `ScalingPolicy` is the **job autoscaler** below (wiring the
-loop's observation source + tick into the coordinator for a live, end-to-end
-autoscaled job is the remaining, later slice). See
+job record is schema-validated at its own boundary. A **running `Node` owns one
+long-lived coordinator over its real `Cluster`** (the compute "spine", **#579**):
+`Node::attach_cluster(Cluster&, worker_count=0)` constructs + starts it (called
+from `main` right after `cluster.start()`, since the Node is built+started before
+the Cluster exists, so the cluster can't be a ctor arg; `worker_count=0` → auto
+from hardware concurrency), `Node::job_coordinator()` returns it (`nullptr` on a
+standalone/un-attached node), and `Node::stop()` tears it down **before** the
+cluster shuts down (the handler-unwind is a cheap atomic store, so it never touches
+a dead cluster). Headless (zetta-core, no SDL), so `--headless` and the headed app
+both get it; the only standing background work is the scheduler's ~25 ms steal poll
+(a no-op until a `map` executor is registered). Earlier coordinators were built
+ad-hoc (the testkit/per-op suites still do; the GUI churn demo keeps its own
+*isolated* single-node coordinator on purpose); routing in-process submitters
+through the node-owned one is follow-up the spine enables. The autoscaler that
+sizes the fleet from a job's `ScalingPolicy` is the **job autoscaler** below
+(wiring the loop's observation source + tick into the coordinator for a live,
+end-to-end autoscaled job is the remaining, later slice). See
 [docs/job-coordinator.md](docs/job-coordinator.md).
 
 ### Job autoscaler (`zetta::JobAutoscaler`)
@@ -2609,7 +2623,7 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519)
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2725,7 +2739,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
     distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
-    job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
+    job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372); a running Node owns one over its real Cluster via Node::attach_cluster/job_coordinator (the SPMD spine, #579)
     checkpoint.hpp  zetta::compute::JobCheckpoint/CheckpointStore/FileCheckpointStore/run_resumable_rounds — burst-job eviction tolerance: durable sha256-fingerprinted progress snapshot (validated boundary) + a durable store seam + a resume-from-last-checkpoint driver (graceful spot-drain), so an evicted job resumes without recomputing committed rounds (RULE-5/RSK-9; #468)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
@@ -3201,7 +3215,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/example-scripts.md`](docs/example-scripts.md) — the **sim-Python example-script harness** (`zetta::testkit::run_example_script` + `example_scripts()`, #523): run a sim-Python **example program end to end as an integration test** — **parse** ([PythonFrontend](docs/python-frontend.md)) → **IR** → **gate** ([default_gate](docs/gate.md), RULE-1) → **run** ([Node::run_graph](docs/execution.md)) — and **assert on the outputs** (node/edge shape, step kinds, data-flow edges, produced `dataset`/`model`/`index` outputs), so *the example programs ARE the integration tests*. A green script doubles as a canonical usage example; a negative script proves a failure **surfaces the offending statement** (the parser's locator at compile, or the failing step's statement reconstructed from its `python` provenance bag). Each example is a `TestCase` under the new **`TestCategory::Examples`**, runnable headless (`tests/test_example_scripts.cpp`) and in the **Operations → Test suite** panel; non-throwing; **no new JSON format** (only the validated IR/Run boundaries). The catalog ships the green churn-pipeline + minimal + method-chain samples, the **UC-1-at-scale** program (`examples.uc1_at_scale`, [#531](https://github.com/oramasearch/zetta/issues/531) — whose real distributed near-data run is the [`cluster.uc1_at_scale`](docs/uc1-at-scale-e2e.md) case), and the failure-surfacing negatives; the remaining flagship TC-9/10/13 scripts land as their engine bindings ([#522](https://github.com/oramasearch/zetta/issues/522) cluster+ML, parquet→DDF, partitioning, fulltext) do.
 - [`docs/runbooks/test-cases/`](docs/runbooks/test-cases/README.md) — **per-test runbooks**: one doc per [test-suite](docs/test-suite.md) case (compute / DDF / ML / distributed / governance / pipeline / examples) explaining what it does, how to run it (the headed **Operations → Test suite** panel + the headless gtest), its options, and what it asserts. The [index](docs/runbooks/test-cases/README.md) lists every case by category. Add a runbook alongside each new test-suite case.
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
-- [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
+- [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372). A running `Node` **owns one long-lived coordinator over its real `Cluster`** — `Node::attach_cluster()` + `Node::job_coordinator()`, started/stopped in the node lifecycle (the SPMD compute spine, #579).
 - [`docs/job-checkpoint.md`](docs/job-checkpoint.md) — **burst-job eviction tolerance** (`zetta::compute` checkpoint / restart, RULE-5 / RSK-9, #468): the **job-level** complement to the work-stealing scheduler's task-level lost-peer recovery — durably snapshot a long-running job's progress (`JobCheckpoint`: opaque sha256-fingerprinted state + a schema-validated boundary with a cross-field integrity check) behind a `CheckpointStore` seam (`FileCheckpointStore` reference: atomic temp-write+rename, corrupt-head fallback), so `run_resumable_rounds` **resumes from the last checkpoint** after a spot eviction — no recompute of committed rounds, graceful drain on a termination notice. Standalone seam (no Node/SQL/cluster wiring); first consumer is per-round [GBDT](docs/gbdt.md) model checkpointing, observable via `system.checkpoints`; a shared/replicated store + auto-restart on a detected eviction are later slices.
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
 - [`docs/churn-solution.md`](docs/churn-solution.md) — wiring the catalog **churn-prediction** blueprint to the **real engine** (`zetta::run_churn_solution`, FEAT-4 / UC-1 / #398): the catalog churn graph gains the `index` step to match the real pipeline, and a reusable bridge encodes a [`ChurnDataset`](docs/churn-dataset.md) → numeric DDF shards, builds the standard featurize spec + GBDT params, injects a [`ChurnStepExecutor`](docs/churn-step-executor.md), and runs the blueprint → a real trained `Model` + ranked at-risk list + churn drivers + playbook (not the stubbed `DefaultStepExecutor`); the Deploy panel's "Run on real engine" action (`demo_churn_dataset`, isolated single-node coordinator) + the acceptance test drive it; no new JSON format.

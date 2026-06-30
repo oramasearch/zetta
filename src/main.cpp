@@ -195,6 +195,13 @@ int main(int argc, char** argv) {
                     nlohmann::json{{"address",
                                     cluster.listen_addresses().front()}});
 
+    // Give the running node its long-lived compute plane: a JobCoordinator over
+    // the real cluster's signal plane (#579), so distributed jobs submitted
+    // through node.job_coordinator() run SPMD across live membership. Attached
+    // here (not at construction) because the Node is built + started before the
+    // Cluster exists; node.stop() tears it down before the cluster shuts down.
+    node.attach_cluster(cluster);
+
     // Tell the operator where this node is reachable so they can connect more
     // nodes. A wildcard bind expands to every interface IPv4.
     std::printf("zetta: cluster node %s\n", cluster.node_id().c_str());
