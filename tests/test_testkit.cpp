@@ -143,6 +143,14 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("rows", 140);
     });
     EXPECT_EQ(featurize.outcome, TestOutcome::Pass) << featurize.error;
+    // TC-13: build a full-text index over each node's owned partitions and assert the
+    // scatter-gather ranking matches a consolidated-index oracle on every node (the
+    // oramacore-cpp backend when compiled in, else the reference scorer).
+    const TestResult fulltext = run("cluster.fulltext_index", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("copies", 3);
+    });
+    EXPECT_EQ(fulltext.outcome, TestOutcome::Pass) << fulltext.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {

@@ -142,6 +142,15 @@ the real **BM25F** path is exercised when the engine is compiled in (skipped oth
 like the other [oramacore tests](oramacore-fulltext-index.md), on a tf-dominated,
 unambiguous corpus).
 
+The same acceptance is a **GUI-runnable [test-suite](test-suite.md) case**,
+`cluster.fulltext_index` (the **TC-13** acceptance, the way TC-9/TC-10/TC-11 each surface
+as a runnable case): it builds the per-partition full-text index over a real loopback
+cluster and asserts the scatter-gather ranking matches the consolidated oracle on every
+node. It uses the real `oramacore_fulltext` (BM25F) backend when the submodule is
+compiled in, and the partition-independent reference scorer otherwise (the same plumbing,
+always green) — runnable headless (`tests/test_testkit.cpp`) and in the
+**Operations → Test suite** panel.
+
 ## What this slice is (and isn't)
 
 It is the **per-partition distributed full-text topology**: build a sub-index per
