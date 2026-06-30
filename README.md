@@ -57,7 +57,12 @@ Python; see [docs/python-frontend.md](docs/python-frontend.md)). The `datasets`
 shim makes `load_dataset("<path>", columns=[...])` real — it decodes the parquet
 with zetta's native reader into a (partitioned) table (HuggingFace `datasets` is
 the fidelity reference only, never run; see
-[docs/datasets-shim.md](docs/datasets-shim.md)). The headed
+[docs/datasets-shim.md](docs/datasets-shim.md)). The headed **Datasets** view
+browses every dataset the cluster holds and where its partitions sit across the
+nodes, and its **"Add dataset"** affordance (a button, drag-drop, or
+**File → Add dataset…**) loads a local parquet / jsonl / json / csv file as a
+**partitioned table** placed across the cluster (see
+[docs/add-dataset.md](docs/add-dataset.md)). The headed
 **Console (REPL)** view runs SQL or simulated-Python against a node interactively
 and **governed**: every statement is capability-scoped against the acting key,
 simulated-Python lowers to the IR and must pass the correctness gate before it
