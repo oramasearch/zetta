@@ -64,6 +64,45 @@ bool row_is_holdout(const std::vector<std::vector<double>>& columns,
     return unit < fraction;
 }
 
+// The GBDT checkpoint payload carried in the opaque JobCheckpoint.state (#468): the
+// partial model plus its accumulated per-feature gains. The model rides its own
+// validated GbdtModel JSON boundary (re-validated on decode); the importances are a
+// plain numeric array, bounds-checked. Encoding is total; decoding is non-throwing
+// and returns nullopt on anything malformed, so a corrupt payload just starts fresh.
+std::string encode_gbdt_checkpoint(const GbdtModel& model,
+                                   const std::vector<double>& importances) {
+    nlohmann::json payload;
+    payload["model"] = model.to_json();
+    payload["feature_importances"] = importances;
+    return payload.dump();
+}
+
+struct GbdtCheckpointPayload {
+    GbdtModel model;
+    std::vector<double> feature_importances;
+};
+
+std::optional<GbdtCheckpointPayload> decode_gbdt_checkpoint(
+    const std::string& bytes) {
+    const nlohmann::json payload = nlohmann::json::parse(bytes, nullptr, false);
+    if (payload.is_discarded() || !payload.is_object() ||
+        !payload.contains("model")) {
+        return std::nullopt;
+    }
+    std::optional<GbdtModel> model = GbdtModel::from_json(payload.at("model"));
+    if (!model) return std::nullopt;
+    GbdtCheckpointPayload out;
+    out.model = std::move(*model);
+    if (payload.contains("feature_importances") &&
+        payload.at("feature_importances").is_array()) {
+        for (const nlohmann::json& value : payload.at("feature_importances")) {
+            if (!value.is_number()) return std::nullopt;
+            out.feature_importances.push_back(value.get<double>());
+        }
+    }
+    return out;
+}
+
 // Map a GBDT reduction onto the collective-plane op.
 CollectiveOp to_collective_op(GbdtReduce op) {
     switch (op) {
@@ -82,7 +121,8 @@ DistributedTrainResult run_train_job(
     const std::vector<std::string>& feature_columns,
     const std::string& label_column, const GbdtParams& params, Node* node,
     const std::string& model_name, const std::string& round_tag,
-    CalibrationConfig calibration, std::chrono::milliseconds timeout) {
+    CalibrationConfig calibration, std::chrono::milliseconds timeout,
+    TrainCheckpointConfig checkpoint) {
     DistributedTrainResult out;
     const std::string tag =
         round_tag.empty() ? default_round_tag(feature_columns, label_column)
@@ -143,8 +183,74 @@ DistributedTrainResult run_train_job(
                 round_name, local, to_collective_op(op), timeout);
             return reduced ? *reduced : std::vector<double>{};
         };
+        // 1c. Checkpoint / restart (RULE-5 / #468). When a store is configured,
+        // resume from the latest checkpoint and checkpoint after each round. Across
+        // the cluster the resume point must be AGREED — the histogram allreduce is
+        // lock-step — so each node loads its local checkpoint, the minimum committed
+        // round is allreduced, and every node resumes from that shared round (a node
+        // lacking a checkpoint forces a fresh start rather than desyncing the rounds;
+        // the trees up to a given round are identical on every node, so truncating to
+        // the agreed round is safe).
+        TrainHooks hooks;
+        if (checkpoint.store != nullptr) {
+            std::optional<GbdtCheckpointPayload> resumed;
+            std::uint64_t local_round = 0;
+            if (std::optional<compute::JobCheckpoint> cp =
+                    checkpoint.store->latest(tag)) {
+                if (std::optional<GbdtCheckpointPayload> payload =
+                        decode_gbdt_checkpoint(cp->state)) {
+                    local_round = payload->model.trees.size();
+                    resumed = std::move(payload);
+                }
+            }
+            const std::optional<std::vector<double>> agreed =
+                round.allreduce(tag + ".resume",
+                                {static_cast<double>(local_round)},
+                                CollectiveOp::Minimum, timeout);
+            if (!agreed || agreed->empty()) {
+                return {.ok = false, .detail = "gbdt resume: agreement failed"};
+            }
+            const std::uint64_t agreed_round = (*agreed)[0] <= 0.0
+                                                   ? 0
+                                                   : static_cast<std::uint64_t>(
+                                                         (*agreed)[0]);
+            if (resumed && agreed_round > 0 &&
+                agreed_round <= resumed->model.trees.size()) {
+                const bool exact = agreed_round == resumed->model.trees.size();
+                GbdtModel seed = std::move(resumed->model);
+                seed.trees.resize(agreed_round);  // identical trees on every node
+                hooks.resume_model = std::move(seed);
+                // Resumed gains are exact only when not truncated; otherwise let them
+                // re-accumulate from the resume point (a minor drivers-ranking
+                // caveat on the rare mismatched-checkpoint path).
+                if (exact) {
+                    hooks.resume_feature_importances =
+                        std::move(resumed->feature_importances);
+                }
+                out.resumed_from_round = agreed_round;
+            }
+            const std::uint32_t every = checkpoint.checkpoint_every == 0
+                                            ? 1u
+                                            : checkpoint.checkpoint_every;
+            const int total_trees = params.num_trees;
+            hooks.on_round = [&checkpoint, &tag, every, total_trees](
+                                 int trees_built, const GbdtModel& partial,
+                                 const std::vector<double>& importances) -> bool {
+                const bool last = trees_built >= total_trees;
+                if (last || (trees_built % static_cast<int>(every) == 0)) {
+                    checkpoint.store->save(compute::JobCheckpoint::make(
+                        tag, JobKind::Train,
+                        static_cast<std::uint64_t>(trees_built),
+                        static_cast<std::uint64_t>(total_trees),
+                        encode_gbdt_checkpoint(partial, importances)));
+                }
+                return true;  // lock-step: never drain a single node unilaterally
+            };
+        }
+
         GbdtTrainResult trained = train_gbdt(fit_columns, feature_columns,
-                                             fit_labels, params, allreduce, tag);
+                                             fit_labels, params, allreduce, tag,
+                                             hooks);
         if (!trained.ok()) {
             return {.ok = false, .detail = "gbdt train: " + trained.status.message};
         }
@@ -277,6 +383,13 @@ DistributedTrainResult run_train_job(
             model->set_weights(out.model.to_json().dump());
             out.model_id = model->id();
         }
+    }
+
+    // Training fully completed — the model is durable as a Model entity, so the
+    // resume checkpoints are no longer needed (each node clears its own store).
+    if (out.status == JobStatus::Succeeded && checkpoint.store != nullptr &&
+        checkpoint.clear_on_success) {
+        checkpoint.store->clear(tag);
     }
     return out;
 }

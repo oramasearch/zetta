@@ -183,6 +183,33 @@ using AllReduce =
                                       const std::vector<double>& local,
                                       GbdtReduce op)>;
 
+// Optional resume + per-round hook for **checkpoint / restart** (RULE-5 / RSK-9,
+// #468). Lets the distributed train job checkpoint the partial model after each
+// boosting round and **resume from the last checkpoint** after a spot eviction,
+// without re-growing the trees already committed. The default {} is "train from
+// scratch, no hook" — exactly the unchanged loop, so existing callers are unaffected.
+// See docs/job-checkpoint.md.
+struct TrainHooks {
+    // Seed the ensemble from a previously-checkpointed partial model + its
+    // accumulated per-feature gains: training resumes at tree index
+    // resume_model->trees.size() (the running predictions are recomputed from those
+    // trees). The model's feature ordering / objective must match the fresh run; an
+    // empty / absent resume_model trains from scratch.
+    std::optional<GbdtModel> resume_model;
+    std::vector<double> resume_feature_importances;
+
+    // Called after each tree is committed: (trees built so far, the partial model,
+    // the current per-feature importances). The natural place to checkpoint the
+    // partial state. Return false to stop early (returning the partial model with a
+    // success status); true (or an empty hook) to continue. NOTE for a distributed
+    // job: the per-round histogram allreduce is lock-step across nodes, so a stop
+    // must be agreed by all participants — run_train_job only ever stops
+    // all-or-nothing; an individual node never drains a collective job unilaterally.
+    std::function<bool(int trees_built, const GbdtModel& partial,
+                       const std::vector<double>& importances)>
+        on_round;
+};
+
 // The outcome of training: the model, the per-feature total split gain (the
 // model's drivers / importances, in feature order), and the status.
 struct GbdtTrainResult {
@@ -206,11 +233,14 @@ struct GbdtTrainResult {
 // ragged, feature_names does not match the column count, labels length disagrees,
 // there are no rows globally, only one label class is present, or a collective
 // round fails.
+// `hooks` (default {}) enables checkpoint / restart: seed the ensemble from a
+// resumed partial model and/or checkpoint after each committed tree (see TrainHooks).
 GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
                            const std::vector<std::string>& feature_names,
                            const std::vector<double>& labels,
                            const GbdtParams& params, const AllReduce& allreduce,
-                           const std::string& tag = "gbdt");
+                           const std::string& tag = "gbdt",
+                           const TrainHooks& hooks = {});
 
 // Single-node convenience: train over the complete dataset with an identity
 // reduction (no cluster). The numerical reference the distributed path matches.

@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "created": {
+      "type": "string"
+    },
+    "job_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "featurize",
+        "train",
+        "explain",
+        "score",
+        "ddf"
+      ],
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "state": {
+      "type": "string"
+    },
+    "state_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "total": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "job_id",
+    "kind",
+    "sequence",
+    "state",
+    "state_sha256",
+    "created"
+  ],
+  "title": "zetta.JobCheckpoint",
+  "type": "object"
+}

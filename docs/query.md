@@ -224,6 +224,19 @@ SELECT partition_id, table, owner_count FROM system.dataset_partitions;
 SELECT * FROM system.dataset_partitions WHERE table = '<tbl-uuid>';
 ```
 
+There is also **`system.checkpoints`** — burst-job eviction tolerance
+([job-checkpoint.md](job-checkpoint.md), RULE-5 / #468), sourced from
+`Node::checkpoints()` (the latest checkpoint per job in this node's **local** store).
+Columns: `job_id`, `kind`, `sequence` (units completed = the resume point), `total`,
+`progress` (`sequence / total`), `created`. Unlike the catalog above, checkpoints are
+**ephemeral + local + not replicated** (like `system.zetta_cloud_status`): the view
+has no CRDT backing and reflects only what is durably resumable on this node.
+Qualified-name only.
+
+```sql
+SELECT job_id, kind, sequence, progress FROM system.checkpoints;
+```
+
 > **Naming.** `system.dataset_partitions` is the **first system table without the
 > `zetta_` prefix**: the `system` database is reserved + zetta-controlled, so the
 > prefix is redundant. New system tables are named plainly; the legacy `zetta_*`
