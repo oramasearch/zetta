@@ -18,6 +18,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cfloat>
 #include <cmath>
@@ -74,6 +75,38 @@ ImVec4 log_level_color(const std::string& level) {
     if (level == "error") return kErrorColor;
     if (level == "warn")  return kWarnColor;
     return kInkQuiet;
+}
+
+// Cluster node-box palette (ImU32, for the window draw list) — the same Orama
+// canvas grammar as the graph workspace: white cards with hairline borders, a
+// soft wash on hover, a coral border (the "you are here" accent) when selected.
+constexpr ImU32 kClusterBoxFill = IM_COL32(255, 255, 255, 255);          // white
+constexpr ImU32 kClusterBoxFillHover = IM_COL32(242, 242, 240, 255);     // wash
+constexpr ImU32 kClusterBoxFillSelected = IM_COL32(247, 238, 239, 255);  // coral wash
+constexpr ImU32 kClusterBoxBorder = IM_COL32(224, 224, 224, 255);        // border
+constexpr ImU32 kClusterBoxBorderSelected = IM_COL32(226, 84, 90, 255);  // coral
+constexpr ImU32 kClusterBoxText = IM_COL32(28, 28, 26, 255);             // ink-primary
+constexpr ImU32 kClusterBoxMuted = IM_COL32(95, 95, 92, 255);            // ink-muted
+
+// The health-dot colour for a node, matching the replication palette the table
+// used: green = self / in-sync, amber = syncing (known but behind), quiet = no
+// status learned yet.
+ImVec4 cluster_node_color(const NodeStatus& node) {
+    if (node.is_self) return kDotActive;
+    if (!node.replication.known) return kInkQuiet;
+    return node.replication.in_sync ? kSuccessColor : kWarnColor;
+}
+
+// A short one-word sync state for the box caption.
+const char* cluster_node_state(const NodeStatus& node) {
+    if (node.is_self) return "self";
+    if (!node.replication.known) return "no status";
+    return node.replication.in_sync ? "in sync" : "syncing";
+}
+
+// The node's first UUID segment — enough to tell nodes apart at a glance.
+std::string cluster_node_short_id(const std::string& node_id) {
+    return node_id.substr(0, node_id.find('-'));
 }
 
 // Join lineage refs (sources / steps) for a single wrapped line.
@@ -298,58 +331,177 @@ void App::draw_cluster() {
         ImGui::SetClipboardText(command.c_str());
     }
 
-    ImGui::SeparatorText("Nodes & replication");
+    ImGui::SeparatorText("Nodes");
+
+    // Spatial cluster view (#582): one selectable box per node in a wrapping
+    // grid (the "boxes" feel), reading live from Cluster::nodes() each frame so
+    // membership tracks joins/leaves/heals with no separate copy — the canvas the
+    // add-nodes control, per-node gauges, and algorithm animation build on. The
+    // box-draw pattern mirrors draw_graph_canvas (ImDrawList rects + an invisible
+    // hit-test button), and the cost is one cheap pass per frame, so it never
+    // starves a live resize.
     const std::vector<NodeStatus> nodes = cluster_.nodes();
-    const ImGuiTableFlags table_flags =
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("nodes", 6, table_flags)) {
-        ImGui::TableSetupColumn("Node");
-        ImGui::TableSetupColumn("Address");
-        ImGui::TableSetupColumn("Role");
-        ImGui::TableSetupColumn("Entries");
-        ImGui::TableSetupColumn("Version");
-        ImGui::TableSetupColumn("Replication");
-        ImGui::TableHeadersRow();
-        if (mono_font_) ImGui::PushFont(mono_font_);
-        for (const NodeStatus& node : nodes) {
-            ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
-            // First UUID segment — enough to tell nodes apart at a glance.
-            const std::string id = node.node_id.substr(0, node.node_id.find('-'));
-            ImGui::TextUnformatted(node.is_self ? (id + " (self)").c_str()
-                                                : id.c_str());
-            ImGui::TableSetColumnIndex(1);
-            ImGui::TextUnformatted(node.address.c_str());
-            ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(to_string(node.role).c_str());
-            ImGui::TableSetColumnIndex(3);
-            if (node.replication.known) {
-                ImGui::Text("%zu", node.replication.entries);
+
+    // Re-resolve the selection against the live membership: if the selected node
+    // has left (or nothing is selected yet), fall back to self so the detail pane
+    // always shows a real node and a departed peer can't dangle.
+    const auto is_selected_present = [&] {
+        for (const NodeStatus& node : nodes)
+            if (node.node_id == selected_cluster_node_) return true;
+        return false;
+    };
+    if (!is_selected_present()) {
+        selected_cluster_node_.clear();
+        for (const NodeStatus& node : nodes)
+            if (node.is_self) selected_cluster_node_ = node.node_id;
+    }
+
+    const float font = ImGui::GetFontSize();
+    const float box_w = font * 12.0f;
+    const float box_h = font * 4.6f;
+    const float gap = font * 0.7f;
+    const float pad = font * 0.6f;
+    const float rounding = font * 0.3f;
+
+    if (ImGui::BeginChild("##cluster_canvas", ImVec2(0, font * 12.0f),
+                          ImGuiChildFlags_Borders)) {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        // How many boxes fit across the child (at least one, even when narrow).
+        const int columns =
+            std::max(1, static_cast<int>((avail + gap) / (box_w + gap)));
+
+        for (std::size_t index = 0; index < nodes.size(); ++index) {
+            const NodeStatus& node = nodes[index];
+            const int row = static_cast<int>(index) / columns;
+            const int col = static_cast<int>(index) % columns;
+            const ImVec2 top_left(origin.x + col * (box_w + gap),
+                                  origin.y + row * (box_h + gap));
+            const ImVec2 bottom_right(top_left.x + box_w, top_left.y + box_h);
+
+            // Click-to-select via an invisible button (hit-test), like the graph
+            // canvas. Hover/selected change only fill + border, not layout.
+            ImGui::SetCursorScreenPos(top_left);
+            ImGui::InvisibleButton(node.node_id.c_str(), ImVec2(box_w, box_h));
+            const bool hovered = ImGui::IsItemHovered();
+            if (ImGui::IsItemClicked()) selected_cluster_node_ = node.node_id;
+            const bool selected = node.node_id == selected_cluster_node_;
+
+            const ImU32 fill = selected
+                                   ? kClusterBoxFillSelected
+                                   : (hovered ? kClusterBoxFillHover
+                                              : kClusterBoxFill);
+            draw->AddRectFilled(top_left, bottom_right, fill, rounding);
+            draw->AddRect(top_left, bottom_right,
+                          selected ? kClusterBoxBorderSelected
+                                   : kClusterBoxBorder,
+                          rounding, 0, selected ? 2.0f : 1.0f);
+
+            draw->PushClipRect(top_left, bottom_right, true);
+            // Health dot + short id (the dot center vertically aligned with the
+            // id line). Green = self/in-sync, amber = syncing, quiet = no status.
+            const float dot_radius = font * 0.28f;
+            const ImVec2 dot_center(top_left.x + pad + dot_radius,
+                                    top_left.y + pad + font * 0.5f);
+            draw->AddCircleFilled(dot_center, dot_radius,
+                                  ImGui::GetColorU32(cluster_node_color(node)));
+            const std::string id = cluster_node_short_id(node.node_id) +
+                                   (node.is_self ? " (self)" : "");
+            const ImVec2 id_pos(dot_center.x + dot_radius + font * 0.45f,
+                                top_left.y + pad);
+            if (mono_font_) {
+                draw->AddText(mono_font_, font, id_pos, kClusterBoxText,
+                              id.c_str());
             } else {
-                ImGui::TextDisabled("—");
+                draw->AddText(id_pos, kClusterBoxText, id.c_str());
             }
-            ImGui::TableSetColumnIndex(4);
-            ImGui::TextUnformatted(node.replication.known
-                                       ? node.replication.version.c_str()
-                                       : "—");
-            ImGui::TableSetColumnIndex(5);
-            if (node.is_self) {
-                ImGui::TextDisabled("—");
-            } else if (!node.replication.known) {
-                ImGui::TextDisabled("no status yet");
-            } else if (node.replication.in_sync) {
-                ImGui::TextColored(kSuccessColor,
-                                   "in sync (%.1fs)",
-                                   node.replication.seconds_since_sync);
+            // Address + a one-word sync state below it.
+            const float small = font * 0.85f;
+            const ImVec2 addr_pos(top_left.x + pad, top_left.y + pad + font * 1.5f);
+            if (mono_font_) {
+                draw->AddText(mono_font_, small, addr_pos, kClusterBoxMuted,
+                              node.address.c_str());
             } else {
-                ImGui::TextColored(kWarnColor,
-                                   "syncing (%.1fs)",
-                                   node.replication.seconds_since_sync);
+                draw->AddText(addr_pos, kClusterBoxMuted, node.address.c_str());
             }
+            const ImVec2 state_pos(top_left.x + pad,
+                                   top_left.y + pad + font * 2.65f);
+            const ImU32 state_color = ImGui::GetColorU32(cluster_node_color(node));
+            if (mono_font_) {
+                draw->AddText(mono_font_, small, state_pos, state_color,
+                              cluster_node_state(node));
+            } else {
+                draw->AddText(state_pos, state_color, cluster_node_state(node));
+            }
+            draw->PopClipRect();
         }
-        if (mono_font_) ImGui::PopFont();
-        ImGui::EndTable();
+
+        // Reserve the laid-out area so the child scrolls when nodes overflow.
+        const int rows = (static_cast<int>(nodes.size()) + columns - 1) / columns;
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::Dummy(ImVec2(avail, std::max(0, rows) * (box_h + gap)));
+    }
+    ImGui::EndChild();
+
+    draw_cluster_node_detail(nodes);
+}
+
+void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
+    const NodeStatus* selected = nullptr;
+    for (const NodeStatus& node : nodes)
+        if (node.node_id == selected_cluster_node_) selected = &node;
+
+    ImGui::Spacing();
+    if (!selected) {
+        ImGui::TextDisabled("Select a node to see its detail.");
+        return;
+    }
+
+    eyebrow(mono_font_, "NODE");
+    mono_line(kInkPrimary, "id        ", selected->node_id);
+    mono_line(kInkSecondary, "role      ", to_string(selected->role));
+    mono_line(kInkSecondary, "address   ", selected->address);
+    mono_line(kInkSecondary, "membership",
+              std::string{"  "} +
+                  (selected->is_self
+                       ? "this node"
+                       : (selected->connected ? "connected peer" : "known")));
+
+    // Replication status — the same facts the old table column carried, now as a
+    // colour-coded line per the node's sync state.
+    ImGui::Spacing();
+    eyebrow(mono_font_, "REPLICATION");
+    if (selected->is_self) {
+        ImGui::TextDisabled("This node is the local replica.");
+    } else if (!selected->replication.known) {
+        ImGui::TextDisabled("No replication status learned yet.");
+    } else {
+        const NodeReplication& rep = selected->replication;
+        mono_line(kInkSecondary, "entries   ", std::to_string(rep.entries));
+        mono_line(kInkSecondary, "version   ",
+                  rep.version.empty() ? "—" : rep.version);
+        char sync[64];
+        std::snprintf(sync, sizeof(sync), "%s (%.1fs)",
+                      rep.in_sync ? "in sync" : "syncing",
+                      rep.seconds_since_sync);
+        if (g_mono_font) ImGui::PushFont(g_mono_font);
+        ImGui::TextColored(rep.in_sync ? kSuccessColor : kWarnColor, "sync      %s",
+                           sync);
+        if (g_mono_font) ImGui::PopFont();
+    }
+
+    // For this node, surface its reachable listen addresses + the live peer
+    // count (membership = self + connected peers), the facts the header shows.
+    if (selected->is_self) {
+        ImGui::Spacing();
+        eyebrow(mono_font_, "REACHABLE AT");
+        for (const std::string& address : cluster_.listen_addresses())
+            mono_line(kInkSecondary, "", address);
+        std::size_t peers = 0;
+        for (const NodeStatus& node : nodes)
+            if (!node.is_self) ++peers;
+        mono_line(kInkMuted, "peers     ", std::to_string(peers));
     }
 }
 

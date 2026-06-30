@@ -48,7 +48,8 @@ reachable) one. Other nodes copy that `--peer` line to join.
 
 Headed mode's **Cluster** panel shows this node's id, every reachable listen
 address, the **command to add another node** (with a Copy button), and a
-**Nodes & replication** table. Headless logs the same table whenever it changes.
+**spatial node-box canvas** (below). Headless logs the per-node table whenever it
+changes.
 
 ## All nodes + replication status
 
@@ -58,9 +59,34 @@ sync** with this node, and how long ago it last synced. Once a `ReplicationManag
 is wired in, peers gossip their documents and status over the connection (see
 [replication.md](replication.md)). The view shows up three ways:
 
-- **Headed** — the Cluster panel's Nodes table.
+- **Headed** — the Cluster panel's spatial node-box canvas (below).
 - **Headless** — the heartbeat prints a per-node table when it changes.
 - **SQL** — `SELECT * FROM system.zetta_nodes;` (see [query.md](query.md)).
+
+### Spatial node-box view (the headed canvas)
+
+The headed Cluster panel renders membership **spatially** rather than as a table
+(`App::draw_cluster`, `src/gui/app_operations.cpp`, #582): **one selectable box per
+node** laid out in a wrapping grid (the worktree-manager "boxes" feel), plus a
+**detail pane** below it. Each box shows a health dot (green = self / in-sync,
+amber = syncing, quiet = no status learned yet), the node's short id, its address,
+and a one-word sync state. **Clicking a box selects it**; the detail pane then
+shows that node's full detail — id, role, address, membership, replication
+(entries / version / in-sync with seconds), and for this node its reachable listen
+addresses + live peer count.
+
+It is a **thin renderer over `Cluster::nodes()`**: the snapshot is read live every
+frame and the selection (`selected_cluster_node_`, the only added GUI state) is
+re-resolved against it, so a peer that **joins, leaves, or heals** simply appears
+or drops out of the grid and the selection falls back to self — the view tracks
+membership with no separate copy of it. The boxes reuse the
+[graph workspace](execution-graph.md)'s `ImDrawList` rect + invisible-hit-test
+pattern and the same Orama canvas palette (white cards, hairline borders, a soft
+wash on hover, a coral border when selected), and the per-frame layout is one cheap
+pass, so it stays within the `render_frame` / `SDL_WaitEventTimeout` cadence and
+doesn't starve a live resize. This canvas is the **spatial foundation** the
+add-nodes control, per-node gauges, algorithm animation, and the graph-over-cluster
+view build on (part of #575).
 
 ## How it works
 
