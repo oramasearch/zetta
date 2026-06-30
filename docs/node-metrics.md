@@ -24,10 +24,16 @@ and now; nothing is stored or gossiped. This is the deliberate exception to
 agreement.
 
 A node can only measure the host it runs on, so the table returns **exactly one
-row — the node the query hits** (a cluster's full picture is the GUI querying
-each node's own `node_metrics`, or a future ephemeral telemetry exchange over the
-[signal plane](signal-plane.md); peer rows would need cross-node reporting, which
-is out of scope here precisely because it can't be replicated).
+row — the node the query hits**. A cluster's *full* picture is gathered separately,
+over the [signal plane](signal-plane.md): the **ephemeral telemetry exchange**
+(`zetta::NodeTelemetryExchange`, #584) has each node broadcast its own
+`NodeMetrics` to its peers as a `node.metrics` event and every node cache what it
+receives, so `Node::telemetry_snapshot()` returns this node + every fresh peer.
+That is what the headed cluster view's [animated per-node gauges](cluster-node-gauges.md)
+animate. It is deliberately **not** routed through `system.node_metrics` (which
+stays the single-host read view) nor the CRDT — telemetry is a measurement, not
+durable agreement, so it rides the ephemeral signal plane and goes stale in
+seconds.
 
 ## Columns
 

@@ -88,6 +88,26 @@ doesn't starve a live resize. This canvas is the **spatial foundation** the
 add-nodes control, per-node gauges, algorithm animation, and the graph-over-cluster
 view build on (part of #575).
 
+#### Live per-node resource gauges (#584)
+
+Each node box also carries **live, animated resource gauges + sparklines** — CPU /
+memory / GPU + VRAM / storage / network in-out, with % utilization, as moving bars
+rather than static numbers (the animated half of #575 area 2). The bars *ease*
+toward the live value each frame (the animation), with a sparkline of recent
+history over each track and the Orama **semantic** colours (green → amber → red by
+load; a neutral flow for network); an unreportable counter degrades to a faint
+`n/a`. Selecting a node shows the same gauges with fuller read-outs (core count,
+byte totals, in/out rates) in the detail pane.
+
+The gauges are fed by a **cluster-wide telemetry exchange over the
+[signal plane](signal-plane.md)** (`zetta::NodeTelemetryExchange`): `system.node_metrics`
+sees only the local host, so each node periodically broadcasts its own sample as an
+ephemeral `node.metrics` event and every node caches what it receives, so a single
+`Node::telemetry_snapshot()` returns the whole cluster's live gauges (self + fresh
+peers). It is **not replicated** (a measurement, not durable state) and rides a
+schema-validated wire boundary. Full detail in
+[cluster-node-gauges.md](cluster-node-gauges.md).
+
 ### Add nodes control (the headed control)
 
 Above the canvas sits the **Add nodes** control (`App::draw_add_nodes_control`,

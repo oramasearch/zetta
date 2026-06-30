@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/cluster_telemetry.hpp"
 
 #include "zetta/add_nodes.hpp"
 #include "zetta/bytes.hpp"
@@ -113,6 +114,261 @@ const char* cluster_node_state(const NodeStatus& node) {
 std::string cluster_node_short_id(const std::string& node_id) {
     return node_id.substr(0, node_id.find('-'));
 }
+
+// ── Per-node resource gauges (#584) ───────────────────────────────────────
+// Animated CPU / memory / GPU / storage / network gauges + sparklines rendered on
+// each cluster node box, driven by the cluster-wide telemetry the signal-plane
+// exchange gathers (Node::telemetry_snapshot()). The boxes show the live, eased
+// bars; the detail pane shows the same gauges with fuller read-outs.
+
+constexpr ImU32 kGaugeTrack = IM_COL32(236, 236, 234, 255);  // light meter track
+constexpr ImU32 kGaugeSpark = IM_COL32(95, 95, 92, 140);     // faint ink trend line
+
+// A load gauge's fill, on the semantic status palette (never coral): green under
+// moderate load, amber as it climbs, red when saturated. Network throughput is a
+// flow, not a good/bad status, so it uses a neutral ink fill instead of this.
+ImVec4 gauge_load_color(float percent) {
+    if (percent >= 85.0f) return kErrorColor;
+    if (percent >= 60.0f) return kWarnColor;
+    return kDotActive;
+}
+
+// One gauge's derived display: the live value (0..100), whether it is available
+// (an unreportable counter degrades to n/a, never a misleading 0), and the compact
+// (box) + fuller (detail-pane) read-out strings.
+struct GaugeReading {
+    float value = 0.0f;
+    bool available = false;
+    std::string box_text;
+    std::string detail_text;
+};
+
+// A compact bytes/sec read-out for a box gauge (e.g. "1.8M", "320k", "0") — short
+// enough to sit at the right of a small meter. The detail pane shows the full
+// per-direction rate instead.
+std::string short_rate(std::uint64_t bytes_per_sec) {
+    char buffer[16];
+    if (bytes_per_sec >= 1000ull * 1000 * 1000) {
+        std::snprintf(buffer, sizeof(buffer), "%.1fG",
+                      static_cast<double>(bytes_per_sec) / 1e9);
+    } else if (bytes_per_sec >= 1000ull * 1000) {
+        std::snprintf(buffer, sizeof(buffer), "%.1fM",
+                      static_cast<double>(bytes_per_sec) / 1e6);
+    } else if (bytes_per_sec >= 1000) {
+        std::snprintf(buffer, sizeof(buffer), "%.0fk",
+                      static_cast<double>(bytes_per_sec) / 1e3);
+    } else {
+        std::snprintf(buffer, sizeof(buffer), "%llu",
+                      static_cast<unsigned long long>(bytes_per_sec));
+    }
+    return buffer;
+}
+
+// Derive the five gauge readings from a node's metrics. `net_peak` is the rolling
+// peak throughput the network "flow" bar normalizes against — updated here once
+// per sample, decayed so a burst scales the window and then relaxes, so an idle
+// link doesn't paint a full bar. The load gauges (CPU/MEM/GPU/STORAGE) carry a
+// true 0..100 utilization; the network gauge carries the relative flow.
+std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
+                                                    float& net_peak) {
+    std::array<GaugeReading, kGaugeCount> gauges;
+    char buffer[96];
+    const auto percent_text = [&](double value) {
+        std::snprintf(buffer, sizeof(buffer), "%.0f%%", value);
+        return std::string(buffer);
+    };
+
+    // CPU — utilization across all logical cores; the detail shows the core count.
+    GaugeReading& cpu = gauges[static_cast<int>(Gauge::Cpu)];
+    cpu.available = metrics.cpu_percent_available;
+    cpu.value = static_cast<float>(metrics.cpu_percent);
+    cpu.box_text = cpu.available ? percent_text(metrics.cpu_percent) : "n/a";
+    {
+        std::string detail;
+        if (metrics.cpu_cores > 0) {
+            detail = std::to_string(metrics.cpu_cores) + " cores · ";
+        }
+        detail += cpu.available ? percent_text(metrics.cpu_percent) : "n/a";
+        cpu.detail_text = detail;
+    }
+
+    // Memory — physical RAM used / total.
+    GaugeReading& mem = gauges[static_cast<int>(Gauge::Memory)];
+    mem.available = metrics.memory_available;
+    mem.value = static_cast<float>(metrics.memory_percent);
+    mem.box_text = mem.available ? percent_text(metrics.memory_percent) : "n/a";
+    mem.detail_text =
+        mem.available
+            ? format_bytes(metrics.memory_used_bytes) + " / " +
+                  format_bytes(metrics.memory_total_bytes) + " · " +
+                  percent_text(metrics.memory_percent)
+            : "n/a";
+
+    // GPU + VRAM — absent in a CPU-only core build (graceful n/a).
+    GaugeReading& gpu = gauges[static_cast<int>(Gauge::Gpu)];
+    gpu.available = metrics.gpu_available;
+    gpu.value = static_cast<float>(metrics.gpu_percent);
+    gpu.box_text = gpu.available ? percent_text(metrics.gpu_percent) : "n/a";
+    gpu.detail_text =
+        gpu.available
+            ? percent_text(metrics.gpu_percent) + " · " +
+                  format_bytes(metrics.vram_used_bytes) + " / " +
+                  format_bytes(metrics.vram_total_bytes)
+            : "no GPU on this host";
+
+    // Storage — the data_dir filesystem used / total.
+    GaugeReading& storage = gauges[static_cast<int>(Gauge::Storage)];
+    storage.available = metrics.storage_available;
+    storage.value = static_cast<float>(metrics.storage_percent);
+    storage.box_text =
+        storage.available ? percent_text(metrics.storage_percent) : "n/a";
+    storage.detail_text =
+        storage.available
+            ? format_bytes(metrics.storage_used_bytes) + " / " +
+                  format_bytes(metrics.storage_total_bytes) + " · " +
+                  percent_text(metrics.storage_percent)
+            : "n/a";
+
+    // Network — in/out throughput, shown as a relative "flow" against a decaying
+    // rolling peak (no reliable link-capacity reference cross-platform).
+    GaugeReading& net = gauges[static_cast<int>(Gauge::Network)];
+    net.available = metrics.network_available;
+    if (net.available) {
+        const double total = static_cast<double>(metrics.net_rx_bytes_per_sec) +
+                             static_cast<double>(metrics.net_tx_bytes_per_sec);
+        net_peak *= 0.92f;  // relax the window so an old burst doesn't pin the bar
+        if (static_cast<float>(total) > net_peak) net_peak = static_cast<float>(total);
+        if (net_peak < 1.0f) net_peak = 1.0f;
+        net.value = std::clamp(static_cast<float>(total) / net_peak * 100.0f, 0.0f,
+                               100.0f);
+        net.box_text = short_rate(metrics.net_rx_bytes_per_sec +
+                                  metrics.net_tx_bytes_per_sec);
+        net.detail_text = "in " + format_bytes(metrics.net_rx_bytes_per_sec) +
+                          "/s · out " + format_bytes(metrics.net_tx_bytes_per_sec) +
+                          "/s";
+    } else {
+        net.box_text = "n/a";
+        net.detail_text = "n/a";
+    }
+    return gauges;
+}
+
+// Advance one node's animated gauge state from its latest telemetry sample: on a
+// NEW underlying sample re-derive the targets/captions and push one point onto
+// each sparkline (the sparkline = the sampled history); every frame ease the
+// shown value toward the target by `dt`, so the bars GLIDE between the ~1 Hz
+// samples (the animation) — frame-rate-independent via an exponential approach.
+void update_node_gauges(NodeGaugeState& state, const NodeMetrics& metrics,
+                        float dt) {
+    if (!state.have_data || metrics.sampled_at != state.last_sampled_at) {
+        state.last_sampled_at = metrics.sampled_at;
+        const std::array<GaugeReading, kGaugeCount> readings =
+            derive_gauges(metrics, state.net_peak);
+        for (int gauge = 0; gauge < kGaugeCount; ++gauge) {
+            state.target[gauge] =
+                readings[gauge].available ? readings[gauge].value : 0.0f;
+            state.available[gauge] = readings[gauge].available;
+            state.box_text[gauge] = readings[gauge].box_text;
+            state.detail_text[gauge] = readings[gauge].detail_text;
+            if (readings[gauge].available) {
+                state.history[gauge].push(state.target[gauge]);
+            }
+            if (!state.have_data) state.shown[gauge] = state.target[gauge];
+        }
+        state.have_data = true;
+    }
+    const float ease = 1.0f - std::exp(-dt * 9.0f);
+    for (int gauge = 0; gauge < kGaugeCount; ++gauge) {
+        const float goal = state.available[gauge] ? state.target[gauge] : 0.0f;
+        state.shown[gauge] += (goal - state.shown[gauge]) * ease;
+    }
+}
+
+// Draw one compact animated gauge at `pos` spanning `total_w` × `row_h`: a rounded
+// track, the recent history as a faint sparkline, an eased fill bar to
+// `shown_percent` (the moving part), a left mono label, and a right read-out (the
+// `right_w` column). Unavailable gauges render as a faint n/a track. Pure draw —
+// no ImGui layout, so it works both inside the node-box canvas (absolute coords)
+// and in the detail pane (cursor-derived coords).
+void draw_node_gauge(ImDrawList* draw, ImFont* mono, float font, ImVec2 pos,
+                     float total_w, float row_h, float right_w, const char* label,
+                     float shown_percent, const Sparkline& history, bool available,
+                     ImVec4 fill, const std::string& right_text) {
+    const float label_w = font * 2.4f;
+    const float gap = font * 0.35f;
+    const float meter_x0 = pos.x + label_w;
+    const float meter_x1 = pos.x + total_w - right_w - gap;
+    const float meter_w = std::max(font * 1.0f, meter_x1 - meter_x0);
+    const float meter_h = std::min(row_h - font * 0.18f, font * 0.9f);
+    const float meter_y0 = pos.y + (row_h - meter_h) * 0.5f;
+    const float meter_y1 = meter_y0 + meter_h;
+    const float rounding = meter_h * 0.32f;
+    const float text_size = font * 0.85f;
+
+    // Label (mono, muted), vertically centered.
+    const ImVec2 label_pos(pos.x, pos.y + (row_h - text_size) * 0.5f);
+    if (mono) {
+        draw->AddText(mono, text_size, label_pos, kClusterBoxMuted, label);
+    } else {
+        draw->AddText(label_pos, kClusterBoxMuted, label);
+    }
+
+    const ImVec2 meter_min(meter_x0, meter_y0);
+    const ImVec2 meter_max(meter_x1, meter_y1);
+    draw->AddRectFilled(meter_min, meter_max, kGaugeTrack, rounding);
+
+    if (available) {
+        // Fill bar (the eased gauge), drawn first at moderate alpha so the trend
+        // line reads over it.
+        const float fraction = std::clamp(shown_percent / 100.0f, 0.0f, 1.0f);
+        const ImU32 fill_soft = ImGui::GetColorU32(
+            ImVec4(fill.x, fill.y, fill.z, 0.60f));
+        if (fraction > 0.0f) {
+            draw->AddRectFilled(meter_min,
+                                ImVec2(meter_x0 + fraction * meter_w, meter_y1),
+                                fill_soft, rounding);
+        }
+        // Sparkline (the sampled history), over the fill — oldest → newest.
+        if (history.count >= 2) {
+            std::vector<ImVec2> points;
+            points.reserve(static_cast<std::size_t>(history.count));
+            for (int index = 0; index < history.count; ++index) {
+                const float x =
+                    meter_x0 + meter_w * static_cast<float>(index) /
+                                   static_cast<float>(history.count - 1);
+                const float value =
+                    std::clamp(history.at(index), 0.0f, 100.0f) / 100.0f;
+                points.emplace_back(x, meter_y1 - value * meter_h);
+            }
+            draw->AddPolyline(points.data(), static_cast<int>(points.size()),
+                              kGaugeSpark, 0, 1.4f);
+        }
+    } else if (mono) {
+        draw->AddText(mono, text_size, ImVec2(meter_x0 + gap, label_pos.y),
+                      kClusterBoxMuted, "n/a");
+    }
+    draw->AddRect(meter_min, meter_max, kClusterBoxBorder, rounding);
+
+    // Right read-out (mono), right-aligned, colored by the gauge (muted for n/a).
+    const ImU32 text_color =
+        available ? ImGui::GetColorU32(fill) : kClusterBoxMuted;
+    float text_w = ImGui::CalcTextSize(right_text.c_str()).x;
+    if (mono) {
+        text_w = mono->CalcTextSizeA(text_size, FLT_MAX, 0.0f,
+                                     right_text.c_str())
+                     .x;
+    }
+    const ImVec2 right_pos(pos.x + total_w - text_w, label_pos.y);
+    if (mono) {
+        draw->AddText(mono, text_size, right_pos, text_color, right_text.c_str());
+    } else {
+        draw->AddText(right_pos, text_color, right_text.c_str());
+    }
+}
+
+// The five gauges, in display order — labels for the node box + detail pane.
+constexpr std::array<const char*, kGaugeCount> kGaugeLabels{"CPU", "MEM", "GPU",
+                                                            "DSK", "NET"};
 
 // Join lineage refs (sources / steps) for a single wrapped line.
 std::string join_refs(const std::vector<std::string>& refs) {
@@ -363,14 +619,33 @@ void App::draw_cluster() {
             if (node.is_self) selected_cluster_node_ = node.node_id;
     }
 
+    // Live per-node telemetry (#584): the cluster-wide snapshot gathered over the
+    // signal plane (each node broadcasts its own system.node_metrics; every node
+    // caches its peers'). Each node box animates its own gauges from it; a node
+    // with no sample yet (a peer that just joined) shows an "awaiting" note. Pin
+    // the snapshot for the frame and index it by id for the per-box lookup.
+    const std::vector<NodeTelemetrySample> telemetry = node_.telemetry_snapshot();
+    std::map<std::string, const NodeTelemetrySample*> telemetry_by_id;
+    for (const NodeTelemetrySample& sample : telemetry) {
+        telemetry_by_id[sample.node_id] = &sample;
+    }
+    // Drop animation state for any node that has left the cluster, so a departed
+    // peer's gauges don't dangle (the snapshot already expires its telemetry).
+    std::erase_if(cluster_gauges_, [&](const auto& entry) {
+        for (const NodeStatus& node : nodes)
+            if (node.node_id == entry.first) return false;
+        return true;
+    });
+    const float dt = ImGui::GetIO().DeltaTime;
+
     const float font = ImGui::GetFontSize();
-    const float box_w = font * 12.0f;
-    const float box_h = font * 4.6f;
+    const float box_w = font * 15.0f;
+    const float box_h = font * 11.0f;
     const float gap = font * 0.7f;
     const float pad = font * 0.6f;
     const float rounding = font * 0.3f;
 
-    if (ImGui::BeginChild("##cluster_canvas", ImVec2(0, font * 12.0f),
+    if (ImGui::BeginChild("##cluster_canvas", ImVec2(0, font * 12.5f),
                           ImGuiChildFlags_Borders)) {
         ImDrawList* draw = ImGui::GetWindowDrawList();
         const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -441,6 +716,38 @@ void App::draw_cluster() {
             } else {
                 draw->AddText(state_pos, state_color, cluster_node_state(node));
             }
+
+            // Live resource gauges (#584): five animated bars + sparklines per box
+            // (CPU / MEM / GPU / DSK / NET), driven by this node's telemetry
+            // sample. The bars ease toward the live value each frame (the
+            // animation); a node with no sample yet shows an awaiting note.
+            const float gauge_top = top_left.y + pad + font * 3.65f;
+            const float gauge_x = top_left.x + pad;
+            const float gauge_w = box_w - pad * 2.0f;
+            const float gauge_row_h = font * 1.12f;
+            const auto telem = telemetry_by_id.find(node.node_id);
+            if (telem != telemetry_by_id.end()) {
+                NodeGaugeState& gauges = cluster_gauges_[node.node_id];
+                update_node_gauges(gauges, telem->second->metrics, dt);
+                for (int g = 0; g < kGaugeCount; ++g) {
+                    const ImVec2 gauge_pos(gauge_x, gauge_top + g * gauge_row_h);
+                    const ImVec4 fill = g == static_cast<int>(Gauge::Network)
+                                            ? kInkMuted
+                                            : gauge_load_color(gauges.shown[g]);
+                    draw_node_gauge(draw, mono_font_, font, gauge_pos, gauge_w,
+                                    gauge_row_h, font * 3.0f, kGaugeLabels[g],
+                                    gauges.shown[g], gauges.history[g],
+                                    gauges.available[g], fill, gauges.box_text[g]);
+                }
+            } else {
+                const ImVec2 note_pos(gauge_x, gauge_top + font * 1.6f);
+                if (mono_font_) {
+                    draw->AddText(mono_font_, small, note_pos, kClusterBoxMuted,
+                                  "awaiting telemetry");
+                } else {
+                    draw->AddText(note_pos, kClusterBoxMuted, "awaiting telemetry");
+                }
+            }
             draw->PopClipRect();
         }
 
@@ -496,6 +803,38 @@ void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
         ImGui::TextColored(rep.in_sync ? kSuccessColor : kWarnColor, "sync      %s",
                            sync);
         if (g_mono_font) ImGui::PopFont();
+    }
+
+    // Live resource telemetry (#584): the same five gauges as the node box, with
+    // fuller per-gauge read-outs (core count / byte totals / in-out rates) and a
+    // wider sparkline. Available for any selected node with a telemetry sample
+    // (self or a peer, gathered cluster-wide over the signal plane); a node that
+    // hasn't reported yet shows a pending note.
+    ImGui::Spacing();
+    eyebrow(mono_font_, "LIVE TELEMETRY");
+    const auto gauges_it = cluster_gauges_.find(selected->node_id);
+    if (gauges_it != cluster_gauges_.end() && gauges_it->second.have_data) {
+        ImGui::Spacing();
+        const NodeGaugeState& gauges = gauges_it->second;
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const float font = ImGui::GetFontSize();
+        const float row_h = font * 1.5f;
+        const float width = ImGui::GetContentRegionAvail().x;
+        const float right_w = std::min(width * 0.55f, font * 14.0f);
+        for (int g = 0; g < kGaugeCount; ++g) {
+            const ImVec2 pos = ImGui::GetCursorScreenPos();
+            const ImVec4 fill = g == static_cast<int>(Gauge::Network)
+                                    ? kInkMuted
+                                    : gauge_load_color(gauges.shown[g]);
+            draw_node_gauge(draw, mono_font_, font, pos, width, row_h, right_w,
+                            kGaugeLabels[g], gauges.shown[g], gauges.history[g],
+                            gauges.available[g], fill, gauges.detail_text[g]);
+            ImGui::Dummy(ImVec2(width, row_h));
+        }
+    } else {
+        ImGui::TextDisabled(
+            "Live telemetry pending (each node broadcasts its own resource "
+            "utilization over the signal plane about once a second).");
     }
 
     // For this node, surface its reachable listen addresses + the live peer

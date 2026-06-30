@@ -249,6 +249,26 @@ void Node::tick() {
             last_seen_version_ = std::move(version);
         }
     }
+    // 4. Telemetry plane (#584): sample this node's live host utilization and
+    //    broadcast it to peers as an ephemeral `node.metrics` signal-plane event,
+    //    throttled to ~1 Hz (the CPU/network gauges are deltas over the interval).
+    //    Every node caches what it receives (telemetry_->on_event), so any headed
+    //    node's cluster view can animate the whole cluster's gauges. NOT routed
+    //    through the CRDT — a measurement, not durable state.
+    if (cluster_ && telemetry_) {
+        using namespace std::chrono;
+        constexpr duration<double> kTelemetryInterval{1.0};
+        const steady_clock::time_point now = steady_clock::now();
+        if (last_telemetry_sample_.time_since_epoch().count() == 0 ||
+            now - last_telemetry_sample_ >= kTelemetryInterval) {
+            last_telemetry_sample_ = now;
+            const NodeMetrics metrics = sample_node_metrics();
+            telemetry_->record_local(node_id(), metrics);
+            cluster_->broadcast_event(
+                std::string(NodeTelemetryExchange::kMethod),
+                encode_node_metrics(metrics, node_id()));
+        }
+    }
 }
 
 void Node::stop() {
@@ -284,7 +304,14 @@ void Node::start_coordinator() {
         const unsigned hardware = std::thread::hardware_concurrency();
         workers = hardware > 1 ? hardware - 1 : 1;
     }
-    coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers);
+    // The live-telemetry exchange (#584) rides the coordinator's signal-handler
+    // chain as its FALLBACK — it receives every signal that is neither a steal nor
+    // a collective, so it caches peers' `node.metrics` events without disturbing
+    // the compute plane. Created once (the cache persists across a stop()/start()
+    // cycle) and reused on each attach.
+    if (!telemetry_) telemetry_ = std::make_unique<NodeTelemetryExchange>();
+    coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
+                                                             telemetry_.get());
     // Register on the cluster's signal plane + start the cross-node steal loop, so
     // a job submitted through job_coordinator() runs SPMD across live membership.
     coordinator_->start();

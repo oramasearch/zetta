@@ -170,6 +170,20 @@ types, like the rest of the cluster.
   natural next step.
 - **Plaintext.** Same as the rest of the transport — TLS isn't wired yet.
 
+## Consumers (event/RPC verbs)
+
+The signal plane is the substrate for several layers, each using its own `method`
+verbs over the same envelope: `collective.contribute` / `collective.result`
+([collectives](collectives.md)), `steal` / `steal_result`
+([work-stealing scheduler](work-stealing-scheduler.md)), `ddf.shuffle`
+([distributed sort](ddf-distributed-sort.md)), `fulltext.query`
+([distributed full-text](distributed-fulltext.md)), and the fire-and-forget
+**`node.metrics`** event the [per-node telemetry exchange](cluster-node-gauges.md)
+broadcasts (#584) so the headed cluster view can animate every node's resource
+gauges. Each rides a schema-validated payload (the
+[collective message](collectives.md) / telemetry boundary pattern); none adds a new
+wire verb beyond `ZETTA/1 SIGNAL`.
+
 ## See also
 
 - [collectives.md](collectives.md) — allreduce / broadcast / barrier / gather
@@ -177,5 +191,7 @@ types, like the rest of the cluster.
 - [cluster.md](cluster.md) — the equal-peer transport this rides on.
 - [work-stealing-scheduler.md](work-stealing-scheduler.md) — the cross-node steal
   protocol built on this layer (the first real consumer).
+- [cluster-node-gauges.md](cluster-node-gauges.md) — the ephemeral `node.metrics`
+  telemetry exchange that animates the cluster view's per-node gauges (#584).
 - [replication.md](replication.md) — the *replicated* (non-ephemeral) state plane,
   for contrast.

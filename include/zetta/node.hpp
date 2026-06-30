@@ -22,6 +22,7 @@
 #include "zetta/index/index_registry.hpp"
 #include "zetta/model.hpp"
 #include "zetta/node_metrics.hpp"
+#include "zetta/node_telemetry.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
@@ -352,6 +353,19 @@ public:
         return node_metrics_sampler_.sample(config_.data_dir);
     }
 
+    // The **cluster-wide** live telemetry snapshot: this node plus every peer
+    // whose `node.metrics` event arrived within the freshness window — the source
+    // the headed cluster view animates per-node gauges from (#584). Where
+    // `sample_node_metrics()` measures only this host, the per-node series are
+    // gathered over the signal plane (each node broadcasts its own sample, every
+    // node caches what it receives — see node_telemetry.hpp / docs/cluster-node-gauges.md).
+    // Ephemeral + non-replicated like the sample itself; empty until a cluster is
+    // attached (the exchange rides the JobCoordinator's signal-handler chain).
+    std::vector<NodeTelemetrySample> telemetry_snapshot() const {
+        if (!telemetry_) return {};
+        return telemetry_->snapshot();
+    }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -599,6 +613,15 @@ private:
     // the cluster, so its handler unwind never touches a dead cluster.
     Cluster* cluster_ = nullptr;
     unsigned compute_workers_ = 0;
+    // Cluster-wide live telemetry over the signal plane (#584): the cache of this
+    // node's + peers' `node.metrics` events, wired as the coordinator's signal
+    // handler fallback. Declared BEFORE coordinator_ so it outlives it (the
+    // coordinator holds it as a raw fallback pointer); created in
+    // start_coordinator(), and tick() broadcasts this node's sample through it.
+    // `last_telemetry_sample_` throttles that broadcast to ~1 Hz. Ephemeral; not
+    // replicated.
+    std::unique_ptr<NodeTelemetryExchange> telemetry_;
+    std::chrono::steady_clock::time_point last_telemetry_sample_{};
     std::unique_ptr<compute::JobCoordinator> coordinator_;
 };
 
