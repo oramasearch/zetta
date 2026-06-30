@@ -76,8 +76,9 @@ a new storage engine lands, this column will reflect it without a schema change.
 `std::vector<DatasetSummary> Node::datasets() const`
 ([`include/zetta/dataset.hpp`](../include/zetta/dataset.hpp)) is the reusable
 engine source behind the view. It is the **single live source** for both the SQL
-view *and* a future GUI dataset panel, so the two cannot diverge (the
-"prefer a table plus a panel that renders it" convention). Each `DatasetSummary`
+view *and* the [GUI Datasets panel](datasets-panel.md), so the two cannot diverge
+(the "prefer a table plus a panel that renders it" convention). Each
+`DatasetSummary`
 aggregates, per table:
 
 - **schema** — the union of each row's object keys in first-seen order (the engine
@@ -107,7 +108,9 @@ entering here, so there is nothing new to schema-validate.
   deliberately not introduced — a dataset is a table, and the observability source
   is the computed view. The convention is to add a stored entity only when a
   computed view genuinely cannot express the state; here it can.
-- The **GUI dataset panel** (epic #575, area 3) renders this same source.
+- The **GUI [Datasets panel](datasets-panel.md)** (epic #575, area 3) renders this
+  same source — a thin list + detail with a partition-placement overlay on the
+  cluster node boxes.
 - **Source-format provenance** (surfacing `parquet`/`csv` rather than the storage
   format) and datasets that exist only as orphan partition-catalog entries (a
   dropped table) are out of scope.
@@ -122,6 +125,8 @@ nodes; `WHERE` + projection work over the view.
 
 ## See also
 
+- [datasets-panel.md](datasets-panel.md) — the headed GUI Datasets view that renders
+  this source (list + detail + cluster placement overlay).
 - [dataset-partitions.md](dataset-partitions.md) — the `system.dataset_partitions`
   partition catalog this view joins for placement.
 - [datasets-shim.md](datasets-shim.md) — how a Parquet file becomes a (partitioned)

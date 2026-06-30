@@ -354,6 +354,7 @@ void App::draw_menu_bar() {
     // pipeline → operate it → govern it.
     if (ImGui::BeginMenu("Data")) {
         view_item("Explorer", View::Explorer);
+        view_item("Datasets", View::Datasets);
         view_item("SQL query", View::Query);
         view_item("Console", View::Console);
         ImGui::EndMenu();
@@ -415,6 +416,7 @@ void App::draw_active_view() {
     switch (active_view_) {
         case View::Home:     draw_home();            break;
         case View::Explorer: draw_explorer();        break;
+        case View::Datasets: draw_datasets();        break;
         case View::Query:    draw_query();           break;
         case View::Console:  draw_console();          break;
         case View::Graph:    draw_graph_workspace(); break;
