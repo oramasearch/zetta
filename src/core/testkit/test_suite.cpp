@@ -234,6 +234,7 @@ const TestSuite& TestSuite::builtin() {
         register_parquet_cases(built);
         register_ml_cases(built);
         register_distributed_cases(built);
+        register_fulltext_cases(built);
         register_governance_cases(built);
         register_pipeline_cases(built);
         register_example_cases(built);
