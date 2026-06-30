@@ -438,6 +438,7 @@ add_library(zetta-core STATIC
   src/core/ddf/local_group_by_job.cpp
   src/core/ddf/featurize.cpp
   src/core/ddf/featurize_job.cpp
+  src/core/ddf/local_featurize_job.cpp
   src/core/ml/gbdt.cpp
   src/core/ml/gbdt_train_job.cpp
   src/core/ml/calibration.cpp

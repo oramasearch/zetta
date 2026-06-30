@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <map>
@@ -20,7 +21,9 @@
 #include "zetta/database.hpp"
 #include "zetta/dataset_partition.hpp"
 #include "zetta/ddf/data_frame.hpp"
+#include "zetta/ddf/featurize.hpp"
 #include "zetta/ddf/group_by.hpp"
+#include "zetta/ddf/local_featurize_job.hpp"
 #include "zetta/ddf/local_group_by_job.hpp"
 #include "zetta/ddf/ops.hpp"
 #include "zetta/node.hpp"
@@ -553,6 +556,168 @@ TestResult run_partition_rebalance(const TestOptions& options, TestContext& cont
     return result;
 }
 
+// --- near-data featurize over partitions (#532) ------------------------------
+
+constexpr std::int64_t kFeaturizeAsOf = 1000;
+
+// The saas-sales-conversations shape: each row is one conversation (entity) carrying
+// already-engineered numeric columns + an event timestamp + a binary outcome.
+ddf::DataFrameSchema engineered_schema() {
+    ddf::DataFrameSchema schema;
+    schema.columns = {
+        ddf::ColumnSchema{.name = "conversation_id", .dtype = DataType::Int64},
+        ddf::ColumnSchema{.name = "customer_engagement", .dtype = DataType::Float64},
+        ddf::ColumnSchema{.name = "sales_effectiveness", .dtype = DataType::Float64},
+        ddf::ColumnSchema{.name = "conversation_length", .dtype = DataType::Int64},
+        ddf::ColumnSchema{.name = "event_ts", .dtype = DataType::Int64},
+        ddf::ColumnSchema{.name = "outcome", .dtype = DataType::Int64}};
+    return schema;
+}
+
+// A static featurize spec: engineered columns carried through, outcome the label,
+// point-in-time filtered to event_ts <= as_of.
+ddf::FeaturizeSpec engineered_spec() {
+    ddf::FeaturizeSpec spec;
+    spec.entity_column = "conversation_id";
+    spec.time_column = "event_ts";
+    spec.as_of = static_cast<double>(kFeaturizeAsOf);
+    spec.account_features = {"customer_engagement", "sales_effectiveness",
+                             "conversation_length"};
+    spec.label_column = "outcome";
+    return spec;
+}
+
+// One conversation; ~1 in 7 is AFTER the cutoff (event_ts > as_of) — the leakage trap
+// that the point-in-time filter must exclude.
+nlohmann::json make_conversation(std::size_t index) {
+    const bool future = (index % 7 == 3);
+    const std::int64_t ts = future ? kFeaturizeAsOf + 1 + static_cast<std::int64_t>(index % 50)
+                                   : static_cast<std::int64_t>(index % 900);
+    return nlohmann::json{
+        {"conversation_id", static_cast<std::int64_t>(index)},
+        {"customer_engagement", static_cast<double>(index % 100) / 100.0},
+        {"sales_effectiveness", static_cast<double>((index * 7) % 100) / 100.0},
+        {"conversation_length", static_cast<std::int64_t>(index % 40) + 1},
+        {"event_ts", ts},
+        {"outcome", static_cast<std::int64_t>(index % 3 == 0 ? 1 : 0)}};
+}
+
+bool feature_tables_equal(const ddf::FeatureTable& a, const ddf::FeatureTable& b) {
+    if (a.entities != b.entities || a.feature_names != b.feature_names) return false;
+    if (a.label_name != b.label_name || a.labels.size() != b.labels.size()) return false;
+    for (const std::string& name : b.feature_names) {
+        const std::vector<double>* x = a.feature(name);
+        const std::vector<double>* y = b.feature(name);
+        if (!x || !y || x->size() != y->size()) return false;
+        for (std::size_t i = 0; i < x->size(); ++i) {
+            if (std::abs((*x)[i] - (*y)[i]) > 1e-6) return false;
+        }
+    }
+    for (std::size_t i = 0; i < a.labels.size(); ++i) {
+        if (std::abs(a.labels[i] - b.labels[i]) > 1e-6) return false;
+    }
+    return true;
+}
+
+// Featurize engineered columns compute-near-data over a partitioned table: each node
+// owns a shard (its partitions), point-in-time featurizes it, and the global feature
+// table is asserted identical to the single-node oracle on every node, leakage-free.
+TestResult run_featurize_partitions(const TestOptions& options, TestContext& context) {
+    const std::size_t nodes = node_count_option(options);
+    const std::size_t rows =
+        static_cast<std::size_t>(std::max<long>(1, options.get_int("rows", 300)));
+
+    // The single-node featurize oracle over the whole dataset.
+    context.emit("computing the single-node featurize oracle");
+    CpuDevice truth_device;
+    JsonStore full;
+    std::size_t excluded = 0;
+    for (std::size_t i = 0; i < rows; ++i) {
+        full.add("row-" + std::to_string(i), make_conversation(i));
+        if (i % 7 == 3) ++excluded;
+    }
+    ddf::DataFrameResult full_frame =
+        ddf::load_data_frame(full, engineered_schema(), truth_device);
+    if (!full_frame.ok()) return TestResult::fail("oracle scan failed: " + full_frame.status.message);
+    const ddf::FeaturizeResult oracle = ddf::point_in_time_featurize(
+        full_frame.frame, full_frame.frame, engineered_spec());
+    if (!oracle.ok()) return TestResult::fail("oracle featurize failed: " + oracle.status.message);
+    if (oracle.table.row_count() >= rows) {
+        return TestResult::fail("the leakage trap did not fire (no post-cutoff rows excluded)");
+    }
+
+    // Each node holds its shard as its OWN partitions (every conversation on one node).
+    context.emit("partitioning " + std::to_string(rows) + " conversations across " +
+                 std::to_string(nodes) + " nodes");
+    LoopbackCluster cluster(nodes);
+    if (!cluster.connected()) return TestResult::fail("cluster did not converge");
+
+    std::vector<std::string> table_ids(nodes);
+    std::vector<std::unique_ptr<CpuDevice>> devices(nodes);
+    std::vector<std::unique_ptr<compute::JobCoordinator>> coordinators(nodes);
+    for (std::size_t i = 0; i < nodes; ++i) {
+        Node& node = cluster.node(i);
+        // A per-node database name avoids a name collision in the replicated catalog
+        // (the cluster is already connected); isolation is by table id + owner anyway.
+        auto database = node.create_database("data_" + std::to_string(i));
+        if (!database) return TestResult::fail("node " + std::to_string(i) + " has no database");
+        auto table = database->create_table("conversations");
+        if (!table) return TestResult::fail("node " + std::to_string(i) + " has no table");
+        table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
+        for (std::size_t r = i; r < rows; r += nodes) table->add_row(make_conversation(r));
+        const PartitionWriteResult written = write_partitioned(node, *database, *table);
+        if (!written.ok()) {
+            return TestResult::fail("node " + std::to_string(i) + " partition write failed: " +
+                                    written.error);
+        }
+        table_ids[i] = table->id();
+        devices[i] = std::make_unique<CpuDevice>();
+        coordinators[i] = std::make_unique<compute::JobCoordinator>(cluster.cluster(i), 2);
+    }
+    for (auto& coordinator : coordinators) coordinator->start();
+
+    const ddf::FeaturizeSpec spec = engineered_spec();
+    std::vector<std::shared_ptr<ComputeJob>> jobs(nodes);
+    std::vector<ddf::NearDataFeaturizeResult> results(nodes);
+    std::vector<std::thread> threads;
+    for (std::size_t i = 0; i < nodes; ++i) {
+        jobs[i] = cluster.node(i).create_job(JobKind::Featurize);
+        threads.emplace_back([&, i] {
+            results[i] = ddf::run_near_data_featurize_job(
+                *coordinators[i], cluster.node(i), *jobs[i], table_ids[i],
+                engineered_schema(), spec, *devices[i], "tk.featurize",
+                std::chrono::seconds(10));
+        });
+    }
+    for (auto& thread : threads) thread.join();
+    for (auto& coordinator : coordinators) coordinator->stop();
+
+    std::uint64_t total_rows_read = 0;
+    for (std::size_t i = 0; i < nodes; ++i) {
+        if (results[i].status != JobStatus::Succeeded) {
+            return TestResult::fail("node " + std::to_string(i) +
+                                    " featurize job failed: " + jobs[i]->detail());
+        }
+        if (!feature_tables_equal(results[i].table, oracle.table)) {
+            return TestResult::fail("node " + std::to_string(i) +
+                                    " disagreed with the single-node oracle");
+        }
+        total_rows_read += results[i].rows_read;
+    }
+    if (total_rows_read != rows) {
+        return TestResult::fail("not every conversation was read near data exactly once");
+    }
+
+    TestResult result = TestResult::pass(
+        "near-data featurize matched the single-node oracle on every node, leakage-free");
+    result.metric("nodes", std::to_string(nodes))
+        .metric("conversations", std::to_string(rows))
+        .metric("feature rows", std::to_string(oracle.table.row_count()))
+        .metric("excluded (post-cutoff)", std::to_string(excluded))
+        .metric("features", std::to_string(oracle.table.feature_count()));
+    return result;
+}
+
 }  // namespace
 
 void register_distributed_cases(TestSuite& suite) {
@@ -615,6 +780,20 @@ void register_distributed_cases(TestSuite& suite) {
                     TestOption::integer("rf", "Replication factor", 1, 1, 3),
                     TestOption::integer("rows", "Rows", 120, 1, 1000000)},
         .run = run_partition_rebalance,
+    });
+    suite.add(TestCase{
+        .id = "cluster.featurize_partitions",
+        .category = TestCategory::Distributed,
+        .name = "Featurize over partitions == single-node",
+        .description = "Point-in-time featurize engineered numeric columns (the "
+                       "saas-sales-conversations shape) compute-near-data over a "
+                       "partitioned table: each node owns a shard (its partitions), "
+                       "featurizes it (event_ts <= as_of, no leakage), and the global "
+                       "feature table is asserted identical to the single-node oracle "
+                       "on every node (#532).",
+        .options = {TestOption::integer("nodes", "Nodes", 3, 1, 6),
+                    TestOption::integer("rows", "Conversations", 300, 1, 1000000)},
+        .run = run_featurize_partitions,
     });
 }
 

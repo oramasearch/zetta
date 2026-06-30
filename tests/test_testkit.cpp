@@ -127,6 +127,11 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("rows", 120);
     });
     EXPECT_EQ(rebalance.outcome, TestOutcome::Pass) << rebalance.error;
+    const TestResult featurize = run("cluster.featurize_partitions", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("rows", 140);
+    });
+    EXPECT_EQ(featurize.outcome, TestOutcome::Pass) << featurize.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {

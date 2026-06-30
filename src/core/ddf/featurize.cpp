@@ -186,22 +186,28 @@ ComputeStatus compute_windowed_feature(const DataFrame& events,
 // --- WindowedFeature / FeaturizeSpec JSON boundary ---------------------------
 
 nlohmann::json FeaturizeSpec::to_json() const {
-    nlohmann::json features = nlohmann::json::array();
-    for (const WindowedFeature& feature : event_features) {
-        nlohmann::json entry;
-        entry["name"] = feature.name;
-        entry["agg"] = to_string(feature.agg);
-        if (!feature.value_column.empty()) entry["value_column"] = feature.value_column;
-        if (feature.window_start.has_value()) entry["window_start"] = *feature.window_start;
-        if (!feature.type_column.empty()) entry["type_column"] = feature.type_column;
-        if (feature.type_value.has_value()) entry["type_value"] = *feature.type_value;
-        features.push_back(std::move(entry));
-    }
     nlohmann::json value;
     value["entity_column"] = entity_column;
-    value["time_column"] = time_column;
-    value["as_of"] = as_of;
-    value["event_features"] = std::move(features);
+    // time_column + as_of are the point-in-time cutoff; a static featurization with no
+    // time dimension omits them (a row filter / windowing is "where applicable").
+    if (!time_column.empty()) {
+        value["time_column"] = time_column;
+        value["as_of"] = as_of;
+    }
+    if (!event_features.empty()) {
+        nlohmann::json features = nlohmann::json::array();
+        for (const WindowedFeature& feature : event_features) {
+            nlohmann::json entry;
+            entry["name"] = feature.name;
+            entry["agg"] = to_string(feature.agg);
+            if (!feature.value_column.empty()) entry["value_column"] = feature.value_column;
+            if (feature.window_start.has_value()) entry["window_start"] = *feature.window_start;
+            if (!feature.type_column.empty()) entry["type_column"] = feature.type_column;
+            if (feature.type_value.has_value()) entry["type_value"] = *feature.type_value;
+            features.push_back(std::move(entry));
+        }
+        value["event_features"] = std::move(features);
+    }
     if (!account_features.empty()) value["account_features"] = account_features;
     if (!label_column.empty()) value["label_column"] = label_column;
     return value;
@@ -229,18 +235,35 @@ std::optional<FeaturizeSpec> FeaturizeSpec::from_json(const nlohmann::json& valu
     FeaturizeSpec spec;
     if (auto entity = string_field("entity_column")) spec.entity_column = *entity;
     else return std::nullopt;
-    if (auto time = string_field("time_column")) spec.time_column = *time;
-    else return std::nullopt;
-    if (!value.contains("as_of") || !value.at("as_of").is_number()) return std::nullopt;
-    spec.as_of = value.at("as_of").get<double>();
 
-    if (!value.contains("event_features") || !value.at("event_features").is_array() ||
-        value.at("event_features").empty()) {
-        return std::nullopt;
+    // time_column is optional: a static featurization (no windowed event features)
+    // over already-engineered columns has no time dimension. When present it must be a
+    // non-empty string and carry an as_of cutoff (the point-in-time row filter / the
+    // per-feature window both compare against it).
+    if (value.contains("time_column")) {
+        if (auto time = string_field("time_column")) spec.time_column = *time;
+        else return std::nullopt;
+    }
+    if (value.contains("as_of")) {
+        if (!value.at("as_of").is_number()) return std::nullopt;
+        spec.as_of = value.at("as_of").get<double>();
+    }
+    if (!spec.time_column.empty() && !value.contains("as_of")) {
+        return std::nullopt;  // a time_column needs an as_of cutoff
     }
 
+    // event_features is optional: empty (or absent) => a static carry-through
+    // featurization of the account_features columns. When present it must be an array;
+    // each feature is windowed, so a non-empty list requires a time_column (checked
+    // after parsing).
     std::set<std::string> output_names;  // every output column name must be unique
-    for (const nlohmann::json& entry : value.at("event_features")) {
+    const nlohmann::json empty_features = nlohmann::json::array();
+    if (value.contains("event_features") && !value.at("event_features").is_array()) {
+        return std::nullopt;
+    }
+    const nlohmann::json& event_features =
+        value.contains("event_features") ? value.at("event_features") : empty_features;
+    for (const nlohmann::json& entry : event_features) {
         if (!entry.is_object()) return std::nullopt;
         for (const auto& [key, _] : entry.items()) {
             if (key != "name" && key != "agg" && key != "value_column" &&
@@ -296,6 +319,9 @@ std::optional<FeaturizeSpec> FeaturizeSpec::from_json(const nlohmann::json& valu
         if (!output_names.insert(feature.name).second) return std::nullopt;  // dup name
         spec.event_features.push_back(std::move(feature));
     }
+    if (!spec.event_features.empty() && spec.time_column.empty()) {
+        return std::nullopt;  // windowed event features need a time_column
+    }
 
     if (value.contains("account_features")) {
         if (!value.at("account_features").is_array()) return std::nullopt;
@@ -312,6 +338,12 @@ std::optional<FeaturizeSpec> FeaturizeSpec::from_json(const nlohmann::json& valu
     if (value.contains("label_column")) {
         if (auto label = string_field("label_column")) spec.label_column = *label;
         else return std::nullopt;
+    }
+
+    // A spec must produce at least one feature column (a windowed event feature or a
+    // carried-through account feature); a label alone is not a feature table.
+    if (spec.event_features.empty() && spec.account_features.empty()) {
+        return std::nullopt;
     }
 
     return spec;
@@ -360,28 +392,58 @@ FeaturizeResult point_in_time_featurize(const DataFrame& events,
                                         const FeaturizeSpec& spec) {
     FeaturizeResult out;
 
-    if (spec.entity_column.empty() || spec.time_column.empty() ||
-        spec.event_features.empty()) {
-        out.status = ComputeStatus::invalid_argument(
-            "featurize: spec needs entity_column, time_column, and event_features");
+    if (spec.entity_column.empty()) {
+        out.status =
+            ComputeStatus::invalid_argument("featurize: spec needs an entity_column");
         return out;
+    }
+    if (spec.event_features.empty() && spec.account_features.empty()) {
+        out.status = ComputeStatus::invalid_argument(
+            "featurize: spec needs at least one event feature or account feature");
+        return out;
+    }
+    if (!spec.event_features.empty() && spec.time_column.empty()) {
+        out.status = ComputeStatus::invalid_argument(
+            "featurize: windowed event features need a time_column");
+        return out;
+    }
+
+    // Static (no event features): the accounts frame IS the row universe (each row is
+    // one entity's engineered feature record), so the point-in-time row filter
+    // (time <= as_of, leakage-free) applies *here* when a time_column is set — a row
+    // after the cutoff is excluded entirely. With windowed event features the accounts
+    // dimension is the full universe and the as_of windowing happens per feature over
+    // the events frame instead (the churn shape).
+    DataFrame static_filtered;
+    const DataFrame* account_source = &accounts;
+    if (spec.event_features.empty() && !spec.time_column.empty()) {
+        DataFrameResult filtered =
+            filter(accounts, FilterPredicate{.column = spec.time_column,
+                                             .comparison = Comparison::LessEqual,
+                                             .value = spec.as_of});
+        if (!filtered.ok()) {
+            out.status = filtered.status;
+            return out;
+        }
+        static_filtered = std::move(filtered.frame);
+        account_source = &static_filtered;
     }
 
     // The entity universe + the static account dimension come from the accounts frame
     // (left-join semantics: one output row per account). Keys are exact int64.
     std::vector<std::int64_t> account_keys;
-    out.status = read_int64(accounts, spec.entity_column, account_keys);
+    out.status = read_int64(*account_source, spec.entity_column, account_keys);
     if (!out.status.ok()) return out;
 
     std::vector<std::vector<double>> account_columns(spec.account_features.size());
     for (std::size_t index = 0; index < spec.account_features.size(); ++index) {
-        out.status = read_doubles(accounts, spec.account_features[index],
+        out.status = read_doubles(*account_source, spec.account_features[index],
                                   account_columns[index]);
         if (!out.status.ok()) return out;
     }
     std::vector<double> label_values;
     if (!spec.label_column.empty()) {
-        out.status = read_doubles(accounts, spec.label_column, label_values);
+        out.status = read_doubles(*account_source, spec.label_column, label_values);
         if (!out.status.ok()) return out;
     }
 
