@@ -9,6 +9,7 @@ class TestSuite;
 
 void register_compute_cases(TestSuite& suite);
 void register_ddf_cases(TestSuite& suite);
+void register_parquet_cases(TestSuite& suite);
 void register_ml_cases(TestSuite& suite);
 void register_distributed_cases(TestSuite& suite);
 void register_governance_cases(TestSuite& suite);

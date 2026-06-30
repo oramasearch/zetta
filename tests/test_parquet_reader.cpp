@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@
 
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/compute/cpu_device.hpp"
+#include "zetta/compute/data_type.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/parquet_reader.hpp"
 
@@ -28,12 +30,19 @@ namespace {
 namespace fs = std::filesystem;
 using zetta::compute::ComputeStatusCode;
 using zetta::compute::CpuDevice;
+using zetta::compute::DataType;
 using zetta::ddf::ColumnSchema;
 using zetta::ddf::DataFrame;
 using zetta::ddf::DataFrameResult;
 using zetta::ddf::DataFrameSchema;
 using zetta::ddf::infer_parquet_schema;
 using zetta::ddf::load_parquet_data_frame;
+
+// The canonical dtype name the reader stamps on a produced column — used to
+// compare what the reader inferred / produced against the pyarrow golden's
+// declared `dtype` string (the reverse direction of `data_type_from_string`,
+// using only the public `compute::to_string`).
+std::string dtype_name(DataType type) { return std::string{zetta::compute::to_string(type)}; }
 
 fs::path parquet_dir() { return fs::path(ZETTA_TEST_FIXTURES_DIR) / "parquet"; }
 fs::path saas_fixture_path() { return parquet_dir() / "saas_sample.parquet"; }
@@ -119,15 +128,68 @@ TEST(ParquetReader, LoadsProjectedSubsetMatchingGolden) {
               static_cast<std::size_t>(golden.at("num_rows").get<std::int64_t>()));
     ASSERT_EQ(frame.column_count(), golden.at("columns").size());
 
+    // Schema parity: the produced columns are exactly the golden's, in order.
+    std::vector<std::string> expected_names;
+    for (const auto& column : golden.at("columns")) {
+        expected_names.push_back(column.at("name").get<std::string>());
+    }
+    EXPECT_EQ(frame.column_names(), expected_names);
+
     // Column projection dropped the embeddings: no embedding_* column survives.
     for (const std::string& name : frame.column_names()) {
         EXPECT_NE(name.rfind("embedding_", 0), 0u) << "embedding column leaked: " << name;
     }
 
-    for (const auto& column : golden.at("columns")) {
-        expect_column_matches(frame, column.at("name").get<std::string>(),
-                              column.at("dtype").get<std::string>(), column.at("values"));
+    // Dtype parity: the dtype the reader *produced* for each column (not the one
+    // the load was asked for) equals the golden's declared dtype, and the values
+    // match field for field.
+    const DataFrameSchema produced = frame.schema();
+    ASSERT_EQ(produced.columns.size(), golden.at("columns").size());
+    for (std::size_t i = 0; i < golden.at("columns").size(); ++i) {
+        const auto& column = golden.at("columns").at(i);
+        const std::string name = column.at("name").get<std::string>();
+        const std::string dtype = column.at("dtype").get<std::string>();
+        EXPECT_EQ(produced.columns[i].name, name);
+        EXPECT_EQ(dtype_name(produced.columns[i].dtype), dtype) << name;
+        expect_column_matches(frame, name, dtype, column.at("values"));
     }
+}
+
+// Dtype parity, independently of the projected load (TC-9 / #499): the reader's
+// own metadata-driven type inference agrees with pyarrow. The headline test above
+// loads each column at the golden's declared dtype, so it cannot prove the reader
+// would *infer* that dtype on its own — this does. `infer_parquet_schema` reads
+// only the footer (no decode) and types every numeric leaf; for each projected
+// golden column its inferred dtype must equal the golden's, and the embeddings it
+// drops must be *seen* by inference (as float32) — proving projection, not
+// inference, is what omits them.
+TEST(ParquetReader, InfersDtypesMatchingGolden) {
+    const std::string bytes = read_bytes(saas_fixture_path());
+    ASSERT_FALSE(bytes.empty());
+    const nlohmann::json golden = read_json(saas_golden_path());
+
+    const auto inferred = infer_parquet_schema(bytes);
+    ASSERT_TRUE(inferred.ok()) << inferred.error;
+
+    std::map<std::string, std::string> inferred_dtype;
+    std::size_t embeddings_seen = 0;
+    for (const ColumnSchema& column : inferred.schema.columns) {
+        inferred_dtype[column.name] = dtype_name(column.dtype);
+        if (column.name.rfind("embedding_", 0) == 0) {
+            ++embeddings_seen;
+            EXPECT_EQ(dtype_name(column.dtype), "float32") << column.name;
+        }
+    }
+
+    for (const auto& column : golden.at("columns")) {
+        const std::string name = column.at("name").get<std::string>();
+        const std::string dtype = column.at("dtype").get<std::string>();
+        ASSERT_TRUE(inferred_dtype.count(name)) << "inference missed " << name;
+        EXPECT_EQ(inferred_dtype[name], dtype) << name;
+    }
+    // Inference sees the embeddings the projection drops (so dropping is the
+    // projection's doing, not inference silently skipping them).
+    EXPECT_GT(embeddings_seen, 0u);
 }
 
 // Column projection over the independently-built #506 decode fixture: request a

@@ -231,6 +231,7 @@ const TestSuite& TestSuite::builtin() {
         TestSuite built;
         register_compute_cases(built);
         register_ddf_cases(built);
+        register_parquet_cases(built);
         register_ml_cases(built);
         register_distributed_cases(built);
         register_governance_cases(built);

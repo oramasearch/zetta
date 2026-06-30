@@ -457,6 +457,7 @@ add_library(zetta-core STATIC
   src/core/testkit/harness.cpp
   src/core/testkit/cases_compute.cpp
   src/core/testkit/cases_ddf.cpp
+  src/core/testkit/cases_parquet.cpp
   src/core/testkit/cases_ml.cpp
   src/core/testkit/cases_distributed.cpp
   src/core/testkit/cases_governance.cpp
