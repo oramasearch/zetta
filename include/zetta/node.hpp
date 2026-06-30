@@ -28,8 +28,10 @@
 namespace zetta {
 
 class ReplicationManager;
+class Cluster;
 struct ExecutionResult;
 namespace ir { class ExecutionGraph; }
+namespace compute { class JobCoordinator; }
 
 // Where a node's persistent state lives and how it presents itself. More
 // fields (listen address, replication peers, cache sizes) land alongside the
@@ -91,6 +93,11 @@ class Node : public AuditSink {
 public:
     explicit Node(NodeConfig config, ReplicationManager* replication = nullptr);
 
+    // Out-of-line so the unique_ptr<compute::JobCoordinator> member (held as an
+    // incomplete type here, to keep the heavy compute/cluster headers out of this
+    // widely-included header) is destroyed where the complete type is visible.
+    ~Node();
+
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
 
@@ -141,6 +148,33 @@ public:
     // add_nodes(Node&, …) overload to feed the previous membership into the
     // between-jobs rebalance (#519).
     std::vector<std::string> cluster_members() const;
+
+    // Attach this running node's **compute plane** to its real Cluster: construct
+    // and start a long-lived `compute::JobCoordinator` over it (ARC-11 / #579, the
+    // SPMD job-submission "spine"), reachable via job_coordinator(). The
+    // coordinator owns the collectives + the distributed work-stealing scheduler
+    // bound to `cluster`'s signal plane, so a job submitted through it runs SPMD
+    // across the live cluster membership.
+    //
+    // Called once after both the node and the cluster are up (main wires it right
+    // after cluster.start()), because main constructs the Node before the Cluster
+    // — so the cluster can't be a constructor argument. `worker_count` is the
+    // coordinator's local pool size; 0 (the default) picks a sensible default from
+    // the hardware concurrency (leaving a core for the loop + network thread). If
+    // the node is already running the coordinator starts immediately; otherwise it
+    // starts on the next start(). `cluster` must outlive the node (or stop()/a
+    // detach must run first) — stop() tears the coordinator down. Calling it again
+    // replaces the attachment.
+    void attach_cluster(Cluster& cluster, unsigned worker_count = 0);
+
+    // This node's long-lived JobCoordinator over its real cluster, or nullptr when
+    // no cluster has been attached (a standalone node, or before attach_cluster).
+    // The single entry the native distributed compute algorithms submit work
+    // through; see compute/job_coordinator.hpp / docs/job-coordinator.md.
+    compute::JobCoordinator* job_coordinator() { return coordinator_.get(); }
+    const compute::JobCoordinator* job_coordinator() const {
+        return coordinator_.get();
+    }
 
     // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
     // target and record it. R1 supports a **Local** target only; deploy_graph
@@ -400,6 +434,13 @@ private:
     // UUID persisted in data_dir/node_id (created on first use). Set by start().
     std::string resolve_node_id();
 
+    // Construct + start the JobCoordinator over the attached cluster (#579). A
+    // no-op when no cluster is attached or one already runs; called from
+    // attach_cluster (when running) and from start() (re-establishes it after a
+    // stop()/start() cycle). stop_coordinator() stops + releases it.
+    void start_coordinator();
+    void stop_coordinator();
+
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
 
@@ -521,6 +562,14 @@ private:
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.
     compute::FileCheckpointStore checkpoint_store_;
     DeploymentController controller_{*this};  // control plane (driven by tick())
+    // The compute plane over the real cluster (#579): non-owning pointer to the
+    // attached Cluster (null = no cluster), the requested worker count (0 = auto),
+    // and the long-lived coordinator (null until attach_cluster + a running node).
+    // Held as an incomplete type via unique_ptr; destroyed in stop()/~Node before
+    // the cluster, so its handler unwind never touches a dead cluster.
+    Cluster* cluster_ = nullptr;
+    unsigned compute_workers_ = 0;
+    std::unique_ptr<compute::JobCoordinator> coordinator_;
 };
 
 }  // namespace zetta

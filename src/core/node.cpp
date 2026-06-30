@@ -1,5 +1,7 @@
 #include "zetta/node.hpp"
 
+#include "zetta/cluster.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/executor.hpp"
 #include "zetta/gate.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
@@ -26,6 +28,7 @@
 #include <map>
 #include <optional>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -69,6 +72,11 @@ Node::Node(NodeConfig config, ReplicationManager* replication)
     index_registry_.add(std::make_shared<OramaCoreFulltextIndex>());
 #endif
 }
+
+// Out-of-line (see node.hpp): destroying coordinator_ here means the complete
+// compute::JobCoordinator type is visible, and — for a node that reached stop()
+// — coordinator_ is already null, so the unwind never touches a dead cluster.
+Node::~Node() = default;
 
 std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     // The latest valid checkpoint per job — the read view behind system.checkpoints
@@ -146,6 +154,10 @@ bool Node::start() {
                 integrity_.dangling_access_keys);
         }
     }
+    // Re-establish the compute plane if a cluster was attached before this start
+    // (a stop()/start() cycle). On first boot main attaches after start(), so this
+    // is a no-op then and attach_cluster brings the coordinator up itself.
+    start_coordinator();
     std::fflush(stdout);
     return true;
 }
@@ -181,10 +193,47 @@ void Node::tick() {
 
 void Node::stop() {
     if (!running_) return;
+    // Tear the coordinator down first, while the attached cluster is still alive
+    // (its signal-handler unwind is a cheap atomic store, and the steal loop joins
+    // promptly) — so the cluster can be stopped/destroyed after us safely (#579).
+    stop_coordinator();
     if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");
     std::fflush(stdout);
+}
+
+void Node::attach_cluster(Cluster& cluster, unsigned worker_count) {
+    cluster_ = &cluster;
+    compute_workers_ = worker_count;
+    // If the node is already running (the normal path — main attaches right after
+    // cluster.start()), bring the coordinator up now; otherwise start() will.
+    if (running_) {
+        stop_coordinator();  // replace any prior attachment cleanly
+        start_coordinator();
+    }
+}
+
+void Node::start_coordinator() {
+    if (!cluster_ || coordinator_) return;
+    unsigned workers = compute_workers_;
+    if (workers == 0) {
+        // Auto: one worker per core, leaving one for the node loop + the cluster's
+        // network thread. Always at least one (the SPMD parallel_map path needs a
+        // worker; 0 would make this node a pure map source).
+        const unsigned hardware = std::thread::hardware_concurrency();
+        workers = hardware > 1 ? hardware - 1 : 1;
+    }
+    coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers);
+    // Register on the cluster's signal plane + start the cross-node steal loop, so
+    // a job submitted through job_coordinator() runs SPMD across live membership.
+    coordinator_->start();
+}
+
+void Node::stop_coordinator() {
+    if (!coordinator_) return;
+    coordinator_->stop();   // join the steal loop, restore the cluster's handler
+    coordinator_.reset();
 }
 
 double Node::uptime_seconds() const {

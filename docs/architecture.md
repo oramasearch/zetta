@@ -11,9 +11,13 @@ data and knows nothing about any UI, so it can run two ways:
   no UI; for servers with no display.
 
 `main()` parses arguments, builds the `Node` and a `Cluster` (cluster networking
-runs on its own background thread), starts them, dispatches to a run mode, then
-stops them. Both modes install SIGINT/SIGTERM handlers so terminal Ctrl-C shuts
-down cleanly.
+runs on its own background thread), starts them, and then `node.attach_cluster(cluster)`
+gives the running node its long-lived [`JobCoordinator`](job-coordinator.md) over
+the real cluster (the SPMD compute "spine", #579) — wired here, not at
+construction, because the Node is built and started before the Cluster exists. It
+then dispatches to a run mode and stops them (`node.stop()` releases the
+coordinator before the cluster shuts down). Both modes install SIGINT/SIGTERM
+handlers so terminal Ctrl-C shuts down cleanly.
 
 The core is the static library **`zetta-core`**, which has **no SDL/ImGui
 dependency** — the build-level guarantee that a node runs headless. The GUI is a
