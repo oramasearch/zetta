@@ -184,8 +184,23 @@ backend types and no new transport — it is a pure consumer of the signal plane
   persistence; a peer that drops mid-round fails that round (the caller retries
   at a higher level).
 
+## Observability
+
+`Collectives` carries two cumulative, thread-safe meters for the live-pipeline
+read views ([pipeline-instrumentation.md](pipeline-instrumentation.md)):
+
+- `wire_bytes()` — total collective-plane payload bytes sent/received (the
+  "bytes moved" the compute-near-data path keeps small).
+- `rounds_completed()` — the number of rounds (allreduce / broadcast / barrier /
+  gather) that succeeded; a timed-out or unreachable-peer round does not count.
+
+Both surface on the running node via `system.collective_rounds`, so the GUI can
+watch a distributed run advance.
+
 ## See also
 
+- [pipeline-instrumentation.md](pipeline-instrumentation.md) — the
+  `system.collective_rounds` read view over the meters above.
 - [signal-plane.md](signal-plane.md) — the ephemeral RPC / event / task layer
   this is built on.
 - [compute-device.md](compute-device.md) — the operator seam (`reduce`,

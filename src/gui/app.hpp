@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "gui/cluster_telemetry.hpp"  // per-node gauge animation state (pure data)
+#include "gui/cluster_pipeline.hpp"   // distributed-algorithm overlay state (pure data)
 
 // Forward declarations keep SDL3 + Dear ImGui headers out of this file — only
 // app.cpp (and no other translation unit) needs the full definitions.
@@ -103,12 +104,21 @@ private:
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
     // routes by extension: .json/.jsonl import as rows, anything else stores as
-    // a large object. N8nArtifact stages a workflow JSON for the New Project
-    // dialog (validated on stage, imported into the new project only on Create)
-    // instead of ingesting it immediately. ModelWeights stages a chosen file as
-    // the serialized weights for the Models view's "Add model" form (attached via
-    // Model::set_weights on Register), rather than ingesting it.
-    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact, ModelWeights };
+    // a large object. Dataset loads a parquet/jsonl/json/csv file as a *partitioned*
+    // table via add_dataset_file (#587), so it surfaces in the Datasets view with
+    // its partitions placed across the cluster. N8nArtifact stages a workflow JSON
+    // for the New Project dialog (validated on stage, imported into the new project
+    // only on Create) instead of ingesting it immediately. ModelWeights stages a
+    // chosen file as the serialized weights for the Models view's "Add model" form
+    // (attached via Model::set_weights on Register), rather than ingesting it.
+    enum class FileIntent {
+        Auto,
+        Records,
+        LargeObject,
+        Dataset,
+        N8nArtifact,
+        ModelWeights
+    };
     struct IncomingFile {
         std::string path;
         FileIntent intent;
@@ -157,6 +167,12 @@ private:
     // membership, replication status, and (for self) reachable addresses + peer
     // count for the selected node. `nodes` is the live Cluster::nodes() snapshot.
     void draw_cluster_node_detail(const std::vector<NodeStatus>& nodes);
+    // The live pipeline-activity strip below the cluster canvas (#590, epic #575
+    // area 5): the real instrumentation the distributed-algorithm overlay animates
+    // — collective rounds + wire/near-data byte totals + placement/rebalance tallies
+    // — echoed verbatim, with a legend for the flow colours. `pipeline` is the
+    // snapshot draw_cluster already read this frame (a thin renderer; no new reads).
+    void draw_pipeline_activity(const PipelineInputs& pipeline);
     // The "Add nodes" control in the Cluster view (epic #575 area 1): pick a
     // target (the provider catalog), a count, and drive zetta::add_nodes over the
     // injected Provisioner for that target. The given-hardware Local target runs
@@ -254,6 +270,7 @@ private:
     void enqueue_file(std::string path, FileIntent intent);
     static void on_open_records(void* userdata, const char* const* files, int filter);
     static void on_open_large_object(void* userdata, const char* const* files, int filter);
+    static void on_open_dataset(void* userdata, const char* const* files, int filter);
     static void on_open_n8n(void* userdata, const char* const* files, int filter);
     static void on_open_model_weights(void* userdata, const char* const* files,
                                       int filter);
@@ -312,6 +329,14 @@ private:
     // history needed to animate the bars between the ~1 Hz samples. Updated each
     // frame in draw_cluster() and pruned of nodes that have left the cluster.
     std::map<std::string, NodeGaugeState> cluster_gauges_;
+
+    // Distributed-algorithm-at-work overlay state (#590, epic #575 area 5): the
+    // short-lived eased "flows" that animate partition placement / near-data loads /
+    // scatter-gather collective rounds / rebalance moves over the node boxes. A thin
+    // renderer's working copy of the live instrumentation read views
+    // (system.dataset_partitions / system.pipeline_jobs / system.collective_rounds) —
+    // diffed each frame in draw_cluster(); it owns no numbers, only the animation.
+    ClusterPipelineState cluster_pipeline_;
 
     // Add nodes control (epic #575 area 1). `provisioners_` maps a CloudProvider
     // catalog id → the injected Provisioner the control drives for that target

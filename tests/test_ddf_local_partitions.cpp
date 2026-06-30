@@ -26,6 +26,7 @@
 #include "zetta/node.hpp"
 #include "zetta/partition_writer.hpp"
 #include "zetta/partitioner.hpp"
+#include "zetta/query/service.hpp"
 #include "zetta/storage/json_store.hpp"
 #include "zetta/table.hpp"
 
@@ -417,4 +418,33 @@ TEST(DdfLocalPartitions, NearDataGroupByMatchesOracleAndMovesOnlyPartials) {
     // fraction of what it read near data.
     EXPECT_LT(total_wire_bytes * 5, total_local_bytes)
         << "moved=" << total_wire_bytes << " read-near-data=" << total_local_bytes;
+
+    // #589: the live run's instrumentation is queryable as a system.<table> on
+    // every node. system.pipeline_jobs surfaces the per-job near-data counters the
+    // runner recorded — the same local-vs-wire bytes asserted above — so the GUI
+    // (and any operator) can read them with SQL instead of a bespoke hook.
+    for (std::size_t index = 0; index < kNodes; ++index) {
+        zetta::query::QueryService svc{nodes[index]->node};
+        auto sel = svc.run("SELECT * FROM system.pipeline_jobs;", "");
+        ASSERT_TRUE(sel.ok()) << sel.error;
+        ASSERT_EQ(sel.rows.size(), 1u) << "node " << index;
+        const auto& row = sel.rows[0];
+        EXPECT_EQ(row["job_id"].get<std::string>(), jobs[index]->id())
+            << "node " << index;
+        EXPECT_EQ(row["kind"].get<std::string>(), "group_by") << "node " << index;
+        EXPECT_EQ(row["node"].get<std::string>(), nodes[index]->node.node_id())
+            << "node " << index;
+        EXPECT_EQ(row["status"].get<std::string>(), "succeeded") << "node " << index;
+        EXPECT_EQ(row["rows_read"].get<std::uint64_t>(), shards[index].size())
+            << "node " << index;
+        EXPECT_EQ(row["local_bytes_read"].get<std::uint64_t>(),
+                  results[index].local_bytes_read)
+            << "node " << index;
+        EXPECT_EQ(row["wire_bytes_moved"].get<std::uint64_t>(),
+                  results[index].wire_bytes_moved)
+            << "node " << index;
+        EXPECT_LT(row["wire_bytes_moved"].get<std::uint64_t>(),
+                  row["local_bytes_read"].get<std::uint64_t>())
+            << "node " << index;
+    }
 }

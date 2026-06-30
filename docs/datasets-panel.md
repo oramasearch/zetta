@@ -28,6 +28,17 @@ reads). The only UI state is `selected_dataset_` — the table id of the selecte
 row, re-resolved against the live datasets each frame (so a dropped table can't
 leave a dangling selection), exactly like `selected_model_` / `selected_run_`.
 
+## Add dataset
+
+The panel also hosts the **"Add dataset" affordance** (#587): an **"Add dataset…"**
+button at the top opens the native file picker filtered to
+`parquet`/`jsonl`/`json`/`csv`, and a file **dropped onto this view** does the same
+— both load the file as a **partitioned table** that joins the list with its
+partitions placed across the cluster. The same action is reachable from
+**File → Add dataset…**. The engine work is `zetta::add_dataset_file`; the add's
+status line ("Added dataset … (N rows, M partitions)") shows in place. See
+[add-dataset.md](add-dataset.md).
+
 ## Layout
 
 A list + detail in the same "select on the left, inspect on the right" shape the
@@ -103,9 +114,13 @@ box to filter the partition table to that node's slices, surfacing
 
 - `src/gui/app_operations.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
   reusing the file-local cluster node-box constants (`kClusterBox*`) and
-  `cluster_node_short_id` the [Cluster view](cluster.md) defines.
+  `cluster_node_short_id` the [Cluster view](cluster.md) defines, plus the
+  "Add dataset…" button.
 - `src/gui/app.cpp` — the `Data → Datasets` menu item and the `View::Datasets`
-  switch arm.
+  switch arm; the `File → Add dataset…` item, the `FileIntent::Dataset` ingestion
+  branch, and the drop-on-Datasets-view routing.
+- [add-dataset.md](add-dataset.md) — the `zetta::add_dataset_file` engine backend +
+  the "Add dataset" affordance this panel hosts.
 - `src/gui/app.hpp` — the `View::Datasets` enum value, the method declarations, and
   the `selected_dataset_` selection member.
 - [system-datasets.md](system-datasets.md) — the `Node::datasets()` engine source +

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "zetta/model.hpp"
 #include "zetta/node_metrics.hpp"
 #include "zetta/node_telemetry.hpp"
+#include "zetta/pipeline_instrumentation.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
@@ -366,6 +368,22 @@ public:
         return telemetry_->snapshot();
     }
 
+    // Record one near-data compute job's **live pipeline instrumentation** (its
+    // local-vs-wire byte counters — see pipeline_instrumentation.hpp). The
+    // near-data job runners (zetta::ddf::run_near_data_* / zetta::ml::run_near_data_train_job)
+    // call this after a job completes so the counters survive the call and surface
+    // in the read-only `system.pipeline_jobs` view (#589, epic #575 area 5).
+    // **Ephemeral / observed — NOT replicated** (no CRDT), like sample_node_metrics()
+    // / checkpoints(): held only in memory on this node and **bounded** (the
+    // most-recent kMaxPipelineJobs records are kept, oldest dropped). Thread-safe —
+    // a background interactive run records while the GUI / query thread reads.
+    static constexpr std::size_t kMaxPipelineJobs = 512;
+    void record_pipeline_job(PipelineJobInstrumentation instrumentation);
+
+    // The recorded near-data pipeline jobs, oldest first (a snapshot copy, safe to
+    // read off the node's threads). The source for `system.pipeline_jobs`.
+    std::vector<PipelineJobInstrumentation> pipeline_jobs() const;
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -599,6 +617,13 @@ private:
         dataset_partitions_;                                // sorted (created, id)
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
+    // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
+    // the most-recent recorded jobs' local-vs-wire counters, the source for the
+    // `system.pipeline_jobs` view. Ephemeral / observed; NOT replicated. Guarded by
+    // its own mutex (mutable so pipeline_jobs() can lock from a const method) — a
+    // background run records while a query thread reads.
+    mutable std::mutex pipeline_jobs_mutex_;
+    std::vector<PipelineJobInstrumentation> pipeline_jobs_;
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     IndexRegistry index_registry_;            // IndexBackend container (#528)

@@ -302,6 +302,7 @@ std::optional<std::vector<double>> Collectives::allreduce(
         result = participate(tag, root, local, /*expect_result=*/true, timeout);
     }
     clear_round(tag);
+    if (result) note_round_completed();
     return result;
 }
 
@@ -324,6 +325,7 @@ std::optional<std::vector<double>> Collectives::broadcast(
         result = participate(tag, root, {}, /*expect_result=*/true, timeout);
     }
     clear_round(tag);
+    if (result) note_round_completed();
     return result;
 }
 
@@ -343,6 +345,7 @@ bool Collectives::barrier(const std::string& tag,
                  .has_value();
     }
     clear_round(tag);
+    if (ok) note_round_completed();
     return ok;
 }
 
@@ -371,6 +374,7 @@ std::optional<std::vector<std::vector<double>>> Collectives::gather(
         if (contributed) result = std::vector<std::vector<double>>{};
     }
     clear_round(tag);
+    if (result) note_round_completed();
     return result;
 }
 

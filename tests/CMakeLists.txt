@@ -72,6 +72,7 @@ add_executable(zetta-tests
   test_node.cpp
   test_node_metrics.cpp
   test_node_telemetry.cpp
+  test_pipeline_instrumentation.cpp
   test_query.cpp
   test_repl_console.cpp
   test_governed_console.cpp
@@ -100,6 +101,7 @@ add_executable(zetta-tests
   test_device_registry.cpp
   test_large_object.cpp
   test_import.cpp
+  test_add_dataset.cpp
   test_churn_dataset.cpp
   test_n8n_import.cpp
   test_n8n_compile.cpp
