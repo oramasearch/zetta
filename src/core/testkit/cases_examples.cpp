@@ -132,11 +132,42 @@ ExampleScript no_pipeline_steps() {
     return script;
 }
 
+// The UC-1-at-scale program (TC-12 / #531): add permanent nodes, load the
+// saas-sales-conversations parquet, train on `outcome`, explain, and rank. Shares
+// its source with the real cluster.uc1_at_scale case (one canonical program); here
+// the standard example harness compiles + gates it and runs it single-node, so this
+// asserts the lowered shape + that it runs to Succeeded. The at-scale, real-cluster,
+// near-data, governed run is the cluster.uc1_at_scale case. See docs/uc1-at-scale-e2e.md.
+ExampleScript uc1_at_scale() {
+    ExampleScript script;
+    script.id = "examples.uc1_at_scale";
+    script.title = "UC-1 at scale (add nodes, load, train, explain, rank)";
+    script.description =
+        "The capstone UC-1-at-scale program: add permanent nodes, load the "
+        "saas-sales-conversations parquet, train on `outcome`, explain (drivers), and "
+        "rank (the at-risk list). Lowers across the connect -> model -> index -> serve "
+        "taxonomy plus an act control step, passes the gate, and runs to Succeeded. The "
+        "real distributed near-data run over a cluster is the cluster.uc1_at_scale case.";
+    script.source = uc1_at_scale_script();
+    script.expect.node_count = 5;
+    script.expect.edge_count = 3;
+    script.expect.steps = {{"add_nodes", StepKind::Act},
+                           {"load_dataset", StepKind::Connect},
+                           {"train", StepKind::Model},
+                           {"explain", StepKind::Serve},
+                           {"rank", StepKind::Index}};
+    script.expect.edges = {
+        {"load_dataset", "train"}, {"train", "explain"}, {"train", "rank"}};
+    script.expect.output_kinds = {"dataset", "model", "index"};
+    return script;
+}
+
 }  // namespace
 
 const std::vector<ExampleScript>& example_scripts() {
     static const std::vector<ExampleScript> scripts = {
         churn_pipeline(),  minimal_train(),     method_chain(),
+        uc1_at_scale(),
         unterminated_string(), no_pipeline_steps(),
     };
     return scripts;

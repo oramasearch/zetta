@@ -151,6 +151,14 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
         o.set_int("copies", 3);
     });
     EXPECT_EQ(fulltext.outcome, TestOutcome::Pass) << fulltext.error;
+    // TC-12: the capstone UC-1-at-scale E2E — one sim-Python program loads the saas
+    // parquet partitioned, adds nodes, and trains a calibrated `outcome` model
+    // compute-near-data across a real cluster, gated + governed, identical on every node.
+    const TestResult uc1 = run("cluster.uc1_at_scale", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("rows", 96);
+    });
+    EXPECT_EQ(uc1.outcome, TestOutcome::Pass) << uc1.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {

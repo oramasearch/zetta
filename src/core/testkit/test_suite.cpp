@@ -237,6 +237,7 @@ const TestSuite& TestSuite::builtin() {
         register_fulltext_cases(built);
         register_governance_cases(built);
         register_pipeline_cases(built);
+        register_uc1_scale_cases(built);
         register_example_cases(built);
         return built;
     }();
