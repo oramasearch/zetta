@@ -14,6 +14,7 @@
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset.hpp"
 #include "zetta/dataset_partition.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
@@ -309,6 +310,20 @@ public:
     std::size_t dataset_partition_count() const {
         return dataset_partitions_.size();
     }
+
+    // The datasets on this node — the **computed-at-query-time** read source behind
+    // the read-only `system.datasets` observability view (RULE-7; #585, the engine
+    // half of the area-3 dataset view in epic #575). A dataset is a first-class
+    // primitive even though none is stored: **one dataset == one table**, and this
+    // aggregates per dataset its schema (inferred field names), row count, on-disk
+    // size, storage format, replication strategy, and **partition placement across
+    // the cluster** (which node owns which partition — joined live from the
+    // replicate-to-all partition catalog, so every node reports the same placement).
+    // Recomputed from the live tree (databases → tables) + dataset_partitions() on
+    // every call — never stored/hand-synced — so it can't drift from the truth. The
+    // `system` database (a virtual catalog) is not a dataset and is excluded. See
+    // dataset.hpp / docs/system-datasets.md.
+    std::vector<DatasetSummary> datasets() const;
 
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
     // docs/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**

@@ -94,6 +94,66 @@ std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     return result;
 }
 
+std::vector<DatasetSummary> Node::datasets() const {
+    // One dataset per table across every database — computed live from the tree +
+    // the partition catalog, so the system.datasets view never drifts from the
+    // truth (RULE-7; #585). A dataset is a first-class primitive with no stored
+    // entity: one dataset == one table. (The virtual `system` catalog has no real
+    // Database here, so it is naturally absent.)
+    std::vector<DatasetSummary> result;
+    for (const auto& database : databases_) {
+        for (const auto& table : database->tables()) {
+            DatasetSummary dataset;
+            dataset.name = table->name();
+            dataset.database = database->name();
+            dataset.table_id = table->id();
+            const StorageEngine& store = table->store();
+            dataset.format = store.name();
+            dataset.replication =
+                std::string(to_string(table->replication_strategy().kind()));
+            dataset.rows = store.size();
+
+            // Schema: the union of each row's object keys in first-seen order — the
+            // engine is schemaless, so a dataset's schema is whatever its rows carry.
+            std::unordered_set<std::string> seen;
+            for (std::size_t i = 0; i < store.size(); ++i) {
+                const nlohmann::json& row = store.at(i);
+                if (!row.is_object()) continue;
+                for (auto field = row.begin(); field != row.end(); ++field) {
+                    if (seen.insert(field.key()).second) {
+                        dataset.columns.push_back(field.key());
+                    }
+                }
+            }
+
+            // On-disk size: the JSONL row chunks under the table's folder (the row
+            // data's storage footprint). A filesystem error leaves it at 0.
+            std::error_code ec;
+            for (const auto& entry : fs::directory_iterator(table->dir(), ec)) {
+                if (entry.path().extension() != ".jsonl") continue;
+                const std::uintmax_t bytes = entry.file_size(ec);
+                if (!ec) dataset.size_bytes += bytes;
+            }
+
+            // Partition placement across the cluster: the catalog entries whose
+            // table id matches. The catalog is replicate-to-all, so this is the
+            // global placement (which node owns which partition), identical on every
+            // node — empty for a non-partitioned (replicate-to-all) dataset.
+            for (const auto& partition : dataset_partitions_) {
+                if (partition->table() != table->id()) continue;
+                const PartitionRowRange& range = partition->row_range();
+                dataset.partitions.push_back(
+                    DatasetPlacement{partition->id(), partition->blob_ref(),
+                                     range.start, range.end,
+                                     partition->owner_nodes()});
+            }
+
+            result.push_back(std::move(dataset));
+        }
+    }
+    return result;
+}
+
 bool Node::start() {
     if (running_) return false;
     running_ = true;

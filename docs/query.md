@@ -224,6 +224,22 @@ SELECT partition_id, table, owner_count FROM system.dataset_partitions;
 SELECT * FROM system.dataset_partitions WHERE table = '<tbl-uuid>';
 ```
 
+- **`system.datasets`** — datasets as a first-class primitive
+  ([system-datasets.md](system-datasets.md), #585), sourced from `Node::datasets()`.
+  One row per dataset (= a table + its data), computed live from the tree + the
+  partition catalog. Columns: `dataset` (= the table name), `database`, `table_id`
+  (joins to `system.dataset_partitions.table`), `format` (the on-disk storage format
+  — `jsonl` today), `replication` (the replication strategy), `rows`, `size_bytes`,
+  `columns` (inferred schema, comma-joined), `column_count`, `partitioned`,
+  `partition_count`, `owner_nodes`, and `placement` (per-partition
+  `[start,end)@owner1|owner2`, joined with `, ` — which node owns which slice).
+  Qualified-name only.
+
+```sql
+SELECT dataset, rows, size_bytes, format FROM system.datasets;
+SELECT dataset, owner_nodes, placement FROM system.datasets WHERE partitioned = true;
+```
+
 There is also **`system.checkpoints`** — burst-job eviction tolerance
 ([job-checkpoint.md](job-checkpoint.md), RULE-5 / #468), sourced from
 `Node::checkpoints()` (the latest checkpoint per job in this node's **local** store).
