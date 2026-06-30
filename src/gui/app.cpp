@@ -173,13 +173,22 @@ App::App(Node& node, Cluster& cluster)
       governed_console_(
           std::make_unique<repl::GovernedConsole>(node, *query_)),
       gate_graph_input_(kExampleGraphJson) {
-    // Seed the console with a runnable SQL example so the passing path is one
-    // click away (cleared on first Run, like any REPL prompt).
+    // Seed the console with a runnable simulated-Python example — the
+    // UC-1-at-scale pipeline (add nodes, load the saas parquet, train on
+    // `outcome`, explain, rank) — so the passing path is one click away: it is
+    // already on the Python frontend, just press Run (cleared on first Run, like
+    // any REPL prompt). The columns are spelled out in full (no `...` ellipsis,
+    // which is not valid sim-Python). In the console the steps execute through the
+    // default step executor (a governed, gated, audited Run); the real distributed
+    // near-data run is the cluster.uc1_at_scale test-suite case.
+    console_model_->set_frontend(repl::Frontend::SimPython);
     console_model_->input() =
-        "CREATE DATABASE shop;\n"
-        "CREATE TABLE shop.items (sku text, qty int);\n"
-        "INSERT INTO shop.items (sku, qty) VALUES ('A1', 5), ('B2', 3);\n"
-        "SELECT * FROM shop.items;";
+        "nodes = cluster.add_nodes(2, provider='azure')\n"
+        "conversations = load_dataset('saas-sales-conversations', columns=['messages', "
+        "'avg_response_seconds', 'sentiment', 'questions_asked', 'outcome'])\n"
+        "model = train(conversations, target='outcome')\n"
+        "drivers = explain(model)\n"
+        "at_risk = rank(model)";
 }
 
 App::~App() {

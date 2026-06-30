@@ -465,6 +465,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_fulltext.cpp
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
+  src/core/testkit/cases_uc1_scale.cpp
   src/core/testkit/cases_examples.cpp
   src/core/testkit/example_script.cpp
   src/core/runtime.cpp

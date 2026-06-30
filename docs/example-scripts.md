@@ -111,6 +111,7 @@ Test suite** panel):
 | `examples.churn_pipeline` | the full `connect→clean→model→index→serve→act` taxonomy (load two sources → featurize → train → build index → serve → notify); compiles, gates, runs green |
 | `examples.minimal_train` | the smallest green sample (load → train): 2 steps, 1 edge — the canonical "runs green in the suite" |
 | `examples.method_chain` | `read_csv(...).dropna().fillna(0)` → fit; a chain lowers to a linear data-flow path |
+| `examples.uc1_at_scale` | the UC-1-at-scale program (add nodes → load the saas parquet → train on `outcome` → explain → rank); asserts the lowered shape + a green single-node run. Its real distributed near-data run is the [`cluster.uc1_at_scale`](uc1-at-scale-e2e.md) case |
 | `examples.unterminated_string` | negative: a syntax error fails at compile; the parser's locator is surfaced |
 | `examples.no_pipeline_steps` | negative: a script with no calls is rejected (nothing to lower / run) |
 
