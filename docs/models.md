@@ -152,7 +152,9 @@ since a feature can push a prediction either way). It is **tolerant reading of
 trusted data, not a second validation gate**: `feature_schema` was already
 schema-validated as an object by `parse_model_value` when the model entered. With
 no `drivers` key (the common case) it returns an empty list. This is what the
-[Runs panel](runs.md#trained-models--metrics--ranked-drivers) renders.
+standalone [Models panel](models-panel.md) and the
+[Runs panel](runs.md#trained-models--metrics--ranked-drivers)'s "Trained models"
+section both render (via the shared `render_model_card`).
 
 ## Integrity (preflight)
 
@@ -195,6 +197,9 @@ bytes the caller already has.
   `ModelValue` + schema/validation entry points.
 - [`src/core/model.cpp`](../src/core/model.cpp) — value, mutators, weights body
   I/O, JSON-Schema boundary validation.
+- [models-panel.md](models-panel.md) — the headed standalone **Models view**
+  (`App::draw_models`): list + detail over this registry, plus the inline
+  register/import affordance.
 - [runs.md](runs.md) — the sibling top-level entity this is modeled on.
 - [large-objects.md](large-objects.md) — the body-transfer seam the weights reuse.
 - [replication.md](replication.md) — the CRDT data plane.

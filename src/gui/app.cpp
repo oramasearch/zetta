@@ -366,6 +366,7 @@ void App::draw_menu_bar() {
     }
     if (ImGui::BeginMenu("Operations")) {
         view_item("Runs", View::Runs);
+        view_item("Models", View::Models);
         view_item("Compute jobs", View::Jobs);
         view_item("Cluster", View::Cluster);
         view_item("Cloud inspector", View::Cloud);
@@ -420,6 +421,7 @@ void App::draw_active_view() {
         case View::Gate:     draw_gate();            break;
         case View::Deploy:   draw_deploy();          break;
         case View::Runs:     draw_runs();            break;
+        case View::Models:   draw_models();          break;
         case View::Jobs:     draw_jobs();            break;
         case View::Cluster:  draw_cluster();         break;
         case View::Cloud:    draw_cloud();           break;
@@ -454,6 +456,13 @@ void App::on_open_n8n(void* userdata, const char* const* files, int) {
     }
 }
 
+void App::on_open_model_weights(void* userdata, const char* const* files, int) {
+    if (files && files[0]) {
+        static_cast<App*>(userdata)->enqueue_file(files[0],
+                                                  FileIntent::ModelWeights);
+    }
+}
+
 void App::handle_incoming_files() {
     std::vector<IncomingFile> files;
     {
@@ -469,6 +478,14 @@ void App::handle_incoming_files() {
         // new project (see stage_n8n_artifact / draw_new_project_modal).
         if (intent == FileIntent::N8nArtifact) {
             stage_n8n_artifact(f.path);
+            continue;
+        }
+        // Model weights are staged for the Models view's "Add model" form — the
+        // bytes are opaque (no validation), attached on Register via set_weights.
+        if (intent == FileIntent::ModelWeights) {
+            add_model_weights_path_ = f.path;
+            add_model_weights_name_ = path.filename().string();
+            io_status_ = "Staged weights: " + add_model_weights_name_;
             continue;
         }
         if (intent == FileIntent::Auto) {
