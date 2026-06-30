@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <string>
 #include <variant>
 
@@ -693,6 +694,45 @@ TEST(QueryService, SelectsDatasetsSystemTable) {
     ASSERT_EQ(one.rows.size(), 1u);
     EXPECT_EQ(one.rows[0]["rows"].get<std::uint64_t>(), 4u);
     EXPECT_FALSE(one.rows[0].contains("format"));  // projected out
+
+    node.stop();
+}
+
+// #575 area 2: system.node_metrics is the live per-node telemetry read view —
+// ephemeral, observed, computed at query time from the node's host counters (no
+// CRDT backing). A node measures only its own host, so it returns exactly one
+// row; GPU degrades gracefully (absent in a CPU-only core build).
+TEST(QueryService, SelectsNodeMetricsSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    auto sel = svc.run("SELECT * FROM system.node_metrics;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 1u);
+
+    const auto& row = sel.rows[0];
+    EXPECT_EQ(row["node_id"].get<std::string>(), node.node_id());
+    EXPECT_FALSE(row["sampled_at"].get<std::string>().empty());
+
+    // GPU is absent in the CPU-only core build — graceful degradation.
+    EXPECT_FALSE(row["gpu_present"].get<bool>());
+    EXPECT_TRUE(row["gpu_percent"].is_null());
+
+    // Storage is read over the node's data_dir filesystem (exists after start()).
+    ASSERT_FALSE(row["storage_total_bytes"].is_null());
+    EXPECT_GT(row["storage_total_bytes"].get<std::uint64_t>(), 0u);
+
+    // Network utilization needs a link cap, so it degrades to null.
+    EXPECT_TRUE(row["net_percent"].is_null());
+
+    // Projection works like any system table.
+    auto projected =
+        svc.run("SELECT node_id, gpu_present FROM system.node_metrics;", "");
+    ASSERT_TRUE(projected.ok()) << projected.error;
+    ASSERT_EQ(projected.rows.size(), 1u);
+    EXPECT_EQ(projected.rows[0]["node_id"].get<std::string>(), node.node_id());
 
     node.stop();
 }

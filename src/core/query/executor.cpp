@@ -70,6 +70,13 @@ namespace {
 //  - `checkpoints` — burst-job eviction tolerance (Node::checkpoints()): one row per
 //    job with a durable resume checkpoint in this node's LOCAL store (its kind /
 //    sequence / total / progress). Ephemeral, local, NOT replicated (RULE-5 / #468).
+//  - `node_metrics` — this node's live host resource utilization
+//    (Node::sample_node_metrics()): CPU / memory / GPU + VRAM / storage / network,
+//    sampled from OS counters at query time. Ephemeral, observed, NOT replicated
+//    (like zetta_cloud_status), the engine source for the animated per-node gauges
+//    (#575 area 2). A node measures only its own host, so this returns one row —
+//    the node the query hits; counters a host can't report are null (the GPU
+//    group is absent in a CPU-only core build).
 // Together with the GUI Runs / Admin panels these satisfy RULE-7 (observable
 // state defaults to a system.<table> read view, never a GUI-only surface).
 // Future: system.leadership, etc.
@@ -93,6 +100,7 @@ constexpr std::string_view kAuditTable = "zetta_audit";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
+constexpr std::string_view kNodeMetricsTable = "node_metrics";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -560,6 +568,60 @@ std::vector<nlohmann::json> checkpoint_rows(const Node& node) {
     return rows;
 }
 
+// The single live-telemetry row for the system.node_metrics table — this node's
+// host resource utilization (Node::sample_node_metrics()), sampled from OS
+// counters at query time (#575 area 2). **Ephemeral, observed, NOT replicated**
+// (like cloud_status / checkpoints): the row has no CRDT backing and reflects only
+// the local host. A node measures only its own host, so this is exactly one row;
+// counters a host can't report are emitted as null (graceful degradation — the
+// GPU group is absent in a CPU-only core build). Percentages are 0..100.
+std::vector<nlohmann::json> node_metrics_rows(Node& node) {
+    const NodeMetrics metrics = node.sample_node_metrics();
+    auto number_or_null = [](bool available, auto value) {
+        return available ? nlohmann::json(value) : nlohmann::json();
+    };
+
+    nlohmann::json row;
+    row["node_id"] = node.node_id();
+    // CPU
+    row["cpu_cores"] =
+        metrics.cpu_cores > 0 ? nlohmann::json(metrics.cpu_cores) : nlohmann::json();
+    row["cpu_percent"] =
+        number_or_null(metrics.cpu_percent_available, metrics.cpu_percent);
+    // Memory
+    row["memory_used_bytes"] =
+        number_or_null(metrics.memory_available, metrics.memory_used_bytes);
+    row["memory_total_bytes"] =
+        number_or_null(metrics.memory_available, metrics.memory_total_bytes);
+    row["memory_percent"] =
+        number_or_null(metrics.memory_available, metrics.memory_percent);
+    // GPU + VRAM (absent in a CPU-only core build → null)
+    row["gpu_present"] = metrics.gpu_available;
+    row["gpu_percent"] =
+        number_or_null(metrics.gpu_available, metrics.gpu_percent);
+    row["vram_used_bytes"] =
+        number_or_null(metrics.gpu_available, metrics.vram_used_bytes);
+    row["vram_total_bytes"] =
+        number_or_null(metrics.gpu_available, metrics.vram_total_bytes);
+    // Storage (the data_dir filesystem)
+    row["storage_used_bytes"] =
+        number_or_null(metrics.storage_available, metrics.storage_used_bytes);
+    row["storage_total_bytes"] =
+        number_or_null(metrics.storage_available, metrics.storage_total_bytes);
+    row["storage_percent"] =
+        number_or_null(metrics.storage_available, metrics.storage_percent);
+    // Network (rates since the previous sample; utilization needs a link cap)
+    row["net_rx_bytes_per_sec"] =
+        number_or_null(metrics.network_available, metrics.net_rx_bytes_per_sec);
+    row["net_tx_bytes_per_sec"] =
+        number_or_null(metrics.network_available, metrics.net_tx_bytes_per_sec);
+    row["net_percent"] =
+        number_or_null(metrics.net_utilization_available, metrics.net_percent);
+    row["sampled_at"] = metrics.sampled_at;
+
+    return {std::move(row)};
+}
+
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
 QueryResult select_over_rows(const SelectStmt& statement,
@@ -952,6 +1014,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kCheckpointsTable) {
                         return select_over_rows(s, checkpoint_rows(node_));
                     }
+                    if (sys == kNodeMetricsTable) {
+                        return select_over_rows(s, node_metrics_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
@@ -963,6 +1028,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.dataset_partitions, "
                                      "system.datasets, "
                                      "system.checkpoints, "
+                                     "system.node_metrics, "
                                      "system.zetta_cloud_providers, or "
                                      "system.zetta_cloud_status)");
                     }

@@ -1798,7 +1798,13 @@ epic #575) and
 **`system.checkpoints`** (burst-job eviction-tolerance checkpoints,
 `Node::checkpoints()`: the latest resume checkpoint per job in this node's local
 store — kind / sequence / total / progress; ephemeral + local + not replicated, like
-`system.zetta_cloud_status`; RULE-5/#468). `system` is
+`system.zetta_cloud_status`; RULE-5/#468) and
+**`system.node_metrics`** (live per-node resource telemetry,
+`Node::sample_node_metrics()`: this node's host CPU / memory / GPU + VRAM / storage
+/ network utilization, sampled from OS counters at query time; one row — the node
+the query hits; ephemeral + observed + not replicated, like `system.zetta_cloud_status`;
+counters a host can't report are null — GPU is absent in a CPU-only core build;
+#575 area 2). `system` is
 reserved (can't be created/dropped/written; no real db may be named it) and is
 where future system tables (e.g. `system.leadership`) live — **surfacing observable
 state as a `system.<table>` table is the default**, see the convention below
@@ -2637,7 +2643,8 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
+  node_metrics.hpp          zetta::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2791,6 +2798,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist
+  node_metrics.cpp          zetta::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
@@ -3191,6 +3199,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. The seam + the trivial `SinglePartitioner` baseline + `Table::set_partitioner` (#512); the two **record→partition** strategies (#513): `HashPartitioner` (`hash(key columns) % P` — deterministic shard-by-key via a stable FNV-1a, balanced for a typical key) and `RoundRobinPartitioner` (`surrogate % P` — even balance regardless of key skew), with the `partitioner_from_json`/`to_json` JSON config boundary (`schemas/partitioner.schema.json`, the hand-written value-type pattern); and the **partition→node** strategy `zetta::RendezvousPlacement` (`rendezvous_placement.hpp`/`rendezvous_owners`, #514) — rendezvous / highest-random-weight (HRW) placement (FNV-1a weight per `(partition, member)`, top-`replication_factor` by weight), so adding/removing one node reassigns only ~1/N of partitions, deterministic + leaderless + order-independent. Dependent slices: the partition catalog (#510) and the partitioned write path (#511, which composes assignment + placement and owns the universal polymorphic persisted-config JSON boundary).
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
+- [`docs/node-metrics.md`](docs/node-metrics.md) — **live per-node resource telemetry** (`zetta::NodeMetricsSampler` / `system.node_metrics`, #575 area 2 / #581): each node samples its own host's OS counters (CPU / memory / GPU + VRAM / storage / network) at query time and emits one utilization row — an **ephemeral, observed** read view with **no CRDT backing** (like `system.zetta_cloud_status`), the engine source for the animated per-node gauges; `zetta-core` only (no SDL, headless-testable), counters a host can't report degrade gracefully to `null` (GPU absent in a CPU-only core build).
 - [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python lowered to the IR + gated + executed by the governed screen below; results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it.
 - [`docs/governed-console.md`](docs/governed-console.md) — the **governed Console/REPL screen** (SCR-8 / #525, realizes UC-3): the headed screen (`App::draw_console`) hosting the [REPL console](docs/repl-console.md), routing every statement through `zetta::repl::GovernedConsole` (zetta-core / no-SDL): **capability-scoped** against the acting key (`api:query` SQL / `orchestration:start_run` sim-Python; empty key = unauthenticated local, still audited), **simulated-Python lowered to the IR + run through the [correctness gate](docs/gate.md)** (RULE-1) then executed via `Node::run_graph` (a real Run), and **each statement recorded in the [audit trail](docs/audit-trail.md)** as a `data_access` event (reuses the existing audit action — no schema change). SQL keeps its own validated [query](docs/query.md) executor. Tabular results for both frontends; a "Run as" key selector; no new JSON boundary; headless-tested (`tests/test_governed_console.cpp`).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
