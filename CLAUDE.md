@@ -1367,23 +1367,29 @@ selectable box per node (click → a per-node detail pane: id, role, address,
 membership, replication; the worktree-manager "boxes" feel) laid out in a wrapping
 grid, a thin renderer over `Cluster::nodes()` read live each frame so membership
 tracks joins/leaves/heals with no separate copy (`App::draw_cluster`,
-`src/gui/app_operations.cpp`, #582 — the spatial foundation the add-nodes control,
-per-node gauges, and algorithm animation build on); headless logs the per-node
-table. Above the canvas the panel carries an **Add nodes control**
-(`App::draw_add_nodes_control`, #583 — epic #575 area 1): the GUI front door for
-`zetta::add_nodes` driven over an **injected `Provisioner`** (`App::set_provisioner`;
-`main` wires the given-hardware `LocalProvisioner` over the live fleet to the
-`"local"` target). Pick a target (the `CloudProviderCatalog`) + a count — the
-**Local** target runs on a plain click (no cloud, no consent, brings up no new
-machines — given-hardware best-effort); every **cloud / Kubernetes / on-prem**
-target is **permission-gated, deny-by-default** (it would run the provider CLI to
-create billable resources), so the control names what it would read/run and nothing
-happens until the user explicitly allows that one action, never remembered — the
-same consent grammar as the Cloud Inspector. The `Node`-aware `add_nodes` overload
-also rebalances sharded partitions onto any new members (#519). Constructing a
-configured cloud provisioner from the GUI + teardown are later slices. See
-[docs/add-nodes-control.md](docs/add-nodes-control.md). `Cluster::nodes()` returns
-this node + every connected peer with
+`src/gui/app_operations.cpp`, #582 — the spatial foundation the add-nodes control
+and algorithm animation build on). Each box also carries **live, animated resource
+gauges + sparklines** (CPU / memory / GPU + VRAM / storage / network in-out, eased
+moving bars with Orama semantic green/amber/red, graceful `n/a`; #584, the GUI half
+of #575 area 2), driven by `Node::telemetry_snapshot()` (the cluster-wide
+[telemetry exchange](#per-node-telemetry-exchange-zettanodetelemetryexchange) over
+the signal plane — animation state in `src/gui/cluster_telemetry.hpp`); selecting a
+node shows the same gauges with fuller read-outs in the detail pane. Above the
+canvas the panel carries an **Add nodes control** (`App::draw_add_nodes_control`,
+#583 — epic #575 area 1): the GUI front door for `zetta::add_nodes` driven over an
+**injected `Provisioner`** (`App::set_provisioner`; `main` wires the given-hardware
+`LocalProvisioner` over the live fleet to the `"local"` target). Pick a target (the
+`CloudProviderCatalog`) + a count — the **Local** target runs on a plain click (no
+cloud, no consent, brings up no new machines — given-hardware best-effort); every
+**cloud / Kubernetes / on-prem** target is **permission-gated, deny-by-default** (it
+would run the provider CLI to create billable resources), so the control names what
+it would read/run and nothing happens until the user explicitly allows that one
+action, never remembered — the same consent grammar as the Cloud Inspector. The
+`Node`-aware `add_nodes` overload also rebalances sharded partitions onto any new
+members (#519). Constructing a configured cloud provisioner from the GUI + teardown
+are later slices. See [docs/add-nodes-control.md](docs/add-nodes-control.md).
+Headless logs the per-node table. `Cluster::nodes()` returns this node + every
+connected peer with
 its replication status (entries, version, in-sync, last-sync) — surfaced in the
 headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
@@ -1421,6 +1427,36 @@ short tick, and membership/signal-only links now send a `PING` keepalive (since
 they carry no periodic gossip). `encode_signal`/`decode_signal` are the
 serialization seam; the transport only adds/strips the framing. See
 [docs/signal-plane.md](docs/signal-plane.md).
+
+### Per-node telemetry exchange (`zetta::NodeTelemetryExchange`)
+
+The **cluster-wide live telemetry exchange** (`include/zetta/node_telemetry.hpp`,
+**#584**, the engine half of the animated per-node gauges of #575 area 2) is the
+*ephemeral telemetry exchange over the signal plane* the
+[node-metrics](docs/node-metrics.md) doc anticipated. `system.node_metrics` measures
+only **the host the query hits**, so a node can't see its peers' utilization
+directly; this fills that gap **without replicating** (telemetry is a measurement,
+not durable state). Each node, on a throttled ~1 Hz step inside `Node::tick()`,
+samples its own `NodeMetrics` and **broadcasts** it to peers as a fire-and-forget
+**`node.metrics`** [signal-plane](docs/signal-plane.md) event; every node **caches**
+what it receives. `NodeTelemetryExchange` is the `SignalHandler` that does the
+caching — wired as the [`JobCoordinator`](docs/job-coordinator.md)'s **fallback**
+(so it coexists with the steal / collective signals the coordinator already routes,
+no new handler slot) and keyed by the **transport-verified** sender id
+(`Signal::from`, not the self-reported payload, so a peer can't masquerade). It is
+created in `Node::start_coordinator()` and exposed via **`Node::telemetry_snapshot()`**
+— this node plus every peer whose last sample is within the freshness window (stale
+peers drop out, so a departed node's gauges don't dangle), node-id ascending. The
+`node.metrics` payload rides a **schema-validated** wire boundary like the
+[`CollectiveMessage`](docs/collectives.md): `encode_node_metrics` /
+`decode_node_metrics` + `node_metrics_wire_schema()` (the **code-owned** draft-07
+source of truth; `schemas/node_metrics.schema.json` is generated + drift-checked by
+`test_schemas`), with an unavailable gauge group carried by **omission** so graceful
+degradation round-trips as field presence. It lives in **zetta-core** (no SDL,
+headless-testable), so a headless node participates too (broadcasts + caches). The
+headed GUI consumer (the animated node-box gauges + sparklines) is a thin renderer
+over `telemetry_snapshot()` — see the Cluster panel below and
+[docs/cluster-node-gauges.md](docs/cluster-node-gauges.md).
 
 ### Collectives (allreduce / broadcast / barrier / gather)
 
@@ -2687,8 +2723,9 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581) + the cluster-wide telemetry snapshot (telemetry_snapshot(), #584); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
   node_metrics.hpp          zetta::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
+  node_telemetry.hpp        zetta::NodeTelemetryExchange + encode_node_metrics/decode_node_metrics/node_metrics_wire_schema — cluster-wide live telemetry over the signal plane (#584): each node broadcasts its own NodeMetrics as an ephemeral `node.metrics` event, a SignalHandler (the JobCoordinator's fallback) caches peers' by sender id; the schema-validated wire boundary; feeds the animated node-box gauges via Node::telemetry_snapshot(); not replicated
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2844,6 +2881,7 @@ src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist
   node_metrics.cpp          zetta::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
+  node_telemetry.cpp        zetta::NodeTelemetryExchange — the node.metrics wire boundary (embedded draft-07 schema + pboettch validation, encode/decode) + the thread-safe peer cache (receive on the network thread, record local + snapshot on the loop thread, expire stale) (#584)
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
@@ -2981,8 +3019,9 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
   app_internal.hpp          shared GUI-only helpers: the Orama design tokens + wash/status_dot/eyebrow/mono_line/primary_button + extern g_mono_font (not in the public include/zetta surface)
+  cluster_telemetry.hpp     zetta::gui::NodeGaugeState/Sparkline/Gauge — pure-data (no ImGui) animation state for the cluster node-box gauges (#584): per-gauge eased value + sparkline history ring, keyed by node id; a thin renderer's working copy of Node::telemetry_snapshot(); the drawing lives in app_operations.cpp
   app_home.cpp / app_explorer.cpp / app_pipeline.cpp / app_operations.cpp / app_governance.cpp
-                            the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464). app_pipeline.cpp also hosts the Graph Workspace's graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591)
+                            the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464). app_pipeline.cpp also hosts the Graph Workspace's graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591); app_operations.cpp's draw_cluster renders the animated per-node resource gauges + sparklines (#584) over the telemetry snapshot
   repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
 modules/                    vendored deps as git submodules (capy, corosio)
@@ -3247,6 +3286,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. The seam + the trivial `SinglePartitioner` baseline + `Table::set_partitioner` (#512); the two **record→partition** strategies (#513): `HashPartitioner` (`hash(key columns) % P` — deterministic shard-by-key via a stable FNV-1a, balanced for a typical key) and `RoundRobinPartitioner` (`surrogate % P` — even balance regardless of key skew), with the `partitioner_from_json`/`to_json` JSON config boundary (`schemas/partitioner.schema.json`, the hand-written value-type pattern); and the **partition→node** strategy `zetta::RendezvousPlacement` (`rendezvous_placement.hpp`/`rendezvous_owners`, #514) — rendezvous / highest-random-weight (HRW) placement (FNV-1a weight per `(partition, member)`, top-`replication_factor` by weight), so adding/removing one node reassigns only ~1/N of partitions, deterministic + leaderless + order-independent. Dependent slices: the partition catalog (#510) and the partitioned write path (#511, which composes assignment + placement and owns the universal polymorphic persisted-config JSON boundary).
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
 - [`docs/node-metrics.md`](docs/node-metrics.md) — **live per-node resource telemetry** (`zetta::NodeMetricsSampler` / `system.node_metrics`, #575 area 2 / #581): each node samples its own host's OS counters (CPU / memory / GPU + VRAM / storage / network) at query time and emits one utilization row — an **ephemeral, observed** read view with **no CRDT backing** (like `system.zetta_cloud_status`), the engine source for the animated per-node gauges; `zetta-core` only (no SDL, headless-testable), counters a host can't report degrade gracefully to `null` (GPU absent in a CPU-only core build).
+- [`docs/cluster-node-gauges.md`](docs/cluster-node-gauges.md) — **animated per-node resource gauges + sparklines** on the headed cluster node boxes (`App::draw_cluster` + `zetta::NodeTelemetryExchange`, #584, #575 area 2): live CPU / memory / GPU + VRAM / storage / network as eased moving bars + sparklines (Orama semantic green/amber/red, graceful `n/a`), fed by a **cluster-wide telemetry exchange over the [signal plane](docs/signal-plane.md)** — each node broadcasts its own [`system.node_metrics`](docs/node-metrics.md) as an ephemeral `node.metrics` event and every node caches its peers', so `Node::telemetry_snapshot()` returns the whole cluster's gauges (self + fresh peers). **Not replicated** (a measurement, not durable state); the wire payload is schema-validated (`node_metrics_wire_schema()`, drift-checked); a thin GUI renderer over the snapshot (animation state in `src/gui/cluster_telemetry.hpp`).
 - [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python lowered to the IR + gated + executed by the governed screen below; results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it.
 - [`docs/governed-console.md`](docs/governed-console.md) — the **governed Console/REPL screen** (SCR-8 / #525, realizes UC-3): the headed screen (`App::draw_console`) hosting the [REPL console](docs/repl-console.md), routing every statement through `zetta::repl::GovernedConsole` (zetta-core / no-SDL): **capability-scoped** against the acting key (`api:query` SQL / `orchestration:start_run` sim-Python; empty key = unauthenticated local, still audited), **simulated-Python lowered to the IR + run through the [correctness gate](docs/gate.md)** (RULE-1) then executed through the **injectable graph runner** (default `Node::run_graph`, or the real churn engine over the node's live `JobCoordinator` for a churn-shaped graph — #580), and **each statement recorded in the [audit trail](docs/audit-trail.md)** as a `data_access` event (reuses the existing audit action — no schema change). SQL keeps its own validated [query](docs/query.md) executor. Tabular results for both frontends; a "Run as" key selector; no new JSON boundary; headless-tested (`tests/test_governed_console.cpp`).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).

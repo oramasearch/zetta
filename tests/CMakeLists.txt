@@ -71,6 +71,7 @@ add_executable(zetta-tests
   test_graph_plan.cpp
   test_node.cpp
   test_node_metrics.cpp
+  test_node_telemetry.cpp
   test_query.cpp
   test_repl_console.cpp
   test_governed_console.cpp

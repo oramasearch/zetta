@@ -8,6 +8,8 @@
 #include <thread>
 #include <vector>
 
+#include "gui/cluster_telemetry.hpp"  // per-node gauge animation state (pure data)
+
 // Forward declarations keep SDL3 + Dear ImGui headers out of this file — only
 // app.cpp (and no other translation unit) needs the full definitions.
 struct SDL_Window;
@@ -304,6 +306,12 @@ private:
     // peer that leaves/fails simply drops out of the grid and the selection falls
     // back to self — the view tracks membership with no separate copy of it.
     std::string selected_cluster_node_;
+    // Animated per-node gauge state (#584), keyed by node id. A thin renderer's
+    // working copy of Node::telemetry_snapshot() (system.node_metrics gathered
+    // cluster-wide over the signal plane): holds only the eased values + sparkline
+    // history needed to animate the bars between the ~1 Hz samples. Updated each
+    // frame in draw_cluster() and pruned of nodes that have left the cluster.
+    std::map<std::string, NodeGaugeState> cluster_gauges_;
 
     // Add nodes control (epic #575 area 1). `provisioners_` maps a CloudProvider
     // catalog id → the injected Provisioner the control drives for that target
