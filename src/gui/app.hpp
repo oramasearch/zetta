@@ -76,6 +76,7 @@ private:
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
         Runs,      // runs / outputs / lineage
+        Models,    // trained models (system.zetta_models) + register/import
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
@@ -88,8 +89,10 @@ private:
     // routes by extension: .json/.jsonl import as rows, anything else stores as
     // a large object. N8nArtifact stages a workflow JSON for the New Project
     // dialog (validated on stage, imported into the new project only on Create)
-    // instead of ingesting it immediately.
-    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact };
+    // instead of ingesting it immediately. ModelWeights stages a chosen file as
+    // the serialized weights for the Models view's "Add model" form (attached via
+    // Model::set_weights on Register), rather than ingesting it.
+    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact, ModelWeights };
     struct IncomingFile {
         std::string path;
         FileIntent intent;
@@ -140,6 +143,15 @@ private:
     // triggers no cloud call. Shown inside the granted consent gate.
     void draw_cloud_inspect_result(const CloudProvider& provider);
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
+    void draw_models();      // standalone models (system.zetta_models): list + detail + add
+    // The inline "Add model" affordance inside draw_models: register/import a model
+    // via Node::create_model (+ optional Model::set_weights). The assembled value is
+    // re-validated against the Model JSON Schema at this boundary, so malformed
+    // metrics/feature_schema fail fast here instead of corrupting the tree on the
+    // next reconcile. Drawn collapsed by default so the list stays the focus.
+    void draw_add_model_form();
+    // Clear the Add-model form fields (name/kind/metrics/features/staged weights/error).
+    void reset_add_model_form();
     void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
     void draw_test_suite();  // the in-app test suite: canned cases + options + run
@@ -186,6 +198,8 @@ private:
     static void on_open_records(void* userdata, const char* const* files, int filter);
     static void on_open_large_object(void* userdata, const char* const* files, int filter);
     static void on_open_n8n(void* userdata, const char* const* files, int filter);
+    static void on_open_model_weights(void* userdata, const char* const* files,
+                                      int filter);
 
     Node& node_;
     Cluster& cluster_;
@@ -226,6 +240,7 @@ private:
     std::string selected_db_;
     std::string selected_table_;
     std::string selected_run_;  // run id; re-resolved each frame like the others
+    std::string selected_model_;  // model id; re-resolved each frame
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
 
@@ -357,6 +372,21 @@ private:
     double scaling_progress_ = 0.4;      // sample: fraction complete [0, 1]
     double scaling_elapsed_ = 120.0;     // sample: elapsed seconds
     double scaling_cost_ = 50.0;         // sample: accumulated cost
+
+    // Models panel — the inline "Add model" form (draw_add_model_form). Register
+    // or import a trained model via Node::create_model (+ optional set_weights).
+    // `metrics` / `feature_schema` are pasted as JSON and re-validated against the
+    // Model JSON Schema at this boundary before create. `weights_path_` is a file
+    // chosen via the native dialog (staged through FileIntent::ModelWeights) whose
+    // bytes are attached on Register; `weights_name_` is its display filename.
+    // Nothing is persisted until Register, so the form is a staging area only.
+    std::string add_model_name_;             // optional display label
+    std::string add_model_kind_{"classifier"};  // required; default classifier
+    std::string add_model_metrics_;          // metrics JSON (object of numbers), optional
+    std::string add_model_features_;         // feature_schema JSON (object), optional
+    std::string add_model_weights_path_;     // staged weights file ("" = none)
+    std::string add_model_weights_name_;     // its display filename
+    std::string add_model_error_;            // inline register error
 
     // File ingestion (drag-and-drop + native dialog) and its last status line.
     std::mutex incoming_mutex_;

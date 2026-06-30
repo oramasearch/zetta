@@ -160,9 +160,17 @@ validated against a formal **JSON Schema** at the storage boundary like `Run`
 (`parse_model_value`; `kind` required, `metrics` numeric, `weights` carries both
 size + hash), and the preflight integrity check counts model weights (present /
 awaiting body / corrupt) the same way it does large-object bodies. The registry
-is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
-provenance + replication only — training/inference (and producing the weights) is
-a later slice. See [docs/models.md](docs/models.md).
+is `Node::models()` + the SQL **`system.zetta_models`** table. The headed app
+surfaces the registry in a **standalone Models view** (`App::draw_models`,
+`src/gui/app_operations.cpp`, **Operations → Models**; part of #575) — a thin,
+read-only list + detail over `system.zetta_models` (each model's metrics + ranked
+drivers + weights fingerprint, reusing the Runs panel's `render_model_card`) **plus
+an inline "Add model" affordance** that registers/imports a model via
+`Node::create_model` + optional `Model::set_weights` (the assembled value
+re-validated against the Model JSON Schema at the form boundary — no new format).
+This is storage + provenance + replication only — training/inference (and producing
+the weights) is a later slice. See [docs/models.md](docs/models.md) and
+[docs/models-panel.md](docs/models-panel.md).
 
 A node also owns **indexes** (`zetta::Index`) — a registered **index over a
 table** (**ENT-39 / ENT-40, ADR-34**): its definition `{ table, kind, backend,
@@ -3145,6 +3153,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
+- [`docs/models-panel.md`](docs/models-panel.md) — the headed standalone **Models view** (`App::draw_models`, part of #575): the GUI form of `system.zetta_models` — list + detail (metrics, ranked drivers, weights fingerprint, reusing the Runs panel's `render_model_card`) + an inline **Add model** affordance (register/import via `create_model` + optional `set_weights`, re-validated against the Model JSON Schema at the form boundary).
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (locality-aware reads / re-balancing are later slices). The producer that fills it is the partitioned write path below.
 - [`docs/partitioned-write-path.md`](docs/partitioned-write-path.md) — the **partitioned write path** (`zetta::write_partitioned`, **#511**): rows → partition → blob, placement recorded. For a table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to a partition (stamping the round-robin `_seq` surrogate onto the assignment record only), serializes each non-empty partition's rows to a JSON Lines blob (the `JsonlStore` `{"_zid",doc}` shape), stores the bytes as a [large object](docs/large-objects.md) (`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted + gossips peer-to-peer), and records a [`DatasetPartition`](docs/dataset-partitions.md) catalog entry per partition (`blob_ref` + the cumulative `row_range` tiling `[0, rows_written)` + `place_partition` owners + `stats`), visible in `system.dataset_partitions`. N non-empty partitions → N blobs + N catalog rows (the acceptance). Composes #510/#512–#514; no new JSON schema (the catalog entry is the existing `DatasetPartition` boundary, the blob is an LO body). A reusable library function today; a load-triggering command and `ReplicationStrategy`-driven placement are later slices.

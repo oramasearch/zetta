@@ -184,6 +184,12 @@ ref (`Model::run()`) is this run's id — not the executor's logical model `outp
 (a placeholder handle in R1). `draw_runs` filters `node_.models()` by that ref and
 passes the matches to the detail renderer.
 
+`render_model_card` is **shared** with the standalone
+[Models panel](models-panel.md) (`App::draw_models`, **Operations → Models**), the
+model-first view over the whole [`system.zetta_models`](query.md) registry — so a
+model reads identically whether seen alongside its run here or browsed on its own
+there.
+
 The panel reads already-validated `Run` **and** `Model` handles in memory, so it
 introduces **no new JSON boundary** — `parse_run_value` / `parse_model_value` have
 already run when each record entered from disk or the CRDT, and the ranked drivers
