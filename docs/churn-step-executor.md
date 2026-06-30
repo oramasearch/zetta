@@ -191,7 +191,7 @@ per-op suites (`test_ddf_featurize`, `test_gbdt`, `test_gbdt_score`, `test_tree_
 
 [`zetta::run_churn_solution`](churn-solution.md) is the reusable bridge that drives
 this executor from the catalog **churn-prediction** blueprint (and the headed Deploy
-panel's "Run on real engine" action) — it builds the numeric shards + pipeline config
+panel's "Run over the cluster" action) — it builds the numeric shards + pipeline config
 this executor needs and injects it into a `GraphExecutor`.
 
 See also [churn-solution.md](churn-solution.md), [execution.md](execution.md),

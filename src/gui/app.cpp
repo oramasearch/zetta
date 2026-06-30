@@ -178,9 +178,12 @@ App::App(Node& node, Cluster& cluster)
     // `outcome`, explain, rank) — so the passing path is one click away: it is
     // already on the Python frontend, just press Run (cleared on first Run, like
     // any REPL prompt). The columns are spelled out in full (no `...` ellipsis,
-    // which is not valid sim-Python). In the console the steps execute through the
-    // default step executor (a governed, gated, audited Run); the real distributed
-    // near-data run is the cluster.uc1_at_scale test-suite case.
+    // which is not valid sim-Python). This seeded program has no featurize step, so it
+    // is not churn-shaped — it runs through the default step executor (a governed,
+    // gated, audited Run); a churn-shaped program (with a featurize step) runs on the
+    // real churn engine over the live cluster via the graph runner wired below. The
+    // full distributed near-data UC-1-at-scale run is the cluster.uc1_at_scale
+    // test-suite case.
     console_model_->set_frontend(repl::Frontend::SimPython);
     console_model_->input() =
         "nodes = cluster.add_nodes(2, provider='azure')\n"
@@ -189,6 +192,26 @@ App::App(Node& node, Cluster& cluster)
         "model = train(conversations, target='outcome')\n"
         "drivers = explain(model)\n"
         "at_risk = rank(model)";
+
+    // Route a governed sim-Python run over the cluster (#580): when the lowered graph
+    // is churn-shaped (connect -> clean/featurize -> model), run it through the REAL
+    // churn engine on the node's live JobCoordinator (the #579 spine) over a built-in
+    // demo dataset — so an interactive console run trains a real Model + ranked at-risk
+    // list over the live cluster (visible in the Runs / Models views), not the
+    // structural placeholder. A non-churn graph falls back to Node::run_graph. The
+    // capability check, correctness gate, and audit record (in GovernedConsole) wrap
+    // this identically either way, so the run stays gated + governed.
+    governed_console_->set_graph_runner(
+        [this](const ir::ExecutionGraph& graph) -> ExecutionResult {
+            if (!is_churn_graph(graph)) return node_.run_graph(graph);
+            compute::CpuDevice device;
+            ChurnSolutionOptions options;
+            options.project = "console";
+            options.graph = "console-churn";
+            return run_churn_solution_on_node(node_, device, graph,
+                                              demo_churn_dataset(), options)
+                .execution;
+        });
 }
 
 App::~App() {

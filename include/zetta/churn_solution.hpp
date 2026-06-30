@@ -137,6 +137,45 @@ ChurnSolutionResult run_churn_solution(Node& node,
                                        const ChurnDataset& dataset,
                                        const ChurnSolutionOptions& options = {});
 
+// Run a churn graph through the REAL engine on the node's **live** JobCoordinator —
+// the long-lived SPMD compute "spine" a running node owns over its real Cluster
+// (#579, Node::attach_cluster / Node::job_coordinator). This is the **interactive
+// "run over the cluster"** front door (#580): unlike run_churn_solution, which takes
+// a coordinator by reference (the test suites + the Deploy panel demo used to spin up
+// an *isolated single-node loopback* one), this resolves node.job_coordinator() and
+// runs there — so the featurize / train / explain / rank jobs combine their partials
+// over the node's real cluster membership through the existing collectives (which ride
+// the signal plane), and the produced Run + Model + ranked list land on the live node
+// (visible in system.zetta_runs / system.zetta_models). It is otherwise identical to
+// run_churn_solution — same encoding, specs, gated/governed surfaces wrap it the same
+// way, **no new JSON format**.
+//
+// A node with no compute plane attached (a standalone node, or one not yet
+// attach_cluster'd) has no live coordinator: this returns a failed ChurnSolutionResult
+// with execution.error set (it provisions nothing — the caller surfaces the reason or
+// falls back to its own coordinator), so it never silently no-ops.
+//
+// **Single-node-or-coordinated membership.** The underlying jobs are SPMD: every
+// collective round waits for *all* connected peers (a bounded timeout). A single node
+// submitting this over a multi-node cluster whose peers are not co-running the same
+// graph will fail those rounds. So today this is correct for the common interactive
+// case — a standalone node, or a single-member cluster — where the live coordinator
+// IS the cluster. Fanning the launch out to every peer so they co-run (a coordinated
+// cross-process SPMD launch over the signal plane) is a later slice; the collectives
+// already handle the *combine*, the *co-launch* is what is missing.
+ChurnSolutionResult run_churn_solution_on_node(
+    Node& node, compute::ComputeDevice& device,
+    const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
+    const ChurnSolutionOptions& options = {});
+
+// Whether `graph` is churn-shaped — has the featurize -> train backbone the
+// ChurnStepExecutor pipeline needs: at least one connect (a source to load), one
+// clean (featurize), and one model (train) step. Used to decide whether an
+// interactive sim-Python program should run on the real churn engine (this true) or
+// the structural DefaultStepExecutor (false), so a non-churn graph still runs as a
+// plain placeholder Run. Pure + non-throwing.
+bool is_churn_graph(const ir::ExecutionGraph& graph);
+
 // A small, deterministic, in-memory churn dataset (no files) for demos — the data
 // the headed Deploy panel's "Run on real engine" action trains on. Built to carry a
 // clean failed-payments churn signal (churned accounts accumulate payment failures;

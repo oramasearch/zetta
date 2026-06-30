@@ -9,6 +9,7 @@
 #include "zetta/audit_event.hpp"
 #include "zetta/capability.hpp"
 #include "zetta/gate.hpp"
+#include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/query/service.hpp"
@@ -190,6 +191,63 @@ TEST(GovernedConsole, GateFailureBlocksTheRunAndAudits) {
     ASSERT_TRUE(event);
     EXPECT_FALSE(event->allowed());
     EXPECT_NE(event->detail().find("blocked by gate"), std::string::npos);
+
+    node.stop();
+}
+
+// ----- the injectable graph runner (#580 "run over the cluster" seam) ---------
+
+// A gate-passed sim-Python graph runs through the injected graph runner (the seam a
+// host uses to route a churn-shaped graph through the real churn engine on the live
+// JobCoordinator) — after the capability check + gate, before the audit record.
+TEST(GovernedConsole, InjectedGraphRunnerExecutesGatePassedSimPython) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+    GovernedConsole console{node, service};
+
+    int runner_calls = 0;
+    console.set_graph_runner(
+        [&](const zetta::ir::ExecutionGraph& graph) {
+            ++runner_calls;
+            return node.run_graph(graph);  // stands in for the real-engine route
+        });
+
+    const Result result = console.run(Frontend::SimPython, kPython);
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(runner_calls, 1);       // the seam ran the gate-passed graph
+    EXPECT_EQ(node.run_count(), 1u);  // a real Run was produced + audited
+    ASSERT_EQ(node.audit_event_count(), 1u);
+    EXPECT_TRUE(last_event(node)->allowed());
+
+    node.stop();
+}
+
+// Governance precedes compute: a gate-blocked graph never reaches the runner.
+TEST(GovernedConsole, InjectedGraphRunnerNotCalledWhenGateBlocks) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    zetta::query::QueryService service{node};
+
+    CorrectnessGate gate;
+    gate.add_check(make_check("always_fail", [](const auto&) {
+        return CheckResult{"always_fail", CheckStatus::Fail, "blocked for the test"};
+    }));
+    GovernedConsole console{node, service, gate};
+
+    int runner_calls = 0;
+    console.set_graph_runner(
+        [&](const zetta::ir::ExecutionGraph& graph) {
+            ++runner_calls;
+            return node.run_graph(graph);
+        });
+
+    const Result result = console.run(Frontend::SimPython, kPython);
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(runner_calls, 0) << "the gate must block before the runner";
+    EXPECT_EQ(node.run_count(), 0u);
 
     node.stop();
 }
