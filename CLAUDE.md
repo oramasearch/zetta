@@ -1358,7 +1358,21 @@ grid, a thin renderer over `Cluster::nodes()` read live each frame so membership
 tracks joins/leaves/heals with no separate copy (`App::draw_cluster`,
 `src/gui/app_operations.cpp`, #582 — the spatial foundation the add-nodes control,
 per-node gauges, and algorithm animation build on); headless logs the per-node
-table. `Cluster::nodes()` returns this node + every connected peer with
+table. Above the canvas the panel carries an **Add nodes control**
+(`App::draw_add_nodes_control`, #583 — epic #575 area 1): the GUI front door for
+`zetta::add_nodes` driven over an **injected `Provisioner`** (`App::set_provisioner`;
+`main` wires the given-hardware `LocalProvisioner` over the live fleet to the
+`"local"` target). Pick a target (the `CloudProviderCatalog`) + a count — the
+**Local** target runs on a plain click (no cloud, no consent, brings up no new
+machines — given-hardware best-effort); every **cloud / Kubernetes / on-prem**
+target is **permission-gated, deny-by-default** (it would run the provider CLI to
+create billable resources), so the control names what it would read/run and nothing
+happens until the user explicitly allows that one action, never remembered — the
+same consent grammar as the Cloud Inspector. The `Node`-aware `add_nodes` overload
+also rebalances sharded partitions onto any new members (#519). Constructing a
+configured cloud provisioner from the GUI + teardown are later slices. See
+[docs/add-nodes-control.md](docs/add-nodes-control.md). `Cluster::nodes()` returns
+this node + every connected peer with
 its replication status (entries, version, in-sync, last-sync) — surfaced in the
 headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
@@ -3264,6 +3278,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
 - [`docs/job-autoscaler.md`](docs/job-autoscaler.md) — the autoscaler control loop (`zetta::JobAutoscaler`): each tick observe a running `ComputeJob`'s progress, score it with the job's `ScalingPolicy`, and add/remove nodes through the `Provisioner` seam within bounds, with hysteresis (anti-thrash) + immediate cost-cap shed; reads live membership each tick (elastic) and degrades to best-effort max utilization on given hardware; schema-validated `AutoscalerConfig` (ADR-29 / ARC-11, #371).
 - [`docs/add-nodes.md`](docs/add-nodes.md) — the **permanent-add control entry point** (`zetta::add_nodes`, #518): the "add 10 nodes to this cluster" action over the `Provisioner` seam — drive a provisioner (the cloud-burst `AzureProvisioner`, or any backend) to bring up N nodes that auto-join via the seed-peer handshake and persist as ordinary `node:<id>` members (the existing membership + replication path, no parallel roster). The *permanent* sibling of the [autoscaler](docs/job-autoscaler.md): provision-and-report only, **never** tearing a member down or revoking — elastic / cost-cap burst deferred; vendor-neutral; validated `AddNodesRequest` JSON boundary.
+- [`docs/add-nodes-control.md`](docs/add-nodes-control.md) — the headed **Add nodes control** in the Cluster view (`App::draw_add_nodes_control`, #583 — epic #575 area 1): the GUI front door for [`zetta::add_nodes`](docs/add-nodes.md), driven over an **injected [`Provisioner`](docs/provisioner.md)** (`App::set_provisioner`; `main` wires the given-hardware `LocalProvisioner` over the live fleet to the `"local"` target). Pick a target (the [`CloudProviderCatalog`](docs/cloud-inspector.md)) + a count — the **Local** target runs on a plain click (no cloud, no consent, given-hardware best-effort); every **cloud / Kubernetes / on-prem** target is **permission-gated, deny-by-default** (adding nodes there runs the provider CLI to create billable resources), so the control names what it would read/run and nothing happens until the user explicitly allows that one action, never remembered — the same consent grammar as the [Cloud Inspector](docs/cloud-inspector.md). The `Node`-aware overload also [rebalances](docs/partition-rebalance.md) sharded partitions onto new members (#519); a target with no injected provisioner renders but reports it isn't wired. A thin renderer — no new engine logic or JSON boundary; constructing a configured cloud provisioner from the GUI + teardown are later slices.
 - [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
 - [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.

@@ -1,6 +1,7 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 
+#include "zetta/add_nodes.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/cloud_inspector.hpp"
 #include "zetta/cloud_provider.hpp"
@@ -8,6 +9,7 @@
 #include "zetta/compute_job.hpp"
 #include "zetta/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/provisioner.hpp"
 #include "zetta/run.hpp"
 #include "zetta/scaling_policy.hpp"
 
@@ -331,6 +333,8 @@ void App::draw_cluster() {
         ImGui::SetClipboardText(command.c_str());
     }
 
+    draw_add_nodes_control();
+
     ImGui::SeparatorText("Nodes");
 
     // Spatial cluster view (#582): one selectable box per node in a wrapping
@@ -503,6 +507,164 @@ void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
             if (!node.is_self) ++peers;
         mono_line(kInkMuted, "peers     ", std::to_string(peers));
     }
+}
+
+void App::set_provisioner(const std::string& target_id, Provisioner& provisioner) {
+    provisioners_[target_id] = &provisioner;
+}
+
+Provisioner* App::provisioner_for(const std::string& target_id) const {
+    const auto found = provisioners_.find(target_id);
+    return found == provisioners_.end() ? nullptr : found->second;
+}
+
+void App::draw_add_nodes_control() {
+    // The "Add nodes" control (epic #575 area 1): drive zetta::add_nodes over an
+    // injected Provisioner. The provider catalog supplies the target list + exactly
+    // what each target would read/run, so the cloud consent gate can name it up
+    // front (the same metadata the Cloud Inspector renders). The given-hardware
+    // Local target uses the injected LocalProvisioner and runs on a plain click;
+    // every cloud / Kubernetes / on-prem target is **permission-gated, deny-by-
+    // default** — adding nodes there runs the provider's CLI to CREATE billable
+    // resources (a write), so nothing happens until the user explicitly allows that
+    // one action, and consent is never remembered (CLAUDE.md hard rule).
+    ImGui::SeparatorText("Add nodes");
+
+    const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
+    const CloudProvider* target = catalog.find(selected_add_target_);
+    if (target == nullptr) {  // a stale id (none should exist) falls back to Local
+        selected_add_target_ = "local";
+        target = catalog.find("local");
+    }
+    if (target == nullptr) return;  // empty catalog — nothing to add against
+
+    // Target selector — the same catalog the Cloud Inspector lists. A green dot
+    // marks an open target (Local, no consent); amber marks a consent-gated one.
+    ImGui::SetNextItemWidth(240.0f);
+    if (ImGui::BeginCombo("Target", target->name.c_str())) {
+        for (const CloudProvider& provider : catalog.providers()) {
+            ImGui::PushID(provider.id.c_str());
+            status_dot(provider.requires_consent() ? kWarnColor : kDotActive);
+            const bool is_selected = provider.id == selected_add_target_;
+            if (ImGui::Selectable(provider.name.c_str(), is_selected)) {
+                // Switching targets clears the last result line so a stale
+                // "added via Local" can't linger under a different target.
+                if (selected_add_target_ != provider.id) add_nodes_status_.clear();
+                selected_add_target_ = provider.id;
+            }
+            if (is_selected) ImGui::SetItemDefaultFocus();
+            ImGui::PopID();
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::TextColored(kInkSecondary, "%s", target->summary.c_str());
+
+    // How many to add. Clamp to >= 1 (a zero add is a no-op, so it isn't useful
+    // from the button).
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Count", &add_nodes_count_);
+    if (add_nodes_count_ < 1) add_nodes_count_ = 1;
+
+    const bool wired = provisioner_for(target->id) != nullptr;
+    const std::string plural = add_nodes_count_ == 1 ? " node" : " nodes";
+
+    if (!target->requires_consent()) {
+        // Local / given hardware — no cloud, no consent, runs on a plain click.
+        ImGui::Spacing();
+        ImGui::TextColored(kInkSecondary,
+            "Uses the nodes already in this cluster; brings up no new machines and "
+            "touches no cloud.");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(!wired);
+        const std::string label =
+            "Add " + std::to_string(add_nodes_count_) + plural;
+        if (primary_button(label.c_str())) run_add_nodes(*target);
+        ImGui::EndDisabled();
+        if (!wired) {
+            ImGui::TextColored(kInkQuiet,
+                "No provisioner is wired for this target in this build.");
+        }
+    } else {
+        // Cloud / Kubernetes / on-prem — permission-gated, deny-by-default. Name
+        // what the provider CLI may read up front so consent is informed; the CLI
+        // may read these files, zetta itself never reads or prints them.
+        ImGui::Spacing();
+        eyebrow(mono_font_, "THE CLI MAY READ");
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        for (const std::string& path : target->config_paths) {
+            ImGui::BulletText("%s", path.c_str());
+        }
+        if (mono_font_) ImGui::PopFont();
+
+        // The consent gate — a tinted (amber) callout so the permission boundary
+        // reads as a deliberate, deny-by-default stop. The Allow button IS the
+        // per-action consent: there is no remembered grant, so a cloud add asks
+        // every time. Nothing runs until it is clicked.
+        ImGui::Spacing();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                              ImVec4(0.980f, 0.933f, 0.855f, 1.0f));
+        ImGui::BeginChild("##add_nodes_consent", ImVec2(0, 0),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+        status_dot(kWarnColor);
+        ImGui::TextColored(kWarnColor, "Permission required");
+        ImGui::TextColored(kInkSecondary,
+            "Adding nodes here runs the %s CLI to create %d billable %s on %s. This "
+            "is a write and it incurs cost. Nothing runs until you allow it; consent "
+            "applies to this one action and is not remembered.",
+            target->cli.c_str(), add_nodes_count_,
+            add_nodes_count_ == 1 ? "node" : "nodes", target->name.c_str());
+        ImGui::Spacing();
+        if (wired) {
+            const std::string allow = "Allow adding " +
+                                      std::to_string(add_nodes_count_) + plural +
+                                      " via " + target->name;
+            if (primary_button(allow.c_str())) run_add_nodes(*target);
+        } else {
+            // Honest about the seam: the control + consent gate are real, but a
+            // configured cloud provisioner for this target hasn't been injected in
+            // this build (constructing one needs subscription / region / creds —
+            // a separate slice). Injecting it lights this up with no UI change.
+            ImGui::TextColored(kInkQuiet,
+                "No provisioner is wired for %s in this build. Inject a configured "
+                "%s provisioner to enable adding nodes here.",
+                target->name.c_str(), target->name.c_str());
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
+
+    if (!add_nodes_status_.empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(add_nodes_status_warn_ ? kWarnColor : kSuccessColor,
+                           "%s", add_nodes_status_.c_str());
+    }
+}
+
+void App::run_add_nodes(const CloudProvider& target) {
+    // The single point that touches the Provisioner — reached only from the Local
+    // "Add" button or a cloud target's explicit "Allow". Synchronous on the UI
+    // thread (which owns the node), like run_cloud_inspect, so the add and the
+    // partition rebalance it triggers race with nothing. The Node-aware add_nodes
+    // overload also rebalances sharded partitions onto any new members (#519); it
+    // never tears a node down.
+    Provisioner* provisioner = provisioner_for(target.id);
+    if (provisioner == nullptr) {
+        add_nodes_status_ =
+            "No provisioner is wired for " + target.name + " in this build.";
+        add_nodes_status_warn_ = true;
+        return;
+    }
+
+    const std::size_t count = static_cast<std::size_t>(add_nodes_count_);
+    const AddNodesResult result = add_nodes(node_, *provisioner, count);
+
+    // Report what came up, honestly: members.size() of the requested count, plus
+    // the backend's detail (for given hardware, why it's bounded by the existing
+    // cluster). Amber when short (best-effort), green when the full count was met.
+    add_nodes_status_warn_ = !result.satisfied;
+    add_nodes_status_ = target.name + " · " + std::to_string(result.members.size()) +
+                        " of " + std::to_string(count) + " node(s)";
+    if (!result.detail.empty()) add_nodes_status_ += " · " + result.detail;
 }
 
 void App::draw_cloud() {

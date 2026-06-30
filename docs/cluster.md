@@ -47,9 +47,9 @@ falling back to `127.0.0.1` — and the join command uses the first (most
 reachable) one. Other nodes copy that `--peer` line to join.
 
 Headed mode's **Cluster** panel shows this node's id, every reachable listen
-address, the **command to add another node** (with a Copy button), and a
-**spatial node-box canvas** (below). Headless logs the per-node table whenever it
-changes.
+address, the **command to add another node** (with a Copy button), an
+**[Add nodes control](add-nodes-control.md)** (below), and a **spatial node-box
+canvas** (below). Headless logs the per-node table whenever it changes.
 
 ## All nodes + replication status
 
@@ -87,6 +87,21 @@ pass, so it stays within the `render_frame` / `SDL_WaitEventTimeout` cadence and
 doesn't starve a live resize. This canvas is the **spatial foundation** the
 add-nodes control, per-node gauges, algorithm animation, and the graph-over-cluster
 view build on (part of #575).
+
+### Add nodes control (the headed control)
+
+Above the canvas sits the **Add nodes** control (`App::draw_add_nodes_control`,
+#583) — the GUI front door for [`zetta::add_nodes`](add-nodes.md), driven over an
+**injected [`Provisioner`](provisioner.md)**. Pick a target (the
+[provider catalog](cloud-inspector.md)) + a count: the given-hardware **Local**
+target uses the injected [`LocalProvisioner`](provisioner.md) and runs on a plain
+click (no cloud, no consent); every cloud / Kubernetes / on-prem target is
+**permission-gated, deny-by-default** — adding nodes there would run the provider's
+CLI to create billable resources, so the control names what it would read/run and
+nothing happens until the user explicitly allows that one action (never remembered).
+The `Node`-aware overload also [rebalances](partition-rebalance.md) sharded
+partitions onto any new members; they appear in the canvas once they gossip in. See
+**[add-nodes-control.md](add-nodes-control.md)**.
 
 ## How it works
 

@@ -193,7 +193,12 @@ any backend) to bring up N nodes that auto-join via the seed-peer handshake and
 persist as ordinary cluster members, **provision-and-report only** (never tearing a
 member down or revoking; elastic / cost-cap burst is the autoscaler's job), behind a
 schema-validated `AddNodesRequest` control-command boundary (see
-[docs/add-nodes.md](docs/add-nodes.md)).
+[docs/add-nodes.md](docs/add-nodes.md)). The headed **Cluster** panel exposes it as
+an **Add nodes** control over an injected `Provisioner`: the given-hardware Local
+target runs on a click; every cloud / Kubernetes / on-prem target is
+**permission-gated, deny-by-default** — it names what the provider CLI would
+read/run to create billable nodes and does nothing until you explicitly allow that
+one action (see [docs/add-nodes-control.md](docs/add-nodes-control.md)).
 It also owns **principals** (`zetta::Principal`) and their **access keys**
 (`zetta::AccessKey`): a request inherits the scope of the key it logged in with —
 V1 **key-scoped access**, deny-by-default (see

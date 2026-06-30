@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -19,6 +20,7 @@ namespace zetta {
 
 class Node;
 class Cluster;
+class Provisioner;
 struct NodeStatus;
 struct ValidationReport;
 struct CloudProvider;
@@ -62,6 +64,14 @@ public:
     // Run the event/render loop until the user quits. Ticks the node once per
     // frame. Must be called only after a successful init().
     void run();
+
+    // Inject the Provisioner the Cluster view's "Add nodes" control drives for a
+    // target (`target_id` is a CloudProvider catalog id — "local", "aws", …). main
+    // wires the given-hardware "local" backend (a LocalProvisioner over the live
+    // cluster fleet); a configured deployment can inject cloud provisioners for
+    // their targets, which stay consent-gated in the control. `provisioner` must
+    // outlive the App. Targets with no injected provisioner render but can't act.
+    void set_provisioner(const std::string& target_id, Provisioner& provisioner);
 
 private:
     // The single active view shown in the content area. The menu bar selects
@@ -137,6 +147,26 @@ private:
     // membership, replication status, and (for self) reachable addresses + peer
     // count for the selected node. `nodes` is the live Cluster::nodes() snapshot.
     void draw_cluster_node_detail(const std::vector<NodeStatus>& nodes);
+    // The "Add nodes" control in the Cluster view (epic #575 area 1): pick a
+    // target (the provider catalog), a count, and drive zetta::add_nodes over the
+    // injected Provisioner for that target. The given-hardware Local target runs
+    // immediately (it brings up no new machines, touches no cloud); every cloud /
+    // Kubernetes / on-prem target is **permission-gated, deny-by-default** — adding
+    // nodes there runs the provider's CLI to create billable resources, so nothing
+    // happens until the user explicitly allows that one action (CLAUDE.md hard
+    // rule). A target with no injected Provisioner renders but reports it isn't
+    // wired.
+    void draw_add_nodes_control();
+    // The single point that drives zetta::add_nodes(node_, …) over the injected
+    // Provisioner for `target` — reached ONLY from the Local "Add" button or a
+    // cloud target's explicit "Allow" (the consent action), never on a passive
+    // render. Synchronous on the UI thread (which owns the node), like
+    // run_cloud_inspect, so the add + the partition rebalance it triggers race with
+    // nothing; the new members surface in the canvas once they gossip in.
+    void run_add_nodes(const CloudProvider& target);
+    // The Provisioner injected for `target_id` (set_provisioner), or nullptr when
+    // none is wired for that target.
+    Provisioner* provisioner_for(const std::string& target_id) const;
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     // Run a provider's read-only inspect (CloudInspector) and cache the result on
     // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
@@ -253,6 +283,21 @@ private:
     // peer that leaves/fails simply drops out of the grid and the selection falls
     // back to self — the view tracks membership with no separate copy of it.
     std::string selected_cluster_node_;
+
+    // Add nodes control (epic #575 area 1). `provisioners_` maps a CloudProvider
+    // catalog id → the injected Provisioner the control drives for that target
+    // (main wires "local" to the given-hardware LocalProvisioner; cloud
+    // provisioners are injected by a configured deployment and stay consent-gated).
+    // `selected_add_target_` is the catalog id chosen in the control;
+    // `add_nodes_count_` how many to add; `add_nodes_status_` the last action's
+    // result line (coloured amber via `add_nodes_status_warn_` when it came up
+    // short). There is no persisted "granted" state — the cloud Allow button IS the
+    // per-action consent, so a cloud add asks every time (deny-by-default).
+    std::map<std::string, Provisioner*> provisioners_;
+    std::string selected_add_target_{"local"};
+    int add_nodes_count_ = 1;
+    std::string add_nodes_status_;
+    bool add_nodes_status_warn_ = false;
 
     // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
     // catalog id selected in the list. `cloud_consent_provider_` is the id the
