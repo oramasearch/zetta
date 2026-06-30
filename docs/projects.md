@@ -176,9 +176,17 @@ driven by the same `selected_project_` the Projects column sets.
   **Revert** reloads the stored copy. The amber `● unsaved edits` marker shows
   when the working copy differs from what's stored. Selecting a *different* graph
   (or switching projects) discards the working copy.
+- **Cluster plan** (`App::draw_graph_plan`, #591). A toggle (on by default) that
+  projects how the open graph would run over the **current** cluster — which steps
+  run near their data, which fan out SPMD, and the owner nodes each lands on — as a
+  canvas overlay (a placement-coloured stripe + badge per step), a current-cluster
+  strip (the selected step's nodes highlighted), and a per-step placement table. A
+  *projection* of zetta's SPMD + compute-near-data model, not a committed schedule.
+  See [graph-plan.md](graph-plan.md).
 
 The panel keeps zetta's GUI rule: it is a thin renderer over the core API and no
-SDL/ImGui type leaks into `zetta-core`. Compile-from-intent (producing a graph to
+SDL/ImGui type leaks into `zetta-core` (the plan projection is the pure
+zetta-core `project_cluster_plan`). Compile-from-intent (producing a graph to
 edit here) and the correctness gate are separate slices.
 
 ## Tests

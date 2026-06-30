@@ -47,8 +47,9 @@ falling back to `127.0.0.1` — and the join command uses the first (most
 reachable) one. Other nodes copy that `--peer` line to join.
 
 Headed mode's **Cluster** panel shows this node's id, every reachable listen
-address, the **command to add another node** (with a Copy button), and a
-**Nodes & replication** table. Headless logs the same table whenever it changes.
+address, the **command to add another node** (with a Copy button), an
+**[Add nodes control](add-nodes-control.md)** (below), and a **spatial node-box
+canvas** (below). Headless logs the per-node table whenever it changes.
 
 ## All nodes + replication status
 
@@ -58,9 +59,69 @@ sync** with this node, and how long ago it last synced. Once a `ReplicationManag
 is wired in, peers gossip their documents and status over the connection (see
 [replication.md](replication.md)). The view shows up three ways:
 
-- **Headed** — the Cluster panel's Nodes table.
+- **Headed** — the Cluster panel's spatial node-box canvas (below).
 - **Headless** — the heartbeat prints a per-node table when it changes.
 - **SQL** — `SELECT * FROM system.zetta_nodes;` (see [query.md](query.md)).
+
+### Spatial node-box view (the headed canvas)
+
+The headed Cluster panel renders membership **spatially** rather than as a table
+(`App::draw_cluster`, `src/gui/app_operations.cpp`, #582): **one selectable box per
+node** laid out in a wrapping grid (the worktree-manager "boxes" feel), plus a
+**detail pane** below it. Each box shows a health dot (green = self / in-sync,
+amber = syncing, quiet = no status learned yet), the node's short id, its address,
+and a one-word sync state. **Clicking a box selects it**; the detail pane then
+shows that node's full detail — id, role, address, membership, replication
+(entries / version / in-sync with seconds), and for this node its reachable listen
+addresses + live peer count.
+
+It is a **thin renderer over `Cluster::nodes()`**: the snapshot is read live every
+frame and the selection (`selected_cluster_node_`, the only added GUI state) is
+re-resolved against it, so a peer that **joins, leaves, or heals** simply appears
+or drops out of the grid and the selection falls back to self — the view tracks
+membership with no separate copy of it. The boxes reuse the
+[graph workspace](execution-graph.md)'s `ImDrawList` rect + invisible-hit-test
+pattern and the same Orama canvas palette (white cards, hairline borders, a soft
+wash on hover, a coral border when selected), and the per-frame layout is one cheap
+pass, so it stays within the `render_frame` / `SDL_WaitEventTimeout` cadence and
+doesn't starve a live resize. This canvas is the **spatial foundation** the
+add-nodes control, per-node gauges, algorithm animation, and the graph-over-cluster
+view build on (part of #575).
+
+#### Live per-node resource gauges (#584)
+
+Each node box also carries **live, animated resource gauges + sparklines** — CPU /
+memory / GPU + VRAM / storage / network in-out, with % utilization, as moving bars
+rather than static numbers (the animated half of #575 area 2). The bars *ease*
+toward the live value each frame (the animation), with a sparkline of recent
+history over each track and the Orama **semantic** colours (green → amber → red by
+load; a neutral flow for network); an unreportable counter degrades to a faint
+`n/a`. Selecting a node shows the same gauges with fuller read-outs (core count,
+byte totals, in/out rates) in the detail pane.
+
+The gauges are fed by a **cluster-wide telemetry exchange over the
+[signal plane](signal-plane.md)** (`zetta::NodeTelemetryExchange`): `system.node_metrics`
+sees only the local host, so each node periodically broadcasts its own sample as an
+ephemeral `node.metrics` event and every node caches what it receives, so a single
+`Node::telemetry_snapshot()` returns the whole cluster's live gauges (self + fresh
+peers). It is **not replicated** (a measurement, not durable state) and rides a
+schema-validated wire boundary. Full detail in
+[cluster-node-gauges.md](cluster-node-gauges.md).
+
+### Add nodes control (the headed control)
+
+Above the canvas sits the **Add nodes** control (`App::draw_add_nodes_control`,
+#583) — the GUI front door for [`zetta::add_nodes`](add-nodes.md), driven over an
+**injected [`Provisioner`](provisioner.md)**. Pick a target (the
+[provider catalog](cloud-inspector.md)) + a count: the given-hardware **Local**
+target uses the injected [`LocalProvisioner`](provisioner.md) and runs on a plain
+click (no cloud, no consent); every cloud / Kubernetes / on-prem target is
+**permission-gated, deny-by-default** — adding nodes there would run the provider's
+CLI to create billable resources, so the control names what it would read/run and
+nothing happens until the user explicitly allows that one action (never remembered).
+The `Node`-aware overload also [rebalances](partition-rebalance.md) sharded
+partitions onto any new members; they appear in the canvas once they gossip in. See
+**[add-nodes-control.md](add-nodes-control.md)**.
 
 ## How it works
 

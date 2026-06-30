@@ -39,8 +39,16 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
    to the IR — the [query layer](query.md) is its own validated executor — so SQL
    is governed by the capability check + audit, not the gate.
 3. **Execute.** SQL runs through the [query service](query.md); simulated-Python
-   executes the gated graph via `Node::run_graph`, producing a real, persisted
-   [Run](runs.md) (so an ad-hoc Python statement shows up in the Runs panel).
+   executes the gated graph through the console's **graph runner**, producing a real,
+   persisted [Run](runs.md) (so an ad-hoc Python statement shows up in the Runs
+   panel). The graph runner is an **injectable seam** (`set_graph_runner`): by default
+   `Node::run_graph` (the structural `DefaultStepExecutor`), but a host may inject one
+   that routes a **churn-shaped** graph through the **real** churn engine on the node's
+   live `JobCoordinator` (#580 — the headed app does this, so an interactive churn
+   program trains a real `Model` over the live cluster; see
+   [run over the live cluster](churn-solution.md#run-over-the-live-cluster-580)). The
+   runner runs **after** the capability check + gate and **before** the audit record,
+   so governance is identical whichever executor runs.
 4. **Audit.** Exactly one **`data_access`** [audit event](audit-trail.md) is
    recorded per statement — the acting key (actor), what it touched (target), the
    governance decision (`allowed`), and a one-line summary (detail). `allowed` is
@@ -99,10 +107,18 @@ tests never link SDL/ImGui).
 ## Status / later slices
 
 This screen wires governance around the existing component. The simulated-Python
-execution runs the gated graph through `Node::run_graph` (the
-`DefaultStepExecutor` orchestration); wiring it to a richer evaluator is #522.
-Scope-axis (resource) checks and a first-class console capability vocabulary can
-layer on later behind the same `required_operation` seam.
+execution runs the gated graph through the injectable **graph runner** — by default
+`Node::run_graph` (the `DefaultStepExecutor` orchestration), or, when the host injects
+it, the **real churn engine over the live cluster** for a churn-shaped graph (#580).
+A churn-shaped interactive program currently trains over a built-in demo churn dataset
+(the program selects the pipeline shape, not yet the data); driving the run from data
+named in the program (`load_dataset` → near-data partitions) is the
+[UC-1-at-scale](uc1-at-scale-e2e.md) path. A **coordinated cross-process SPMD launch**
+(every peer co-running the same graph over the live cluster) is a later slice — the
+[collectives](collectives.md) already combine partials; the co-launch over the
+[signal plane](signal-plane.md) is what is missing. Scope-axis (resource) checks and a
+first-class console capability vocabulary can layer on later behind the same
+`required_operation` seam.
 
 See also [repl-console.md](repl-console.md) (the component), [gate.md](gate.md)
 (the correctness gate), [audit-trail.md](audit-trail.md) (the trail), and

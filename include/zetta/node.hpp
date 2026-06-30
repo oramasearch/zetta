@@ -14,12 +14,15 @@
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset.hpp"
 #include "zetta/dataset_partition.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_controller.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_registry.hpp"
 #include "zetta/model.hpp"
+#include "zetta/node_metrics.hpp"
+#include "zetta/node_telemetry.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
@@ -28,8 +31,10 @@
 namespace zetta {
 
 class ReplicationManager;
+class Cluster;
 struct ExecutionResult;
 namespace ir { class ExecutionGraph; }
+namespace compute { class JobCoordinator; }
 
 // Where a node's persistent state lives and how it presents itself. More
 // fields (listen address, replication peers, cache sizes) land alongside the
@@ -91,6 +96,11 @@ class Node : public AuditSink {
 public:
     explicit Node(NodeConfig config, ReplicationManager* replication = nullptr);
 
+    // Out-of-line so the unique_ptr<compute::JobCoordinator> member (held as an
+    // incomplete type here, to keep the heavy compute/cluster headers out of this
+    // widely-included header) is destroyed where the complete type is visible.
+    ~Node();
+
     Node(const Node&) = delete;
     Node& operator=(const Node&) = delete;
 
@@ -141,6 +151,33 @@ public:
     // add_nodes(Node&, …) overload to feed the previous membership into the
     // between-jobs rebalance (#519).
     std::vector<std::string> cluster_members() const;
+
+    // Attach this running node's **compute plane** to its real Cluster: construct
+    // and start a long-lived `compute::JobCoordinator` over it (ARC-11 / #579, the
+    // SPMD job-submission "spine"), reachable via job_coordinator(). The
+    // coordinator owns the collectives + the distributed work-stealing scheduler
+    // bound to `cluster`'s signal plane, so a job submitted through it runs SPMD
+    // across the live cluster membership.
+    //
+    // Called once after both the node and the cluster are up (main wires it right
+    // after cluster.start()), because main constructs the Node before the Cluster
+    // — so the cluster can't be a constructor argument. `worker_count` is the
+    // coordinator's local pool size; 0 (the default) picks a sensible default from
+    // the hardware concurrency (leaving a core for the loop + network thread). If
+    // the node is already running the coordinator starts immediately; otherwise it
+    // starts on the next start(). `cluster` must outlive the node (or stop()/a
+    // detach must run first) — stop() tears the coordinator down. Calling it again
+    // replaces the attachment.
+    void attach_cluster(Cluster& cluster, unsigned worker_count = 0);
+
+    // This node's long-lived JobCoordinator over its real cluster, or nullptr when
+    // no cluster has been attached (a standalone node, or before attach_cluster).
+    // The single entry the native distributed compute algorithms submit work
+    // through; see compute/job_coordinator.hpp / docs/job-coordinator.md.
+    compute::JobCoordinator* job_coordinator() { return coordinator_.get(); }
+    const compute::JobCoordinator* job_coordinator() const {
+        return coordinator_.get();
+    }
 
     // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
     // target and record it. R1 supports a **Local** target only; deploy_graph
@@ -276,6 +313,20 @@ public:
         return dataset_partitions_.size();
     }
 
+    // The datasets on this node — the **computed-at-query-time** read source behind
+    // the read-only `system.datasets` observability view (RULE-7; #585, the engine
+    // half of the area-3 dataset view in epic #575). A dataset is a first-class
+    // primitive even though none is stored: **one dataset == one table**, and this
+    // aggregates per dataset its schema (inferred field names), row count, on-disk
+    // size, storage format, replication strategy, and **partition placement across
+    // the cluster** (which node owns which partition — joined live from the
+    // replicate-to-all partition catalog, so every node reports the same placement).
+    // Recomputed from the live tree (databases → tables) + dataset_partitions() on
+    // every call — never stored/hand-synced — so it can't drift from the truth. The
+    // `system` database (a virtual catalog) is not a dataset and is excluded. See
+    // dataset.hpp / docs/system-datasets.md.
+    std::vector<DatasetSummary> datasets() const;
+
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
     // docs/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
@@ -287,6 +338,32 @@ public:
     void record_cloud_inspection(CloudInspectReport report);
     std::vector<CloudInspectReport> cloud_inspections() const {
         return cloud_inspections_;
+    }
+
+    // Sample this node's **live host resource utilization** — CPU / memory / GPU
+    // + VRAM / storage / network (see node_metrics.hpp / docs/node-metrics.md).
+    // **Ephemeral, observed state with NO CRDT backing**: it is read straight
+    // from the host's OS counters here and now, never stored or replicated (like
+    // cloud_inspections()). It is the source for the read-only
+    // `system.node_metrics` view (RULE-7 / #575 area 2). Non-const because the
+    // CPU + network gauges are rates measured against the previous sample, which
+    // the sampler updates each call. The storage gauge is taken over the node's
+    // `data_dir` filesystem.
+    NodeMetrics sample_node_metrics() {
+        return node_metrics_sampler_.sample(config_.data_dir);
+    }
+
+    // The **cluster-wide** live telemetry snapshot: this node plus every peer
+    // whose `node.metrics` event arrived within the freshness window — the source
+    // the headed cluster view animates per-node gauges from (#584). Where
+    // `sample_node_metrics()` measures only this host, the per-node series are
+    // gathered over the signal plane (each node broadcasts its own sample, every
+    // node caches what it receives — see node_telemetry.hpp / docs/cluster-node-gauges.md).
+    // Ephemeral + non-replicated like the sample itself; empty until a cluster is
+    // attached (the exchange rides the JobCoordinator's signal-handler chain).
+    std::vector<NodeTelemetrySample> telemetry_snapshot() const {
+        if (!telemetry_) return {};
+        return telemetry_->snapshot();
     }
 
     // CRUD for principals (authenticated actors — see principal.hpp /
@@ -399,6 +476,13 @@ private:
     // This node's stable id: the replication actor id when replicated, else the
     // UUID persisted in data_dir/node_id (created on first use). Set by start().
     std::string resolve_node_id();
+
+    // Construct + start the JobCoordinator over the attached cluster (#579). A
+    // no-op when no cluster is attached or one already runs; called from
+    // attach_cluster (when running) and from start() (re-establishes it after a
+    // stop()/start() cycle). stop_coordinator() stops + releases it.
+    void start_coordinator();
+    void stop_coordinator();
 
     // Rebuild runs_ by scanning config_.data_dir. Called from start().
     void load_runs();
@@ -514,6 +598,7 @@ private:
     std::vector<std::shared_ptr<DatasetPartition>>
         dataset_partitions_;                                // sorted (created, id)
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
+    NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     IndexRegistry index_registry_;            // IndexBackend container (#528)
@@ -521,6 +606,23 @@ private:
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.
     compute::FileCheckpointStore checkpoint_store_;
     DeploymentController controller_{*this};  // control plane (driven by tick())
+    // The compute plane over the real cluster (#579): non-owning pointer to the
+    // attached Cluster (null = no cluster), the requested worker count (0 = auto),
+    // and the long-lived coordinator (null until attach_cluster + a running node).
+    // Held as an incomplete type via unique_ptr; destroyed in stop()/~Node before
+    // the cluster, so its handler unwind never touches a dead cluster.
+    Cluster* cluster_ = nullptr;
+    unsigned compute_workers_ = 0;
+    // Cluster-wide live telemetry over the signal plane (#584): the cache of this
+    // node's + peers' `node.metrics` events, wired as the coordinator's signal
+    // handler fallback. Declared BEFORE coordinator_ so it outlives it (the
+    // coordinator holds it as a raw fallback pointer); created in
+    // start_coordinator(), and tick() broadcasts this node's sample through it.
+    // `last_telemetry_sample_` throttles that broadcast to ~1 Hz. Ephemeral; not
+    // replicated.
+    std::unique_ptr<NodeTelemetryExchange> telemetry_;
+    std::chrono::steady_clock::time_point last_telemetry_sample_{};
+    std::unique_ptr<compute::JobCoordinator> coordinator_;
 };
 
 }  // namespace zetta

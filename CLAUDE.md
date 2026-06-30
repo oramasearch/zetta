@@ -65,10 +65,11 @@ server.
 
 ```
 main()                       picks the mode, owns the Node + Cluster lifecycle
-  │  builds zetta::Node + zetta::Cluster, starts both
+  │  builds zetta::Node + zetta::Cluster, starts both, then
+  │  node.attach_cluster(cluster)  # the long-lived JobCoordinator spine (#579)
   ├── --headless ─→ zetta::run_headless(node, cluster)   # core only, no SDL
   └── --headed   ─→ zetta::gui::App(node, cluster).run() # SDL3 + ImGui over them
-  ...then cluster.stop(), node.stop()
+  ...then cluster.stop(), node.stop()   # node.stop() releases the coordinator
 ```
 
 A node owns **databases**, each database owns **tables**, and each table holds
@@ -92,8 +93,19 @@ database owns tables, with `create_graph`/`update_graph`/`drop_graph` CRUD
 edit replicates like a create). The headed **Graph Workspace** panel
 (`App::draw_graph_workspace`) renders a project's graph as an editable node/edge
 canvas — nodes in columns by `StepKind`, edges between them — and persists edits
-back to the IR via `update_graph` (SCR-3/CMP-1, the GUI slice of FEAT-2). See
-[docs/projects.md](docs/projects.md).
+back to the IR via `update_graph` (SCR-3/CMP-1, the GUI slice of FEAT-2). The same
+workspace also carries a **graph-over-cluster plan view** (`App::draw_graph_plan`,
+#591, part of #575 area 6): a toggle that **projects how the open graph would run
+over the current cluster** — which steps run **near their data**, which **fan out**
+SPMD, and the **owner nodes** each lands on. The projection is the pure, tested
+zetta-core `zetta::project_cluster_plan` (`include/zetta/graph_plan.hpp`) over the
+IR + the [partition catalog](docs/dataset-partitions.md) + the live `Cluster::nodes()`
+(no new JSON boundary — all inputs are already validated); the GUI overlays it on
+the canvas (a placement-coloured stripe + badge per step) plus a current-cluster
+strip (the selected step's target nodes highlighted) and a per-step placement
+table. It is a **projection** of zetta's SPMD + compute-near-data model, **not** a
+committed schedule (there is no general per-step scheduler yet). See
+[docs/projects.md](docs/projects.md) and [docs/graph-plan.md](docs/graph-plan.md).
 
 A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
 payloads captured with provenance (`kind` intent|artifact, `source`
@@ -160,9 +172,17 @@ validated against a formal **JSON Schema** at the storage boundary like `Run`
 (`parse_model_value`; `kind` required, `metrics` numeric, `weights` carries both
 size + hash), and the preflight integrity check counts model weights (present /
 awaiting body / corrupt) the same way it does large-object bodies. The registry
-is `Node::models()` + the SQL **`system.zetta_models`** table. This is storage +
-provenance + replication only — training/inference (and producing the weights) is
-a later slice. See [docs/models.md](docs/models.md).
+is `Node::models()` + the SQL **`system.zetta_models`** table. The headed app
+surfaces the registry in a **standalone Models view** (`App::draw_models`,
+`src/gui/app_operations.cpp`, **Operations → Models**; part of #575) — a thin,
+read-only list + detail over `system.zetta_models` (each model's metrics + ranked
+drivers + weights fingerprint, reusing the Runs panel's `render_model_card`) **plus
+an inline "Add model" affordance** that registers/imports a model via
+`Node::create_model` + optional `Model::set_weights` (the assembled value
+re-validated against the Model JSON Schema at the form boundary — no new format).
+This is storage + provenance + replication only — training/inference (and producing
+the weights) is a later slice. See [docs/models.md](docs/models.md) and
+[docs/models-panel.md](docs/models-panel.md).
 
 A node also owns **indexes** (`zetta::Index`) — a registered **index over a
 table** (**ENT-39 / ENT-40, ADR-34**): its definition `{ table, kind, backend,
@@ -1231,10 +1251,23 @@ fallback) — member declaration order makes construction register it and
 destruction unwind it cleanly, which is why it owns (not references) those pieces.
 It introduces **no new JSON format** — `map` rides the schema-validated steal
 messages, the collectives ride the schema-validated `CollectiveMessage`, and the
-job record is schema-validated at its own boundary. The autoscaler that sizes the
-fleet from a job's `ScalingPolicy` is the **job autoscaler** below (wiring the
-loop's observation source + tick into the coordinator for a live, end-to-end
-autoscaled job is the remaining, later slice). See
+job record is schema-validated at its own boundary. A **running `Node` owns one
+long-lived coordinator over its real `Cluster`** (the compute "spine", **#579**):
+`Node::attach_cluster(Cluster&, worker_count=0)` constructs + starts it (called
+from `main` right after `cluster.start()`, since the Node is built+started before
+the Cluster exists, so the cluster can't be a ctor arg; `worker_count=0` → auto
+from hardware concurrency), `Node::job_coordinator()` returns it (`nullptr` on a
+standalone/un-attached node), and `Node::stop()` tears it down **before** the
+cluster shuts down (the handler-unwind is a cheap atomic store, so it never touches
+a dead cluster). Headless (zetta-core, no SDL), so `--headless` and the headed app
+both get it; the only standing background work is the scheduler's ~25 ms steal poll
+(a no-op until a `map` executor is registered). Earlier coordinators were built
+ad-hoc (the testkit/per-op suites still do; the GUI churn demo keeps its own
+*isolated* single-node coordinator on purpose); routing in-process submitters
+through the node-owned one is follow-up the spine enables. The autoscaler that
+sizes the fleet from a job's `ScalingPolicy` is the **job autoscaler** below
+(wiring the loop's observation source + tick into the coordinator for a live,
+end-to-end autoscaled job is the remaining, later slice). See
 [docs/job-coordinator.md](docs/job-coordinator.md).
 
 ### Job autoscaler (`zetta::JobAutoscaler`)
@@ -1328,9 +1361,35 @@ so a restarted node (new id, same address) **replaces** its stale entry instead
 of leaving a ghost. `zetta::Cluster` runs networking on a background thread via
 **Corosio**, behind the `zetta::runtime::net` seam (adapter:
 `src/core/cluster.cpp`; public API exposes no backend types). The headed Cluster
-panel shows the node id, every reachable listen address, peers, and the
-**command to add another node** plus a **Nodes & replication** table; headless
-logs that table. `Cluster::nodes()` returns this node + every connected peer with
+panel shows the node id, every reachable listen address, peers, the
+**command to add another node**, and a **spatial node-box canvas** — one
+selectable box per node (click → a per-node detail pane: id, role, address,
+membership, replication; the worktree-manager "boxes" feel) laid out in a wrapping
+grid, a thin renderer over `Cluster::nodes()` read live each frame so membership
+tracks joins/leaves/heals with no separate copy (`App::draw_cluster`,
+`src/gui/app_operations.cpp`, #582 — the spatial foundation the add-nodes control
+and algorithm animation build on). Each box also carries **live, animated resource
+gauges + sparklines** (CPU / memory / GPU + VRAM / storage / network in-out, eased
+moving bars with Orama semantic green/amber/red, graceful `n/a`; #584, the GUI half
+of #575 area 2), driven by `Node::telemetry_snapshot()` (the cluster-wide
+[telemetry exchange](#per-node-telemetry-exchange-zettanodetelemetryexchange) over
+the signal plane — animation state in `src/gui/cluster_telemetry.hpp`); selecting a
+node shows the same gauges with fuller read-outs in the detail pane. Above the
+canvas the panel carries an **Add nodes control** (`App::draw_add_nodes_control`,
+#583 — epic #575 area 1): the GUI front door for `zetta::add_nodes` driven over an
+**injected `Provisioner`** (`App::set_provisioner`; `main` wires the given-hardware
+`LocalProvisioner` over the live fleet to the `"local"` target). Pick a target (the
+`CloudProviderCatalog`) + a count — the **Local** target runs on a plain click (no
+cloud, no consent, brings up no new machines — given-hardware best-effort); every
+**cloud / Kubernetes / on-prem** target is **permission-gated, deny-by-default** (it
+would run the provider CLI to create billable resources), so the control names what
+it would read/run and nothing happens until the user explicitly allows that one
+action, never remembered — the same consent grammar as the Cloud Inspector. The
+`Node`-aware `add_nodes` overload also rebalances sharded partitions onto any new
+members (#519). Constructing a configured cloud provisioner from the GUI + teardown
+are later slices. See [docs/add-nodes-control.md](docs/add-nodes-control.md).
+Headless logs the per-node table. `Cluster::nodes()` returns this node + every
+connected peer with
 its replication status (entries, version, in-sync, last-sync) — surfaced in the
 headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
@@ -1368,6 +1427,36 @@ short tick, and membership/signal-only links now send a `PING` keepalive (since
 they carry no periodic gossip). `encode_signal`/`decode_signal` are the
 serialization seam; the transport only adds/strips the framing. See
 [docs/signal-plane.md](docs/signal-plane.md).
+
+### Per-node telemetry exchange (`zetta::NodeTelemetryExchange`)
+
+The **cluster-wide live telemetry exchange** (`include/zetta/node_telemetry.hpp`,
+**#584**, the engine half of the animated per-node gauges of #575 area 2) is the
+*ephemeral telemetry exchange over the signal plane* the
+[node-metrics](docs/node-metrics.md) doc anticipated. `system.node_metrics` measures
+only **the host the query hits**, so a node can't see its peers' utilization
+directly; this fills that gap **without replicating** (telemetry is a measurement,
+not durable state). Each node, on a throttled ~1 Hz step inside `Node::tick()`,
+samples its own `NodeMetrics` and **broadcasts** it to peers as a fire-and-forget
+**`node.metrics`** [signal-plane](docs/signal-plane.md) event; every node **caches**
+what it receives. `NodeTelemetryExchange` is the `SignalHandler` that does the
+caching — wired as the [`JobCoordinator`](docs/job-coordinator.md)'s **fallback**
+(so it coexists with the steal / collective signals the coordinator already routes,
+no new handler slot) and keyed by the **transport-verified** sender id
+(`Signal::from`, not the self-reported payload, so a peer can't masquerade). It is
+created in `Node::start_coordinator()` and exposed via **`Node::telemetry_snapshot()`**
+— this node plus every peer whose last sample is within the freshness window (stale
+peers drop out, so a departed node's gauges don't dangle), node-id ascending. The
+`node.metrics` payload rides a **schema-validated** wire boundary like the
+[`CollectiveMessage`](docs/collectives.md): `encode_node_metrics` /
+`decode_node_metrics` + `node_metrics_wire_schema()` (the **code-owned** draft-07
+source of truth; `schemas/node_metrics.schema.json` is generated + drift-checked by
+`test_schemas`), with an unavailable gauge group carried by **omission** so graceful
+degradation round-trips as field presence. It lives in **zetta-core** (no SDL,
+headless-testable), so a headless node participates too (broadcasts + caches). The
+headed GUI consumer (the animated node-box gauges + sparklines) is a thin renderer
+over `telemetry_snapshot()` — see the Cluster panel below and
+[docs/cluster-node-gauges.md](docs/cluster-node-gauges.md).
 
 ### Collectives (allreduce / broadcast / barrier / gather)
 
@@ -1767,10 +1856,22 @@ readable strings, no secret material) and **`system.zetta_audit`** (the immutabl
 audit trail, `Node::audit_events()`) — plus **`system.dataset_partitions`** (the
 partition catalog, `Node::dataset_partitions()`: where each table's data slices
 live — table / blob / row range / stats / owner nodes; ENT-36/TBL-13) and
+**`system.datasets`** (datasets as a first-class primitive, `Node::datasets()`: one
+row per dataset = a table + its data, aggregating schema / rows / on-disk size /
+storage format / replication strategy + **partition placement across the cluster**
+— which node owns which partition, joined from the replicate-to-all catalog;
+computed live, never stored; #585, the engine source for the area-3 dataset view in
+epic #575) and
 **`system.checkpoints`** (burst-job eviction-tolerance checkpoints,
 `Node::checkpoints()`: the latest resume checkpoint per job in this node's local
 store — kind / sequence / total / progress; ephemeral + local + not replicated, like
-`system.zetta_cloud_status`; RULE-5/#468). `system` is
+`system.zetta_cloud_status`; RULE-5/#468) and
+**`system.node_metrics`** (live per-node resource telemetry,
+`Node::sample_node_metrics()`: this node's host CPU / memory / GPU + VRAM / storage
+/ network utilization, sampled from OS counters at query time; one row — the node
+the query hits; ephemeral + observed + not replicated, like `system.zetta_cloud_status`;
+counters a host can't report are null — GPU is absent in a CPU-only core build;
+#575 area 2). `system` is
 reserved (can't be created/dropped/written; no real db may be named it) and is
 where future system tables (e.g. `system.leadership`) live — **surfacing observable
 state as a `system.<table>` table is the default**, see the convention below
@@ -2144,14 +2245,27 @@ columns), builds the standard featurize spec + GBDT params, **injects** a
 `ChurnStepExecutor`, and **executes** the graph — returning the Run plus the real
 `Model` id + ranked at-risk list + drivers + playbook. It adds **no new JSON
 format** (rides the validated `ChurnDataset` / catalog / Run / ComputeJob / GBDT
-boundaries). The Deploy panel offers a **"Run on real engine"** action
-(`App::run_churn_demo`) for the churn blueprint — synchronous on the UI thread (like
-the Cloud Inspector), over `demo_churn_dataset()` (a built-in, no-files demo
-dataset), on an **isolated single-node loopback `JobCoordinator`** so the SPMD
-collectives never block on this node's real peers; the produced Model + jobs
-register on the node (visible in the Runs/Jobs panels). Single-node here; the
-single-node == multi-node equivalence is proven in the per-op job suites. See
-[docs/churn-solution.md](docs/churn-solution.md).
+boundaries). **Interactive runs go over the live cluster** (`run_churn_solution_on_node`
++ `is_churn_graph`, **#580**): the sibling `run_churn_solution_on_node(node, device,
+graph, dataset, options)` resolves the node's **live** `JobCoordinator` (the
+[#579 spine](#job-coordinator-zettacompute) — `Node::attach_cluster` /
+`Node::job_coordinator`) and runs the same pipeline there, so the produced Run + Model
++ ranked list combine over the node's **real cluster membership** (the collectives ride
+the signal plane) and register on the live node — **not** an isolated loopback (a node
+with no compute plane attached fails clearly rather than no-op). Two interactive
+surfaces drive it: the Deploy panel's **"Run over the cluster"** action
+(`App::run_churn_demo`, over `demo_churn_dataset()`, synchronous on the UI thread like
+the Cloud Inspector; a throwaway loopback only as a no-cluster fallback) and a
+**churn-shaped** sim-Python program in the [governed Console](#repl-console-zettareplconsolemodel--zettaguireplconsole)
+(routed through the console's injectable **graph runner** seam — still capability-scoped
++ gate-checked + audited; `is_churn_graph` is the `connect`+`clean`+`model` predicate, a
+non-churn graph stays on `Node::run_graph`). **Single-node-or-coordinated membership**:
+the underlying jobs are SPMD — a collective round waits for *all* connected peers, so an
+interactive run is correct on a standalone/single-member cluster (the live coordinator
+*is* the cluster) today; the collectives already do the **combine**, the missing piece
+is the cross-process **co-launch** (telling every peer to co-run the same graph over the
+signal plane), a later slice. The single-node == multi-node equivalence is proven in the
+per-op job suites. See [docs/churn-solution.md](docs/churn-solution.md).
 
 ### Cloud Inspector (permission-gated cloud provider inspection)
 
@@ -2609,7 +2723,9 @@ assets/fonts/               embedded Geist + Geist Mono TTFs (SIL OFL 1.1) + REA
 scripts/install-deps.sh     install system build tools (macOS / Ubuntu)
 include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
-  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519)
+  node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581) + the cluster-wide telemetry snapshot (telemetry_snapshot(), #584); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
+  node_metrics.hpp          zetta::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
+  node_telemetry.hpp        zetta::NodeTelemetryExchange + encode_node_metrics/decode_node_metrics/node_metrics_wire_schema — cluster-wide live telemetry over the signal plane (#584): each node broadcasts its own NodeMetrics as an ephemeral `node.metrics` event, a SignalHandler (the JobCoordinator's fallback) caches peers' by sender id; the schema-validated wire boundary; feeds the animated node-box gauges via Node::telemetry_snapshot(); not replicated
   database.hpp              zetta::Database — owns tables (disk-backed)
   project.hpp               zetta::Project — an AI project; owns inputs + execution graphs
   project_input.hpp         zetta::ProjectInput — raw intent/artifact input + provenance
@@ -2661,9 +2777,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   capability.hpp            zetta::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
   audit_event.hpp           zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   intent_compiler.hpp       zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
+  graph_plan.hpp            zetta::project_cluster_plan/ClusterPlan/StepPlan/StepPlacement — project how an ExecutionGraph would run over the current cluster (near-data / fan-out / all-nodes / coordinator per step, near-data locality propagated forward along DataFlow edges); pure + deterministic, the engine of the Graph Workspace plan view (#591, #575 area 6); no new JSON boundary
   executor.hpp              zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
   churn_step_executor.hpp   zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→build a real entity index (#528) + score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
-  churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398)
+  churn_solution.hpp        zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + run_churn_solution_on_node (run over the node's live JobCoordinator, the #579 spine — the interactive "run over the cluster" front door, #580) + is_churn_graph (connect+clean+model predicate) + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398/#580)
   table.hpp                 zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
   partitioner.hpp           zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
   rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
@@ -2725,7 +2842,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     device_registry.hpp     zetta::compute::DeviceRegistry — per-node enumerate/report/select devices (ARC-9; #362)
     work_stealing_scheduler.hpp  zetta::compute::WorkStealingScheduler — local per-worker-deque work-stealing task pool (ARC-10/#366)
     distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
-    job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372)
+    job_coordinator.hpp  zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372); a running Node owns one over its real Cluster via Node::attach_cluster/job_coordinator (the SPMD spine, #579)
     checkpoint.hpp  zetta::compute::JobCheckpoint/CheckpointStore/FileCheckpointStore/run_resumable_rounds — burst-job eviction tolerance: durable sha256-fingerprinted progress snapshot (validated boundary) + a durable store seam + a resume-from-last-checkpoint driver (graceful spot-drain), so an evicted job resumes without recomputing committed rounds (RULE-5/RSK-9; #468)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
@@ -2759,10 +2876,12 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     example_script.hpp      zetta::testkit::ExampleScript/ExampleExpectations/ExampleRunReport + run_example_script + example_scripts() — the sim-Python example-script harness: run a script end to end (parse->IR->gate->run) + assert on outputs, surfacing the offending statement on failure (the example programs ARE the integration tests; #523)
   repl/
     console_model.hpp       zetta::repl::ConsoleModel — the engine-agnostic REPL session (frontend + input + transcript + submit) behind the CMP-6 console; no SDL/ImGui, so it backs the GUI component AND a future CLI (#524)
-    governed_console.hpp    zetta::repl::GovernedConsole — the governed run handler behind the SCR-8 Console/REPL screen: capability-scope a statement, lower sim-Python to the IR + run the correctness gate, execute (SQL via QueryService / sim-Python via run_graph), record one data_access audit event; zetta-core / no-SDL (#525)
+    governed_console.hpp    zetta::repl::GovernedConsole — the governed run handler behind the SCR-8 Console/REPL screen: capability-scope a statement, lower sim-Python to the IR + run the correctness gate, execute (SQL via QueryService / sim-Python via the injectable graph runner — default run_graph, or the real churn engine over the live cluster for a churn-shaped graph, #580), record one data_access audit event; zetta-core / no-SDL (#525/#580)
 src/core/                   zetta-core impl
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   node.cpp                  load_databases()/load_projects()/load_deployments()/load_runs()/load_jobs()/load_dataset_partitions() + replication capture/reconcile/persist
+  node_metrics.cpp          zetta::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
+  node_telemetry.cpp        zetta::NodeTelemetryExchange — the node.metrics wire boundary (embedded draft-07 schema + pboettch validation, encode/decode) + the thread-safe peer cache (receive on the network thread, record local + snapshot on the loop thread, expire stale) (#584)
   database.cpp
   project.cpp               zetta::Project — persist/rename project.json + input/graph CRUD
   project_input.cpp         zetta::ProjectInput — persist input.json + payload body
@@ -2821,9 +2940,10 @@ src/core/                   zetta-core impl
   capability.cpp            zetta::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
   audit_event.cpp           zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
   intent_compiler.cpp       compile_intent — templated churn/generic skeleton (NL intent → IR)
+  graph_plan.cpp            project_cluster_plan — per-step cluster placement projection (kind → placement; near-data owner propagation along DataFlow edges; drop stale owners) for the Graph Workspace plan view (#591)
   executor.cpp              GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
   churn_step_executor.cpp   ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain); index step also builds a real entity index via the node registry (#396/#528)
-  churn_solution.cpp        run_churn_solution — the ChurnDataset→numeric encoder + standard churn pipeline config + the runner (inject ChurnStepExecutor into a GraphExecutor) + demo_churn_dataset (#398)
+  churn_solution.cpp        run_churn_solution — the ChurnDataset→numeric encoder + standard churn pipeline config + the runner (inject ChurnStepExecutor into a GraphExecutor) + run_churn_solution_on_node (resolve Node::job_coordinator → run over the live spine) + is_churn_graph + demo_churn_dataset (#398/#580)
   table.cpp
   partitioner.cpp          zetta::HashPartitioner/RoundRobinPartitioner assign_partition (FNV-1a key hash / surrogate mod) + to_json + partitioner_from_json config boundary (#513)
   jsonl_store.cpp
@@ -2894,13 +3014,14 @@ src/core/                   zetta-core impl
     example_script.cpp      run_example_script — parse->IR->gate->run + expectation checks + offending-statement reconstruction (#523)
     cases_examples.cpp      example_scripts() built-in catalog + register_example_cases (each sim-Python example a TestCase under TestCategory::Examples)
   repl/console_model.cpp    zetta::repl::ConsoleModel — submit/clear logic + Frontend names + format_result/format_transcript text projections (CMP-6; #524)
-  repl/governed_console.cpp zetta::repl::GovernedConsole — the governance pipeline (capability check → sim-Python lower+gate → execute → data_access audit) + required_operation + the SQL Outcome→Result grid mapping (SCR-8; #525)
+  repl/governed_console.cpp zetta::repl::GovernedConsole — the governance pipeline (capability check → sim-Python lower+gate → execute via the injectable graph runner → data_access audit) + required_operation + the SQL Outcome→Result grid mapping (SCR-8; #525/#580)
 src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
   app_internal.hpp          shared GUI-only helpers: the Orama design tokens + wash/status_dot/eyebrow/mono_line/primary_button + extern g_mono_font (not in the public include/zetta surface)
+  cluster_telemetry.hpp     zetta::gui::NodeGaugeState/Sparkline/Gauge — pure-data (no ImGui) animation state for the cluster node-box gauges (#584): per-gauge eased value + sparkline history ring, keyed by node id; a thin renderer's working copy of Node::telemetry_snapshot(); the drawing lives in app_operations.cpp
   app_home.cpp / app_explorer.cpp / app_pipeline.cpp / app_operations.cpp / app_governance.cpp
-                            the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464)
+                            the App::draw_* panels split by area (home/data, pipeline, operations, governance) — each an App member TU over app.hpp + app_internal.hpp (#464). app_pipeline.cpp also hosts the Graph Workspace's graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591); app_operations.cpp's draw_cluster renders the animated per-node resource gauges + sparklines (#584) over the telemetry snapshot
   repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
 modules/                    vendored deps as git submodules (capy, corosio)
@@ -3145,8 +3266,11 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/new-project-screen.md`](docs/new-project-screen.md) — the headed New Project screen (SCR-2): name + paste NL intent + import/drag-drop an n8n workflow artifact, in one atomic create (FEAT-1).
 - [`docs/runs.md`](docs/runs.md) — the Run (`zetta::Run`) record: status/logs/outputs/lineage + JSON-Schema validation.
 - [`docs/models.md`](docs/models.md) — the Model (`zetta::Model`) entity (ENT-14/FEAT-6): replicated `model:<uuid>` metadata + serialized weights as a peer-to-peer large-object body (sha256-verified) + the `system.zetta_models` registry.
+- [`docs/models-panel.md`](docs/models-panel.md) — the headed standalone **Models view** (`App::draw_models`, part of #575): the GUI form of `system.zetta_models` — list + detail (metrics, ranked drivers, weights fingerprint, reusing the Runs panel's `render_model_card`) + an inline **Add model** affordance (register/import via `create_model` + optional `set_weights`, re-validated against the Model JSON Schema at the form boundary).
 - [`docs/compute-jobs.md`](docs/compute-jobs.md) — the ComputeJob (`zetta::ComputeJob`) record: a unit of native distributed accelerated compute (featurize/train/explain/score/ddf) — lifecycle, create/finish audit, JSON-Schema boundary (ARC-11 / ENT-31).
 - [`docs/dataset-partitions.md`](docs/dataset-partitions.md) — the partition catalog (`zetta::DatasetPartition`, ENT-36 / TBL-13): a replicate-to-all record of where a slice of a table's data lives (table / blob body / row range / stats / owner nodes) — the `part:<uuid>` CRDT key + reconcile + the read-only `system.dataset_partitions` computed view, so placement is globally visible; JSON-Schema validated at the boundary. Storage + provenance + replication of the catalog only (locality-aware reads / re-balancing are later slices). The producer that fills it is the partitioned write path below.
+- [`docs/system-datasets.md`](docs/system-datasets.md) — datasets as a first-class observability primitive (`zetta::Node::datasets()` + the read-only **`system.datasets`** view, #585; the engine source for the area-3 dataset view in epic #575). One row per dataset (= a table + its data) aggregating its inferred schema, row count, on-disk size, storage format, [replication strategy](docs/replication-strategy.md), and **partition placement across the cluster** — which node owns which partition, joined live from the replicate-to-all [partition catalog](docs/dataset-partitions.md). No stored `Dataset` entity: computed at query time from the live tree + catalog, so it never drifts (RULE-7); `Node::datasets()` is the single source both the SQL view and the [GUI Datasets panel](docs/datasets-panel.md) read. `format` is the live on-disk storage format (`jsonl` today — the original parquet/csv import format isn't retained); adds no new JSON boundary.
+- [`docs/datasets-panel.md`](docs/datasets-panel.md) — the headed **Datasets view** (`App::draw_datasets` + `App::draw_dataset_placement`, `src/gui/app_operations.cpp`, **Data → Datasets**; #586, area 3 of epic #575): the GUI form of [`system.datasets`](docs/system-datasets.md) — a **thin renderer** (no GUI-only state beyond the selection) list + detail showing the selected dataset's schema / row count / on-disk size / storage format / [replication strategy](docs/replication-strategy.md), plus the headline **partition placement across the cluster** as a node-box overlay (reusing the [Cluster view](docs/cluster.md)'s spatial grammar — a node owning a slice of this dataset is highlighted, one owning none dimmed; a departed/foreign owner still shows from the replicate-to-all catalog) over a per-partition `[start,end) → owners` table. Recomputed from `Node::datasets()` + `Cluster::nodes()` each frame, so it can't drift; no new JSON boundary.
 - [`docs/partitioned-write-path.md`](docs/partitioned-write-path.md) — the **partitioned write path** (`zetta::write_partitioned`, **#511**): rows → partition → blob, placement recorded. For a table configured with a [`Partitioner`](docs/partitioner.md) it assigns each row to a partition (stamping the round-robin `_seq` surrogate onto the assignment record only), serializes each non-empty partition's rows to a JSON Lines blob (the `JsonlStore` `{"_zid",doc}` shape), stores the bytes as a [large object](docs/large-objects.md) (`LargeObjectStore::import_bytes`, so the body is sha256-fingerprinted + gossips peer-to-peer), and records a [`DatasetPartition`](docs/dataset-partitions.md) catalog entry per partition (`blob_ref` + the cumulative `row_range` tiling `[0, rows_written)` + `place_partition` owners + `stats`), visible in `system.dataset_partitions`. N non-empty partitions → N blobs + N catalog rows (the acceptance). Composes #510/#512–#514; no new JSON schema (the catalog entry is the existing `DatasetPartition` boundary, the blob is an LO body). A reusable library function today; a load-triggering command and `ReplicationStrategy`-driven placement are later slices.
 - [`docs/partition-rebalance.md`](docs/partition-rebalance.md) — the **between-jobs partition rebalance on a membership change** (`zetta::rebalance_partitions`, **#517**; satisfies TC-10/#500): when a node joins, recompute [rendezvous (HRW)](docs/partitioner.md) placement for the sharded partitions and update each changed [`DatasetPartition`](docs/dataset-partitions.md)'s `owner_nodes` (via the capturing `set_owner_nodes` mutator that captures `part:<id>` into the CRDT), so **≈rf/N partitions move onto the new node** (whole partitions, no full rehash) and every row stays readable exactly once with `rf` owners — the **bodies move for free** over the [sharded-blob-placement](docs/sharded-blob-placement.md) (#515) seam (the new owner `LOREQ`s the body, a non-owner refuses it). `rf` is preserved from the catalog's current owner count (not the declarative `ReplicationStrategy`, since any `Partitioner` could have placed it); **replicate-to-all** partitions (owned by exactly the previous membership) are left untouched. **Auto-triggered inside `Node::tick()`** off the replicated `node:<id>` membership keys (no `Cluster` plumbing); fires on **joins** (append-only `node:` keys). No new JSON format. Out of scope: locality reads (#516), physical GC of a demoted owner's stale body, mid-job/elastic rebalance.
 - [`docs/sharded-blob-placement.md`](docs/sharded-blob-placement.md) — partition-aware large-object body replication (`zetta::ReplicatedBlobStore`, #515): a `Partitioned` / `PartitionedWithReplicas` table's partition body (the [catalog](docs/dataset-partitions.md) entry's `blob_ref`) is fetched + held **only by its owner node(s)** per `owner_nodes` + the replication factor (`rf` owners → exactly `rf` copies), instead of replicate-to-all — `missing_blobs()` skips a non-owner's partition body (so it never `LOREQ`s it), `store_blob()` refuses it; a plain large object, an unplaced partition (empty `owner_nodes`), and model weights keep replicate-to-all. Owner set read from the CRDT `part:` snapshot through the validated boundary (network-thread-safe, no Node access); no new JSON format. The first slice that *acts* on a non-default [replication strategy](docs/replication-strategy.md) at the body level (the partitioner write path / locality-aware reads / rebalancing are later slices).
@@ -3161,9 +3285,12 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/storage.md`](docs/storage.md) — on-disk format + storage-engine seam.
 - [`docs/partitioner.md`](docs/partitioner.md) — the `Partitioner` seam (`zetta::Partitioner`, ADR-31 / ENT-37, #512): the pluggable, per-table policy mapping a record to a partition and a partition to its owner node(s) over a fixed partition count `P >> nodes`, so rebalancing moves whole partitions (as blobs) rather than rehashing rows. The seam + the trivial `SinglePartitioner` baseline + `Table::set_partitioner` (#512); the two **record→partition** strategies (#513): `HashPartitioner` (`hash(key columns) % P` — deterministic shard-by-key via a stable FNV-1a, balanced for a typical key) and `RoundRobinPartitioner` (`surrogate % P` — even balance regardless of key skew), with the `partitioner_from_json`/`to_json` JSON config boundary (`schemas/partitioner.schema.json`, the hand-written value-type pattern); and the **partition→node** strategy `zetta::RendezvousPlacement` (`rendezvous_placement.hpp`/`rendezvous_owners`, #514) — rendezvous / highest-random-weight (HRW) placement (FNV-1a weight per `(partition, member)`, top-`replication_factor` by weight), so adding/removing one node reassigns only ~1/N of partitions, deterministic + leaderless + order-independent. Dependent slices: the partition catalog (#510) and the partitioned write path (#511, which composes assignment + placement and owns the universal polymorphic persisted-config JSON boundary).
 - [`docs/query.md`](docs/query.md) — the dialect-agnostic query layer + Postgres subset, incl. comparison `WHERE` and **`GROUP BY` aggregation routed through the [DDF engine](docs/ddf.md)** (ARC-12 / API-2, #386).
+- [`docs/node-metrics.md`](docs/node-metrics.md) — **live per-node resource telemetry** (`zetta::NodeMetricsSampler` / `system.node_metrics`, #575 area 2 / #581): each node samples its own host's OS counters (CPU / memory / GPU + VRAM / storage / network) at query time and emits one utilization row — an **ephemeral, observed** read view with **no CRDT backing** (like `system.zetta_cloud_status`), the engine source for the animated per-node gauges; `zetta-core` only (no SDL, headless-testable), counters a host can't report degrade gracefully to `null` (GPU absent in a CPU-only core build).
+- [`docs/cluster-node-gauges.md`](docs/cluster-node-gauges.md) — **animated per-node resource gauges + sparklines** on the headed cluster node boxes (`App::draw_cluster` + `zetta::NodeTelemetryExchange`, #584, #575 area 2): live CPU / memory / GPU + VRAM / storage / network as eased moving bars + sparklines (Orama semantic green/amber/red, graceful `n/a`), fed by a **cluster-wide telemetry exchange over the [signal plane](docs/signal-plane.md)** — each node broadcasts its own [`system.node_metrics`](docs/node-metrics.md) as an ephemeral `node.metrics` event and every node caches its peers', so `Node::telemetry_snapshot()` returns the whole cluster's gauges (self + fresh peers). **Not replicated** (a measurement, not durable state); the wire payload is schema-validated (`node_metrics_wire_schema()`, drift-checked); a thin GUI renderer over the snapshot (animation state in `src/gui/cluster_telemetry.hpp`).
 - [`docs/repl-console.md`](docs/repl-console.md) — the **REPL console** component (CMP-6 / #524): the SQL / simulated-Python console behind the headed **Data → Console** view — `zetta::repl::ConsoleModel` (the engine-agnostic REPL session in zetta-core: frontend + input + transcript + submit; no SDL/ImGui, so the same class backs the GUI component AND a future CLI) + the thin `zetta::gui::ReplConsole` ImGui renderer (frontend selector, multiline editor, run/clear, scrollback transcript, result grid). The component emits **run events** via a host-supplied handler — SQL through the [query service](docs/query.md), simulated-Python lowered to the IR + gated + executed by the governed screen below; results + errors display inline. No new JSON boundary (ephemeral session state). The governed Console/REPL screen (SCR-8, #525) hosts it.
-- [`docs/governed-console.md`](docs/governed-console.md) — the **governed Console/REPL screen** (SCR-8 / #525, realizes UC-3): the headed screen (`App::draw_console`) hosting the [REPL console](docs/repl-console.md), routing every statement through `zetta::repl::GovernedConsole` (zetta-core / no-SDL): **capability-scoped** against the acting key (`api:query` SQL / `orchestration:start_run` sim-Python; empty key = unauthenticated local, still audited), **simulated-Python lowered to the IR + run through the [correctness gate](docs/gate.md)** (RULE-1) then executed via `Node::run_graph` (a real Run), and **each statement recorded in the [audit trail](docs/audit-trail.md)** as a `data_access` event (reuses the existing audit action — no schema change). SQL keeps its own validated [query](docs/query.md) executor. Tabular results for both frontends; a "Run as" key selector; no new JSON boundary; headless-tested (`tests/test_governed_console.cpp`).
+- [`docs/governed-console.md`](docs/governed-console.md) — the **governed Console/REPL screen** (SCR-8 / #525, realizes UC-3): the headed screen (`App::draw_console`) hosting the [REPL console](docs/repl-console.md), routing every statement through `zetta::repl::GovernedConsole` (zetta-core / no-SDL): **capability-scoped** against the acting key (`api:query` SQL / `orchestration:start_run` sim-Python; empty key = unauthenticated local, still audited), **simulated-Python lowered to the IR + run through the [correctness gate](docs/gate.md)** (RULE-1) then executed through the **injectable graph runner** (default `Node::run_graph`, or the real churn engine over the node's live `JobCoordinator` for a churn-shaped graph — #580), and **each statement recorded in the [audit trail](docs/audit-trail.md)** as a `data_access` event (reuses the existing audit action — no schema change). SQL keeps its own validated [query](docs/query.md) executor. Tabular results for both frontends; a "Run as" key selector; no new JSON boundary; headless-tested (`tests/test_governed_console.cpp`).
 - [`docs/execution-graph.md`](docs/execution-graph.md) — the ExecutionGraph IR (nodes/edges/step-kinds).
+- [`docs/graph-plan.md`](docs/graph-plan.md) — the **graph-over-cluster plan view** (`zetta::project_cluster_plan` + the Graph Workspace's `App::draw_graph_plan`, #591, #575 area 6): project how an [ExecutionGraph](docs/execution-graph.md) would run over the **current** cluster — which steps run **near their data**, which **fan out** SPMD, the **owner nodes** each lands on — over the IR + the [partition catalog](docs/dataset-partitions.md) + the live [cluster](docs/cluster.md). A pure, tested zetta-core projection (connect → near-data/all-nodes; clean/model/index/serve → near-data/fan-out; act → coordinator; near-data locality propagated forward along DataFlow edges) rendered as a canvas overlay + cluster strip + per-step table; a **projection** of zetta's SPMD + compute-near-data model, not a committed schedule (no per-step scheduler yet); thin renderer, no new JSON boundary.
 - [`docs/intent-compiler.md`](docs/intent-compiler.md) — compiling a natural-language intent into a reviewable, editable ExecutionGraph skeleton (`zetta::compile_intent`; templated churn mapping, FEAT-2 / #311).
 - [`docs/python-frontend.md`](docs/python-frontend.md) — the simulated-Python language frontend (`zetta::input::LanguageFrontend` interface + `zetta::input::PythonFrontend`, ENT-38 / ADR-33 / #520) **+ its cluster/ML engine bindings** (#522): parse a Python subset (assignments, function calls, attribute/method access + chaining, literals) and lower it to the [ExecutionGraph IR](docs/execution-graph.md) — calls → typed steps (via the engine-faithful `python_step_kind` verb table; unmapped verb → Clean), variable refs + method receivers → data-flow edges; **not** a Python runtime (re-implement, don't run); non-throwing; no new JSON format (output is the validated IR JSON form). The verbs bind to real engine ops — `train`→`model` ([GBDT](docs/gbdt.md)), `score`/`predict`/`rank`→`index` ([batch scoring](docs/gbdt-score.md)), `explain`→`serve` ([TreeSHAP](docs/tree-shap.md)) all run through the [`ChurnStepExecutor`](docs/churn-step-executor.md); `cluster.add_nodes(n, provider=)`→`act` runs through `zetta::input::run_add_nodes_step` → the permanent-add control action [`zetta::add_nodes`](docs/add-nodes.md) (cloud consent-gated: the `Provisioner&` is injected). The IR-targeting analogue of the query layer's `Dialect`.
 - [`docs/datasets-shim.md`](docs/datasets-shim.md) — the simulated HuggingFace **`datasets` library shim** (`zetta::input::run_load_dataset_step` + `DatasetStepExecutor` + `dataset_load_spec` + `DatasetResolver`, #521): a sim-Python `from datasets import load_dataset; load_dataset("<path>", columns=[…])` lowers to an IR `connect`/load step (parquet path + column projection), and the binding decodes the referenced Parquet bytes with the native [Parquet reader](docs/parquet-reader.md) (`read_parquet_rows`, no Apache Arrow / parquet-cpp / HF runtime / network — fidelity references only), applies the projection, and populates a (optionally [partitioned](docs/partitioned-write-path.md)) table; the `DatasetStepExecutor` runs the load inside a [`GraphExecutor`](docs/execution.md). File/network IO behind the injectable `DatasetResolver` seam (offline default = a local filesystem path; a Hub-name resolver is a host-injected later slice); **no new JSON format** (the spec rides the validated IR boundary; rows are stored as free-form table rows). The engine binding of the [new-input](.claude/skills/new-input/SKILL.md) worked example.
@@ -3201,10 +3328,10 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/example-scripts.md`](docs/example-scripts.md) — the **sim-Python example-script harness** (`zetta::testkit::run_example_script` + `example_scripts()`, #523): run a sim-Python **example program end to end as an integration test** — **parse** ([PythonFrontend](docs/python-frontend.md)) → **IR** → **gate** ([default_gate](docs/gate.md), RULE-1) → **run** ([Node::run_graph](docs/execution.md)) — and **assert on the outputs** (node/edge shape, step kinds, data-flow edges, produced `dataset`/`model`/`index` outputs), so *the example programs ARE the integration tests*. A green script doubles as a canonical usage example; a negative script proves a failure **surfaces the offending statement** (the parser's locator at compile, or the failing step's statement reconstructed from its `python` provenance bag). Each example is a `TestCase` under the new **`TestCategory::Examples`**, runnable headless (`tests/test_example_scripts.cpp`) and in the **Operations → Test suite** panel; non-throwing; **no new JSON format** (only the validated IR/Run boundaries). The catalog ships the green churn-pipeline + minimal + method-chain samples, the **UC-1-at-scale** program (`examples.uc1_at_scale`, [#531](https://github.com/oramasearch/zetta/issues/531) — whose real distributed near-data run is the [`cluster.uc1_at_scale`](docs/uc1-at-scale-e2e.md) case), and the failure-surfacing negatives; the remaining flagship TC-9/10/13 scripts land as their engine bindings ([#522](https://github.com/oramasearch/zetta/issues/522) cluster+ML, parquet→DDF, partitioning, fulltext) do.
 - [`docs/runbooks/test-cases/`](docs/runbooks/test-cases/README.md) — **per-test runbooks**: one doc per [test-suite](docs/test-suite.md) case (compute / DDF / ML / distributed / governance / pipeline / examples) explaining what it does, how to run it (the headed **Operations → Test suite** panel + the headless gtest), its options, and what it asserts. The [index](docs/runbooks/test-cases/README.md) lists every case by category. Add a runbook alongside each new test-suite case.
 - [`docs/work-stealing-scheduler.md`](docs/work-stealing-scheduler.md) — the work-stealing scheduler (`zetta::compute::WorkStealingScheduler` local + `DistributedScheduler` cross-node): a job split into tasks, idle/faster workers/nodes steal pending work, no fixed capability model, **elastic mid-job membership** (join/leave/lost-node re-exec) (ARC-10 / #366 / #367).
-- [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372).
+- [`docs/job-coordinator.md`](docs/job-coordinator.md) — the job coordinator (`zetta::compute::JobCoordinator` / `JobRound`): the single entry the compute algorithms (DDF/GBDT/SHAP) submit work through — split a `ComputeJob` into tasks on the work-stealing scheduler, drive collectives at round boundaries (SPMD), drive the job lifecycle; owns + chains the scheduler + collectives over one signal-handler slot (ARC-11 / #372). A running `Node` **owns one long-lived coordinator over its real `Cluster`** — `Node::attach_cluster()` + `Node::job_coordinator()`, started/stopped in the node lifecycle (the SPMD compute spine, #579).
 - [`docs/job-checkpoint.md`](docs/job-checkpoint.md) — **burst-job eviction tolerance** (`zetta::compute` checkpoint / restart, RULE-5 / RSK-9, #468): the **job-level** complement to the work-stealing scheduler's task-level lost-peer recovery — durably snapshot a long-running job's progress (`JobCheckpoint`: opaque sha256-fingerprinted state + a schema-validated boundary with a cross-field integrity check) behind a `CheckpointStore` seam (`FileCheckpointStore` reference: atomic temp-write+rename, corrupt-head fallback), so `run_resumable_rounds` **resumes from the last checkpoint** after a spot eviction — no recompute of committed rounds, graceful drain on a termination notice. Standalone seam (no Node/SQL/cluster wiring); first consumer is per-round [GBDT](docs/gbdt.md) model checkpointing, observable via `system.checkpoints`; a shared/replicated store + auto-restart on a detected eviction are later slices.
 - [`docs/solution-catalog.md`](docs/solution-catalog.md) — the AI Solution Library (`zetta::SolutionCatalog`) + the headed Deploy panel: one-button deploy with a placement dial (FEAT-4 / SCR-5 / CMP-3).
-- [`docs/churn-solution.md`](docs/churn-solution.md) — wiring the catalog **churn-prediction** blueprint to the **real engine** (`zetta::run_churn_solution`, FEAT-4 / UC-1 / #398): the catalog churn graph gains the `index` step to match the real pipeline, and a reusable bridge encodes a [`ChurnDataset`](docs/churn-dataset.md) → numeric DDF shards, builds the standard featurize spec + GBDT params, injects a [`ChurnStepExecutor`](docs/churn-step-executor.md), and runs the blueprint → a real trained `Model` + ranked at-risk list + churn drivers + playbook (not the stubbed `DefaultStepExecutor`); the Deploy panel's "Run on real engine" action (`demo_churn_dataset`, isolated single-node coordinator) + the acceptance test drive it; no new JSON format.
+- [`docs/churn-solution.md`](docs/churn-solution.md) — wiring the catalog **churn-prediction** blueprint to the **real engine** (`zetta::run_churn_solution`, FEAT-4 / UC-1 / #398): the catalog churn graph gains the `index` step to match the real pipeline, and a reusable bridge encodes a [`ChurnDataset`](docs/churn-dataset.md) → numeric DDF shards, builds the standard featurize spec + GBDT params, injects a [`ChurnStepExecutor`](docs/churn-step-executor.md), and runs the blueprint → a real trained `Model` + ranked at-risk list + churn drivers + playbook (not the stubbed `DefaultStepExecutor`); **interactive runs go over the node's live `JobCoordinator`** (`run_churn_solution_on_node` + `is_churn_graph`, #580) — the Deploy panel's "Run over the cluster" action + a churn-shaped sim-Python program in the governed Console drive it over the [#579 spine](docs/job-coordinator.md), not an isolated loopback; no new JSON format.
 - [`docs/cloud-inspector.md`](docs/cloud-inspector.md) — the headed **Cloud Inspector** (`zetta::CloudProviderCatalog` + `zetta::CloudInspector` + `App::draw_cloud`): permission-gated inspection of deployment targets (local/on-prem/k8s/AWS/GCP/Azure/OCI) — a deny-by-default, ask-every-time consent gate that, on consent, runs the provider's read-only commands via the shared `CommandRunner`, parses each vendor's JSON at a validated boundary into identity/regions/nodes (no creds read), and surfaces it in the panel + `system.zetta_cloud_providers` / `system.zetta_cloud_status` (#445).
 - [`docs/signal-plane.md`](docs/signal-plane.md) — the ephemeral signal plane (`zetta::Signal`): RPC / events / tasks over the cluster transport, addressed by node id, schema-validated at the boundary (ADR-28 / ARC-10).
 - [`docs/collectives.md`](docs/collectives.md) — collective communication (`zetta::Collectives`): allreduce / broadcast / barrier / gather over the signal plane, deterministic across node order, for combining compute partials (ADR-28 / ARC-10; #365).
@@ -3219,6 +3346,7 @@ the whole style scale together, so text-size is effectively a UI zoom.
 - [`docs/burst-approval-gate.md`](docs/burst-approval-gate.md) — the large-burst cost-cap approval gate (`zetta::BurstApprovalGate`): a `Provisioner` decorator that blocks an over-cap provision burst pending approval and records the decision in the audit trail (APR-3 / RSK-9, #379).
 - [`docs/job-autoscaler.md`](docs/job-autoscaler.md) — the autoscaler control loop (`zetta::JobAutoscaler`): each tick observe a running `ComputeJob`'s progress, score it with the job's `ScalingPolicy`, and add/remove nodes through the `Provisioner` seam within bounds, with hysteresis (anti-thrash) + immediate cost-cap shed; reads live membership each tick (elastic) and degrades to best-effort max utilization on given hardware; schema-validated `AutoscalerConfig` (ADR-29 / ARC-11, #371).
 - [`docs/add-nodes.md`](docs/add-nodes.md) — the **permanent-add control entry point** (`zetta::add_nodes`, #518): the "add 10 nodes to this cluster" action over the `Provisioner` seam — drive a provisioner (the cloud-burst `AzureProvisioner`, or any backend) to bring up N nodes that auto-join via the seed-peer handshake and persist as ordinary `node:<id>` members (the existing membership + replication path, no parallel roster). The *permanent* sibling of the [autoscaler](docs/job-autoscaler.md): provision-and-report only, **never** tearing a member down or revoking — elastic / cost-cap burst deferred; vendor-neutral; validated `AddNodesRequest` JSON boundary.
+- [`docs/add-nodes-control.md`](docs/add-nodes-control.md) — the headed **Add nodes control** in the Cluster view (`App::draw_add_nodes_control`, #583 — epic #575 area 1): the GUI front door for [`zetta::add_nodes`](docs/add-nodes.md), driven over an **injected [`Provisioner`](docs/provisioner.md)** (`App::set_provisioner`; `main` wires the given-hardware `LocalProvisioner` over the live fleet to the `"local"` target). Pick a target (the [`CloudProviderCatalog`](docs/cloud-inspector.md)) + a count — the **Local** target runs on a plain click (no cloud, no consent, given-hardware best-effort); every **cloud / Kubernetes / on-prem** target is **permission-gated, deny-by-default** (adding nodes there runs the provider CLI to create billable resources), so the control names what it would read/run and nothing happens until the user explicitly allows that one action, never remembered — the same consent grammar as the [Cloud Inspector](docs/cloud-inspector.md). The `Node`-aware overload also [rebalances](docs/partition-rebalance.md) sharded partitions onto new members (#519); a target with no injected provisioner renders but reports it isn't wired. A thin renderer — no new engine logic or JSON boundary; constructing a configured cloud provisioner from the GUI + teardown are later slices.
 - [`docs/azure-provisioner.md`](docs/azure-provisioner.md) — the reference cloud-burst backend (`zetta::AzureProvisioner` + `AzCliControlPlane`): burst N ephemeral Azure nodes (VMSS / Spot shape via the `az` CLI, no cloud SDK), mint bulk burst identities so they join the cluster, tear down + revoke; injectable control-plane + identity seams, schema-validated `AzureConfig` (ARC-13 / ADR-20, #376; AWS #377 / GCP #378 mirror it).
 - [`docs/cloud-provisioner-pattern.md`](docs/cloud-provisioner-pattern.md) — the recipe every cloud-burst backend follows (the shape `AzureProvisioner` set; AWS / GCP mirror): the four pieces, the shared `CommandRunner` + identity hooks, the lifecycle→CLI mapping (VMSS ↔ ASG ↔ MIG), the step-by-step — **CLI for now** (a REST/SDK binding is a drop-in control-plane swap later).
 - [`docs/build.md`](docs/build.md) — build, run, test.

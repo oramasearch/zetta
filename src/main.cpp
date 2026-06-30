@@ -8,7 +8,9 @@
 
 #include "zetta/cluster.hpp"
 #include "zetta/headless.hpp"
+#include "zetta/local_provisioner.hpp"
 #include "zetta/node.hpp"
+#include "zetta/provisioner.hpp"
 #include "zetta/replicated_blob_store.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
@@ -195,6 +197,13 @@ int main(int argc, char** argv) {
                     nlohmann::json{{"address",
                                     cluster.listen_addresses().front()}});
 
+    // Give the running node its long-lived compute plane: a JobCoordinator over
+    // the real cluster's signal plane (#579), so distributed jobs submitted
+    // through node.job_coordinator() run SPMD across live membership. Attached
+    // here (not at construction) because the Node is built + started before the
+    // Cluster exists; node.stop() tears it down before the cluster shuts down.
+    node.attach_cluster(cluster);
+
     // Tell the operator where this node is reachable so they can connect more
     // nodes. A wildcard bind expands to every interface IPv4.
     std::printf("zetta: cluster node %s\n", cluster.node_id().c_str());
@@ -209,6 +218,23 @@ int main(int argc, char** argv) {
         rc = zetta::run_headless(node, cluster);
     } else {
         zetta::gui::App app(node, cluster);
+
+        // Wire the given-hardware Provisioner the Cluster view's "Add nodes"
+        // control drives: a LocalProvisioner that reports the nodes already in the
+        // cluster (best-effort — it brings up no new machines and touches no
+        // cloud), reading the live fleet from Cluster::nodes() on each call so it
+        // tracks self-healing membership. Cloud provisioners (which create billable
+        // resources) are injected by a configured deployment and stay consent-gated
+        // in the control. The provisioner must outlive app.run().
+        zetta::LocalProvisioner local_provisioner([&cluster] {
+            std::vector<zetta::ProvisionedNode> fleet;
+            for (const zetta::NodeStatus& peer : cluster.nodes()) {
+                fleet.push_back({peer.node_id, peer.address, {}});
+            }
+            return fleet;
+        });
+        app.set_provisioner("local", local_provisioner);
+
         if (app.init()) {
             app.run();
         } else {

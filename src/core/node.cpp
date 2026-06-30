@@ -1,5 +1,7 @@
 #include "zetta/node.hpp"
 
+#include "zetta/cluster.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/executor.hpp"
 #include "zetta/gate.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
@@ -26,6 +28,7 @@
 #include <map>
 #include <optional>
 #include <system_error>
+#include <thread>
 #include <tuple>
 #include <unordered_set>
 #include <utility>
@@ -70,6 +73,11 @@ Node::Node(NodeConfig config, ReplicationManager* replication)
 #endif
 }
 
+// Out-of-line (see node.hpp): destroying coordinator_ here means the complete
+// compute::JobCoordinator type is visible, and — for a node that reached stop()
+// — coordinator_ is already null, so the unwind never touches a dead cluster.
+Node::~Node() = default;
+
 std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     // The latest valid checkpoint per job — the read view behind system.checkpoints
     // (RULE-7). Sorted by job id for a stable order; a checkpoint that fails to load
@@ -81,6 +89,66 @@ std::vector<compute::JobCheckpoint> Node::checkpoints() const {
         if (std::optional<compute::JobCheckpoint> latest =
                 checkpoint_store_.latest(id)) {
             result.push_back(std::move(*latest));
+        }
+    }
+    return result;
+}
+
+std::vector<DatasetSummary> Node::datasets() const {
+    // One dataset per table across every database — computed live from the tree +
+    // the partition catalog, so the system.datasets view never drifts from the
+    // truth (RULE-7; #585). A dataset is a first-class primitive with no stored
+    // entity: one dataset == one table. (The virtual `system` catalog has no real
+    // Database here, so it is naturally absent.)
+    std::vector<DatasetSummary> result;
+    for (const auto& database : databases_) {
+        for (const auto& table : database->tables()) {
+            DatasetSummary dataset;
+            dataset.name = table->name();
+            dataset.database = database->name();
+            dataset.table_id = table->id();
+            const StorageEngine& store = table->store();
+            dataset.format = store.name();
+            dataset.replication =
+                std::string(to_string(table->replication_strategy().kind()));
+            dataset.rows = store.size();
+
+            // Schema: the union of each row's object keys in first-seen order — the
+            // engine is schemaless, so a dataset's schema is whatever its rows carry.
+            std::unordered_set<std::string> seen;
+            for (std::size_t i = 0; i < store.size(); ++i) {
+                const nlohmann::json& row = store.at(i);
+                if (!row.is_object()) continue;
+                for (auto field = row.begin(); field != row.end(); ++field) {
+                    if (seen.insert(field.key()).second) {
+                        dataset.columns.push_back(field.key());
+                    }
+                }
+            }
+
+            // On-disk size: the JSONL row chunks under the table's folder (the row
+            // data's storage footprint). A filesystem error leaves it at 0.
+            std::error_code ec;
+            for (const auto& entry : fs::directory_iterator(table->dir(), ec)) {
+                if (entry.path().extension() != ".jsonl") continue;
+                const std::uintmax_t bytes = entry.file_size(ec);
+                if (!ec) dataset.size_bytes += bytes;
+            }
+
+            // Partition placement across the cluster: the catalog entries whose
+            // table id matches. The catalog is replicate-to-all, so this is the
+            // global placement (which node owns which partition), identical on every
+            // node — empty for a non-partitioned (replicate-to-all) dataset.
+            for (const auto& partition : dataset_partitions_) {
+                if (partition->table() != table->id()) continue;
+                const PartitionRowRange& range = partition->row_range();
+                dataset.partitions.push_back(
+                    DatasetPlacement{partition->id(), partition->blob_ref(),
+                                     range.start, range.end,
+                                     partition->owner_nodes()});
+            }
+
+            result.push_back(std::move(dataset));
         }
     }
     return result;
@@ -146,6 +214,10 @@ bool Node::start() {
                 integrity_.dangling_access_keys);
         }
     }
+    // Re-establish the compute plane if a cluster was attached before this start
+    // (a stop()/start() cycle). On first boot main attaches after start(), so this
+    // is a no-op then and attach_cluster brings the coordinator up itself.
+    start_coordinator();
     std::fflush(stdout);
     return true;
 }
@@ -177,14 +249,78 @@ void Node::tick() {
             last_seen_version_ = std::move(version);
         }
     }
+    // 4. Telemetry plane (#584): sample this node's live host utilization and
+    //    broadcast it to peers as an ephemeral `node.metrics` signal-plane event,
+    //    throttled to ~1 Hz (the CPU/network gauges are deltas over the interval).
+    //    Every node caches what it receives (telemetry_->on_event), so any headed
+    //    node's cluster view can animate the whole cluster's gauges. NOT routed
+    //    through the CRDT — a measurement, not durable state.
+    if (cluster_ && telemetry_) {
+        using namespace std::chrono;
+        constexpr duration<double> kTelemetryInterval{1.0};
+        const steady_clock::time_point now = steady_clock::now();
+        if (last_telemetry_sample_.time_since_epoch().count() == 0 ||
+            now - last_telemetry_sample_ >= kTelemetryInterval) {
+            last_telemetry_sample_ = now;
+            const NodeMetrics metrics = sample_node_metrics();
+            telemetry_->record_local(node_id(), metrics);
+            cluster_->broadcast_event(
+                std::string(NodeTelemetryExchange::kMethod),
+                encode_node_metrics(metrics, node_id()));
+        }
+    }
 }
 
 void Node::stop() {
     if (!running_) return;
+    // Tear the coordinator down first, while the attached cluster is still alive
+    // (its signal-handler unwind is a cheap atomic store, and the steal loop joins
+    // promptly) — so the cluster can be stopped/destroyed after us safely (#579).
+    stop_coordinator();
     if (replication_) persist_replication();
     running_ = false;
     std::printf("zetta: node stopped\n");
     std::fflush(stdout);
+}
+
+void Node::attach_cluster(Cluster& cluster, unsigned worker_count) {
+    cluster_ = &cluster;
+    compute_workers_ = worker_count;
+    // If the node is already running (the normal path — main attaches right after
+    // cluster.start()), bring the coordinator up now; otherwise start() will.
+    if (running_) {
+        stop_coordinator();  // replace any prior attachment cleanly
+        start_coordinator();
+    }
+}
+
+void Node::start_coordinator() {
+    if (!cluster_ || coordinator_) return;
+    unsigned workers = compute_workers_;
+    if (workers == 0) {
+        // Auto: one worker per core, leaving one for the node loop + the cluster's
+        // network thread. Always at least one (the SPMD parallel_map path needs a
+        // worker; 0 would make this node a pure map source).
+        const unsigned hardware = std::thread::hardware_concurrency();
+        workers = hardware > 1 ? hardware - 1 : 1;
+    }
+    // The live-telemetry exchange (#584) rides the coordinator's signal-handler
+    // chain as its FALLBACK — it receives every signal that is neither a steal nor
+    // a collective, so it caches peers' `node.metrics` events without disturbing
+    // the compute plane. Created once (the cache persists across a stop()/start()
+    // cycle) and reused on each attach.
+    if (!telemetry_) telemetry_ = std::make_unique<NodeTelemetryExchange>();
+    coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
+                                                             telemetry_.get());
+    // Register on the cluster's signal plane + start the cross-node steal loop, so
+    // a job submitted through job_coordinator() runs SPMD across live membership.
+    coordinator_->start();
+}
+
+void Node::stop_coordinator() {
+    if (!coordinator_) return;
+    coordinator_->stop();   // join the steal loop, restore the cluster's handler
+    coordinator_.reset();
 }
 
 double Node::uptime_seconds() const {

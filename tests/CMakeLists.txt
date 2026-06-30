@@ -68,7 +68,10 @@ add_executable(zetta-tests
   test_example_scripts.cpp
   test_audit.cpp
   test_intent_compiler.cpp
+  test_graph_plan.cpp
   test_node.cpp
+  test_node_metrics.cpp
+  test_node_telemetry.cpp
   test_query.cpp
   test_repl_console.cpp
   test_governed_console.cpp
@@ -111,6 +114,7 @@ add_executable(zetta-tests
   test_work_stealing_scheduler.cpp
   test_distributed_scheduler.cpp
   test_job_coordinator.cpp
+  test_node_job_coordinator.cpp
   test_cluster.cpp
   test_signal.cpp
   test_collectives.cpp

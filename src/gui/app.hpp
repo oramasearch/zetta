@@ -1,11 +1,14 @@
 #pragma once
 
 #include <atomic>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "gui/cluster_telemetry.hpp"  // per-node gauge animation state (pure data)
 
 // Forward declarations keep SDL3 + Dear ImGui headers out of this file — only
 // app.cpp (and no other translation unit) needs the full definitions.
@@ -19,10 +22,14 @@ namespace zetta {
 
 class Node;
 class Cluster;
+class Provisioner;
+struct NodeStatus;
+struct DatasetSummary;
 struct ValidationReport;
 struct CloudProvider;
 class Project;
 class ProjectGraph;
+struct ClusterPlan;
 namespace ir {
 class ExecutionGraph;
 }
@@ -62,6 +69,14 @@ public:
     // frame. Must be called only after a successful init().
     void run();
 
+    // Inject the Provisioner the Cluster view's "Add nodes" control drives for a
+    // target (`target_id` is a CloudProvider catalog id — "local", "aws", …). main
+    // wires the given-hardware "local" backend (a LocalProvisioner over the live
+    // cluster fleet); a configured deployment can inject cloud provisioners for
+    // their targets, which stay consent-gated in the control. `provisioner` must
+    // outlive the App. Targets with no injected provisioner render but can't act.
+    void set_provisioner(const std::string& target_id, Provisioner& provisioner);
+
 private:
     // The single active view shown in the content area. The menu bar selects
     // which one is live, so the window shows one focused panel at a time instead
@@ -70,12 +85,14 @@ private:
     enum class View {
         Home,      // project-first landing (the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
+        Datasets,  // datasets (system.datasets): schema/size/format + placement
         Query,     // the SQL console
         Console,   // the SQL / simulated-Python REPL console (CMP-6)
         Graph,     // the execution-graph workspace
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
         Runs,      // runs / outputs / lineage
+        Models,    // trained models (system.zetta_models) + register/import
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
@@ -88,8 +105,10 @@ private:
     // routes by extension: .json/.jsonl import as rows, anything else stores as
     // a large object. N8nArtifact stages a workflow JSON for the New Project
     // dialog (validated on stage, imported into the new project only on Create)
-    // instead of ingesting it immediately.
-    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact };
+    // instead of ingesting it immediately. ModelWeights stages a chosen file as
+    // the serialized weights for the Models view's "Add model" form (attached via
+    // Model::set_weights on Register), rather than ingesting it.
+    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact, ModelWeights };
     struct IncomingFile {
         std::string path;
         FileIntent intent;
@@ -117,6 +136,11 @@ private:
     void draw_tables();
     void draw_rows();
     void draw_large_objects();
+    void draw_datasets();    // datasets (system.datasets): list + schema/size/format
+    // The partition-placement-across-the-cluster overlay inside draw_datasets:
+    // one node box per cluster member (the draw_cluster grammar), highlighting
+    // which nodes own a partition of the selected dataset.
+    void draw_dataset_placement(const DatasetSummary& dataset);
     void draw_query();       // the SQL text area + results
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
@@ -128,7 +152,31 @@ private:
     // collectives never block on this node's real peers, runs, then tears it down.
     // Called only from the Deploy panel's explicit "Run on real engine" action.
     void run_churn_demo();
-    void draw_cluster();     // role, listen address, peers, join command
+    void draw_cluster();     // spatial selectable node-box canvas + per-node detail
+    // The detail pane below the cluster canvas: full id, role, address,
+    // membership, replication status, and (for self) reachable addresses + peer
+    // count for the selected node. `nodes` is the live Cluster::nodes() snapshot.
+    void draw_cluster_node_detail(const std::vector<NodeStatus>& nodes);
+    // The "Add nodes" control in the Cluster view (epic #575 area 1): pick a
+    // target (the provider catalog), a count, and drive zetta::add_nodes over the
+    // injected Provisioner for that target. The given-hardware Local target runs
+    // immediately (it brings up no new machines, touches no cloud); every cloud /
+    // Kubernetes / on-prem target is **permission-gated, deny-by-default** — adding
+    // nodes there runs the provider's CLI to create billable resources, so nothing
+    // happens until the user explicitly allows that one action (CLAUDE.md hard
+    // rule). A target with no injected Provisioner renders but reports it isn't
+    // wired.
+    void draw_add_nodes_control();
+    // The single point that drives zetta::add_nodes(node_, …) over the injected
+    // Provisioner for `target` — reached ONLY from the Local "Add" button or a
+    // cloud target's explicit "Allow" (the consent action), never on a passive
+    // render. Synchronous on the UI thread (which owns the node), like
+    // run_cloud_inspect, so the add + the partition rebalance it triggers race with
+    // nothing; the new members surface in the canvas once they gossip in.
+    void run_add_nodes(const CloudProvider& target);
+    // The Provisioner injected for `target_id` (set_provisioner), or nullptr when
+    // none is wired for that target.
+    Provisioner* provisioner_for(const std::string& target_id) const;
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     // Run a provider's read-only inspect (CloudInspector) and cache the result on
     // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
@@ -140,6 +188,15 @@ private:
     // triggers no cloud call. Shown inside the granted consent gate.
     void draw_cloud_inspect_result(const CloudProvider& provider);
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
+    void draw_models();      // standalone models (system.zetta_models): list + detail + add
+    // The inline "Add model" affordance inside draw_models: register/import a model
+    // via Node::create_model (+ optional Model::set_weights). The assembled value is
+    // re-validated against the Model JSON Schema at this boundary, so malformed
+    // metrics/feature_schema fail fast here instead of corrupting the tree on the
+    // next reconcile. Drawn collapsed by default so the list stays the focus.
+    void draw_add_model_form();
+    // Clear the Add-model form fields (name/kind/metrics/features/staged weights/error).
+    void reset_add_model_form();
     void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
     void draw_test_suite();  // the in-app test suite: canned cases + options + run
@@ -175,7 +232,19 @@ private:
     void draw_graph_workspace();
     // Render the working-copy graph as a canvas: nodes laid out in columns by
     // StepKind (connect→…→act), edges drawn between them; clicking selects a node.
-    void draw_graph_canvas();
+    // When `plan` is non-null, each step is overlaid with its projected cluster
+    // placement — a coloured left stripe + a mono badge (near-data / fan-out /
+    // all nodes / coordinator) — turning the canvas into a graph-over-cluster view.
+    void draw_graph_canvas(const ClusterPlan* plan);
+    // The cluster-plan section below the canvas (#591): a legend, the current
+    // cluster's node strip (the nodes the selected step lands on are highlighted),
+    // and a per-step placement table. A thin, read-only projection of how the graph
+    // would run over the live cluster (zetta's SPMD + compute-near-data model).
+    void draw_graph_plan(const ClusterPlan& plan);
+    // Build the cluster-plan projection for the open working-copy graph over the
+    // live cluster: resolve each step's source table → partition owners (from the
+    // dataset-partition catalog) and project placement via project_cluster_plan.
+    ClusterPlan build_graph_plan() const;
     // The add/rename/delete controls + Save/Revert below the canvas.
     void draw_graph_editor(Project& project);
     // Load a fresh working copy of `stored` for editing (clears selection/dirty).
@@ -186,6 +255,8 @@ private:
     static void on_open_records(void* userdata, const char* const* files, int filter);
     static void on_open_large_object(void* userdata, const char* const* files, int filter);
     static void on_open_n8n(void* userdata, const char* const* files, int filter);
+    static void on_open_model_weights(void* userdata, const char* const* files,
+                                      int filter);
 
     Node& node_;
     Cluster& cluster_;
@@ -226,8 +297,36 @@ private:
     std::string selected_db_;
     std::string selected_table_;
     std::string selected_run_;  // run id; re-resolved each frame like the others
+    std::string selected_dataset_;  // dataset table id; re-resolved each frame
+    std::string selected_model_;  // model id; re-resolved each frame
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
+    // Cluster panel: the node id of the box selected in the spatial canvas
+    // ("" = none). Re-resolved against the live Cluster::nodes() each frame, so a
+    // peer that leaves/fails simply drops out of the grid and the selection falls
+    // back to self — the view tracks membership with no separate copy of it.
+    std::string selected_cluster_node_;
+    // Animated per-node gauge state (#584), keyed by node id. A thin renderer's
+    // working copy of Node::telemetry_snapshot() (system.node_metrics gathered
+    // cluster-wide over the signal plane): holds only the eased values + sparkline
+    // history needed to animate the bars between the ~1 Hz samples. Updated each
+    // frame in draw_cluster() and pruned of nodes that have left the cluster.
+    std::map<std::string, NodeGaugeState> cluster_gauges_;
+
+    // Add nodes control (epic #575 area 1). `provisioners_` maps a CloudProvider
+    // catalog id → the injected Provisioner the control drives for that target
+    // (main wires "local" to the given-hardware LocalProvisioner; cloud
+    // provisioners are injected by a configured deployment and stay consent-gated).
+    // `selected_add_target_` is the catalog id chosen in the control;
+    // `add_nodes_count_` how many to add; `add_nodes_status_` the last action's
+    // result line (coloured amber via `add_nodes_status_warn_` when it came up
+    // short). There is no persisted "granted" state — the cloud Allow button IS the
+    // per-action consent, so a cloud add asks every time (deny-by-default).
+    std::map<std::string, Provisioner*> provisioners_;
+    std::string selected_add_target_{"local"};
+    int add_nodes_count_ = 1;
+    std::string add_nodes_status_;
+    bool add_nodes_status_warn_ = false;
 
     // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
     // catalog id selected in the list. `cloud_consent_provider_` is the id the
@@ -358,6 +457,21 @@ private:
     double scaling_elapsed_ = 120.0;     // sample: elapsed seconds
     double scaling_cost_ = 50.0;         // sample: accumulated cost
 
+    // Models panel — the inline "Add model" form (draw_add_model_form). Register
+    // or import a trained model via Node::create_model (+ optional set_weights).
+    // `metrics` / `feature_schema` are pasted as JSON and re-validated against the
+    // Model JSON Schema at this boundary before create. `weights_path_` is a file
+    // chosen via the native dialog (staged through FileIntent::ModelWeights) whose
+    // bytes are attached on Register; `weights_name_` is its display filename.
+    // Nothing is persisted until Register, so the form is a staging area only.
+    std::string add_model_name_;             // optional display label
+    std::string add_model_kind_{"classifier"};  // required; default classifier
+    std::string add_model_metrics_;          // metrics JSON (object of numbers), optional
+    std::string add_model_features_;         // feature_schema JSON (object), optional
+    std::string add_model_weights_path_;     // staged weights file ("" = none)
+    std::string add_model_weights_name_;     // its display filename
+    std::string add_model_error_;            // inline register error
+
     // File ingestion (drag-and-drop + native dialog) and its last status line.
     std::mutex incoming_mutex_;
     std::vector<IncomingFile> incoming_files_;
@@ -384,6 +498,11 @@ private:
     std::string add_edge_to_;          // to-node id for a new edge
     int add_edge_kind_ = 0;            // EdgeKind index for a new edge
     std::string rename_node_input_;    // name field for renaming the selected node
+    // Cluster-plan overlay (#591): when on, the canvas + a plan section project how
+    // the open graph would run over the current cluster (near-data / fan-out /
+    // owner nodes). On by default so opening a graph shows the projection; a
+    // checkbox above the canvas hides it for a plain edit view.
+    bool show_cluster_plan_ = true;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

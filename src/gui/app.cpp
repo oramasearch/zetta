@@ -178,9 +178,12 @@ App::App(Node& node, Cluster& cluster)
     // `outcome`, explain, rank) — so the passing path is one click away: it is
     // already on the Python frontend, just press Run (cleared on first Run, like
     // any REPL prompt). The columns are spelled out in full (no `...` ellipsis,
-    // which is not valid sim-Python). In the console the steps execute through the
-    // default step executor (a governed, gated, audited Run); the real distributed
-    // near-data run is the cluster.uc1_at_scale test-suite case.
+    // which is not valid sim-Python). This seeded program has no featurize step, so it
+    // is not churn-shaped — it runs through the default step executor (a governed,
+    // gated, audited Run); a churn-shaped program (with a featurize step) runs on the
+    // real churn engine over the live cluster via the graph runner wired below. The
+    // full distributed near-data UC-1-at-scale run is the cluster.uc1_at_scale
+    // test-suite case.
     console_model_->set_frontend(repl::Frontend::SimPython);
     console_model_->input() =
         "nodes = cluster.add_nodes(2, provider='azure')\n"
@@ -189,6 +192,26 @@ App::App(Node& node, Cluster& cluster)
         "model = train(conversations, target='outcome')\n"
         "drivers = explain(model)\n"
         "at_risk = rank(model)";
+
+    // Route a governed sim-Python run over the cluster (#580): when the lowered graph
+    // is churn-shaped (connect -> clean/featurize -> model), run it through the REAL
+    // churn engine on the node's live JobCoordinator (the #579 spine) over a built-in
+    // demo dataset — so an interactive console run trains a real Model + ranked at-risk
+    // list over the live cluster (visible in the Runs / Models views), not the
+    // structural placeholder. A non-churn graph falls back to Node::run_graph. The
+    // capability check, correctness gate, and audit record (in GovernedConsole) wrap
+    // this identically either way, so the run stays gated + governed.
+    governed_console_->set_graph_runner(
+        [this](const ir::ExecutionGraph& graph) -> ExecutionResult {
+            if (!is_churn_graph(graph)) return node_.run_graph(graph);
+            compute::CpuDevice device;
+            ChurnSolutionOptions options;
+            options.project = "console";
+            options.graph = "console-churn";
+            return run_churn_solution_on_node(node_, device, graph,
+                                              demo_churn_dataset(), options)
+                .execution;
+        });
 }
 
 App::~App() {
@@ -354,6 +377,7 @@ void App::draw_menu_bar() {
     // pipeline → operate it → govern it.
     if (ImGui::BeginMenu("Data")) {
         view_item("Explorer", View::Explorer);
+        view_item("Datasets", View::Datasets);
         view_item("SQL query", View::Query);
         view_item("Console", View::Console);
         ImGui::EndMenu();
@@ -366,6 +390,7 @@ void App::draw_menu_bar() {
     }
     if (ImGui::BeginMenu("Operations")) {
         view_item("Runs", View::Runs);
+        view_item("Models", View::Models);
         view_item("Compute jobs", View::Jobs);
         view_item("Cluster", View::Cluster);
         view_item("Cloud inspector", View::Cloud);
@@ -414,12 +439,14 @@ void App::draw_active_view() {
     switch (active_view_) {
         case View::Home:     draw_home();            break;
         case View::Explorer: draw_explorer();        break;
+        case View::Datasets: draw_datasets();        break;
         case View::Query:    draw_query();           break;
         case View::Console:  draw_console();          break;
         case View::Graph:    draw_graph_workspace(); break;
         case View::Gate:     draw_gate();            break;
         case View::Deploy:   draw_deploy();          break;
         case View::Runs:     draw_runs();            break;
+        case View::Models:   draw_models();          break;
         case View::Jobs:     draw_jobs();            break;
         case View::Cluster:  draw_cluster();         break;
         case View::Cloud:    draw_cloud();           break;
@@ -454,6 +481,13 @@ void App::on_open_n8n(void* userdata, const char* const* files, int) {
     }
 }
 
+void App::on_open_model_weights(void* userdata, const char* const* files, int) {
+    if (files && files[0]) {
+        static_cast<App*>(userdata)->enqueue_file(files[0],
+                                                  FileIntent::ModelWeights);
+    }
+}
+
 void App::handle_incoming_files() {
     std::vector<IncomingFile> files;
     {
@@ -469,6 +503,14 @@ void App::handle_incoming_files() {
         // new project (see stage_n8n_artifact / draw_new_project_modal).
         if (intent == FileIntent::N8nArtifact) {
             stage_n8n_artifact(f.path);
+            continue;
+        }
+        // Model weights are staged for the Models view's "Add model" form — the
+        // bytes are opaque (no validation), attached on Register via set_weights.
+        if (intent == FileIntent::ModelWeights) {
+            add_model_weights_path_ = f.path;
+            add_model_weights_name_ = path.filename().string();
+            io_status_ = "Staged weights: " + add_model_weights_name_;
             continue;
         }
         if (intent == FileIntent::Auto) {

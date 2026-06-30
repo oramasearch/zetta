@@ -5,9 +5,12 @@
 #include "zetta/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/job_coordinator.hpp"
+#include "zetta/database.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/deployment.hpp"
 #include "zetta/deployment_target.hpp"
 #include "zetta/gate.hpp"
+#include "zetta/graph_plan.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ir/step_kind.hpp"
@@ -15,6 +18,7 @@
 #include "zetta/project.hpp"
 #include "zetta/project_graph.hpp"
 #include "zetta/solution_catalog.hpp"
+#include "zetta/table.hpp"
 #include "zetta/validation.hpp"
 
 #include <imgui.h>
@@ -71,6 +75,22 @@ constexpr ImU32 kNodeBorderSelected = IM_COL32(226, 84, 90, 255);   // coral
 constexpr ImU32 kNodeTextColor = IM_COL32(28, 28, 26, 255);         // ink-primary
 constexpr ImU32 kDataEdgeColor = IM_COL32(150, 150, 146, 220);      // gray line
 constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
+
+// The colour a step's projected cluster placement is drawn in (#591) — semantic,
+// within the Orama palette (coral stays the "you are here" accent, never status):
+//   near-data  → green (compute runs where the data lives — the efficient case)
+//   fan-out    → ink   (SPMD across every node — neutral, distributed compute)
+//   all nodes  → quiet (a load whose result is replicated everywhere)
+//   coordinator→ amber (a single-node funnel point — attention, not distributed)
+ImVec4 placement_color(StepPlacement placement) {
+    switch (placement) {
+        case StepPlacement::NearData:    return kDotActive;
+        case StepPlacement::FanOut:      return kInkSecondary;
+        case StepPlacement::AllNodes:    return kInkQuiet;
+        case StepPlacement::Coordinator: return kWarnColor;
+    }
+    return kInkQuiet;
+}
 
 }  // namespace
 
@@ -300,17 +320,20 @@ void App::draw_deploy() {
                            deploy_status_.c_str());
     }
 
-    // 3b) Run on the real engine — the churn solution actually trains a Model,
-    //     ranks the at-risk accounts, and explains the drivers (FEAT-4 / UC-1,
-    //     #398). Only the churn blueprint maps to the real churn pipeline today, so
-    //     the action is offered only for it; it runs over a built-in demo dataset.
+    // 3b) Run over the cluster — the churn solution actually trains a Model, ranks
+    //     the at-risk accounts, and explains the drivers (FEAT-4 / UC-1, #398) on the
+    //     node's LIVE JobCoordinator (the #579 compute spine over the real cluster, not
+    //     an isolated loopback — #580). Only the churn blueprint maps to the real churn
+    //     pipeline today, so the action is offered only for it; it runs over a built-in
+    //     demo dataset.
     if (selected != nullptr && selected->id == "churn-prediction") {
         ImGui::Spacing();
-        if (primary_button("Run on real engine")) {
+        if (primary_button("Run over the cluster")) {
             run_churn_demo();
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("trains a real model on a built-in demo dataset");
+        ImGui::TextDisabled(
+            "trains a real model on a built-in demo dataset, over the live cluster");
         if (!churn_run_status_.empty()) {
             ImGui::TextColored(churn_run_failed_ ? kErrorColor : kSuccessColor,
                                "%s", churn_run_status_.c_str());
@@ -363,27 +386,37 @@ void App::run_churn_demo() {
         return;
     }
 
-    // Run on an ISOLATED single-node loopback cluster + coordinator so the SPMD
-    // collectives are trivially single-node and never block on this node's real
-    // peers. The Model + jobs + Run still register on the App's node_ (so the Runs /
-    // Jobs / Admin panels reflect them). Synchronous on the UI thread that owns the
-    // node — the same deliberate per-click pattern as run_cloud_inspect.
-    ClusterConfig compute_cfg;
-    compute_cfg.listen_host = "127.0.0.1";
-    compute_cfg.listen_port = 47000;
-    compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse it)
-    Cluster compute_cluster("churn-run", compute_cfg);
-    compute_cluster.start();
-    compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
-    coordinator.start();
     compute::CpuDevice device;
-
     ChurnSolutionOptions options;
     options.project = "deploy-panel";
     options.graph = "churn-prediction";
-    const ChurnSolutionResult result = run_churn_solution(
-        node_, coordinator, device, selected->graph, demo_churn_dataset(), options);
-    coordinator.stop();
+
+    // Run over the node's **live** JobCoordinator — the long-lived compute spine the
+    // running node owns over its real Cluster (#579/#580). The featurize / train /
+    // explain / rank jobs combine over the real cluster membership (single-node here
+    // in the common headed deployment), and the produced Model + jobs + Run register
+    // on the App's node_ (so the Runs / Models / Jobs / Admin panels reflect them).
+    // Synchronous on the UI thread that owns the node — the same deliberate per-click
+    // pattern as run_cloud_inspect.
+    ChurnSolutionResult result = run_churn_solution_on_node(
+        node_, device, selected->graph, demo_churn_dataset(), options);
+
+    // Defensive fallback: a node with no compute plane attached (no cluster) can't run
+    // over the live spine. The headed app always attaches a cluster, so this is just a
+    // safety net — bring up a throwaway single-node loopback so the demo still works.
+    if (node_.job_coordinator() == nullptr) {
+        ClusterConfig compute_cfg;
+        compute_cfg.listen_host = "127.0.0.1";
+        compute_cfg.listen_port = 47000;
+        compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse)
+        Cluster compute_cluster("churn-run", compute_cfg);
+        compute_cluster.start();
+        compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
+        coordinator.start();
+        result = run_churn_solution(node_, coordinator, device, selected->graph,
+                                    demo_churn_dataset(), options);
+        coordinator.stop();
+    }
 
     if (!result.ok()) {
         churn_run_failed_ = true;
@@ -499,12 +532,82 @@ void App::draw_graph_workspace() {
     }
 
     ImGui::Separator();
-    draw_graph_canvas();
+
+    // Cluster-plan overlay (#591): project how this graph would run over the live
+    // cluster — which steps run near their data, which fan out, and the owner
+    // nodes — and overlay it on the canvas + a plan section below. On by default so
+    // opening a graph shows the projection; the checkbox hides it for a plain edit
+    // view. The projection is rebuilt each frame from the IR + the partition
+    // catalog + the live membership, so it tracks edits and joins/leaves live.
+    ImGui::Checkbox("Cluster plan", &show_cluster_plan_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("project this graph over the current cluster");
+    const ClusterPlan plan = show_cluster_plan_ ? build_graph_plan() : ClusterPlan{};
+
+    draw_graph_canvas(show_cluster_plan_ ? &plan : nullptr);
+    if (show_cluster_plan_) draw_graph_plan(plan);
     draw_graph_editor(*project);
 }
 
-void App::draw_graph_canvas() {
+ClusterPlan App::build_graph_plan() const {
+    if (!editing_graph_) return ClusterPlan{};
+
+    // Members projected over = the live cluster (system.zetta_nodes / the spatial
+    // Cluster view's source), so the plan tracks joins/leaves with no separate copy.
+    std::vector<std::string> members;
+    for (const NodeStatus& node : cluster_.nodes()) members.push_back(node.node_id);
+
+    // Partition catalog (system.dataset_partitions): table id → the sorted union of
+    // its partitions' owner nodes. A table absent here is not partitioned, so a step
+    // reading it has no near-data locality (it falls to its kind's default).
+    std::unordered_map<std::string, std::vector<std::string>> table_owners;
+    for (const auto& partition : node_.dataset_partitions()) {
+        std::vector<std::string>& owners = table_owners[partition->table()];
+        for (const std::string& owner : partition->owner_nodes()) {
+            const auto pos = std::lower_bound(owners.begin(), owners.end(), owner);
+            if (pos == owners.end() || *pos != owner) owners.insert(pos, owner);
+        }
+    }
+
+    // Resolve a step's "table" attribute (a name OR a tbl id) → a known table id.
+    // Index both name→id and id→id over every table in every database, so either
+    // form an authored graph uses resolves.
+    std::unordered_map<std::string, std::string> table_ref_to_id;
+    for (const std::string& db_name : node_.database_names()) {
+        const auto database = node_.find_database(db_name);
+        if (!database) continue;
+        for (const std::string& tbl_name : database->table_names()) {
+            const auto table = database->find_table(tbl_name);
+            if (!table) continue;
+            table_ref_to_id[table->name()] = table->id();
+            table_ref_to_id[table->id()] = table->id();
+        }
+    }
+
+    // Per step: if it directly reads a table that is partitioned, record that
+    // table's owner nodes — the seed project_cluster_plan propagates downstream.
+    std::unordered_map<std::string, std::vector<std::string>> direct_owners;
+    for (const auto& node : editing_graph_->nodes()) {
+        const auto attr = node->attributes.find("table");
+        if (attr == node->attributes.end() || !attr->is_string()) continue;
+        const auto resolved = table_ref_to_id.find(attr->get<std::string>());
+        if (resolved == table_ref_to_id.end()) continue;
+        const auto owners = table_owners.find(resolved->second);
+        if (owners == table_owners.end() || owners->second.empty()) continue;
+        direct_owners[node->id] = owners->second;
+    }
+
+    return project_cluster_plan(*editing_graph_, members, direct_owners);
+}
+
+void App::draw_graph_canvas(const ClusterPlan* plan) {
     ir::ExecutionGraph& graph = *editing_graph_;
+
+    // Index the plan by step id so each node box can show its projected placement.
+    std::unordered_map<std::string, const StepPlan*> plan_of;
+    if (plan != nullptr) {
+        for (const StepPlan& step : plan->steps) plan_of[step.node_id] = &step;
+    }
 
     const float font = ImGui::GetFontSize();
     const float node_w = font * 9.0f;
@@ -625,10 +728,41 @@ void App::draw_graph_canvas() {
                               selected ? kNodeBorderSelected : kNodeBorder,
                               rounding, 0, selected ? 2.0f : 1.0f);
                 draw->PushClipRect(item.top_left, item.bottom_right, true);
-                draw->AddText(
-                    ImVec2(item.top_left.x + pad,
-                           item.top_left.y + (node_h - font) * 0.5f),
-                    kNodeTextColor, item.node->name.c_str());
+
+                // Cluster-plan overlay (#591): a coloured left stripe in the step's
+                // projected placement colour + a mono badge under the name. The name
+                // moves to the top so the badge fits below it; without a plan the
+                // name stays vertically centred (plain edit view).
+                const auto plan_it = plan_of.find(item.node->id);
+                const StepPlan* step_plan =
+                    plan_it != plan_of.end() ? plan_it->second : nullptr;
+                const float stripe_w = font * 0.22f;
+                float name_x = item.top_left.x + pad;
+                float name_y = item.top_left.y + (node_h - font) * 0.5f;
+                if (step_plan != nullptr) {
+                    const ImVec4 color = placement_color(step_plan->placement);
+                    draw->AddRectFilled(
+                        ImVec2(item.top_left.x + 1.0f, item.top_left.y + 1.0f),
+                        ImVec2(item.top_left.x + stripe_w, item.bottom_right.y - 1.0f),
+                        ImGui::GetColorU32(color));
+                    name_x = item.top_left.x + stripe_w + pad * 0.5f;
+                    name_y = item.top_left.y + font * 0.30f;
+                    // Mono placement badge near the box bottom.
+                    const float small = font * 0.78f;
+                    const ImVec2 badge_pos(name_x,
+                                           item.top_left.y + node_h - font * 0.30f -
+                                               small);
+                    const std::string badge{placement_label(step_plan->placement)};
+                    if (mono_font_) {
+                        draw->AddText(mono_font_, small, badge_pos,
+                                      ImGui::GetColorU32(color), badge.c_str());
+                    } else {
+                        draw->AddText(badge_pos, ImGui::GetColorU32(color),
+                                      badge.c_str());
+                    }
+                }
+                draw->AddText(ImVec2(name_x, name_y), kNodeTextColor,
+                              item.node->name.c_str());
                 draw->PopClipRect();
             }
 
@@ -639,6 +773,188 @@ void App::draw_graph_canvas() {
         }
     }
     ImGui::EndChild();
+}
+
+void App::draw_graph_plan(const ClusterPlan& plan) {
+    const float font = ImGui::GetFontSize();
+
+    ImGui::Spacing();
+    eyebrow(mono_font_, "PLAN OVER CLUSTER");
+    ImGui::TextWrapped(
+        "Projected over the current %zu-node cluster: how each step would run "
+        "(zetta's SPMD + compute-near-data model). A live projection of the IR + "
+        "partition placement, not a committed schedule.",
+        plan.members.size());
+
+    // Legend — the four placement classes and what each means.
+    const auto legend_item = [&](StepPlacement placement, const char* meaning) {
+        status_dot(placement_color(placement));
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        ImGui::TextColored(placement_color(placement), "%s",
+                           std::string{placement_label(placement)}.c_str());
+        if (mono_font_) ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::TextDisabled("· %s", meaning);
+    };
+    legend_item(StepPlacement::NearData,
+                "runs on the partition owners, near its data");
+    legend_item(StepPlacement::FanOut,
+                "SPMD across every node; partials combine over collectives");
+    legend_item(StepPlacement::AllNodes, "a load replicated to every node");
+    legend_item(StepPlacement::Coordinator, "runs once on the coordinator");
+
+    // The current cluster as a node strip. When a step is selected in the canvas
+    // (or the table below), the nodes it is projected to run on get the coral
+    // "runs here" treatment — the direct graph↔cluster link.
+    const StepPlan* selected_step = nullptr;
+    for (const StepPlan& step : plan.steps)
+        if (step.node_id == selected_node_id_) selected_step = &step;
+    const auto runs_here = [&](const std::string& node_id) {
+        return selected_step != nullptr &&
+               std::find(selected_step->target_nodes.begin(),
+                         selected_step->target_nodes.end(),
+                         node_id) != selected_step->target_nodes.end();
+    };
+    const auto short_id = [](const std::string& id) {
+        return id.substr(0, id.find('-'));
+    };
+    const auto health_color = [](const NodeStatus& node) -> ImVec4 {
+        if (node.is_self) return kDotActive;
+        if (!node.replication.known) return kInkQuiet;
+        return node.replication.in_sync ? kSuccessColor : kWarnColor;
+    };
+
+    ImGui::Spacing();
+    const std::vector<NodeStatus> nodes = cluster_.nodes();
+    const float box_w = font * 9.0f;
+    const float box_h = font * 2.3f;
+    const float gap = font * 0.6f;
+    const float box_pad = font * 0.5f;
+    const float rounding = font * 0.3f;
+    if (ImGui::BeginChild("##plan_cluster_strip", ImVec2(0, font * 7.0f),
+                          ImGuiChildFlags_Borders)) {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const int columns =
+            std::max(1, static_cast<int>((avail + gap) / (box_w + gap)));
+        for (std::size_t index = 0; index < nodes.size(); ++index) {
+            const NodeStatus& node = nodes[index];
+            const int row = static_cast<int>(index) / columns;
+            const int col = static_cast<int>(index) % columns;
+            const ImVec2 top_left(origin.x + col * (box_w + gap),
+                                  origin.y + row * (box_h + gap));
+            const ImVec2 bottom_right(top_left.x + box_w, top_left.y + box_h);
+            const bool here = runs_here(node.node_id);
+            draw->AddRectFilled(top_left, bottom_right,
+                                here ? kNodeFillSelected : kNodeFill, rounding);
+            draw->AddRect(top_left, bottom_right,
+                          here ? kNodeBorderSelected : kNodeBorder, rounding, 0,
+                          here ? 2.0f : 1.0f);
+            draw->PushClipRect(top_left, bottom_right, true);
+            const float dot_radius = font * 0.26f;
+            const ImVec2 dot_center(top_left.x + box_pad + dot_radius,
+                                    top_left.y + box_pad + font * 0.5f);
+            draw->AddCircleFilled(dot_center, dot_radius,
+                                  ImGui::GetColorU32(health_color(node)));
+            const std::string id =
+                short_id(node.node_id) + (node.is_self ? " (self)" : "");
+            const ImVec2 id_pos(dot_center.x + dot_radius + font * 0.4f,
+                                top_left.y + box_pad);
+            if (mono_font_) {
+                draw->AddText(mono_font_, font, id_pos, kNodeTextColor, id.c_str());
+            } else {
+                draw->AddText(id_pos, kNodeTextColor, id.c_str());
+            }
+            const ImVec2 addr_pos(top_left.x + box_pad,
+                                  top_left.y + box_pad + font * 1.4f);
+            if (mono_font_) {
+                draw->AddText(mono_font_, font * 0.82f, addr_pos, kCanvasHeaderColor,
+                              node.address.c_str());
+            } else {
+                draw->AddText(addr_pos, kCanvasHeaderColor, node.address.c_str());
+            }
+            draw->PopClipRect();
+        }
+        const int rows = (static_cast<int>(nodes.size()) + columns - 1) / columns;
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::Dummy(ImVec2(avail, std::max(0, rows) * (box_h + gap)));
+    }
+    ImGui::EndChild();
+    if (selected_step == nullptr) {
+        ImGui::TextDisabled("Select a step to highlight the nodes it runs on.");
+    }
+
+    // Per-step placement table. Clicking a row selects that step (highlighting it
+    // in the canvas + the strip above).
+    ImGui::Spacing();
+    if (plan.steps.empty()) {
+        ImGui::TextDisabled("(add steps to project a plan)");
+        return;
+    }
+    const auto targets_summary = [&](const StepPlan& step) -> std::string {
+        if (step.target_nodes.empty()) return "—";
+        switch (step.placement) {
+            case StepPlacement::NearData: {
+                std::string ids;
+                for (std::size_t i = 0; i < step.target_nodes.size(); ++i) {
+                    if (i) ids += ", ";
+                    ids += short_id(step.target_nodes[i]);
+                }
+                return std::to_string(step.target_nodes.size()) + " owner(s) · " +
+                       ids;
+            }
+            case StepPlacement::FanOut:
+            case StepPlacement::AllNodes:
+                return "all " + std::to_string(step.target_nodes.size()) +
+                       " node(s)";
+            case StepPlacement::Coordinator:
+                return short_id(step.target_nodes.front()) + " (coordinator)";
+        }
+        return "—";
+    };
+
+    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
+                                        ImGuiTableFlags_RowBg |
+                                        ImGuiTableFlags_SizingStretchProp;
+    if (ImGui::BeginTable("graph_plan_steps", 4, table_flags)) {
+        ImGui::TableSetupColumn("Step", ImGuiTableColumnFlags_WidthStretch, 0.30f);
+        ImGui::TableSetupColumn("Stage", ImGuiTableColumnFlags_WidthStretch, 0.12f);
+        ImGui::TableSetupColumn("Placement", ImGuiTableColumnFlags_WidthStretch,
+                                0.16f);
+        ImGui::TableSetupColumn("Runs on", ImGuiTableColumnFlags_WidthStretch,
+                                0.42f);
+        ImGui::TableHeadersRow();
+        for (const StepPlan& step : plan.steps) {
+            const auto node = editing_graph_->find_node(step.node_id);
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::PushID(step.node_id.c_str());
+            const bool is_selected = step.node_id == selected_node_id_;
+            if (ImGui::Selectable(node ? node->name.c_str() : step.node_id.c_str(),
+                                  is_selected, ImGuiSelectableFlags_SpanAllColumns)) {
+                selected_node_id_ = step.node_id;
+                if (node) rename_node_input_ = node->name;
+            }
+            // Hovering the row explains the projection (the step's rationale).
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", step.rationale.c_str());
+            }
+            ImGui::PopID();
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TextDisabled("%s",
+                                std::string{ir::to_string(step.kind)}.c_str());
+            ImGui::TableSetColumnIndex(2);
+            status_dot(placement_color(step.placement));
+            ImGui::TextColored(placement_color(step.placement), "%s",
+                               std::string{placement_label(step.placement)}.c_str());
+            ImGui::TableSetColumnIndex(3);
+            if (mono_font_) ImGui::PushFont(mono_font_);
+            ImGui::TextUnformatted(targets_summary(step).c_str());
+            if (mono_font_) ImGui::PopFont();
+        }
+        ImGui::EndTable();
+    }
 }
 
 void App::draw_graph_editor(Project& project) {

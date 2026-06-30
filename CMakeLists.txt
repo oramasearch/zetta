@@ -344,6 +344,8 @@ add_library(zetta-core STATIC
   src/core/replication.cpp
   src/core/replication_strategy.cpp
   src/core/node.cpp
+  src/core/node_metrics.cpp
+  src/core/node_telemetry.cpp
   src/core/database.cpp
   src/core/project.cpp
   src/core/project_input.cpp
@@ -408,6 +410,7 @@ add_library(zetta-core STATIC
   src/core/churn_step_executor.cpp
   src/core/churn_solution.cpp
   src/core/intent_compiler.cpp
+  src/core/graph_plan.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp

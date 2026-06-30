@@ -1,11 +1,15 @@
 #include <gtest/gtest.h>
 
+#include <cstdint>
 #include <string>
 #include <variant>
+
+#include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
 #include "zetta/cluster.hpp"
 #include "zetta/database.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
@@ -596,6 +600,139 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     ASSERT_TRUE(projected.ok()) << projected.error;
     ASSERT_EQ(projected.rows.size(), 1u);
     EXPECT_EQ(projected.rows[0]["name"].get<std::string>(), "analyst");
+
+    node.stop();
+}
+
+// system.datasets — datasets as a first-class primitive (#585): one row per dataset
+// (a table + its data) with schema / rows / size / format + partition placement
+// across the cluster, computed live from the tree + the partition catalog.
+TEST(QueryService, SelectsDatasetsSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // No tables yet -> no datasets (a valid, empty view).
+    auto empty = svc.run("SELECT * FROM system.datasets;", "");
+    ASSERT_TRUE(empty.ok()) << empty.error;
+    EXPECT_EQ(empty.rows.size(), 0u);
+
+    auto db = node.create_database("shop");
+    ASSERT_TRUE(db);
+
+    // A plain dataset (a table + rows). The engine is schemaless, so the schema is
+    // the union of the rows' keys — the second row introduces a third column.
+    auto orders = db->create_table("orders");
+    ASSERT_TRUE(orders);
+    orders->add_row(nlohmann::json{{"id", 1}, {"total", 10}});
+    orders->add_row(nlohmann::json{{"id", 2}, {"total", 20}, {"note", "rush"}});
+
+    // A partitioned dataset: a table plus catalog placement (which node owns which
+    // partition). The catalog is replicate-to-all, so this is the global placement.
+    auto events = db->create_table("events");
+    ASSERT_TRUE(events);
+    for (int i = 0; i < 4; ++i) events->add_row(nlohmann::json{{"i", i}});
+    zetta::DatasetPartitionValue p0;
+    p0.table = events->id();
+    p0.blob_ref = "lo:body0";
+    p0.row_range = {0, 2};
+    p0.owner_nodes = {"node-a", "node-b"};
+    ASSERT_TRUE(node.create_dataset_partition(p0));
+    zetta::DatasetPartitionValue p1;
+    p1.table = events->id();
+    p1.blob_ref = "lo:body1";
+    p1.row_range = {2, 4};
+    p1.owner_nodes = {"node-c"};
+    ASSERT_TRUE(node.create_dataset_partition(p1));
+
+    auto sel = svc.run("SELECT * FROM system.datasets;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 2u);
+
+    // Look up each dataset by name (order is table insertion order, but be explicit).
+    const auto find = [&](const std::string& name) -> nlohmann::json {
+        for (const auto& row : sel.rows) {
+            if (row.value("dataset", std::string{}) == name) return row;
+        }
+        return {};
+    };
+
+    const nlohmann::json orders_row = find("orders");
+    ASSERT_FALSE(orders_row.is_null()) << "orders dataset missing";
+    EXPECT_EQ(orders_row["database"].get<std::string>(), "shop");
+    EXPECT_EQ(orders_row["table_id"].get<std::string>(), orders->id());
+    EXPECT_EQ(orders_row["format"].get<std::string>(), "jsonl");
+    EXPECT_EQ(orders_row["replication"].get<std::string>(), "replicate_to_all");
+    EXPECT_EQ(orders_row["rows"].get<std::uint64_t>(), 2u);
+    EXPECT_EQ(orders_row["column_count"].get<int>(), 3);  // id, total, note
+    EXPECT_NE(orders_row["columns"].get<std::string>().find("note"),
+              std::string::npos);
+    EXPECT_GT(orders_row["size_bytes"].get<std::uint64_t>(), 0u);
+    EXPECT_FALSE(orders_row["partitioned"].get<bool>());
+    EXPECT_EQ(orders_row["partition_count"].get<int>(), 0);
+    EXPECT_EQ(orders_row["owner_nodes"].get<std::string>(), "");
+    EXPECT_EQ(orders_row["placement"].get<std::string>(), "");
+
+    const nlohmann::json events_row = find("events");
+    ASSERT_FALSE(events_row.is_null()) << "events dataset missing";
+    EXPECT_EQ(events_row["rows"].get<std::uint64_t>(), 4u);
+    EXPECT_TRUE(events_row["partitioned"].get<bool>());
+    EXPECT_EQ(events_row["partition_count"].get<int>(), 2);
+    // Cross-cluster placement: which slice each node owns.
+    const std::string placement = events_row["placement"].get<std::string>();
+    EXPECT_NE(placement.find("[0,2)@node-a|node-b"), std::string::npos) << placement;
+    EXPECT_NE(placement.find("[2,4)@node-c"), std::string::npos) << placement;
+    const std::string owners = events_row["owner_nodes"].get<std::string>();
+    EXPECT_NE(owners.find("node-a"), std::string::npos) << owners;
+    EXPECT_NE(owners.find("node-c"), std::string::npos) << owners;
+
+    // WHERE + projection work over the view too.
+    auto one = svc.run(
+        "SELECT dataset, rows FROM system.datasets WHERE dataset = 'events';", "");
+    ASSERT_TRUE(one.ok()) << one.error;
+    ASSERT_EQ(one.rows.size(), 1u);
+    EXPECT_EQ(one.rows[0]["rows"].get<std::uint64_t>(), 4u);
+    EXPECT_FALSE(one.rows[0].contains("format"));  // projected out
+
+    node.stop();
+}
+
+// #575 area 2: system.node_metrics is the live per-node telemetry read view —
+// ephemeral, observed, computed at query time from the node's host counters (no
+// CRDT backing). A node measures only its own host, so it returns exactly one
+// row; GPU degrades gracefully (absent in a CPU-only core build).
+TEST(QueryService, SelectsNodeMetricsSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    auto sel = svc.run("SELECT * FROM system.node_metrics;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 1u);
+
+    const auto& row = sel.rows[0];
+    EXPECT_EQ(row["node_id"].get<std::string>(), node.node_id());
+    EXPECT_FALSE(row["sampled_at"].get<std::string>().empty());
+
+    // GPU is absent in the CPU-only core build — graceful degradation.
+    EXPECT_FALSE(row["gpu_present"].get<bool>());
+    EXPECT_TRUE(row["gpu_percent"].is_null());
+
+    // Storage is read over the node's data_dir filesystem (exists after start()).
+    ASSERT_FALSE(row["storage_total_bytes"].is_null());
+    EXPECT_GT(row["storage_total_bytes"].get<std::uint64_t>(), 0u);
+
+    // Network utilization needs a link cap, so it degrades to null.
+    EXPECT_TRUE(row["net_percent"].is_null());
+
+    // Projection works like any system table.
+    auto projected =
+        svc.run("SELECT node_id, gpu_present FROM system.node_metrics;", "");
+    ASSERT_TRUE(projected.ok()) << projected.error;
+    ASSERT_EQ(projected.rows.size(), 1u);
+    EXPECT_EQ(projected.rows[0]["node_id"].get<std::string>(), node.node_id());
 
     node.stop();
 }
