@@ -20,6 +20,7 @@ namespace zetta {
 class Node;
 class Cluster;
 struct NodeStatus;
+struct DatasetSummary;
 struct ValidationReport;
 struct CloudProvider;
 class Project;
@@ -71,6 +72,7 @@ private:
     enum class View {
         Home,      // project-first landing (the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
+        Datasets,  // datasets (system.datasets): schema/size/format + placement
         Query,     // the SQL console
         Console,   // the SQL / simulated-Python REPL console (CMP-6)
         Graph,     // the execution-graph workspace
@@ -121,6 +123,11 @@ private:
     void draw_tables();
     void draw_rows();
     void draw_large_objects();
+    void draw_datasets();    // datasets (system.datasets): list + schema/size/format
+    // The partition-placement-across-the-cluster overlay inside draw_datasets:
+    // one node box per cluster member (the draw_cluster grammar), highlighting
+    // which nodes own a partition of the selected dataset.
+    void draw_dataset_placement(const DatasetSummary& dataset);
     void draw_query();       // the SQL text area + results
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
@@ -245,6 +252,7 @@ private:
     std::string selected_db_;
     std::string selected_table_;
     std::string selected_run_;  // run id; re-resolved each frame like the others
+    std::string selected_dataset_;  // dataset table id; re-resolved each frame
     std::string selected_model_;  // model id; re-resolved each frame
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
