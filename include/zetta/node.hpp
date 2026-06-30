@@ -21,6 +21,7 @@
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_registry.hpp"
 #include "zetta/model.hpp"
+#include "zetta/node_metrics.hpp"
 #include "zetta/principal.hpp"
 #include "zetta/project.hpp"
 #include "zetta/run.hpp"
@@ -338,6 +339,19 @@ public:
         return cloud_inspections_;
     }
 
+    // Sample this node's **live host resource utilization** — CPU / memory / GPU
+    // + VRAM / storage / network (see node_metrics.hpp / docs/node-metrics.md).
+    // **Ephemeral, observed state with NO CRDT backing**: it is read straight
+    // from the host's OS counters here and now, never stored or replicated (like
+    // cloud_inspections()). It is the source for the read-only
+    // `system.node_metrics` view (RULE-7 / #575 area 2). Non-const because the
+    // CPU + network gauges are rates measured against the previous sample, which
+    // the sampler updates each call. The storage gauge is taken over the node's
+    // `data_dir` filesystem.
+    NodeMetrics sample_node_metrics() {
+        return node_metrics_sampler_.sample(config_.data_dir);
+    }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -570,6 +584,7 @@ private:
     std::vector<std::shared_ptr<DatasetPartition>>
         dataset_partitions_;                                // sorted (created, id)
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
+    NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
     IndexRegistry index_registry_;            // IndexBackend container (#528)
