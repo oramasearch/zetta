@@ -19,6 +19,7 @@ namespace zetta {
 
 class Node;
 class Cluster;
+struct NodeStatus;
 struct ValidationReport;
 struct CloudProvider;
 class Project;
@@ -131,7 +132,11 @@ private:
     // collectives never block on this node's real peers, runs, then tears it down.
     // Called only from the Deploy panel's explicit "Run on real engine" action.
     void run_churn_demo();
-    void draw_cluster();     // role, listen address, peers, join command
+    void draw_cluster();     // spatial selectable node-box canvas + per-node detail
+    // The detail pane below the cluster canvas: full id, role, address,
+    // membership, replication status, and (for self) reachable addresses + peer
+    // count for the selected node. `nodes` is the live Cluster::nodes() snapshot.
+    void draw_cluster_node_detail(const std::vector<NodeStatus>& nodes);
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     // Run a provider's read-only inspect (CloudInspector) and cache the result on
     // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
@@ -243,6 +248,11 @@ private:
     std::string selected_model_;  // model id; re-resolved each frame
     std::string selected_job_;  // compute-job id; re-resolved each frame
     std::string selected_principal_;  // principal name; re-resolved each frame
+    // Cluster panel: the node id of the box selected in the spatial canvas
+    // ("" = none). Re-resolved against the live Cluster::nodes() each frame, so a
+    // peer that leaves/fails simply drops out of the grid and the selection falls
+    // back to self — the view tracks membership with no separate copy of it.
+    std::string selected_cluster_node_;
 
     // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
     // catalog id selected in the list. `cloud_consent_provider_` is the id the

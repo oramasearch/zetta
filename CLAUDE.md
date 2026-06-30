@@ -1350,9 +1350,15 @@ so a restarted node (new id, same address) **replaces** its stale entry instead
 of leaving a ghost. `zetta::Cluster` runs networking on a background thread via
 **Corosio**, behind the `zetta::runtime::net` seam (adapter:
 `src/core/cluster.cpp`; public API exposes no backend types). The headed Cluster
-panel shows the node id, every reachable listen address, peers, and the
-**command to add another node** plus a **Nodes & replication** table; headless
-logs that table. `Cluster::nodes()` returns this node + every connected peer with
+panel shows the node id, every reachable listen address, peers, the
+**command to add another node**, and a **spatial node-box canvas** — one
+selectable box per node (click → a per-node detail pane: id, role, address,
+membership, replication; the worktree-manager "boxes" feel) laid out in a wrapping
+grid, a thin renderer over `Cluster::nodes()` read live each frame so membership
+tracks joins/leaves/heals with no separate copy (`App::draw_cluster`,
+`src/gui/app_operations.cpp`, #582 — the spatial foundation the add-nodes control,
+per-node gauges, and algorithm animation build on); headless logs the per-node
+table. `Cluster::nodes()` returns this node + every connected peer with
 its replication status (entries, version, in-sync, last-sync) — surfaced in the
 headed panel, the headless log, and the SQL `zetta_nodes` system table. **Leader
 election + failover are the planned next step** (`ClusterRole` exists for it,
