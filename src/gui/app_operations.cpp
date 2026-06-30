@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/cluster_pipeline.hpp"
 #include "gui/cluster_telemetry.hpp"
 
 #include "zetta/add_dataset.hpp"
@@ -8,10 +9,14 @@
 #include "zetta/cloud_inspector.hpp"
 #include "zetta/cloud_provider.hpp"
 #include "zetta/cluster.hpp"
+#include "zetta/collectives.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/dataset.hpp"
+#include "zetta/dataset_partition.hpp"
 #include "zetta/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline_instrumentation.hpp"
 #include "zetta/provisioner.hpp"
 #include "zetta/run.hpp"
 #include "zetta/scaling_policy.hpp"
@@ -371,6 +376,322 @@ void draw_node_gauge(ImDrawList* draw, ImFont* mono, float font, ImVec2 pos,
 constexpr std::array<const char*, kGaugeCount> kGaugeLabels{"CPU", "MEM", "GPU",
                                                             "DSK", "NET"};
 
+// ── Distributed-algorithm-at-work overlay (#590) ──────────────────────────
+// The animation layer over the node-box canvas (epic #575 area 5). A thin renderer
+// over the live instrumentation read views — system.dataset_partitions (placement /
+// rebalance), system.pipeline_jobs (near-data vs wire bytes), system.collective_rounds
+// (scatter/gather) — so the canvas visibly animates a live run without inventing any
+// number. update_cluster_pipeline() diffs a per-frame snapshot into brief flows;
+// draw_pipeline_flow() glides them over the boxes. See docs/cluster-pipeline-animation.md.
+//
+// Flow palette: near-data / local work reads GREEN (it stays home — the near-data
+// win the instrumentation makes checkable), wire / collective movement reads INK (it
+// crosses the network), so "wire-bytes-vs-local-bytes" is legible at a glance. Coral
+// stays reserved for the selection accent (Orama discipline); status green/amber/red
+// stays the gauges'.
+constexpr ImU32 kFlowLocal = IM_COL32(29, 158, 117, 235);  // kDotActive — near data / placed
+constexpr ImU32 kFlowWire = IM_COL32(95, 95, 92, 220);     // kInkMuted — over the wire
+constexpr ImU32 kFlowMove = IM_COL32(68, 68, 65, 235);     // kInkSecondary — rebalance move
+
+// Re-pack an ImU32 with a new alpha (0..1) — for fading a flow over its lifetime.
+ImU32 with_alpha(ImU32 color, float alpha) {
+    alpha = std::clamp(alpha, 0.0f, 1.0f);
+    const ImU32 a = static_cast<ImU32>(alpha * 255.0f + 0.5f);
+    return (color & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
+}
+
+// The flow's draw colour by kind (green = stays local, ink = crosses the wire).
+ImU32 flow_color(PipelineFlowKind kind) {
+    switch (kind) {
+        case PipelineFlowKind::PartitionPlaced:
+        case PipelineFlowKind::NearDataRead:
+        case PipelineFlowKind::LocalCompute:
+            return kFlowLocal;
+        case PipelineFlowKind::PartitionMoved:
+            return kFlowMove;
+        case PipelineFlowKind::CollectiveScatter:
+        case PipelineFlowKind::CollectiveGather:
+        case PipelineFlowKind::WireMoved:
+            return kFlowWire;
+    }
+    return kFlowWire;
+}
+
+// Diff the live instrumentation snapshot against the last-seen baseline, spawning a
+// brief animated flow per change — a placed / moved partition, a near-data job's
+// local read (+ its wire partials), a completed collective round — and advance the
+// in-flight flows + per-node activity by `dt`. Pure bookkeeping over the read views:
+// no numbers are invented, and a change with no instrumentation behind it spawns
+// nothing. Bounded — at most kMaxSpawnPerUpdate new flows per call (so a burst, e.g.
+// returning to the view after a long run, folds into the baseline instead of
+// replaying), the flow list capped, and the diff maps pruned to the snapshot — so it
+// stays within the render_frame / SDL_WaitEventTimeout cadence (never starves a
+// resize). The FIRST call only primes the baseline (spawns nothing).
+void update_cluster_pipeline(ClusterPipelineState& state, const PipelineInputs& in,
+                             float dt) {
+    // Advance + cull in-flight flows; decay node activity + the collective pacing.
+    for (PipelineFlow& flow : state.flows) flow.age += dt;
+    std::erase_if(state.flows,
+                  [](const PipelineFlow& f) { return f.age >= f.lifetime; });
+    const float decay = std::exp(-dt * 1.8f);
+    for (auto& [id, level] : state.node_activity) level *= decay;
+    std::erase_if(state.node_activity,
+                  [](const auto& e) { return e.second < 0.01f; });
+    if (state.collective_cooldown > 0.0f) state.collective_cooldown -= dt;
+    state.peak_bytes *= 0.985;  // relax the byte-weight reference so an idle link is light
+    if (state.peak_bytes < 1.0) state.peak_bytes = 1.0;
+
+    int budget = state.primed ? ClusterPipelineState::kMaxSpawnPerUpdate : 0;
+
+    const auto member = [&](const std::string& id) {
+        return !id.empty() &&
+               std::find(in.nodes.begin(), in.nodes.end(), id) != in.nodes.end();
+    };
+    const auto bump = [&](const std::string& id, float amount) {
+        if (id.empty()) return;
+        float& level = state.node_activity[id];
+        level = std::min(1.0f, level + amount);
+    };
+    const auto spawn = [&](PipelineFlow flow) {
+        if (state.flows.size() >= ClusterPipelineState::kMaxFlows) {
+            state.flows.erase(state.flows.begin());
+        }
+        bump(flow.from, 0.5f);
+        bump(flow.to, 0.6f);
+        state.flows.push_back(std::move(flow));
+    };
+    const auto byte_weight = [&](std::uint64_t bytes) {
+        if (static_cast<double>(bytes) > state.peak_bytes) {
+            state.peak_bytes = static_cast<double>(bytes);
+        }
+        return static_cast<float>(
+            std::clamp(static_cast<double>(bytes) / state.peak_bytes, 0.15, 1.0));
+    };
+    const auto row_weight = [](std::uint64_t rows) {
+        return rows ? std::clamp(static_cast<float>(rows) / 20000.0f, 0.25f, 1.0f)
+                    : 0.4f;
+    };
+
+    // 1) Partitions — a new id is a placement (rows → partition → owner node); a
+    //    changed owner set is a rebalance move (a partition sliding onto a new node).
+    //    The baseline is only written on a new id / a change, so an unchanged catalog
+    //    costs one map lookup + one vector compare per partition (no copy).
+    for (const PipelinePartitionRef& part : in.partitions) {
+        const auto it = state.partition_owners.find(part.id);
+        if (it == state.partition_owners.end()) {
+            bool placed = false;
+            for (const std::string& owner : part.owners) {
+                if (budget <= 0 || !member(owner)) continue;
+                PipelineFlow flow;
+                flow.kind = PipelineFlowKind::PartitionPlaced;
+                flow.to = owner;
+                flow.lifetime = 1.1f;
+                flow.weight = row_weight(part.rows);
+                flow.label =
+                    part.rows ? (std::to_string(part.rows) + " rows") : "partition";
+                spawn(std::move(flow));
+                --budget;
+                placed = true;
+            }
+            if (placed) ++state.placements_seen;  // one tally per placed partition
+            state.partition_owners.emplace(part.id, part.owners);
+        } else if (it->second != part.owners) {
+            if (budget > 0) {
+                // Pick a newly-added owner (the destination) and a dropped owner (the
+                // source) so the chip visibly slides off the old node onto the new one.
+                std::string to_node;
+                std::string from_node;
+                for (const std::string& owner : part.owners) {
+                    if (member(owner) &&
+                        std::find(it->second.begin(), it->second.end(), owner) ==
+                            it->second.end()) {
+                        to_node = owner;
+                        break;
+                    }
+                }
+                for (const std::string& owner : it->second) {
+                    if (std::find(part.owners.begin(), part.owners.end(), owner) ==
+                        part.owners.end()) {
+                        from_node = owner;
+                        break;
+                    }
+                }
+                if (to_node.empty() && !part.owners.empty()) {
+                    to_node = part.owners.front();
+                }
+                if (member(to_node)) {
+                    PipelineFlow flow;
+                    flow.kind = PipelineFlowKind::PartitionMoved;
+                    flow.from = member(from_node) ? from_node : std::string{};
+                    flow.to = to_node;
+                    flow.lifetime = 1.3f;
+                    flow.weight = row_weight(part.rows);
+                    flow.label = "rebalance";
+                    spawn(std::move(flow));
+                    --budget;
+                    ++state.moves_seen;
+                }
+            }
+            it->second = part.owners;  // fold into the baseline (even if budget spent)
+        }
+    }
+    // Prune the owner map to the live catalog so it stays bounded.
+    if (state.partition_owners.size() > in.partitions.size()) {
+        std::unordered_set<std::string> live;
+        for (const PipelinePartitionRef& part : in.partitions) live.insert(part.id);
+        std::erase_if(state.partition_owners,
+                      [&](const auto& e) { return live.find(e.first) == live.end(); });
+    }
+
+    // 2) Near-data jobs — a newly-recorded job is a local read on its node (bytes
+    //    that stayed home), plus a wire flow toward the root for the partials it moved.
+    const std::string root =
+        in.participants.empty() ? std::string{} : in.participants.front();
+    for (const PipelineJobRef& job : in.jobs) {
+        if (state.seen_jobs.find(job.id) != state.seen_jobs.end()) continue;
+        state.seen_jobs[job.id] = true;
+        if (budget <= 0) continue;
+        if (member(job.node)) {
+            PipelineFlow flow;
+            flow.kind = PipelineFlowKind::NearDataRead;
+            flow.to = job.node;
+            flow.lifetime = 1.2f;
+            flow.weight = byte_weight(job.local_bytes);
+            flow.label = job.kind + " · " + format_bytes(job.local_bytes);
+            spawn(std::move(flow));
+            --budget;
+        }
+        if (budget > 0 && job.wire_bytes > 0 && member(job.node) && member(root) &&
+            root != job.node) {
+            PipelineFlow flow;
+            flow.kind = PipelineFlowKind::WireMoved;
+            flow.from = job.node;
+            flow.to = root;
+            flow.lifetime = 1.0f;
+            flow.weight = byte_weight(job.wire_bytes);
+            spawn(std::move(flow));
+            --budget;
+        }
+    }
+    if (state.seen_jobs.size() > in.jobs.size()) {
+        std::unordered_set<std::string> live;
+        for (const PipelineJobRef& job : in.jobs) live.insert(job.id);
+        std::erase_if(state.seen_jobs,
+                      [&](const auto& e) { return live.find(e.first) == live.end(); });
+    }
+
+    // 3) Collective rounds — a tick of rounds_completed spawns one paced scatter +
+    //    gather set (root ↔ each participant), the live run's heartbeat. The cooldown
+    //    caps the pulse rate to a legible ~2 Hz however fast rounds tick (the strip
+    //    still shows the true count). A single-node cluster has no peer to flow to, so
+    //    a round is a self compute pulse on the lone node.
+    if (in.rounds_completed > state.last_rounds && state.primed &&
+        state.collective_cooldown <= 0.0f && budget > 0) {
+        state.collective_cooldown = 0.45f;
+        if (in.participants.size() <= 1) {
+            const std::string self =
+                !in.participants.empty()
+                    ? in.participants.front()
+                    : (in.nodes.empty() ? std::string{} : in.nodes.front());
+            if (member(self)) {
+                PipelineFlow flow;
+                flow.kind = PipelineFlowKind::LocalCompute;
+                flow.to = self;
+                flow.lifetime = 0.9f;
+                flow.weight = 0.6f;
+                spawn(std::move(flow));
+            }
+        } else if (member(root)) {
+            for (const std::string& peer : in.participants) {
+                if (budget <= 0) break;
+                if (peer == root || !member(peer)) continue;
+                PipelineFlow gather;
+                gather.kind = PipelineFlowKind::CollectiveGather;
+                gather.from = peer;
+                gather.to = root;
+                gather.lifetime = 0.6f;
+                gather.weight = 0.55f;
+                spawn(std::move(gather));
+                PipelineFlow scatter;
+                scatter.kind = PipelineFlowKind::CollectiveScatter;
+                scatter.from = root;
+                scatter.to = peer;
+                scatter.age = -0.5f;  // begins after the gather leg lands
+                scatter.lifetime = 0.6f;
+                scatter.weight = 0.55f;
+                spawn(std::move(scatter));
+                --budget;
+            }
+        }
+    }
+    state.last_rounds = in.rounds_completed;
+    state.last_wire_bytes = in.wire_bytes;
+    state.primed = true;
+}
+
+// Draw one in-flight flow over the node-box canvas. `centers` maps node id → box
+// centre (rebuilt each frame, so the animation tracks a live resize / reflow); a
+// flow whose endpoint has left the cluster is silently skipped. A travelling flow
+// (distinct from / to) eases a comet with a short trail along a faint connecting
+// line; a from-data / local flow (no source) pulses an expanding ring on the target
+// box. Pure draw on the window draw list — no ImGui layout.
+void draw_pipeline_flow(ImDrawList* draw, ImFont* mono, float font,
+                        const std::unordered_map<std::string, ImVec2>& centers,
+                        const PipelineFlow& flow, float box_h) {
+    if (flow.age < 0.0f) return;  // scheduled but not yet started
+    const float t = std::clamp(flow.age / flow.lifetime, 0.0f, 1.0f);
+    const float fade = 1.0f - t;
+    const ImU32 base = flow_color(flow.kind);
+    const auto find = [&](const std::string& id) -> const ImVec2* {
+        const auto it = centers.find(id);
+        return it == centers.end() ? nullptr : &it->second;
+    };
+
+    const bool travelling = !flow.from.empty() && flow.from != flow.to;
+    if (travelling) {
+        const ImVec2* a = find(flow.from);
+        const ImVec2* b = find(flow.to);
+        if (!a || !b) return;
+        const float line_alpha = 0.30f * std::sin(t * 3.14159265f);
+        draw->AddLine(*a, *b, with_alpha(kFlowWire, line_alpha), 1.4f);
+        const float ease = t * t * (3.0f - 2.0f * t);  // smoothstep
+        const float radius = font * 0.18f + flow.weight * font * 0.30f;
+        for (int trail = 0; trail < 4; ++trail) {
+            const float back = std::max(0.0f, ease - trail * 0.06f);
+            const ImVec2 p(a->x + (b->x - a->x) * back, a->y + (b->y - a->y) * back);
+            draw->AddCircleFilled(p, radius * (1.0f - trail * 0.16f),
+                                  with_alpha(base, fade * (1.0f - trail * 0.22f)));
+        }
+        if (t > 0.7f) {  // a soft landing ring as it arrives
+            const float ring = box_h * 0.18f * (t - 0.7f) / 0.3f;
+            draw->AddCircle(*b, ring + radius, with_alpha(base, fade * 0.7f), 0, 2.0f);
+        }
+        if (!flow.label.empty() && t < 0.6f && mono) {
+            const ImVec2 head(a->x + (b->x - a->x) * ease, a->y + (b->y - a->y) * ease);
+            const float ts = font * 0.78f;
+            draw->AddText(mono, ts, ImVec2(head.x + radius + 2.0f, head.y - ts * 0.5f),
+                          with_alpha(base, fade), flow.label.c_str());
+        }
+    } else {
+        const ImVec2* c = find(flow.to);
+        if (!c) return;
+        const float max_r = box_h * (0.30f + flow.weight * 0.22f);
+        for (int ring = 0; ring < 2; ++ring) {
+            const float rt = std::clamp(t + ring * 0.18f, 0.0f, 1.0f);
+            draw->AddCircle(*c, max_r * rt, with_alpha(base, (1.0f - rt) * 0.85f), 0,
+                            2.0f);
+        }
+        draw->AddCircleFilled(*c, font * 0.22f * fade + 1.0f, with_alpha(base, fade));
+        if (!flow.label.empty() && t < 0.55f && mono) {
+            const float ts = font * 0.78f;
+            const float tw =
+                mono->CalcTextSizeA(ts, FLT_MAX, 0.0f, flow.label.c_str()).x;
+            draw->AddText(mono, ts, ImVec2(c->x - tw * 0.5f, c->y - max_r - ts),
+                          with_alpha(base, fade), flow.label.c_str());
+        }
+    }
+}
+
 // Join lineage refs (sources / steps) for a single wrapped line.
 std::string join_refs(const std::vector<std::string>& refs) {
     std::string joined;
@@ -639,6 +960,43 @@ void App::draw_cluster() {
     });
     const float dt = ImGui::GetIO().DeltaTime;
 
+    // Distributed-algorithm-at-work overlay (#590): snapshot the live instrumentation
+    // read views ONCE this frame — the partition catalog (placement / rebalance), the
+    // near-data pipeline jobs (local vs wire bytes), and the live coordinator's
+    // collective-plane progress (rounds) — then diff them into brief animated flows
+    // over the boxes. A thin renderer: every value comes from the same source as the
+    // system.dataset_partitions / system.pipeline_jobs / system.collective_rounds SQL
+    // views, nothing is invented. The reads are cheap (in-memory snapshots), so the
+    // overlay never starves a live resize.
+    PipelineInputs pipeline;
+    for (const NodeStatus& node : nodes) pipeline.nodes.push_back(node.node_id);
+    if (compute::JobCoordinator* coordinator = node_.job_coordinator()) {
+        pipeline.attached = true;
+        const Collectives& collectives = coordinator->collectives();
+        pipeline.rounds_completed = collectives.rounds_completed();
+        pipeline.wire_bytes = collectives.wire_bytes();
+        pipeline.participants = collectives.participants();
+    }
+    for (const std::shared_ptr<DatasetPartition>& part : node_.dataset_partitions()) {
+        PipelinePartitionRef ref;
+        ref.id = part->id();
+        ref.owners = part->owner_nodes();
+        ref.rows = part->row_range().end - part->row_range().start;
+        pipeline.partitions.push_back(std::move(ref));
+    }
+    for (const PipelineJobInstrumentation& job : node_.pipeline_jobs()) {
+        PipelineJobRef ref;
+        ref.id = job.job_id;
+        ref.node = job.node;
+        ref.kind = std::string(to_string(job.kind));
+        ref.local_bytes = job.local_bytes_read;
+        ref.wire_bytes = job.wire_bytes_moved;
+        ref.rows = job.rows_read;
+        ref.succeeded = job.status == JobStatus::Succeeded;
+        pipeline.jobs.push_back(std::move(ref));
+    }
+    update_cluster_pipeline(cluster_pipeline_, pipeline, dt);
+
     const float font = ImGui::GetFontSize();
     const float box_w = font * 15.0f;
     const float box_h = font * 11.0f;
@@ -655,6 +1013,10 @@ void App::draw_cluster() {
         const int columns =
             std::max(1, static_cast<int>((avail + gap) / (box_w + gap)));
 
+        // Box centres for the algorithm overlay (#590) — rebuilt each frame so the
+        // flows track a live resize / reflow.
+        std::unordered_map<std::string, ImVec2> node_centers;
+
         for (std::size_t index = 0; index < nodes.size(); ++index) {
             const NodeStatus& node = nodes[index];
             const int row = static_cast<int>(index) / columns;
@@ -670,6 +1032,24 @@ void App::draw_cluster() {
             const bool hovered = ImGui::IsItemHovered();
             if (ImGui::IsItemClicked()) selected_cluster_node_ = node.node_id;
             const bool selected = node.node_id == selected_cluster_node_;
+
+            // Record the box centre + draw a soft activity halo BEHIND the box (so it
+            // shows in the gaps around it) while this node is doing pipeline work
+            // (#590): the activity level is bumped when a flow touches the node and
+            // eased down when the work stops, so the working nodes visibly light up.
+            node_centers[node.node_id] =
+                ImVec2((top_left.x + bottom_right.x) * 0.5f,
+                       (top_left.y + bottom_right.y) * 0.5f);
+            const auto activity_it =
+                cluster_pipeline_.node_activity.find(node.node_id);
+            if (activity_it != cluster_pipeline_.node_activity.end() &&
+                activity_it->second > 0.02f) {
+                const float glow = font * 0.5f * activity_it->second;
+                draw->AddRectFilled(ImVec2(top_left.x - glow, top_left.y - glow),
+                                    ImVec2(bottom_right.x + glow, bottom_right.y + glow),
+                                    with_alpha(kFlowLocal, activity_it->second * 0.16f),
+                                    rounding + glow);
+            }
 
             const ImU32 fill = selected
                                    ? kClusterBoxFillSelected
@@ -752,6 +1132,14 @@ void App::draw_cluster() {
             draw->PopClipRect();
         }
 
+        // Algorithm overlay (#590): draw the in-flight flows OVER the boxes, after
+        // the per-box clip rects are balanced, so a comet can cross the gaps between
+        // boxes. Each flow is positioned from the live box centres, so it tracks a
+        // resize / reflow; a flow to a node that just left the cluster is skipped.
+        for (const PipelineFlow& flow : cluster_pipeline_.flows) {
+            draw_pipeline_flow(draw, mono_font_, font, node_centers, flow, box_h);
+        }
+
         // Reserve the laid-out area so the child scrolls when nodes overflow.
         const int rows = (static_cast<int>(nodes.size()) + columns - 1) / columns;
         ImGui::SetCursorScreenPos(origin);
@@ -759,7 +1147,57 @@ void App::draw_cluster() {
     }
     ImGui::EndChild();
 
+    draw_pipeline_activity(pipeline);
     draw_cluster_node_detail(nodes);
+}
+
+// The live pipeline-activity strip below the cluster canvas (#590): the real
+// instrumentation numbers the overlay animates, echoed verbatim (a thin renderer —
+// never an invented number), plus a legend tying the flow colours to near-data
+// (green, stays home) vs over-the-wire (ink). Quiet when no compute plane is
+// attached. The `pipeline` snapshot was already read this frame in draw_cluster.
+void App::draw_pipeline_activity(const PipelineInputs& pipeline) {
+    ImGui::Spacing();
+    eyebrow(mono_font_, "PIPELINE");
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    if (pipeline.attached) {
+        ImGui::TextColored(
+            kInkSecondary,
+            "rounds %llu  ·  wire moved %s  ·  near-data jobs %zu  ·  partitions %zu",
+            static_cast<unsigned long long>(pipeline.rounds_completed),
+            format_bytes(pipeline.wire_bytes).c_str(), pipeline.jobs.size(),
+            pipeline.partitions.size());
+        ImGui::TextColored(kInkQuiet,
+                           "placed %llu  ·  rebalanced %llu  (since this view opened)",
+                           static_cast<unsigned long long>(
+                               cluster_pipeline_.placements_seen),
+                           static_cast<unsigned long long>(
+                               cluster_pipeline_.moves_seen));
+    } else {
+        ImGui::TextColored(kInkQuiet,
+                           "no compute plane attached (a standalone node)");
+    }
+    if (mono_font_) ImGui::PopFont();
+
+    // Legend swatches — drawn on the window draw list so they don't depend on a
+    // bullet glyph being present in the embedded font.
+    const auto swatch = [&](ImU32 color, const char* label) {
+        ImDrawList* draw = ImGui::GetWindowDrawList();
+        const ImVec2 pos = ImGui::GetCursorScreenPos();
+        const float size = ImGui::GetFontSize() * 0.55f;
+        const float y = pos.y + (ImGui::GetTextLineHeight() - size) * 0.5f;
+        draw->AddRectFilled(ImVec2(pos.x, y), ImVec2(pos.x + size, y + size), color,
+                            size * 0.3f);
+        ImGui::Dummy(ImVec2(size + ImGui::GetStyle().ItemInnerSpacing.x,
+                            ImGui::GetTextLineHeight()));
+        ImGui::SameLine();
+        ImGui::TextColored(kInkMuted, "%s", label);
+    };
+    swatch(kFlowLocal, "near data");
+    ImGui::SameLine();
+    swatch(kFlowWire, "over the wire");
+    ImGui::SameLine();
+    swatch(kFlowMove, "rebalance");
 }
 
 void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
