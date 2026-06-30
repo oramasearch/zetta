@@ -18,7 +18,9 @@
 #include "zetta/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
+#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute_job.hpp"
+#include "zetta/pipeline_instrumentation.hpp"
 #include "zetta/database.hpp"
 #include "zetta/dataset_partition.hpp"
 #include "zetta/ddf/data_frame.hpp"
@@ -101,6 +103,8 @@ constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
 constexpr std::string_view kNodeMetricsTable = "node_metrics";
+constexpr std::string_view kPipelineJobsTable = "pipeline_jobs";
+constexpr std::string_view kCollectiveRoundsTable = "collective_rounds";
 
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
@@ -622,6 +626,62 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
     return {std::move(row)};
 }
 
+// One JSON row per recorded near-data compute job for the system.pipeline_jobs
+// table — the live pipeline instrumentation (#589, epic #575 area 5; the engine
+// source the algorithm-at-work animation reads from). Sourced from
+// Node::pipeline_jobs() (the bounded, in-memory ring the near-data runners record
+// into). **Ephemeral, observed, NOT replicated** (like node_metrics / checkpoints):
+// the rows reflect what THIS node did and have no CRDT backing. Each row exposes the
+// near-data acceptance directly — `local_bytes_read` (partition body bytes read near
+// data, not moved) vs `wire_bytes_moved` (the collective-plane partials), so a query
+// can confirm bytes-moved ≈ partials, not ≈ dataset.
+std::vector<nlohmann::json> pipeline_job_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const PipelineJobInstrumentation& job : node.pipeline_jobs()) {
+        nlohmann::json row;
+        row["job_id"] = job.job_id;
+        row["kind"] = std::string(to_string(job.kind));
+        row["node"] = job.node;
+        row["partitions_read"] = job.partitions_read;
+        row["rows_read"] = job.rows_read;
+        row["local_bytes_read"] = job.local_bytes_read;
+        row["wire_bytes_moved"] = job.wire_bytes_moved;
+        row["status"] = std::string(to_string(job.status));
+        row["recorded_at"] = job.recorded_at;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// The single live-collective-plane row for the system.collective_rounds table —
+// the live progress of this node's long-lived compute coordinator (#589, epic #575
+// area 5). Computed from the live JobCoordinator's Collectives (the #579 spine):
+// `rounds_completed` (allreduce/broadcast/barrier/gather that succeeded) and
+// `wire_bytes_moved` (cumulative collective-plane payload bytes) both tick up during
+// ANY distributed run — including the interactive churn run — so the GUI can watch a
+// run advance. **Ephemeral, observed, NOT replicated** (live meters, no CRDT). A
+// node with no attached coordinator (standalone, or before attach_cluster) reports
+// `attached=false` with zeroed counters — always exactly one row, like node_metrics.
+std::vector<nlohmann::json> collective_round_rows(Node& node) {
+    nlohmann::json row;
+    row["node"] = node.node_id();
+    compute::JobCoordinator* coordinator = node.job_coordinator();
+    if (coordinator) {
+        const Collectives& collectives = coordinator->collectives();
+        row["attached"] = true;
+        row["participants"] =
+            static_cast<int>(collectives.participants().size());
+        row["rounds_completed"] = collectives.rounds_completed();
+        row["wire_bytes_moved"] = collectives.wire_bytes();
+    } else {
+        row["attached"] = false;
+        row["participants"] = 0;
+        row["rounds_completed"] = static_cast<std::uint64_t>(0);
+        row["wire_bytes_moved"] = static_cast<std::uint64_t>(0);
+    }
+    return {std::move(row)};
+}
+
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
 QueryResult select_over_rows(const SelectStmt& statement,
@@ -1017,6 +1077,12 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kNodeMetricsTable) {
                         return select_over_rows(s, node_metrics_rows(node_));
                     }
+                    if (sys == kPipelineJobsTable) {
+                        return select_over_rows(s, pipeline_job_rows(node_));
+                    }
+                    if (sys == kCollectiveRoundsTable) {
+                        return select_over_rows(s, collective_round_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.zetta_nodes, "
@@ -1029,6 +1095,8 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.datasets, "
                                      "system.checkpoints, "
                                      "system.node_metrics, "
+                                     "system.pipeline_jobs, "
+                                     "system.collective_rounds, "
                                      "system.zetta_cloud_providers, or "
                                      "system.zetta_cloud_status)");
                     }

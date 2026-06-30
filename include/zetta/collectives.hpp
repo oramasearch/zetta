@@ -149,6 +149,18 @@ public:
         return wire_bytes_.load(std::memory_order_relaxed);
     }
 
+    // The number of collective rounds this node has completed successfully — one
+    // per allreduce / broadcast / barrier / gather that returned a result (a
+    // timed-out or unreachable-peer round does not count). Cumulative across
+    // rounds; thread-safe (incremented on the application call path). Paired with
+    // wire_bytes() it is the live "collective-round progress" signal the pipeline
+    // instrumentation read view (system.collective_rounds) surfaces, so the GUI's
+    // algorithm-at-work animation can watch a distributed run advance. Ephemeral /
+    // observed — never replicated.
+    std::uint64_t rounds_completed() const noexcept {
+        return rounds_completed_.load(std::memory_order_relaxed);
+    }
+
     // --- SignalHandler (runs on the cluster network thread) -----------------
     SignalResponse on_request(const Signal& request) override;
     void on_event(const Signal& event) override;
@@ -192,11 +204,19 @@ private:
         wire_bytes_.fetch_add(bytes, std::memory_order_relaxed);
     }
 
+    // Count one successfully-completed collective round (see rounds_completed()).
+    void note_round_completed() noexcept {
+        rounds_completed_.fetch_add(1, std::memory_order_relaxed);
+    }
+
     Cluster& cluster_;
     SignalHandler* delegate_ = nullptr;
 
     // The "bytes moved over the wire" meter (see wire_bytes()).
     std::atomic<std::uint64_t> wire_bytes_{0};
+
+    // The completed-round counter (see rounds_completed()).
+    std::atomic<std::uint64_t> rounds_completed_{0};
 
     std::mutex mutex_;
     std::condition_variable cv_;

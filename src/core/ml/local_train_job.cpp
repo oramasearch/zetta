@@ -6,6 +6,8 @@
 #include <utility>
 
 #include "zetta/node.hpp"
+#include "zetta/pipeline_instrumentation.hpp"
+#include "zetta/timestamp.hpp"
 
 namespace zetta::ml {
 
@@ -19,6 +21,21 @@ NearDataTrainResult run_near_data_train_job(
     std::size_t top_k, const std::string& round_tag,
     std::chrono::milliseconds timeout) {
     NearDataTrainResult out;
+
+    // Record this pipeline's near-data instrumentation into the node before
+    // returning (it spans the train + explain + score phases), so the counters
+    // survive the call and surface in system.pipeline_jobs (#589).
+    auto record_instrumentation = [&] {
+        node.record_pipeline_job({.job_id = job.id(),
+                                  .kind = NearDataJobKind::Train,
+                                  .node = node.node_id(),
+                                  .partitions_read = out.partitions_read,
+                                  .rows_read = out.rows_read,
+                                  .local_bytes_read = out.local_bytes_read,
+                                  .wire_bytes_moved = out.wire_bytes_moved,
+                                  .status = out.status,
+                                  .recorded_at = now_iso8601()});
+    };
 
     // (1) Compute near data: materialize this node's shard from its OWNED partitions
     // of `table` — only the bodies it physically holds, read from local disk (no
@@ -38,6 +55,7 @@ NearDataTrainResult run_near_data_train_job(
                               shard.status.message};
         });
         out.status = job.status();
+        record_instrumentation();
         return out;
     }
 
@@ -70,6 +88,7 @@ NearDataTrainResult run_near_data_train_job(
         // Training failed — surface it without attempting explain/rank over an unbuilt
         // model. The instrumentation still reflects what this node moved.
         out.wire_bytes_moved = coordinator.collectives().wire_bytes() - wire_before;
+        record_instrumentation();
         return out;
     }
 
@@ -107,6 +126,7 @@ NearDataTrainResult run_near_data_train_job(
                   scored.status == JobStatus::Succeeded)
                      ? JobStatus::Succeeded
                      : JobStatus::Failed;
+    record_instrumentation();
     return out;
 }
 

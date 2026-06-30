@@ -271,6 +271,29 @@ backing). Qualified-name only.
 SELECT node_id, cpu_percent, memory_percent FROM system.node_metrics;
 ```
 
+There are also two **live pipeline instrumentation** views
+([pipeline-instrumentation.md](pipeline-instrumentation.md), #589 / #575 area 5 —
+the engine source the GUI's algorithm-at-work animation reads from), both
+**ephemeral, observed, NOT replicated** (no CRDT backing) like `system.node_metrics`:
+
+- **`system.pipeline_jobs`** — one row per recorded **near-data** compute job
+  (sourced from `Node::pipeline_jobs()`, a bounded in-memory ring the near-data
+  runners record into). Columns: `job_id`, `kind` (`group_by` / `featurize` /
+  `train`), `node`, `partitions_read`, `rows_read`, `local_bytes_read` (bytes read
+  near data, not moved), `wire_bytes_moved` (the collective-plane partials),
+  `status`, `recorded_at`. Empty until a near-data job runs. Qualified-name only.
+- **`system.collective_rounds`** — exactly **one row** (this node), the live
+  [job coordinator](job-coordinator.md)'s collective-plane progress. Columns:
+  `node`, `attached` (a coordinator is attached), `participants`,
+  `rounds_completed` (allreduce/broadcast/barrier/gather that succeeded),
+  `wire_bytes_moved` (cumulative). Ticks up during any distributed run; a
+  standalone node reports `attached=false` with zeroed meters. Qualified-name only.
+
+```sql
+SELECT job_id, kind, local_bytes_read, wire_bytes_moved FROM system.pipeline_jobs;
+SELECT rounds_completed, wire_bytes_moved FROM system.collective_rounds;
+```
+
 > **Naming.** `system.dataset_partitions` is the **first system table without the
 > `zetta_` prefix**: the `system` database is reserved + zetta-controlled, so the
 > prefix is redundant. New system tables are named plainly; the legacy `zetta_*`
