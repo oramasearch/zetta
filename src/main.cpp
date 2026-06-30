@@ -8,7 +8,9 @@
 
 #include "zetta/cluster.hpp"
 #include "zetta/headless.hpp"
+#include "zetta/local_provisioner.hpp"
 #include "zetta/node.hpp"
+#include "zetta/provisioner.hpp"
 #include "zetta/replicated_blob_store.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
@@ -216,6 +218,23 @@ int main(int argc, char** argv) {
         rc = zetta::run_headless(node, cluster);
     } else {
         zetta::gui::App app(node, cluster);
+
+        // Wire the given-hardware Provisioner the Cluster view's "Add nodes"
+        // control drives: a LocalProvisioner that reports the nodes already in the
+        // cluster (best-effort — it brings up no new machines and touches no
+        // cloud), reading the live fleet from Cluster::nodes() on each call so it
+        // tracks self-healing membership. Cloud provisioners (which create billable
+        // resources) are injected by a configured deployment and stay consent-gated
+        // in the control. The provisioner must outlive app.run().
+        zetta::LocalProvisioner local_provisioner([&cluster] {
+            std::vector<zetta::ProvisionedNode> fleet;
+            for (const zetta::NodeStatus& peer : cluster.nodes()) {
+                fleet.push_back({peer.node_id, peer.address, {}});
+            }
+            return fleet;
+        });
+        app.set_provisioner("local", local_provisioner);
+
         if (app.init()) {
             app.run();
         } else {
