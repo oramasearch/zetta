@@ -3,6 +3,7 @@
 #include "gui/repl_console.hpp"
 
 #include "zetta/access_key.hpp"
+#include "zetta/add_dataset.hpp"
 #include "zetta/audit_event.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/capability.hpp"
@@ -369,6 +370,18 @@ void App::draw_menu_bar() {
         if (ImGui::MenuItem("New project…")) {
             new_project_modal_requested_ = true;
         }
+        // Add a dataset from a parquet/jsonl/json/csv file (#587). Open the native
+        // picker and switch to the Datasets view, where the loaded dataset (and the
+        // add status) surfaces; the dialog callback enqueues a FileIntent::Dataset.
+        if (ImGui::MenuItem("Add dataset…")) {
+            active_view_ = View::Datasets;
+            static const SDL_DialogFileFilter filters[] = {
+                {"Datasets (parquet, jsonl, json, csv)",
+                 "parquet;pq;jsonl;ndjson;json;csv"},
+                {"All files", "*"}};
+            SDL_ShowOpenFileDialog(&App::on_open_dataset, this, window_, filters, 2,
+                                   nullptr, false);
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Cmd+Q")) running_ = false;
         ImGui::EndMenu();
@@ -474,6 +487,12 @@ void App::on_open_large_object(void* userdata, const char* const* files, int) {
     }
 }
 
+void App::on_open_dataset(void* userdata, const char* const* files, int) {
+    if (files && files[0]) {
+        static_cast<App*>(userdata)->enqueue_file(files[0], FileIntent::Dataset);
+    }
+}
+
 void App::on_open_n8n(void* userdata, const char* const* files, int) {
     if (files && files[0]) {
         static_cast<App*>(userdata)->enqueue_file(files[0],
@@ -511,6 +530,27 @@ void App::handle_incoming_files() {
             add_model_weights_path_ = f.path;
             add_model_weights_name_ = path.filename().string();
             io_status_ = "Staged weights: " + add_model_weights_name_;
+            continue;
+        }
+        // A dataset file (parquet/jsonl/json/csv) is loaded as a *partitioned*
+        // table (#587) so it appears in the Datasets view with its partitions
+        // placed across the cluster. The add runs on this (main) thread, which
+        // owns the node, like the other ingestion paths.
+        if (intent == FileIntent::Dataset) {
+            AddDatasetOptions options;
+            options.members = node_.cluster_members();
+            const AddDatasetResult loaded = add_dataset_file(node_, path, options);
+            if (loaded.ok()) {
+                io_status_ = "Added dataset " + loaded.table->name() + " (" +
+                             std::to_string(loaded.rows) + " row(s), " +
+                             std::to_string(loaded.partitions.size()) +
+                             " partition(s))";
+                // Surface it: switch to the Datasets view and select it.
+                if (loaded.table) selected_dataset_ = loaded.table->id();
+                active_view_ = View::Datasets;
+            } else {
+                io_status_ = "Add dataset failed: " + loaded.error;
+            }
             continue;
         }
         if (intent == FileIntent::Auto) {
@@ -700,12 +740,17 @@ void App::run() {
             } else if (event.type == SDL_EVENT_DROP_FILE) {
                 if (event.drop.data) {
                     // While the New Project dialog is up, a dropped file is its
-                    // n8n artifact (the rest of the UI is blocked by the modal);
-                    // otherwise it routes by extension as before.
-                    enqueue_file(event.drop.data,
-                                 new_project_modal_open_
-                                     ? FileIntent::N8nArtifact
-                                     : FileIntent::Auto);
+                    // n8n artifact (the rest of the UI is blocked by the modal).
+                    // On the Datasets view a drop is an "Add dataset" (#587),
+                    // loaded as a partitioned table. Otherwise it routes by
+                    // extension as before.
+                    FileIntent intent = FileIntent::Auto;
+                    if (new_project_modal_open_) {
+                        intent = FileIntent::N8nArtifact;
+                    } else if (active_view_ == View::Datasets) {
+                        intent = FileIntent::Dataset;
+                    }
+                    enqueue_file(event.drop.data, intent);
                 }
             }
         } while (SDL_PollEvent(&event));

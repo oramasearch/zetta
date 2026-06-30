@@ -103,12 +103,21 @@ private:
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
     // routes by extension: .json/.jsonl import as rows, anything else stores as
-    // a large object. N8nArtifact stages a workflow JSON for the New Project
-    // dialog (validated on stage, imported into the new project only on Create)
-    // instead of ingesting it immediately. ModelWeights stages a chosen file as
-    // the serialized weights for the Models view's "Add model" form (attached via
-    // Model::set_weights on Register), rather than ingesting it.
-    enum class FileIntent { Auto, Records, LargeObject, N8nArtifact, ModelWeights };
+    // a large object. Dataset loads a parquet/jsonl/json/csv file as a *partitioned*
+    // table via add_dataset_file (#587), so it surfaces in the Datasets view with
+    // its partitions placed across the cluster. N8nArtifact stages a workflow JSON
+    // for the New Project dialog (validated on stage, imported into the new project
+    // only on Create) instead of ingesting it immediately. ModelWeights stages a
+    // chosen file as the serialized weights for the Models view's "Add model" form
+    // (attached via Model::set_weights on Register), rather than ingesting it.
+    enum class FileIntent {
+        Auto,
+        Records,
+        LargeObject,
+        Dataset,
+        N8nArtifact,
+        ModelWeights
+    };
     struct IncomingFile {
         std::string path;
         FileIntent intent;
@@ -254,6 +263,7 @@ private:
     void enqueue_file(std::string path, FileIntent intent);
     static void on_open_records(void* userdata, const char* const* files, int filter);
     static void on_open_large_object(void* userdata, const char* const* files, int filter);
+    static void on_open_dataset(void* userdata, const char* const* files, int filter);
     static void on_open_n8n(void* userdata, const char* const* files, int filter);
     static void on_open_model_weights(void* userdata, const char* const* files,
                                       int filter);

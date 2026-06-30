@@ -2,6 +2,7 @@
 #include "gui/app_internal.hpp"
 #include "gui/cluster_telemetry.hpp"
 
+#include "zetta/add_dataset.hpp"
 #include "zetta/add_nodes.hpp"
 #include "zetta/bytes.hpp"
 #include "zetta/cloud_inspector.hpp"
@@ -1542,7 +1543,29 @@ void App::draw_datasets() {
     // each frame via Node::datasets(), so it never drifts from the truth; the only
     // UI state is the selected dataset's table id (re-resolved each frame).
     const std::vector<DatasetSummary> datasets = node_.datasets();
-    ImGui::TextDisabled("%zu dataset(s)", datasets.size());
+
+    // Add-dataset affordance (#587): pick a parquet/jsonl/json/csv file and load
+    // it as a *partitioned* table, so it joins the list below with its partitions
+    // placed across the cluster. A file dropped onto this view does the same (see
+    // the SDL_EVENT_DROP_FILE routing in run()). The dialog filter mirrors
+    // dataset_file::dialog_extensions().
+    if (primary_button("Add dataset...")) {
+        static const SDL_DialogFileFilter filters[] = {
+            {"Datasets (parquet, jsonl, json, csv)",
+             "parquet;pq;jsonl;ndjson;json;csv"},
+            {"All files", "*"}};
+        SDL_ShowOpenFileDialog(&App::on_open_dataset, this, window_, filters, 2,
+                               nullptr, false);
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("or drop a file here · %zu dataset(s)", datasets.size());
+    // The shared ingestion status line (e.g. "Added dataset … (N rows, M
+    // partitions)") — also shown on Home, surfaced here so an add gives feedback
+    // in place.
+    if (!io_status_.empty()) {
+        ImGui::TextColored(kInkSecondary, "%s", io_status_.c_str());
+    }
+    ImGui::Spacing();
 
     // Re-resolve the selection against the live datasets: if the selected table is
     // gone (or nothing is selected yet), fall back to the first dataset so the
