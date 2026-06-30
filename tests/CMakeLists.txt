@@ -85,6 +85,7 @@ add_executable(zetta-tests
   test_ddf_featurize.cpp
   test_ddf_featurize_partitions.cpp
   test_gbdt.cpp
+  test_gbdt_train_partitions.cpp
   test_calibration.cpp
   test_tree_shap.cpp
   test_native_oracle.cpp
