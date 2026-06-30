@@ -27,6 +27,7 @@ struct ValidationReport;
 struct CloudProvider;
 class Project;
 class ProjectGraph;
+struct ClusterPlan;
 namespace ir {
 class ExecutionGraph;
 }
@@ -229,7 +230,19 @@ private:
     void draw_graph_workspace();
     // Render the working-copy graph as a canvas: nodes laid out in columns by
     // StepKind (connect→…→act), edges drawn between them; clicking selects a node.
-    void draw_graph_canvas();
+    // When `plan` is non-null, each step is overlaid with its projected cluster
+    // placement — a coloured left stripe + a mono badge (near-data / fan-out /
+    // all nodes / coordinator) — turning the canvas into a graph-over-cluster view.
+    void draw_graph_canvas(const ClusterPlan* plan);
+    // The cluster-plan section below the canvas (#591): a legend, the current
+    // cluster's node strip (the nodes the selected step lands on are highlighted),
+    // and a per-step placement table. A thin, read-only projection of how the graph
+    // would run over the live cluster (zetta's SPMD + compute-near-data model).
+    void draw_graph_plan(const ClusterPlan& plan);
+    // Build the cluster-plan projection for the open working-copy graph over the
+    // live cluster: resolve each step's source table → partition owners (from the
+    // dataset-partition catalog) and project placement via project_cluster_plan.
+    ClusterPlan build_graph_plan() const;
     // The add/rename/delete controls + Save/Revert below the canvas.
     void draw_graph_editor(Project& project);
     // Load a fresh working copy of `stored` for editing (clears selection/dirty).
@@ -477,6 +490,11 @@ private:
     std::string add_edge_to_;          // to-node id for a new edge
     int add_edge_kind_ = 0;            // EdgeKind index for a new edge
     std::string rename_node_input_;    // name field for renaming the selected node
+    // Cluster-plan overlay (#591): when on, the canvas + a plan section project how
+    // the open graph would run over the current cluster (near-data / fan-out /
+    // owner nodes). On by default so opening a graph shows the projection; a
+    // checkbox above the canvas hides it for a plain edit view.
+    bool show_cluster_plan_ = true;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

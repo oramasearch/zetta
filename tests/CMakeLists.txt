@@ -68,6 +68,7 @@ add_executable(zetta-tests
   test_example_scripts.cpp
   test_audit.cpp
   test_intent_compiler.cpp
+  test_graph_plan.cpp
   test_node.cpp
   test_node_metrics.cpp
   test_query.cpp

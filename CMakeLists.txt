@@ -409,6 +409,7 @@ add_library(zetta-core STATIC
   src/core/churn_step_executor.cpp
   src/core/churn_solution.cpp
   src/core/intent_compiler.cpp
+  src/core/graph_plan.cpp
   src/core/duration.cpp
   src/core/bytes.cpp
   src/core/large_object.cpp
