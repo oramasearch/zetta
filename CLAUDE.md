@@ -1433,8 +1433,18 @@ its own, and the control plane uses it to act), records it as node-local state
 **`system.zetta_provisioners`** table), and injects a CLI-backed `Provisioner` per
 detected target (owned by `gui::CloudProvisioners`) so its consent-gated **Allow**
 button lights up. Azure is the reference detector; the other targets follow the same
-shape. Teardown from the GUI is a later slice. See
-[docs/provisioner-detection.md](docs/provisioner-detection.md) and
+shape. The **add runs off the UI thread** — a `runtime::spawn`ed coroutine drives
+the provider CLI while a **progress bar** (elapsed vs a per-target ETA baseline)
+animates and the window stays responsive (`App::run_add_nodes` launches,
+`App::poll_add_nodes` applies the result on the UI thread via `apply_added_nodes`);
+a failure renders in full, **copyable**. Editable **Region + VM size** fields
+(pre-filled from `system.zetta_provisioners`, applied via `Provisioner::set_placement`
+before the add) let the operator steer where a burst lands. The Azure backend
+(`AzCliControlPlane`) is capacity-aware: it picks a fresh **`zetta-node-group-NN`**
+resource group (never a taken/deprovisioning name) and, since Azure exposes no
+capacity API, **falls back across VM SKUs** on a `SkuNotAvailable` shortage until one
+places (Microsoft's own retry-with-fallback guidance). Teardown from the GUI is a
+later slice. See [docs/provisioner-detection.md](docs/provisioner-detection.md) and
 [docs/add-nodes-control.md](docs/add-nodes-control.md).
 Headless logs the per-node table. `Cluster::nodes()` returns this node + every
 connected peer with

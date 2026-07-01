@@ -18,6 +18,7 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline_instrumentation.hpp"
 #include "zetta/provisioner.hpp"
+#include "zetta/provisioner_detect.hpp"
 #include "zetta/run.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/scaling_policy.hpp"
@@ -67,6 +68,21 @@ struct AddNodesOp {
     std::optional<AddNodesResult> result;   // set by the coroutine before `done`
     std::atomic<bool> done{false};          // flipped by the spawn completion
 };
+
+// Shared state for the async VM-size dropdown fetch (forward-declared in app.hpp).
+// The coroutine runs `az vm list-skus` for `location` off the UI thread and writes
+// `result` under `mutex`; poll_add_nodes reads `done` and copies the options out.
+struct VmSizesOp {
+    std::string subscription;
+    std::string location;
+    std::mutex mutex;
+    std::vector<std::string> result;
+    std::atomic<bool> done{false};
+};
+
+// Defined below (near run_add_nodes); forward-declared so draw_add_nodes_control
+// can spawn it.
+zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op);
 
 namespace {
 
@@ -1400,6 +1416,113 @@ void App::draw_add_nodes_control() {
         }
         if (mono_font_) ImGui::PopFont();
 
+        // Editable placement — dropdowns of the detected available options. Region
+        // options come from the detected config (az account list-locations); the
+        // VM-size options are fetched per-region OFF the UI thread (az vm list-skus).
+        // Both are applied to the injected provisioner via set_placement before the
+        // add. The operator steers where a burst lands; the backend also falls back
+        // across VM sizes automatically on a capacity shortage.
+        // Bind the detected configs to a local — provisioner_configs() returns by
+        // value, so a pointer into a temporary would dangle after the loop.
+        const std::vector<ProvisionerConfig> provisioner_configs =
+            node_.provisioner_configs();
+        const ProvisionerConfig* detected_cfg = nullptr;
+        for (const ProvisionerConfig& pc : provisioner_configs) {
+            if (pc.target == target->id) {
+                detected_cfg = &pc;
+                break;
+            }
+        }
+
+        // Pre-fill the current region/size from the detected config when the target
+        // changes, and reset the size options so they re-fetch for the new target.
+        if (add_nodes_placement_target_ != target->id) {
+            add_nodes_placement_target_ = target->id;
+            add_nodes_region_.clear();
+            add_nodes_vm_size_.clear();
+            add_nodes_size_options_.clear();
+            add_nodes_sizes_region_.clear();
+            if (detected_cfg) {
+                const nlohmann::json& cfg = detected_cfg->config;
+                add_nodes_region_ = cfg.value(
+                    "location", cfg.value("region", cfg.value("zone", std::string{})));
+                add_nodes_vm_size_ = cfg.value(
+                    "vm_size",
+                    cfg.value("instance_type",
+                              cfg.value("machine_type",
+                                        cfg.value("shape", std::string{}))));
+            }
+        }
+
+        // Region changed (or first render) → fetch its VM-size options off the UI
+        // thread. Marking add_nodes_sizes_region_ at launch prevents a re-launch
+        // while the fetch is in flight; poll_add_nodes copies the options out.
+        const std::string subscription =
+            detected_cfg ? detected_cfg->config.value("subscription_id", std::string{})
+                         : std::string{};
+        if (target->id == "azure" && !add_nodes_region_.empty() &&
+            !subscription.empty() && add_nodes_sizes_region_ != add_nodes_region_) {
+            add_nodes_sizes_region_ = add_nodes_region_;
+            const auto cached = add_nodes_sizes_cache_.find(add_nodes_region_);
+            if (cached != add_nodes_sizes_cache_.end()) {
+                add_nodes_size_options_ = cached->second;  // instant (already fetched)
+                add_nodes_sizes_op_.reset();
+            } else {
+                add_nodes_size_options_.clear();
+                auto sizes_op = std::make_shared<VmSizesOp>();
+                sizes_op->subscription = subscription;
+                sizes_op->location = add_nodes_region_;
+                add_nodes_sizes_op_ = sizes_op;
+                zetta::runtime::spawn(fetch_vm_sizes_task(sizes_op), [sizes_op] {
+                    sizes_op->done.store(true, std::memory_order_release);
+                });
+            }
+        }
+
+        ImGui::Spacing();
+        eyebrow(mono_font_, "PLACEMENT");
+        ImGui::BeginDisabled(add_nodes_op_ != nullptr);
+
+        // Region — a dropdown of the detected regions (free-text if none detected).
+        ImGui::SetNextItemWidth(240.0f);
+        if (detected_cfg && !detected_cfg->available_regions.empty()) {
+            if (ImGui::BeginCombo("Region", add_nodes_region_.c_str())) {
+                for (const std::string& region : detected_cfg->available_regions) {
+                    if (ImGui::Selectable(region.c_str(),
+                                          region == add_nodes_region_)) {
+                        add_nodes_region_ = region;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            ImGui::InputText("Region", &add_nodes_region_);
+        }
+
+        // VM size — a dropdown of the region's available sizes; a "Loading…" note
+        // while fetching, free-text as a fallback when the list is unavailable.
+        if (add_nodes_sizes_op_) {
+            ImGui::TextColored(kInkQuiet, "Loading VM sizes for %s…",
+                               add_nodes_region_.c_str());
+        } else if (!add_nodes_size_options_.empty()) {
+            ImGui::SetNextItemWidth(240.0f);
+            if (ImGui::BeginCombo("VM size", add_nodes_vm_size_.c_str())) {
+                for (const std::string& sku : add_nodes_size_options_) {
+                    if (ImGui::Selectable(sku.c_str(), sku == add_nodes_vm_size_)) {
+                        add_nodes_vm_size_ = sku;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            ImGui::SetNextItemWidth(240.0f);
+            ImGui::InputText("VM size", &add_nodes_vm_size_);
+        }
+        ImGui::EndDisabled();
+        ImGui::TextColored(kInkQuiet,
+            "Dropdowns of what your subscription can deploy. The backend also falls "
+            "back across sizes on a capacity shortage at create time.");
+
         // The consent gate — a tinted (amber) callout so the permission boundary
         // reads as a deliberate, deny-by-default stop. The Allow button IS the
         // per-action consent: there is no remembered grant, so a cloud add asks
@@ -1511,6 +1634,17 @@ zetta::runtime::task<> provision_task(std::shared_ptr<AddNodesOp> op) {
     co_return;
 }
 
+// Fetch the VM-size dropdown options for a region OFF the UI thread (az vm
+// list-skus is slow). Inputs by value into the frame; the completion flips done.
+zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op) {
+    std::vector<std::string> sizes = azure_vm_sizes(op->subscription, op->location);
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        op->result = std::move(sizes);
+    }
+    co_return;
+}
+
 void App::run_add_nodes(const CloudProvider& target) {
     // Reached only from the Local "Add" button or a cloud target's explicit
     // "Allow". The slow provision runs OFF the UI thread (runtime::spawn) so a
@@ -1526,6 +1660,11 @@ void App::run_add_nodes(const CloudProvider& target) {
         add_nodes_status_warn_ = true;
         return;
     }
+
+    // Steer where this burst lands from the editable Region / VM size fields (a
+    // no-op on the given-hardware Local target). Applied on the UI thread before
+    // the provision coroutine reads the config off-thread.
+    provisioner->set_placement(add_nodes_region_, add_nodes_vm_size_);
 
     auto op = std::make_shared<AddNodesOp>();
     op->target_id = target.id;
@@ -1545,6 +1684,19 @@ void App::run_add_nodes(const CloudProvider& target) {
 }
 
 void App::poll_add_nodes() {
+    // The async VM-size dropdown fetch: when the coroutine finishes, copy the
+    // options out and clear the op (the combo then renders them).
+    if (add_nodes_sizes_op_ &&
+        add_nodes_sizes_op_->done.load(std::memory_order_acquire)) {
+        std::shared_ptr<VmSizesOp> sizes = add_nodes_sizes_op_;
+        {
+            std::lock_guard<std::mutex> lock(sizes->mutex);
+            add_nodes_size_options_ = std::move(sizes->result);
+        }
+        add_nodes_sizes_cache_[sizes->location] = add_nodes_size_options_;  // cache it
+        add_nodes_sizes_op_.reset();
+    }
+
     if (!add_nodes_op_ || !add_nodes_op_->done.load(std::memory_order_acquire)) {
         return;
     }

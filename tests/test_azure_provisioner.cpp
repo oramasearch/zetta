@@ -221,6 +221,22 @@ TEST(AzureProvisioner, ProvisionIsBestEffortWhenCapacityIsShort) {
     EXPECT_EQ(minted.size(), 2u);  // mint whatever actually came up
 }
 
+// set_placement steers the next burst: region → Azure location, instance type →
+// vm_size. An empty dimension is left unchanged (the GUI's editable placement).
+TEST(AzureProvisioner, SetPlacementUpdatesRegionAndSize) {
+    FakeControlPlane control_plane;
+    AzureProvisioner provisioner{control_plane, sample_config()};
+
+    provisioner.set_placement("westus2", "Standard_D4s_v5");
+    EXPECT_EQ(provisioner.config().location, "westus2");
+    EXPECT_EQ(provisioner.config().vm_size, "Standard_D4s_v5");
+
+    // An empty dimension leaves that field unchanged.
+    provisioner.set_placement("", "Standard_D8s_v5");
+    EXPECT_EQ(provisioner.config().location, "westus2");           // kept
+    EXPECT_EQ(provisioner.config().vm_size, "Standard_D8s_v5");    // updated
+}
+
 TEST(AzureProvisioner, ZeroCountIsASatisfiedNoOp) {
     FakeControlPlane control_plane;
     int mint_calls = 0;

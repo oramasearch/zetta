@@ -2,6 +2,7 @@
 
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -37,6 +38,33 @@ std::optional<std::string> az_default(const CommandRunner& run,
     return value;
 }
 
+// Parse a JSON array of strings (an `az … --query "[…].name" -o json` result),
+// skipping non-strings. Empty when the output isn't a JSON string array.
+std::vector<std::string> parse_string_array(const std::string& json_text) {
+    std::vector<std::string> values;
+    const nlohmann::json parsed =
+        nlohmann::json::parse(json_text, nullptr, /*allow_exceptions=*/false);
+    if (!parsed.is_array()) return values;
+    for (const nlohmann::json& element : parsed) {
+        if (element.is_string()) values.push_back(element.get<std::string>());
+    }
+    return values;
+}
+
+// The Azure regions the subscription can deploy to (`az account list-locations`,
+// physical regions only, sorted). Empty on any CLI error — the GUI then falls back
+// to a free-text region field.
+std::vector<std::string> azure_regions(const CommandRunner& run) {
+    // `az account list-locations` operates on the active subscription and does NOT
+    // accept `--subscription` (it errors "unrecognized arguments"). Physical regions
+    // only, sorted.
+    const CommandResult result =
+        run({"az", "account", "list-locations", "--query",
+             "sort([?metadata.regionType=='Physical'].name)", "-o", "json"});
+    if (result.exit_code != 0) return {};
+    return parse_string_array(result.stdout_text);
+}
+
 }  // namespace
 
 std::optional<ProvisionerConfig> detect_azure_provisioner(
@@ -69,7 +97,25 @@ std::optional<ProvisionerConfig> detect_azure_provisioner(
     detected.config = config.to_json();
     detected.summary = "subscription " + config.subscription_id + " · " +
                        config.resource_group + " · " + config.location;
+    // The regions the Add-nodes Region dropdown offers (best-effort — an empty list
+    // means the GUI falls back to a free-text field).
+    detected.available_regions = azure_regions(run);
     return detected;
+}
+
+std::vector<std::string> azure_vm_sizes(const std::string& subscription,
+                                        const std::string& location,
+                                        CommandRunner runner) {
+    const CommandRunner run = runner ? std::move(runner) : default_command_runner();
+    // Sizes with NO subscription/policy restriction in the region — the deployable
+    // options. (Live capacity isn't reflected here; the control plane's SKU
+    // fallback handles a capacity shortage at create time.)
+    const CommandResult result = run(
+        {"az", "vm", "list-skus", "--subscription", subscription, "--location",
+         location, "--resource-type", "virtualMachines", "--query",
+         "sort([?restrictions==`[]`].name)", "-o", "json"});
+    if (result.exit_code != 0) return {};
+    return parse_string_array(result.stdout_text);
 }
 
 std::vector<ProvisionerConfig> detect_provisioner_configs(CommandRunner runner) {

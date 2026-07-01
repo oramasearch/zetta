@@ -58,6 +58,11 @@ class ReplConsole;  // the CMP-6 REPL component (src/gui/repl_console.hpp)
 // progress bar. Held by shared_ptr so the coroutine + its completion keep it alive.
 struct AddNodesOp;
 
+// In-flight async fetch of the VM-size dropdown options for a region (`az vm
+// list-skus` is region-dependent + slow, so it runs off the UI thread via
+// runtime::spawn, like AddNodesOp). Defined in app_operations.cpp.
+struct VmSizesOp;
+
 // The headed run mode: an SDL3 + Dear ImGui window rendering a live view of a
 // zetta::Node. Owns the window, renderer, and ImGui context for its lifetime —
 // construct it, init(), run(), then let it destruct.
@@ -373,6 +378,22 @@ private:
     // the next one (0 = no baseline yet, so the bar shows elapsed-only).
     std::shared_ptr<AddNodesOp> add_nodes_op_;
     std::map<std::string, double> add_nodes_eta_seconds_;
+    // Editable placement for a cloud add: region + VM size, applied to the injected
+    // provisioner via Provisioner::set_placement before the add so the operator can
+    // steer where a burst lands (complementing the backend's own SKU fallback).
+    // Pre-filled from the detected system.zetta_provisioners config when the target
+    // changes (tracked by add_nodes_placement_target_).
+    std::string add_nodes_region_;
+    std::string add_nodes_vm_size_;
+    std::string add_nodes_placement_target_;
+    // VM-size dropdown options for the current region + the async fetch that
+    // populates them (az vm list-skus, off the UI thread — polled by poll_add_nodes).
+    std::vector<std::string> add_nodes_size_options_;
+    std::string add_nodes_sizes_region_;  // region add_nodes_size_options_ are for
+    std::shared_ptr<VmSizesOp> add_nodes_sizes_op_;  // in-flight fetch (null = idle)
+    // Per-region cache of fetched size lists — `az vm list-skus` is ~50s, so a
+    // region is fetched at most once per session (re-selecting it is instant).
+    std::map<std::string, std::vector<std::string>> add_nodes_sizes_cache_;
 
     // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
     // catalog id selected in the list. `cloud_consent_provider_` is the id the

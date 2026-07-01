@@ -72,19 +72,24 @@ rather than a read-only inspect.
 
 `run_add_nodes(target)` is the **single point** that touches the `Provisioner`,
 reached only from the Local **Add** button or a cloud target's explicit **Allow**.
-Like [`run_cloud_inspect`](cloud-inspector.md) it is **synchronous on the UI thread**
-(which owns the `Node`), so the add and the partition rebalance it triggers race
-with nothing. It reports the outcome from the [`AddNodesResult`](add-nodes.md):
-`<target> · <members> of <count> node(s)` plus the backend's `detail`, coloured
-green when the full count came up and amber when it was short (best-effort).
+The slow provision (the provider CLI — `az vmss create` runs for minutes) runs
+**off the UI thread** as a [`runtime::spawn`](runtime.md)'d coroutine, so the
+window never freezes; `poll_add_nodes` (each frame in the run loop) applies the
+result on the UI thread via `apply_added_nodes` (the fast membership + rebalance
+half). While it runs the panel shows a **progress bar** (elapsed vs a per-target
+ETA baseline) and disables the buttons; a failure renders in full, wrapped +
+scrollable, with a one-click **Copy error**. Editable **Region + VM size**
+dropdowns (regions detected via `az account list-locations`, sizes fetched
+per-region off the UI thread via `az vm list-skus`, applied through
+[`Provisioner::set_placement`](provisioner.md) before the add) let the operator
+steer where a burst lands.
 
 ## What this slice does **not** do
 
-- **No cloud provisioner construction in the GUI.** Only the given-hardware
-  `LocalProvisioner` is injected in the default build; the consent-gated cloud
-  targets render their gate but report "not wired" until a configured provisioner
-  is injected for them. Collecting cloud config (subscription / region / creds) and
-  constructing the cloud backends from the GUI is a later slice.
+- **No teardown from the GUI.** The cloud backends are wired (from
+  [local-CLI detection](provisioner-detection.md)) and a burst runs off-thread with
+  editable placement + SKU fallback, but the control only **grows** the cluster —
+  removing a specific burst / node from the GUI is a later slice.
 - **No teardown / node removal.** [`add_nodes`](add-nodes.md) only grows the
   cluster (it never tears a member down), and the default given-hardware provisioner
   can't release nodes (its `teardown` is a no-op). A `remove_nodes` control — and

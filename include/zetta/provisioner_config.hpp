@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -23,6 +24,12 @@ struct ProvisionerConfig {
     std::string cli;        // the local CLI it drives: "az" / "aws" / "gcloud" / …
     std::string summary;    // human one-line (e.g. "subscription <id> · <group> · <region>")
     nlohmann::json config;  // the provider's validated XConfig::to_json() shape
+
+    // The regions the subscription can deploy to (detected from the CLI, e.g.
+    // `az account list-locations`) — the options for the Add-nodes Region dropdown.
+    // VM-size options are region-dependent + a large/slow query, so they are fetched
+    // on demand in the GUI rather than stored here.
+    std::vector<std::string> available_regions;
 
     bool operator==(const ProvisionerConfig&) const = default;
 };

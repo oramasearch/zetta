@@ -29,8 +29,20 @@ std::vector<ProvisionerConfig> detect_provisioner_configs(CommandRunner runner =
 
 // Azure detector (the reference): `az account show` for the subscription + tenant,
 // `az config get` for the operator's default resource group + location (falling
-// back to a stable "zetta-burst" group + "eastus" when the CLI has no default).
+// back to a stable "zetta-burst" group + "eastus" when the CLI has no default),
+// and `az account list-locations` for the deployable regions (the Region dropdown).
 // std::nullopt when `az` is absent or not logged in.
 std::optional<ProvisionerConfig> detect_azure_provisioner(const CommandRunner& run);
+
+// The Azure VM sizes available (no subscription/policy restriction) for creating
+// virtual machines in `location` — the options for the Add-nodes VM-size dropdown,
+// via `az vm list-skus`. Region-dependent and a large/slow query, so it is fetched
+// on demand (off the UI thread) rather than at detection. Empty on any CLI error.
+// Live capacity is NOT reflected (Azure exposes no capacity API — the control
+// plane's SKU fallback handles that at create time). `runner` defaults to the real
+// exec-based runner.
+std::vector<std::string> azure_vm_sizes(const std::string& subscription,
+                                        const std::string& location,
+                                        CommandRunner runner = {});
 
 }  // namespace zetta
