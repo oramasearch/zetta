@@ -48,7 +48,9 @@ struct NodeStatus {
     std::string address;
     ClusterRole role = ClusterRole::Follower;
     bool is_self = false;
-    bool connected = false;  // membership (always true for self)
+    bool connected = false;  // true iff a live link is currently held (always
+                             // true for self); false for a roster member this
+                             // node can't currently reach
     NodeReplication replication;
 };
 
@@ -68,8 +70,10 @@ struct ClusterConfig {
     // Drop a peer that has sent nothing for this long (gossip flows every ~0.5s,
     // so silence means the link died — clears it so a fresh one can replace it).
     unsigned peer_idle_timeout_seconds = 6;
-    // Re-dial seeds that aren't currently connected, this often, so a dropped
-    // link re-establishes itself.
+    // Dial every node in the replicated roster (and the configured seeds) that
+    // isn't currently connected, this often, so a dropped link re-establishes
+    // itself and the cluster keeps trying to reach members it hasn't connected
+    // to yet — until they leave the roster. The default is well under a minute.
     unsigned reconnect_interval_seconds = 3;
     // Log every cluster event (handshake, peer add/remove, STATUS sent/received,
     // body requests/transfers, keepalive, reconnect) to stderr — for debugging
@@ -127,9 +131,13 @@ public:
     std::size_t peer_count() const;
 
     // Every node and its replication status, for the "list of all nodes" view:
-    // this node first (is_self), then each connected peer with the replication
-    // state it last reported. Thread-safe. With no ReplicationManager wired in,
-    // the replication fields are left unknown.
+    // this node first (is_self), then every other node in the replicated roster
+    // (the node:<id> keys in the CRDT — identical on every node), node-id sorted.
+    // Each row's `connected` flag reflects whether a live link is currently held,
+    // so members this node can't presently reach still appear (with their last
+    // reported replication state when connected). A live peer not yet in the
+    // roster is included too. Thread-safe. With no ReplicationManager wired in,
+    // only this node is reported.
     std::vector<NodeStatus> nodes() const;
 
     // --- Signal plane (RPC / events / tasks) --------------------------------

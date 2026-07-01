@@ -1355,10 +1355,24 @@ the host's real LAN IPs (`Cluster::listen_addresses()`), since `0.0.0.0` itself
 isn't dial-able; the same reachable address is what it advertises in the
 handshake. Links **self-heal**: gossip flows every ~0.5s, so a peer silent past
 `peer_idle_timeout_seconds` (default 6) is dropped (clears half-open connections
-with no clean EOF), nodes re-dial disconnected `--peer`s every
-`reconnect_interval_seconds` (default 3), and peers are keyed by listen address
-so a restarted node (new id, same address) **replaces** its stale entry instead
-of leaving a ghost. `zetta::Cluster` runs networking on a background thread via
+with no clean EOF), a node **dials every node in the replicated roster** it isn't
+connected to every `reconnect_interval_seconds` (default 3) — see below — and
+peers are keyed by listen address so a restarted node (new id, same address)
+**replaces** its stale entry instead of leaving a ghost. **The dial list is the
+replicated membership, not the static `--peer` seeds** (`src/core/cluster.cpp`):
+each node seeds its own `node:<id>` key (id + reachable address) into the CRDT and
+peers merge it, so every node's document lists every node; the reconnect loop
+dials each roster member (∪ the configured seeds) it isn't connected to, retrying
+at least once a minute until a member's `node:<id>` key leaves the roster. So a
+node **reaches peers it was never handed as a `--peer`** (learned transitively via
+the roster) and reconnection is **symmetric** (an accept-only node dials the peer
+back once it seeds itself in) — with a per-address in-flight-dial guard so
+re-dialing the whole roster can't pile up connect attempts. Correspondingly,
+`Cluster::nodes()` (and so `system.zetta_nodes`) lists **every roster member** —
+identical on every node — each flagged `connected` from the live peer table, so an
+unreachable member still appears rather than vanishing. Roster **removal** (a
+leave / tombstone) is a later slice; today `node:` keys are append-only, so a
+departed node stays listed (dial-retried, `connected=false`). `zetta::Cluster` runs networking on a background thread via
 **Corosio**, behind the `zetta::runtime::net` seam (adapter:
 `src/core/cluster.cpp`; public API exposes no backend types). The headed Cluster
 panel shows the node id, every reachable listen address, peers, the
@@ -1524,10 +1538,15 @@ the existing gossip; new "kinds of agreement" = a new `ReplicationPolicy`, never
 bespoke sync path.
 
 > Current reality vs. the rule: DDL + rows now flow through replication (the CRDT
-> is the source of truth; disk is its projection). The one remaining gap is
-> **cluster membership**, still tracked in the `Cluster` peer table separately —
-> **migration debt, not the design**: route the node list through replication
-> too. Move things *toward* this rule, never away.
+> is the source of truth; disk is its projection). **Cluster membership now
+> flows through replication too** — the authoritative node roster is the
+> `node:<id>` keys in the document (id + address), which is what the cluster
+> **dials** (`src/core/cluster.cpp` reconnect loop) and what `Cluster::nodes()` /
+> `system.zetta_nodes` report; the `Cluster` peer table is derived from live links
+> layered over that replicated roster, not a parallel source of truth. The
+> remaining gap is **removal** — `node:` keys are append-only, so a departed node
+> is never taken out of the roster (a leave / tombstone is a later slice). Move
+> things *toward* this rule, never away.
 
 **Consistency model: multi-leader by default; leadership only where exclusivity
 is required.** Because the base is a CRDT, every node is a writer and merges

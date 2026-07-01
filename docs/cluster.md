@@ -53,11 +53,17 @@ canvas** (below). Headless logs the per-node table whenever it changes.
 
 ## All nodes + replication status
 
-`Cluster::nodes()` returns this node (first) plus every connected peer, each with
-its [replication](replication.md) status: entries, version, whether it's **in
-sync** with this node, and how long ago it last synced. Once a `ReplicationManager`
-is wired in, peers gossip their documents and status over the connection (see
-[replication.md](replication.md)). The view shows up three ways:
+`Cluster::nodes()` returns this node (first) plus **every other node in the
+replicated roster** — the `node:<id>` keys in the CRDT document, identical on
+every node (see *Dialing the replicated roster* below), node-id sorted. Each row
+carries its [replication](replication.md) status (entries, version, whether it's
+**in sync** with this node, how long ago it last synced) and a **`connected`**
+flag: `true` when this node currently holds a live link, `false` for a roster
+member it can't presently reach (which still appears, so an unreachable node is
+visible rather than silently absent). A live peer not yet in the roster is
+included too. Once a `ReplicationManager` is wired in, peers gossip their
+documents and status over the connection (see [replication.md](replication.md)).
+The view shows up three ways:
 
 - **Headed** — the Cluster panel's spatial node-box canvas (below).
 - **Headless** — the heartbeat prints a per-node table when it changes.
@@ -147,10 +153,35 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   died: a peer that sends nothing for `peer_idle_timeout_seconds` (default 6) is
   dropped — this clears half-open connections that never produce a clean EOF (a
   silent TCP drop across machines). And every `reconnect_interval_seconds`
-  (default 3) a node re-dials any `--peer` it isn't currently connected to, so a
-  dropped link re-establishes itself. Between the two, a restarted or
+  (default 3, well under a minute) a node dials any node it isn't currently
+  connected to — see *Dialing the replicated roster* — so a dropped link
+  re-establishes itself. Between the two, a restarted or
   briefly-partitioned peer reconnects and the stale entry is replaced — no
   stuck `syncing`/`no status` ghost.
+
+## Dialing the replicated roster
+
+Membership is **replicated state**: on startup each node seeds its own
+`node:<id>` key — its id plus a reachable address — into the CRDT document, and
+peers merge it, so **every node's document lists every node** (id + address),
+identical across the cluster. This roster, **not** the static `--peer` seed list,
+is what a node dials.
+
+Every `reconnect_interval_seconds` a node dials each roster member (∪ its
+configured seeds) that it isn't currently connected to. So a node **reaches peers
+it was never handed as a `--peer`** — it learns their addresses from the roster,
+which merged in transitively — and it **keeps trying** a member that's
+unreachable in one direction, retrying at least once a minute until that member's
+`node:<id>` key leaves the roster. Reconnection is therefore **symmetric**: a node
+that only *accepted* a connection dials the peer back once that peer seeds itself
+into the roster, rather than depending on the original dialer to return.
+
+A per-address **in-flight-dial guard** means re-dialing the whole roster each
+interval never piles up concurrent connect attempts on a slow or one-way
+peer — at most one dial per address is outstanding at a time. Removing a dead node
+from the roster (a leave / tombstone) is a separate, later slice; until then a
+departed node stays listed (and dial-retried), and shows `connected = false` in
+`nodes()`.
 
 ## Signal plane (RPC / events / tasks)
 

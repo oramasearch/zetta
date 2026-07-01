@@ -19,6 +19,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -37,6 +38,7 @@
 #include "zetta/uuid.hpp"
 
 #include "base64.hpp"
+#include "catalog.hpp"
 
 // src/core/cluster.cpp is the networking adapter: the one .cpp allowed to use
 // the Corosio backend (via zetta::runtime::net). Cluster's public header
@@ -75,6 +77,11 @@ struct Cluster::State {
     bool log_events = false;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
+    // Addresses (host:port) with an outbound dial currently in flight. The
+    // reconnect loop re-dials every not-connected roster node each tick, so this
+    // stops a slow or one-way-unreachable peer from accumulating a new connect
+    // attempt every interval. Guarded by `mutex`, alongside `peers`.
+    std::set<std::string> dialing;
 
     // --- Signal plane -------------------------------------------------------
     //
@@ -172,13 +179,22 @@ struct Cluster::State {
         std::erase_if(peers,
                       [&](const PeerRecord& p) { return p.node_id == node_id; });
     }
-    // Listen addresses of currently-connected peers (for the reconnect loop).
-    std::vector<std::string> connected_addresses() const {
+    // Reserve an outbound dial to `address`, or return false if we're already
+    // connected to it or a dial to it is already in flight. The connected check
+    // and the reservation happen under one lock so the reconnect loop can't race
+    // two dials (or a dial against a live link) to the same peer.
+    bool begin_dialing(const std::string& address) {
         const std::lock_guard<std::mutex> lock(mutex);
-        std::vector<std::string> addresses;
-        addresses.reserve(peers.size());
-        for (const PeerRecord& peer : peers) addresses.push_back(peer.address);
-        return addresses;
+        for (const PeerRecord& peer : peers) {
+            if (peer.address == address) return false;
+        }
+        return dialing.insert(address).second;
+    }
+    // Release a dial reservation (the dial finished — connected, then dropped, or
+    // failed to connect), so the reconnect loop can try it again.
+    void end_dialing(const std::string& address) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        dialing.erase(address);
     }
     // Record a peer's reported replication status (entries + version) and stamp
     // the sync time. No-op if the peer has since disconnected.
@@ -210,6 +226,28 @@ void log_event(const Cluster::State* self, const std::string& message) {
 
 // First UUID segment, for compact logs.
 std::string short_id(const std::string& id) { return id.substr(0, 8); }
+
+// The replicated node roster: (node_id, reachable address) for every node:<id>
+// key in the CRDT document. Each node seeds its own entry on startup and peers
+// merge it, so this roster is identical on every node — it is the authoritative
+// membership (replicated state, per "EVERYTHING is replicated"), NOT the static
+// --peer seed list. This is what the cluster dials and what nodes() reports.
+// Empty when no ReplicationManager is wired in.
+std::vector<std::pair<std::string, std::string>> replicated_roster(
+    const Cluster::State* self) {
+    std::vector<std::pair<std::string, std::string>> roster;
+    if (!self->replication) return roster;
+    const nlohmann::json snapshot = self->replication->snapshot();
+    if (!snapshot.is_object()) return roster;
+    for (const auto& [key, value] : snapshot.items()) {
+        const std::string id = catalog::id_after(key, catalog::kNodePrefix);
+        if (id.empty() || !value.is_object()) continue;
+        const auto address = value.find("address");
+        if (address == value.end() || !address->is_string()) continue;
+        roster.emplace_back(id, address->get<std::string>());
+    }
+    return roster;
+}
 
 bool parse_host_port(const std::string& text, net::ipv4_address& address,
                      std::uint16_t& port) {
@@ -587,21 +625,47 @@ capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
     }
 }
 
-capy::task<> dial_seed(Cluster::State* self, net::ipv4_address address,
-                       std::uint16_t port, std::string my_node_id,
-                       std::string my_listen_address) {
+capy::task<> dial_seed(Cluster::State* self, std::string dial_key,
+                       net::ipv4_address address, std::uint16_t port,
+                       std::string my_node_id, std::string my_listen_address) {
     net::tcp_socket socket(self->io_context);
     socket.open();
     if (auto [ec] = co_await socket.connect(net::endpoint(address, port)); ec) {
+        self->end_dialing(dial_key);  // couldn't reach it — free it to retry
         co_return;
     }
     co_await handshake_and_hold(self, std::move(socket), my_node_id,
                                 my_listen_address, /*initiate=*/true);
+    self->end_dialing(dial_key);  // connection ended — free it to reconnect
 }
 
-// Periodically re-dial any seed we're not currently connected to, so a dropped
-// link re-establishes itself (the keepalive on the other side clears the stale
-// entry; this side reconnects). Runs for the cluster's lifetime.
+// Launch one outbound dial to `address` (host:port) unless it's ourselves, we're
+// already connected, or a dial to it is already in flight. Shared by the initial
+// seed dials and the roster reconnect loop, so first contact and reconnect take
+// exactly one path (and one in-flight-dial guard).
+void dial_address(Cluster::State* self, const std::string& address,
+                  const std::string& my_node_id,
+                  const std::string& my_listen_address) {
+    if (address.empty() || address == my_listen_address) return;
+    net::ipv4_address ip;
+    std::uint16_t port = 0;
+    if (!parse_host_port(address, ip, port)) return;
+    if (!self->begin_dialing(address)) return;  // connected or already dialing
+    log_event(self, "dial " + address);
+    capy::run_async(self->io_context.get_executor())(
+        dial_seed(self, address, ip, port, my_node_id, my_listen_address));
+}
+
+// Periodically dial every node we should be connected to but aren't. The dial
+// set is the replicated roster (every node:<id> in the CRDT — membership is
+// replicated state, so this includes members we were never handed as a --peer)
+// UNIONed with the configured seeds (which may not have merged into the roster
+// yet on first contact). The cluster keeps trying to reach every member — a peer
+// unreachable in one direction is retried each interval until its node:<id> key
+// leaves the roster. dial_address skips self, live links, and in-flight dials, so
+// re-dialing the whole roster each tick can't pile up connect attempts. Runs for
+// the cluster's lifetime (even with no seeds: a peer we accept seeds itself into
+// the roster, so this side then dials it back — reconnection is symmetric).
 capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds,
                             std::string my_node_id,
                             std::string my_listen_address) {
@@ -609,19 +673,12 @@ capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds
     for (;;) {
         timer.expires_after(self->reconnect_interval);
         [[maybe_unused]] const auto wait_result = co_await timer.wait();
-        const std::vector<std::string> connected = self->connected_addresses();
+        for (const auto& [id, address] : replicated_roster(self)) {
+            if (id == my_node_id) continue;
+            dial_address(self, address, my_node_id, my_listen_address);
+        }
         for (const std::string& seed : seeds) {
-            if (std::find(connected.begin(), connected.end(), seed) !=
-                connected.end()) {
-                continue;  // already connected to this seed
-            }
-            net::ipv4_address address;
-            std::uint16_t port = 0;
-            if (parse_host_port(seed, address, port)) {
-                log_event(self, "redial " + seed + " (not connected)");
-                capy::run_async(self->io_context.get_executor())(dial_seed(
-                    self, address, port, my_node_id, my_listen_address));
-            }
+            dial_address(self, seed, my_node_id, my_listen_address);
         }
     }
 }
@@ -724,18 +781,15 @@ void Cluster::start() {
             accept_loop(state_.get(), node_id_, my_listen));
     }
     for (const std::string& seed : config_.seeds) {
-        net::ipv4_address address;
-        std::uint16_t port = 0;
-        if (parse_host_port(seed, address, port)) {
-            capy::run_async(state_->io_context.get_executor())(
-                dial_seed(state_.get(), address, port, node_id_, my_listen));
-        }
+        dial_address(state_.get(), seed, node_id_, my_listen);
     }
-    // Keep re-dialing seeds that drop, so the cluster self-heals.
-    if (!config_.seeds.empty()) {
-        capy::run_async(state_->io_context.get_executor())(
-            reconnect_loop(state_.get(), config_.seeds, node_id_, my_listen));
-    }
+    // Keep dialing every node in the replicated roster (plus the configured
+    // seeds) that we're not connected to, so the cluster self-heals AND reaches
+    // members it was never explicitly handed as a --peer. Always run it — even
+    // with no seeds — so an accept-only node dials its peers back once they seed
+    // themselves into the roster (symmetric reconnection).
+    capy::run_async(state_->io_context.get_executor())(
+        reconnect_loop(state_.get(), config_.seeds, node_id_, my_listen));
 
     state_->network_thread = std::thread([this] { state_->io_context.run(); });
 }
@@ -810,9 +864,24 @@ std::vector<NodeStatus> Cluster::nodes() const {
     const std::string my_address = listen_addresses().front();
     const auto now = std::chrono::steady_clock::now();
 
+    // The replicated roster (every node:<id> in the CRDT) is the authoritative
+    // node list — identical on every node — so this view lists ALL members, each
+    // flagged connected from the live peer table, not just the links we currently
+    // hold. Read it before taking state_->mutex (snapshot() takes replication's
+    // own lock). An empty roster ⇒ standalone; we still report ourselves.
+    const std::vector<std::pair<std::string, std::string>> roster =
+        replicated_roster(state_.get());
+
     const std::lock_guard<std::mutex> lock(state_->mutex);
+
+    // Index the live peer table by node id for reachability + status lookups.
+    std::map<std::string, const State::PeerRecord*> connected;
+    for (const State::PeerRecord& peer : state_->peers) {
+        connected.emplace(peer.node_id, &peer);
+    }
+
     std::vector<NodeStatus> result;
-    result.reserve(state_->peers.size() + 1);
+    result.reserve(roster.size() + state_->peers.size() + 1);
 
     NodeStatus self;
     self.node_id = node_id_;
@@ -827,23 +896,52 @@ std::vector<NodeStatus> Cluster::nodes() const {
     self.replication.seconds_since_sync = -1.0;  // not applicable
     result.push_back(std::move(self));
 
-    for (const State::PeerRecord& peer : state_->peers) {
+    // One row per OTHER node, self excluded, node-id sorted so every node renders
+    // the same list. `emitted` dedups (self, and a peer that appears both in the
+    // roster and the live table).
+    std::set<std::string> emitted{node_id_};
+    const auto emit = [&](const std::string& id,
+                          const std::string& roster_address) {
+        if (!emitted.insert(id).second) return;
+        const auto it = connected.find(id);
+        const bool is_connected = it != connected.end();
         NodeStatus node;
-        node.node_id = peer.node_id;
-        node.address = peer.address;
+        node.node_id = id;
+        node.address = is_connected ? it->second->address : roster_address;
         node.role = ClusterRole::Follower;
         node.is_self = false;
-        node.connected = true;
-        node.replication.known = peer.has_status;
-        node.replication.entries = peer.entries;
-        node.replication.version = peer.version;
-        node.replication.in_sync =
-            peer.has_status && have_replication && peer.version == my_version;
-        node.replication.seconds_since_sync =
-            peer.has_status
-                ? std::chrono::duration<double>(now - peer.last_sync).count()
-                : -1.0;
+        node.connected = is_connected;
+        if (is_connected) {
+            const State::PeerRecord& peer = *it->second;
+            node.replication.known = peer.has_status;
+            node.replication.entries = peer.entries;
+            node.replication.version = peer.version;
+            node.replication.in_sync =
+                peer.has_status && have_replication && peer.version == my_version;
+            node.replication.seconds_since_sync =
+                peer.has_status
+                    ? std::chrono::duration<double>(now - peer.last_sync).count()
+                    : -1.0;
+        }
         result.push_back(std::move(node));
+    };
+
+    // Roster first (so members we can't currently reach still appear), sorted.
+    std::vector<std::pair<std::string, std::string>> members(roster.begin(),
+                                                             roster.end());
+    std::sort(members.begin(), members.end());
+    for (const auto& [id, address] : members) emit(id, address);
+    // Then any live peer not yet in our roster (its node:<id> hasn't merged in
+    // yet) — sorted, so ordering stays deterministic.
+    std::vector<std::string> peer_ids;
+    peer_ids.reserve(state_->peers.size());
+    for (const State::PeerRecord& peer : state_->peers) {
+        peer_ids.push_back(peer.node_id);
+    }
+    std::sort(peer_ids.begin(), peer_ids.end());
+    for (const std::string& id : peer_ids) {
+        const auto it = connected.find(id);
+        emit(id, it != connected.end() ? it->second->address : std::string{});
     }
     return result;
 }

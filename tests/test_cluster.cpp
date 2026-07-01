@@ -1,9 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "zetta/cluster.hpp"
 #include "zetta/replication.hpp"
@@ -261,4 +263,77 @@ TEST(Cluster, GossipsReplicationStatusBetweenNodes) {
 
     b.stop();
     a.stop();
+}
+
+TEST(Cluster, DialsRosterMemberItWasNeverSeededWith) {
+    // Membership is replicated state: every node seeds its own node:<id> entry
+    // (id + reachable address) and peers merge it. A node should dial every
+    // member in that replicated roster, not just its configured --peer seeds —
+    // so a node reaches peers it was never explicitly told about, via the CRDT.
+    //
+    // Topology: A is a hub. B seeds A. C seeds ONLY A. Once C's document merges
+    // A's (which by then carries B's roster entry), C must dial B on its own —
+    // even though C was never handed B as a seed.
+    const std::string id_a = zetta::new_uuid();
+    const std::string id_b = zetta::new_uuid();
+    const std::string id_c = zetta::new_uuid();
+    ReplicationManager repl_a{id_a};
+    ReplicationManager repl_b{id_b};
+    ReplicationManager repl_c{id_c};
+    repl_a.set("node:" + id_a, nlohmann::json{{"address", "127.0.0.1:43100"}});
+    repl_b.set("node:" + id_b, nlohmann::json{{"address", "127.0.0.1:43101"}});
+    repl_c.set("node:" + id_c, nlohmann::json{{"address", "127.0.0.1:43102"}});
+
+    const auto make = [](const std::string& id, ReplicationManager& repl,
+                         std::uint16_t port,
+                         std::vector<std::string> seeds) {
+        ClusterConfig config;
+        config.listen_host = "127.0.0.1";
+        config.listen_port = port;
+        config.port_range = 1;
+        config.reconnect_interval_seconds = 1;  // dial the roster promptly
+        config.seeds = std::move(seeds);
+        return std::make_unique<Cluster>(id, config, &repl);
+    };
+
+    auto a = make(id_a, repl_a, 43100, {});
+    a->start();
+    sleep_ms(100);
+    auto b = make(id_b, repl_b, 43101, {"127.0.0.1:43100"});
+    auto c = make(id_c, repl_c, 43102, {"127.0.0.1:43100"});  // knows only A
+    b->start();
+    c->start();
+
+    const auto wait_for = [](auto predicate) {
+        for (int attempt = 0; attempt < 400; ++attempt) {
+            if (predicate()) return true;
+            sleep_ms(25);
+        }
+        return false;
+    };
+
+    // C connects to B without ever being seeded with B — it learned B's address
+    // from the replicated roster (merged via A) and dialed it. Every node ends up
+    // connected to the other two.
+    ASSERT_TRUE(wait_for([&] {
+        return a->peer_count() == 2 && b->peer_count() == 2 &&
+               c->peer_count() == 2;
+    }));
+
+    // C holds a direct link to B specifically (not just to the hub A).
+    bool c_sees_b = false;
+    for (const zetta::ClusterPeer& peer : c->peers()) {
+        if (peer.node_id == id_b) c_sees_b = true;
+    }
+    EXPECT_TRUE(c_sees_b);
+
+    // nodes() reports the full replicated roster (all three), each connected.
+    const std::vector<NodeStatus> nodes = c->nodes();
+    ASSERT_EQ(nodes.size(), 3u);
+    EXPECT_TRUE(nodes[0].is_self);
+    for (const NodeStatus& node : nodes) EXPECT_TRUE(node.connected);
+
+    c->stop();
+    b->stop();
+    a->stop();
 }
