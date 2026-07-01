@@ -427,21 +427,69 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     EXPECT_TRUE(has_flag(create, "--custom-data", "ZETTA_SEED_PEER=10.0.0.1:7777"));
 }
 
-TEST(AzCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {
+// A successful create is satisfied: the scale set placed the requested VMs, which
+// then join the cluster by gossip (they aren't necessarily visible via list-
+// instances yet). Reporting keys off placement, not an immediate instance count.
+TEST(AzCliControlPlane, BringUpSatisfiedOnSuccessfulPlacement) {
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         CommandResult result;
         if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
-        return result;
+        return result;  // create/group succeed (exit 0) by default
     };
 
     AzCliControlPlane control_plane{runner};
-    // Ask for three but the listing only reports two.
     const ProvisionResult result =
         control_plane.bring_up(sample_config(), ProvisionRequest{3, gpu_spec()});
 
-    EXPECT_FALSE(result.satisfied);
-    EXPECT_EQ(result.nodes.size(), 2u);
+    EXPECT_TRUE(result.satisfied);
     EXPECT_FALSE(result.detail.empty());
+}
+
+// When a SKU has no live capacity (SkuNotAvailable / Capacity Restrictions), the
+// create rolls to the next candidate SKU — deleting the failed scale set first so
+// the stable pool name is free — and reports the SKU that actually placed. Azure
+// has no capacity API, so retry-with-fallback is the only reliable placement path.
+TEST(AzCliControlPlane, BringUpFallsBackToNextSkuOnCapacity) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "vmss") && has_token(argv, "create") &&
+            has_flag(argv, "--vm-sku", "Standard_B2s")) {
+            // The first candidate (default) has no capacity in this region.
+            result.exit_code = 1;
+            result.stderr_text =
+                "ERROR: SkuNotAvailable: ... Capacity Restrictions: Standard_B2s "
+                "... not available in location 'eastus'.";
+        } else if (has_token(argv, "list-instances")) {
+            result.stdout_text = two_node_listing();
+        }
+        return result;  // the second SKU's create + everything else succeed
+    };
+
+    AzCliControlPlane control_plane{runner};
+    // sample_config() pins no vm_size, so candidates start with Standard_B2s.
+    const ProvisionResult result =
+        control_plane.bring_up(sample_config(), ProvisionRequest{1, gpu_spec()});
+
+    EXPECT_TRUE(result.satisfied);
+
+    // It attempted the B2s create, deleted the failed set, then created a fallback.
+    bool tried_b2s = false, deleted = false, placed_fallback = false;
+    for (const std::vector<std::string>& argv : calls) {
+        if (has_token(argv, "vmss") && has_token(argv, "create") &&
+            has_flag(argv, "--vm-sku", "Standard_B2s")) {
+            tried_b2s = true;
+        }
+        if (has_token(argv, "vmss") && has_token(argv, "delete")) deleted = true;
+        if (has_token(argv, "vmss") && has_token(argv, "create") &&
+            !has_flag(argv, "--vm-sku", "Standard_B2s")) {
+            placed_fallback = true;
+        }
+    }
+    EXPECT_TRUE(tried_b2s);
+    EXPECT_TRUE(deleted);
+    EXPECT_TRUE(placed_fallback);
 }
 
 TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
