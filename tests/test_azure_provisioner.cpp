@@ -371,7 +371,36 @@ TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
     EXPECT_TRUE(has_flag(create, "--orchestration-mode", "Flexible"));
     EXPECT_TRUE(has_flag(create, "--instance-count", "2"));
     EXPECT_TRUE(has_flag(create, "--vm-sku", "Standard_NC24ads_A100_v4"));
+    EXPECT_TRUE(has_flag(create, "--image", "Ubuntu2204"));
+    // Flexible orchestration requires these to actually deploy (a missing fault
+    // domain count fails create) — see docs/research/azure-cli-compute.md §2.7.
+    EXPECT_TRUE(has_flag(create, "--platform-fault-domain-count", "1"));
+    EXPECT_TRUE(has_flag(create, "--single-placement-group", "false"));
+    EXPECT_TRUE(has_flag(create, "--admin-username", "azureuser"));
+    EXPECT_TRUE(has_token(create, "--generate-ssh-keys"));
     EXPECT_FALSE(has_token(create, "--priority"));  // not a spot config
+}
+
+// When the config pins no image / SKU, bring_up defaults to the VMSS Flexible
+// quickstart's values so a first burst deploys instead of failing on a missing
+// image (docs/research/azure-cli-compute.md §2.7).
+TEST(AzCliControlPlane, DefaultsImageAndSkuForFlexibleCreate) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    // sample_config() pins neither image nor vm_size.
+    control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+
+    const std::vector<std::string>& create = vmss_create_call(calls);
+    EXPECT_TRUE(has_flag(create, "--image", "Ubuntu2204"));
+    EXPECT_TRUE(has_flag(create, "--vm-sku", "Standard_B2s"));
+    EXPECT_TRUE(has_flag(create, "--platform-fault-domain-count", "1"));
 }
 
 TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {

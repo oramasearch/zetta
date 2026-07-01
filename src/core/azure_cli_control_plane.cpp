@@ -84,9 +84,25 @@ ProvisionResult AzCliControlPlane::bring_up(const AzureConfig& config,
     // Flexible orchestration is the recommended mode for self-managed scaled
     // workers (independent VMs under one scale set) — the burst-cluster shape.
     flag(create, "--orchestration-mode", "Flexible");
+    // Flexible orchestration REQUIRES an explicit platform fault domain count — a
+    // missing one fails create with `InvalidParameter: Required parameter
+    // 'platformFaultDomainCount' is missing`. 1 is valid + safe for a regional,
+    // non-zonal burst (Microsoft Learn: virtual-machine-scale-sets-manage-fault-
+    // domains — regional supports 1/2/3, zonal only 1). Flexible orchestration
+    // does not use a single placement group.
+    flag(create, "--platform-fault-domain-count", "1");
+    flag(create, "--single-placement-group", "false");
     flag(create, "--instance-count", std::to_string(request.count));
-    if (!config.image.empty()) flag(create, "--image", config.image);
-    if (!config.vm_size.empty()) flag(create, "--vm-sku", config.vm_size);
+    // A Linux worker needs an image, a VM SKU, and an admin login to deploy. When
+    // the config doesn't pin them, default to the VMSS Flexible quickstart's values
+    // (Ubuntu 22.04 + a small burstable SKU) so a first burst just works; SSH keys
+    // are generated/reused locally by `az`. See docs/research/azure-cli-compute.md
+    // §2.7 (Microsoft-Learn-verified `az vmss create` Flexible shape).
+    flag(create, "--image", config.image.empty() ? "Ubuntu2204" : config.image);
+    flag(create, "--vm-sku",
+         config.vm_size.empty() ? "Standard_B2s" : config.vm_size);
+    flag(create, "--admin-username", "azureuser");
+    create.push_back("--generate-ssh-keys");
     if (config.spot) {
         flag(create, "--priority", "Spot");
         flag(create, "--eviction-policy", "Delete");
