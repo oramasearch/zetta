@@ -1416,8 +1416,28 @@ void App::draw_add_nodes_control() {
 
     if (!add_nodes_status_.empty()) {
         ImGui::Spacing();
-        ImGui::TextColored(add_nodes_status_warn_ ? kWarnColor : kSuccessColor,
-                           "%s", add_nodes_status_.c_str());
+        if (add_nodes_status_warn_) {
+            // A provider CLI / ARM failure can run to many lines (the real cause
+            // lives deep in a JSON `details` array), so render it in full —
+            // wrapped + scrollable — with a one-click **Copy** so the whole thing
+            // can be pasted into an issue or a search, instead of being clipped to
+            // one unreadable, unselectable line.
+            if (ImGui::SmallButton("Copy error")) {
+                ImGui::SetClipboardText(add_nodes_status_.c_str());
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, kWarnColor);
+            ImGui::BeginChild(
+                "##add_nodes_error",
+                ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8.0f),
+                ImGuiChildFlags_Borders);
+            ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+            ImGui::TextUnformatted(add_nodes_status_.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextColored(kSuccessColor, "%s", add_nodes_status_.c_str());
+        }
     }
 }
 
