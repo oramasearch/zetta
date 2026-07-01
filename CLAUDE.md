@@ -551,18 +551,40 @@ test-suite case. See [docs/partition-rebalance.md](docs/partition-rebalance.md).
 
 zetta's async / coroutine / networking layer lives behind
 `include/zetta/runtime.hpp` (namespace `zetta::runtime`). Code uses `zetta::runtime::task<T>`,
-`zetta::runtime::block_on`, `zetta::runtime::thread_pool`, etc. and **never names
+`zetta::runtime::block_on`, `zetta::runtime::spawn`, `zetta::runtime::thread_pool`,
+`zetta::runtime::parallel_for`, etc. and **never names
 `boost::capy` / `boost::corosio` directly** — so the (beta, churning) C++
 Alliance backend can be swapped, or replaced by Boost.Asio, by editing that one
 header. Backed by Capy today (`modules/capy`); Corosio (`modules/corosio`) adds
-networking. The seam also exposes **`runtime::parallel_for`** — a blocking
-data-parallel primitive (`src/core/runtime.cpp`) that tiles `[0, count)` into
-contiguous chunks over one shared, process-wide thread pool and joins before
-returning, so CPU-bound code (the `CpuDevice` operators today; the job scheduler /
-collectives later) fans work across cores without naming `boost::capy`. Its tiling
-is a pure function of `count` (so multi-pass algorithms line phases up), and
-bodies **must not throw** (a throwing body aborts — zetta-core never unwinds across
-the seam). Background + migration plan: [docs/runtime.md](docs/runtime.md) and
+networking.
+
+**RULE — express async through the seam, never a hand-rolled OS thread.** Reach
+for the seam tool that fits, not `std::thread` / `std::async`:
+
+- **A one-off concurrent task that just must not block a latency path** (a
+  subprocess like a provider CLI, a network round-trip, file I/O — anything that
+  would otherwise freeze the GUI frame loop) → **`runtime::spawn(task<>,
+  on_complete)`**: it runs the coroutine off the calling thread and fires the
+  completion when done, and the caller polls. This is the right shape for the
+  headed **Add nodes** provisioning. Do **not** hand-roll a `std::thread` for it —
+  the seam is that interface, and going around it defeats the one-header backend
+  swap.
+- **Bounded / backpressured concurrency** (many tasks, but a capped number in
+  flight) → a **`runtime::thread_pool`** is exactly the right tool. Use it when you
+  need to *limit* concurrency or apply backpressure — not for a single one-off,
+  where `spawn` is simpler.
+- **CPU-bound data-parallel fan-out** (spread one loop across cores) →
+  **`runtime::parallel_for`**, which is *blocking*: it tiles `[0, count)` into
+  contiguous chunks over the shared pool and **joins before returning** (bodies
+  must not throw — a throwing body aborts, as zetta-core never unwinds across the
+  seam). It is not an async escape hatch and never belongs on a latency path that
+  has to stay responsive.
+- **Entering the async world from synchronous code** (`main()`, a test) →
+  **`block_on`**.
+
+The pre-existing GUI `std::thread` worker (`App::test_worker_`) predates `spawn`
+and is the legacy shape to migrate onto it, not to copy. Background + migration
+plan: [docs/runtime.md](docs/runtime.md) and
 [docs/research/coroutines.md](docs/research/coroutines.md).
 
 ### Accelerated compute (`zetta::compute`)

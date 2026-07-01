@@ -19,7 +19,12 @@
 #include "zetta/pipeline_instrumentation.hpp"
 #include "zetta/provisioner.hpp"
 #include "zetta/run.hpp"
+#include "zetta/runtime.hpp"
 #include "zetta/scaling_policy.hpp"
+
+#include <chrono>
+#include <mutex>
+#include <optional>
 
 #include <SDL3/SDL.h>
 
@@ -45,6 +50,24 @@
 #include <vector>
 
 namespace zetta::gui {
+
+// Shared state for the in-flight async "Add nodes" op (forward-declared in
+// app.hpp). The provision coroutine writes `result` under `mutex` and the
+// completion flips `done`; the UI thread polls `done` each frame, applies the
+// result on its own thread, and clears the op (poll_add_nodes). Held by shared_ptr
+// so the coroutine + its completion keep it alive independent of the App field.
+struct AddNodesOp {
+    std::string target_id;
+    std::string target_name;
+    std::size_t requested = 0;
+    Provisioner* provisioner = nullptr;  // read only by the coroutine (no Node touch)
+    std::chrono::steady_clock::time_point started;
+
+    std::mutex mutex;                       // guards `result`
+    std::optional<AddNodesResult> result;   // set by the coroutine before `done`
+    std::atomic<bool> done{false};          // flipped by the spawn completion
+};
+
 namespace {
 
 // A run's status, color-coded along its lifecycle: pending (neutral) → running
@@ -1356,7 +1379,7 @@ void App::draw_add_nodes_control() {
             "Uses the nodes already in this cluster; brings up no new machines and "
             "touches no cloud.");
         ImGui::Spacing();
-        ImGui::BeginDisabled(!wired);
+        ImGui::BeginDisabled(!wired || add_nodes_op_ != nullptr);
         const std::string label =
             "Add " + std::to_string(add_nodes_count_) + plural;
         if (primary_button(label.c_str())) run_add_nodes(*target);
@@ -1399,7 +1422,9 @@ void App::draw_add_nodes_control() {
             const std::string allow = "Allow adding " +
                                       std::to_string(add_nodes_count_) + plural +
                                       " via " + target->name;
+            ImGui::BeginDisabled(add_nodes_op_ != nullptr);
             if (primary_button(allow.c_str())) run_add_nodes(*target);
+            ImGui::EndDisabled();
         } else {
             // Honest about the seam: the control + consent gate are real, but a
             // configured cloud provisioner for this target hasn't been injected in
@@ -1414,7 +1439,37 @@ void App::draw_add_nodes_control() {
         ImGui::PopStyleColor();
     }
 
-    if (!add_nodes_status_.empty()) {
+    // An add is running: show a live progress bar (elapsed vs the ETA baseline for
+    // this target) instead of the last result. The provision runs on a background
+    // coroutine (runtime::spawn), so the frame loop keeps animating this every
+    // frame and the window stays responsive; poll_add_nodes() clears it on finish.
+    if (add_nodes_op_) {
+        ImGui::Spacing();
+        const double elapsed = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() -
+                                   add_nodes_op_->started)
+                                   .count();
+        const auto eta_it = add_nodes_eta_seconds_.find(add_nodes_op_->target_id);
+        // Seed the estimate from the last successful add for this target; with no
+        // baseline yet, fall back to a nominal cloud-burst duration so the bar
+        // still creeps forward (it caps at 99% until the op actually completes).
+        const double eta = (eta_it != add_nodes_eta_seconds_.end() &&
+                            eta_it->second > 0.0)
+                               ? eta_it->second
+                               : 90.0;
+        const float fraction =
+            elapsed < eta ? static_cast<float>(elapsed / eta) : 0.99f;
+        const std::string overlay =
+            std::to_string(static_cast<int>(elapsed + 0.5)) + "s / ~" +
+            std::to_string(static_cast<int>(eta + 0.5)) + "s";
+        ImGui::ProgressBar(fraction,
+                           ImVec2(ImGui::GetContentRegionAvail().x, 0.0f),
+                           overlay.c_str());
+        ImGui::TextColored(kInkSecondary,
+                           "Adding via %s on a background coroutine — the UI "
+                           "stays responsive.",
+                           add_nodes_op_->target_name.c_str());
+    } else if (!add_nodes_status_.empty()) {
         ImGui::Spacing();
         if (add_nodes_status_warn_) {
             // A provider CLI / ARM failure can run to many lines (the real cause
@@ -1441,13 +1496,29 @@ void App::draw_add_nodes_control() {
     }
 }
 
+// The provision half of add_nodes, run OFF the UI thread as a coroutine. Takes the
+// op by value (a shared_ptr) so the coroutine frame owns its inputs — never capture
+// by reference (the dangling-parameter footgun). It runs the provider CLI (the slow
+// part; NO Node access), stores the result under the op's mutex, then completes;
+// runtime::spawn's completion flips op->done, which poll_add_nodes() picks up.
+zetta::runtime::task<> provision_task(std::shared_ptr<AddNodesOp> op) {
+    AddNodesResult result =
+        add_nodes(*op->provisioner, AddNodesRequest{op->requested, NodeCapability{}});
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        op->result = std::move(result);
+    }
+    co_return;
+}
+
 void App::run_add_nodes(const CloudProvider& target) {
-    // The single point that touches the Provisioner — reached only from the Local
-    // "Add" button or a cloud target's explicit "Allow". Synchronous on the UI
-    // thread (which owns the node), like run_cloud_inspect, so the add and the
-    // partition rebalance it triggers race with nothing. The Node-aware add_nodes
-    // overload also rebalances sharded partitions onto any new members (#519); it
-    // never tears a node down.
+    // Reached only from the Local "Add" button or a cloud target's explicit
+    // "Allow". The slow provision runs OFF the UI thread (runtime::spawn) so a
+    // minutes-long `az vmss create` never freezes the window; poll_add_nodes()
+    // applies the result on the UI thread when it finishes. No-op if an add is
+    // already in flight (the buttons are disabled meanwhile).
+    if (add_nodes_op_) return;
+
     Provisioner* provisioner = provisioner_for(target.id);
     if (provisioner == nullptr) {
         add_nodes_status_ =
@@ -1456,16 +1527,55 @@ void App::run_add_nodes(const CloudProvider& target) {
         return;
     }
 
-    const std::size_t count = static_cast<std::size_t>(add_nodes_count_);
-    const AddNodesResult result = add_nodes(node_, *provisioner, count);
+    auto op = std::make_shared<AddNodesOp>();
+    op->target_id = target.id;
+    op->target_name = target.name;
+    op->requested = static_cast<std::size_t>(add_nodes_count_);
+    op->provisioner = provisioner;
+    op->started = std::chrono::steady_clock::now();
+    add_nodes_op_ = op;
+    add_nodes_status_.clear();  // hide the previous result while this one runs
 
-    // Report what came up, honestly: members.size() of the requested count, plus
-    // the backend's detail (for given hardware, why it's bounded by the existing
-    // cluster). Amber when short (best-effort), green when the full count was met.
+    // Fire the provision coroutine off the UI thread; the completion (on a pool
+    // worker) flips `done`, which poll_add_nodes() reads each frame. The captured
+    // shared_ptr keeps the op alive until the completion runs.
+    zetta::runtime::spawn(provision_task(op), [op] {
+        op->done.store(true, std::memory_order_release);
+    });
+}
+
+void App::poll_add_nodes() {
+    if (!add_nodes_op_ || !add_nodes_op_->done.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    // The coroutine finished. Take its result and apply it to the node ON THE UI
+    // THREAD (the thread that owns the node) — the fast membership + rebalance half.
+    std::shared_ptr<AddNodesOp> op = add_nodes_op_;
+    AddNodesResult result;
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        if (op->result) result = std::move(*op->result);
+    }
+    apply_added_nodes(node_, result);
+
+    const double elapsed = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - op->started)
+                               .count();
+    // Seed the ETA baseline from a run that actually brought something up, so a
+    // fast failure doesn't make the next estimate absurdly low.
+    if (result.satisfied || !result.members.empty()) {
+        add_nodes_eta_seconds_[op->target_id] = elapsed;
+    }
+
     add_nodes_status_warn_ = !result.satisfied;
-    add_nodes_status_ = target.name + " · " + std::to_string(result.members.size()) +
-                        " of " + std::to_string(count) + " node(s)";
+    add_nodes_status_ = op->target_name + " · " +
+                        std::to_string(result.members.size()) + " of " +
+                        std::to_string(op->requested) + " node(s) · took " +
+                        std::to_string(static_cast<int>(elapsed + 0.5)) + "s";
     if (!result.detail.empty()) add_nodes_status_ += " · " + result.detail;
+
+    add_nodes_op_.reset();
 }
 
 void App::draw_cloud() {

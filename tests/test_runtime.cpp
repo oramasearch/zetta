@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -28,6 +30,13 @@ zetta::runtime::task<> set_flag(std::shared_ptr<bool> flag) {
     co_return;
 }
 
+// Records `value` into shared, thread-safe state — the shape a spawned task uses
+// to hand its result back to a polling caller. Inputs by value into the frame.
+zetta::runtime::task<> record(std::shared_ptr<std::atomic<int>> sink, int value) {
+    sink->store(value, std::memory_order_relaxed);
+    co_return;
+}
+
 }  // namespace
 
 TEST(Runtime, BlockOnReturnsValueAndAwaitComposes) {
@@ -38,6 +47,23 @@ TEST(Runtime, BlockOnRunsVoidTask) {
     auto flag = std::make_shared<bool>(false);
     zetta::runtime::block_on(set_flag(flag));
     EXPECT_TRUE(*flag);
+}
+
+// spawn runs the coroutine off the calling thread and signals completion — the
+// caller polls a flag (as the GUI frame loop does) instead of blocking.
+TEST(Runtime, SpawnRunsOffThreadAndSignalsCompletion) {
+    auto sink = std::make_shared<std::atomic<int>>(0);
+    auto done = std::make_shared<std::atomic<bool>>(false);
+
+    zetta::runtime::spawn(record(sink, 7),
+                          [done] { done->store(true, std::memory_order_release); });
+
+    // Poll for up to ~10s, the way a frame loop would (never blocking on the work).
+    for (int i = 0; i < 10000 && !done->load(std::memory_order_acquire); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(done->load(std::memory_order_acquire));
+    EXPECT_EQ(sink->load(std::memory_order_relaxed), 7);
 }
 
 // --- parallel_for ------------------------------------------------------------
