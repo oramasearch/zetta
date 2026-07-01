@@ -25,8 +25,14 @@ would read/run*, so the consent gate can name it up front. A green dot marks an
 The control drives whatever `Provisioner` was **injected for the selected target's
 id** (`App::set_provisioner(target_id, provisioner)`). A target with no injected
 provisioner still renders, but reports it isn't wired — the control + consent gate
-are real; constructing a configured cloud provisioner (subscription / region /
-creds) is a separate slice. Injecting one lights the target up with no UI change.
+are real. The cloud targets are wired from
+**[local-CLI detection](provisioner-detection.md)**: at startup zetta asks each
+installed, logged-in CLI (`az`, …) for its deployment context (subscription /
+region / resource group — **no credentials**; the CLI keeps its own and the
+control plane uses it to act), records it as `system.zetta_provisioners`, and
+injects a CLI-backed provisioner per detected target — lighting that target's
+**Allow** button up with no UI change. A target whose CLI isn't installed / logged
+in stays unwired.
 
 ## Local (given hardware) — no consent
 

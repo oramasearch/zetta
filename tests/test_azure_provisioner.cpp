@@ -102,6 +102,17 @@ bool has_token(const std::vector<std::string>& argv, const std::string& token) {
     return std::find(argv.begin(), argv.end(), token) != argv.end();
 }
 
+// The `az vmss create` call among captured calls (bring_up now also runs an
+// `az group create` first — the two share the "create" token, so match on "vmss").
+const std::vector<std::string>& vmss_create_call(
+    const std::vector<std::vector<std::string>>& calls) {
+    static const std::vector<std::string> none;
+    for (const std::vector<std::string>& argv : calls) {
+        if (has_token(argv, "vmss") && has_token(argv, "create")) return argv;
+    }
+    return none;
+}
+
 }  // namespace
 
 // ---- AzureConfig JSON boundary ---------------------------------------------
@@ -351,7 +362,7 @@ TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
 
     // The create call carries the pool identity, location, count, and SKU/image.
     ASSERT_FALSE(calls.empty());
-    const std::vector<std::string>& create = calls.front();
+    const std::vector<std::string>& create = vmss_create_call(calls);
     EXPECT_TRUE(has_token(create, "create"));
     EXPECT_TRUE(has_flag(create, "--subscription", "sub-123"));
     EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg"));
@@ -380,7 +391,7 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
-    const std::vector<std::string>& create = calls.front();
+    const std::vector<std::string>& create = vmss_create_call(calls);
     EXPECT_TRUE(has_flag(create, "--priority", "Spot"));
     EXPECT_TRUE(has_token(create, "--eviction-policy"));
     EXPECT_TRUE(has_token(create, "--max-price"));
@@ -405,9 +416,10 @@ TEST(AzCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {
 }
 
 TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
+    // Group create succeeds; the vmss create fails (quota) — the reported failure.
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         CommandResult result;
-        if (has_token(argv, "create")) {
+        if (has_token(argv, "vmss") && has_token(argv, "create")) {
             result.exit_code = 1;
             result.stderr_text = "quota exceeded";
         }
@@ -421,6 +433,47 @@ TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
     EXPECT_FALSE(result.satisfied);
     EXPECT_TRUE(result.nodes.empty());
     EXPECT_NE(result.detail.find("quota exceeded"), std::string::npos);
+}
+
+// bring_up ensures the resource group exists (idempotent) BEFORE the vmss create,
+// so a first burst into a subscription with no pre-provisioned group just works
+// instead of failing with ResourceGroupNotFound.
+TEST(AzCliControlPlane, BringUpEnsuresResourceGroupFirst) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+
+    // The very first call is `az group create` for the pool's resource group.
+    ASSERT_FALSE(calls.empty());
+    const std::vector<std::string>& group = calls.front();
+    EXPECT_TRUE(has_token(group, "group"));
+    EXPECT_TRUE(has_token(group, "create"));
+    EXPECT_TRUE(has_flag(group, "--name", "zetta-rg"));
+    EXPECT_TRUE(has_flag(group, "--location", "eastus"));
+    EXPECT_TRUE(has_flag(group, "--subscription", "sub-123"));
+
+    // A group-create failure aborts before the vmss create (no pool spawned).
+    CommandRunner failing = [&](const std::vector<std::string>& argv) -> CommandResult {
+        CommandResult result;
+        if (has_token(argv, "group") && has_token(argv, "create")) {
+            result.exit_code = 1;
+            result.stderr_text = "AuthorizationFailed";
+        }
+        return result;
+    };
+    AzCliControlPlane cp2{failing};
+    const ProvisionResult aborted =
+        cp2.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(aborted.satisfied);
+    EXPECT_TRUE(aborted.nodes.empty());
+    EXPECT_NE(aborted.detail.find("AuthorizationFailed"), std::string::npos);
 }
 
 TEST(AzCliControlPlane, DestroyBuildsDeleteInstancesAndReportsOutcome) {

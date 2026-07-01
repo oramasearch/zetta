@@ -55,6 +55,26 @@ ProvisionResult AzCliControlPlane::bring_up(const AzureConfig& config,
                                             const ProvisionRequest& request) {
     ProvisionResult result;
 
+    // Azure requires the resource group to exist before any resource in it, so a
+    // first burst into a fresh group otherwise fails with ResourceGroupNotFound.
+    // Ensure it up front — `az group create` is idempotent (re-creating an existing
+    // group is a no-op success) and a resource group is free — so "add nodes" just
+    // works against a subscription with no pre-provisioned group. Tearing the whole
+    // group down is the clean uninstall (a later slice).
+    std::vector<std::string> ensure_group{"az", "group", "create"};
+    flag(ensure_group, "--subscription", config.subscription_id);
+    flag(ensure_group, "--name", config.resource_group);
+    flag(ensure_group, "--location", config.location);
+    flag(ensure_group, "--output", "none");
+    if (const CommandResult grouped = runner_(ensure_group);
+        grouped.exit_code != 0) {
+        result.satisfied = false;
+        result.detail = "az group create failed: " +
+                        (grouped.stderr_text.empty() ? grouped.stdout_text
+                                                     : grouped.stderr_text);
+        return result;
+    }
+
     // Scale the burst pool to the requested count — create it if absent. The
     // stable pool name makes this idempotent (a second burst scales the existing
     // scale set rather than spawning a duplicate).

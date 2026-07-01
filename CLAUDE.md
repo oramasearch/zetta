@@ -1402,8 +1402,18 @@ would run the provider CLI to create billable resources), so the control names w
 it would read/run and nothing happens until the user explicitly allows that one
 action, never remembered — the same consent grammar as the Cloud Inspector. The
 `Node`-aware `add_nodes` overload also rebalances sharded partitions onto any new
-members (#519). Constructing a configured cloud provisioner from the GUI + teardown
-are later slices. See [docs/add-nodes-control.md](docs/add-nodes-control.md).
+members (#519). The **cloud targets wire themselves from the operator's own local
+CLI**: `main` runs `detect_provisioner_configs()` (`src/core/provisioner_detect.cpp`)
+at startup, which asks each installed, logged-in CLI (`az`, …) for its deployment
+context (subscription / region / resource group — **no credentials**; the CLI keeps
+its own, and the control plane uses it to act), records it as node-local state
+(`Node::record_provisioner_config` — like `cloud_inspections_`, surfaced as the
+**`system.zetta_provisioners`** table), and injects a CLI-backed `Provisioner` per
+detected target (owned by `gui::CloudProvisioners`) so its consent-gated **Allow**
+button lights up. Azure is the reference detector; the other targets follow the same
+shape. Teardown from the GUI is a later slice. See
+[docs/provisioner-detection.md](docs/provisioner-detection.md) and
+[docs/add-nodes-control.md](docs/add-nodes-control.md).
 Headless logs the per-node table. `Cluster::nodes()` returns this node + every
 connected peer with
 its replication status (entries, version, in-sync, last-sync) — surfaced in the
@@ -1886,7 +1896,10 @@ lifecycle, sourced from `Node::jobs()`; qualified name only) and
 **`system.zetta_cloud_providers`** (the Cloud Inspector's provider catalog — pure
 metadata, reads nothing from any cloud) and **`system.zetta_cloud_status`** (the
 cached results of consent-gated cloud inspects, from `Node::cloud_inspections()`;
-querying it never triggers a cloud call) and the run + governance read views
+querying it never triggers a cloud call) and **`system.zetta_provisioners`** (the
+cloud-burst targets detected from this node's own local CLIs, from
+`Node::provisioner_configs()` — non-secret deployment context, no credentials;
+drives the headed Add-nodes control) and the run + governance read views
 (RULE-7, the queryable counterpart of the GUI Runs / Admin panels):
 **`system.zetta_runs`** (the run registry, `Node::runs()`),
 **`system.zetta_principals`** (authenticated actors, `Node::principals()`),
