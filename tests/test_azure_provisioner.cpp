@@ -339,7 +339,7 @@ std::string two_node_listing() {
 
 }  // namespace
 
-TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
+TEST(AzCliControlPlane, BringUpBuildsFlexibleCreateCommand) {
     std::vector<std::vector<std::string>> calls;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
@@ -356,16 +356,16 @@ TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
     const ProvisionResult result =
         control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
+    // A successful placement is satisfied; the VMs join by gossip, not list().
     EXPECT_TRUE(result.satisfied);
-    ASSERT_EQ(result.nodes.size(), 2u);
-    EXPECT_EQ(result.nodes[0].node_id, "vm0");
 
     // The create call carries the pool identity, location, count, and SKU/image.
+    // The resource group is the first free `<base>-NN` (base = config.resource_group).
     ASSERT_FALSE(calls.empty());
     const std::vector<std::string>& create = vmss_create_call(calls);
     EXPECT_TRUE(has_token(create, "create"));
     EXPECT_TRUE(has_flag(create, "--subscription", "sub-123"));
-    EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg"));
+    EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg-01"));
     EXPECT_TRUE(has_flag(create, "--name", "zetta-burst"));
     EXPECT_TRUE(has_flag(create, "--location", "eastus"));
     EXPECT_TRUE(has_flag(create, "--orchestration-mode", "Flexible"));
@@ -512,9 +512,10 @@ TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
     EXPECT_NE(result.detail.find("quota exceeded"), std::string::npos);
 }
 
-// bring_up ensures the resource group exists (idempotent) BEFORE the vmss create,
-// so a first burst into a subscription with no pre-provisioned group just works
-// instead of failing with ResourceGroupNotFound.
+// bring_up creates the resource group (idempotent) BEFORE the vmss create, so a
+// first burst into a subscription with no pre-provisioned group just works instead
+// of failing with ResourceGroupNotFound. The group name is a fresh `<base>-NN`
+// picked to avoid a taken / deprovisioning name (checked via `az group exists`).
 TEST(AzCliControlPlane, BringUpEnsuresResourceGroupFirst) {
     std::vector<std::vector<std::string>> calls;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
@@ -527,14 +528,24 @@ TEST(AzCliControlPlane, BringUpEnsuresResourceGroupFirst) {
     AzCliControlPlane control_plane{runner};
     control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
 
-    // The very first call is `az group create` for the pool's resource group.
+    // A `az group create` for the picked group name precedes any vmss create.
     ASSERT_FALSE(calls.empty());
-    const std::vector<std::string>& group = calls.front();
-    EXPECT_TRUE(has_token(group, "group"));
-    EXPECT_TRUE(has_token(group, "create"));
-    EXPECT_TRUE(has_flag(group, "--name", "zetta-rg"));
-    EXPECT_TRUE(has_flag(group, "--location", "eastus"));
-    EXPECT_TRUE(has_flag(group, "--subscription", "sub-123"));
+    std::optional<std::vector<std::string>> group_create;
+    std::size_t group_create_index = 0, vmss_create_index = calls.size();
+    for (std::size_t i = 0; i < calls.size(); ++i) {
+        if (has_token(calls[i], "group") && has_token(calls[i], "create")) {
+            group_create = calls[i];
+            group_create_index = i;
+        } else if (has_token(calls[i], "vmss") && has_token(calls[i], "create") &&
+                   vmss_create_index == calls.size()) {
+            vmss_create_index = i;
+        }
+    }
+    ASSERT_TRUE(group_create.has_value());
+    EXPECT_LT(group_create_index, vmss_create_index);  // group before vmss
+    EXPECT_TRUE(has_flag(*group_create, "--name", "zetta-rg-01"));
+    EXPECT_TRUE(has_flag(*group_create, "--location", "eastus"));
+    EXPECT_TRUE(has_flag(*group_create, "--subscription", "sub-123"));
 
     // A group-create failure aborts before the vmss create (no pool spawned).
     CommandRunner failing = [&](const std::vector<std::string>& argv) -> CommandResult {
