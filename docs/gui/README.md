@@ -7,6 +7,7 @@ GUI is a **thin renderer** driven by a `zetta::Node` — panels read live engine
 possible. **[design-system.md](design-system.md) is the mandatory read before any GUI work** — the
 Orama tokens, typography, copy rules, and component grammar it defines are enforced, not advisory.
 
+- [architecture.md](architecture.md) — **the structural design**: the view registry, the widget grammar (page_header/card/empty_state/banner/entity_link/tones), navigation + pending selection, and the adding-a-view recipe.
 - [design-system.md](design-system.md) — the Orama design system as applied to the headed GUI: colour tokens, Geist typography, copy rules, coral discipline, component grammar. **Read before touching the GUI.**
 - [new-project-screen.md](new-project-screen.md) — the New Project screen (SCR-2): name a project, paste an NL intent, import/drop an n8n workflow artifact in one atomic create (FEAT-1).
 - [datasets-panel.md](datasets-panel.md) — the Datasets view: the GUI form of [`system.datasets`](../data/system-datasets.md), with partition placement as a node-box overlay (#586).

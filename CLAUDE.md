@@ -62,6 +62,7 @@ level can be trusted — a stale card is worse than none.
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
+| MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
 | Provisioners, cloud burst, cloud inspector | [`docs/cloud/`](docs/cloud/README.md) |
 | Access control, audit, governed console | [`docs/governance/`](docs/governance/README.md) |
 | Any GUI change | [`docs/gui/`](docs/gui/README.md) — design system + rendering notes are mandatory reads |
@@ -337,6 +338,13 @@ git-tracked files: this `CLAUDE.md` (rules), `docs/**` (system behavior),
 Project skills live in `.claude/skills/` (committed, shared):
 - **zetta-dev** — these conventions as a working checklist + `reference.md`
   (recipes, gotchas).
+- **gui-dev** — headed-GUI work: the view registry + widget grammar +
+  navigation architecture, design-system discipline.
+- **api-dev** — control-surface work: the capability registry, MCP/REST,
+  auth/consent, the Beast2 adapter boundary.
+- **mcp-journeys** — author/run simulated user tests; the promotion rule.
+- **add-use-case** — build a UC-N in the engine (compose-don't-invent, the
+  FedEx-test rule, the nine-step recipe).
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
 - **github-ops** — issues/PRs/CI via `gh` (priority `p1`–`p4` + area labels).

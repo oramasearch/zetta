@@ -143,3 +143,5 @@ This is where the use case actually gets built: as an **execution graph over its
 - **Overpromising** — a use case that "automates everything" instead of a specific, measurable win.
 - **Bespoke creep** — building it for one customer's exact tables instead of a generic type any team instantiates.
 - **Model in the hot path** — a stochastic model wired into a critical workflow with no correctness gate.
+
+- [creating-a-use-case.md](creating-a-use-case.md) — **the engine recipe for UC-N**: the invariant shape (compose, don't invent math), the fixture-with-traps rule, the nine-step checklist, and what done means.
