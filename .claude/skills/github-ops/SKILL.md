@@ -27,19 +27,20 @@ Explicit project policy: no "Claude", "AI", "Codex", "Generated with…",
 `Co-Authored-By: Claude`, or similar — in commits, PR titles/bodies, issue text,
 or comments. The author is always the user (`homer6`).
 
-### Feature branch + PR (never push directly to `main`)
+### Feature branch + PR targeting `dev` (never push directly to `main`/`dev`)
 
 All work goes on a **feature branch** (`<type>/<short-slug>`, e.g.
-`docs/domain-restructure`) and lands via a **PR** — do not push directly to
-`main`. The docs are part of the **same commits** as the change (update
+`docs/domain-restructure`) and lands via a **PR with base `dev`** — the
+integration branch, which promotes to `main`. Do not push directly to `main`
+or `dev`. The docs are part of the **same commits** as the change (update
 `CLAUDE.md`, `README.md`, `docs/<domain>/*.md` + the domain README index, and
 the affected skill; grep for stale terms first).
 
 ```bash
-git checkout -b <type>/<short-slug> origin/main
+git checkout -b <type>/<short-slug> origin/dev
 # …work, commit…
 git push -u origin <type>/<short-slug>
-gh pr create -R oramasearch/zetta --base main --assignee @me
+gh pr create -R oramasearch/zetta --base dev --assignee @me
 ```
 
 ### Commit messages — Conventional Commits
@@ -95,7 +96,7 @@ carries the explanation; use `Related to #N` in the commit footer instead.
 
 ```bash
 gh issue close <N> -R oramasearch/zetta --comment "$(cat <<'EOF'
-Done in PR #<N> (merged to main).
+Done in PR #<N> (merged to dev).
 
 ## How it was solved
 - <what changed — file paths>
@@ -197,7 +198,7 @@ gh issue reopen <N> -R oramasearch/zetta
 ## Pull Requests (only when the user asks for one)
 
 ```bash
-gh pr create -R oramasearch/zetta --base main --assignee @me \
+gh pr create -R oramasearch/zetta --base dev --assignee @me \
   --title "feat(scope): imperative subject" \
   --body "$(cat <<'EOF'
 ## Summary

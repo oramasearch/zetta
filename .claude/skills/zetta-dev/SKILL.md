@@ -112,8 +112,9 @@ loops **patient** (poll seconds, not a fixed tiny count) — they're timing-boun
   `-F <file>` message file (shell quoting mangles inline multi-line messages).
 - **Never mention Claude/AI** and **never add Claude as author or co-author**
   (no `Co-Authored-By`, no "Generated with…" footer). The author is the user.
-- **All work goes on a feature branch and lands via a PR** (`<type>/<short-slug>`,
-  e.g. `docs/domain-restructure`) — never push directly to `main`. Commit and
+- **All work goes on a feature branch and lands via a PR targeting `dev`**
+  (`<type>/<short-slug>`, e.g. `docs/domain-restructure`) — never push directly
+  to `main` or `dev` (`dev` integrates, then promotes to `main`). Commit and
   push the branch after a major, verified unit of work — don't leave finished
   work unpushed.
 - **After any system change, update ALL relevant docs in the same commit** —

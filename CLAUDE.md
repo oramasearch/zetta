@@ -273,8 +273,9 @@ idle loop + live resize, font rebuild).
 - **Never mention "Claude" / "AI" / "Codex"** in commit text or PR bodies, and
   **never add Claude as an author or co-author** (no `Co-Authored-By`, no
   "Generated with…" footer). The author is the user, full stop.
-- **All work goes on a feature branch and lands via a PR** — do not push
-  directly to `main`. Branch names: `<type>/<short-slug>` (e.g.
+- **All work goes on a feature branch and lands via a PR targeting `dev`** —
+  never push directly to `main` or `dev`; `dev` is the integration branch and
+  promotes to `main`. Branch names: `<type>/<short-slug>` (e.g.
   `docs/domain-restructure`, `feat/provisioner-detection-from-cli`). Commit and
   push the branch after any major, verified unit of work — don't leave finished
   work unpushed.
