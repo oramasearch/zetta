@@ -135,6 +135,26 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   included **only** by the adapter `src/core/cluster/cluster.cpp`. **Never name
   `boost::capy` / `boost::corosio` directly** outside those seams.
 
+- **Coroutines first.** zetta is a coroutine-native codebase: async APIs are
+  expressed as awaitables through the `zetta::runtime` seam (`task<T>`,
+  `spawn`, `parallel_for`, `async_event`), never as blocking
+  mutex/condition-variable surfaces. A raw `std::mutex` is permitted ONLY as
+  the lowest-level cross-thread handoff inside a seam adapter (the cluster's
+  per-peer outbox, a bounded telemetry ring) — contained, commented, and never
+  visible in a public API. If the runtime seam lacks a primitive you need,
+  extend the seam (one alias/adapter in `runtime.hpp`), don't work around it.
+
+- **Observability first (RULE: every operation is observable).** Every
+  operation captures its **intent** (what the caller asked for, verbatim),
+  its **plan** (what the engine decided to do), its **performance** (spans
+  with timings), and its **result shape** — as OpenTelemetry-style spans
+  threaded by trace id across surfaces and nodes, surfaced as `system.*`
+  read views and returned to API callers (an MCP agent sees the trace id +
+  timing of every call and can read the full trace back). Errors carry the
+  engine's reason; crashes carry stacktraces. See
+  [`docs/architecture/observability.md`](docs/architecture/observability.md)
+  — new operations MUST open a span; new failures MUST be observable.
+
 - **No exceptions across zetta-core seams.** Boundary functions are
   non-throwing (`std::optional` / status types + a path-qualified reason).
   Untrusted input is **validated at the boundary**: top-level replicated

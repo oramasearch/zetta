@@ -14,6 +14,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 add_executable(zetta-tests
+  api/test_registry.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   pipeline/test_validation.cpp

@@ -91,6 +91,17 @@ durable, replicated, queryable handle: a `Run` (`run:<uuid>`) or a
 read surface. No request-scoped blocking, no bespoke async protocol, and MCP,
 REST, SQL, and the GUI all observe the same lifecycle rows.
 
+## Observability — every call is a span
+
+Per [../architecture/observability.md](../architecture/observability.md):
+`Registry::call` opens a span (capability, kind, actor, the caller's reserved
+optional `intent` field, input digest) and closes it with status + duration +
+result shape; every `ApiResult` carries `trace_id`/`span_id`/`duration_ms` so
+the MCP response itself tells the agent what happened and where to read more
+(`get_trace`). Inbound `traceparent` is honored; without one the call starts a
+fresh trace. `intent` is stripped before schema validation — every capability
+accepts it.
+
 ## Errors — the no-throw boundary, mapped
 
 Handlers are non-throwing and return `ApiResult { ok, value, error{code,
@@ -128,8 +139,17 @@ GUI marks panels dirty + records the action for the activity feed
 
 JSON-RPC 2.0 over `POST /mcp` (Streamable HTTP, single JSON responses;
 SSE/streaming is a later slice): `initialize`, `notifications/initialized`,
-`ping`, `tools/list`, `tools/call`. Prompts (`prompts/list`/`get`) land with
-the methodology layer (plan slice 8). CORS on, loopback-origin default.
+`ping`, `tools/list`, `tools/call`. CORS on, loopback-origin default.
+
+**Prompts are the progressive-disclosure layer** (`prompts/list`/`get`, plan
+slice 8): a new user (or agent) should never need the full tool table to get
+value. The set is layered — `using_this_cluster` (orientation: what this node
+is, the three reads to run first), `run_use_case` (UC-1 end to end),
+`simulate_user_test` (drive a journey, assert on traces + system.*),
+`author_use_case` (the add-use-case flow), `investigate` (pull traces/errors
+for a misbehaving operation), `submit_feedback` (bundle a bug/feature report
+with its traces). Each prompt teaches the next layer down; expert users
+bypass them entirely.
 
 ## What the skeleton ships (#615) vs. defers
 

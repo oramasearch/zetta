@@ -72,6 +72,24 @@ symbols in `namespace zetta::<d>`:
   tests, and doc page in the same domain, and updates the domain `README.md`
   index + `docs/architecture/code-map.md` in the same commit.
 
+## Concurrency — coroutines first
+
+Async APIs are awaitables via the `zetta::runtime` seam (`task<T>`, `spawn`,
+`async_event`, `parallel_for`) — a public API never exposes blocking
+mutex/condvar semantics. Raw `std::mutex` appears only as the contained
+cross-thread handoff inside a seam adapter (outbox/ring patterns), commented
+as such. Need a primitive the seam lacks? Extend `runtime.hpp` (one
+alias/adapter over capy), never name `boost::capy`/`boost::corosio` outside
+the seam. Ownership stays with loops (Node: owning loop; network thread:
+thread-safe types only) — cross-thread work is marshaled, not locked.
+
+## Observability — every operation is observable
+
+New operations open a span (intent · plan · performance · result shape) with
+trace ids threaded across calls, surfaces, and nodes
+([observability.md](observability.md)); failures carry the engine's reason,
+crashes carry stacktraces. An unobservable operation is incomplete.
+
 ## Errors and boundaries
 
 - **No exceptions across zetta-core seams** (the library builds with

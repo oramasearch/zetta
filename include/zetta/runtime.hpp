@@ -7,6 +7,7 @@
 #include <utility>
 
 #include <boost/capy.hpp>
+#include <boost/capy/ex/async_event.hpp>
 #include <boost/capy/test/run_blocking.hpp>
 
 // zetta's async runtime seam.
@@ -27,6 +28,13 @@ using task = boost::capy::task<Value>;
 
 // A pool of worker threads exposing an executor (`pool.get_executor()`).
 using thread_pool = boost::capy::thread_pool;
+
+// A coroutine-native one-shot event: awaiters suspend on `co_await
+// event.wait()` and are all resumed when any thread calls `set()` (each on
+// its own executor). The coroutine-first alternative to a condition
+// variable — the primitive cross-thread completion signaling goes through
+// (e.g. the API surface's MainThreadBridge).
+using async_event = boost::capy::async_event;
 
 // Synchronous bridge: run `coroutine` to completion on the calling thread. Use
 // from non-coroutine code (main(), tests) to enter the async world. Backed by
