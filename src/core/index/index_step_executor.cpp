@@ -8,14 +8,14 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/database.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_backend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/storage/jsonl_store.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/table.hpp"
 
 namespace zetta {
 namespace {

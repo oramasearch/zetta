@@ -14,16 +14,16 @@
 #include <nlohmann/json.hpp>
 
 #include "cases.hpp"
-#include "zetta/cluster.hpp"
-#include "zetta/database.hpp"
+#include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index_backend.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #include "zetta/node.hpp"
-#include "zetta/partition_writer.hpp"
-#include "zetta/partitioner.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/partition_writer.hpp"
+#include "zetta/data/partitioner.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/testkit/harness.hpp"
 #include "zetta/testkit/test_suite.hpp"
 

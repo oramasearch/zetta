@@ -6,8 +6,8 @@
 #include <utility>
 
 #include "zetta/node.hpp"
-#include "zetta/pipeline_instrumentation.hpp"
-#include "zetta/timestamp.hpp"
+#include "zetta/compute/pipeline_instrumentation.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::ml {
 

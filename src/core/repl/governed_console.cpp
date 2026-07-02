@@ -7,18 +7,18 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/access_key.hpp"
-#include "zetta/audit_event.hpp"
-#include "zetta/capability.hpp"
-#include "zetta/duration.hpp"
-#include "zetta/executor.hpp"
+#include "zetta/governance/access_key.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/util/duration.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
-#include "zetta/run.hpp"
-#include "zetta/timestamp.hpp"
-#include "zetta/validation.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/pipeline/validation.hpp"
 
 namespace zetta::repl {
 

@@ -1,6 +1,6 @@
 #include "zetta/headless.hpp"
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
 #include "zetta/signals.hpp"
 

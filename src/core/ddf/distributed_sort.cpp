@@ -9,7 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/ddf/data_frame_ops.hpp"
 #include "data_frame_internal.hpp"
 

@@ -15,7 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/index/index_backend.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // Per-partition distributed full-text search (ENT-39 / ENT-40, ADR-34, #529 — the
 // engine half of TC-13 #503). Where the [index step executor](index_step_executor.hpp)

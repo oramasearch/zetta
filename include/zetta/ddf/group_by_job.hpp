@@ -4,7 +4,7 @@
 #include <string>
 
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 

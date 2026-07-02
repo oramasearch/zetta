@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/tree_shap.hpp"

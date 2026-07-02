@@ -7,8 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/cluster.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/cluster/cluster.hpp"
+#include "zetta/util/uuid.hpp"
 
 #include "../base64.hpp"
 

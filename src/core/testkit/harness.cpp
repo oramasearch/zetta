@@ -6,9 +6,9 @@
 #include <thread>
 #include <utility>
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace zetta::testkit {
 namespace {

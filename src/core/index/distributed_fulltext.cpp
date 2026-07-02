@@ -8,13 +8,13 @@
 
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/cluster.hpp"
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/index/oramacore_fulltext_index.hpp"
-#include "zetta/large_object.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/table.hpp"
 
 namespace zetta {
 namespace {

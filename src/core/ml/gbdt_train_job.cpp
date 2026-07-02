@@ -9,9 +9,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_status.hpp"
-#include "zetta/model.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 
 #include "feature_columns.hpp"

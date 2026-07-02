@@ -7,12 +7,12 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
-#include "zetta/database.hpp"
-#include "zetta/large_object.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
-#include "zetta/replication.hpp"
-#include "zetta/table.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/util/uuid.hpp"
 
 using zetta::IntegrityReport;
 using zetta::Node;

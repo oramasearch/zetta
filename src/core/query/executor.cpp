@@ -13,23 +13,23 @@
 #include <variant>
 #include <vector>
 
-#include "zetta/cloud_inspector.hpp"
-#include "zetta/cloud_provider.hpp"
-#include "zetta/cluster.hpp"
+#include "zetta/cloud/cloud_inspector.hpp"
+#include "zetta/cloud/cloud_provider.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/pipeline_instrumentation.hpp"
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/pipeline_instrumentation.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
-#include "zetta/deployment.hpp"
+#include "zetta/pipeline/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/table.hpp"
 
 namespace zetta::query {
 namespace {

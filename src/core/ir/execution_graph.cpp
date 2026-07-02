@@ -3,7 +3,7 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/uuid.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace zetta::ir {
 

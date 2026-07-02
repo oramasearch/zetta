@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/runtime.hpp"
 

@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <system_error>
 
-#include "zetta/uuid.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace zetta::test {
 

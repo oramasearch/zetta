@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "zetta/compute/work_stealing_scheduler.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // The **cross-node** half of the work-stealing scheduler (ARC-10, #366): idle /
 // faster *nodes* steal pending tasks from busy peers over the

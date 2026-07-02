@@ -2,7 +2,7 @@
 
 #include <utility>
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 
 namespace zetta::compute {
 

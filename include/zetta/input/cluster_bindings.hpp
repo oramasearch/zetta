@@ -3,9 +3,9 @@
 #include <cstddef>
 #include <optional>
 
-#include "zetta/add_nodes.hpp"            // AddNodesResult, add_nodes
+#include "zetta/cloud/add_nodes.hpp"            // AddNodesResult, add_nodes
 #include "zetta/ir/execution_graph.hpp"  // ir::Node
-#include "zetta/provisioner.hpp"         // Provisioner
+#include "zetta/cloud/provisioner.hpp"         // Provisioner
 
 // Sim-Python **cluster control bindings** (#522). The
 // [Python frontend](python_frontend.hpp) lowers `cluster.add_nodes(n, provider=)`

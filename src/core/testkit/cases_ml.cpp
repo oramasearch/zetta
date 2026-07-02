@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "cases.hpp"
-#include "zetta/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/tree_shap.hpp"

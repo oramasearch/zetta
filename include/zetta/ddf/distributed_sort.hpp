@@ -9,10 +9,10 @@
 #include <string_view>
 #include <vector>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_device.hpp"
 #include "zetta/ddf/data_frame.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // The **distributed sort** over the DDF substrate (ARC-12, #385) — sample-partition
 // + local sort + merge across the cluster. Every participating node owns a shard

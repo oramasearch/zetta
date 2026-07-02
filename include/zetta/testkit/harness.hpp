@@ -10,8 +10,8 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/churn_dataset.hpp"
-#include "zetta/churn_solution.hpp"  // the canonical churn encoding (reused, not copied)
+#include "zetta/usecases/churn/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"  // the canonical churn encoding (reused, not copied)
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/featurize.hpp"
 #include "zetta/ml/gbdt.hpp"
@@ -83,7 +83,7 @@ ChurnDataset sample_churn_dataset();
 
 // The churn numeric encoding (a ChurnDataset -> the two numeric DDF input shards)
 // and the standard pipeline schemas / featurize spec are the **canonical** ones in
-// `zetta/churn_solution.hpp` (`zetta::encode_churn_dataset` -> `ChurnNumericShards`,
+// `zetta/usecases/churn/churn_solution.hpp` (`zetta::encode_churn_dataset` -> `ChurnNumericShards`,
 // `zetta::churn_events_schema` / `churn_accounts_schema` / `churn_featurize_spec`).
 // The testkit reuses those directly rather than carrying its own copy — see
 // docs/testing/test-suite.md. Only the testkit-specific extras live here:

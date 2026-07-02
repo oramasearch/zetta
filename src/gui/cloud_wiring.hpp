@@ -4,19 +4,19 @@
 #include <string>
 #include <vector>
 
-#include "zetta/aws_cli_control_plane.hpp"
-#include "zetta/aws_provisioner.hpp"
-#include "zetta/azure_cli_control_plane.hpp"
-#include "zetta/azure_provisioner.hpp"
-#include "zetta/bare_metal_cli_control_plane.hpp"
-#include "zetta/bare_metal_provisioner.hpp"
-#include "zetta/gcp_cli_control_plane.hpp"
-#include "zetta/gcp_provisioner.hpp"
-#include "zetta/k8s_cli_control_plane.hpp"
-#include "zetta/k8s_provisioner.hpp"
-#include "zetta/oci_cli_control_plane.hpp"
-#include "zetta/oci_provisioner.hpp"
-#include "zetta/provisioner_config.hpp"
+#include "zetta/cloud/aws_cli_control_plane.hpp"
+#include "zetta/cloud/aws_provisioner.hpp"
+#include "zetta/cloud/azure_cli_control_plane.hpp"
+#include "zetta/cloud/azure_provisioner.hpp"
+#include "zetta/cloud/bare_metal_cli_control_plane.hpp"
+#include "zetta/cloud/bare_metal_provisioner.hpp"
+#include "zetta/cloud/gcp_cli_control_plane.hpp"
+#include "zetta/cloud/gcp_provisioner.hpp"
+#include "zetta/cloud/k8s_cli_control_plane.hpp"
+#include "zetta/cloud/k8s_provisioner.hpp"
+#include "zetta/cloud/oci_cli_control_plane.hpp"
+#include "zetta/cloud/oci_provisioner.hpp"
+#include "zetta/cloud/provisioner_config.hpp"
 
 namespace zetta::gui {
 

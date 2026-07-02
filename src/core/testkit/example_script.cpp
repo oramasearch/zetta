@@ -7,14 +7,14 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/executor.hpp"
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
-#include "zetta/run.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/testkit/harness.hpp"  // ScratchDir
-#include "zetta/validation.hpp"
+#include "zetta/pipeline/validation.hpp"
 
 // The sim-Python example-script harness (issue #523): run a script end to end
 // (parse -> IR -> gate -> run) and check its declared expectations, surfacing the

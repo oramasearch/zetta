@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/model.hpp"
+#include "zetta/ml/model.hpp"
 
 namespace zetta::ml {
 

@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include "zetta/executor.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/index/index_backend.hpp"
 #include "zetta/index/index_registry.hpp"
 

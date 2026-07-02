@@ -10,7 +10,7 @@
 
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/timestamp.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::ml {
 

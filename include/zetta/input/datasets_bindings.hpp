@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "zetta/executor.hpp"            // StepExecutor, StepOutcome
+#include "zetta/pipeline/executor.hpp"            // StepExecutor, StepOutcome
 #include "zetta/ir/execution_graph.hpp"  // ir::Node
 
 // Sim-Python **`datasets` library shim** (#521). The

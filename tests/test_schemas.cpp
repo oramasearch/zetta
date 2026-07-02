@@ -7,23 +7,23 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/audit_event.hpp"
-#include "zetta/cloud_inspector.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/compute/checkpoint.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/playbook.hpp"
 #include "zetta/ddf/parquet_reader.hpp"
-#include "zetta/model.hpp"
-#include "zetta/node_telemetry.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/parquet/column_decoder.hpp"
 #include "zetta/parquet/metadata.hpp"
-#include "zetta/run.hpp"
-#include "zetta/solution_catalog.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/pipeline/solution_catalog.hpp"
 
 // Schema-as-code (#464): the C++ type is the **single source of truth** for its JSON
 // Schema. Each validated entity exposes its draft-07 schema as a `*_schema()`

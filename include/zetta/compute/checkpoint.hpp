@@ -10,7 +10,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 
 // **Burst-job eviction tolerance — checkpoint / restart** (RULE-5 / RSK-9, #468).
 //

@@ -3,9 +3,9 @@
 #include <functional>
 #include <string>
 
-#include "zetta/capability.hpp"
-#include "zetta/executor.hpp"
-#include "zetta/gate.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/repl/console_model.hpp"
 

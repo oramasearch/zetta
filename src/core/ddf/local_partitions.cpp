@@ -10,9 +10,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
-#include "zetta/large_object.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/json_store.hpp"
 

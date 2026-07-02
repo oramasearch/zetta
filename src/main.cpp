@@ -6,15 +6,15 @@
 // display. All the real work lives behind zetta::Node / zetta::Cluster — main
 // only picks how to drive them.
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/headless.hpp"
-#include "zetta/local_provisioner.hpp"
+#include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/node.hpp"
-#include "zetta/provisioner.hpp"
-#include "zetta/provisioner_detect.hpp"
-#include "zetta/replicated_blob_store.hpp"
-#include "zetta/replication.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/cloud/provisioner.hpp"
+#include "zetta/cloud/provisioner_detect.hpp"
+#include "zetta/data/replicated_blob_store.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 #include "gui/app.hpp"

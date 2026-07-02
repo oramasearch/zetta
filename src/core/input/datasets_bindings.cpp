@@ -14,16 +14,16 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/node.hpp"
 #include "zetta/parquet/reader.hpp"
-#include "zetta/partition_writer.hpp"
-#include "zetta/partitioner.hpp"
-#include "zetta/run.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/partition_writer.hpp"
+#include "zetta/data/partitioner.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/data/table.hpp"
 
 namespace zetta::input {
 namespace {

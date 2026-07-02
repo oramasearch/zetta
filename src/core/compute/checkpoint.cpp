@@ -11,8 +11,8 @@
 
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/sha256.hpp"
-#include "zetta/timestamp.hpp"
+#include "zetta/util/sha256.hpp"
+#include "zetta/util/timestamp.hpp"
 
 #include "../base64.hpp"
 

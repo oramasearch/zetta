@@ -8,10 +8,10 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/distributed_scheduler.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // The **job coordinator** (ARC-11, #372) — the single entry the native
 // distributed accelerated-compute algorithms (DDF / GBDT / SHAP) submit work

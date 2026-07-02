@@ -1,14 +1,14 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 
-#include "zetta/access_key.hpp"
-#include "zetta/audit_event.hpp"
-#include "zetta/capability.hpp"
+#include "zetta/governance/access_key.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/capability.hpp"
 #include "zetta/node.hpp"
-#include "zetta/principal.hpp"
-#include "zetta/scope.hpp"
+#include "zetta/governance/principal.hpp"
+#include "zetta/governance/scope.hpp"
 #include "zetta/testkit/test_suite.hpp"
-#include "zetta/timestamp.hpp"
+#include "zetta/util/timestamp.hpp"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
