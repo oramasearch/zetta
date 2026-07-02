@@ -1,6 +1,6 @@
 # Entity resolution in featurization (TC-4)
 
-The **entity resolver** (`zetta::EntityResolver`,
+The **entity resolver** (`zetta::usecases::churn::EntityResolver`,
 [`include/zetta/usecases/churn/entity_resolution.hpp`](../../include/zetta/usecases/churn/entity_resolution.hpp))
 is the data step that runs **before** churn featurization: it maps the raw
 account-name strings on comms events — the `mention`s — to a canonical CRM

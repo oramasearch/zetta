@@ -59,7 +59,7 @@ mirroring [`Project`](projects.md):
 | `node_id` | `std::string` | The node the graph was placed on (its cluster id). |
 | `node_count` | `std::size_t` | Graph summary captured at deploy time. |
 | `edge_count` | `std::size_t` | Graph summary captured at deploy time. |
-| `created` | `std::string` | ISO-8601 UTC stamp (`zetta::now_iso8601()`). |
+| `created` | `std::string` | ISO-8601 UTC stamp (`zetta::util::now_iso8601()`). |
 
 The graph is recorded as a **summary** (its name + node/edge counts), **not** the
 full graph: the ExecutionGraph IR has no serialized form yet (a later slice, see

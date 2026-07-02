@@ -1,6 +1,6 @@
 # Runs
 
-A **Run** (`zetta::Run`) is the record of **one execution of a deployed graph** —
+A **Run** (`zetta::pipeline::Run`) is the record of **one execution of a deployed graph** —
 its status, logs, produced outputs (datasets / models / indexes), and lineage
 (sources, steps, freshness, confidence). It is the keystone of FEAT-5 (Run +
 monitor + lineage) and realizes the closed domain spec ENT-12.
@@ -9,14 +9,14 @@ This page documents the **storage + data model** plus the **GUI viewer**: the
 `Run` type and its lifecycle (create / update / query) on a `Node`, and the
 read-only **Runs / Outputs / Lineage** panel that surfaces it in the headed app
 (see [GUI panel](#gui-panel)). Actually *executing* a graph to produce a run is
-its own slice — `zetta::GraphExecutor` / `Node::run_graph`, see
+its own slice — `zetta::pipeline::GraphExecutor` / `Node::run_graph`, see
 [execution.md](execution.md); a Run created here is the artifact it writes to and
 the panel reads from.
 
 ## The type
 
 A `Run` (`include/zetta/pipeline/run.hpp`) is a top-level entity with no parent, modeled
-exactly like [`zetta::Project`](projects.md). Its value:
+exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 
 | Field | Type | Notes |
 |---|---|---|
@@ -35,7 +35,7 @@ exactly like [`zetta::Project`](projects.md). Its value:
 `Running` (RunStarted), and ends `Succeeded` (RunSucceeded, with outputs +
 lineage) or `Failed` (RunFailed; the failing step + reason live in `logs`).
 `lineage.confidence` is a 0..1 score, **clamped into range on write** so stored
-values always satisfy the schema. Stamps come from `zetta::now_iso8601()`
+values always satisfy the schema. Stamps come from `zetta::util::now_iso8601()`
 (fixed-width, so they order chronologically as plain text).
 
 `project` / `graph` / `deployment` are **id-only references** (kept lightweight,
@@ -65,15 +65,15 @@ The **update** half of the slice is the mutators on the `Run` handle. Each bumps
 
 ```cpp
 auto run = node.create_run("project-uuid", "graph-1");   // Pending
-run->set_status(zetta::RunStatus::Running);
-run->add_log({zetta::now_iso8601(), "info", "connect: 1.2M rows"});
-run->set_status(zetta::RunStatus::Succeeded);
+run->set_status(zetta::pipeline::RunStatus::Running);
+run->add_log({zetta::util::now_iso8601(), "info", "connect: 1.2M rows"});
+run->set_status(zetta::pipeline::RunStatus::Succeeded);
 run->set_outputs({{"dataset", "churn_features", "tbl:abc"},
                   {"index",   "churn_index",    "idx:def"}});
-zetta::RunLineage lineage;
+zetta::pipeline::RunLineage lineage;
 lineage.sources    = {"events.jsonl", "crm.csv"};
 lineage.steps      = {"connect", "clean", "model", "index"};
-lineage.freshness  = zetta::now_iso8601();
+lineage.freshness  = zetta::util::now_iso8601();
 lineage.confidence = 0.87;
 run->set_lineage(lineage);
 ```
@@ -110,7 +110,7 @@ Run is the first zetta record validated against a **formal JSON Schema** (draft-
 rather than ad-hoc shape checks. The schema is the single source of truth for the
 value shape — `status` and output `kind` are closed enums, `confidence` is bounded
 to `[0, 1]`, and `additionalProperties` is `false` — and it is exposed via
-`zetta::run_value_schema()`.
+`zetta::pipeline::run_value_schema()`.
 
 Every value that **enters** the system passes through it:
 
@@ -176,7 +176,7 @@ produced and renders each (`render_model_card`):
 - **Ranked drivers** — the model's feature importances, **strongest |influence|
   first**, each as a normalized bar with its signed value (`+/-`, since a feature
   can push a prediction up or down). Read from the model's free-form
-  `feature_schema.drivers` via [`zetta::ranked_drivers`](../ml/models.md#ranked-drivers-explainability);
+  `feature_schema.drivers` via [`zetta::ml::ranked_drivers`](../ml/models.md#ranked-drivers-explainability);
   absent until an `Explain` job records them ("(no ranked drivers recorded)").
 
 The run↔model link is the **durable reverse edge** — a model whose producing-run

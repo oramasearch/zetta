@@ -112,7 +112,7 @@ acceptance.
 ```cpp
 // A device-backed feature frame (one row per entity, entity-key column + features).
 auto frame = feature_table.to_data_frame(device);
-auto job = node.create_job(zetta::JobKind::Score);
+auto job = node.create_job(zetta::compute::JobKind::Score);
 auto result = zetta::ml::run_score_job(
     coordinator, *job, frame.frame, model, /*entity_column=*/"entity",
     /*top_k=*/100);  // the 100 most at-risk accounts

@@ -31,7 +31,7 @@ is null, `error` explains why, and **nothing is stored**.
 ```cpp
 auto project = node.create_project("churn");
 
-auto result = zetta::import_n8n_workflow_file(*project, "churn_workflow.json",
+auto result = zetta::pipeline::import_n8n_workflow_file(*project, "churn_workflow.json",
                                               "user:steve");
 if (!result.ok()) {
     // result.error: "invalid JSON" / "not an n8n workflow: …" / "cannot open file: …"

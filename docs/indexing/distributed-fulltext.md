@@ -1,4 +1,4 @@
-# Per-partition distributed full-text (`zetta::DistributedFulltextIndex`)
+# Per-partition distributed full-text (`zetta::index::DistributedFulltextIndex`)
 
 The **approved per-partition topology** for full-text search (ENT-39 / ENT-40,
 ADR-34, [#529](https://github.com/oramasearch/zetta/issues/529) — the engine half of

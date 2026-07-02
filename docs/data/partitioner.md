@@ -17,11 +17,11 @@ persistence/replication and the placement half are separate, dependent slices:
 - **the partition catalog** — `system.dataset_partitions`, the replicated record
   of where each partition landed — `#510`.
 - **the partitioned write path** — rows → partition → blob, placement recorded —
-  **`#511`, built** (`zetta::write_partitioned`, see
+  **`#511`, built** (`zetta::data::write_partitioned`, see
   [partitioned-write-path.md](partitioned-write-path.md)): it drives both halves of
   this seam over a partitioned table's rows.
 - **rebalance on membership change** — `#517`, **built**
-  (`zetta::rebalance_partitions`, see
+  (`zetta::data::rebalance_partitions`, see
   [partition-rebalance.md](partition-rebalance.md)): on a join it re-runs the
   partition→node half over the new membership and moves only the changed partitions.
   **compute-near-data** (a DDF op runs over the node's local partitions) — `#516`.

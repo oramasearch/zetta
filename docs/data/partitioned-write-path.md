@@ -1,6 +1,6 @@
 # Partitioned write path (rows → partition → blob, placement recorded)
 
-The **partitioned write path** (`zetta::write_partitioned`,
+The **partitioned write path** (`zetta::data::write_partitioned`,
 `include/zetta/data/partition_writer.hpp`, **#511**) is where the partitioning pieces
 finally meet: it takes a table configured with a [`Partitioner`](partitioner.md)
 and **lays its rows out as partitions** — assigning each row to a partition,

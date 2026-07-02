@@ -185,7 +185,7 @@ and appears in `system.zetta_jobs`. It is the literal `churn_features.sql` shape
    `distributed_group_by` broadcasts the merged result back to all participants.
 
 ```cpp
-auto job = node.create_job(zetta::JobKind::Featurize);
+auto job = node.create_job(zetta::compute::JobKind::Featurize);
 auto out = zetta::ddf::run_featurize_job(coordinator, *job, events_shard,
                                          accounts_shard, spec);
 // out.table is the GLOBAL feature table, identical on every participating node;
@@ -221,7 +221,7 @@ saas-sales-conversations engineered columns are featurized over the partitioned
 dataset (the static spec above):
 
 ```cpp
-auto job = node.create_job(zetta::JobKind::Featurize);
+auto job = node.create_job(zetta::compute::JobKind::Featurize);
 auto out = zetta::ddf::run_near_data_featurize_job(
     coordinator, node, *job, table_id, engineered_schema, spec, device);
 // out.table is the GLOBAL feature table, identical on every node and equal to a

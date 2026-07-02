@@ -30,7 +30,7 @@ deliberately out of scope here.
 
 ## Node capability model (ENT-32)
 
-`zetta::NodeCapability` describes a single node's compute resources along three
+`zetta::cloud::NodeCapability` describes a single node's compute resources along three
 dimensions:
 
 | Field | Type | Meaning |
@@ -46,8 +46,8 @@ autoscaler ranks placements by, and an optional free-form model name
 (`"A100"`, `"H100"`, `"MI300X"`). A CPU-only node has `GpuKind::None` and zero
 throughput.
 
-> **Not** the access-control capability. `zetta::NodeCapability` is *compute*;
-> `zetta::Capability` (see [access-control.md](../governance/access-control.md)) is a *right*.
+> **Not** the access-control capability. `zetta::cloud::NodeCapability` is *compute*;
+> `zetta::governance::Capability` (see [access-control.md](../governance/access-control.md)) is a *right*.
 > The names are kept apart on purpose. This is also distinct from — and feeds —
 > the per-node device registry (`#362`), which enumerates a node's
 > `ComputeDevice`s and reports each one's capability in this same shape.
@@ -102,7 +102,7 @@ public:
 
 ## The Local backend (`LocalProvisioner`)
 
-`zetta::LocalProvisioner` (`include/zetta/cloud/local_provisioner.hpp`) is the first
+`zetta::cloud::LocalProvisioner` (`include/zetta/cloud/local_provisioner.hpp`) is the first
 concrete `Provisioner` — the **given-hardware** path (ARC-13, `#374`). It does
 **not** stand up VMs: it reports and uses the nodes **already in the cluster**,
 best-effort. This is the case where we don't control the infrastructure — the
@@ -155,18 +155,18 @@ through the shared [`CommandRunner`](../../include/zetta/cloud/command_runner.hp
 SDK / client lib in `zetta-core`). [`AzureProvisioner`](azure-provisioner.md)
 (`#376`) is the **reference**; the mirrors are:
 
-- [`zetta::AwsProvisioner`](aws-provisioner.md) (`#377`) — an `AwsCliControlPlane`
+- [`zetta::cloud::AwsProvisioner`](aws-provisioner.md) (`#377`) — an `AwsCliControlPlane`
   `aws` binding (the EC2 Auto Scaling Group + Spot shape) + a validated `AwsConfig`.
-- [`zetta::GcpProvisioner`](gcp-provisioner.md) (`#378`) — a `GcpCliControlPlane`
+- [`zetta::cloud::GcpProvisioner`](gcp-provisioner.md) (`#378`) — a `GcpCliControlPlane`
   `gcloud` binding (the Managed Instance Group + Spot shape) + a validated `GcpConfig`.
-- [`zetta::OciProvisioner`](oci-provisioner.md) (`#432`) — an `OciCliControlPlane`
+- [`zetta::cloud::OciProvisioner`](oci-provisioner.md) (`#432`) — an `OciCliControlPlane`
   `oci` binding (the Instance Pool + preemptible shape, OCID-resolved by display
   name) + a validated `OciConfig`.
-- [`zetta::K8sProvisioner`](k8s-provisioner.md) (`include/zetta/cloud/k8s_provisioner.hpp`,
+- [`zetta::cloud::K8sProvisioner`](k8s-provisioner.md) (`include/zetta/cloud/k8s_provisioner.hpp`,
   ARC-13 / ADR-20, `#434`) — a `K8sCliControlPlane` `kubectl` binding that bursts
   worker pods into an **existing cluster** (a Deployment scaled to N) + a validated
   `K8sConfig`.
-- [`zetta::BareMetalProvisioner`](bare-metal-provisioner.md)
+- [`zetta::cloud::BareMetalProvisioner`](bare-metal-provisioner.md)
   (`include/zetta/cloud/bare_metal_provisioner.hpp`, ARC-13 / ADR-20, `#436`) — a
   `BareMetalCliControlPlane` binding that bursts **local worker containers** on the
   host via its runtime (`docker` / `podman`) + a validated `BareMetalConfig`. Unlike

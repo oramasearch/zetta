@@ -1,6 +1,6 @@
 # Validation
 
-`zetta::ValidationReport` (`include/zetta/pipeline/validation.hpp`) is the
+`zetta::pipeline::ValidationReport` (`include/zetta/pipeline/validation.hpp`) is the
 **correctness-gate result** for a graph version: the record of which checks ran,
 how each fared, the overall verdict, and whether the result should block a
 deploy. It realizes the closed spec **ENT-5** and is the first slice of the
@@ -10,7 +10,7 @@ deploy; records why.*
 This is a **pure data model** — it holds and round-trips results and answers
 "did it pass?" / "should it block?". It does **not** run any checks and is not
 the gate itself. The gate — the runner that executes checks over a graph and
-populates a report — is `zetta::CorrectnessGate` ([gate.md](gate.md)); this type
+populates a report — is `zetta::pipeline::CorrectnessGate` ([gate.md](gate.md)); this type
 is what it produces.
 
 ## The shape
@@ -82,6 +82,6 @@ ML steps, and a correctness eval over a generated graph, then refuses to deploy
 when the report says so. This type is the result those checks aggregate into and
 the value the rest of the system (events like `GraphValidated` /
 `ValidationFailed`, the `ValidateGraph` command) carries. The **runner** that
-executes checks over a graph and produces this report is `zetta::CorrectnessGate`
+executes checks over a graph and produces this report is `zetta::pipeline::CorrectnessGate`
 ([gate.md](gate.md)); the concrete checks land on top of its `Check` seam as
 separate work.

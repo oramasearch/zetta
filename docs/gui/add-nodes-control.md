@@ -2,7 +2,7 @@
 
 The headed **Cluster** panel's **Add nodes** control (`App::draw_add_nodes_control`,
 `src/gui/app_operations.cpp`, **#583** — epic [#575](https://github.com/oramasearch/zetta/issues/575)
-area 1) is the GUI front door for **[`zetta::add_nodes`](../cloud/add-nodes.md)** — the
+area 1) is the GUI front door for **[`zetta::cloud::add_nodes`](../cloud/add-nodes.md)** — the
 "add N nodes to this cluster" action — driven over an **injected
 [`Provisioner`](../cloud/provisioner.md)**. It sits right above the
 [spatial node-box canvas](../cluster/cluster.md#spatial-node-box-view-the-headed-canvas), so
@@ -103,7 +103,7 @@ steer where a burst lands.
 ## See also
 
 - [add-nodes.md](../cloud/add-nodes.md) — the engine entry point the control drives
-  (`zetta::add_nodes`; provision + rebalance, never teardown).
+  (`zetta::cloud::add_nodes`; provision + rebalance, never teardown).
 - [provisioner.md](../cloud/provisioner.md) — the `Provisioner` seam + the given-hardware
   `LocalProvisioner` the `"local"` target is wired to.
 - [cluster.md](../cluster/cluster.md) — the Cluster panel + the spatial node-box canvas the

@@ -63,7 +63,7 @@ Future policies (sharded, quorum, …) plug in behind the same enum/seam.
 ### Per-table / per-database replication strategy (ENT-35)
 
 Alongside the node-wide policy, each **database and table** carries a
-**`zetta::ReplicationStrategy`** describing how *its* replicated state is laid out:
+**`zetta::data::ReplicationStrategy`** describing how *its* replicated state is laid out:
 `ReplicateToAll` (the default — a full copy everywhere), `Partitioned` (sharded,
 one copy per shard), or `PartitionedWithReplicas(replication_factor)` (sharded with
 N total copies, default 3). The choice is **recorded, persisted, and replicated**
@@ -91,7 +91,7 @@ there to re-issue one.)
 
 ## API (a facade over Automerge)
 
-`zetta::ReplicationManager` (`include/zetta/cluster/replication.hpp`) exposes only JSON +
+`zetta::cluster::ReplicationManager` (`include/zetta/cluster/replication.hpp`) exposes only JSON +
 bytes; Automerge is hidden in the adapter `src/core/cluster/replication.cpp`, so the rest
 of zetta stays decoupled from the backend.
 

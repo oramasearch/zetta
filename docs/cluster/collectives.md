@@ -3,7 +3,7 @@
 **Collective communication** over the [signal plane](signal-plane.md) — the
 primitive the native distributed accelerated-compute pass for UC-1 churn (#264,
 ADR-28 / ARC-10) uses to combine per-node compute *partials* across the cluster:
-gradient histograms, partial aggregates, and the like. `zetta::Collectives`
+gradient histograms, partial aggregates, and the like. `zetta::cluster::Collectives`
 (`include/zetta/cluster/collectives.hpp`) implements four collectives, modeled on MPI:
 
 | collective  | what it does                                                                 |
@@ -43,11 +43,11 @@ cluster's `SignalHandler`. Every participant calls the same collective with the
 same `tag` (the round's name) — the calls rendezvous and return together.
 
 ```cpp
-zetta::Collectives collectives{cluster};   // registers the signal handler
+zetta::cluster::Collectives collectives{cluster};   // registers the signal handler
 
 // allreduce: every node passes its partial; every node gets the sum.
 std::optional<std::vector<double>> total =
-    collectives.allreduce("grad-epoch-7", local_gradient, zetta::CollectiveOp::Sum);
+    collectives.allreduce("grad-epoch-7", local_gradient, zetta::cluster::CollectiveOp::Sum);
 if (total) train_step(*total);
 
 // broadcast: the root's weights go to everyone.
@@ -69,7 +69,7 @@ requests) passes that handler as the constructor's `delegate`; `Collectives`
 forwards everything it doesn't recognize to it, and restores it on destruction:
 
 ```cpp
-zetta::Collectives collectives{cluster, &my_task_handler};
+zetta::cluster::Collectives collectives{cluster, &my_task_handler};
 ```
 
 ## How a round runs
@@ -133,7 +133,7 @@ so a result that lands before its waiter starts waiting is not lost.
 
 ## Wire format + the schema boundary
 
-The two RPC methods carry a `zetta::CollectiveMessage` as the signal's opaque
+The two RPC methods carry a `zetta::cluster::CollectiveMessage` as the signal's opaque
 payload — a compact JSON object:
 
 ```json
@@ -161,8 +161,8 @@ src/core/cluster/collectives.cpp        the round logic + the JSON-Schema bounda
 schemas/collective_message.schema.json   the draft-07 schema (mirror)
 ```
 
-`Collectives` depends only on `zetta::Cluster` (for `request()` and the
-participant list) and `zetta::Signal` (the handler base). It introduces no
+`Collectives` depends only on `zetta::cluster::Cluster` (for `request()` and the
+participant list) and `zetta::cluster::Signal` (the handler base). It introduces no
 backend types and no new transport — it is a pure consumer of the signal plane.
 
 ## Limits / future

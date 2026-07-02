@@ -1,6 +1,6 @@
 # Project inputs
 
-A **project input** (`zetta::ProjectInput`) is a raw input captured into a
+A **project input** (`zetta::pipeline::ProjectInput`) is a raw input captured into a
 [project](projects.md) with **provenance**. It is the first slice of ingestion
 (FEAT-1): a team starts a project either by describing what they want in natural
 language (**intent**) or by handing over something they already have
@@ -40,7 +40,7 @@ a raw payload body:
 `project_input_source_from`. Those strings are **both** the display label **and**
 the stored representation (what's written to the CRDT value and `input.json`), so
 they are stable on-disk identifiers. The `created_at` stamp comes from
-`zetta::now_iso8601()` — fixed-width, so inputs also order chronologically as
+`zetta::util::now_iso8601()` — fixed-width, so inputs also order chronologically as
 plain text.
 
 An input is an **immutable provenance record**: it is created once and never
@@ -54,14 +54,14 @@ Inputs are created through the owning `Project`:
 auto project = node.create_project("churn");
 
 // Natural-language intent, pasted (no filename):
-project->create_input(zetta::ProjectInputKind::Intent,
-                      zetta::ProjectInputSource::Pasted,
+project->create_input(zetta::pipeline::ProjectInputKind::Intent,
+                      zetta::pipeline::ProjectInputSource::Pasted,
                       "score every active account for churn risk and tell me why",
                       /*filename=*/{}, /*created_by=*/"user:steve");
 
 // An artifact the team uploaded (keeps its original filename):
-project->create_input(zetta::ProjectInputKind::Artifact,
-                      zetta::ProjectInputSource::Upload,
+project->create_input(zetta::pipeline::ProjectInputKind::Artifact,
+                      zetta::pipeline::ProjectInputSource::Upload,
                       workflow_json, "churn.json", "user:charles");
 ```
 

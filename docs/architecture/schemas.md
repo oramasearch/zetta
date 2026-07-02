@@ -13,8 +13,8 @@ single source of truth**. Each such type exposes it through a `*_schema()` acces
 (the "serialize method") returning the schema as `nlohmann::json`:
 
 ```cpp
-const nlohmann::json& zetta::run_value_schema();          // src/core/pipeline/run.cpp
-const nlohmann::json& zetta::compute_job_value_schema();  // src/core/compute/compute_job.cpp
+const nlohmann::json& zetta::pipeline::run_value_schema();          // src/core/pipeline/run.cpp
+const nlohmann::json& zetta::compute::compute_job_value_schema();  // src/core/compute/compute_job.cpp
 const nlohmann::json& zetta::ml::gbdt_model_schema();     // src/core/ml/gbdt.cpp
 // … audit_event, model, cloud_inspect_report, solution_catalog, calibration,
 //    golden_oracle, playbook_entry

@@ -120,7 +120,7 @@ return a `compute::ComputeStatus`.
   attached via `set_weights` (fingerprinted + replicated peer-to-peer like any
   large-object body), with the evaluation metrics in `metrics` and the per-feature
   gains as the ranked `feature_schema.drivers` (explainability — read by
-  `zetta::ranked_drivers`, surfaced in the [Runs panel](../pipeline/runs.md)). One logical model
+  `zetta::ml::ranked_drivers`, surfaced in the [Runs panel](../pipeline/runs.md)). One logical model
   is produced (at the root, which replicates to peers); deduping per-node
   registrations into a single record on every node is a later slice.
 
@@ -131,13 +131,13 @@ must be identical on every node (it defaults to a deterministic, spec-derived ta
 ```cpp
 // Featurize → device-backed feature frame → train → Model.
 auto features = feature_table.to_data_frame(device);          // X + y on the device
-auto job = node.create_job(zetta::JobKind::Train);
+auto job = node.create_job(zetta::compute::JobKind::Train);
 auto result = zetta::ml::run_train_job(
     coordinator, *job, features.frame,
     feature_table.feature_names, feature_table.label_name,
     zetta::ml::GbdtParams{}, &node);
 // result.model is the ensemble; result.metrics.auc the score;
-// result.model_id the registered zetta::Model (on the root).
+// result.model_id the registered zetta::ml::Model (on the root).
 ```
 
 ## Probability calibration

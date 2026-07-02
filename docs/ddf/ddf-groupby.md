@@ -97,7 +97,7 @@ aggregate `a`'s value for group `g` (`value(name)` looks one up by output name).
 
 `distributed_group_by` combines every participant's local partial into one result
 identical on every node. It is a template over any **collective surface** that
-exposes `gather` + `broadcast` — both [`zetta::Collectives`](../cluster/collectives.md) and
+exposes `gather` + `broadcast` — both [`zetta::cluster::Collectives`](../cluster/collectives.md) and
 the job coordinator's [`JobRound`](../compute/job-coordinator.md) qualify — so a SPMD job body
 calls it directly with its `JobRound`:
 
@@ -144,7 +144,7 @@ accelerated compute.
 ```cpp
 #include "zetta/ddf/group_by_job.hpp"
 
-auto job = node.create_job(zetta::JobKind::Ddf);          // the record
+auto job = node.create_job(zetta::compute::JobKind::Ddf);          // the record
 auto out = zetta::ddf::run_group_by_job(
     coordinator, *job, my_shard_frame, spec,
     /*round_tag=*/"region-agg-round");                    // shared across nodes

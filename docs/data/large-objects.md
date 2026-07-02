@@ -15,7 +15,7 @@ panel, "Store file…" in the Large Objects panel).
 
 ## Record import
 
-`zetta::import_records(Table&, path)`:
+`zetta::data::import_records(Table&, path)`:
 
 - `.jsonl` — one JSON document per line (blank lines skipped).
 - `.json` (or any other extension) — a JSON **array** (each element a row) or a

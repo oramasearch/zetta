@@ -93,7 +93,7 @@ of work — accelerator-first, falling back to the CPU, with `require_kind` /
 `min_memory_bytes` filters. So the *same* graph step runs on a GPU where one
 exists and on the CPU where it doesn't, with no change to the caller.
 
-The fleet-level capability model is **`zetta::NodeCapability`**
+The fleet-level capability model is **`zetta::cloud::NodeCapability`**
 ([provisioner.md](../cloud/provisioner.md), ENT-32): `cores`, `memory_bytes`, and a `Gpu`
 (`GpuKind` — `none` / `cuda` / `rocm` / `metal` — plus `throughput_tflops` and an
 optional `model`). `satisfies()` is the meet-or-exceed comparison the scheduler and

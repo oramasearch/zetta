@@ -34,11 +34,11 @@ instead of producing a half-built graph.
 
 ```cpp
 auto project = node.create_project("churn");
-auto imported = zetta::import_n8n_workflow_file(*project, "churn_workflow.json");
+auto imported = zetta::pipeline::import_n8n_workflow_file(*project, "churn_workflow.json");
 
 std::string error;
 std::optional<zetta::ir::ExecutionGraph> graph =
-    zetta::compile_n8n_workflow(*imported.input, &error);
+    zetta::pipeline::compile_n8n_workflow(*imported.input, &error);
 if (!graph) {
     // error: "invalid JSON" / "not an n8n workflow: …" /
     //        'nodes[2]: unsupported n8n node type "…" (node "…")' / …

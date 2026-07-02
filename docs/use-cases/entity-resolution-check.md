@@ -1,6 +1,6 @@
 # Entity-resolution correctness eval
 
-The **entity-resolution check** (`zetta::EntityResolutionCheck`,
+The **entity-resolution check** (`zetta::usecases::churn::EntityResolutionCheck`,
 `include/zetta/usecases/churn/entity_resolution_check.hpp`) is the first concrete
 correctness check to plug into the [correctness gate](../pipeline/gate.md). It is the
 **make-or-break** eval of FEAT-3 and realizes test case **TC-4**: it verifies
@@ -105,7 +105,7 @@ CheckResult result = EntityResolutionCheck{}.evaluate(graph);
 This is one concrete check on the gate's `Check` seam; the schema/type,
 data-leakage and point-in-time checks (`#309`) plug in the same way. The
 **producer** of the payload it reads is the entity resolver
-([entity-resolution.md](entity-resolution.md), `zetta::EntityResolver`, #394) —
+([entity-resolution.md](entity-resolution.md), `zetta::usecases::churn::EntityResolver`, #394) —
 resolver produces, this gate verifies. See [gate.md](../pipeline/gate.md) (the runner that
 hosts it), [validation.md](../pipeline/validation.md) (the `CheckResult` / `ValidationReport`
 it produces), and [execution-graph.md](../pipeline/execution-graph.md) (the IR it inspects).

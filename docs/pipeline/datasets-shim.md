@@ -118,8 +118,8 @@ so a mixed graph still runs end-to-end. Inject one into a `GraphExecutor`:
 
 ```cpp
 auto executor = std::make_shared<zetta::input::DatasetStepExecutor>(node);
-zetta::GraphExecutor runner(executor);
-zetta::ExecutionResult result = runner.execute(node, lowered.graph);
+zetta::pipeline::GraphExecutor runner(executor);
+zetta::pipeline::ExecutionResult result = runner.execute(node, lowered.graph);
 // result.run->outputs().front() == { kind: "dataset", ref: "tbl:<id>" }
 ```
 

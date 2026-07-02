@@ -26,7 +26,7 @@ agreement.
 A node can only measure the host it runs on, so the table returns **exactly one
 row — the node the query hits**. A cluster's *full* picture is gathered separately,
 over the [signal plane](signal-plane.md): the **ephemeral telemetry exchange**
-(`zetta::NodeTelemetryExchange`, #584) has each node broadcast its own
+(`zetta::cluster::NodeTelemetryExchange`, #584) has each node broadcast its own
 `NodeMetrics` to its peers as a `node.metrics` event and every node cache what it
 receives, so `Node::telemetry_snapshot()` returns this node + every fresh peer.
 That is what the headed cluster view's [animated per-node gauges](../gui/cluster-node-gauges.md)
@@ -72,7 +72,7 @@ zero. Each gauge group carries an availability flag in `NodeMetrics`; the
 
 ## How the sampler works
 
-`zetta::NodeMetricsSampler` is a small, **stateful, thread-safe** per-node object
+`zetta::cluster::NodeMetricsSampler` is a small, **stateful, thread-safe** per-node object
 (`Node` owns one; `Node::sample_node_metrics()` is the accessor). Absolute gauges
 (cores, memory, storage) need no history; the **CPU and network gauges are
 rates** computed from the delta between consecutive samples, so the sampler holds

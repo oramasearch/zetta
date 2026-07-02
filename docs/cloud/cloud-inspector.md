@@ -23,7 +23,7 @@ In the UI this is a **load-bearing consent gate**: nothing is read or called
 until the user explicitly allows that one inspection, and consent is **never
 remembered** across providers or selections.
 
-## The provider catalog (`zetta::CloudProviderCatalog`)
+## The provider catalog (`zetta::cloud::CloudProviderCatalog`)
 
 `include/zetta/cloud/cloud_provider.hpp` + `src/core/cloud/cloud_provider.cpp`.
 
@@ -102,7 +102,7 @@ A list + detail layout (like the Runs / Admin panels):
 synchronously on the UI thread (which owns the node, so caching the result races
 with nothing) and records the report via `Node::record_cloud_inspection`.
 
-## The inspector (`zetta::CloudInspector`)
+## The inspector (`zetta::cloud::CloudInspector`)
 
 `include/zetta/cloud/cloud_inspector.hpp` + `src/core/cloud/cloud_inspector.cpp`.
 

@@ -1,6 +1,6 @@
 # Synthetic churn dataset (UC-1 fixture) + loader
 
-The **synthetic churn dataset** (`zetta::ChurnDataset`,
+The **synthetic churn dataset** (`zetta::usecases::churn::ChurnDataset`,
 `include/zetta/usecases/churn/churn_dataset.hpp`) is a small, committed, synthetic
 (non-customer) churn dataset — **accounts** + **comms/usage events** — that the
 native tests load directly, plus a tiny C++ loader. It is the **root task of
@@ -63,14 +63,14 @@ data — the entity to score, the time column, the label, `t0`, and the horizon:
 
 ## Records
 
-**Account** (`zetta::ChurnAccount`): `account_id`, `name`, `brand`, `entity`,
+**Account** (`zetta::usecases::churn::ChurnAccount`): `account_id`, `name`, `brand`, `entity`,
 `plan_tier` (`starter`|`business`|`enterprise`), `industry`, `region`, `mrr`,
 `seats`, `tenure_days`, `renewal_date`, `churned`, `churn_date`. `entity` is the
 TC-4 ground-truth division; `account_id` is its correct resolution target;
 `brand` groups siblings (e.g. `"FedEx"`) that share a brand but are distinct
 accounts.
 
-**Event** (`zetta::ChurnEvent`): `event_id`, `account_id`, `event_ts`,
+**Event** (`zetta::usecases::churn::ChurnEvent`): `event_id`, `account_id`, `event_ts`,
 `event_type` (`login`|`feature_use`|`payment_failed`|`support_ticket`|
 `csm_contact`|`comms`), `channel`, `mention`, `value`. Every event carries an
 `event_ts`; `mention` is non-empty only on `comms` rows — the raw account-name
@@ -85,15 +85,15 @@ carry mention variants (`"FedEx Freight"`, `"Fedex Freight"`, …), plus a
 near-collision (`"Umbrella Logistics"` → `acct_umbrella`, *not* FedEx Logistics)
 to keep resolution non-trivial.
 
-`zetta::entity_resolution_attribute(dataset, strategy = FullName)` builds the
+`zetta::usecases::churn::entity_resolution_attribute(dataset, strategy = FullName)` builds the
 `entity_resolution` payload by **actually resolving** the comms mentions against
-the account directory with [`zetta::EntityResolver`](entity-resolution.md): the
+the account directory with [`zetta::usecases::churn::EntityResolver`](entity-resolution.md): the
 resolver sees only the raw `mention` string and matches it to an account, while the
 ground-truth `entity` is held out and recorded so the gate can check the resolver's
 choice. With the default `FullName` strategy the resolution is division-correct —
 `"FedEx Freight"` and the variant `"Fedex Freight"` both land on
 `acct_fedex_freight` while `"FedEx Ground"` stays separate — so the payload passes
-`zetta::EntityResolutionCheck` (and `default_gate()`) because it *resolved
+`zetta::usecases::churn::EntityResolutionCheck` (and `default_gate()`) because it *resolved
 correctly*, not by construction. Passing `ResolutionStrategy::Brand` collapses every
 `"FedEx …"` mention onto one brand bucket, so the gate **fails and blocks deploy**
 (RULE-1) — the real-resolver way to drive the conflation failure. See
@@ -105,9 +105,9 @@ correctly*, not by construction. Passing `ResolutionStrategy::Brand` collapses e
 ```cpp
 #include "zetta/usecases/churn/churn_dataset.hpp"
 
-zetta::ChurnDatasetResult result = zetta::load_churn_dataset(dir);  // JSONL by default
+zetta::usecases::churn::ChurnDatasetResult result = zetta::usecases::churn::load_churn_dataset(dir);  // JSONL by default
 if (!result.ok()) { /* result.error is a path-qualified reason */ }
-const zetta::ChurnDataset& dataset = result.dataset;
+const zetta::usecases::churn::ChurnDataset& dataset = result.dataset;
 ```
 
 `load_churn_dataset(dir, format = Jsonl)` reads `dataset.json` plus
@@ -117,7 +117,7 @@ const zetta::ChurnDataset& dataset = result.dataset;
 fails the load with a path-qualified reason, exactly like the Run record. The
 loaded structs are the in-memory frame the featurizer/oracle compute against; the
 JSONL files also import straight into a zetta table via
-`zetta::import_records(table, dir / "accounts.jsonl")` (so the data is *loadable
+`zetta::data::import_records(table, dir / "accounts.jsonl")` (so the data is *loadable
 into a zetta table*, the acceptance bar).
 
 ### Boundary validation
@@ -175,7 +175,7 @@ via the `ZETTA_TEST_FIXTURES_DIR` compile-define (`tests/fixtures`).
 ## Pointers
 
 - [execution-graph.md](../pipeline/execution-graph.md) — the IR the resolution payload rides on.
-- [entity-resolution.md](entity-resolution.md) — the resolver (`zetta::EntityResolver`) that maps the fixture's comms mentions to accounts (TC-4 producer).
+- [entity-resolution.md](entity-resolution.md) — the resolver (`zetta::usecases::churn::EntityResolver`) that maps the fixture's comms mentions to accounts (TC-4 producer).
 - [entity-resolution-check.md](entity-resolution-check.md) — the TC-4 check this fixture feeds.
 - [gate.md](../pipeline/gate.md) — the correctness gate that blocks deploy on conflation (RULE-1).
 - [use-cases/uc1.md](uc1.md) — the full UC-1 churn solution this is the dataset for.

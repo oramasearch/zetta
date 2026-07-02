@@ -1,6 +1,6 @@
-# Real StepExecutors — the churn pipeline (`zetta::ChurnStepExecutor`)
+# Real StepExecutors — the churn pipeline (`zetta::usecases::churn::ChurnStepExecutor`)
 
-`zetta::ChurnStepExecutor` is the **real** per-step executor for the UC-1 churn
+`zetta::usecases::churn::ChurnStepExecutor` is the **real** per-step executor for the UC-1 churn
 pipeline (#396) — the slice that replaces [`DefaultStepExecutor`](../pipeline/execution.md)'s
 logical-ref placeholders ("no real model/index is materialized in R1") with actual
 **native distributed accelerated compute**, behind the same `StepExecutor` seam and
@@ -86,7 +86,7 @@ coordinator.start();
 zetta::compute::CpuDevice device;   // or a CUDA device when present
 
 // This node's numeric input shards + the churn specs.
-zetta::ChurnPipelineConfig config;
+zetta::usecases::churn::ChurnPipelineConfig config;
 config.events_store    = &events_store;     // numeric events rows (non-owning)
 config.events_schema   = events_schema;
 config.accounts_store  = &accounts_store;   // numeric accounts rows (non-owning)
@@ -95,11 +95,11 @@ config.featurize       = churn_featurize_spec;
 config.params          = gbdt_params;
 config.entity_column   = "entity";
 
-auto churn = std::make_shared<zetta::ChurnStepExecutor>(
+auto churn = std::make_shared<zetta::usecases::churn::ChurnStepExecutor>(
     node, coordinator, device, std::move(config));
 
-zetta::GraphExecutor executor{churn};
-zetta::ExecutionResult result =
+zetta::pipeline::GraphExecutor executor{churn};
+zetta::pipeline::ExecutionResult result =
     executor.execute(node, churn_graph, "churn-project", "churn-graph-1");
 
 // result.run->outputs() now references the real Model + ranked list + drivers:
@@ -189,7 +189,7 @@ per-op suites (`test_ddf_featurize`, `test_gbdt`, `test_gbdt_score`, `test_tree_
 - **Real executors for the other use cases** behind the same seam, the way this one
   realizes churn.
 
-[`zetta::run_churn_solution`](churn-solution.md) is the reusable bridge that drives
+[`zetta::usecases::churn::run_churn_solution`](churn-solution.md) is the reusable bridge that drives
 this executor from the catalog **churn-prediction** blueprint (and the headed Deploy
 panel's "Run over the cluster" action) — it builds the numeric shards + pipeline config
 this executor needs and injects it into a `GraphExecutor`.

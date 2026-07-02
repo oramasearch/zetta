@@ -22,6 +22,10 @@ the working checklist. For the annotated file-by-file codebase map see
   with Homebrew Clang on macOS / `clang++-NN` (≥17) on Linux, auto-selected in
   CMakeLists.txt's pre-`project()` block; Apple Clang / Ubuntu GCC 13 are too old.
 - **Follow the C++ Core Guidelines.**
+- **Namespaces match the domain directories** (`include/zetta/<d>/` +
+  `src/core/<d>/` + `tests/<d>/` ↔ `namespace zetta::<d>`; no aliases; root
+  exceptions Node/runtime/gui). Full statement:
+  `docs/architecture/coding-conventions.md`.
 - **Full, descriptive names — legibility first.** No 1–2 letter or cryptic
   abbreviations for namespaces, types, functions, variables, or template
   parameters (`runtime` not `rt`, `error_code` not `ec`, `Value` not `T`).

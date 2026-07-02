@@ -28,7 +28,7 @@ joins/leaves live.
 ## The placement model
 
 The projection is the pure, deterministic, non-throwing
-`zetta::project_cluster_plan` (`include/zetta/pipeline/graph_plan.hpp`,
+`zetta::pipeline::project_cluster_plan` (`include/zetta/pipeline/graph_plan.hpp`,
 `src/core/pipeline/graph_plan.cpp`) — in **zetta-core**, so it is headless-testable
 (`tests/pipeline/test_graph_plan.cpp`) and the GUI stays a thin renderer. It takes the
 [ExecutionGraph IR](execution-graph.md), the cluster `members`, and `direct_owners`

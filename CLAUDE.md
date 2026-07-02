@@ -249,8 +249,17 @@ idle loop + live resize, font rebuild).
 
 ### C++ conventions
 
+The full statement is
+[`docs/architecture/coding-conventions.md`](docs/architecture/coding-conventions.md);
+the load-bearing rules:
+
 - **C++26** (`CMAKE_CXX_STANDARD 26`); use modern idioms. **Follow the
   [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/).**
+- **Namespaces match the domain directories** — a type in
+  `include/zetta/<domain>/` lives in `namespace zetta::<domain>` (mirrored by
+  `src/core/<domain>/` and `tests/<domain>/`); no compatibility aliases.
+  Root exceptions: `zetta::Node`, `zetta::runtime`, `zetta::gui`. Forward
+  declarations of another domain's type go at file scope, fully qualified.
 - **Full, descriptive names — legibility first.** No 1–2 letter or cryptic
   abbreviations for namespaces, types, functions, variables, or template
   parameters (`runtime` not `rt`, `error_code` not `ec`, `Value` not `T`).

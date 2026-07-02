@@ -1,6 +1,6 @@
 # Models
 
-A **Model** (`zetta::Model`) is a trained model registered on the node: its
+A **Model** (`zetta::ml::Model`) is a trained model registered on the node: its
 metadata (kind, feature schema, evaluation metrics) plus a fingerprint of its
 serialized **weights**. It realizes **ENT-14 / FEAT-6** and is part of the
 *native distributed accelerated compute* pass for UC-1 churn (#264).
@@ -20,7 +20,7 @@ replicates, and the `system.zetta_models` registry table.
 ## The type
 
 A `Model` (`include/zetta/ml/model.hpp`) is a top-level entity with no parent,
-modeled exactly like [`zetta::Run`](../pipeline/runs.md) — keyed by id (models have no
+modeled exactly like [`zetta::pipeline::Run`](../pipeline/runs.md) — keyed by id (models have no
 human-name lookup; the registry is `Node::models()` + the system table). Its
 value (`ModelValue`):
 
@@ -48,7 +48,7 @@ value (`ModelValue`):
 ```cpp
 // Create: requires a non-empty `kind`; stamps `created`. The caller fills the
 // rest of the ModelValue (name / feature_schema / metrics / project / run).
-zetta::ModelValue spec;
+zetta::ml::ModelValue spec;
 spec.kind = "classifier";
 spec.name = "churn-v1";
 spec.feature_schema = {{"tenure_months", "number"}, {"plan", "string"}};
@@ -143,7 +143,7 @@ adds **no new JSON boundary** to the Model record:
 }
 ```
 
-`zetta::ranked_drivers(const nlohmann::json& feature_schema)` (and the convenience
+`zetta::ml::ranked_drivers(const nlohmann::json& feature_schema)` (and the convenience
 `Model::drivers()`) reads that optional `drivers` array **defensively** — keeping
 only well-shaped `{ feature: string, importance: number }` entries, silently
 skipping anything else — and returns them as `ModelDriver{ feature, importance }`

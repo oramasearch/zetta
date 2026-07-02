@@ -6,8 +6,8 @@ execution (status, logs, outputs, lineage). This is an atomic slice of **FEAT-5*
 (Run + monitor + lineage, `#136`): it joins the two keystones it sits on — the
 ExecutionGraph IR (*what* to run) and the Run record (*the result*).
 
-This page documents the **orchestrator**: `zetta::GraphExecutor` and the
-`zetta::StepExecutor` seam it runs each step through.
+This page documents the **orchestrator**: `zetta::pipeline::GraphExecutor` and the
+`zetta::pipeline::StepExecutor` seam it runs each step through.
 
 ```
 include/zetta/pipeline/executor.hpp   GraphExecutor, StepExecutor, DefaultStepExecutor,
@@ -36,9 +36,9 @@ The discoverable entry point is on the node:
 zetta::ir::ExecutionGraph graph = /* … build or load from a ProjectGraph … */;
 
 // Deploy records the placement (a separate slice); then execute on the node.
-node.deploy_graph(graph, zetta::DeploymentTarget::local(), "churn_pipeline");
+node.deploy_graph(graph, zetta::pipeline::DeploymentTarget::local(), "churn_pipeline");
 
-zetta::ExecutionResult result =
+zetta::pipeline::ExecutionResult result =
     node.run_graph(graph, /*project=*/"churn-project", /*graph_id=*/"churn-graph-1");
 
 if (result.ok) {
@@ -54,8 +54,8 @@ if (result.ok) {
 runs). Use `GraphExecutor` directly to inject a custom `StepExecutor`:
 
 ```cpp
-zetta::GraphExecutor executor{std::make_shared<MyStepExecutor>()};
-zetta::ExecutionResult result = executor.execute(node, graph, project, graph_id);
+zetta::pipeline::GraphExecutor executor{std::make_shared<MyStepExecutor>()};
+zetta::pipeline::ExecutionResult result = executor.execute(node, graph, project, graph_id);
 ```
 
 The `Run` is created on the node, so it is owned, persisted, and (when the node
@@ -149,7 +149,7 @@ produced run is schema-valid and survives a restart, and that a custom
 
 ## Real per-step compute (the churn pipeline)
 
-The first **real** `StepExecutor` is `zetta::ChurnStepExecutor` (#396) — it replaces
+The first **real** `StepExecutor` is `zetta::usecases::churn::ChurnStepExecutor` (#396) — it replaces
 `DefaultStepExecutor`'s logical-ref placeholders with actual distributed accelerated
 compute for the UC-1 churn pipeline, **behind this same seam and without touching the
 orchestrator**. Each heavy step runs as a recorded `ComputeJob`
@@ -163,7 +163,7 @@ coordinator, a compute device, the input shards) and used by injection into a
 `GraphExecutor`. See [churn-step-executor.md](../use-cases/churn-step-executor.md).
 
 The **`index` step** has its own real `StepExecutor` —
-[`zetta::IndexStepExecutor`](../indexing/index-step-executor.md) (#528) — which resolves the
+[`zetta::index::IndexStepExecutor`](../indexing/index-step-executor.md) (#528) — which resolves the
 step's backend from the node's `IndexRegistry`, builds a real index over the source
 table's rows, records the [`Index`](../indexing/index-backend.md) entity, and emits an `index`
 output referencing the real id (other step kinds delegate to `DefaultStepExecutor`),

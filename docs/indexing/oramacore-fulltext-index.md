@@ -1,4 +1,4 @@
-# OramaCore full-text index backend (`zetta::OramaCoreFulltextIndex`)
+# OramaCore full-text index backend (`zetta::index::OramaCoreFulltextIndex`)
 
 The **first *real* [`IndexBackend`](index-backend.md)** — a **full-text (BM25F)**
 Search backend backed by the native **[oramacore-cpp](#the-engine--oramacore-cpp)**

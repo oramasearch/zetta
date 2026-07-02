@@ -10,7 +10,7 @@ pass combines per-node partials with is deterministic and order-independent.
 ## What it does
 
 1. **Brings up the cluster + collectives.** `LoopbackCluster(nodes)` stands up N
-   real nodes; each node's [`zetta::Cluster`](../../../cluster/cluster.md) is wrapped in a
+   real nodes; each node's [`zetta::cluster::Cluster`](../../../cluster/cluster.md) is wrapped in a
    [`Collectives`](../../../cluster/collectives.md).
 2. **Contributes SPMD.** A thread per node builds a local vector of width 4 where
    element `j` of node `i` is `(i+1)·(j+1)`, then calls

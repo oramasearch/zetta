@@ -46,7 +46,7 @@ right" shape (and the Runs panel):
   - **capabilities** — the rights the key may exercise (the verb axis, ENT-22):
     `(none — denies every operation)` when empty, or a bulleted `domain:action`
     list. A TTL'd grant shows its `expires` stamp; once elapsed it is flagged
-    **red** as `(expired …)` (compared against `zetta::now_iso8601()`).
+    **red** as `(expired …)` (compared against `zetta::util::now_iso8601()`).
 
 This single view covers both halves of the acceptance — "principals/keys" and
 "grants" — because a key's two grant axes (scope + capabilities) are exactly what

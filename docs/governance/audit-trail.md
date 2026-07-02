@@ -35,7 +35,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | `detail` | `std::string` | Human-readable reason / summary (e.g. the access decision's reason). |
 | `time` | `std::string` | ISO-8601 UTC stamp of when the action was recorded. |
 
-Stamps come from `zetta::now_iso8601()` (fixed-width, so they order
+Stamps come from `zetta::util::now_iso8601()` (fixed-width, so they order
 chronologically as plain text); the trail is kept sorted by `(time, id)`.
 
 ## What emits an event
@@ -55,7 +55,7 @@ action is recorded exactly once, on the node where it happened):
 | **Provision burst** | `BurstApprovalGate::provision` | `provision_requested`, emitted **only** when a burst exceeds the cap, `allowed` = approved (vs. blocked pending approval), `target` = the burst size, `detail` = which cap axis was exceeded + the outcome. See [burst-approval-gate.md](../cloud/burst-approval-gate.md). |
 
 Because every `authorize` decision is recorded, `Node::authorize` is **non-const**
-(it appends to the trail). `zetta::authorize(const AccessKey&, const Resource&)`
+(it appends to the trail). `zetta::governance::authorize(const AccessKey&, const Resource&)`
 — the *pure* decision over a known key — stays const and is unaffected.
 
 ```cpp
@@ -157,7 +157,7 @@ read-only table.
 
 ## Pointers
 
-- `include/zetta/governance/audit_event.hpp` — `zetta::AuditEvent` / `AuditEventValue` /
+- `include/zetta/governance/audit_event.hpp` — `zetta::governance::AuditEvent` / `AuditEventValue` /
   `AuditAction` (ENT-23) + the `AuditSink` seam + JSON schema/validate/parse.
 - `src/core/governance/audit_event.cpp` — the value, JSON form, and JSON-Schema boundary
   validation.

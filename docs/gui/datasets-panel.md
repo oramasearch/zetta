@@ -35,7 +35,7 @@ button at the top opens the native file picker filtered to
 `parquet`/`jsonl`/`json`/`csv`, and a file **dropped onto this view** does the same
 — both load the file as a **partitioned table** that joins the list with its
 partitions placed across the cluster. The same action is reachable from
-**File → Add dataset…**. The engine work is `zetta::add_dataset_file`; the add's
+**File → Add dataset…**. The engine work is `zetta::data::add_dataset_file`; the add's
 status line ("Added dataset … (N rows, M partitions)") shows in place. See
 [add-dataset.md](../data/add-dataset.md).
 
@@ -119,7 +119,7 @@ box to filter the partition table to that node's slices, surfacing
 - `src/gui/app.cpp` — the `Data → Datasets` menu item and the `View::Datasets`
   switch arm; the `File → Add dataset…` item, the `FileIntent::Dataset` ingestion
   branch, and the drop-on-Datasets-view routing.
-- [add-dataset.md](../data/add-dataset.md) — the `zetta::add_dataset_file` engine backend +
+- [add-dataset.md](../data/add-dataset.md) — the `zetta::data::add_dataset_file` engine backend +
   the "Add dataset" affordance this panel hosts.
 - `src/gui/app.hpp` — the `View::Datasets` enum value, the method declarations, and
   the `selected_dataset_` selection member.

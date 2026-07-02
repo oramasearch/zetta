@@ -43,31 +43,31 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   cluster/                  the distributed plane: membership, the signal plane, collectives, CRDT replication, telemetry
-    cluster.hpp             zetta::Cluster — equal-peer membership over TCP + the signal-plane API
-    signal.hpp              zetta::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
-    collectives.hpp         zetta::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365); wire_bytes() + rounds_completed() live meters feed system.collective_rounds (#589)
-    replication.hpp         zetta::ReplicationManager — Automerge CRDT state
-    node_metrics.hpp        zetta::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
-    node_telemetry.hpp      zetta::NodeTelemetryExchange + encode_node_metrics/decode_node_metrics/node_metrics_wire_schema — cluster-wide live telemetry over the signal plane (#584): each node broadcasts its own NodeMetrics as an ephemeral `node.metrics` event, a SignalHandler (the JobCoordinator's fallback) caches peers' by sender id; the schema-validated wire boundary; feeds the animated node-box gauges via Node::telemetry_snapshot(); not replicated
+    cluster.hpp             zetta::cluster::Cluster — equal-peer membership over TCP + the signal-plane API
+    signal.hpp              zetta::cluster::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
+    collectives.hpp         zetta::cluster::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365); wire_bytes() + rounds_completed() live meters feed system.collective_rounds (#589)
+    replication.hpp         zetta::cluster::ReplicationManager — Automerge CRDT state
+    node_metrics.hpp        zetta::cluster::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
+    node_telemetry.hpp      zetta::cluster::NodeTelemetryExchange + encode_node_metrics/decode_node_metrics/node_metrics_wire_schema — cluster-wide live telemetry over the signal plane (#584): each node broadcasts its own NodeMetrics as an ephemeral `node.metrics` event, a SignalHandler (the JobCoordinator's fallback) caches peers' by sender id; the schema-validated wire boundary; feeds the animated node-box gauges via Node::telemetry_snapshot(); not replicated
   data/                     the data model: databases, tables, partitioning + placement, large objects, datasets, imports
-    database.hpp            zetta::Database — owns tables (disk-backed)
-    table.hpp               zetta::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
-    partitioner.hpp         zetta::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
-    rendezvous_placement.hpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
-    partition_writer.hpp    zetta::write_partitioned/PartitionWriteResult — the partitioned write path: assign each row to a partition (Partitioner), serialize each non-empty partition to a JSON Lines blob, store it as a LargeObject (import_bytes), record a DatasetPartition catalog entry per partition (blob ref + cumulative row range + place_partition owners); N blobs + N catalog rows (ADR-31/ENT-37; #511)
-    partition_rebalance.hpp  zetta::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; ≈rf/N move on a join. Two triggers: directly from add_nodes(Node&, …) (#519) and auto-triggered in Node::tick off node:<id> membership keys (ADR-31/ENT-37; #517, TC-10/#500)
-    dataset_partition.hpp   zetta::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all; set_owner_nodes is the capturing re-placement mutator the rebalance uses (ENT-36/TBL-13; #517)
-    dataset.hpp             zetta::DatasetSummary/DatasetPlacement — a read-only, computed-at-query-time summary of one dataset (name/format/replication/rows/size/columns + per-partition placement); one dataset == one table, no stored Dataset entity — recomputed from the live Node tree joined with the partition catalog so it never drifts; the engine source behind system.datasets and the GUI dataset views (#585, #575 area 3; docs/data/system-datasets.md)
-    large_object.hpp        zetta::LargeObjectStore — files as blobs (per database); import_file (from a path) + import_bytes (from in-memory bytes, used by the partitioned write path)
-    import.hpp              zetta::import_records — JSON/JSONL files → table rows
-    add_dataset.hpp         zetta::add_dataset_file — "Add dataset" affordance backend: load a parquet/jsonl/json/csv file as a partitioned table (RendezvousPlacement + write_partitioned), so it surfaces in system.datasets with partitions placed across the cluster; CSV type-inferred, no new JSON boundary (#587)
-    replication_strategy.hpp  zetta::ReplicationStrategy — per-table/db replication strategy (ReplicateToAll | Partitioned | PartitionedWithReplicas(factor)) + JSON boundary; recorded/persisted/replicated, default ReplicateToAll (ENT-35; #509)
-    blob_store.hpp          zetta::BlobStore — large-object body transfer seam
-    replicated_blob_store.hpp  zetta::ReplicatedBlobStore — BlobStore from CRDT + disk; partition-aware placement: a partition body is fetched/held only by its owner node(s) per the catalog + replication factor, not replicate-to-all (#515)
+    database.hpp            zetta::data::Database — owns tables (disk-backed)
+    table.hpp               zetta::data::Table — owns a storage engine (its rows); configurable per-table with a Partitioner
+    partitioner.hpp         zetta::data::Partitioner/SinglePartitioner — the partitioning seam: record→partition + partition→node(s) over a fixed P>>nodes, pluggable per table (ADR-31/ENT-37; #512); + the record→partition strategies HashPartitioner (FNV-1a hash(key columns)%P) / RoundRobinPartitioner (surrogate%P for even balance) + the partitioner_from_json/to_json config boundary (#513)
+    rendezvous_placement.hpp  zetta::data::RendezvousPlacement/rendezvous_owners — rendezvous (highest-random-weight) partition→node placement: a membership change moves only ~1/N of partitions, deterministic + leaderless (ADR-31/ENT-37; #514)
+    partition_writer.hpp    zetta::data::write_partitioned/PartitionWriteResult — the partitioned write path: assign each row to a partition (Partitioner), serialize each non-empty partition to a JSON Lines blob, store it as a LargeObject (import_bytes), record a DatasetPartition catalog entry per partition (blob ref + cumulative row range + place_partition owners); N blobs + N catalog rows (ADR-31/ENT-37; #511)
+    partition_rebalance.hpp  zetta::data::rebalance_partitions/RebalanceResult — between-jobs rebalance on a membership change: recompute rendezvous placement for the sharded partitions preserving rf=owner count, update changed owner_nodes (set_owner_nodes captures → bodies move via #515); skip replicate-to-all; ≈rf/N move on a join. Two triggers: directly from add_nodes(Node&, …) (#519) and auto-triggered in Node::tick off node:<id> membership keys (ADR-31/ENT-37; #517, TC-10/#500)
+    dataset_partition.hpp   zetta::data::DatasetPartition — a partition catalog entry: where a table's data slice lives (table/blob_ref/row_range/stats/owner_nodes) + JSON Schema; replicate-to-all; set_owner_nodes is the capturing re-placement mutator the rebalance uses (ENT-36/TBL-13; #517)
+    dataset.hpp             zetta::data::DatasetSummary/DatasetPlacement — a read-only, computed-at-query-time summary of one dataset (name/format/replication/rows/size/columns + per-partition placement); one dataset == one table, no stored Dataset entity — recomputed from the live Node tree joined with the partition catalog so it never drifts; the engine source behind system.datasets and the GUI dataset views (#585, #575 area 3; docs/data/system-datasets.md)
+    large_object.hpp        zetta::data::LargeObjectStore — files as blobs (per database); import_file (from a path) + import_bytes (from in-memory bytes, used by the partitioned write path)
+    import.hpp              zetta::data::import_records — JSON/JSONL files → table rows
+    add_dataset.hpp         zetta::data::add_dataset_file — "Add dataset" affordance backend: load a parquet/jsonl/json/csv file as a partitioned table (RendezvousPlacement + write_partitioned), so it surfaces in system.datasets with partitions placed across the cluster; CSV type-inferred, no new JSON boundary (#587)
+    replication_strategy.hpp  zetta::data::ReplicationStrategy — per-table/db replication strategy (ReplicateToAll | Partitioned | PartitionedWithReplicas(factor)) + JSON boundary; recorded/persisted/replicated, default ReplicateToAll (ENT-35; #509)
+    blob_store.hpp          zetta::data::BlobStore — large-object body transfer seam
+    replicated_blob_store.hpp  zetta::data::ReplicatedBlobStore — BlobStore from CRDT + disk; partition-aware placement: a partition body is fetched/held only by its owner node(s) per the catalog + replication factor, not replicate-to-all (#515)
   storage/
-    engine.hpp              zetta::StorageEngine interface
-    json_store.hpp          zetta::JsonStore — in-memory vector<json> (header-only)
-    jsonl_store.hpp         zetta::JsonlStore — JSONL on disk, 10k/chunk
+    engine.hpp              zetta::storage::StorageEngine interface
+    json_store.hpp          zetta::storage::JsonStore — in-memory vector<json> (header-only)
+    jsonl_store.hpp         zetta::storage::JsonlStore — JSONL on disk, 10k/chunk
   query/                    zetta::query — the SQL layer: dialect frontends over a dialect-neutral AST (docs/data/query.md)
     ast.hpp                 the generic, dialect-neutral query AST (CreateDatabase/DropDatabase/CreateTable/DropTable/Insert/Select statements + TableRef/WhereClause/AggregateExpr) every frontend parses into and the executor runs — support a new dialect by writing a frontend, never by touching execution
     dialect.hpp             zetta::query::Dialect/ParseResult — the frontend interface: dialect text → generic statements
@@ -86,25 +86,25 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   input/
     language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
     python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522)
-    cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::add_nodes (provider injected, cloud consent-gated) (#522)
+    cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::cloud::add_nodes (provider injected, cloud consent-gated) (#522)
     datasets_bindings.hpp   zetta::input::run_load_dataset_step/DatasetStepExecutor/dataset_load_spec/DatasetResolver — the `datasets` library shim: execute a lowered sim-Python load_dataset("<path>", columns=…) IR node by decoding the parquet via the native reader (read_parquet_rows) into a (partitioned) table; file/network IO behind the injectable DatasetResolver seam (offline default = local path); HF datasets is the fidelity reference only (#521)
   pipeline/                 AI projects: inputs → compiled execution graphs → correctness gate → deploy → runs (+ the solution catalog)
-    project.hpp             zetta::Project — an AI project; owns inputs + execution graphs
-    project_input.hpp       zetta::ProjectInput — raw intent/artifact input + provenance
-    project_graph.hpp       zetta::ProjectGraph — a named ExecutionGraph under a project
-    intent_compiler.hpp     zetta::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
-    n8n_import.hpp          zetta::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
-    n8n_compile.hpp         zetta::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
-    graph_plan.hpp          zetta::project_cluster_plan/ClusterPlan/StepPlan/StepPlacement — project how an ExecutionGraph would run over the current cluster (near-data / fan-out / all-nodes / coordinator per step, near-data locality propagated forward along DataFlow edges); pure + deterministic, the engine of the Graph Workspace plan view (#591, #575 area 6); no new JSON boundary
-    executor.hpp            zetta::GraphExecutor / StepExecutor — orchestrate a graph into a Run
-    validation.hpp          zetta::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
-    gate.hpp                zetta::CorrectnessGate — gate runner: checks → report (RULE-1)
-    graph_checks.hpp        zetta::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
-    run.hpp                 zetta::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
-    deployment_target.hpp   zetta::DeploymentTarget — a placement (ENT-6; R1 local)
-    deployment.hpp          zetta::Deployment — a graph placed onto a target
-    deployment_controller.hpp  zetta::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
-    solution_catalog.hpp    zetta::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
+    project.hpp             zetta::pipeline::Project — an AI project; owns inputs + execution graphs
+    project_input.hpp       zetta::pipeline::ProjectInput — raw intent/artifact input + provenance
+    project_graph.hpp       zetta::pipeline::ProjectGraph — a named ExecutionGraph under a project
+    intent_compiler.hpp     zetta::pipeline::compile_intent — NL intent → templated ExecutionGraph skeleton (FEAT-2)
+    n8n_import.hpp          zetta::pipeline::import_n8n_workflow — n8n workflow JSON → artifact ProjectInput (schema-validated)
+    n8n_compile.hpp         zetta::pipeline::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
+    graph_plan.hpp          zetta::pipeline::project_cluster_plan/ClusterPlan/StepPlan/StepPlacement — project how an ExecutionGraph would run over the current cluster (near-data / fan-out / all-nodes / coordinator per step, near-data locality propagated forward along DataFlow edges); pure + deterministic, the engine of the Graph Workspace plan view (#591, #575 area 6); no new JSON boundary
+    executor.hpp            zetta::pipeline::GraphExecutor / StepExecutor — orchestrate a graph into a Run
+    validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
+    gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
+    graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
+    run.hpp                 zetta::pipeline::Run — one graph execution (status/logs/outputs/lineage) + Run JSON Schema
+    deployment_target.hpp   zetta::pipeline::DeploymentTarget — a placement (ENT-6; R1 local)
+    deployment.hpp          zetta::pipeline::Deployment — a graph placed onto a target
+    deployment_controller.hpp  zetta::pipeline::DeploymentController — reconcile local deployments desired→actual + self-heal (FEAT-4/TC-3)
+    solution_catalog.hpp    zetta::pipeline::SolutionCatalog — AI Solution Library (deployable blueprints) + schema-validated parse
   compute/                  zetta::compute — the accelerator seam (ADR-27/ARC-9; no SDL/CUDA in headers)
     data_type.hpp           zetta::compute::DataType — element-type tag + byte_size/data_type_of<T> (header-only)
     compute_status.hpp      zetta::compute::ComputeStatus — the no-throw call result (header-only)
@@ -118,10 +118,10 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     distributed_scheduler.hpp  zetta::compute::DistributedScheduler — cross-node steal over the signal plane, elastic mid-job membership (ARC-10/#366/#367)
     job_coordinator.hpp     zetta::compute::JobCoordinator/JobRound — split a ComputeJob into tasks on the scheduler, drive collectives at round boundaries, drive job lifecycle (ARC-11/#372); a running Node owns one over its real Cluster via Node::attach_cluster/job_coordinator (the SPMD spine, #579)
     checkpoint.hpp          zetta::compute::JobCheckpoint/CheckpointStore/FileCheckpointStore/run_resumable_rounds — burst-job eviction tolerance: durable sha256-fingerprinted progress snapshot (validated boundary) + a durable store seam + a resume-from-last-checkpoint driver (graceful spot-drain), so an evicted job resumes without recomputing committed rounds (RULE-5/RSK-9; #468)
-    compute_job.hpp         zetta::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
-    scaling_policy.hpp      zetta::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
-    job_autoscaler.hpp      zetta::JobAutoscaler/AutoscalerConfig — autoscaler control loop: observe a running ComputeJob, score its ScalingPolicy, add/remove nodes via the Provisioner within bounds, hysteresis + cost-cap shed, elastic membership, best-effort on given hardware (ADR-29/ARC-11; #371)
-    pipeline_instrumentation.hpp  zetta::PipelineJobInstrumentation/NearDataJobKind — the per-job near-data instrumentation record (kind / partitions+rows read / local_bytes_read vs wire_bytes_moved / status) the near-data runners record into the Node; ephemeral/observed, the source for system.pipeline_jobs; no new JSON boundary (#589, #575 area 5)
+    compute_job.hpp         zetta::compute::ComputeJob — one unit of accelerated compute (kind/lifecycle) + ComputeJob JSON Schema (ARC-11/ENT-31)
+    scaling_policy.hpp      zetta::compute::ScalingPolicy — per-job autoscaler reward objective (cost/runtime/data-shape) + bounds + evaluate() + JSON boundary (ADR-29/ENT-34; #370)
+    job_autoscaler.hpp      zetta::compute::JobAutoscaler/AutoscalerConfig — autoscaler control loop: observe a running ComputeJob, score its ScalingPolicy, add/remove nodes via the Provisioner within bounds, hysteresis + cost-cap shed, elastic membership, best-effort on given hardware (ADR-29/ARC-11; #371)
+    pipeline_instrumentation.hpp  zetta::compute::PipelineJobInstrumentation/NearDataJobKind — the per-job near-data instrumentation record (kind / partitions+rows read / local_bytes_read vs wire_bytes_moved / status) the near-data runners record into the Node; ephemeral/observed, the source for system.pipeline_jobs; no new JSON boundary (#589, #575 area 5)
   ddf/
     data_frame.hpp          zetta::ddf::DataFrame/Column/DataFrameSchema — typed columnar frame over a table, chunked, ComputeDevice-backed + loader/infer/JSON boundary (ARC-12/ENT-33; #380)
     parquet_reader.hpp      zetta::ddf::load_parquet_data_frame/infer_parquet_schema — native Parquet → DataFrame reader with column projection: decode only the requested leaf columns into DeviceBuffers (drop embedding_0..3071), numeric/dense boundary + parquet_data_frame schema for the golden (ADR-32; #508)
@@ -138,7 +138,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     featurize_job.hpp       zetta::ddf::run_featurize_job — run the point-in-time featurization as a recorded `featurize` ComputeJob across the cluster (distributed_join + distributed_group_by on the JobRound; global table on every node) (ARC-12/FEAT-6; #388)
     local_featurize_job.hpp  zetta::ddf::run_near_data_featurize_job/NearDataFeaturizeResult — compute-near-data featurize over a single partitioned table: load this node's owned partitions via load_local_partitions → run_featurize_job over the local shard; the engineered-columns slice of UC-1 at scale, result == single-node oracle (ARC-12/FEAT-8; #532)
   ml/
-    model.hpp               zetta::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
+    model.hpp               zetta::ml::Model — a trained model (metadata + weights fingerprint) + Model JSON Schema (ENT-14/FEAT-6)
     gbdt.hpp                zetta::ml — histogram GBDT (binary logistic): GbdtParams/GbdtModel/RegressionTree (+ JSON boundaries), evaluate_binary (AUC/log-loss), train_gbdt (host-side reference, gradient/Hessian histograms allreduced via an injected AllReduce — single-node == multi-node) (FEAT-6/ENT-14; #390)
     gbdt_train_job.hpp      zetta::ml::run_train_job — run distributed GBDT training as a recorded `train` ComputeJob through the job coordinator and produce a Model (weights body + metrics + ranked drivers, registered on the root); opt-in held-out probability calibration via CalibrationConfig; opt-in per-round checkpoint/restart via TrainCheckpointConfig (resume the partial model from the last checkpoint after a spot eviction, cluster-agreed resume round; RULE-5/#468) (FEAT-6/ENT-14; #390/#391)
     gbdt_score.hpp          zetta::ml — batch scoring / rank-at-risk: score_gbdt/predict_risk (calibrated risk = predict_proba, ranked desc) + load_gbdt_model (weights body read back through the GbdtModel JSON Schema boundary) (FEAT-6/CMD-10; #392)
@@ -150,51 +150,51 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
     playbook.hpp            zetta::ml — UC-1 retention playbook: generate_playbook (deterministic driver→action→owner via PlaybookPolicy + frozen expected-retained-value priority risk×ARR×save_rate, ranked) behind a constrained PlaybookNarrator seam (default-Claude ConstrainedNarrator over an injected NarratorCompletion, validated at the playbook_entry schema boundary, never invents numbers; RulesEngineNarrator offline fallback) + OutcomeLog (FEAT-6; #397)
   index/
-    index_kind.hpp          zetta::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
-    index_backend.hpp       zetta::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
-    index_registry.hpp      zetta::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry); the Node owns one (Node::index_registry(), #528)
-    index_step_executor.hpp  zetta::IndexStepExecutor + read_index_partitions — the StepExecutor that runs a deployed IR `index` step: resolve backend → read table rows into partitions → build a real index → record the Index entity → emit an `index` output (queryable via the node registry); non-index kinds delegate to DefaultStepExecutor (#528)
-    in_memory_index_backend.hpp  zetta::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
-    oramacore_fulltext_index.hpp  zetta::OramaCoreFulltextIndex — the first real backend: a full-text (BM25F) Search backend over the native oramacore-cpp engine (name "oramacore_fulltext"); pImpl over the engine, ZETTA_WITH_ORAMACORE-guarded so a checkout without the private submodule still builds (#527)
-    distributed_fulltext.hpp  zetta::DistributedFulltextIndex/merge_fulltext_hits/FulltextHit — per-partition distributed full-text: build a sub-index per LOCAL owned partition (compute-near-data) into an owned IndexBackend, answer a query by scatter-gather (the fulltext.query signal-plane RPC, schema-validated) + merge/rank across nodes → a global ranking matching the consolidated-index oracle; the SignalHandler chained over a delegate (DistributedSorter pattern) (#529, TC-13 #503)
-    index.hpp               zetta::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
+    index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
+    index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
+    index_registry.hpp      zetta::index::IndexRegistry + index_spec_from_node — register backends, resolve an IndexSpec / IR `index` step → a backend (like compute::DeviceRegistry); the Node owns one (Node::index_registry(), #528)
+    index_step_executor.hpp  zetta::index::IndexStepExecutor + read_index_partitions — the StepExecutor that runs a deployed IR `index` step: resolve backend → read table rows into partitions → build a real index → record the Index entity → emit an `index` output (queryable via the node registry); non-index kinds delegate to DefaultStepExecutor (#528)
+    in_memory_index_backend.hpp  zetta::index::InMemoryIndexBackend — the from-scratch in-memory Search reference backend (inverted field→row-ids over partitions; name "memory_search")
+    oramacore_fulltext_index.hpp  zetta::index::OramaCoreFulltextIndex — the first real backend: a full-text (BM25F) Search backend over the native oramacore-cpp engine (name "oramacore_fulltext"); pImpl over the engine, ZETTA_WITH_ORAMACORE-guarded so a checkout without the private submodule still builds (#527)
+    distributed_fulltext.hpp  zetta::index::DistributedFulltextIndex/merge_fulltext_hits/FulltextHit — per-partition distributed full-text: build a sub-index per LOCAL owned partition (compute-near-data) into an owned IndexBackend, answer a query by scatter-gather (the fulltext.query signal-plane RPC, schema-validated) + merge/rank across nodes → a global ranking matching the consolidated-index oracle; the SignalHandler chained over a delegate (DistributedSorter pattern) (#529, TC-13 #503)
+    index.hpp               zetta::index::Index/IndexValue — the top-level replicated index entity {table,kind,backend,fields} + Index JSON Schema (ENT-39/ENT-40)
   cloud/                    provisioners, cloud burst, the cloud inspector — CLI control planes behind CommandRunner, no cloud SDK
-    node_capability.hpp     zetta::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
-    provisioner.hpp         zetta::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
-    add_nodes.hpp           zetta::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518). The add_nodes(Node&, …) overloads also trigger the between-jobs partition rebalance onto the new members (#519)
-    burst_provisioner.hpp   zetta::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
-    local_provisioner.hpp   zetta::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
-    azure_provisioner.hpp   zetta::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
-    azure_cli_control_plane.hpp  zetta::AzCliControlPlane — reference AzureControlPlane binding: shells out to the `az` CLI (VMSS/Spot shape) via the shared CommandRunner (#376)
-    command_runner.hpp      zetta::CommandRunner/CommandResult/default_command_runner — shared, vendor-neutral exec seam every CLI cloud binding runs through (argv, no shell; fork/execvp; #376)
-    aws_provisioner.hpp     zetta::AwsProvisioner/AwsConfig/AwsControlPlane — AWS cloud-burst backend mirroring the Azure pattern: burst N nodes + mint identities + teardown/revoke behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #377)
-    aws_cli_control_plane.hpp  zetta::AwsCliControlPlane — reference AwsControlPlane binding: shells out to the `aws` CLI (EC2 Auto Scaling Group / Spot shape) via the shared CommandRunner (#377)
-    gcp_provisioner.hpp     zetta::GcpProvisioner/GcpConfig/GcpControlPlane — GCP cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #378)
-    gcp_cli_control_plane.hpp  zetta::GcpCliControlPlane — reference GcpControlPlane binding: shells out to `gcloud` (Managed Instance Group/Spot shape) via the shared CommandRunner (#378)
-    oci_provisioner.hpp     zetta::OciProvisioner/OciConfig/OciControlPlane — OCI cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #432)
-    oci_cli_control_plane.hpp  zetta::OciCliControlPlane — reference OciControlPlane binding: shells out to `oci` (Instance Pool/preemptible shape, OCID-resolved by name) via the shared CommandRunner (#432)
-    k8s_provisioner.hpp     zetta::K8sProvisioner/K8sConfig/K8sControlPlane — Kubernetes cloud-burst backend mirroring Azure: burst N pods into an existing cluster + mint identities + teardown/revoke behind the control-plane seam, no client lib (ARC-13/ADR-20; #434)
-    k8s_cli_control_plane.hpp  zetta::K8sCliControlPlane — reference K8sControlPlane binding: shells out to `kubectl` (Deployment/scale shape) via the shared CommandRunner (#434)
-    bare_metal_provisioner.hpp  zetta::BareMetalProvisioner/BareMetalConfig/BareMetalControlPlane — bare-metal (local-host) cloud-burst backend mirroring Azure: burst N local worker containers + mint identities + teardown/revoke behind the control-plane seam, no container SDK; bursts (vs LocalProvisioner which reports) (ARC-13/ADR-20; #436)
-    bare_metal_cli_control_plane.hpp  zetta::BareMetalCliControlPlane — reference BareMetalControlPlane binding: shells out to docker/podman (local-container shape, launch-the-shortfall) via the shared CommandRunner (#436)
-    provisioner_config.hpp  zetta::ProvisionerConfig — one cloud-burst provisioner's deployment context, detected from the operator's own local CLI; node-local observed state (like a CloudInspectReport — not replicated, not persisted), surfaced as system.zetta_provisioners; carries NO credentials, only the non-secret targeting (subscription/project/region/…) held as the provider's validated XConfig JSON so the GUI wiring can rebuild a real provisioner from it (docs/cloud/provisioner-detection.md)
-    provisioner_detect.hpp  zetta::detect_provisioner_configs — detect which cloud-burst provisioners this node can drive by asking the local CLIs (az/aws/gcloud/oci/kubectl/docker) for their active deployment context; fast, read-only, non-interactive commands through the shared CommandRunner seam (testable against a fake, never touches a real cloud in CI); the credential-free sibling of the consent-gated Cloud Inspector
-    burst_identity.hpp      zetta::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
-    burst_approval_gate.hpp  zetta::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
-    cloud_provider.hpp      zetta::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access); each inspect command is an InspectCommand (display + no-shell argv)
-    cloud_inspector.hpp     zetta::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
+    node_capability.hpp     zetta::cloud::NodeCapability/Gpu/GpuKind — node compute capability model (cores/GPU/memory) + satisfies (ENT-32)
+    provisioner.hpp         zetta::cloud::Provisioner/ProvisionedNode — provision N nodes against a capability spec / teardown / list (ARC-13; #373)
+    add_nodes.hpp           zetta::cloud::add_nodes/AddNodesRequest/AddNodesResult — permanent-add control entry point: drive a Provisioner to bring up N nodes that auto-join + persist as members; provision-only (never teardown/revoke), the autoscaler's permanent sibling; validated AddNodesRequest JSON boundary (#518). The add_nodes(Node&, …) overloads also trigger the between-jobs partition rebalance onto the new members (#519)
+    burst_provisioner.hpp   zetta::cloud::BurstProvisioner<Config, ControlPlane> — the shared cloud-burst orchestration template (provision+mint / teardown+revoke-on-drain / provisioned); every cloud backend subclasses it so the orchestration lives once (#464)
+    local_provisioner.hpp   zetta::cloud::LocalProvisioner — given-hardware Provisioner backend: uses existing cluster nodes best-effort, teardown is a no-op (ARC-13; #374)
+    azure_provisioner.hpp   zetta::cloud::AzureProvisioner/AzureConfig/AzureControlPlane — reference cloud-burst backend: burst N Azure nodes + mint identities + teardown/revoke, behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #376)
+    azure_cli_control_plane.hpp  zetta::cloud::AzCliControlPlane — reference AzureControlPlane binding: shells out to the `az` CLI (VMSS/Spot shape) via the shared CommandRunner (#376)
+    command_runner.hpp      zetta::cloud::CommandRunner/CommandResult/default_command_runner — shared, vendor-neutral exec seam every CLI cloud binding runs through (argv, no shell; fork/execvp; #376)
+    aws_provisioner.hpp     zetta::cloud::AwsProvisioner/AwsConfig/AwsControlPlane — AWS cloud-burst backend mirroring the Azure pattern: burst N nodes + mint identities + teardown/revoke behind an injectable control-plane seam, no cloud SDK (ARC-13/ADR-20; #377)
+    aws_cli_control_plane.hpp  zetta::cloud::AwsCliControlPlane — reference AwsControlPlane binding: shells out to the `aws` CLI (EC2 Auto Scaling Group / Spot shape) via the shared CommandRunner (#377)
+    gcp_provisioner.hpp     zetta::cloud::GcpProvisioner/GcpConfig/GcpControlPlane — GCP cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #378)
+    gcp_cli_control_plane.hpp  zetta::cloud::GcpCliControlPlane — reference GcpControlPlane binding: shells out to `gcloud` (Managed Instance Group/Spot shape) via the shared CommandRunner (#378)
+    oci_provisioner.hpp     zetta::cloud::OciProvisioner/OciConfig/OciControlPlane — OCI cloud-burst backend mirroring Azure: burst N + mint identities + teardown/revoke behind the control-plane seam, no cloud SDK (ARC-13/ADR-20; #432)
+    oci_cli_control_plane.hpp  zetta::cloud::OciCliControlPlane — reference OciControlPlane binding: shells out to `oci` (Instance Pool/preemptible shape, OCID-resolved by name) via the shared CommandRunner (#432)
+    k8s_provisioner.hpp     zetta::cloud::K8sProvisioner/K8sConfig/K8sControlPlane — Kubernetes cloud-burst backend mirroring Azure: burst N pods into an existing cluster + mint identities + teardown/revoke behind the control-plane seam, no client lib (ARC-13/ADR-20; #434)
+    k8s_cli_control_plane.hpp  zetta::cloud::K8sCliControlPlane — reference K8sControlPlane binding: shells out to `kubectl` (Deployment/scale shape) via the shared CommandRunner (#434)
+    bare_metal_provisioner.hpp  zetta::cloud::BareMetalProvisioner/BareMetalConfig/BareMetalControlPlane — bare-metal (local-host) cloud-burst backend mirroring Azure: burst N local worker containers + mint identities + teardown/revoke behind the control-plane seam, no container SDK; bursts (vs LocalProvisioner which reports) (ARC-13/ADR-20; #436)
+    bare_metal_cli_control_plane.hpp  zetta::cloud::BareMetalCliControlPlane — reference BareMetalControlPlane binding: shells out to docker/podman (local-container shape, launch-the-shortfall) via the shared CommandRunner (#436)
+    provisioner_config.hpp  zetta::cloud::ProvisionerConfig — one cloud-burst provisioner's deployment context, detected from the operator's own local CLI; node-local observed state (like a CloudInspectReport — not replicated, not persisted), surfaced as system.zetta_provisioners; carries NO credentials, only the non-secret targeting (subscription/project/region/…) held as the provider's validated XConfig JSON so the GUI wiring can rebuild a real provisioner from it (docs/cloud/provisioner-detection.md)
+    provisioner_detect.hpp  zetta::cloud::detect_provisioner_configs — detect which cloud-burst provisioners this node can drive by asking the local CLIs (az/aws/gcloud/oci/kubectl/docker) for their active deployment context; fast, read-only, non-interactive commands through the shared CommandRunner seam (testable against a fake, never touches a real cloud in CI); the credential-free sibling of the consent-gated Cloud Inspector
+    burst_identity.hpp      zetta::cloud::BurstIdentityManager/BurstIdentity — bulk-mint/revoke short-lived service Principal+AccessKey per burst node, audited (ARC-13/RSK-9; #375)
+    burst_approval_gate.hpp  zetta::cloud::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
+    cloud_provider.hpp      zetta::cloud::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access); each inspect command is an InspectCommand (display + no-shell argv)
+    cloud_inspector.hpp     zetta::cloud::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
   governance/               access control (principals, keys, scopes, capabilities) + the audit trail
-    principal.hpp           zetta::Principal — an authenticated actor; owns access keys
-    access_key.hpp          zetta::AccessKey — a scoped + capability-bearing login credential + authorize()
-    scope.hpp               zetta::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
-    capability.hpp          zetta::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
-    audit_event.hpp         zetta::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
+    principal.hpp           zetta::governance::Principal — an authenticated actor; owns access keys
+    access_key.hpp          zetta::governance::AccessKey — a scoped + capability-bearing login credential + authorize()
+    scope.hpp               zetta::governance::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
+    capability.hpp          zetta::governance::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
+    audit_event.hpp         zetta::governance::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
   usecases/churn/           UC-1 churn — the first use case, end to end
-    churn_step_executor.hpp  zetta::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→build a real entity index (#528) + score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
-    churn_solution.hpp      zetta::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + run_churn_solution_on_node (run over the node's live JobCoordinator, the #579 spine — the interactive "run over the cluster" front door, #580) + is_churn_graph (connect+clean+model predicate) + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398/#580)
-    churn_dataset.hpp       zetta::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
-    entity_resolution.hpp   zetta::EntityResolver — resolve raw comms mentions → CRM accounts division-correct (FullName) / coarse Brand trap; emit the entity_resolution annotation the gate verifies (FEAT-6/TC-4; #394)
-    entity_resolution_check.hpp  zetta::EntityResolutionCheck — division-correct resolution (TC-4)
+    churn_step_executor.hpp  zetta::usecases::churn::ChurnStepExecutor — the real churn StepExecutor: connect→load-to-DDF, clean→featurize, model→train+calibrate (registers a Model), index→build a real entity index (#528) + score/rank, serve→explain (TreeSHAP), act→playbook, each heavy step a ComputeJob; behind the seam, orchestrator untouched (FEAT-5/FEAT-6/UC-1; #396)
+    churn_solution.hpp      zetta::usecases::churn::run_churn_solution — wire the catalog churn blueprint to the real engine: encode a ChurnDataset → numeric DDF shards, build the standard featurize spec + GBDT params, inject a ChurnStepExecutor, run the graph → real Model + ranked at-risk list + drivers + playbook; + run_churn_solution_on_node (run over the node's live JobCoordinator, the #579 spine — the interactive "run over the cluster" front door, #580) + is_churn_graph (connect+clean+model predicate) + demo_churn_dataset (no-files demo) (FEAT-4/UC-1; #398/#580)
+    churn_dataset.hpp       zetta::usecases::churn::ChurnDataset / load_churn_dataset — synthetic UC-1 churn fixture loader (FEAT-6 / #402)
+    entity_resolution.hpp   zetta::usecases::churn::EntityResolver — resolve raw comms mentions → CRM accounts division-correct (FullName) / coarse Brand trap; emit the entity_resolution annotation the gate verifies (FEAT-6/TC-4; #394)
+    entity_resolution_check.hpp  zetta::usecases::churn::EntityResolutionCheck — division-correct resolution (TC-4)
   repl/
     console_model.hpp       zetta::repl::ConsoleModel — the engine-agnostic REPL session (frontend + input + transcript + submit) behind the CMP-6 console; no SDL/ImGui, so it backs the GUI component AND a future CLI (#524)
     governed_console.hpp    zetta::repl::GovernedConsole — the governed run handler behind the SCR-8 Console/REPL screen: capability-scope a statement, lower sim-Python to the IR + run the correctness gate, execute (SQL via QueryService / sim-Python via the injectable graph runner — default run_graph, or the real churn engine over the live cluster for a churn-shaped graph, #580), record one data_access audit event; zetta-core / no-SDL (#525/#580)
@@ -203,9 +203,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     harness.hpp             ScratchDir + LoopbackCluster (a real N-node loopback cluster) + the in-code synthetic churn dataset + numeric encoding
     example_script.hpp      zetta::testkit::ExampleScript/ExampleExpectations/ExampleRunReport + run_example_script + example_scripts() — the sim-Python example-script harness: run a script end to end (parse->IR->gate->run) + assert on outputs, surfacing the offending statement on failure (the example programs ARE the integration tests; #523)
   util/                     small shared utilities
-    uuid.hpp                zetta::new_uuid() — v4 UUID for folder names
-    sha256.hpp              zetta::sha256_hex — large-object body fingerprint
-    timestamp.hpp           zetta::now_iso8601() — UTC ISO-8601 stamp (created/updated)
+    uuid.hpp                zetta::util::new_uuid() — v4 UUID for folder names
+    sha256.hpp              zetta::util::sha256_hex — large-object body fingerprint
+    timestamp.hpp           zetta::util::now_iso8601() — UTC ISO-8601 stamp (created/updated)
     bytes.hpp / duration.hpp  human-readable size / time formatters
 src/core/                   zetta-core impl
   CLAUDE.md                 directory rule-card (tree-scoped rules)
@@ -218,24 +218,24 @@ src/core/                   zetta-core impl
   signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
   cluster/
     cluster.cpp             cluster networking adapter (the one Corosio user) + signal-plane transport
-    signal.cpp              zetta::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
-    collectives.cpp         zetta::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
+    signal.cpp              zetta::cluster::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
+    collectives.cpp         zetta::cluster::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
     replication.cpp         replication CRDT adapter (the one automerge-cpp user)
-    node_metrics.cpp        zetta::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
-    node_telemetry.cpp      zetta::NodeTelemetryExchange — the node.metrics wire boundary (embedded draft-07 schema + pboettch validation, encode/decode) + the thread-safe peer cache (receive on the network thread, record local + snapshot on the loop thread, expire stale) (#584)
+    node_metrics.cpp        zetta::cluster::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
+    node_telemetry.cpp      zetta::cluster::NodeTelemetryExchange — the node.metrics wire boundary (embedded draft-07 schema + pboettch validation, encode/decode) + the thread-safe peer cache (receive on the network thread, record local + snapshot on the loop thread, expire stale) (#584)
   data/
     database.cpp
     table.cpp
     jsonl_store.cpp
-    partitioner.cpp         zetta::HashPartitioner/RoundRobinPartitioner assign_partition (FNV-1a key hash / surrogate mod) + to_json + partitioner_from_json config boundary (#513)
-    rendezvous_placement.cpp  zetta::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
-    partition_writer.cpp    zetta::write_partitioned — the partitioned write path: bucket rows by assign_partition (stamping the round-robin surrogate), serialize each non-empty partition to JSON Lines, store via LargeObjectStore::import_bytes, record a DatasetPartition per partition (cumulative row range + place_partition owners) (#511)
-    partition_rebalance.cpp  zetta::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger + Node::cluster_members live in node.cpp (#517); the add_nodes direct trigger lives in add_nodes.cpp (#519)
-    dataset_partition.cpp   zetta::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
-    large_object.cpp        zetta::LargeObjectStore — blob folders + body I/O (import_file/import_bytes, sha256 fingerprint)
-    import.cpp              zetta::import_records — JSON/JSONL file → table rows
-    add_dataset.cpp         zetta::add_dataset_file — decode parquet/jsonl/json/csv by extension → free-form rows (native Parquet reader + CSV type inference), create a uniquely-named table, write_partitioned with RendezvousPlacement (#587)
-    replication_strategy.cpp  zetta::ReplicationStrategy — kind names, JSON boundary validation, replication_strategy_from_meta reader (ENT-35; #509)
+    partitioner.cpp         zetta::data::HashPartitioner/RoundRobinPartitioner assign_partition (FNV-1a key hash / surrogate mod) + to_json + partitioner_from_json config boundary (#513)
+    rendezvous_placement.cpp  zetta::data::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
+    partition_writer.cpp    zetta::data::write_partitioned — the partitioned write path: bucket rows by assign_partition (stamping the round-robin surrogate), serialize each non-empty partition to JSON Lines, store via LargeObjectStore::import_bytes, record a DatasetPartition per partition (cumulative row range + place_partition owners) (#511)
+    partition_rebalance.cpp  zetta::data::rebalance_partitions — between-jobs rebalance: per placed partition recompute rendezvous_owners(stats.partition, members, rf=owner count) and set_owner_nodes on a change; skip replicate-to-all (vs previous_members); the Node::tick auto-trigger + Node::cluster_members live in node.cpp (#517); the add_nodes direct trigger lives in add_nodes.cpp (#519)
+    dataset_partition.cpp   zetta::data::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
+    large_object.cpp        zetta::data::LargeObjectStore — blob folders + body I/O (import_file/import_bytes, sha256 fingerprint)
+    import.cpp              zetta::data::import_records — JSON/JSONL file → table rows
+    add_dataset.cpp         zetta::data::add_dataset_file — decode parquet/jsonl/json/csv by extension → free-form rows (native Parquet reader + CSV type inference), create a uniquely-named table, write_partitioned with RendezvousPlacement (#587)
+    replication_strategy.cpp  zetta::data::ReplicationStrategy — kind names, JSON boundary validation, replication_strategy_from_meta reader (ENT-35; #509)
     replicated_blob_store.cpp  large-object body transfer (CRDT metadata + disk)
   query/
     postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST)
@@ -252,25 +252,25 @@ src/core/                   zetta-core impl
     serialization.cpp       ExecutionGraph IR ↔ JSON (+ boundary validation)
   input/
     python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the engine-faithful python_step_kind verb table (#520/#522)
-    cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count — read the count from a lowered cluster.add_nodes IR node + drive zetta::add_nodes (#522)
+    cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count — read the count from a lowered cluster.add_nodes IR node + drive zetta::cloud::add_nodes (#522)
     datasets_bindings.cpp   zetta::input::run_load_dataset_step/DatasetStepExecutor — read the source + column projection from a lowered load_dataset IR node, resolve bytes via the DatasetResolver seam, decode with the native parquet reader, project, and populate a (partitioned) table (#521)
   pipeline/
-    project.cpp             zetta::Project — persist/rename project.json + input/graph CRUD
-    project_input.cpp       zetta::ProjectInput — persist input.json + payload body
-    project_graph.cpp       zetta::ProjectGraph — persist a graph's json projection
+    project.cpp             zetta::pipeline::Project — persist/rename project.json + input/graph CRUD
+    project_input.cpp       zetta::pipeline::ProjectInput — persist input.json + payload body
+    project_graph.cpp       zetta::pipeline::ProjectGraph — persist a graph's json projection
     intent_compiler.cpp     compile_intent — templated churn/generic skeleton (NL intent → IR)
-    n8n_import.cpp          zetta::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
-    n8n_compile.cpp         zetta::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
+    n8n_import.cpp          zetta::pipeline::import_n8n_workflow — n8n workflow JSON Schema + validate + store as artifact input
+    n8n_compile.cpp         zetta::pipeline::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
     graph_plan.cpp          project_cluster_plan — per-step cluster placement projection (kind → placement; near-data owner propagation along DataFlow edges; drop stale owners) for the Graph Workspace plan view (#591)
     executor.cpp            GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
     validation.cpp          ValidationReport verdict + JSON round-trip/validation
     gate.cpp                CorrectnessGate runner + NonEmptyGraphCheck + make_check
     graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
-    run.cpp                 zetta::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
-    deployment_target.cpp   zetta::DeploymentTarget — names + JSON (boundary-validated)
-    deployment.cpp          zetta::Deployment — persist deployment.json
-    deployment_controller.cpp  zetta::DeploymentController — reconcile pass: start/self-heal a deployment's run
-    solution_catalog.cpp    zetta::SolutionCatalog — built-in library + schema/IR boundary parse
+    run.cpp                 zetta::pipeline::Run — value, mutators, JSON-Schema boundary validation (parse_run_value)
+    deployment_target.cpp   zetta::pipeline::DeploymentTarget — names + JSON (boundary-validated)
+    deployment.cpp          zetta::pipeline::Deployment — persist deployment.json
+    deployment_controller.cpp  zetta::pipeline::DeploymentController — reconcile pass: start/self-heal a deployment's run
+    solution_catalog.cpp    zetta::pipeline::SolutionCatalog — built-in library + schema/IR boundary parse
   compute/
     device_buffer.cpp       DeviceBuffer lifetime (free via device) + ComputeDevice::make_buffer (→ zetta-compute lib)
     host_stub_device.cpp    HostStubDevice — host-memory allocate/transfer; operators unsupported (→ zetta-compute)
@@ -281,9 +281,9 @@ src/core/                   zetta-core impl
     distributed_scheduler.cpp  DistributedScheduler — the cross-node steal protocol + its JSON-Schema boundary + elastic membership re-queue (zetta-core; #366/#367)
     job_coordinator.cpp     JobCoordinator — lifecycle driving (Running→Succeeded|Failed) + the shared signal-handler chain over Collectives + DistributedScheduler (zetta-core; #372)
     checkpoint.cpp          JobCheckpoint value + JSON-Schema + sha256 integrity boundary, FileCheckpointStore (atomic save / latest / clear / job_ids), run_resumable_rounds (resume + checkpoint + graceful drain) (zetta-core; #468)
-    compute_job.cpp         zetta::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
-    scaling_policy.cpp      zetta::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
-    job_autoscaler.cpp      zetta::JobAutoscaler — the tick() control loop (observe → evaluate → hysteresis → provision/teardown) + AutoscalerConfig JSON boundary (ADR-29/ARC-11)
+    compute_job.cpp         zetta::compute::ComputeJob — value, set_status (+ finish audit), JSON-Schema boundary validation (parse_compute_job_value)
+    scaling_policy.cpp      zetta::compute::ScalingPolicy — objective names, evaluate() per objective + cost cap, JSON boundary validation (ADR-29/ENT-34)
+    job_autoscaler.cpp      zetta::compute::JobAutoscaler — the tick() control loop (observe → evaluate → hysteresis → provision/teardown) + AutoscalerConfig JSON boundary (ADR-29/ARC-11)
   ddf/
     data_frame.cpp          DataFrame loader (table→typed columns, chunked, device-backed), schema inference + DataFrameSchema JSON boundary (zetta-core; #380)
     parquet_reader.cpp      load_parquet_data_frame (decode requested leaf columns → DeviceBuffers, column projection + numeric/dense boundary), infer_parquet_schema, parquet_data_frame_schema/validate boundary (zetta-core; #508)
@@ -300,7 +300,7 @@ src/core/                   zetta-core impl
     featurize_job.cpp       run_featurize_job — drive the distributed featurization as a recorded `featurize` ComputeJob (distributed_join enrich → per-feature filter + distributed_group_by; static mode skips the join and carries account_features over the time-filtered shard) through the coordinator (zetta-core; #388/#532)
     local_featurize_job.cpp  run_near_data_featurize_job — load the local shard via load_local_partitions then drive run_featurize_job, reporting local_bytes_read vs wire_bytes_moved (zetta-core; #532)
   ml/
-    model.cpp               zetta::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
+    model.cpp               zetta::ml::Model — value, mutators, weights body I/O, JSON-Schema boundary validation (parse_model_value)
     gbdt.cpp                zetta::ml — histogram GBDT trainer (binning + split-finding + boosting loop), the binary-logistic model + GbdtParams/GbdtMetrics JSON boundaries (gbdt_model via pboettch) (zetta-core; #390)
     gbdt_train_job.cpp      run_train_job — read the device-backed feature frame, drive the boosting loop with the JobRound's allreduce, compute global metrics (gather/broadcast), register the Model on the root; opt-in held-out calibration (content-hash split → gather/fit/broadcast); opt-in checkpoint/restart (resume the partial model, allreduce-min the cluster resume round, checkpoint each round via TrainHooks; #468) (zetta-core; #390/#391)
     gbdt_score.cpp          zetta::ml — pure scorer (align columns to the model's feature order, predict_proba, rank desc + top_k) + load_gbdt_model (weights body → GbdtModel JSON Schema boundary) (zetta-core; #392)
@@ -313,41 +313,41 @@ src/core/                   zetta-core impl
     golden_oracle.cpp       load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
     playbook.cpp            zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
   index/
-    index.cpp               zetta::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
-    index_registry.cpp      zetta::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
-    index_step_executor.cpp  zetta::IndexStepExecutor — run an IR `index` step: resolve backend (node registry) → read table rows into partitions → build → record Index entity → `index` output; + read_index_partitions (shared) (#528)
-    in_memory_index_backend.cpp  zetta::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
-    oramacore_fulltext_index.cpp  zetta::OramaCoreFulltextIndex — full-text BM25F build over partitions / ranked query (now carrying per-hit scores) / drop via the oramacore-cpp MemoryIndex (pImpl); ZETTA_WITH_ORAMACORE-guarded engine-absent stub (#527)
-    distributed_fulltext.cpp  zetta::DistributedFulltextIndex — per-partition build from owned partitions, scatter-gather query over the fulltext.query RPC, merge_fulltext_hits + the request/response JSON-Schema boundary (#529)
+    index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
+    index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
+    index_step_executor.cpp  zetta::index::IndexStepExecutor — run an IR `index` step: resolve backend (node registry) → read table rows into partitions → build → record Index entity → `index` output; + read_index_partitions (shared) (#528)
+    in_memory_index_backend.cpp  zetta::index::InMemoryIndexBackend — inverted-index build over partitions / query / idempotent drop (the Search reference backend)
+    oramacore_fulltext_index.cpp  zetta::index::OramaCoreFulltextIndex — full-text BM25F build over partitions / ranked query (now carrying per-hit scores) / drop via the oramacore-cpp MemoryIndex (pImpl); ZETTA_WITH_ORAMACORE-guarded engine-absent stub (#527)
+    distributed_fulltext.cpp  zetta::index::DistributedFulltextIndex — per-partition build from owned partitions, scatter-gather query over the fulltext.query RPC, merge_fulltext_hits + the request/response JSON-Schema boundary (#529)
   cloud/
-    node_capability.cpp     zetta::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
-    provisioner.cpp         zetta::ProvisionedNode — JSON boundary validation for the Provisioner DTO
-    provisioner_detect.cpp  zetta::detect_provisioner_configs — the per-provider detectors: run each local CLI's fast read-only context queries through the CommandRunner, parse the output, build the provider's validated XConfig JSON + one-line summary → ProvisionerConfig
-    add_nodes.cpp           zetta::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518); the Node& overloads drive rebalance_partitions onto the new members (#519)
-    local_provisioner.cpp   zetta::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
-    azure_provisioner.cpp   zetta::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
-    azure_cli_control_plane.cpp  zetta::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
-    command_runner.cpp      zetta::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)
-    aws_provisioner.cpp     zetta::AwsProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AwsControlPlane seam + AwsConfig JSON boundary (#377)
-    aws_cli_control_plane.cpp  zetta::AwsCliControlPlane — `aws autoscaling`/`aws ec2` argv construction + JSON parsing at the ProvisionedNode boundary (#377)
-    gcp_provisioner.cpp     zetta::GcpProvisioner — GCP burst lifecycle (provision+mint / teardown+revoke) over the GcpControlPlane seam + GcpConfig JSON boundary (#378)
-    gcp_cli_control_plane.cpp  zetta::GcpCliControlPlane — `gcloud` MIG argv construction (template/create/resize/list/delete-instances) + JSON parse at the ProvisionedNode boundary (#378)
-    oci_provisioner.cpp     zetta::OciProvisioner — OCI burst lifecycle (provision+mint / teardown+revoke) over the OciControlPlane seam + OciConfig JSON boundary (#432)
-    oci_cli_control_plane.cpp  zetta::OciCliControlPlane — `oci` Instance Pool argv (resolve-by-name/instance-config/create-or-resize/list-instances/detach) + JSON parse at the ProvisionedNode boundary (#432)
-    k8s_provisioner.cpp     zetta::K8sProvisioner — Kubernetes burst lifecycle (provision+mint / teardown+revoke) over the K8sControlPlane seam + K8sConfig JSON boundary (#434)
-    k8s_cli_control_plane.cpp  zetta::K8sCliControlPlane — `kubectl` Deployment argv (create/set env+sa/patch spot/scale/get pods/delete pod) + JSON parse at the ProvisionedNode boundary (#434)
-    bare_metal_provisioner.cpp  zetta::BareMetalProvisioner — bare-metal burst lifecycle (provision+mint / teardown+revoke) over the BareMetalControlPlane seam + BareMetalConfig JSON boundary (#436)
-    bare_metal_cli_control_plane.cpp  zetta::BareMetalCliControlPlane — docker/podman argv (ps --filter label/run -d shortfall/rm -f) + NDJSON parse at the ProvisionedNode boundary (#436)
-    burst_identity.cpp      zetta::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
-    burst_approval_gate.cpp  zetta::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
-    cloud_provider.cpp      zetta::CloudProviderCatalog — built-in provider metadata (local/bare-metal/k8s/aws/gcp/azure/oci); no cloud access
-    cloud_inspector.cpp     zetta::CloudInspector — run a provider's read-only commands, per-vendor JSON parse + boundary validation → CloudInspectReport, report JSON boundary (#445)
+    node_capability.cpp     zetta::cloud::NodeCapability — GpuKind names, satisfies(), JSON boundary validation (ENT-32)
+    provisioner.cpp         zetta::cloud::ProvisionedNode — JSON boundary validation for the Provisioner DTO
+    provisioner_detect.cpp  zetta::cloud::detect_provisioner_configs — the per-provider detectors: run each local CLI's fast read-only context queries through the CommandRunner, parse the output, build the provider's validated XConfig JSON + one-line summary → ProvisionerConfig
+    add_nodes.cpp           zetta::cloud::add_nodes — permanent-add control action over the Provisioner seam (provision + report, no teardown) + AddNodesRequest JSON boundary (#518); the Node& overloads drive rebalance_partitions onto the new members (#519)
+    local_provisioner.cpp   zetta::cloud::LocalProvisioner — given-hardware backend: best-effort select over the live cluster fleet, no-op teardown (#374)
+    azure_provisioner.cpp   zetta::cloud::AzureProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AzureControlPlane seam + AzureConfig JSON boundary (#376)
+    azure_cli_control_plane.cpp  zetta::cloud::AzCliControlPlane — `az vmss` argv construction + JSON parsing at the ProvisionedNode boundary (#376)
+    command_runner.cpp      zetta::cloud::default_command_runner — the shared fork/execvp/pipe exec runner (argv, no shell; #376)
+    aws_provisioner.cpp     zetta::cloud::AwsProvisioner — burst lifecycle (provision+mint / teardown+revoke) over the AwsControlPlane seam + AwsConfig JSON boundary (#377)
+    aws_cli_control_plane.cpp  zetta::cloud::AwsCliControlPlane — `aws autoscaling`/`aws ec2` argv construction + JSON parsing at the ProvisionedNode boundary (#377)
+    gcp_provisioner.cpp     zetta::cloud::GcpProvisioner — GCP burst lifecycle (provision+mint / teardown+revoke) over the GcpControlPlane seam + GcpConfig JSON boundary (#378)
+    gcp_cli_control_plane.cpp  zetta::cloud::GcpCliControlPlane — `gcloud` MIG argv construction (template/create/resize/list/delete-instances) + JSON parse at the ProvisionedNode boundary (#378)
+    oci_provisioner.cpp     zetta::cloud::OciProvisioner — OCI burst lifecycle (provision+mint / teardown+revoke) over the OciControlPlane seam + OciConfig JSON boundary (#432)
+    oci_cli_control_plane.cpp  zetta::cloud::OciCliControlPlane — `oci` Instance Pool argv (resolve-by-name/instance-config/create-or-resize/list-instances/detach) + JSON parse at the ProvisionedNode boundary (#432)
+    k8s_provisioner.cpp     zetta::cloud::K8sProvisioner — Kubernetes burst lifecycle (provision+mint / teardown+revoke) over the K8sControlPlane seam + K8sConfig JSON boundary (#434)
+    k8s_cli_control_plane.cpp  zetta::cloud::K8sCliControlPlane — `kubectl` Deployment argv (create/set env+sa/patch spot/scale/get pods/delete pod) + JSON parse at the ProvisionedNode boundary (#434)
+    bare_metal_provisioner.cpp  zetta::cloud::BareMetalProvisioner — bare-metal burst lifecycle (provision+mint / teardown+revoke) over the BareMetalControlPlane seam + BareMetalConfig JSON boundary (#436)
+    bare_metal_cli_control_plane.cpp  zetta::cloud::BareMetalCliControlPlane — docker/podman argv (ps --filter label/run -d shortfall/rm -f) + NDJSON parse at the ProvisionedNode boundary (#436)
+    burst_identity.cpp      zetta::cloud::BurstIdentityManager — bulk mint/revoke burst identities over the Node's principal CRUD + audit sink (#375)
+    burst_approval_gate.cpp  zetta::cloud::BurstApprovalGate — cost-cap gate logic: estimate, default cost, audit the decision, BurstCap JSON boundary (APR-3)
+    cloud_provider.cpp      zetta::cloud::CloudProviderCatalog — built-in provider metadata (local/bare-metal/k8s/aws/gcp/azure/oci); no cloud access
+    cloud_inspector.cpp     zetta::cloud::CloudInspector — run a provider's read-only commands, per-vendor JSON parse + boundary validation → CloudInspectReport, report JSON boundary (#445)
   governance/
-    principal.cpp           zetta::Principal — persist/rename principal.json + key CRUD
-    access_key.cpp          zetta::AccessKey — persist key.json + authorize() decisions (resource + operation)
-    scope.cpp               zetta::Scope — permits() + JSON boundary validation
-    capability.cpp          zetta::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
-    audit_event.cpp         zetta::AuditEvent — value, JSON form, JSON-Schema boundary validation
+    principal.cpp           zetta::governance::Principal — persist/rename principal.json + key CRUD
+    access_key.cpp          zetta::governance::AccessKey — persist key.json + authorize() decisions (resource + operation)
+    scope.cpp               zetta::governance::Scope — permits() + JSON boundary validation
+    capability.cpp          zetta::governance::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
+    audit_event.cpp         zetta::governance::AuditEvent — value, JSON form, JSON-Schema boundary validation
   usecases/churn/
     churn_step_executor.cpp  ChurnStepExecutor — the per-kind real churn compute, each heavy step a ComputeJob (composes featurize/train/score/explain); index step also builds a real entity index via the node registry (#396/#528)
     churn_solution.cpp      run_churn_solution — the ChurnDataset→numeric encoder + standard churn pipeline config + the runner (inject ChurnStepExecutor into a GraphExecutor) + run_churn_solution_on_node (resolve Node::job_coordinator → run over the live spine) + is_churn_graph + demo_churn_dataset (#398/#580)
@@ -369,7 +369,7 @@ src/core/                   zetta-core impl
     uuid.cpp
     bytes.cpp / duration.cpp  the size / time formatter impls
     sha256.cpp              self-contained SHA-256 (no crypto dependency)
-    timestamp.cpp           zetta::now_iso8601() — UTC ISO-8601 stamp
+    timestamp.cpp           zetta::util::now_iso8601() — UTC ISO-8601 stamp
 src/gui/                    headed UI (links SDL3 + ImGui)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)

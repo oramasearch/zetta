@@ -42,8 +42,8 @@ They meet at `IndexSpec`: the registry resolves an `index`-step spec (or an
 orchestrator's walk is unchanged; only an `index` step gets real behavior:
 
 ```cpp
-zetta::IndexStepExecutor step{node};                       // over node.index_registry()
-zetta::GraphExecutor executor{std::make_shared<zetta::IndexStepExecutor>(node)};
+zetta::index::IndexStepExecutor step{node};                       // over node.index_registry()
+zetta::pipeline::GraphExecutor executor{std::make_shared<zetta::index::IndexStepExecutor>(node)};
 auto result = executor.execute(node, graph);               // builds the index step's index
 ```
 
@@ -84,7 +84,7 @@ After the run, the built index lives in the registry backend keyed by
 auto index   = node.find_index(result.run->outputs()[0].ref);   // the recorded entity
 auto backend = node.index_registry().resolve(index->spec());    // its backend
 
-zetta::IndexQuery q;
+zetta::index::IndexQuery q;
 q.field = "plan";
 q.term  = "pro";
 auto hits = backend->query(index->spec(), q);                   // the matching row ids

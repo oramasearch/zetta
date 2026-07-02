@@ -16,7 +16,7 @@
 > placement dial (R1 Local only) and `ScalingPolicy` uses for the reward model before
 > the autoscaler that consumes it.
 
-A `zetta::ReplicationStrategy` (`include/zetta/data/replication_strategy.hpp`) is the
+A `zetta::data::ReplicationStrategy` (`include/zetta/data/replication_strategy.hpp`) is the
 per-entity counterpart to `ReplicationManager`'s **node-wide** `ReplicationPolicy`
 (`include/zetta/cluster/replication.hpp`): the manager's policy is one knob for the whole
 replicated document; the strategy is a choice **carried by each database and
@@ -46,11 +46,11 @@ database's strategy** unless it overrides:
 
 // A database whose tables are partitioned with 3 replicas by default.
 auto db = node.create_database(
-    "events", zetta::ReplicationStrategy::partitioned_with_replicas());  // factor 3
+    "events", zetta::data::ReplicationStrategy::partitioned_with_replicas());  // factor 3
 
 auto a = db->create_table("a");  // inherits partitioned_with_replicas(3)
 auto b = db->create_table(
-    "b", zetta::ReplicationStrategy::replicate_to_all());  // overrides per table
+    "b", zetta::data::ReplicationStrategy::replicate_to_all());  // overrides per table
 
 db->replication_strategy();      // -> PartitionedWithReplicas, factor 3
 a->replication_strategy();       // -> PartitionedWithReplicas, factor 3 (inherited)

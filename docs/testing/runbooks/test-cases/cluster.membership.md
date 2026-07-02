@@ -9,7 +9,7 @@ real equal-peer cluster forms before the heavier cases build on it.
 ## What it does
 
 1. **Stands up N real nodes.** `LoopbackCluster(nodes)` brings up N
-   [`zetta::Cluster`](../../../cluster/cluster.md)s on loopback TCP (`127.0.0.1`): a real,
+   [`zetta::cluster::Cluster`](../../../cluster/cluster.md)s on loopback TCP (`127.0.0.1`): a real,
    fully-connected, equal-peer cluster, not a simulation. It waits for them to
    connect within the bring-up window.
 2. **Confirms convergence.** It checks `cluster.connected()`, then reads each

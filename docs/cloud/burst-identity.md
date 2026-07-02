@@ -195,7 +195,7 @@ no orphans, both headless (`tests/testkit/test_testkit.cpp`) and from the headed
 
 ## Pointers
 
-- `include/zetta/cloud/burst_identity.hpp` — `zetta::BurstIdentity` /
+- `include/zetta/cloud/burst_identity.hpp` — `zetta::cloud::BurstIdentity` /
   `BurstIdentityManager`.
 - `src/core/cloud/burst_identity.cpp` — bulk mint / revoke / list over the Node's
   principal CRUD + audit sink.

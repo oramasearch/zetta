@@ -62,7 +62,7 @@ the GUI, every frame:
    Node::telemetry_snapshot()  →  self + every fresh peer  →  animate the gauges
 ```
 
-- The engine half is **`zetta::NodeTelemetryExchange`**
+- The engine half is **`zetta::cluster::NodeTelemetryExchange`**
   (`include/zetta/cluster/node_telemetry.hpp`, `src/core/cluster/node_telemetry.cpp`): a
   `SignalHandler` wired as the [`JobCoordinator`](../compute/job-coordinator.md)'s **fallback**
   (so it coexists with the steal / collective signals the coordinator already

@@ -74,12 +74,12 @@ coordinator.set_executor([](std::string_view method, std::string_view payload) {
 coordinator.start();   // register the handler chain + start the steal loop
 
 // Drive a ComputeJob (created on a Node) through its lifecycle:
-auto job = node.create_job(zetta::JobKind::Train, project_id, graph_id);
-zetta::JobStatus status = coordinator.run(*job, [&](zetta::compute::JobRound& round) {
+auto job = node.create_job(zetta::compute::JobKind::Train, project_id, graph_id);
+zetta::compute::JobStatus status = coordinator.run(*job, [&](zetta::compute::JobRound& round) {
     // 1. local partial: split this node's shard across the worker pool
     auto partial = compute_partial(round, my_shard);
     // 2. round boundary: combine partials across the cluster
-    auto total = round.allreduce("epoch-1", partial, zetta::CollectiveOp::Sum);
+    auto total = round.allreduce("epoch-1", partial, zetta::cluster::CollectiveOp::Sum);
     if (!total) return zetta::compute::JobCoordinator::Outcome{.ok = false,
                                                               .detail = "round failed"};
     return zetta::compute::JobCoordinator::Outcome{.ok = true, .detail = "done"};

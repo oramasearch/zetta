@@ -10,7 +10,7 @@ cost control, or the Add-nodes path; the GUI control is
 [../gui/add-nodes-control.md](../gui/add-nodes-control.md).
 
 - [provisioner.md](provisioner.md) — the `Provisioner` seam + node capability model, and the given-hardware `LocalProvisioner` backend (ARC-13 / ENT-32, #373/#374).
-- [add-nodes.md](add-nodes.md) — the permanent-add control entry point: bring up N nodes that auto-join and persist as members; provision-only, never teardown (`zetta::add_nodes`, #518).
+- [add-nodes.md](add-nodes.md) — the permanent-add control entry point: bring up N nodes that auto-join and persist as members; provision-only, never teardown (`zetta::cloud::add_nodes`, #518).
 - [provisioner-detection.md](provisioner-detection.md) — detect cloud targets from the operator's own local CLIs (no credentials) → `system.zetta_provisioners` + injected provisioners.
 - [burst-identity.md](burst-identity.md) — bulk-mint a short-lived service `Principal` + `AccessKey` per burst node, bulk-revoke on teardown, audited (`BurstIdentityManager`, #375).
 - [burst-approval-gate.md](burst-approval-gate.md) — the large-burst cost-cap approval gate: a `Provisioner` decorator that blocks over-cap bursts pending approval (APR-3 / RSK-9, #379).

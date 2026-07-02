@@ -41,11 +41,11 @@ the template that produced it (so *why* a graph was produced stays inspectable):
 ```cpp
 #include "zetta/pipeline/intent_compiler.hpp"
 
-std::optional<zetta::CompiledIntent> compiled = zetta::compile_intent(
+std::optional<zetta::pipeline::CompiledIntent> compiled = zetta::pipeline::compile_intent(
     "Score every active account for churn risk and tell me why.");
 
 if (compiled) {
-    // compiled->shape == zetta::IntentShape::Churn
+    // compiled->shape == zetta::pipeline::IntentShape::Churn
     // compiled->graph is a full connect→clean→model→index→serve→act skeleton
 }
 ```
