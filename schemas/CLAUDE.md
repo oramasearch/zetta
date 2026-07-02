@@ -1,0 +1,17 @@
+# schemas — generated, do not hand-edit
+
+Every `*.json` here is a **generated artifact** of the schema-as-code rule: the
+embedded draft-07 schema in the C++ (exposed via a `*_schema()` accessor) is
+the single source of truth, and `tests/test_schemas.cpp` **drift-checks** these
+files against it — a hand edit fails the build's tests.
+
+- To change a schema: edit the embedded schema in the owning `.cpp`, then
+  regenerate with `ZETTA_WRITE_SCHEMAS=1` (run the schema test binary) and
+  commit the C++ + regenerated JSON together.
+- Two boundary patterns consume these (see
+  [docs/architecture/schemas.md](../docs/architecture/schemas.md)): top-level
+  replicated entities validate via the embedded pboettch validator; value-type
+  DTOs mirror their schema with a hand-written non-throwing `from_json`.
+- A new JSON boundary = a new embedded schema + generated file here + a
+  malformed-input test. Prefer **no new JSON format** — ride an existing
+  validated boundary when possible.

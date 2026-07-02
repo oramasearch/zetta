@@ -22,18 +22,34 @@ C++26, macOS-first, single statically-linked binary.
 ## How these docs work — progressive disclosure
 
 This file holds only **identity, the load-bearing rules, build/test, and
-conventions**. Everything else is disclosed by domain, in three layers:
+conventions**. Everything else is disclosed progressively, in four layers:
 
 1. **This file** — always loaded; the rules below apply to all zetta work.
-2. **[`docs/README.md`](docs/README.md) → `docs/<domain>/README.md`** — the
+2. **Directory `CLAUDE.md` rule-cards** — auto-loaded when working in that
+   tree; the rules scoped to it:
+   [`src/core/`](src/core/CLAUDE.md) (replication invariants, boundaries,
+   seams) · [`src/gui/`](src/gui/CLAUDE.md) (thin-renderer rule, design
+   system, rendering gotchas) · [`include/zetta/`](include/zetta/CLAUDE.md)
+   (public-API rules) · [`tests/`](tests/CLAUDE.md) (test conventions) ·
+   [`docs/`](docs/CLAUDE.md) (filing rules) ·
+   [`schemas/`](schemas/CLAUDE.md) (generated, don't hand-edit).
+3. **[`docs/README.md`](docs/README.md) → `docs/<domain>/README.md`** — the
    domain index. **Before working in a domain, read its README** (a short
    overview + a one-line index of its pages).
-3. **`docs/<domain>/<page>.md`** — one page per shipped slice (symbols, issue
+4. **`docs/<domain>/<page>.md`** — one page per shipped slice (symbols, issue
    refs, boundaries, scope notes).
 
 For navigating the source tree, read
 **[`docs/architecture/code-map.md`](docs/architecture/code-map.md)** — the
 annotated file-by-file map (kept in sync by the docs discipline below).
+
+**Keep this disclosure network current — it is a hard rule, same commit as the
+change.** Every change updates the layer that owns it: a new rule or gotcha →
+the directory's `CLAUDE.md` rule-card (or this file if repo-wide); a new or
+changed slice → its `docs/<domain>/<page>.md` **and** the domain `README.md`
+index; a file added/moved/renamed → `docs/architecture/code-map.md`; a new
+domain → the `docs/README.md` table. The network is only useful while every
+level can be trusted — a stale card is worse than none.
 
 | When touching… | Read first |
 |---|---|
@@ -277,8 +293,11 @@ update every relevant surface:
   header.
 - **[`docs/architecture/code-map.md`](docs/architecture/code-map.md)** — when
   files are added, moved, or renamed.
-- **This `CLAUDE.md`** — only for rule/convention/layout changes (keep it
-  small; detail lives in the domain docs).
+- **The directory's `CLAUDE.md` rule-card** (`src/core/`, `src/gui/`,
+  `include/zetta/`, `tests/`, `docs/`, `schemas/`) — when a rule, invariant, or
+  gotcha scoped to that tree changes.
+- **This `CLAUDE.md`** — only for repo-wide rule/convention/layout changes
+  (keep it small; detail lives in the rule-cards and domain docs).
 - **`README.md`** — quick start / requirements / the product overview.
 - **`modules/README.md`** — when a vendored module changes.
 - The relevant **`.claude/skills/*/SKILL.md`** (especially `zetta-dev`) — when

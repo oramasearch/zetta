@@ -9,6 +9,14 @@ fit together at runtime — see [architecture.md](architecture.md); for how-to
 recipes and gotchas when working in the code, see the `zetta-dev` skill's
 [reference.md](../../.claude/skills/zetta-dev/reference.md).
 
+Directory **`CLAUDE.md` rule-cards** carry each tree's scoped rules and are
+auto-loaded when working there: [`src/core/`](../../src/core/CLAUDE.md) ·
+[`src/gui/`](../../src/gui/CLAUDE.md) ·
+[`include/zetta/`](../../include/zetta/CLAUDE.md) ·
+[`tests/`](../../tests/CLAUDE.md) · [`docs/`](../CLAUDE.md) ·
+[`schemas/`](../../schemas/CLAUDE.md) — the disclosure map is in the root
+`CLAUDE.md`.
+
 ## Build targets
 
 `CMakeLists.txt` builds four targets, in dependency order: the vendored

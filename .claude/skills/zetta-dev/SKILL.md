@@ -6,11 +6,14 @@ description: zetta's project coding conventions and architecture. Use whenever w
 # zetta-dev — coding conventions & architecture checklist
 
 zetta is a C++26 database. A *node* runs **headed** (SDL3 + Dear ImGui UI) or
-**headless** (no UI). Apply these to all zetta work. **CLAUDE.md holds the rules;
+**headless** (no UI). Apply these to all zetta work. **The root CLAUDE.md holds
+the repo-wide rules; directory CLAUDE.md rule-cards** (`src/core/`, `src/gui/`,
+`include/zetta/`, `tests/`, `docs/`, `schemas/`) **carry tree-scoped rules; and
 `docs/` is domain-organized for progressive disclosure** (`docs/README.md` →
 `docs/<domain>/README.md` → the page) — **read a domain's README before working
-in it**; this is the working checklist. For the annotated file-by-file codebase
-map see `docs/architecture/code-map.md`; for how-to recipes and gotchas, see
+in it**, and keep every level current in the same commit as the change. This is
+the working checklist. For the annotated file-by-file codebase map see
+`docs/architecture/code-map.md`; for how-to recipes and gotchas, see
 **[reference.md](reference.md)**.
 
 ## C++ style
