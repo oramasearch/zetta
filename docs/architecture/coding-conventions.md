@@ -83,6 +83,19 @@ alias/adapter over capy), never name `boost::capy`/`boost::corosio` outside
 the seam. Ownership stays with loops (Node: owning loop; network thread:
 thread-safe types only) — cross-thread work is marshaled, not locked.
 
+## Distributed-first — every algorithm scales at both levels
+
+Re-implement adopted algorithms natively (ADR-17) and structure them to
+exploit all available hardware: **cluster level** (SPMD over owned partitions,
+collectives for partials, single-node == multi-node; the Provisioner seam
+makes the fleet elastic, so provisionable cloud hardware counts) and
+**machine level** (`ComputeDevice` for heavy numerics — accelerator first,
+CPU always; `runtime::parallel_for` / the work-stealing scheduler for
+data-parallel fan-out). A single-threaded single-node version is a reference
+slice, not a destination — the distributed/accelerated path must be designed
+behind the same API from day one. Precedents: distributed sort/join/group-by,
+histogram-allreduce GBDT, per-partition scatter-gather fulltext.
+
 ## Observability — every operation is observable
 
 New operations open a span (intent · plan · performance · result shape) with

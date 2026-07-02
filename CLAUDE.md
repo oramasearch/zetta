@@ -248,15 +248,29 @@ ever.** This binds both the **product** and **Claude when building it**.
   cloud, ask the developer first. When in doubt, surface what *would* be
   read/called and ask — never touch the cloud to "just check."
 
-### AI compute — GPU-native, CPU fallback, distributed (DIRECTION)
+### Distributed-first — every algorithm scales at both levels (FOUNDATION)
 
-Every heavy AI op (featurize / train / score / explain) targets: runs on the
-accelerator when present, falls back to CPU, scales across the cluster — via
-the `ComputeDevice` seam + the job coordinator's collectives (SPMD). Current
-reality: the ML numerics are host-side references over device-backed data, with
-device-native kernels the documented optimization behind the same API. Move
-things *toward* this rule (push numerics onto device kernels), never away
-(never add an AI op that bypasses the seam).
+**Any algorithm zetta adopts is re-implemented native (no foreign runtime,
+ADR-17) and structured to exploit ALL available hardware at BOTH levels:**
+
+- **Cluster level**: SPMD over owned partitions (compute-near-data), partials
+  combined via the collectives, single-node == multi-node by construction —
+  and the cluster itself is elastic (the `Provisioner` seam can add local or
+  cloud nodes, consent- and cost-gated), so "available hardware" includes
+  hardware zetta can provision.
+- **Machine level**: heavy numerics target the `ComputeDevice` seam
+  (accelerator when present, CPU backend always) and data-parallel work fans
+  across cores via `runtime::parallel_for` / the work-stealing scheduler.
+
+A correct-but-single-threaded, single-node implementation is a *reference*,
+not a destination — acceptable as the first slice (the GBDT/TreeSHAP
+host-side-reference pattern) only with the distributed/accelerated path
+designed behind the same API. Never add an algorithm that structurally can't
+distribute (hidden global state, order-dependent single streams) without
+recording why. Precedents to copy: distributed sort/join/group-by,
+histogram-allreduce GBDT, per-partition scatter-gather fulltext.
+Applies to AI ops (featurize / train / score / explain) and everything else —
+search, aggregation, resolution, import.
 
 ### Design system — follow it for all GUI work
 
