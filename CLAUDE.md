@@ -8,8 +8,11 @@
 > types; manage projects to success — most AI projects fail), the first use case
 > (**churn / UC-1**), and **growing the use-case catalog**. Source of truth is
 > the wtm `ORAMA-ZETTA` blueprint (epic
-> [`#279`](https://github.com/oramasearch/zetta/issues/279)). This file is the
-> engineering rules for the codebase.
+> [`#279`](https://github.com/oramasearch/zetta/issues/279)). The full product
+> set is [`docs/product/`](docs/product/README.md) — vision · personas ·
+> positioning · catalog · control surfaces · the
+> [experience contracts](docs/product/experience/README.md) (UX · DX · AX ·
+> serving). This file is the engineering rules for the codebase.
 
 **Technically, a zetta node is a database.** A *zetta node* is one running
 instance. It runs in two modes:

@@ -22,7 +22,7 @@ run / test.
 
 | Domain | Covers |
 |---|---|
-| [product/](product/README.md) | What Orama Zetta is: naming, value-first messaging, AI projects as the central item, the use-case-driven build, the wtm `ORAMA-ZETTA` blueprint as source of truth. |
+| [product/](product/README.md) | What Orama Zetta is: the read-first framing + vision (Intelligence Velocity), personas, positioning, the use-case catalog, control surfaces, and the per-audience experience contracts (UX · DX · AX · serving). |
 | [architecture/](architecture/README.md) | The node, run modes, module map, the code map, schema-as-code, the async runtime seam, true hybrid, the living codebase health audit. |
 | [data/](data/README.md) | Storage engines and the on-disk format, large objects, datasets, partitioning (seam, write path, rebalance, sharded placement), the native Parquet reader, the query layer. |
 | [cluster/](cluster/README.md) | Equal-peer clustering, CRDT replication, the signal plane, collectives, per-node telemetry. |
