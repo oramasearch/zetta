@@ -102,6 +102,17 @@ bool has_token(const std::vector<std::string>& argv, const std::string& token) {
     return std::find(argv.begin(), argv.end(), token) != argv.end();
 }
 
+// The `az vmss create` call among captured calls (bring_up now also runs an
+// `az group create` first — the two share the "create" token, so match on "vmss").
+const std::vector<std::string>& vmss_create_call(
+    const std::vector<std::vector<std::string>>& calls) {
+    static const std::vector<std::string> none;
+    for (const std::vector<std::string>& argv : calls) {
+        if (has_token(argv, "vmss") && has_token(argv, "create")) return argv;
+    }
+    return none;
+}
+
 }  // namespace
 
 // ---- AzureConfig JSON boundary ---------------------------------------------
@@ -208,6 +219,22 @@ TEST(AzureProvisioner, ProvisionIsBestEffortWhenCapacityIsShort) {
     EXPECT_EQ(result.nodes.size(), 2u);
     EXPECT_FALSE(result.detail.empty());
     EXPECT_EQ(minted.size(), 2u);  // mint whatever actually came up
+}
+
+// set_placement steers the next burst: region → Azure location, instance type →
+// vm_size. An empty dimension is left unchanged (the GUI's editable placement).
+TEST(AzureProvisioner, SetPlacementUpdatesRegionAndSize) {
+    FakeControlPlane control_plane;
+    AzureProvisioner provisioner{control_plane, sample_config()};
+
+    provisioner.set_placement("westus2", "Standard_D4s_v5");
+    EXPECT_EQ(provisioner.config().location, "westus2");
+    EXPECT_EQ(provisioner.config().vm_size, "Standard_D4s_v5");
+
+    // An empty dimension leaves that field unchanged.
+    provisioner.set_placement("", "Standard_D8s_v5");
+    EXPECT_EQ(provisioner.config().location, "westus2");           // kept
+    EXPECT_EQ(provisioner.config().vm_size, "Standard_D8s_v5");    // updated
 }
 
 TEST(AzureProvisioner, ZeroCountIsASatisfiedNoOp) {
@@ -328,7 +355,7 @@ std::string two_node_listing() {
 
 }  // namespace
 
-TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
+TEST(AzCliControlPlane, BringUpBuildsFlexibleCreateCommand) {
     std::vector<std::vector<std::string>> calls;
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         calls.push_back(argv);
@@ -345,22 +372,51 @@ TEST(AzCliControlPlane, BringUpBuildsCreateThenListsInstances) {
     const ProvisionResult result =
         control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
+    // A successful placement is satisfied; the VMs join by gossip, not list().
     EXPECT_TRUE(result.satisfied);
-    ASSERT_EQ(result.nodes.size(), 2u);
-    EXPECT_EQ(result.nodes[0].node_id, "vm0");
 
     // The create call carries the pool identity, location, count, and SKU/image.
+    // The resource group is the first free `<base>-NN` (base = config.resource_group).
     ASSERT_FALSE(calls.empty());
-    const std::vector<std::string>& create = calls.front();
+    const std::vector<std::string>& create = vmss_create_call(calls);
     EXPECT_TRUE(has_token(create, "create"));
     EXPECT_TRUE(has_flag(create, "--subscription", "sub-123"));
-    EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg"));
+    EXPECT_TRUE(has_flag(create, "--resource-group", "zetta-rg-01"));
     EXPECT_TRUE(has_flag(create, "--name", "zetta-burst"));
     EXPECT_TRUE(has_flag(create, "--location", "eastus"));
     EXPECT_TRUE(has_flag(create, "--orchestration-mode", "Flexible"));
     EXPECT_TRUE(has_flag(create, "--instance-count", "2"));
     EXPECT_TRUE(has_flag(create, "--vm-sku", "Standard_NC24ads_A100_v4"));
+    EXPECT_TRUE(has_flag(create, "--image", "Ubuntu2204"));
+    // Flexible orchestration requires these to actually deploy (a missing fault
+    // domain count fails create) — see docs/research/azure-cli-compute.md §2.7.
+    EXPECT_TRUE(has_flag(create, "--platform-fault-domain-count", "1"));
+    EXPECT_TRUE(has_flag(create, "--single-placement-group", "false"));
+    EXPECT_TRUE(has_flag(create, "--admin-username", "azureuser"));
+    EXPECT_TRUE(has_token(create, "--generate-ssh-keys"));
     EXPECT_FALSE(has_token(create, "--priority"));  // not a spot config
+}
+
+// When the config pins no image / SKU, bring_up defaults to the VMSS Flexible
+// quickstart's values so a first burst deploys instead of failing on a missing
+// image (docs/research/azure-cli-compute.md §2.7).
+TEST(AzCliControlPlane, DefaultsImageAndSkuForFlexibleCreate) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    // sample_config() pins neither image nor vm_size.
+    control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+
+    const std::vector<std::string>& create = vmss_create_call(calls);
+    EXPECT_TRUE(has_flag(create, "--image", "Ubuntu2204"));
+    EXPECT_TRUE(has_flag(create, "--vm-sku", "Standard_B2s"));
+    EXPECT_TRUE(has_flag(create, "--platform-fault-domain-count", "1"));
 }
 
 TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
@@ -380,34 +436,83 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
-    const std::vector<std::string>& create = calls.front();
+    const std::vector<std::string>& create = vmss_create_call(calls);
     EXPECT_TRUE(has_flag(create, "--priority", "Spot"));
     EXPECT_TRUE(has_token(create, "--eviction-policy"));
     EXPECT_TRUE(has_token(create, "--max-price"));
     EXPECT_TRUE(has_flag(create, "--custom-data", "ZETTA_SEED_PEER=10.0.0.1:7777"));
 }
 
-TEST(AzCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {
+// A successful create is satisfied: the scale set placed the requested VMs, which
+// then join the cluster by gossip (they aren't necessarily visible via list-
+// instances yet). Reporting keys off placement, not an immediate instance count.
+TEST(AzCliControlPlane, BringUpSatisfiedOnSuccessfulPlacement) {
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         CommandResult result;
         if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
-        return result;
+        return result;  // create/group succeed (exit 0) by default
     };
 
     AzCliControlPlane control_plane{runner};
-    // Ask for three but the listing only reports two.
     const ProvisionResult result =
         control_plane.bring_up(sample_config(), ProvisionRequest{3, gpu_spec()});
 
-    EXPECT_FALSE(result.satisfied);
-    EXPECT_EQ(result.nodes.size(), 2u);
+    EXPECT_TRUE(result.satisfied);
     EXPECT_FALSE(result.detail.empty());
 }
 
+// When a SKU has no live capacity (SkuNotAvailable / Capacity Restrictions), the
+// create rolls to the next candidate SKU — deleting the failed scale set first so
+// the stable pool name is free — and reports the SKU that actually placed. Azure
+// has no capacity API, so retry-with-fallback is the only reliable placement path.
+TEST(AzCliControlPlane, BringUpFallsBackToNextSkuOnCapacity) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "vmss") && has_token(argv, "create") &&
+            has_flag(argv, "--vm-sku", "Standard_B2s")) {
+            // The first candidate (default) has no capacity in this region.
+            result.exit_code = 1;
+            result.stderr_text =
+                "ERROR: SkuNotAvailable: ... Capacity Restrictions: Standard_B2s "
+                "... not available in location 'eastus'.";
+        } else if (has_token(argv, "list-instances")) {
+            result.stdout_text = two_node_listing();
+        }
+        return result;  // the second SKU's create + everything else succeed
+    };
+
+    AzCliControlPlane control_plane{runner};
+    // sample_config() pins no vm_size, so candidates start with Standard_B2s.
+    const ProvisionResult result =
+        control_plane.bring_up(sample_config(), ProvisionRequest{1, gpu_spec()});
+
+    EXPECT_TRUE(result.satisfied);
+
+    // It attempted the B2s create, deleted the failed set, then created a fallback.
+    bool tried_b2s = false, deleted = false, placed_fallback = false;
+    for (const std::vector<std::string>& argv : calls) {
+        if (has_token(argv, "vmss") && has_token(argv, "create") &&
+            has_flag(argv, "--vm-sku", "Standard_B2s")) {
+            tried_b2s = true;
+        }
+        if (has_token(argv, "vmss") && has_token(argv, "delete")) deleted = true;
+        if (has_token(argv, "vmss") && has_token(argv, "create") &&
+            !has_flag(argv, "--vm-sku", "Standard_B2s")) {
+            placed_fallback = true;
+        }
+    }
+    EXPECT_TRUE(tried_b2s);
+    EXPECT_TRUE(deleted);
+    EXPECT_TRUE(placed_fallback);
+}
+
 TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
+    // Group create succeeds; the vmss create fails (quota) — the reported failure.
     CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
         CommandResult result;
-        if (has_token(argv, "create")) {
+        if (has_token(argv, "vmss") && has_token(argv, "create")) {
             result.exit_code = 1;
             result.stderr_text = "quota exceeded";
         }
@@ -421,6 +526,58 @@ TEST(AzCliControlPlane, BringUpReportsCreateFailure) {
     EXPECT_FALSE(result.satisfied);
     EXPECT_TRUE(result.nodes.empty());
     EXPECT_NE(result.detail.find("quota exceeded"), std::string::npos);
+}
+
+// bring_up creates the resource group (idempotent) BEFORE the vmss create, so a
+// first burst into a subscription with no pre-provisioned group just works instead
+// of failing with ResourceGroupNotFound. The group name is a fresh `<base>-NN`
+// picked to avoid a taken / deprovisioning name (checked via `az group exists`).
+TEST(AzCliControlPlane, BringUpEnsuresResourceGroupFirst) {
+    std::vector<std::vector<std::string>> calls;
+    CommandRunner runner = [&](const std::vector<std::string>& argv) -> CommandResult {
+        calls.push_back(argv);
+        CommandResult result;
+        if (has_token(argv, "list-instances")) result.stdout_text = two_node_listing();
+        return result;
+    };
+
+    AzCliControlPlane control_plane{runner};
+    control_plane.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+
+    // A `az group create` for the picked group name precedes any vmss create.
+    ASSERT_FALSE(calls.empty());
+    std::optional<std::vector<std::string>> group_create;
+    std::size_t group_create_index = 0, vmss_create_index = calls.size();
+    for (std::size_t i = 0; i < calls.size(); ++i) {
+        if (has_token(calls[i], "group") && has_token(calls[i], "create")) {
+            group_create = calls[i];
+            group_create_index = i;
+        } else if (has_token(calls[i], "vmss") && has_token(calls[i], "create") &&
+                   vmss_create_index == calls.size()) {
+            vmss_create_index = i;
+        }
+    }
+    ASSERT_TRUE(group_create.has_value());
+    EXPECT_LT(group_create_index, vmss_create_index);  // group before vmss
+    EXPECT_TRUE(has_flag(*group_create, "--name", "zetta-rg-01"));
+    EXPECT_TRUE(has_flag(*group_create, "--location", "eastus"));
+    EXPECT_TRUE(has_flag(*group_create, "--subscription", "sub-123"));
+
+    // A group-create failure aborts before the vmss create (no pool spawned).
+    CommandRunner failing = [&](const std::vector<std::string>& argv) -> CommandResult {
+        CommandResult result;
+        if (has_token(argv, "group") && has_token(argv, "create")) {
+            result.exit_code = 1;
+            result.stderr_text = "AuthorizationFailed";
+        }
+        return result;
+    };
+    AzCliControlPlane cp2{failing};
+    const ProvisionResult aborted =
+        cp2.bring_up(sample_config(), ProvisionRequest{2, gpu_spec()});
+    EXPECT_FALSE(aborted.satisfied);
+    EXPECT_TRUE(aborted.nodes.empty());
+    EXPECT_NE(aborted.detail.find("AuthorizationFailed"), std::string::npos);
 }
 
 TEST(AzCliControlPlane, DestroyBuildsDeleteInstancesAndReportsOutcome) {

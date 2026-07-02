@@ -528,6 +528,56 @@ TEST(QueryService, SelectsCloudStatusSystemTable) {
     node.stop();
 }
 
+// system.zetta_provisioners surfaces the cloud-burst targets detected from this
+// node's own local CLIs (Node::provisioner_configs()), with no credentials — only
+// the non-secret deployment context that drives the headed Add-nodes control.
+TEST(QueryService, SelectsProvisionersSystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    // Empty until detection records a target — querying never runs a CLI.
+    auto empty = svc.run("SELECT * FROM system.zetta_provisioners;", "");
+    ASSERT_TRUE(empty.ok()) << empty.error;
+    EXPECT_EQ(empty.rows.size(), 0u);
+
+    // Record a detected Azure context, as startup detection from the local `az`
+    // CLI would (only the non-secret targeting; the CLI keeps its own credentials).
+    zetta::ProvisionerConfig provisioner;
+    provisioner.target = "azure";
+    provisioner.cli = "az";
+    provisioner.summary = "subscription sub-1 · my-rg · westus2";
+    provisioner.config = nlohmann::json{
+        {"subscription_id", "sub-1"},
+        {"resource_group", "my-rg"},
+        {"location", "westus2"},
+        {"spot", true},
+    };
+    node.record_provisioner_config(provisioner);
+
+    auto sel = svc.run("SELECT * FROM system.zetta_provisioners;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 1u);
+    EXPECT_EQ(sel.rows[0]["target"].get<std::string>(), "azure");
+    EXPECT_EQ(sel.rows[0]["cli"].get<std::string>(), "az");
+    EXPECT_EQ(sel.rows[0]["subscription"].get<std::string>(), "sub-1");
+    EXPECT_EQ(sel.rows[0]["region"].get<std::string>(), "westus2");
+    EXPECT_EQ(sel.rows[0]["resource_group"].get<std::string>(), "my-rg");
+    EXPECT_TRUE(sel.rows[0]["spot"].get<bool>());
+
+    // Latest config per target wins (re-detection replaces, never duplicates).
+    provisioner.summary = "subscription sub-1 · my-rg · eastus";
+    provisioner.config["location"] = "eastus";
+    node.record_provisioner_config(provisioner);
+    auto again = svc.run("SELECT * FROM system.zetta_provisioners;", "");
+    ASSERT_TRUE(again.ok()) << again.error;
+    ASSERT_EQ(again.rows.size(), 1u);
+    EXPECT_EQ(again.rows[0]["region"].get<std::string>(), "eastus");
+
+    node.stop();
+}
+
 // RULE-7: runs / principals / keys / the audit trail are observable as
 // system.zetta_* read views (not GUI-only), computed at query time from the live
 // Node accessors — same as zetta_models / zetta_jobs.

@@ -78,12 +78,7 @@ AddNodesResult add_nodes(Provisioner& provider, std::size_t count,
     return add_nodes(provider, AddNodesRequest{count, spec});
 }
 
-AddNodesResult add_nodes(Node& node, Provisioner& provider,
-                         const AddNodesRequest& request) {
-    // Provision first (the Provisioner-only path), then wire the membership change
-    // to the between-jobs rebalance (#519).
-    AddNodesResult result = add_nodes(provider, request);
-
+void apply_added_nodes(Node& node, const AddNodesResult& result) {
     // The previous membership is this node's current replicated node:<id> set; the
     // grown membership adds the just-provisioned members (their node_id IS the
     // cluster/CRDT id). Dedup into a sorted set so a re-add of an already-present
@@ -103,6 +98,15 @@ AddNodesResult add_nodes(Node& node, Provisioner& provider,
         const std::vector<std::string> members(grown.begin(), grown.end());
         rebalance_partitions(node, members, previous);
     }
+}
+
+AddNodesResult add_nodes(Node& node, Provisioner& provider,
+                         const AddNodesRequest& request) {
+    // Provision first (the Provisioner-only path — the slow, Node-free half a GUI
+    // caller can run off the UI thread), then apply the membership change + the
+    // between-jobs rebalance (#519) on the thread that owns the node.
+    AddNodesResult result = add_nodes(provider, request);
+    apply_added_nodes(node, result);
     return result;
 }
 

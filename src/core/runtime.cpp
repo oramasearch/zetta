@@ -65,6 +65,21 @@ boost::capy::task<> run_chunk(
 
 }  // namespace
 
+void spawn(task<> coroutine, std::function<void()> on_complete) {
+    // Fire-and-forget the coroutine on the shared pool: run_async schedules it on
+    // an executor and invokes the completion when the task finishes, without the
+    // caller blocking (unlike parallel_for's latch wait). The completion runs on a
+    // pool worker — it just forwards to on_complete, which the caller keeps
+    // thread-safe. run_async owns the coroutine frame + the completion until the
+    // task completes, so spawn can return immediately.
+    auto executor = shared_pool().get_executor();
+    boost::capy::run_async(
+        executor,
+        [callback = std::move(on_complete)](auto&&...) noexcept {
+            if (callback) callback();
+        })(std::move(coroutine));
+}
+
 std::size_t parallel_chunks(std::size_t count) noexcept {
     if (count <= 1) return count;  // 0 -> 0, 1 -> 1
     // Cap at the worker count, and never carve chunks smaller than the grain.

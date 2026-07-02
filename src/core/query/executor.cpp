@@ -52,6 +52,11 @@ namespace {
 //    (Node::cloud_inspections()). Querying it NEVER triggers a cloud call: it
 //    only reflects inspects the user already consented to in the Cloud Inspector
 //    (empty until then). Ephemeral, not replicated.
+//  - `zetta_provisioners` — cloud-burst provisioners detected from this node's own
+//    local CLIs (Node::provisioner_configs()): one row per wired target with its
+//    non-secret deployment context (subscription / region / …). Carries NO
+//    credentials (the CLI keeps its own). Ephemeral, not replicated — it reflects
+//    this node's CLI auth + defaults, and drives the headed Add-nodes control.
 //  - `zetta_runs` — the run registry (Node::runs()): one row per graph execution
 //    + its lifecycle / pipeline refs / lineage (FEAT-5).
 //  - `zetta_principals` — the authenticated actors (Node::principals(); ENT-20).
@@ -95,6 +100,7 @@ constexpr std::string_view kIndexesTable = "zetta_indexes";
 constexpr std::string_view kJobsTable = "zetta_jobs";
 constexpr std::string_view kCloudProvidersTable = "zetta_cloud_providers";
 constexpr std::string_view kCloudStatusTable = "zetta_cloud_status";
+constexpr std::string_view kProvisionersTable = "zetta_provisioners";
 constexpr std::string_view kRunsTable = "zetta_runs";
 constexpr std::string_view kPrincipalsTable = "zetta_principals";
 constexpr std::string_view kKeysTable = "zetta_keys";
@@ -365,6 +371,35 @@ std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
         row["commands_total"] = static_cast<int>(report.commands.size());
         row["checked_at"] = report.checked_at;
         row["detail"] = report.detail;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per detected provisioner for the zetta_provisioners system table —
+// the cloud-burst targets this node can drive, derived from its own local CLIs
+// (Node::provisioner_configs()). **Reading this never triggers a cloud call** and
+// **exposes no credentials**: it reflects only the non-secret deployment context
+// the CLI reported (subscription / region / resource group / …), pulled tolerantly
+// from the provider's validated config JSON. Empty until detection wires a target.
+std::vector<nlohmann::json> provisioner_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const ProvisionerConfig& provisioner : node.provisioner_configs()) {
+        const nlohmann::json& config = provisioner.config;
+        nlohmann::json row;
+        row["target"] = provisioner.target;
+        row["cli"] = provisioner.cli;
+        // Common non-secret targeting fields, read tolerantly (each provider's
+        // config shape differs; absent fields are simply empty).
+        row["subscription"] = config.value("subscription_id", std::string{});
+        row["project"] = config.value("project_id", std::string{});
+        row["region"] = config.contains("location")
+                            ? config.value("location", std::string{})
+                            : config.value("region", std::string{});
+        row["resource_group"] = config.value("resource_group", std::string{});
+        row["pool"] = config.value("pool_name", std::string{});
+        row["spot"] = config.value("spot", false);
+        row["summary"] = provisioner.summary;
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1053,6 +1088,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kCloudStatusTable) {
                         return select_over_rows(s, cloud_status_rows(node_));
                     }
+                    if (sys == kProvisionersTable) {
+                        return select_over_rows(s, provisioner_rows(node_));
+                    }
                     if (sys == kRunsTable) {
                         return select_over_rows(s, run_rows(node_));
                     }
@@ -1097,8 +1135,9 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.node_metrics, "
                                      "system.pipeline_jobs, "
                                      "system.collective_rounds, "
-                                     "system.zetta_cloud_providers, or "
-                                     "system.zetta_cloud_status)");
+                                     "system.zetta_cloud_providers, "
+                                     "system.zetta_cloud_status, or "
+                                     "system.zetta_provisioners)");
                     }
                     if (!cluster_) {
                         return error("system.zetta_nodes is unavailable here "

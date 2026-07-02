@@ -551,18 +551,40 @@ test-suite case. See [docs/partition-rebalance.md](docs/partition-rebalance.md).
 
 zetta's async / coroutine / networking layer lives behind
 `include/zetta/runtime.hpp` (namespace `zetta::runtime`). Code uses `zetta::runtime::task<T>`,
-`zetta::runtime::block_on`, `zetta::runtime::thread_pool`, etc. and **never names
+`zetta::runtime::block_on`, `zetta::runtime::spawn`, `zetta::runtime::thread_pool`,
+`zetta::runtime::parallel_for`, etc. and **never names
 `boost::capy` / `boost::corosio` directly** — so the (beta, churning) C++
 Alliance backend can be swapped, or replaced by Boost.Asio, by editing that one
 header. Backed by Capy today (`modules/capy`); Corosio (`modules/corosio`) adds
-networking. The seam also exposes **`runtime::parallel_for`** — a blocking
-data-parallel primitive (`src/core/runtime.cpp`) that tiles `[0, count)` into
-contiguous chunks over one shared, process-wide thread pool and joins before
-returning, so CPU-bound code (the `CpuDevice` operators today; the job scheduler /
-collectives later) fans work across cores without naming `boost::capy`. Its tiling
-is a pure function of `count` (so multi-pass algorithms line phases up), and
-bodies **must not throw** (a throwing body aborts — zetta-core never unwinds across
-the seam). Background + migration plan: [docs/runtime.md](docs/runtime.md) and
+networking.
+
+**RULE — express async through the seam, never a hand-rolled OS thread.** Reach
+for the seam tool that fits, not `std::thread` / `std::async`:
+
+- **A one-off concurrent task that just must not block a latency path** (a
+  subprocess like a provider CLI, a network round-trip, file I/O — anything that
+  would otherwise freeze the GUI frame loop) → **`runtime::spawn(task<>,
+  on_complete)`**: it runs the coroutine off the calling thread and fires the
+  completion when done, and the caller polls. This is the right shape for the
+  headed **Add nodes** provisioning. Do **not** hand-roll a `std::thread` for it —
+  the seam is that interface, and going around it defeats the one-header backend
+  swap.
+- **Bounded / backpressured concurrency** (many tasks, but a capped number in
+  flight) → a **`runtime::thread_pool`** is exactly the right tool. Use it when you
+  need to *limit* concurrency or apply backpressure — not for a single one-off,
+  where `spawn` is simpler.
+- **CPU-bound data-parallel fan-out** (spread one loop across cores) →
+  **`runtime::parallel_for`**, which is *blocking*: it tiles `[0, count)` into
+  contiguous chunks over the shared pool and **joins before returning** (bodies
+  must not throw — a throwing body aborts, as zetta-core never unwinds across the
+  seam). It is not an async escape hatch and never belongs on a latency path that
+  has to stay responsive.
+- **Entering the async world from synchronous code** (`main()`, a test) →
+  **`block_on`**.
+
+The pre-existing GUI `std::thread` worker (`App::test_worker_`) predates `spawn`
+and is the legacy shape to migrate onto it, not to copy. Background + migration
+plan: [docs/runtime.md](docs/runtime.md) and
 [docs/research/coroutines.md](docs/research/coroutines.md).
 
 ### Accelerated compute (`zetta::compute`)
@@ -1402,8 +1424,28 @@ would run the provider CLI to create billable resources), so the control names w
 it would read/run and nothing happens until the user explicitly allows that one
 action, never remembered — the same consent grammar as the Cloud Inspector. The
 `Node`-aware `add_nodes` overload also rebalances sharded partitions onto any new
-members (#519). Constructing a configured cloud provisioner from the GUI + teardown
-are later slices. See [docs/add-nodes-control.md](docs/add-nodes-control.md).
+members (#519). The **cloud targets wire themselves from the operator's own local
+CLI**: `main` runs `detect_provisioner_configs()` (`src/core/provisioner_detect.cpp`)
+at startup, which asks each installed, logged-in CLI (`az`, …) for its deployment
+context (subscription / region / resource group — **no credentials**; the CLI keeps
+its own, and the control plane uses it to act), records it as node-local state
+(`Node::record_provisioner_config` — like `cloud_inspections_`, surfaced as the
+**`system.zetta_provisioners`** table), and injects a CLI-backed `Provisioner` per
+detected target (owned by `gui::CloudProvisioners`) so its consent-gated **Allow**
+button lights up. Azure is the reference detector; the other targets follow the same
+shape. The **add runs off the UI thread** — a `runtime::spawn`ed coroutine drives
+the provider CLI while a **progress bar** (elapsed vs a per-target ETA baseline)
+animates and the window stays responsive (`App::run_add_nodes` launches,
+`App::poll_add_nodes` applies the result on the UI thread via `apply_added_nodes`);
+a failure renders in full, **copyable**. Editable **Region + VM size** fields
+(pre-filled from `system.zetta_provisioners`, applied via `Provisioner::set_placement`
+before the add) let the operator steer where a burst lands. The Azure backend
+(`AzCliControlPlane`) is capacity-aware: it picks a fresh **`zetta-node-group-NN`**
+resource group (never a taken/deprovisioning name) and, since Azure exposes no
+capacity API, **falls back across VM SKUs** on a `SkuNotAvailable` shortage until one
+places (Microsoft's own retry-with-fallback guidance). Teardown from the GUI is a
+later slice. See [docs/provisioner-detection.md](docs/provisioner-detection.md) and
+[docs/add-nodes-control.md](docs/add-nodes-control.md).
 Headless logs the per-node table. `Cluster::nodes()` returns this node + every
 connected peer with
 its replication status (entries, version, in-sync, last-sync) — surfaced in the
@@ -1886,7 +1928,10 @@ lifecycle, sourced from `Node::jobs()`; qualified name only) and
 **`system.zetta_cloud_providers`** (the Cloud Inspector's provider catalog — pure
 metadata, reads nothing from any cloud) and **`system.zetta_cloud_status`** (the
 cached results of consent-gated cloud inspects, from `Node::cloud_inspections()`;
-querying it never triggers a cloud call) and the run + governance read views
+querying it never triggers a cloud call) and **`system.zetta_provisioners`** (the
+cloud-burst targets detected from this node's own local CLIs, from
+`Node::provisioner_configs()` — non-secret deployment context, no credentials;
+drives the headed Add-nodes control) and the run + governance read views
 (RULE-7, the queryable counterpart of the GUI Runs / Admin panels):
 **`system.zetta_runs`** (the run registry, `Node::runs()`),
 **`system.zetta_principals`** (authenticated actors, `Node::principals()`),

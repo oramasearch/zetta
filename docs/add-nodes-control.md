@@ -25,8 +25,14 @@ would read/run*, so the consent gate can name it up front. A green dot marks an
 The control drives whatever `Provisioner` was **injected for the selected target's
 id** (`App::set_provisioner(target_id, provisioner)`). A target with no injected
 provisioner still renders, but reports it isn't wired — the control + consent gate
-are real; constructing a configured cloud provisioner (subscription / region /
-creds) is a separate slice. Injecting one lights the target up with no UI change.
+are real. The cloud targets are wired from
+**[local-CLI detection](provisioner-detection.md)**: at startup zetta asks each
+installed, logged-in CLI (`az`, …) for its deployment context (subscription /
+region / resource group — **no credentials**; the CLI keeps its own and the
+control plane uses it to act), records it as `system.zetta_provisioners`, and
+injects a CLI-backed provisioner per detected target — lighting that target's
+**Allow** button up with no UI change. A target whose CLI isn't installed / logged
+in stays unwired.
 
 ## Local (given hardware) — no consent
 
@@ -66,19 +72,24 @@ rather than a read-only inspect.
 
 `run_add_nodes(target)` is the **single point** that touches the `Provisioner`,
 reached only from the Local **Add** button or a cloud target's explicit **Allow**.
-Like [`run_cloud_inspect`](cloud-inspector.md) it is **synchronous on the UI thread**
-(which owns the `Node`), so the add and the partition rebalance it triggers race
-with nothing. It reports the outcome from the [`AddNodesResult`](add-nodes.md):
-`<target> · <members> of <count> node(s)` plus the backend's `detail`, coloured
-green when the full count came up and amber when it was short (best-effort).
+The slow provision (the provider CLI — `az vmss create` runs for minutes) runs
+**off the UI thread** as a [`runtime::spawn`](runtime.md)'d coroutine, so the
+window never freezes; `poll_add_nodes` (each frame in the run loop) applies the
+result on the UI thread via `apply_added_nodes` (the fast membership + rebalance
+half). While it runs the panel shows a **progress bar** (elapsed vs a per-target
+ETA baseline) and disables the buttons; a failure renders in full, wrapped +
+scrollable, with a one-click **Copy error**. Editable **Region + VM size**
+dropdowns (regions detected via `az account list-locations`, sizes fetched
+per-region off the UI thread via `az vm list-skus`, applied through
+[`Provisioner::set_placement`](provisioner.md) before the add) let the operator
+steer where a burst lands.
 
 ## What this slice does **not** do
 
-- **No cloud provisioner construction in the GUI.** Only the given-hardware
-  `LocalProvisioner` is injected in the default build; the consent-gated cloud
-  targets render their gate but report "not wired" until a configured provisioner
-  is injected for them. Collecting cloud config (subscription / region / creds) and
-  constructing the cloud backends from the GUI is a later slice.
+- **No teardown from the GUI.** The cloud backends are wired (from
+  [local-CLI detection](provisioner-detection.md)) and a burst runs off-thread with
+  editable placement + SKU fallback, but the control only **grows** the cluster —
+  removing a specific burst / node from the GUI is a later slice.
 - **No teardown / node removal.** [`add_nodes`](add-nodes.md) only grows the
   cluster (it never tears a member down), and the default given-hardware provisioner
   can't release nodes (its `teardown` is a no-op). A `remove_nodes` control — and

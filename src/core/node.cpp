@@ -1317,6 +1317,25 @@ void Node::record_cloud_inspection(CloudInspectReport report) {
     }
 }
 
+// ----- provisioner configs (ephemeral; CLI-detected, not replicated) ----------
+
+void Node::record_provisioner_config(ProvisionerConfig config) {
+    // Latest config per target wins, so the cache holds one current row per target
+    // for system.zetta_provisioners — like record_cloud_inspection, this is
+    // session-local observed state from the local CLI (RULE-7): no CRDT capture,
+    // no disk write, no credentials.
+    const auto it = std::find_if(
+        provisioner_configs_.begin(), provisioner_configs_.end(),
+        [&](const ProvisionerConfig& existing) {
+            return existing.target == config.target;
+        });
+    if (it == provisioner_configs_.end()) {
+        provisioner_configs_.push_back(std::move(config));
+    } else {
+        *it = std::move(config);
+    }
+}
+
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
 bool Node::drop_principal(const std::string& name) {

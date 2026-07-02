@@ -12,6 +12,7 @@
 #include "zetta/access_key.hpp"
 #include "zetta/audit_event.hpp"
 #include "zetta/cloud_inspector.hpp"
+#include "zetta/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute_job.hpp"
 #include "zetta/database.hpp"
@@ -342,6 +343,19 @@ public:
         return cloud_inspections_;
     }
 
+    // Cloud-burst provisioner deployment contexts detected from this node's own
+    // local CLIs (detect_provisioner_configs; docs/provisioners.md). **Ephemeral,
+    // observed state with NO CRDT backing** — like cloud_inspections(), node-local
+    // and never replicated/persisted, because it reflects *this* node's CLI auth +
+    // defaults. It carries no credentials (the CLI keeps its own); it is the source
+    // for the read-only `system.zetta_provisioners` view and for wiring the headed
+    // Add-nodes control. The latest config per target id replaces the previous one;
+    // provisioner_configs() is in target insertion order.
+    void record_provisioner_config(ProvisionerConfig config);
+    std::vector<ProvisionerConfig> provisioner_configs() const {
+        return provisioner_configs_;
+    }
+
     // Sample this node's **live host resource utilization** — CPU / memory / GPU
     // + VRAM / storage / network (see node_metrics.hpp / docs/node-metrics.md).
     // **Ephemeral, observed state with NO CRDT backing**: it is read straight
@@ -616,6 +630,7 @@ private:
     std::vector<std::shared_ptr<DatasetPartition>>
         dataset_partitions_;                                // sorted (created, id)
     std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
+    std::vector<ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
     NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
     // the most-recent recorded jobs' local-vs-wire counters, the source for the

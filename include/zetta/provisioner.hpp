@@ -82,6 +82,17 @@ public:
     // The nodes this provisioner currently has up (those provisioned and not yet
     // torn down).
     virtual std::vector<ProvisionedNode> provisioned() const = 0;
+
+    // Override where the NEXT provision() places nodes — a cloud target's region
+    // and VM size / instance type. The GUI's editable "region + size" fields call
+    // this before an add so the operator can steer placement (e.g. to a region
+    // that has capacity, complementing the backend's own SKU fallback). An empty
+    // string leaves that dimension unchanged. **Default is a no-op**: the given-
+    // hardware LocalProvisioner has no placement to set; each cloud backend maps
+    // the two dimensions onto its own config fields (Azure location + vm_size,
+    // AWS region + instance_type, …).
+    virtual void set_placement(const std::string& /*region*/,
+                               const std::string& /*instance_type*/) {}
 };
 
 }  // namespace zetta

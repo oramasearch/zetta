@@ -102,6 +102,14 @@ public:
 class AwsProvisioner : public BurstProvisioner<AwsConfig, AwsControlPlane> {
 public:
     using BurstProvisioner<AwsConfig, AwsControlPlane>::BurstProvisioner;
+
+    // Steer the next burst: region → AWS `region`, instance type → `instance_type`.
+    // An empty dimension is left unchanged.
+    void set_placement(const std::string& region,
+                       const std::string& instance_type) override {
+        if (!region.empty()) config_.region = region;
+        if (!instance_type.empty()) config_.instance_type = instance_type;
+    }
 };
 
 }  // namespace zetta
