@@ -54,6 +54,7 @@ level can be trusted — a stale card is worse than none.
 | When touching… | Read first |
 |---|---|
 | Product framing, naming, use cases | [`docs/product/`](docs/product/README.md), [`docs/use-cases/`](docs/use-cases/README.md) |
+| Anything a user, developer, or agent experiences | [`docs/product/experience.md`](docs/product/experience.md) → ux.md · dx.md · ax.md · serving.md — update the affected page in the same commit |
 | Node, run modes, module layout, schemas-as-code | [`docs/architecture/`](docs/architecture/README.md) |
 | Storage, large objects, partitioning, Parquet, SQL | [`docs/data/`](docs/data/README.md) |
 | Cluster, replication/CRDT, signal plane, collectives | [`docs/cluster/`](docs/cluster/README.md) |
