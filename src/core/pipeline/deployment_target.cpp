@@ -2,7 +2,7 @@
 
 #include <array>
 
-namespace zetta {
+namespace zetta::pipeline {
 
 std::string to_string(DeploymentKind kind) {
     switch (kind) {
@@ -46,4 +46,4 @@ std::optional<DeploymentTarget> DeploymentTarget::from_json(
     return target;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

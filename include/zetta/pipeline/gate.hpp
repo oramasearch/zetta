@@ -21,7 +21,7 @@
 // registers the trivial check, the #309 schema/type + data-leakage / point-in-time
 // checks (see graph_checks.hpp), and the #312 entity-resolution eval (TC-4 —
 // EntityResolutionCheck, in checks/).
-namespace zetta {
+namespace zetta::pipeline {
 
 // One named correctness check: it inspects an ExecutionGraph and reports a single
 // CheckResult (name + status + reason). This is the pluggable unit the gate runs.
@@ -92,4 +92,4 @@ private:
 // they are registered here too.
 CorrectnessGate default_gate();
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

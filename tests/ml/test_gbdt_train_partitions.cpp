@@ -42,14 +42,14 @@ namespace {
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RoundRobinPartitioner;
+using zetta::data::RoundRobinPartitioner;
 using zetta::compute::CpuDevice;
 using zetta::compute::DataType;
 using zetta::ddf::ColumnSchema;
@@ -155,8 +155,8 @@ struct NearDataNode {
         EXPECT_TRUE(table);
         table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
         for (const Json& row : shard_rows) table->add_row(row);
-        const zetta::PartitionWriteResult written =
-            zetta::write_partitioned(node, *database, *table);
+        const zetta::data::PartitionWriteResult written =
+            zetta::data::write_partitioned(node, *database, *table);
         EXPECT_TRUE(written.ok()) << written.error;
         table_id = table->id();
     }

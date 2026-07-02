@@ -7,7 +7,7 @@
 
 #include "zetta/ir/execution_graph.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 
 // A named ExecutionGraph IR persisted under a Project (see project.hpp). It pairs
 // the in-memory graph (zetta::ir::ExecutionGraph) with the identity it needs to
@@ -53,4 +53,4 @@ private:
     std::filesystem::path file_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

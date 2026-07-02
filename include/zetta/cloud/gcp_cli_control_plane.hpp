@@ -6,7 +6,7 @@
 #include "zetta/cloud/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 #include "zetta/cloud/gcp_provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // GcpCliControlPlane — the **reference** GcpControlPlane binding (#378): it drives
 // Google Cloud by shelling out to the `gcloud` CLI (no GCP C++ SDK, honoring the
@@ -53,4 +53,4 @@ private:
     CommandRunner runner_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

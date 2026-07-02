@@ -7,7 +7,7 @@
 
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // BurstProvisioner — the shared orchestration every cloud-burst Provisioner
 // backend (Azure #376, AWS #377, GCP #378, OCI #432, Kubernetes #434, bare-metal
@@ -114,4 +114,4 @@ protected:
     IdentityHooks identity_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

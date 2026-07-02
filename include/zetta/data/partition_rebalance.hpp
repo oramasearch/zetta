@@ -6,9 +6,10 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::data {
+
 class DatasetPartition;
 
 // One partition that changed owners during a rebalance — the audit detail of a
@@ -75,4 +76,4 @@ RebalanceResult rebalance_partitions(
     Node& node, const std::vector<std::string>& members,
     const std::vector<std::string>& previous_members = {});
 
-}  // namespace zetta
+}  // namespace zetta::data

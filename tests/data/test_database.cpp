@@ -12,9 +12,9 @@
 #include "zetta/data/replication_strategy.hpp"
 
 namespace fs = std::filesystem;
-using zetta::Database;
-using zetta::ReplicationStrategy;
-using zetta::ReplicationStrategyKind;
+using zetta::data::Database;
+using zetta::data::ReplicationStrategy;
+using zetta::data::ReplicationStrategyKind;
 using zetta::test::TempDir;
 
 TEST(Database, CreateFindDropTable) {

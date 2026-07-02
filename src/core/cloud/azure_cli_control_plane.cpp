@@ -10,7 +10,7 @@
 
 #include "zetta/cloud/command_runner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 namespace {
 
@@ -245,4 +245,4 @@ std::vector<ProvisionedNode> AzCliControlPlane::list(
     return parse_nodes(listed.stdout_text);
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

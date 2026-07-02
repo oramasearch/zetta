@@ -330,7 +330,7 @@ void App::draw_rows() {
     }
 
     ImGui::Spacing();
-    const StorageEngine& store = table->store();
+    const zetta::storage::StorageEngine& store = table->store();
     if (store.size() == 0) {
         ImGui::TextDisabled("(empty)");
     }
@@ -368,7 +368,7 @@ void App::draw_query() {
         query_error_.clear();
         query_result_columns_.clear();
         query_result_rows_.clear();
-        query_time_ = format_duration(outcome.elapsed);
+        query_time_ = zetta::util::format_duration(outcome.elapsed);
         if (!outcome.ok()) {
             query_error_ = outcome.error;
         } else {
@@ -504,14 +504,14 @@ void App::draw_large_objects() {
     ImGui::TextDisabled("or drop any file on the window");
     ImGui::Separator();
 
-    const std::vector<LargeObject> objects = db->large_objects().list();
+    const std::vector<zetta::data::LargeObject> objects = db->large_objects().list();
     if (objects.empty()) ImGui::TextDisabled("(none)");
-    for (const LargeObject& lo : objects) {
+    for (const zetta::data::LargeObject& lo : objects) {
         ImGui::PushID(lo.id.c_str());
         if (ImGui::SmallButton("x")) db->large_objects().unlink(lo.id);
         ImGui::SameLine();
         ImGui::TextWrapped("%s  (%s)", lo.name.c_str(),
-                           format_bytes(lo.size).c_str());
+                           zetta::util::format_bytes(lo.size).c_str());
         // The metadata replicates immediately; the body transfers separately,
         // so a freshly-replicated object may not have its bytes here yet.
         if (!lo.body_present) {
@@ -623,7 +623,7 @@ void App::draw_new_project_modal() {
                 summary += " + intent";
             }
             if (!new_project_artifact_path_.empty()) {
-                const N8nImportResult imported = import_n8n_workflow_file(
+                const zetta::pipeline::N8nImportResult imported = import_n8n_workflow_file(
                     *project, new_project_artifact_path_);
                 summary += imported.ok()
                                ? " + n8n artifact (" + new_project_artifact_name_ +

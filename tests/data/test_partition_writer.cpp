@@ -21,16 +21,16 @@
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/data/table.hpp"
 
-using zetta::Database;
-using zetta::HashPartitioner;
+using zetta::data::Database;
+using zetta::data::HashPartitioner;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::PartitionWriteResult;
-using zetta::RendezvousPlacement;
-using zetta::ReplicationStrategy;
-using zetta::RoundRobinPartitioner;
-using zetta::SinglePartitioner;
-using zetta::Table;
+using zetta::data::PartitionWriteResult;
+using zetta::data::RendezvousPlacement;
+using zetta::data::ReplicationStrategy;
+using zetta::data::RoundRobinPartitioner;
+using zetta::data::SinglePartitioner;
+using zetta::data::Table;
 using zetta::query::QueryService;
 using zetta::test::TempDir;
 
@@ -76,7 +76,7 @@ std::size_t blob_line_count(const std::string& blob) {
 // Assert the partition row ranges tile [0, total) contiguously with no gaps or
 // overlaps, in the order the catalog returns them.
 void expect_ranges_tile(
-    const std::vector<std::shared_ptr<zetta::DatasetPartition>>& partitions,
+    const std::vector<std::shared_ptr<zetta::data::DatasetPartition>>& partitions,
     std::uint64_t total) {
     std::uint64_t expected_start = 0;
     for (const auto& partition : partitions) {
@@ -99,7 +99,7 @@ TEST(PartitionWriter, HashPartitionedLoadProducesBlobsAndCatalogRows) {
     fx.table->set_partitioner(std::make_shared<HashPartitioner>(
         /*P=*/4, std::vector<std::string>{"id"}));
 
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);
     ASSERT_TRUE(result.ok()) << result.error;
 
@@ -141,7 +141,7 @@ TEST(PartitionWriter, BlobsCarryEveryRowExactlyOnce) {
     fx.table->set_partitioner(std::make_shared<HashPartitioner>(
         /*P=*/8, std::vector<std::string>{"id"}));
 
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);
     ASSERT_TRUE(result.ok()) << result.error;
 
@@ -176,7 +176,7 @@ TEST(PartitionWriter, SinglePartitionerWritesOneFullRangeBlob) {
     fx.table->set_partitioner(std::make_shared<SinglePartitioner>());
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table, members);
     ASSERT_TRUE(result.ok()) << result.error;
 
@@ -196,7 +196,7 @@ TEST(PartitionWriter, RoundRobinStampsSurrogateAndBalances) {
     Fixture fx{tmp, /*count=*/8};  // rows have no _seq; the write path stamps it
     fx.table->set_partitioner(std::make_shared<RoundRobinPartitioner>(/*P=*/4));
 
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);
     ASSERT_TRUE(result.ok()) << result.error;
 
@@ -218,7 +218,7 @@ TEST(PartitionWriter, RendezvousPlacementRecordsShardedOwners) {
         /*partition_count=*/8, /*replication_factor=*/2));
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table, members);
     ASSERT_TRUE(result.ok()) << result.error;
 
@@ -244,7 +244,7 @@ TEST(PartitionWriter, DefaultMembersUseThisNode) {
     Fixture fx{tmp, /*count=*/3};
     fx.table->set_partitioner(std::make_shared<SinglePartitioner>());
 
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);  // no members → this node
     ASSERT_TRUE(result.ok()) << result.error;
     ASSERT_EQ(result.partitions.size(), 1u);
@@ -258,7 +258,7 @@ TEST(PartitionWriter, UnpartitionedTableIsRejected) {
     TempDir tmp;
     Fixture fx{tmp, /*count=*/4};
     // No partitioner configured.
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);
     EXPECT_FALSE(result.ok());
     EXPECT_FALSE(result.error.empty());
@@ -273,7 +273,7 @@ TEST(PartitionWriter, EmptyTableWritesNothing) {
     fx.table->set_partitioner(std::make_shared<HashPartitioner>(
         /*P=*/4, std::vector<std::string>{"id"}));
 
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);
     ASSERT_TRUE(result.ok()) << result.error;
     EXPECT_EQ(result.partitions.size(), 0u);
@@ -289,7 +289,7 @@ TEST(PartitionWriter, RecordedPartitionsAreQueryable) {
     fx.table->set_partitioner(std::make_shared<HashPartitioner>(
         /*P=*/4, std::vector<std::string>{"id"}));
 
-    const PartitionWriteResult result = zetta::write_partitioned(
+    const PartitionWriteResult result = zetta::data::write_partitioned(
         *fx.node, *fx.database, *fx.table);
     ASSERT_TRUE(result.ok()) << result.error;
 

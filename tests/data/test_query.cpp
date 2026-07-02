@@ -194,15 +194,15 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
     Node node{config_for(tmp)};
     node.start();
 
-    const std::string node_id = zetta::new_uuid();
-    zetta::ReplicationManager replication{node_id};
+    const std::string node_id = zetta::util::new_uuid();
+    zetta::cluster::ReplicationManager replication{node_id};
     replication.set(node_id, nlohmann::json{{"address", "127.0.0.1:43500"}});
 
-    zetta::ClusterConfig config;
+    zetta::cluster::ClusterConfig config;
     config.listen_host = "127.0.0.1";
     config.listen_port = 43500;
     config.port_range = 1;
-    zetta::Cluster cluster{node_id, config, &replication};
+    zetta::cluster::Cluster cluster{node_id, config, &replication};
     cluster.start();
 
     QueryService svc{node, &cluster};
@@ -508,7 +508,7 @@ TEST(QueryService, SelectsCloudStatusSystemTable) {
     EXPECT_EQ(empty.rows.size(), 0u);
 
     // Record a (consented) inspect result, as the Cloud Inspector would.
-    zetta::CloudInspectReport report;
+    zetta::cloud::CloudInspectReport report;
     report.provider_id = "aws";
     report.provider_name = "Amazon Web Services";
     report.ran = true;
@@ -544,7 +544,7 @@ TEST(QueryService, SelectsProvisionersSystemTable) {
 
     // Record a detected Azure context, as startup detection from the local `az`
     // CLI would (only the non-secret targeting; the CLI keeps its own credentials).
-    zetta::ProvisionerConfig provisioner;
+    zetta::cloud::ProvisionerConfig provisioner;
     provisioner.target = "azure";
     provisioner.cli = "az";
     provisioner.summary = "subscription sub-1 · my-rg · westus2";
@@ -596,20 +596,20 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     // A run.
     auto run = node.create_run("churn", "g1");
     ASSERT_TRUE(run);
-    run->set_status(zetta::RunStatus::Succeeded);
+    run->set_status(zetta::pipeline::RunStatus::Succeeded);
 
     // A principal with a scoped, capability-bearing key.
-    auto principal = node.create_principal("analyst", zetta::PrincipalKind::User);
+    auto principal = node.create_principal("analyst", zetta::governance::PrincipalKind::User);
     ASSERT_TRUE(principal);
-    zetta::Scope scope;
-    scope.grant(zetta::ResourceKind::Project, "churn");
-    zetta::CapabilitySet capabilities;
-    capabilities.grant(zetta::CapabilityDomain::Orchestration, "start_run");
+    zetta::governance::Scope scope;
+    scope.grant(zetta::governance::ResourceKind::Project, "churn");
+    zetta::governance::CapabilitySet capabilities;
+    capabilities.grant(zetta::governance::CapabilityDomain::Orchestration, "start_run");
     auto key = principal->create_key(scope, capabilities);
     ASSERT_TRUE(key);
 
     // An audit event (authorize records a data_access decision).
-    node.authorize(key->id(), zetta::Resource{zetta::ResourceKind::Project, "churn"});
+    node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"});
 
     // zetta_runs
     auto runs = svc.run("SELECT * FROM system.zetta_runs;", "");
@@ -683,13 +683,13 @@ TEST(QueryService, SelectsDatasetsSystemTable) {
     auto events = db->create_table("events");
     ASSERT_TRUE(events);
     for (int i = 0; i < 4; ++i) events->add_row(nlohmann::json{{"i", i}});
-    zetta::DatasetPartitionValue p0;
+    zetta::data::DatasetPartitionValue p0;
     p0.table = events->id();
     p0.blob_ref = "lo:body0";
     p0.row_range = {0, 2};
     p0.owner_nodes = {"node-a", "node-b"};
     ASSERT_TRUE(node.create_dataset_partition(p0));
-    zetta::DatasetPartitionValue p1;
+    zetta::data::DatasetPartitionValue p1;
     p1.table = events->id();
     p1.blob_ref = "lo:body1";
     p1.row_range = {2, 4};

@@ -19,33 +19,33 @@ union SDL_Event;
 struct ImGuiStyle;
 struct ImFont;
 
+namespace zetta { class Node; }
+namespace zetta::cluster { class Cluster; }
+namespace zetta::cluster { struct NodeStatus; }
+namespace zetta::data { struct DatasetSummary; }
+namespace zetta::pipeline { struct ValidationReport; }
+namespace zetta::pipeline { class Project; }
+namespace zetta::pipeline { class ProjectGraph; }
+namespace zetta::pipeline { struct ClusterPlan; }
+namespace zetta::ir { class ExecutionGraph; }
+namespace zetta::query { class QueryService; }
+namespace zetta::repl { class ConsoleModel; }
+namespace zetta::repl { class GovernedConsole; }
+namespace zetta::testkit { class TestOptions; }
+namespace zetta::testkit { struct TestResult; }
+namespace zetta::testkit { struct TestCase; }
+namespace zetta::gui { struct AddNodesOp; }
+namespace zetta::gui { struct VmSizesOp; }
+
+namespace zetta::cloud { class Provisioner; }
+namespace zetta::cloud { struct CloudProvider; }
+
 namespace zetta {
 
-class Node;
-class Cluster;
-class Provisioner;
-struct NodeStatus;
-struct DatasetSummary;
-struct ValidationReport;
-struct CloudProvider;
-class Project;
-class ProjectGraph;
-struct ClusterPlan;
-namespace ir {
-class ExecutionGraph;
-}
-namespace query {
-class QueryService;
-}
-namespace repl {
-class ConsoleModel;
-class GovernedConsole;
-}
-namespace testkit {
-class TestOptions;
-struct TestResult;
-struct TestCase;
-}  // namespace testkit
+
+
+
+
 
 namespace gui {
 
@@ -56,19 +56,17 @@ class ReplConsole;  // the CMP-6 REPL component (src/gui/repl_console.hpp)
 // its result into this shared state; the UI thread polls it each frame, applies
 // the result to the node (apply_added_nodes) on its own thread, and renders a
 // progress bar. Held by shared_ptr so the coroutine + its completion keep it alive.
-struct AddNodesOp;
 
 // In-flight async fetch of the VM-size dropdown options for a region (`az vm
 // list-skus` is region-dependent + slow, so it runs off the UI thread via
 // runtime::spawn, like AddNodesOp). Defined in app_operations.cpp.
-struct VmSizesOp;
 
 // The headed run mode: an SDL3 + Dear ImGui window rendering a live view of a
 // zetta::Node. Owns the window, renderer, and ImGui context for its lifetime —
 // construct it, init(), run(), then let it destruct.
 class App {
 public:
-    App(Node& node, Cluster& cluster);
+    App(Node& node, zetta::cluster::Cluster& cluster);
     ~App();
 
     App(const App&) = delete;
@@ -88,7 +86,7 @@ public:
     // cluster fleet); a configured deployment can inject cloud provisioners for
     // their targets, which stay consent-gated in the control. `provisioner` must
     // outlive the App. Targets with no injected provisioner render but can't act.
-    void set_provisioner(const std::string& target_id, Provisioner& provisioner);
+    void set_provisioner(const std::string& target_id, zetta::cloud::Provisioner& provisioner);
 
 private:
     // The single active view shown in the content area. The menu bar selects
@@ -162,7 +160,7 @@ private:
     // The partition-placement-across-the-cluster overlay inside draw_datasets:
     // one node box per cluster member (the draw_cluster grammar), highlighting
     // which nodes own a partition of the selected dataset.
-    void draw_dataset_placement(const DatasetSummary& dataset);
+    void draw_dataset_placement(const zetta::data::DatasetSummary& dataset);
     void draw_query();       // the SQL text area + results
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
@@ -178,7 +176,7 @@ private:
     // The detail pane below the cluster canvas: full id, role, address,
     // membership, replication status, and (for self) reachable addresses + peer
     // count for the selected node. `nodes` is the live Cluster::nodes() snapshot.
-    void draw_cluster_node_detail(const std::vector<NodeStatus>& nodes);
+    void draw_cluster_node_detail(const std::vector<zetta::cluster::NodeStatus>& nodes);
     // The live pipeline-activity strip below the cluster canvas (#590, epic #575
     // area 5): the real instrumentation the distributed-algorithm overlay animates
     // — collective rounds + wire/near-data byte totals + placement/rebalance tallies
@@ -186,7 +184,7 @@ private:
     // snapshot draw_cluster already read this frame (a thin renderer; no new reads).
     void draw_pipeline_activity(const PipelineInputs& pipeline);
     // The "Add nodes" control in the Cluster view (epic #575 area 1): pick a
-    // target (the provider catalog), a count, and drive zetta::add_nodes over the
+    // target (the provider catalog), a count, and drive zetta::cloud::add_nodes over the
     // injected Provisioner for that target. The given-hardware Local target runs
     // immediately (it brings up no new machines, touches no cloud); every cloud /
     // Kubernetes / on-prem target is **permission-gated, deny-by-default** — adding
@@ -202,7 +200,7 @@ private:
     // `az vmss create` no longer freezes the window; poll_add_nodes() applies the
     // result on the UI thread when it finishes. A no-op while an op is already in
     // flight (the button is disabled meanwhile).
-    void run_add_nodes(const CloudProvider& target);
+    void run_add_nodes(const zetta::cloud::CloudProvider& target);
     // Poll the in-flight async add-nodes op each frame: when the coroutine has
     // finished, apply its result to the node (apply_added_nodes, on the UI thread),
     // record the run's duration as the ETA baseline, set the status line, and clear
@@ -211,17 +209,17 @@ private:
     void poll_add_nodes();
     // The Provisioner injected for `target_id` (set_provisioner), or nullptr when
     // none is wired for that target.
-    Provisioner* provisioner_for(const std::string& target_id) const;
+    zetta::cloud::Provisioner* provisioner_for(const std::string& target_id) const;
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
     // Run a provider's read-only inspect (CloudInspector) and cache the result on
     // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
     // never on a passive render — this is the one place the GUI touches a cloud,
     // and only after explicit consent. Synchronous (briefly blocks the UI thread,
     // which owns the node, so no races); a deliberate per-click action.
-    void run_cloud_inspect(const CloudProvider& provider);
+    void run_cloud_inspect(const zetta::cloud::CloudProvider& provider);
     // Render the cached inspect result for `provider` (from the node). Read-only;
     // triggers no cloud call. Shown inside the granted consent gate.
-    void draw_cloud_inspect_result(const CloudProvider& provider);
+    void draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider);
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_models();      // standalone models (system.zetta_models): list + detail + add
     // The inline "Add model" affordance inside draw_models: register/import a model
@@ -270,20 +268,20 @@ private:
     // When `plan` is non-null, each step is overlaid with its projected cluster
     // placement — a coloured left stripe + a mono badge (near-data / fan-out /
     // all nodes / coordinator) — turning the canvas into a graph-over-cluster view.
-    void draw_graph_canvas(const ClusterPlan* plan);
+    void draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan);
     // The cluster-plan section below the canvas (#591): a legend, the current
     // cluster's node strip (the nodes the selected step lands on are highlighted),
     // and a per-step placement table. A thin, read-only projection of how the graph
     // would run over the live cluster (zetta's SPMD + compute-near-data model).
-    void draw_graph_plan(const ClusterPlan& plan);
+    void draw_graph_plan(const zetta::pipeline::ClusterPlan& plan);
     // Build the cluster-plan projection for the open working-copy graph over the
     // live cluster: resolve each step's source table → partition owners (from the
     // dataset-partition catalog) and project placement via project_cluster_plan.
-    ClusterPlan build_graph_plan() const;
+    zetta::pipeline::ClusterPlan build_graph_plan() const;
     // The add/rename/delete controls + Save/Revert below the canvas.
-    void draw_graph_editor(Project& project);
+    void draw_graph_editor(zetta::pipeline::Project& project);
     // Load a fresh working copy of `stored` for editing (clears selection/dirty).
-    void open_graph(const ProjectGraph& stored);
+    void open_graph(const zetta::pipeline::ProjectGraph& stored);
 
     void handle_incoming_files();  // drain + route the queue (main thread)
     void enqueue_file(std::string path, FileIntent intent);
@@ -295,7 +293,7 @@ private:
                                       int filter);
 
     Node& node_;
-    Cluster& cluster_;
+    zetta::cluster::Cluster& cluster_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
     // Geist Mono face for labels / counts / metrics / paths (the design system's
@@ -366,7 +364,7 @@ private:
     // result line (coloured amber via `add_nodes_status_warn_` when it came up
     // short). There is no persisted "granted" state — the cloud Allow button IS the
     // per-action consent, so a cloud add asks every time (deny-by-default).
-    std::map<std::string, Provisioner*> provisioners_;
+    std::map<std::string, zetta::cloud::Provisioner*> provisioners_;
     std::string selected_add_target_{"local"};
     int add_nodes_count_ = 1;
     std::string add_nodes_status_;
@@ -494,7 +492,7 @@ private:
     // validates it against the IR schema at the boundary.
     std::string gate_graph_input_;
     std::string gate_error_;
-    std::unique_ptr<ValidationReport> gate_report_;
+    std::unique_ptr<zetta::pipeline::ValidationReport> gate_report_;
 
     // Deploy panel: the selected AI Solution Library blueprint (by id), the
     // chosen placement on the dial (R1: only Local is functional), and the last

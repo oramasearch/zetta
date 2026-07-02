@@ -6,7 +6,7 @@
 
 #include "zetta/ir/serialization.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
 ProjectGraph::ProjectGraph(std::string id, std::string project_id,
@@ -39,4 +39,4 @@ void ProjectGraph::persist() const {
     out << document.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

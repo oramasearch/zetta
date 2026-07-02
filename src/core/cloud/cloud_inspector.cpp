@@ -9,7 +9,7 @@
 
 #include "zetta/util/timestamp.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 namespace {
 
 // The CloudInspectReport JSON Schema (draft-07) — zetta's own contract for the
@@ -389,7 +389,7 @@ CloudInspectReport CloudInspector::inspect(const CloudProvider& provider) const 
     CloudInspectReport report;
     report.provider_id = provider.id;
     report.provider_name = provider.name;
-    report.checked_at = now_iso8601();
+    report.checked_at = zetta::util::now_iso8601();
 
     if (!provider.runnable()) {
         // Described but not yet runnable (bare-metal's ssh needs a host). Report
@@ -504,4 +504,4 @@ std::optional<CloudInspectReport> parse_cloud_inspect_report(
     return report;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

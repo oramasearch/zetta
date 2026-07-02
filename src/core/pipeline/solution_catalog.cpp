@@ -9,7 +9,7 @@
 
 #include "zetta/ir/serialization.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace {
 
 // The catalog JSON Schema (draft-07). One declarative source of truth for the
@@ -312,4 +312,4 @@ const Solution* SolutionCatalog::find(const std::string& id) const {
     return nullptr;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

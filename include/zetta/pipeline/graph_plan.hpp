@@ -25,11 +25,9 @@
 // IR — validated by ir::from_json — and the partition-owner sets, derived from the
 // schema-validated dataset_partition catalog), so it adds NO new JSON boundary. See
 // docs/pipeline/graph-plan.md.
-namespace zetta {
+namespace zetta::ir { class ExecutionGraph; }
 
-namespace ir {
-class ExecutionGraph;
-}
+namespace zetta::pipeline {
 
 // How one graph step is projected to run over the current cluster.
 enum class StepPlacement {
@@ -82,4 +80,4 @@ ClusterPlan project_cluster_plan(
     const ir::ExecutionGraph& graph, const std::vector<std::string>& members,
     const std::unordered_map<std::string, std::vector<std::string>>& direct_owners);
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

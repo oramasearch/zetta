@@ -6,7 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::data {
 
 // The per-table / per-database replication strategy (ENT-35) — *how* a given
 // table or database's replicated state is laid out across the cluster. It is the
@@ -127,4 +127,4 @@ private:
 // enters from outside, e.g. a future API/DDL boundary).
 ReplicationStrategy replication_strategy_from_meta(const nlohmann::json& meta);
 
-}  // namespace zetta
+}  // namespace zetta::data

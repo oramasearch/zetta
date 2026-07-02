@@ -11,7 +11,7 @@
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/compute/scaling_policy.hpp"
 
-namespace zetta {
+namespace zetta::compute {
 
 class ComputeJob;  // include/zetta/compute/compute_job.hpp — the running job we steer.
 
@@ -66,7 +66,7 @@ struct AutoscalerConfig {
     // The per-node capability floor each provisioned node must meet (passed in the
     // ProvisionRequest on a scale-up). A default (no-floor) NodeCapability is
     // satisfied by every node.
-    NodeCapability node_spec;
+    zetta::cloud::NodeCapability node_spec;
 
     // Hysteresis: how many **consecutive** ticks must recommend the **same**
     // direction before the loop acts on it. The anti-thrash guard — a one-off
@@ -125,7 +125,7 @@ public:
     using ObservationSource = std::function<JobObservation()>;
 
     JobAutoscaler(const ComputeJob& job, ScalingPolicy policy,
-                  Provisioner& provisioner, ObservationSource observe,
+                  zetta::cloud::Provisioner& provisioner, ObservationSource observe,
                   AutoscalerConfig config = {});
 
     // Run one control-loop tick: read the allocation, observe, score the policy,
@@ -149,7 +149,7 @@ public:
 private:
     const ComputeJob& job_;
     ScalingPolicy policy_;
-    Provisioner& provisioner_;
+    zetta::cloud::Provisioner& provisioner_;
     ObservationSource observe_;
     AutoscalerConfig config_;
 
@@ -163,4 +163,4 @@ private:
     std::uint64_t total_scale_downs_ = 0;
 };
 
-}  // namespace zetta
+}  // namespace zetta::compute

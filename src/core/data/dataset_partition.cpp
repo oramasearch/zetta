@@ -10,7 +10,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::data {
 namespace fs = std::filesystem;
 
 namespace {
@@ -131,7 +131,7 @@ std::optional<DatasetPartitionValue> parse_dataset_partition_value(
 // ----- DatasetPartition ------------------------------------------------------
 
 DatasetPartition::DatasetPartition(std::string id, DatasetPartitionValue value,
-                                   fs::path dir, ReplicationManager* replication)
+                                   fs::path dir, zetta::cluster::ReplicationManager* replication)
     : id_(std::move(id)),
       value_(std::move(value)),
       dir_(std::move(dir)),
@@ -162,4 +162,4 @@ void DatasetPartition::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

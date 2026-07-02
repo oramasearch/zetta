@@ -9,11 +9,11 @@
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 
-using zetta::default_gate;
-using zetta::parse_solution_catalog;
-using zetta::Solution;
-using zetta::SolutionCatalog;
-using zetta::solution_catalog_schema;
+using zetta::pipeline::default_gate;
+using zetta::pipeline::parse_solution_catalog;
+using zetta::pipeline::Solution;
+using zetta::pipeline::SolutionCatalog;
+using zetta::pipeline::solution_catalog_schema;
 
 namespace {
 
@@ -50,7 +50,7 @@ TEST(SolutionCatalog, BuiltinIsNonEmptyAndValid) {
 
     // Every built-in blueprint is presentation-complete and carries a non-empty
     // graph that passes the correctness gate — i.e. it is actually deployable.
-    const zetta::CorrectnessGate gate = default_gate();
+    const zetta::pipeline::CorrectnessGate gate = default_gate();
     for (const Solution& solution : catalog.solutions()) {
         EXPECT_FALSE(solution.id.empty());
         EXPECT_FALSE(solution.name.empty());

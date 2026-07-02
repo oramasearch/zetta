@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace zetta {
+namespace zetta::pipeline {
 
 std::string to_string(CheckStatus status) {
     switch (status) {
@@ -118,4 +118,4 @@ std::optional<ValidationReport> validation_report_from_json(
     return parsed;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

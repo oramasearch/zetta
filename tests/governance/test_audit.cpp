@@ -19,17 +19,17 @@
 #include "zetta/governance/scope.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::AuditAction;
-using zetta::AuditEventValue;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::DeploymentTarget;
+using zetta::governance::AuditAction;
+using zetta::governance::AuditEventValue;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::pipeline::DeploymentTarget;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
-using zetta::Resource;
-using zetta::ResourceKind;
-using zetta::Scope;
+using zetta::cluster::ReplicationManager;
+using zetta::governance::Resource;
+using zetta::governance::ResourceKind;
+using zetta::governance::Scope;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 using zetta::test::TempDir;
@@ -190,7 +190,7 @@ TEST(AuditTrail, PersistsAcrossRestartViaDisk) {
 
 TEST(AuditTrail, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     {
         ReplicationManager replication{node_id};
         Node node{config_for(tmp), &replication};
@@ -222,8 +222,8 @@ TEST(AuditTrail, PersistsAcrossRestartViaCRDT) {
 TEST(AuditTrail, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
@@ -280,28 +280,28 @@ TEST(AuditTrail, SchemaRejectsMalformedValuesAtTheBoundary) {
     value.target = "churn";
     value.time = "2026-06-25T14:00:00.000Z";
     EXPECT_TRUE(
-        zetta::validate_audit_event_value(zetta::to_json(value), &error))
+        zetta::governance::validate_audit_event_value(zetta::governance::to_json(value), &error))
         << error;
 
     // Unknown action enum.
-    EXPECT_FALSE(zetta::validate_audit_event_value(
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(
         json{{"action", "exploded"}, {"time", "t"}}, &error));
     // Missing the required action field.
-    EXPECT_FALSE(zetta::validate_audit_event_value(json{{"time", "t"}}, &error));
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(json{{"time", "t"}}, &error));
     // Missing the required time field.
-    EXPECT_FALSE(zetta::validate_audit_event_value(
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(
         json{{"action", "data_access"}}, &error));
     // Wrong type for a field.
-    EXPECT_FALSE(zetta::validate_audit_event_value(
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(
         json{{"action", "data_access"}, {"time", "t"}, {"allowed", "yes"}},
         &error));
     // A stray top-level field (additionalProperties: false).
-    EXPECT_FALSE(zetta::validate_audit_event_value(
+    EXPECT_FALSE(zetta::governance::validate_audit_event_value(
         json{{"action", "data_access"}, {"time", "t"}, {"surprise", 1}},
         &error));
 
     // parse_audit_event_value rejects the same and returns nullopt with a reason.
-    EXPECT_FALSE(zetta::parse_audit_event_value(json{{"action", "exploded"}},
+    EXPECT_FALSE(zetta::governance::parse_audit_event_value(json{{"action", "exploded"}},
                                                 &error));
     EXPECT_FALSE(error.empty());
 }
@@ -312,7 +312,7 @@ TEST(AuditTrail, InvalidAuditJsonOnDiskIsSkipped) {
     const std::filesystem::path audit = tmp.path() / "audit";
     std::filesystem::create_directories(audit);
     {
-        std::ofstream out(audit / (zetta::new_uuid() + ".json"));
+        std::ofstream out(audit / (zetta::util::new_uuid() + ".json"));
         out << R"({"id":"x","action":"exploded","time":"t"})" << '\n';
     }
 

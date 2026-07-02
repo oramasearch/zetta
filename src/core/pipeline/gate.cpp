@@ -6,7 +6,7 @@
 #include "zetta/usecases/churn/entity_resolution_check.hpp"
 #include "zetta/pipeline/graph_checks.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 
 namespace {
 
@@ -80,8 +80,8 @@ CorrectnessGate default_gate() {
     // The entity-resolution correctness eval (#312 / TC-4). A no-op (vacuous
     // pass) on graphs without an entity-resolution step, so it is safe in the
     // baseline gate; it blocks deploy only when a step conflates accounts.
-    gate.add_check(std::make_shared<EntityResolutionCheck>());
+    gate.add_check(std::make_shared<zetta::usecases::churn::EntityResolutionCheck>());
     return gate;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

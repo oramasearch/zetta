@@ -30,12 +30,12 @@ namespace {
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
-using zetta::JsonStore;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
+using zetta::storage::JsonStore;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::CpuDevice;

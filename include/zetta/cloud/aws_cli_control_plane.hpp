@@ -6,7 +6,7 @@
 #include "zetta/cloud/aws_provisioner.hpp"
 #include "zetta/cloud/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 
-namespace zetta {
+namespace zetta::cloud {
 
 // AwsCliControlPlane — the **reference** AwsControlPlane binding (#377): it drives
 // AWS by shelling out to the `aws` CLI (no AWS C++ SDK, honoring the "no cloud SDK
@@ -55,4 +55,4 @@ private:
     CommandRunner runner_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

@@ -16,7 +16,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::ml {
 namespace fs = std::filesystem;
 
 namespace {
@@ -145,7 +145,7 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
 // ----- Model -----------------------------------------------------------------
 
 Model::Model(std::string id, ModelValue value, fs::path dir,
-             ReplicationManager* replication)
+             zetta::cluster::ReplicationManager* replication)
     : id_(std::move(id)),
       value_(std::move(value)),
       dir_(std::move(dir)),
@@ -182,7 +182,7 @@ bool Model::set_weights(std::string_view bytes) {
     if (!write_weights_body(bytes)) return false;
     ModelWeights weights;
     weights.size = bytes.size();
-    weights.sha256 = sha256_hex(bytes);
+    weights.sha256 = zetta::util::sha256_hex(bytes);
     value_.weights = weights;
     capture_and_persist();
     return true;
@@ -245,4 +245,4 @@ void Model::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::ml

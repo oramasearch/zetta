@@ -81,20 +81,20 @@ std::vector<std::string> tokenize(const std::string& text) {
 
 constexpr std::string_view kReferenceBackend = "tf_reference";
 
-class ReferenceFulltextBackend final : public IndexBackend {
+class ReferenceFulltextBackend final : public zetta::index::IndexBackend {
 public:
     std::string name() const override { return std::string(kReferenceBackend); }
-    IndexKind kind() const override { return IndexKind::Search; }
+    zetta::index::IndexKind kind() const override { return zetta::index::IndexKind::Search; }
 
-    IndexStatus build(const IndexSpec& spec,
-                      std::span<const IndexPartition> partitions) override {
-        if (spec.kind != IndexKind::Search) {
-            return IndexStatus::unsupported("tf_reference is search-only");
+    zetta::index::IndexStatus build(const zetta::index::IndexSpec& spec,
+                      std::span<const zetta::index::IndexPartition> partitions) override {
+        if (spec.kind != zetta::index::IndexKind::Search) {
+            return zetta::index::IndexStatus::unsupported("tf_reference is search-only");
         }
-        if (spec.fields.empty()) return IndexStatus::invalid_argument("no fields");
+        if (spec.fields.empty()) return zetta::index::IndexStatus::invalid_argument("no fields");
         Built built;
-        for (const IndexPartition& partition : partitions) {
-            for (const IndexDocument& document : partition.documents) {
+        for (const zetta::index::IndexPartition& partition : partitions) {
+            for (const zetta::index::IndexDocument& document : partition.documents) {
                 if (!document.doc.is_object()) continue;
                 std::map<std::string, int> counts;
                 for (const std::string& field : spec.fields) {
@@ -109,20 +109,20 @@ public:
             }
         }
         indexes_[spec.key()] = std::move(built);
-        return IndexStatus::success();
+        return zetta::index::IndexStatus::success();
     }
 
-    IndexQueryResult query(const IndexSpec& spec,
-                           const IndexQuery& query) const override {
-        IndexQueryResult result;
+    zetta::index::IndexQueryResult query(const zetta::index::IndexSpec& spec,
+                           const zetta::index::IndexQuery& query) const override {
+        zetta::index::IndexQueryResult result;
         const auto found = indexes_.find(spec.key());
         if (found == indexes_.end()) {
-            result.status = IndexStatus::not_found("no index for " + spec.key());
+            result.status = zetta::index::IndexStatus::not_found("no index for " + spec.key());
             return result;
         }
         const std::vector<std::string> query_tokens = tokenize(
             query.term.is_string() ? query.term.get<std::string>() : query.term.dump());
-        std::vector<FulltextHit> hits;
+        std::vector<zetta::index::FulltextHit> hits;
         for (const Doc& doc : found->second.docs) {
             double score = 0.0;
             for (const std::string& token : query_tokens) {
@@ -132,22 +132,22 @@ public:
             if (score > 0.0) hits.push_back({doc.id, score});
         }
         std::stable_sort(hits.begin(), hits.end(),
-                         [](const FulltextHit& a, const FulltextHit& b) {
+                         [](const zetta::index::FulltextHit& a, const zetta::index::FulltextHit& b) {
                              if (a.score != b.score) return a.score > b.score;
                              return a.row_id < b.row_id;
                          });
         if (query.top_k > 0 && hits.size() > query.top_k) hits.resize(query.top_k);
-        for (const FulltextHit& hit : hits) {
+        for (const zetta::index::FulltextHit& hit : hits) {
             result.row_ids.push_back(hit.row_id);
             result.scores.push_back(hit.score);
         }
-        result.status = IndexStatus::success();
+        result.status = zetta::index::IndexStatus::success();
         return result;
     }
 
-    IndexStatus drop(const IndexSpec& spec) override {
+    zetta::index::IndexStatus drop(const zetta::index::IndexSpec& spec) override {
         indexes_.erase(spec.key());
-        return IndexStatus::success();
+        return zetta::index::IndexStatus::success();
     }
 
 private:
@@ -164,8 +164,8 @@ private:
 // Make the chosen backend (real BM25F when the engine is compiled in, else the
 // reference scorer) — used both per node and for the consolidated oracle so the
 // rankings are directly comparable.
-std::shared_ptr<IndexBackend> make_backend(bool real_engine) {
-    if (real_engine) return std::make_shared<OramaCoreFulltextIndex>();
+std::shared_ptr<zetta::index::IndexBackend> make_backend(bool real_engine) {
+    if (real_engine) return std::make_shared<zetta::index::OramaCoreFulltextIndex>();
     return std::make_shared<ReferenceFulltextBackend>();
 }
 
@@ -173,13 +173,13 @@ std::shared_ptr<IndexBackend> make_backend(bool real_engine) {
 // queried once — the single source of truth the per-partition distributed query
 // must match.
 std::vector<std::string> consolidated_oracle(
-    const std::vector<std::shared_ptr<Table>>& tables, bool real_engine,
-    const IndexSpec& spec, const IndexQuery& query) {
-    const std::shared_ptr<IndexBackend> oracle = make_backend(real_engine);
-    std::vector<IndexPartition> all;
-    for (const std::shared_ptr<Table>& table : tables) {
+    const std::vector<std::shared_ptr<zetta::data::Table>>& tables, bool real_engine,
+    const zetta::index::IndexSpec& spec, const zetta::index::IndexQuery& query) {
+    const std::shared_ptr<zetta::index::IndexBackend> oracle = make_backend(real_engine);
+    std::vector<zetta::index::IndexPartition> all;
+    for (const std::shared_ptr<zetta::data::Table>& table : tables) {
         if (!table) continue;
-        for (IndexPartition& partition : read_index_partitions(table->store())) {
+        for (zetta::index::IndexPartition& partition : zetta::index::read_index_partitions(table->store())) {
             all.push_back(std::move(partition));
         }
     }
@@ -218,12 +218,12 @@ std::vector<nlohmann::json> postgres_corpus(std::size_t copies) {
     return corpus;
 }
 
-IndexSpec articles_spec(const std::string& backend) {
-    return IndexSpec{"articles", IndexKind::Search, backend, {"title", "body"}};
+zetta::index::IndexSpec articles_spec(const std::string& backend) {
+    return zetta::index::IndexSpec{"articles", zetta::index::IndexKind::Search, backend, {"title", "body"}};
 }
 
-IndexQuery text_query(const std::string& term, std::size_t top_k) {
-    IndexQuery query;
+zetta::index::IndexQuery text_query(const std::string& term, std::size_t top_k) {
+    zetta::index::IndexQuery query;
     query.term = term;
     query.top_k = top_k;
     return query;
@@ -247,9 +247,9 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
     const std::size_t top_k =
         static_cast<std::size_t>(std::max<long>(0, options.get_int("top_k", 0)));
 
-    const bool real_engine = OramaCoreFulltextIndex::engine_available();
+    const bool real_engine = zetta::index::OramaCoreFulltextIndex::engine_available();
     const std::string backend_name =
-        real_engine ? std::string(OramaCoreFulltextIndex::kName)
+        real_engine ? std::string(zetta::index::OramaCoreFulltextIndex::kName)
                     : std::string(kReferenceBackend);
     context.emit(real_engine
                      ? "using the real oramacore-cpp BM25F backend"
@@ -264,26 +264,26 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
     LoopbackCluster cluster(nodes);
     if (!cluster.connected()) return TestResult::fail("cluster did not converge");
 
-    const IndexSpec spec = articles_spec(backend_name);
+    const zetta::index::IndexSpec spec = articles_spec(backend_name);
 
     context.emit("partitioning " + std::to_string(corpus.size()) +
                  " articles across " + std::to_string(nodes) +
                  " nodes (" + std::to_string(partitions) + " partitions each)");
-    std::vector<std::shared_ptr<Table>> tables(nodes);
+    std::vector<std::shared_ptr<zetta::data::Table>> tables(nodes);
     std::uint64_t total_rows_written = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
         Node& node = cluster.node(i);
-        std::shared_ptr<Database> database = node.create_database("data");
+        std::shared_ptr<zetta::data::Database> database = node.create_database("data");
         if (!database) {
             return TestResult::fail("create_database failed on node " + std::to_string(i));
         }
-        std::shared_ptr<Table> table = database->create_table("articles");
+        std::shared_ptr<zetta::data::Table> table = database->create_table("articles");
         if (!table) {
             return TestResult::fail("create_table failed on node " + std::to_string(i));
         }
-        table->set_partitioner(std::make_shared<RoundRobinPartitioner>(partitions));
+        table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(partitions));
         for (std::size_t r = i; r < corpus.size(); r += nodes) table->add_row(corpus[r]);
-        const PartitionWriteResult written = write_partitioned(node, *database, *table);
+        const zetta::data::PartitionWriteResult written = write_partitioned(node, *database, *table);
         if (!written.ok()) {
             return TestResult::fail("write_partitioned failed on node " +
                                     std::to_string(i) + ": " + written.error);
@@ -298,14 +298,14 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
     // One DistributedFulltextIndex per node over the chosen backend; build the
     // per-partition sub-indexes near data. Declared after the cluster so they
     // unregister their signal handlers before it tears down.
-    std::vector<std::unique_ptr<DistributedFulltextIndex>> indexes(nodes);
+    std::vector<std::unique_ptr<zetta::index::DistributedFulltextIndex>> indexes(nodes);
     std::size_t total_partitions_indexed = 0;
     std::uint64_t total_rows_indexed = 0;
     std::uint64_t total_local_bytes = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
-        indexes[i] = std::make_unique<DistributedFulltextIndex>(cluster.cluster(i),
+        indexes[i] = std::make_unique<zetta::index::DistributedFulltextIndex>(cluster.cluster(i),
                                                                 make_backend(real_engine));
-        const DistributedFulltextIndex::BuildResult build =
+        const zetta::index::DistributedFulltextIndex::BuildResult build =
             indexes[i]->build_local(cluster.node(i), spec);
         if (!build.ok()) {
             return TestResult::fail("node " + std::to_string(i) +
@@ -328,7 +328,7 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
     }
 
     // The consolidated oracle over EVERY node's rows.
-    const IndexQuery query = text_query("postgres", top_k);
+    const zetta::index::IndexQuery query = text_query("postgres", top_k);
     const std::vector<std::string> oracle =
         consolidated_oracle(tables, real_engine, spec, query);
     if (oracle.empty()) return TestResult::fail("the oracle matched no rows");
@@ -336,7 +336,7 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
     // Every node, acting as the query coordinator, scatters to its peers and merges —
     // and each must produce the IDENTICAL global ranking, equal to the oracle.
     context.emit("scatter-gather querying \"postgres\" from every node");
-    std::vector<DistributedFulltextIndex::QueryResult> results(nodes);
+    std::vector<zetta::index::DistributedFulltextIndex::QueryResult> results(nodes);
     std::vector<std::thread> threads;
     for (std::size_t i = 0; i < nodes; ++i) {
         threads.emplace_back([&, i] {
@@ -347,7 +347,7 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
 
     std::uint64_t total_wire_bytes = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
-        const DistributedFulltextIndex::QueryResult& result = results[i];
+        const zetta::index::DistributedFulltextIndex::QueryResult& result = results[i];
         if (!result.ok()) {
             return TestResult::fail("node " + std::to_string(i) +
                                     " query failed: " + result.status.message);

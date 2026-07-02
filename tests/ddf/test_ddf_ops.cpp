@@ -41,8 +41,8 @@ using zetta::ddf::Projection;
 using zetta::ddf::scan;
 
 // Build an in-memory store from a list of row docs.
-zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         store.add("row-" + std::to_string(i), rows[i]);
     }
@@ -60,7 +60,7 @@ DataFrameSchema int_schema(const std::vector<std::string>& names) {
 // --- scan --------------------------------------------------------------------
 
 TEST(DdfScan, InfersSchemaAndLoads) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"a", 1}, {"b", 2.5}, {"label", "x"}},
         {{"a", 3}, {"b", 4.5}, {"label", "y"}},
     });
@@ -78,7 +78,7 @@ TEST(DdfScan, InfersSchemaAndLoads) {
 
 TEST(DdfScan, WithExplicitSchemaLoadsFromTable) {
     zetta::test::TempDir tmp;
-    zetta::Table table("tbl-uuid", "events", tmp.path() / "tbl");
+    zetta::data::Table table("tbl-uuid", "events", tmp.path() / "tbl");
     table.add_row({{"amount", 10}, {"count", 2}});
     table.add_row({{"amount", 20}, {"count", 5}});
 
@@ -93,7 +93,7 @@ TEST(DdfScan, WithExplicitSchemaLoadsFromTable) {
 // --- filter ------------------------------------------------------------------
 
 TEST(DdfFilter, KeepsMatchingRows) {
-    const zetta::JsonStore store =
+    const zetta::storage::JsonStore store =
         make_store({{{"x", 1}}, {{"x", 2}}, {{"x", 3}}, {{"x", 4}}, {{"x", 5}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
@@ -110,7 +110,7 @@ TEST(DdfFilter, KeepsMatchingRows) {
 }
 
 TEST(DdfFilter, CoversEveryComparison) {
-    const zetta::JsonStore store =
+    const zetta::storage::JsonStore store =
         make_store({{{"x", 1}}, {{"x", 2}}, {{"x", 3}}, {{"x", 4}}, {{"x", 5}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
@@ -137,7 +137,7 @@ TEST(DdfFilter, GathersAndRepacksAcrossChunks) {
     // 7 rows, chunk_rows=3 -> chunks [3,3,1]; keep evens spread across chunks.
     std::vector<nlohmann::json> rows;
     for (int i = 0; i < 7; ++i) rows.push_back({{"x", i}});
-    const zetta::JsonStore store = make_store(rows);
+    const zetta::storage::JsonStore store = make_store(rows);
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device, /*chunk_rows=*/3);
     ASSERT_TRUE(scanned.ok());
@@ -157,7 +157,7 @@ TEST(DdfFilter, GathersAndRepacksAcrossChunks) {
 }
 
 TEST(DdfFilter, SelectingNoneYieldsEmptyFrame) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}, {{"x", 2}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}, {{"x", 2}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
     ASSERT_TRUE(scanned.ok());
@@ -174,7 +174,7 @@ TEST(DdfFilter, SelectingNoneYieldsEmptyFrame) {
 }
 
 TEST(DdfFilter, RejectsUnknownColumn) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
     ASSERT_TRUE(scanned.ok());
@@ -193,7 +193,7 @@ TEST(DdfFilter, RejectsEmptyFrame) {
 // --- project -----------------------------------------------------------------
 
 TEST(DdfProject, SelectsAndReordersColumns) {
-    const zetta::JsonStore store =
+    const zetta::storage::JsonStore store =
         make_store({{{"a", 1}, {"b", 2}, {"c", 3}}, {{"a", 4}, {"b", 5}, {"c", 6}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"a", "b", "c"}), device);
@@ -211,7 +211,7 @@ TEST(DdfProject, SelectsAndReordersColumns) {
 }
 
 TEST(DdfProject, ComputesUnaryAndBinaryColumns) {
-    const zetta::JsonStore store =
+    const zetta::storage::JsonStore store =
         make_store({{{"a", 1}, {"b", 10}}, {{"a", 3}, {"b", 30}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"a", "b"}), device);
@@ -234,7 +234,7 @@ TEST(DdfProject, ComputesUnaryAndBinaryColumns) {
 }
 
 TEST(DdfProject, ComputesFloatUnary) {
-    const zetta::JsonStore store = make_store({{{"x", 4.0}}, {{"x", 9.0}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 4.0}}, {{"x", 9.0}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Float64}};
     CpuDevice device;
@@ -251,7 +251,7 @@ TEST(DdfProject, ComputesFloatUnary) {
 }
 
 TEST(DdfProject, RejectsFloatOnlyOpOnIntegerColumn) {
-    const zetta::JsonStore store = make_store({{{"x", 4}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 4}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
     ASSERT_TRUE(scanned.ok());
@@ -264,7 +264,7 @@ TEST(DdfProject, RejectsFloatOnlyOpOnIntegerColumn) {
 }
 
 TEST(DdfProject, RejectsUnknownColumn) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
     ASSERT_TRUE(scanned.ok());
@@ -277,7 +277,7 @@ TEST(DdfProject, RejectsUnknownColumn) {
 }
 
 TEST(DdfProject, RejectsEmptyProjection) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}});
     CpuDevice device;
     auto scanned = scan(store, int_schema({"x"}), device);
     ASSERT_TRUE(scanned.ok());
@@ -289,7 +289,7 @@ TEST(DdfProject, RejectsEmptyProjection) {
 // --- the acceptance: scan -> filter -> project, multi-chunk ------------------
 
 TEST(DdfOps, ScanFilterProjectMatchesExpectedRowsAndCols) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"a", 1}, {"b", 10}, {"keep", 1}},
         {{"a", 2}, {"b", 20}, {"keep", 0}},
         {{"a", 3}, {"b", 30}, {"keep", 1}},
@@ -468,7 +468,7 @@ TEST(DdfOpsCudaParity, FilterProjectMatchCpu) {
     if (info.name == "cuda" || info.name.empty()) {
         GTEST_SKIP() << "no CUDA device present";
     }
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"a", 1}, {"b", 10}, {"keep", 1}},
         {{"a", 2}, {"b", 20}, {"keep", 0}},
         {{"a", 3}, {"b", 30}, {"keep", 1}},

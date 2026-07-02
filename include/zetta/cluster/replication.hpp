@@ -8,7 +8,8 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+
+namespace zetta::cluster {
 
 // What/whom to replicate. The first (and currently only) policy is
 // ReplicateToAllNodes: every node holds a full copy of all replicated state.
@@ -74,10 +75,11 @@ public:
     void merge(std::span<const std::byte> blob);
 
 private:
-    struct State;  // hides the Automerge backend
+    struct State;
+
     std::unique_ptr<State> state_;
     std::string node_id_;  // this node's UUID (its Automerge actor id)
     ReplicationPolicy policy_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cluster

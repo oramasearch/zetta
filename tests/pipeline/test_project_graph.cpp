@@ -17,11 +17,11 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
@@ -140,7 +140,7 @@ TEST(ProjectGraph, UpdateGraphGuardsNameAndContents) {
 
 TEST(ProjectGraph, UpdateGraphReplicatesAndSurvivesRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     nlohmann::json edited_json;
     std::string graph_id;
     {
@@ -213,7 +213,7 @@ TEST(ProjectGraph, PersistsAcrossRestartViaDisk) {
 
 TEST(ProjectGraph, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string graph_id;
     nlohmann::json serialized;
     {
@@ -260,8 +260,8 @@ TEST(ProjectGraph, PersistsAcrossRestartViaCRDT) {
 TEST(ProjectGraph, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};

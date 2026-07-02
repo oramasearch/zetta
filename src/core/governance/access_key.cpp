@@ -6,7 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::governance {
 namespace fs = std::filesystem;
 
 AccessKey::AccessKey(std::string id, std::string principal_id, Scope scope,
@@ -57,4 +57,4 @@ AccessDecision authorize(const AccessKey& key, const Operation& operation,
     return AccessDecision{false, label + " has no matching capability"};
 }
 
-}  // namespace zetta
+}  // namespace zetta::governance

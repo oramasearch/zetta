@@ -19,26 +19,26 @@
 #include "zetta/governance/scope.hpp"
 #include "zetta/util/timestamp.hpp"
 
-using zetta::AuditAction;
-using zetta::AzureConfig;
-using zetta::AzureControlPlane;
-using zetta::AzureProvisioner;
-using zetta::BurstIdentity;
-using zetta::BurstIdentityManager;
-using zetta::CapabilityDomain;
-using zetta::CapabilitySet;
-using zetta::Gpu;
-using zetta::GpuKind;
+using zetta::governance::AuditAction;
+using zetta::cloud::AzureConfig;
+using zetta::cloud::AzureControlPlane;
+using zetta::cloud::AzureProvisioner;
+using zetta::cloud::BurstIdentity;
+using zetta::cloud::BurstIdentityManager;
+using zetta::governance::CapabilityDomain;
+using zetta::governance::CapabilitySet;
+using zetta::cloud::Gpu;
+using zetta::cloud::GpuKind;
 using zetta::Node;
-using zetta::NodeCapability;
+using zetta::cloud::NodeCapability;
 using zetta::NodeConfig;
-using zetta::PrincipalKind;
-using zetta::ProvisionedNode;
-using zetta::ProvisionRequest;
-using zetta::ProvisionResult;
-using zetta::Provisioner;
-using zetta::ResourceKind;
-using zetta::Scope;
+using zetta::governance::PrincipalKind;
+using zetta::cloud::ProvisionedNode;
+using zetta::cloud::ProvisionRequest;
+using zetta::cloud::ProvisionResult;
+using zetta::cloud::Provisioner;
+using zetta::governance::ResourceKind;
+using zetta::governance::Scope;
 using zetta::test::TempDir;
 
 namespace {
@@ -202,8 +202,8 @@ TEST(BurstIdentity, BulkMintAndRevokeViaTheProvisionerSeam) {
 
         auto key = node.find_access_key(identity.key_id);
         ASSERT_TRUE(key);
-        EXPECT_TRUE(key->permits(zetta::Resource{ResourceKind::Project, "churn"}));
-        EXPECT_FALSE(key->permits(zetta::Resource{ResourceKind::Project, "fraud"}));
+        EXPECT_TRUE(key->permits(zetta::governance::Resource{ResourceKind::Project, "churn"}));
+        EXPECT_FALSE(key->permits(zetta::governance::Resource{ResourceKind::Project, "fraud"}));
     }
 
     // Each mint recorded a key_issued audit event; nothing revoked yet.
@@ -332,10 +332,10 @@ TEST(BurstIdentity, MintsServicePrincipalsScopedToTheJob) {
 
     // The key is TTL'd: live now, but a key with an elapsed cutoff would be denied.
     auto key = principal->keys().front();
-    EXPECT_TRUE(key->permits(zetta::Operation{CapabilityDomain::Orchestration, "run"},
-                             zetta::now_iso8601()));
+    EXPECT_TRUE(key->permits(zetta::governance::Operation{CapabilityDomain::Orchestration, "run"},
+                             zetta::util::now_iso8601()));
     EXPECT_FALSE(key->permits(
-        zetta::Operation{CapabilityDomain::Orchestration, "run"},
+        zetta::governance::Operation{CapabilityDomain::Orchestration, "run"},
         "3000-01-01T00:00:00.000Z"));  // past the TTL → denied
 
     node.stop();
@@ -401,16 +401,16 @@ TEST(BurstIdentity, MintedIdentitiesSurviveRestart) {
 // ---- the new audit actions round-trip + pass schema validation ---------------
 
 TEST(BurstIdentity, KeyIssuedAndRevokedActionsRoundTripAndValidate) {
-    EXPECT_EQ(zetta::to_string(AuditAction::KeyIssued), "key_issued");
-    EXPECT_EQ(zetta::to_string(AuditAction::KeyRevoked), "key_revoked");
-    EXPECT_EQ(zetta::audit_action_from("key_issued"), AuditAction::KeyIssued);
-    EXPECT_EQ(zetta::audit_action_from("key_revoked"), AuditAction::KeyRevoked);
+    EXPECT_EQ(zetta::governance::to_string(AuditAction::KeyIssued), "key_issued");
+    EXPECT_EQ(zetta::governance::to_string(AuditAction::KeyRevoked), "key_revoked");
+    EXPECT_EQ(zetta::governance::audit_action_from("key_issued"), AuditAction::KeyIssued);
+    EXPECT_EQ(zetta::governance::audit_action_from("key_revoked"), AuditAction::KeyRevoked);
 
-    zetta::AuditEventValue value;
+    zetta::governance::AuditEventValue value;
     value.action = AuditAction::KeyIssued;
     value.target = "key-123";
     value.time = "2026-06-25T14:00:00.000Z";
     std::string error;
-    EXPECT_TRUE(zetta::validate_audit_event_value(zetta::to_json(value), &error))
+    EXPECT_TRUE(zetta::governance::validate_audit_event_value(zetta::governance::to_json(value), &error))
         << error;
 }

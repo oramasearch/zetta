@@ -6,7 +6,7 @@
 
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // LocalProvisioner — the **given-hardware** Provisioner backend (ARC-13, #374),
 // the first concrete implementation of the Provisioner seam. It does NOT stand
@@ -62,4 +62,4 @@ private:
     FleetSource fleet_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

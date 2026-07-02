@@ -13,17 +13,17 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 
-using zetta::DefaultStepExecutor;
-using zetta::DeploymentTarget;
-using zetta::ExecutionResult;
-using zetta::GraphExecutor;
+using zetta::pipeline::DefaultStepExecutor;
+using zetta::pipeline::DeploymentTarget;
+using zetta::pipeline::ExecutionResult;
+using zetta::pipeline::GraphExecutor;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RunOutput;
-using zetta::RunStatus;
-using zetta::StepExecutor;
-using zetta::StepOutcome;
-using zetta::topological_order;
+using zetta::pipeline::RunOutput;
+using zetta::pipeline::RunStatus;
+using zetta::pipeline::StepExecutor;
+using zetta::pipeline::StepOutcome;
+using zetta::pipeline::topological_order;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
@@ -64,7 +64,7 @@ std::size_t count_outputs(const std::vector<RunOutput>& outputs,
         [&](const RunOutput& output) { return output.kind == kind; }));
 }
 
-bool has_log_containing(const std::shared_ptr<zetta::Run>& run,
+bool has_log_containing(const std::shared_ptr<zetta::pipeline::Run>& run,
                         const std::string& needle) {
     for (const auto& entry : run->logs()) {
         if (entry.message.find(needle) != std::string::npos) return true;
@@ -257,7 +257,7 @@ TEST(Executor, ProducedRunIsSchemaValidAndPersists) {
 
         // The produced value passes the Run JSON Schema (the storage boundary).
         std::string error;
-        EXPECT_TRUE(zetta::validate_run_value(result.run->metadata(), &error))
+        EXPECT_TRUE(zetta::pipeline::validate_run_value(result.run->metadata(), &error))
             << error;
         node.stop();
     }

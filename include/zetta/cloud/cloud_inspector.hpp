@@ -9,7 +9,7 @@
 #include "zetta/cloud/cloud_provider.hpp"
 #include "zetta/cloud/command_runner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // The outcome of one executed inspect command — the read-only identity/inventory
 // call a provider's CLI made. `output` is the captured stdout/stderr (truncated
@@ -79,4 +79,4 @@ bool validate_cloud_inspect_report(const nlohmann::json& value,
 std::optional<CloudInspectReport> parse_cloud_inspect_report(
     const nlohmann::json& value, std::string* error = nullptr);
 
-}  // namespace zetta
+}  // namespace zetta::cloud

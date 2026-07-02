@@ -27,7 +27,7 @@
 // node (e.g. one with a GPU) naturally processes more, with no fixed
 // per-node capability model. See docs/compute/work-stealing-scheduler.md.
 namespace zetta {
-class Cluster;
+namespace cluster { class Cluster; }
 }
 
 namespace zetta::compute {
@@ -68,7 +68,7 @@ namespace zetta::compute {
 // on its own thread and blocks on `Cluster::request` (never the network thread);
 // the `steal` / `steal_result` handlers run on the network thread and stay cheap
 // (hand out / store descriptors — the actual compute happens on the *stealer*).
-class DistributedScheduler : public SignalHandler {
+class DistributedScheduler : public zetta::cluster::SignalHandler {
 public:
     // How a (method, payload) task is executed. The payload + the return are raw
     // application bytes (the wire base64s them); this same executor must be
@@ -91,8 +91,8 @@ public:
 
     // `worker_count` local worker threads (0 = a pure source: this node hands its
     // work to peers and runs none itself). `cluster` must outlive this scheduler.
-    DistributedScheduler(Cluster& cluster, unsigned worker_count);
-    DistributedScheduler(Cluster& cluster, unsigned worker_count, Config config);
+    DistributedScheduler(zetta::cluster::Cluster& cluster, unsigned worker_count);
+    DistributedScheduler(zetta::cluster::Cluster& cluster, unsigned worker_count, Config config);
     ~DistributedScheduler() override;
 
     DistributedScheduler(const DistributedScheduler&) = delete;
@@ -138,9 +138,9 @@ public:
 
     // SignalHandler — steal / steal_result are handled here; the rest is
     // forwarded to the fallback (if any).
-    SignalResponse on_request(const Signal& request) override;
-    void on_event(const Signal& event) override;
-    void on_task(const Signal& task) override;
+    zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
+    void on_event(const zetta::cluster::Signal& event) override;
+    void on_task(const zetta::cluster::Signal& task) override;
 
 private:
     // One owned map() in flight. The pending deque is the authoritative source of
@@ -174,10 +174,10 @@ private:
     // never strands a job. Runs each steal-loop pass.
     void sweep_lost_assignments();
 
-    SignalResponse handle_steal(const Signal& request);
-    SignalResponse handle_steal_result(const Signal& request);
+    zetta::cluster::SignalResponse handle_steal(const zetta::cluster::Signal& request);
+    zetta::cluster::SignalResponse handle_steal_result(const zetta::cluster::Signal& request);
 
-    Cluster& cluster_;
+    zetta::cluster::Cluster& cluster_;
     const Config config_;
     WorkStealingScheduler local_;
     TaskExecutor executor_;

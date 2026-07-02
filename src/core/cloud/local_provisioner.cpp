@@ -3,7 +3,7 @@
 #include <string>
 #include <utility>
 
-namespace zetta {
+namespace zetta::cloud {
 
 LocalProvisioner::LocalProvisioner(FleetSource fleet)
     : fleet_(std::move(fleet)) {}
@@ -55,4 +55,4 @@ std::vector<ProvisionedNode> LocalProvisioner::current_fleet() const {
     return fleet_ ? fleet_() : std::vector<ProvisionedNode>{};
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

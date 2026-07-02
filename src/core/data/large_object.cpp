@@ -14,7 +14,7 @@
 
 #include "../catalog.hpp"
 
-namespace zetta {
+namespace zetta::data {
 namespace fs = std::filesystem;
 namespace {
 
@@ -35,7 +35,7 @@ bool write_bytes(const fs::path& path, const std::string& data) {
 }  // namespace
 
 LargeObjectStore::LargeObjectStore(fs::path dir, std::string database_id,
-                                   ReplicationManager* replication)
+                                   zetta::cluster::ReplicationManager* replication)
     : dir_(std::move(dir)),
       database_id_(std::move(database_id)),
       replication_(replication) {
@@ -94,10 +94,10 @@ std::optional<LargeObject> LargeObjectStore::import_file(const fs::path& src) {
 std::optional<LargeObject> LargeObjectStore::import_bytes(std::string name,
                                                           const std::string& bytes) {
     LargeObject lo;
-    lo.id = new_uuid();
+    lo.id = zetta::util::new_uuid();
     lo.name = std::move(name);
     lo.size = bytes.size();
-    lo.sha256 = sha256_hex(bytes);
+    lo.sha256 = zetta::util::sha256_hex(bytes);
     lo.body_present = true;
 
     const fs::path obj = object_dir(lo.id);
@@ -190,4 +190,4 @@ fs::path LargeObjectStore::object_dir(const std::string& id) const {
     return dir_ / id;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

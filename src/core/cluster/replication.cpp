@@ -14,7 +14,7 @@
 // src/core/replication.cpp is the CRDT adapter: the one .cpp that uses
 // automerge-cpp. ReplicationManager's public header exposes no Automerge types
 // (only JSON + bytes), so the rest of zetta stays decoupled from the backend.
-namespace zetta {
+namespace zetta::cluster {
 namespace am = automerge_cpp;
 
 struct ReplicationManager::State {
@@ -29,7 +29,7 @@ ReplicationManager::ReplicationManager(std::string node_id,
       policy_(policy) {
     // The node's UUID is its Automerge actor id (distinct per node, so
     // concurrent changes merge conflict-free).
-    state_->document.set_actor_id(am::ActorId{uuid_to_bytes(node_id_)});
+    state_->document.set_actor_id(am::ActorId{zetta::util::uuid_to_bytes(node_id_)});
 }
 
 ReplicationManager::~ReplicationManager() = default;
@@ -105,4 +105,4 @@ void ReplicationManager::merge(std::span<const std::byte> blob) {
     state_->document.merge(*other);
 }
 
-}  // namespace zetta
+}  // namespace zetta::cluster

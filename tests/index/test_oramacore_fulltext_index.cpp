@@ -11,14 +11,14 @@
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #include "zetta/ir/execution_graph.hpp"
 
-using zetta::IndexDocument;
-using zetta::IndexKind;
-using zetta::IndexPartition;
-using zetta::IndexQuery;
-using zetta::IndexRegistry;
-using zetta::IndexSpec;
-using zetta::IndexStatusCode;
-using zetta::OramaCoreFulltextIndex;
+using zetta::index::IndexDocument;
+using zetta::index::IndexKind;
+using zetta::index::IndexPartition;
+using zetta::index::IndexQuery;
+using zetta::index::IndexRegistry;
+using zetta::index::IndexSpec;
+using zetta::index::IndexStatusCode;
+using zetta::index::OramaCoreFulltextIndex;
 
 namespace {
 
@@ -198,7 +198,7 @@ TEST(OramaCoreFulltextIndex, ResolvesViaRegistryAndAnswersAQuery) {
     ASSERT_TRUE(backend);
     EXPECT_EQ(backend->name(), "oramacore_fulltext");
 
-    const IndexSpec spec = *zetta::index_spec_from_node(step);
+    const IndexSpec spec = *zetta::index::index_spec_from_node(step);
     ASSERT_TRUE(backend->build(spec, sample_partitions()).ok());
 
     IndexQuery q;

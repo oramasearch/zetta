@@ -48,9 +48,9 @@ std::string number(double value) {
     return buffer;
 }
 
-ChurnDataset dataset_for(const TestContext& context, TestResult& note_into) {
+zetta::usecases::churn::ChurnDataset dataset_for(const TestContext& context, TestResult& note_into) {
     if (!context.custom_data_path.empty()) {
-        const ChurnDatasetResult loaded = load_churn_dataset(context.custom_data_path);
+        const zetta::usecases::churn::ChurnDatasetResult loaded = zetta::usecases::churn::load_churn_dataset(context.custom_data_path);
         if (loaded.ok()) {
             note_into.note("using custom dataset at " + context.custom_data_path);
             return loaded.dataset;
@@ -63,13 +63,13 @@ ChurnDataset dataset_for(const TestContext& context, TestResult& note_into) {
 
 TestResult run_uc1(const TestOptions& options, TestContext& context) {
     TestResult result = TestResult::pass("");
-    const ChurnDataset dataset = dataset_for(context, result);
+    const zetta::usecases::churn::ChurnDataset dataset = dataset_for(context, result);
     const bool brand = options.get_choice("resolver", 0) == 1;
-    const ResolutionStrategy strategy =
-        brand ? ResolutionStrategy::Brand : ResolutionStrategy::FullName;
+    const zetta::usecases::churn::ResolutionStrategy strategy =
+        brand ? zetta::usecases::churn::ResolutionStrategy::Brand : zetta::usecases::churn::ResolutionStrategy::FullName;
 
     // The churn graph + entity-resolution annotation on the clean step.
-    const auto compiled = compile_intent("reduce churn and improve retention");
+    const auto compiled = zetta::pipeline::compile_intent("reduce churn and improve retention");
     if (!compiled) return TestResult::fail("could not compile the churn graph");
     ir::ExecutionGraph graph = compiled->graph;
     if (auto clean = graph.find_node("build_features")) {
@@ -79,7 +79,7 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
 
     // RULE-1: the gate must pass before anything is placed.
     context.emit("running the correctness gate");
-    const ValidationReport report = default_gate().run(graph);
+    const zetta::pipeline::ValidationReport report = zetta::pipeline::default_gate().run(graph);
     if (brand) {
         // The conflating resolver must block the gate — the governed-correct outcome
         // is that the pipeline never runs.
@@ -102,38 +102,38 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
     JobCoordinator coordinator(cluster.cluster(0), /*worker_count=*/2);
     coordinator.start();
 
-    auto principal = node.create_principal("retention-pipeline", PrincipalKind::Service);
+    auto principal = node.create_principal("retention-pipeline", zetta::governance::PrincipalKind::Service);
     if (!principal) { coordinator.stop(); return TestResult::fail("no principal"); }
-    Scope scope;
-    scope.grant(ResourceKind::Project, "churn").grant(ResourceKind::Database, "churn");
-    CapabilitySet capabilities;
-    capabilities.grant(CapabilityDomain::Orchestration, "start_run")
-        .grant(CapabilityDomain::Data, "read");
+    zetta::governance::Scope scope;
+    scope.grant(zetta::governance::ResourceKind::Project, "churn").grant(zetta::governance::ResourceKind::Database, "churn");
+    zetta::governance::CapabilitySet capabilities;
+    capabilities.grant(zetta::governance::CapabilityDomain::Orchestration, "start_run")
+        .grant(zetta::governance::CapabilityDomain::Data, "read");
     auto key = principal->create_key(scope, capabilities);
     if (!key) { coordinator.stop(); return TestResult::fail("no key"); }
 
-    const bool in_scope = node.authorize(key->id(), Resource{ResourceKind::Project, "churn"}).allowed;
-    const bool out_of_scope = node.authorize(key->id(), Resource{ResourceKind::Project, "fraud"}).allowed;
-    const bool can_run = node.authorize(key->id(), Operation{CapabilityDomain::Orchestration, "start_run"}).allowed;
+    const bool in_scope = node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"}).allowed;
+    const bool out_of_scope = node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "fraud"}).allowed;
+    const bool can_run = node.authorize(key->id(), zetta::governance::Operation{zetta::governance::CapabilityDomain::Orchestration, "start_run"}).allowed;
     if (!in_scope || out_of_scope || !can_run) {
         coordinator.stop();
         return TestResult::fail("the key-scoped access decisions were wrong");
     }
-    node.deploy_graph(graph, DeploymentTarget::local(), "churn");  // governed deploy
+    node.deploy_graph(graph, zetta::pipeline::DeploymentTarget::local(), "churn");  // governed deploy
 
     // Run the real pipeline behind the StepExecutor seam.
     context.emit("running featurize -> train -> explain -> rank -> playbook");
-    const ChurnNumericShards numeric = encode_churn_dataset(dataset);
-    const JsonStore events = make_store(numeric.events);
-    const JsonStore accounts = make_store(numeric.accounts);
+    const zetta::usecases::churn::ChurnNumericShards numeric = encode_churn_dataset(dataset);
+    const zetta::storage::JsonStore events = make_store(numeric.events);
+    const zetta::storage::JsonStore accounts = make_store(numeric.accounts);
     CpuDevice device;
 
-    ChurnPipelineConfig config;
+    zetta::usecases::churn::ChurnPipelineConfig config;
     config.events_store = &events;
-    config.events_schema = churn_events_schema();
+    config.events_schema = zetta::usecases::churn::churn_events_schema();
     config.accounts_store = &accounts;
-    config.accounts_schema = churn_accounts_schema();
-    config.featurize = churn_featurize_spec(numeric.as_of);
+    config.accounts_schema = zetta::usecases::churn::churn_accounts_schema();
+    config.featurize = zetta::usecases::churn::churn_featurize_spec(numeric.as_of);
     config.params = churn_gbdt_params(static_cast<int>(options.get_int("trees", 30)),
                                       static_cast<int>(options.get_int("depth", 3)), 16, 0.3);
     config.calibration.enabled = options.get_bool("calibrate", false);
@@ -144,16 +144,16 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
     config.project = "churn";
     config.graph = "churn-graph";
 
-    auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device, config);
-    GraphExecutor executor{churn};
-    const ExecutionResult run = executor.execute(node, graph, "churn", "churn-graph");
+    auto churn = std::make_shared<zetta::usecases::churn::ChurnStepExecutor>(node, coordinator, device, config);
+    zetta::pipeline::GraphExecutor executor{churn};
+    const zetta::pipeline::ExecutionResult run = executor.execute(node, graph, "churn", "churn-graph");
 
     TestResult outcome = TestResult::fail("");  // filled below
     do {
         if (!run.ok || !run.run) { outcome = TestResult::fail("the run failed: " + run.error); break; }
-        if (run.run->status() != RunStatus::Succeeded) { outcome = TestResult::fail("run did not succeed"); break; }
+        if (run.run->status() != zetta::pipeline::RunStatus::Succeeded) { outcome = TestResult::fail("run did not succeed"); break; }
         std::string schema_error;
-        if (!validate_run_value(run.run->metadata(), &schema_error)) {
+        if (!zetta::pipeline::validate_run_value(run.run->metadata(), &schema_error)) {
             outcome = TestResult::fail("run is not schema-valid: " + schema_error); break;
         }
         if (churn->model_id().empty() || !node.find_model(churn->model_id())) {
@@ -178,14 +178,14 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
         int succeeded = 0, jobs = 0, job_created = 0, job_finished = 0, data_access = 0, deployed = 0;
         for (const auto& job : node.jobs()) {
             ++jobs;
-            if (job->status() == JobStatus::Succeeded) ++succeeded;
+            if (job->status() == zetta::compute::JobStatus::Succeeded) ++succeeded;
         }
         for (const auto& event : node.audit_events()) {
             switch (event->action()) {
-                case AuditAction::JobCreated: ++job_created; break;
-                case AuditAction::JobFinished: ++job_finished; break;
-                case AuditAction::DataAccess: ++data_access; break;
-                case AuditAction::GraphDeployed: ++deployed; break;
+                case zetta::governance::AuditAction::JobCreated: ++job_created; break;
+                case zetta::governance::AuditAction::JobFinished: ++job_finished; break;
+                case zetta::governance::AuditAction::DataAccess: ++data_access; break;
+                case zetta::governance::AuditAction::GraphDeployed: ++deployed; break;
                 default: break;
             }
         }

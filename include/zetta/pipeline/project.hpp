@@ -13,11 +13,10 @@
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::pipeline {
 
-// An AI project — the central, user-managed artifact in Orama Zetta (a project
 // is instantiated from a use-case type on a team's data; see docs/pipeline/projects.md).
 // This is the data-model root only: id + name + lifecycle stamps + owner key.
 // Its inputs / execution graphs / runs attach in later slices (FEAT-1/FEAT-2).
@@ -32,7 +31,7 @@ class ReplicationManager;
 // bumps `updated`, but keeps the folder/id. `metadata()` is the value shape that
 // rides in the CRDT and (with the id added) on disk.
 //
-// A Project owns its **inputs** (zetta::ProjectInput) the same way a Database
+// A Project owns its **inputs** (zetta::pipeline::ProjectInput) the same way a Database
 // owns its tables: input create/drop are captured into the replicated CRDT and
 // `materialize_input` is the reverse path used by reconciliation. Inputs live in
 // the project's `inputs/` subfolder (see project_input.hpp / docs/pipeline/project-inputs.md).
@@ -40,8 +39,8 @@ class Project {
 public:
     Project(std::string id, std::string name, std::string created,
             std::string updated, std::string owner, std::filesystem::path dir,
-            ReplicationManager* replication = nullptr,
-            AuditSink* audit = nullptr);
+            zetta::cluster::ReplicationManager* replication = nullptr,
+            zetta::governance::AuditSink* audit = nullptr);
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
@@ -142,7 +141,7 @@ public:
     // ExecutionGraph stored under this project (FEAT-2 / #311) — the bridge from a
     // captured intent (FEAT-1) to a reviewable graph in the Graph Workspace. Reads
     // the intent input's payload body, runs the templated compiler
-    // (zetta::compile_intent), and persists the resulting skeleton as a named
+    // (zetta::pipeline::compile_intent), and persists the resulting skeleton as a named
     // ProjectGraph (replicated + editable, exactly like create_graph). `name`
     // defaults to "<intent-shape> skeleton" when empty. Returns an empty handle if
     // the input id is unknown, the input is not an Intent, its body is not present
@@ -183,8 +182,8 @@ private:
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<ProjectInput>> inputs_;
     std::vector<std::shared_ptr<ProjectGraph>> graphs_;  // insertion order
-    ReplicationManager* replication_;  // null = not replicated
-    AuditSink* audit_;  // null = not audited (no node behind this project)
+    zetta::cluster::ReplicationManager* replication_;  // null = not replicated
+    zetta::governance::AuditSink* audit_;  // null = not audited (no node behind this project)
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

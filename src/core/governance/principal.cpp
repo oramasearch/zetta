@@ -13,7 +13,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::governance {
 namespace fs = std::filesystem;
 
 std::string_view to_string(PrincipalKind kind) {
@@ -34,7 +34,7 @@ std::optional<PrincipalKind> principal_kind_from(std::string_view name) {
 
 Principal::Principal(std::string id, PrincipalKind kind, std::string name,
                      std::string created, fs::path dir,
-                     ReplicationManager* replication)
+                     zetta::cluster::ReplicationManager* replication)
     : id_(std::move(id)),
       kind_(kind),
       name_(std::move(name)),
@@ -119,8 +119,8 @@ void Principal::load() {
 
 std::shared_ptr<AccessKey> Principal::create_key(Scope scope,
                                                  CapabilitySet capabilities) {
-    const std::string id = new_uuid();
-    const std::string created = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    const std::string created = zetta::util::now_iso8601();
     if (replication_) {
         replication_->set(catalog::access_key_key(id),
                           nlohmann::json{{"principal", id_},
@@ -174,4 +174,4 @@ bool Principal::materialize_drop_key(const std::string& id) {
     return true;
 }
 
-}  // namespace zetta
+}  // namespace zetta::governance

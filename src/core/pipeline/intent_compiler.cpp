@@ -9,7 +9,7 @@
 
 #include "zetta/ir/step_kind.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace {
 
 // A lowercase copy of `text`, so the keyword heuristic is case-insensitive. ASCII
@@ -151,4 +151,4 @@ std::optional<CompiledIntent> compile_intent(std::string_view intent,
     return CompiledIntent{build_generic_skeleton(), IntentShape::Generic};
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

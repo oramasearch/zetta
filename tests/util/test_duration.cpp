@@ -4,7 +4,7 @@
 
 #include "zetta/util/duration.hpp"
 
-using zetta::format_duration;
+using zetta::util::format_duration;
 using namespace std::chrono;
 
 TEST(FormatDuration, PicksUnitFromNanosecondsToWeeks) {

@@ -13,18 +13,18 @@
 #include "zetta/cloud/node_capability.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-using zetta::AzCliControlPlane;
-using zetta::AzureConfig;
-using zetta::AzureControlPlane;
-using zetta::AzureProvisioner;
-using zetta::CommandResult;
-using zetta::CommandRunner;
-using zetta::Gpu;
-using zetta::GpuKind;
-using zetta::NodeCapability;
-using zetta::ProvisionedNode;
-using zetta::ProvisionRequest;
-using zetta::ProvisionResult;
+using zetta::cloud::AzCliControlPlane;
+using zetta::cloud::AzureConfig;
+using zetta::cloud::AzureControlPlane;
+using zetta::cloud::AzureProvisioner;
+using zetta::cloud::CommandResult;
+using zetta::cloud::CommandRunner;
+using zetta::cloud::Gpu;
+using zetta::cloud::GpuKind;
+using zetta::cloud::NodeCapability;
+using zetta::cloud::ProvisionedNode;
+using zetta::cloud::ProvisionRequest;
+using zetta::cloud::ProvisionResult;
 
 namespace {
 

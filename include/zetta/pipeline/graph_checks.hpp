@@ -19,7 +19,7 @@
 // carries none of the relevant annotations is simply skipped (it passes), so
 // these checks are opt-in per step and never penalise a graph that doesn't use
 // them.
-namespace zetta {
+namespace zetta::pipeline {
 
 // Schema/type check (#309): every field a step `requires` from its inputs must be
 // provided — with a matching type — by the `schema` (source profile) of one of
@@ -44,4 +44,4 @@ public:
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

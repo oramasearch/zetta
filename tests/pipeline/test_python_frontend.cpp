@@ -72,7 +72,7 @@ TEST(PythonFrontend, CompilesAcceptanceScriptToValidGraph) {
     EXPECT_EQ(reparsed->edge_count(), 1u);
 
     // …and passes the baseline correctness gate.
-    EXPECT_TRUE(zetta::default_gate().run(result.graph).passed());
+    EXPECT_TRUE(zetta::pipeline::default_gate().run(result.graph).passed());
 }
 
 // The lowered graph executes through Node::run_graph like any other frontend's.

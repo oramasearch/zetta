@@ -16,13 +16,13 @@
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ProjectInputKind;
-using zetta::ProjectInputSource;
-using zetta::ReplicationManager;
+using zetta::pipeline::ProjectInputKind;
+using zetta::pipeline::ProjectInputSource;
+using zetta::cluster::ReplicationManager;
 using zetta::test::TempDir;
 
 namespace {
@@ -76,7 +76,7 @@ TEST(ProjectInput, CreateFetchDropWithProvenance) {
     EXPECT_EQ(intent->created_by(), "user:steve");
     EXPECT_EQ(intent->project_id(), project->id());
     // content_hash is computed at the boundary, never trusted from the caller.
-    EXPECT_EQ(intent->content_hash(), zetta::sha256_hex(kIntent));
+    EXPECT_EQ(intent->content_hash(), zetta::util::sha256_hex(kIntent));
     EXPECT_EQ(intent->size(), std::string(kIntent).size());
     EXPECT_TRUE(looks_like_iso8601(intent->created_at()));
     // The payload body is on disk and round-trips.
@@ -91,7 +91,7 @@ TEST(ProjectInput, CreateFetchDropWithProvenance) {
                                           "churn.json", "user:charles");
     ASSERT_TRUE(artifact);
     EXPECT_EQ(artifact->filename(), "churn.json");
-    EXPECT_EQ(artifact->content_hash(), zetta::sha256_hex(workflow));
+    EXPECT_EQ(artifact->content_hash(), zetta::util::sha256_hex(workflow));
 
     EXPECT_EQ(project->input_count(), 2u);
     // Fetch by id.
@@ -126,7 +126,7 @@ TEST(ProjectInput, CaptureIntentStoresWithProvenance) {
     EXPECT_EQ(intent->created_by(), "user:steve");
     EXPECT_EQ(intent->project_id(), project->id());
     // content_hash is computed at the boundary, never trusted from the caller.
-    EXPECT_EQ(intent->content_hash(), zetta::sha256_hex(kIntent));
+    EXPECT_EQ(intent->content_hash(), zetta::util::sha256_hex(kIntent));
     EXPECT_EQ(intent->size(), std::string(kIntent).size());
     EXPECT_TRUE(looks_like_iso8601(intent->created_at()));
 
@@ -194,7 +194,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaDisk) {
     EXPECT_EQ(input->source(), ProjectInputSource::Upload);
     EXPECT_EQ(input->filename(), "intent.txt");
     EXPECT_EQ(input->created_by(), "user:steve");
-    EXPECT_EQ(input->content_hash(), zetta::sha256_hex(kIntent));
+    EXPECT_EQ(input->content_hash(), zetta::util::sha256_hex(kIntent));
     ASSERT_TRUE(input->read_payload().has_value());
     EXPECT_EQ(*input->read_payload(), kIntent);
     reloaded.stop();
@@ -202,7 +202,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaDisk) {
 
 TEST(ProjectInput, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string input_id;
     {
         ReplicationManager replication{node_id};
@@ -233,7 +233,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaCRDT) {
             EXPECT_EQ(value.value("kind", std::string{}), "intent");
             EXPECT_EQ(value.value("source", std::string{}), "pasted");
             EXPECT_EQ(value.value("content_hash", std::string{}),
-                      zetta::sha256_hex(kIntent));
+                      zetta::util::sha256_hex(kIntent));
             EXPECT_EQ(value.value("created_by", std::string{}), "user:steve");
         }
     }
@@ -243,7 +243,7 @@ TEST(ProjectInput, PersistsAcrossRestartViaCRDT) {
     ASSERT_TRUE(project);
     auto input = project->find_input(input_id);
     ASSERT_TRUE(input);
-    EXPECT_EQ(input->content_hash(), zetta::sha256_hex(kIntent));
+    EXPECT_EQ(input->content_hash(), zetta::util::sha256_hex(kIntent));
     // Payload survives via disk on the same node.
     ASSERT_TRUE(input->read_payload().has_value());
     EXPECT_EQ(*input->read_payload(), kIntent);
@@ -253,8 +253,8 @@ TEST(ProjectInput, PersistsAcrossRestartViaCRDT) {
 TEST(ProjectInput, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
@@ -302,7 +302,7 @@ TEST(ProjectInput, ReplicatesToPeer) {
     EXPECT_EQ(replicated->source(), ProjectInputSource::Upload);
     EXPECT_EQ(replicated->filename(), "churn.json");
     EXPECT_EQ(replicated->created_by(), "user:charles");
-    EXPECT_EQ(replicated->content_hash(), zetta::sha256_hex(kIntent));
+    EXPECT_EQ(replicated->content_hash(), zetta::util::sha256_hex(kIntent));
     EXPECT_EQ(replicated->size(), std::string(kIntent).size());
     // The payload body does NOT transfer yet (a later slice, like LO bodies):
     // the record replicates, the bytes await body transfer.
@@ -340,7 +340,7 @@ TEST(ProjectInput, SkipsMalformedInputOnLoad) {
 
         // Hand-write a malformed input folder (unknown kind) next to the good
         // one: boundary validation should skip it on reload.
-        const auto bad_dir = project->dir() / "inputs" / zetta::new_uuid();
+        const auto bad_dir = project->dir() / "inputs" / zetta::util::new_uuid();
         std::filesystem::create_directories(bad_dir);
         std::ofstream out(bad_dir / "input.json");
         out << R"({"kind":"nonsense","source":"pasted"})" << '\n';

@@ -7,7 +7,7 @@
 
 #include "../base64.hpp"
 
-namespace zetta {
+namespace zetta::cluster {
 
 namespace {
 
@@ -184,4 +184,4 @@ std::optional<Signal> decode_signal(std::string_view envelope,
     return signal;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cluster

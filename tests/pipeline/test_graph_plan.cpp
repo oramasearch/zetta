@@ -9,12 +9,12 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 
-using zetta::ClusterPlan;
-using zetta::placement_label;
-using zetta::project_cluster_plan;
-using zetta::StepPlacement;
-using zetta::StepPlan;
-using zetta::to_string;
+using zetta::pipeline::ClusterPlan;
+using zetta::pipeline::placement_label;
+using zetta::pipeline::project_cluster_plan;
+using zetta::pipeline::StepPlacement;
+using zetta::pipeline::StepPlan;
+using zetta::pipeline::to_string;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;

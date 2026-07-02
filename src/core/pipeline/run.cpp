@@ -14,7 +14,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
 namespace {
@@ -218,7 +218,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
 // ----- Run -------------------------------------------------------------------
 
 Run::Run(std::string id, RunValue value, fs::path dir,
-         ReplicationManager* replication)
+         zetta::cluster::ReplicationManager* replication)
     : id_(std::move(id)),
       value_(std::move(value)),
       dir_(std::move(dir)),
@@ -254,7 +254,7 @@ void Run::apply_value(RunValue value) {
 }
 
 void Run::capture_and_persist() {
-    value_.updated = now_iso8601();
+    value_.updated = zetta::util::now_iso8601();
     // CRDT first (the source of truth), then the on-disk projection.
     if (replication_) replication_->set(catalog::run_key(id_), metadata());
     persist_meta();
@@ -269,4 +269,4 @@ void Run::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

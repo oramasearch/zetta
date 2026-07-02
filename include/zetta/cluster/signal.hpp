@@ -18,9 +18,9 @@
 // document — they exist only for the lifetime of the message. This is the
 // substrate that collectives, the work-stealing scheduler, and the job
 // coordinator build on (see docs/cluster/signal-plane.md). The transport lives in
-// `zetta::Cluster` (src/core/cluster.cpp); the envelope format + its
+// `zetta::cluster::Cluster` (src/core/cluster.cpp); the envelope format + its
 // boundary validation live here (src/core/signal.cpp).
-namespace zetta {
+namespace zetta::cluster {
 
 // The four signal kinds. Ordered request→response→event→task.
 enum class SignalKind { Request, Response, Event, Task };
@@ -93,4 +93,4 @@ std::string encode_signal(const Signal& signal);
 std::optional<Signal> decode_signal(std::string_view envelope,
                                     std::string* error = nullptr);
 
-}  // namespace zetta
+}  // namespace zetta::cluster

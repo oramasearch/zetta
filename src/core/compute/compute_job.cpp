@@ -11,7 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::compute {
 namespace fs = std::filesystem;
 
 namespace {
@@ -168,7 +168,7 @@ std::optional<ComputeJobValue> parse_compute_job_value(
 // ----- ComputeJob ------------------------------------------------------------
 
 ComputeJob::ComputeJob(std::string id, ComputeJobValue value, fs::path dir,
-                       ReplicationManager* replication, AuditSink* audit)
+                       zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit)
     : id_(std::move(id)),
       value_(std::move(value)),
       dir_(std::move(dir)),
@@ -186,7 +186,7 @@ void ComputeJob::set_status(JobStatus status, std::string detail) {
     // already-audited as its own replicated `audit:` event.
     if (audit_ && !was_terminal && is_terminal(value_.status)) {
         audit_->record_audit_event(
-            {AuditAction::JobFinished, {}, id_,
+            {zetta::governance::AuditAction::JobFinished, {}, id_,
              value_.status == JobStatus::Succeeded,
              "compute job " + std::string(to_string(value_.kind)) + " " +
                  std::string(to_string(value_.status)) +
@@ -201,7 +201,7 @@ void ComputeJob::apply_value(ComputeJobValue value) {
 }
 
 void ComputeJob::capture_and_persist() {
-    value_.updated = now_iso8601();
+    value_.updated = zetta::util::now_iso8601();
     // CRDT first (the source of truth), then the on-disk projection.
     if (replication_) replication_->set(catalog::job_key(id_), metadata());
     persist_meta();
@@ -216,4 +216,4 @@ void ComputeJob::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::compute

@@ -6,7 +6,7 @@
 #include <string_view>
 #include <utility>
 
-namespace zetta {
+namespace zetta::data {
 
 namespace {
 
@@ -94,4 +94,4 @@ std::vector<std::string> RendezvousPlacement::place_partition(
     return rendezvous_owners(partition, members, replication_factor_);
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

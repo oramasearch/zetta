@@ -13,8 +13,8 @@
 
 namespace {
 
-zetta::NodeMetrics make_full_sample() {
-    zetta::NodeMetrics metrics;
+zetta::cluster::NodeMetrics make_full_sample() {
+    zetta::cluster::NodeMetrics metrics;
     metrics.sampled_at = "2026-06-30T12:00:00Z";
     metrics.cpu_cores = 8;
     metrics.cpu_percent_available = true;
@@ -37,15 +37,15 @@ zetta::NodeMetrics make_full_sample() {
 }  // namespace
 
 TEST(NodeTelemetryWire, RoundTripsAvailableGroups) {
-    const zetta::NodeMetrics original = make_full_sample();
-    const std::string payload = zetta::encode_node_metrics(original, "node-a");
+    const zetta::cluster::NodeMetrics original = make_full_sample();
+    const std::string payload = zetta::cluster::encode_node_metrics(original, "node-a");
 
     std::string error;
-    const auto decoded = zetta::decode_node_metrics(payload, &error);
+    const auto decoded = zetta::cluster::decode_node_metrics(payload, &error);
     ASSERT_TRUE(decoded.has_value()) << error;
     EXPECT_EQ(decoded->node_id, "node-a");
 
-    const zetta::NodeMetrics& m = decoded->metrics;
+    const zetta::cluster::NodeMetrics& m = decoded->metrics;
     EXPECT_EQ(m.sampled_at, original.sampled_at);
     EXPECT_EQ(m.cpu_cores, 8u);
     EXPECT_TRUE(m.cpu_percent_available);
@@ -66,12 +66,12 @@ TEST(NodeTelemetryWire, UnavailableGroupsDegradeGracefully) {
     // A host with only CPU cores known (no CPU% delta yet, no mem/gpu/storage/net):
     // the unavailable groups are omitted on the wire and decode back as n/a, never
     // a misleading zero.
-    zetta::NodeMetrics sparse;
+    zetta::cluster::NodeMetrics sparse;
     sparse.sampled_at = "2026-06-30T12:00:01Z";
     sparse.cpu_cores = 4;
 
     const auto decoded =
-        zetta::decode_node_metrics(zetta::encode_node_metrics(sparse, "node-b"));
+        zetta::cluster::decode_node_metrics(zetta::cluster::encode_node_metrics(sparse, "node-b"));
     ASSERT_TRUE(decoded.has_value());
     EXPECT_EQ(decoded->metrics.cpu_cores, 4u);
     EXPECT_FALSE(decoded->metrics.cpu_percent_available);
@@ -84,38 +84,38 @@ TEST(NodeTelemetryWire, UnavailableGroupsDegradeGracefully) {
 
 TEST(NodeTelemetryWire, RejectsMalformedPayloadAtBoundary) {
     std::string error;
-    EXPECT_FALSE(zetta::decode_node_metrics("{not json", &error).has_value());
+    EXPECT_FALSE(zetta::cluster::decode_node_metrics("{not json", &error).has_value());
     EXPECT_FALSE(error.empty());
 
     // Missing required node_id.
     EXPECT_FALSE(
-        zetta::decode_node_metrics(R"({"sampled_at":"t"})").has_value());
+        zetta::cluster::decode_node_metrics(R"({"sampled_at":"t"})").has_value());
     // Wrong type for a gauge (string where a number is required).
     EXPECT_FALSE(
-        zetta::decode_node_metrics(
+        zetta::cluster::decode_node_metrics(
             R"({"node_id":"n","sampled_at":"t","cpu_percent":"hot"})")
             .has_value());
     // Unknown field (closed object).
     EXPECT_FALSE(
-        zetta::decode_node_metrics(
+        zetta::cluster::decode_node_metrics(
             R"({"node_id":"n","sampled_at":"t","mystery":1})")
             .has_value());
 }
 
 TEST(NodeTelemetryExchange, RecordsLocalAndReceivesPeers) {
-    zetta::NodeTelemetryExchange exchange;
+    zetta::cluster::NodeTelemetryExchange exchange;
 
     // The local node records its own sample.
     exchange.record_local("node-a", make_full_sample());
 
     // A peer's broadcast arrives as a node.metrics event (keyed by Signal::from).
-    zetta::NodeMetrics peer = make_full_sample();
+    zetta::cluster::NodeMetrics peer = make_full_sample();
     peer.cpu_percent = 88.0;
-    zetta::Signal event;
-    event.kind = zetta::SignalKind::Event;
-    event.method = std::string(zetta::NodeTelemetryExchange::kMethod);
+    zetta::cluster::Signal event;
+    event.kind = zetta::cluster::SignalKind::Event;
+    event.method = std::string(zetta::cluster::NodeTelemetryExchange::kMethod);
     event.from = "node-b";
-    event.payload = zetta::encode_node_metrics(peer, "node-b");
+    event.payload = zetta::cluster::encode_node_metrics(peer, "node-b");
     exchange.on_event(event);
 
     const auto snapshot = exchange.snapshot();
@@ -130,18 +130,18 @@ TEST(NodeTelemetryExchange, RecordsLocalAndReceivesPeers) {
 }
 
 TEST(NodeTelemetryExchange, IgnoresOtherEventsAndMalformedPayloads) {
-    zetta::NodeTelemetryExchange exchange;
+    zetta::cluster::NodeTelemetryExchange exchange;
 
-    zetta::Signal other;
-    other.kind = zetta::SignalKind::Event;
+    zetta::cluster::Signal other;
+    other.kind = zetta::cluster::SignalKind::Event;
     other.method = "some.other.event";
     other.from = "node-x";
     other.payload = "whatever";
     exchange.on_event(other);  // wrong method → ignored
 
-    zetta::Signal bad;
-    bad.kind = zetta::SignalKind::Event;
-    bad.method = std::string(zetta::NodeTelemetryExchange::kMethod);
+    zetta::cluster::Signal bad;
+    bad.kind = zetta::cluster::SignalKind::Event;
+    bad.method = std::string(zetta::cluster::NodeTelemetryExchange::kMethod);
     bad.from = "node-y";
     bad.payload = "{not valid";
     exchange.on_event(bad);  // malformed payload → dropped at the boundary
@@ -150,7 +150,7 @@ TEST(NodeTelemetryExchange, IgnoresOtherEventsAndMalformedPayloads) {
 }
 
 TEST(NodeTelemetryExchange, ExpiresStaleEntries) {
-    zetta::NodeTelemetryExchange exchange;
+    zetta::cluster::NodeTelemetryExchange exchange;
     exchange.record_local("node-a", make_full_sample());
 
     // A zero-length freshness window drops everything (every entry is already

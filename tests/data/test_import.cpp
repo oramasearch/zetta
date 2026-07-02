@@ -11,9 +11,9 @@
 #include "zetta/data/table.hpp"
 
 namespace fs = std::filesystem;
-using zetta::Database;
-using zetta::format_bytes;
-using zetta::import_records;
+using zetta::data::Database;
+using zetta::util::format_bytes;
+using zetta::data::import_records;
 using zetta::test::TempDir;
 
 namespace {
@@ -25,7 +25,7 @@ fs::path write_file(const fs::path& path, const std::string& contents) {
 }
 
 // A throwaway database + table to import into.
-std::shared_ptr<zetta::Table> fresh_table(TempDir& tmp, const char* name) {
+std::shared_ptr<zetta::data::Table> fresh_table(TempDir& tmp, const char* name) {
     static int counter = 0;
     Database db{"db", "d", tmp.path() / ("db" + std::to_string(counter++))};
     return db.create_table(name);  // table outlives db via shared_ptr

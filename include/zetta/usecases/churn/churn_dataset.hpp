@@ -26,13 +26,13 @@
 //   * the make-or-break FedEx entity-resolution case (TC-4): FedEx Freight + 5
 //     sibling subsidiaries (Ground, Express, Office, Logistics, Services) as
 //     *separate* accounts, surfaced through entity_resolution_attribute() for
-//     zetta::EntityResolutionCheck.
+//     zetta::usecases::churn::EntityResolutionCheck.
 //
 // The loader is **non-throwing** (returns an error string, never throws across the
 // zetta-core seam) and **schema-validates every record at the boundary**, mirroring
 // the Run record (src/core/run.cpp) — a malformed record fails the load with a
 // path-qualified reason instead of corrupting downstream state.
-namespace zetta {
+namespace zetta::usecases::churn {
 
 // One account row. `entity` is the TC-4 ground truth; `account_id` is its correct
 // resolution target. Siblings share a `brand` (e.g. "FedEx") but are distinct
@@ -106,13 +106,13 @@ ChurnDatasetResult load_churn_dataset(const std::filesystem::path& dir,
 //
 //   { "entity_resolution": { "records": [ { mention, entity, resolved } ] } }
 //
-// The resolver (zetta::EntityResolver, see entity_resolution.hpp) is handed only the
+// The resolver (zetta::usecases::churn::EntityResolver, see entity_resolution.hpp) is handed only the
 // raw `mention` string and matches it to an account; the ground-truth `entity` (the
 // account the mention truly belongs to) is held out and recorded so the gate can
 // check the resolver's choice. With the default `FullName` strategy the resolution is
 // division-correct — "FedEx Freight" and the variant "Fedex Freight" both land on
 // `acct_fedex_freight` while "FedEx Ground" stays separate — so the payload passes
-// `zetta::EntityResolutionCheck` (TC-4) because it *resolved correctly*, not by
+// `zetta::usecases::churn::EntityResolutionCheck` (TC-4) because it *resolved correctly*, not by
 // construction. Passing `ResolutionStrategy::Brand` collapses every "FedEx …" mention
 // onto one brand bucket, producing the conflation the gate must fail (RULE-1) — the
 // real-resolver way to exercise the failure path. Attach the result to an
@@ -121,4 +121,4 @@ nlohmann::json entity_resolution_attribute(
     const ChurnDataset& dataset,
     ResolutionStrategy strategy = ResolutionStrategy::FullName);
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

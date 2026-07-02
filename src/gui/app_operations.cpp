@@ -61,11 +61,11 @@ struct AddNodesOp {
     std::string target_id;
     std::string target_name;
     std::size_t requested = 0;
-    Provisioner* provisioner = nullptr;  // read only by the coroutine (no Node touch)
+    zetta::cloud::Provisioner* provisioner = nullptr;  // read only by the coroutine (no Node touch)
     std::chrono::steady_clock::time_point started;
 
     std::mutex mutex;                       // guards `result`
-    std::optional<AddNodesResult> result;   // set by the coroutine before `done`
+    std::optional<zetta::cloud::AddNodesResult> result;   // set by the coroutine before `done`
     std::atomic<bool> done{false};          // flipped by the spawn completion
 };
 
@@ -88,35 +88,35 @@ namespace {
 
 // A run's status, color-coded along its lifecycle: pending (neutral) → running
 // (amber) → succeeded (green) | failed (red). Same palette as the cluster panel.
-ImVec4 run_status_color(RunStatus status) {
+ImVec4 run_status_color(zetta::pipeline::RunStatus status) {
     switch (status) {
-        case RunStatus::Pending:   return kInkQuiet;
-        case RunStatus::Running:   return kWarnColor;
-        case RunStatus::Succeeded: return kSuccessColor;
-        case RunStatus::Failed:    return kErrorColor;
+        case zetta::pipeline::RunStatus::Pending:   return kInkQuiet;
+        case zetta::pipeline::RunStatus::Running:   return kWarnColor;
+        case zetta::pipeline::RunStatus::Succeeded: return kSuccessColor;
+        case zetta::pipeline::RunStatus::Failed:    return kErrorColor;
     }
     return kInkQuiet;
 }
 
 // A compute job's status, color-coded along its lifecycle: queued (neutral) →
 // running (amber) → succeeded (green) | failed (red). Same palette as runs.
-ImVec4 job_status_color(JobStatus status) {
+ImVec4 job_status_color(zetta::compute::JobStatus status) {
     switch (status) {
-        case JobStatus::Queued:    return kInkQuiet;
-        case JobStatus::Running:   return kWarnColor;
-        case JobStatus::Succeeded: return kSuccessColor;
-        case JobStatus::Failed:    return kErrorColor;
+        case zetta::compute::JobStatus::Queued:    return kInkQuiet;
+        case zetta::compute::JobStatus::Running:   return kWarnColor;
+        case zetta::compute::JobStatus::Succeeded: return kSuccessColor;
+        case zetta::compute::JobStatus::Failed:    return kErrorColor;
     }
     return kInkQuiet;
 }
 
 // A scaling action's color: scale-up green (more capacity), hold neutral,
 // scale-down amber (shedding nodes). A quick read of the autoscaler's intent.
-ImVec4 scaling_action_color(ScalingAction action) {
+ImVec4 scaling_action_color(zetta::compute::ScalingAction action) {
     switch (action) {
-        case ScalingAction::ScaleUp:   return kSuccessColor;
-        case ScalingAction::Hold:      return kInkQuiet;
-        case ScalingAction::ScaleDown: return kWarnColor;
+        case zetta::compute::ScalingAction::ScaleUp:   return kSuccessColor;
+        case zetta::compute::ScalingAction::Hold:      return kInkQuiet;
+        case zetta::compute::ScalingAction::ScaleDown: return kWarnColor;
     }
     return kInkQuiet;
 }
@@ -142,14 +142,14 @@ constexpr ImU32 kClusterBoxMuted = IM_COL32(95, 95, 92, 255);            // ink-
 // The health-dot colour for a node, matching the replication palette the table
 // used: green = self / in-sync, amber = syncing (known but behind), quiet = no
 // status learned yet.
-ImVec4 cluster_node_color(const NodeStatus& node) {
+ImVec4 cluster_node_color(const zetta::cluster::NodeStatus& node) {
     if (node.is_self) return kDotActive;
     if (!node.replication.known) return kInkQuiet;
     return node.replication.in_sync ? kSuccessColor : kWarnColor;
 }
 
 // A short one-word sync state for the box caption.
-const char* cluster_node_state(const NodeStatus& node) {
+const char* cluster_node_state(const zetta::cluster::NodeStatus& node) {
     if (node.is_self) return "self";
     if (!node.replication.known) return "no status";
     return node.replication.in_sync ? "in sync" : "syncing";
@@ -214,7 +214,7 @@ std::string short_rate(std::uint64_t bytes_per_sec) {
 // per sample, decayed so a burst scales the window and then relaxes, so an idle
 // link doesn't paint a full bar. The load gauges (CPU/MEM/GPU/STORAGE) carry a
 // true 0..100 utilization; the network gauge carries the relative flow.
-std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
+std::array<GaugeReading, kGaugeCount> derive_gauges(const zetta::cluster::NodeMetrics& metrics,
                                                     float& net_peak) {
     std::array<GaugeReading, kGaugeCount> gauges;
     char buffer[96];
@@ -244,8 +244,8 @@ std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
     mem.box_text = mem.available ? percent_text(metrics.memory_percent) : "n/a";
     mem.detail_text =
         mem.available
-            ? format_bytes(metrics.memory_used_bytes) + " / " +
-                  format_bytes(metrics.memory_total_bytes) + " · " +
+            ? zetta::util::format_bytes(metrics.memory_used_bytes) + " / " +
+                  zetta::util::format_bytes(metrics.memory_total_bytes) + " · " +
                   percent_text(metrics.memory_percent)
             : "n/a";
 
@@ -257,8 +257,8 @@ std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
     gpu.detail_text =
         gpu.available
             ? percent_text(metrics.gpu_percent) + " · " +
-                  format_bytes(metrics.vram_used_bytes) + " / " +
-                  format_bytes(metrics.vram_total_bytes)
+                  zetta::util::format_bytes(metrics.vram_used_bytes) + " / " +
+                  zetta::util::format_bytes(metrics.vram_total_bytes)
             : "no GPU on this host";
 
     // Storage — the data_dir filesystem used / total.
@@ -269,8 +269,8 @@ std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
         storage.available ? percent_text(metrics.storage_percent) : "n/a";
     storage.detail_text =
         storage.available
-            ? format_bytes(metrics.storage_used_bytes) + " / " +
-                  format_bytes(metrics.storage_total_bytes) + " · " +
+            ? zetta::util::format_bytes(metrics.storage_used_bytes) + " / " +
+                  zetta::util::format_bytes(metrics.storage_total_bytes) + " · " +
                   percent_text(metrics.storage_percent)
             : "n/a";
 
@@ -288,8 +288,8 @@ std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
                                100.0f);
         net.box_text = short_rate(metrics.net_rx_bytes_per_sec +
                                   metrics.net_tx_bytes_per_sec);
-        net.detail_text = "in " + format_bytes(metrics.net_rx_bytes_per_sec) +
-                          "/s · out " + format_bytes(metrics.net_tx_bytes_per_sec) +
+        net.detail_text = "in " + zetta::util::format_bytes(metrics.net_rx_bytes_per_sec) +
+                          "/s · out " + util::format_bytes(metrics.net_tx_bytes_per_sec) +
                           "/s";
     } else {
         net.box_text = "n/a";
@@ -303,7 +303,7 @@ std::array<GaugeReading, kGaugeCount> derive_gauges(const NodeMetrics& metrics,
 // each sparkline (the sparkline = the sampled history); every frame ease the
 // shown value toward the target by `dt`, so the bars GLIDE between the ~1 Hz
 // samples (the animation) — frame-rate-independent via an exponential approach.
-void update_node_gauges(NodeGaugeState& state, const NodeMetrics& metrics,
+void update_node_gauges(NodeGaugeState& state, const zetta::cluster::NodeMetrics& metrics,
                         float dt) {
     if (!state.have_data || metrics.sampled_at != state.last_sampled_at) {
         state.last_sampled_at = metrics.sampled_at;
@@ -596,7 +596,7 @@ void update_cluster_pipeline(ClusterPipelineState& state, const PipelineInputs& 
             flow.to = job.node;
             flow.lifetime = 1.2f;
             flow.weight = byte_weight(job.local_bytes);
-            flow.label = job.kind + " · " + format_bytes(job.local_bytes);
+            flow.label = job.kind + " · " + util::format_bytes(job.local_bytes);
             spawn(std::move(flow));
             --budget;
         }
@@ -746,7 +746,7 @@ std::string join_refs(const std::vector<std::string>& refs) {
 // SHAP-style explainability surface). A pure view over an already-validated Model
 // handle; metrics/drivers come from the model's free-form (already schema-
 // validated) fields, so no new JSON boundary is introduced.
-void render_model_card(const Model& model) {
+void render_model_card(const zetta::ml::Model& model) {
     const std::string short_id = model.id().substr(0, model.id().find('-'));
     ImGui::SeparatorText(
         (model.name().empty() ? ("model " + short_id) : model.name()).c_str());
@@ -755,7 +755,7 @@ void render_model_card(const Model& model) {
                        short_id.c_str());
     if (model.has_weights()) {
         ImGui::TextColored(
-            kInkQuiet, "weights: %s%s", format_bytes(model.weights()->size).c_str(),
+            kInkQuiet, "weights: %s%s", zetta::util::format_bytes(model.weights()->size).c_str(),
             model.has_weights_body() ? "" : " (awaiting body transfer)");
     } else {
         ImGui::TextColored(kInkQuiet, "weights: (not yet attached)");
@@ -794,7 +794,7 @@ void render_model_card(const Model& model) {
     // optional explainability annotation in the model's feature_schema; absent
     // until an Explain job records it.
     ImGui::TextDisabled("Ranked drivers");
-    const std::vector<ModelDriver> drivers = model.drivers();
+    const std::vector<zetta::ml::ModelDriver> drivers = model.drivers();
     if (drivers.empty()) {
         ImGui::TextDisabled("(no ranked drivers recorded)");
     } else {
@@ -807,7 +807,7 @@ void render_model_card(const Model& model) {
             ImGui::TableSetupColumn("Importance");
             ImGui::TableHeadersRow();
             int rank = 0;
-            for (const ModelDriver& driver : drivers) {
+            for (const zetta::ml::ModelDriver& driver : drivers) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%d", ++rank);
@@ -830,8 +830,8 @@ void render_model_card(const Model& model) {
 // trained model(s) it produced (metrics + ranked drivers), and lineage. A pure
 // view over the (already schema-validated) Run handle — no mutation. `models` are
 // the node's models whose producing-run ref is this run (resolved by the caller).
-void render_run_detail(const Run& run,
-                       const std::vector<std::shared_ptr<Model>>& models) {
+void render_run_detail(const zetta::pipeline::Run& run,
+                       const std::vector<std::shared_ptr<zetta::ml::Model>>& models) {
     if (g_mono_font) ImGui::PushFont(g_mono_font);
     ImGui::TextColored(kInkPrimary, "run %s", run.id().c_str());
     if (g_mono_font) ImGui::PopFont();
@@ -855,7 +855,7 @@ void render_run_detail(const Run& run,
     if (run.logs().empty()) {
         ImGui::TextDisabled("(no log entries)");
     } else {
-        for (const RunLogEntry& entry : run.logs()) {
+        for (const zetta::pipeline::RunLogEntry& entry : run.logs()) {
             if (g_mono_font) ImGui::PushFont(g_mono_font);
             ImGui::TextColored(kInkQuiet, "%s", entry.time.c_str());
             ImGui::SameLine();
@@ -877,7 +877,7 @@ void render_run_detail(const Run& run,
         ImGui::TableSetupColumn("Ref");
         ImGui::TableHeadersRow();
         if (g_mono_font) ImGui::PushFont(g_mono_font);
-        for (const RunOutput& output : run.outputs()) {
+        for (const zetta::pipeline::RunOutput& output : run.outputs()) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(output.kind.c_str());
@@ -897,7 +897,7 @@ void render_run_detail(const Run& run,
     // is just a placeholder handle in R1.
     if (!models.empty()) {
         ImGui::SeparatorText("Trained models");
-        for (const std::shared_ptr<Model>& model : models) {
+        for (const std::shared_ptr<zetta::ml::Model>& model : models) {
             ImGui::PushID(model->id().c_str());
             render_model_card(*model);
             ImGui::PopID();
@@ -907,7 +907,7 @@ void render_run_detail(const Run& run,
     // Lineage — where the results came from (sources, steps), how fresh, and how
     // confident (a 0..1 score, shown as a bar).
     ImGui::SeparatorText("Lineage");
-    const RunLineage& lineage = run.lineage();
+    const zetta::pipeline::RunLineage& lineage = run.lineage();
     const bool has_lineage = !lineage.sources.empty() || !lineage.steps.empty() ||
                              !lineage.freshness.empty() || lineage.confidence != 0.0;
     if (!has_lineage) {
@@ -964,19 +964,19 @@ void App::draw_cluster() {
     // box-draw pattern mirrors draw_graph_canvas (ImDrawList rects + an invisible
     // hit-test button), and the cost is one cheap pass per frame, so it never
     // starves a live resize.
-    const std::vector<NodeStatus> nodes = cluster_.nodes();
+    const std::vector<zetta::cluster::NodeStatus> nodes = cluster_.nodes();
 
     // Re-resolve the selection against the live membership: if the selected node
     // has left (or nothing is selected yet), fall back to self so the detail pane
     // always shows a real node and a departed peer can't dangle.
     const auto is_selected_present = [&] {
-        for (const NodeStatus& node : nodes)
+        for (const zetta::cluster::NodeStatus& node : nodes)
             if (node.node_id == selected_cluster_node_) return true;
         return false;
     };
     if (!is_selected_present()) {
         selected_cluster_node_.clear();
-        for (const NodeStatus& node : nodes)
+        for (const zetta::cluster::NodeStatus& node : nodes)
             if (node.is_self) selected_cluster_node_ = node.node_id;
     }
 
@@ -985,15 +985,15 @@ void App::draw_cluster() {
     // caches its peers'). Each node box animates its own gauges from it; a node
     // with no sample yet (a peer that just joined) shows an "awaiting" note. Pin
     // the snapshot for the frame and index it by id for the per-box lookup.
-    const std::vector<NodeTelemetrySample> telemetry = node_.telemetry_snapshot();
-    std::map<std::string, const NodeTelemetrySample*> telemetry_by_id;
-    for (const NodeTelemetrySample& sample : telemetry) {
+    const std::vector<zetta::cluster::NodeTelemetrySample> telemetry = node_.telemetry_snapshot();
+    std::map<std::string, const zetta::cluster::NodeTelemetrySample*> telemetry_by_id;
+    for (const zetta::cluster::NodeTelemetrySample& sample : telemetry) {
         telemetry_by_id[sample.node_id] = &sample;
     }
     // Drop animation state for any node that has left the cluster, so a departed
     // peer's gauges don't dangle (the snapshot already expires its telemetry).
     std::erase_if(cluster_gauges_, [&](const auto& entry) {
-        for (const NodeStatus& node : nodes)
+        for (const zetta::cluster::NodeStatus& node : nodes)
             if (node.node_id == entry.first) return false;
         return true;
     });
@@ -1008,22 +1008,22 @@ void App::draw_cluster() {
     // views, nothing is invented. The reads are cheap (in-memory snapshots), so the
     // overlay never starves a live resize.
     PipelineInputs pipeline;
-    for (const NodeStatus& node : nodes) pipeline.nodes.push_back(node.node_id);
+    for (const zetta::cluster::NodeStatus& node : nodes) pipeline.nodes.push_back(node.node_id);
     if (compute::JobCoordinator* coordinator = node_.job_coordinator()) {
         pipeline.attached = true;
-        const Collectives& collectives = coordinator->collectives();
+        const zetta::cluster::Collectives& collectives = coordinator->collectives();
         pipeline.rounds_completed = collectives.rounds_completed();
         pipeline.wire_bytes = collectives.wire_bytes();
         pipeline.participants = collectives.participants();
     }
-    for (const std::shared_ptr<DatasetPartition>& part : node_.dataset_partitions()) {
+    for (const std::shared_ptr<zetta::data::DatasetPartition>& part : node_.dataset_partitions()) {
         PipelinePartitionRef ref;
         ref.id = part->id();
         ref.owners = part->owner_nodes();
         ref.rows = part->row_range().end - part->row_range().start;
         pipeline.partitions.push_back(std::move(ref));
     }
-    for (const PipelineJobInstrumentation& job : node_.pipeline_jobs()) {
+    for (const zetta::compute::PipelineJobInstrumentation& job : node_.pipeline_jobs()) {
         PipelineJobRef ref;
         ref.id = job.job_id;
         ref.node = job.node;
@@ -1031,7 +1031,7 @@ void App::draw_cluster() {
         ref.local_bytes = job.local_bytes_read;
         ref.wire_bytes = job.wire_bytes_moved;
         ref.rows = job.rows_read;
-        ref.succeeded = job.status == JobStatus::Succeeded;
+        ref.succeeded = job.status == zetta::compute::JobStatus::Succeeded;
         pipeline.jobs.push_back(std::move(ref));
     }
     update_cluster_pipeline(cluster_pipeline_, pipeline, dt);
@@ -1057,7 +1057,7 @@ void App::draw_cluster() {
         std::unordered_map<std::string, ImVec2> node_centers;
 
         for (std::size_t index = 0; index < nodes.size(); ++index) {
-            const NodeStatus& node = nodes[index];
+            const zetta::cluster::NodeStatus& node = nodes[index];
             const int row = static_cast<int>(index) / columns;
             const int col = static_cast<int>(index) % columns;
             const ImVec2 top_left(origin.x + col * (box_w + gap),
@@ -1204,7 +1204,7 @@ void App::draw_pipeline_activity(const PipelineInputs& pipeline) {
             kInkSecondary,
             "rounds %llu  ·  wire moved %s  ·  near-data jobs %zu  ·  partitions %zu",
             static_cast<unsigned long long>(pipeline.rounds_completed),
-            format_bytes(pipeline.wire_bytes).c_str(), pipeline.jobs.size(),
+            zetta::util::format_bytes(pipeline.wire_bytes).c_str(), pipeline.jobs.size(),
             pipeline.partitions.size());
         ImGui::TextColored(kInkQuiet,
                            "placed %llu  ·  rebalanced %llu  (since this view opened)",
@@ -1239,9 +1239,9 @@ void App::draw_pipeline_activity(const PipelineInputs& pipeline) {
     swatch(kFlowMove, "rebalance");
 }
 
-void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
-    const NodeStatus* selected = nullptr;
-    for (const NodeStatus& node : nodes)
+void App::draw_cluster_node_detail(const std::vector<zetta::cluster::NodeStatus>& nodes) {
+    const zetta::cluster::NodeStatus* selected = nullptr;
+    for (const zetta::cluster::NodeStatus& node : nodes)
         if (node.node_id == selected_cluster_node_) selected = &node;
 
     ImGui::Spacing();
@@ -1269,7 +1269,7 @@ void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
     } else if (!selected->replication.known) {
         ImGui::TextDisabled("No replication status learned yet.");
     } else {
-        const NodeReplication& rep = selected->replication;
+        const zetta::cluster::NodeReplication& rep = selected->replication;
         mono_line(kInkSecondary, "entries   ", std::to_string(rep.entries));
         mono_line(kInkSecondary, "version   ",
                   rep.version.empty() ? "—" : rep.version);
@@ -1323,23 +1323,23 @@ void App::draw_cluster_node_detail(const std::vector<NodeStatus>& nodes) {
         for (const std::string& address : cluster_.listen_addresses())
             mono_line(kInkSecondary, "", address);
         std::size_t peers = 0;
-        for (const NodeStatus& node : nodes)
+        for (const zetta::cluster::NodeStatus& node : nodes)
             if (!node.is_self) ++peers;
         mono_line(kInkMuted, "peers     ", std::to_string(peers));
     }
 }
 
-void App::set_provisioner(const std::string& target_id, Provisioner& provisioner) {
+void App::set_provisioner(const std::string& target_id, zetta::cloud::Provisioner& provisioner) {
     provisioners_[target_id] = &provisioner;
 }
 
-Provisioner* App::provisioner_for(const std::string& target_id) const {
+zetta::cloud::Provisioner* App::provisioner_for(const std::string& target_id) const {
     const auto found = provisioners_.find(target_id);
     return found == provisioners_.end() ? nullptr : found->second;
 }
 
 void App::draw_add_nodes_control() {
-    // The "Add nodes" control (epic #575 area 1): drive zetta::add_nodes over an
+    // The "Add nodes" control (epic #575 area 1): drive zetta::cloud::add_nodes over an
     // injected Provisioner. The provider catalog supplies the target list + exactly
     // what each target would read/run, so the cloud consent gate can name it up
     // front (the same metadata the Cloud Inspector renders). The given-hardware
@@ -1350,8 +1350,8 @@ void App::draw_add_nodes_control() {
     // one action, and consent is never remembered (CLAUDE.md hard rule).
     ImGui::SeparatorText("Add nodes");
 
-    const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
-    const CloudProvider* target = catalog.find(selected_add_target_);
+    const zetta::cloud::CloudProviderCatalog& catalog = zetta::cloud::CloudProviderCatalog::builtin();
+    const zetta::cloud::CloudProvider* target = catalog.find(selected_add_target_);
     if (target == nullptr) {  // a stale id (none should exist) falls back to Local
         selected_add_target_ = "local";
         target = catalog.find("local");
@@ -1362,7 +1362,7 @@ void App::draw_add_nodes_control() {
     // marks an open target (Local, no consent); amber marks a consent-gated one.
     ImGui::SetNextItemWidth(240.0f);
     if (ImGui::BeginCombo("Target", target->name.c_str())) {
-        for (const CloudProvider& provider : catalog.providers()) {
+        for (const zetta::cloud::CloudProvider& provider : catalog.providers()) {
             ImGui::PushID(provider.id.c_str());
             status_dot(provider.requires_consent() ? kWarnColor : kDotActive);
             const bool is_selected = provider.id == selected_add_target_;
@@ -1424,10 +1424,10 @@ void App::draw_add_nodes_control() {
         // across VM sizes automatically on a capacity shortage.
         // Bind the detected configs to a local — provisioner_configs() returns by
         // value, so a pointer into a temporary would dangle after the loop.
-        const std::vector<ProvisionerConfig> provisioner_configs =
+        const std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs =
             node_.provisioner_configs();
-        const ProvisionerConfig* detected_cfg = nullptr;
-        for (const ProvisionerConfig& pc : provisioner_configs) {
+        const zetta::cloud::ProvisionerConfig* detected_cfg = nullptr;
+        for (const zetta::cloud::ProvisionerConfig& pc : provisioner_configs) {
             if (pc.target == target->id) {
                 detected_cfg = &pc;
                 break;
@@ -1625,8 +1625,8 @@ void App::draw_add_nodes_control() {
 // part; NO Node access), stores the result under the op's mutex, then completes;
 // runtime::spawn's completion flips op->done, which poll_add_nodes() picks up.
 zetta::runtime::task<> provision_task(std::shared_ptr<AddNodesOp> op) {
-    AddNodesResult result =
-        add_nodes(*op->provisioner, AddNodesRequest{op->requested, NodeCapability{}});
+    zetta::cloud::AddNodesResult result =
+        add_nodes(*op->provisioner, zetta::cloud::AddNodesRequest{op->requested, zetta::cloud::NodeCapability{}});
     {
         std::lock_guard<std::mutex> lock(op->mutex);
         op->result = std::move(result);
@@ -1637,7 +1637,7 @@ zetta::runtime::task<> provision_task(std::shared_ptr<AddNodesOp> op) {
 // Fetch the VM-size dropdown options for a region OFF the UI thread (az vm
 // list-skus is slow). Inputs by value into the frame; the completion flips done.
 zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op) {
-    std::vector<std::string> sizes = azure_vm_sizes(op->subscription, op->location);
+    std::vector<std::string> sizes = zetta::cloud::azure_vm_sizes(op->subscription, op->location);
     {
         std::lock_guard<std::mutex> lock(op->mutex);
         op->result = std::move(sizes);
@@ -1645,7 +1645,7 @@ zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op) {
     co_return;
 }
 
-void App::run_add_nodes(const CloudProvider& target) {
+void App::run_add_nodes(const zetta::cloud::CloudProvider& target) {
     // Reached only from the Local "Add" button or a cloud target's explicit
     // "Allow". The slow provision runs OFF the UI thread (runtime::spawn) so a
     // minutes-long `az vmss create` never freezes the window; poll_add_nodes()
@@ -1653,7 +1653,7 @@ void App::run_add_nodes(const CloudProvider& target) {
     // already in flight (the buttons are disabled meanwhile).
     if (add_nodes_op_) return;
 
-    Provisioner* provisioner = provisioner_for(target.id);
+    zetta::cloud::Provisioner* provisioner = provisioner_for(target.id);
     if (provisioner == nullptr) {
         add_nodes_status_ =
             "No provisioner is wired for " + target.name + " in this build.";
@@ -1704,7 +1704,7 @@ void App::poll_add_nodes() {
     // The coroutine finished. Take its result and apply it to the node ON THE UI
     // THREAD (the thread that owns the node) — the fast membership + rebalance half.
     std::shared_ptr<AddNodesOp> op = add_nodes_op_;
-    AddNodesResult result;
+    zetta::cloud::AddNodesResult result;
     {
         std::lock_guard<std::mutex> lock(op->mutex);
         if (op->result) result = std::move(*op->result);
@@ -1749,7 +1749,7 @@ void App::draw_cloud() {
         "it. Credential files are never displayed.");
     ImGui::Spacing();
 
-    const CloudProviderCatalog& catalog = CloudProviderCatalog::builtin();
+    const zetta::cloud::CloudProviderCatalog& catalog = zetta::cloud::CloudProviderCatalog::builtin();
 
     const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
     const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 18.0f;
@@ -1759,7 +1759,7 @@ void App::draw_cloud() {
     ImGui::BeginChild("##cloud_list", ImVec2(list_w, panel_h),
                       ImGuiChildFlags_Borders);
     std::string current_category;
-    for (const CloudProvider& provider : catalog.providers()) {
+    for (const zetta::cloud::CloudProvider& provider : catalog.providers()) {
         if (provider.category != current_category) {
             current_category = provider.category;
             if (&provider != &catalog.providers().front()) ImGui::Spacing();
@@ -1784,7 +1784,7 @@ void App::draw_cloud() {
     ImGui::SameLine();
     ImGui::BeginChild("##cloud_detail", ImVec2(0, panel_h),
                       ImGuiChildFlags_Borders);
-    const CloudProvider* provider = catalog.find(selected_cloud_provider_);
+    const zetta::cloud::CloudProvider* provider = catalog.find(selected_cloud_provider_);
     if (!provider) {
         ImGui::TextDisabled("Select a provider to inspect.");
         ImGui::EndChild();
@@ -1831,7 +1831,7 @@ void App::draw_cloud() {
     ImGui::Spacing();
     eyebrow(mono_font_, "AND ZETTA WOULD RUN, READ-ONLY");
     if (mono_font_) ImGui::PushFont(mono_font_);
-    for (const InspectCommand& command : provider->inspect_commands) {
+    for (const zetta::cloud::InspectCommand& command : provider->inspect_commands) {
         ImGui::BulletText("%s", command.display.c_str());
     }
     if (mono_font_) ImGui::PopFont();
@@ -1883,10 +1883,10 @@ void App::draw_cloud() {
 
 // Render the cached result of the consented inspect for `provider` (found on the
 // node). Reads only already-produced state — it triggers no cloud call.
-void App::draw_cloud_inspect_result(const CloudProvider& provider) {
-    const std::vector<CloudInspectReport> reports = node_.cloud_inspections();
-    const CloudInspectReport* report = nullptr;
-    for (const CloudInspectReport& candidate : reports) {
+void App::draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider) {
+    const std::vector<zetta::cloud::CloudInspectReport> reports = node_.cloud_inspections();
+    const zetta::cloud::CloudInspectReport* report = nullptr;
+    for (const zetta::cloud::CloudInspectReport& candidate : reports) {
         if (candidate.provider_id == provider.id) {
             report = &candidate;
             break;
@@ -1941,7 +1941,7 @@ void App::draw_cloud_inspect_result(const CloudProvider& provider) {
     // when one failed, so a missing CLI or a parse failure is legible.
     ImGui::Spacing();
     eyebrow(mono_font_, "COMMANDS");
-    for (const CloudInspectCommand& command : report->commands) {
+    for (const zetta::cloud::CloudInspectCommand& command : report->commands) {
         status_dot(command.ok ? kDotActive : kErrorColor);
         if (mono_font_) ImGui::PushFont(mono_font_);
         ImGui::TextColored(kInkSecondary, "%s", command.display.c_str());
@@ -1956,13 +1956,13 @@ void App::draw_cloud_inspect_result(const CloudProvider& provider) {
     }
 }
 
-void App::run_cloud_inspect(const CloudProvider& provider) {
+void App::run_cloud_inspect(const zetta::cloud::CloudProvider& provider) {
     // The single point where the GUI touches a cloud — reached only from the
     // consent gate's Allow / Re-inspect actions. Synchronous: the inspect runs on
     // the UI thread (which owns the node), so recording the result races with
     // nothing. The default CommandRunner shells out to the provider's CLI; the
     // result is cached for the panel and for system.zetta_cloud_status.
-    CloudInspector inspector;
+    zetta::cloud::CloudInspector inspector;
     node_.record_cloud_inspection(inspector.inspect(provider));
 }
 
@@ -1973,7 +1973,7 @@ void App::draw_runs() {
     // outputs / lineage). This panel is a read-only viewer: runs arrive via the
     // API, tests, or replication from a peer (executing a graph — StartRun — is
     // a later slice). Held by id and re-resolved each frame, like the explorer.
-    const std::vector<std::shared_ptr<Run>> runs = node_.runs();
+    const std::vector<std::shared_ptr<zetta::pipeline::Run>> runs = node_.runs();
     ImGui::TextDisabled("%zu run(s)", runs.size());
 
     const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
@@ -1984,7 +1984,7 @@ void App::draw_runs() {
     ImGui::BeginChild("##run_list", ImVec2(list_w, panel_h),
                       ImGuiChildFlags_Borders);
     if (runs.empty()) ImGui::TextDisabled("(no runs)");
-    for (const std::shared_ptr<Run>& run : runs) {
+    for (const std::shared_ptr<zetta::pipeline::Run>& run : runs) {
         ImGui::PushID(run->id().c_str());
         ImGui::TextColored(run_status_color(run->status()), "%-9s",
                            std::string(to_string(run->status())).c_str());
@@ -2007,8 +2007,8 @@ void App::draw_runs() {
         // Resolve the trained model(s) this run produced via the durable reverse
         // link (Model::run() == run id), so the detail pane can surface their
         // metrics + ranked drivers alongside the run's outputs.
-        std::vector<std::shared_ptr<Model>> run_models;
-        for (const std::shared_ptr<Model>& model : node_.models()) {
+        std::vector<std::shared_ptr<zetta::ml::Model>> run_models;
+        for (const std::shared_ptr<zetta::ml::Model>& model : node_.models()) {
             if (model->run() == run->id()) run_models.push_back(model);
         }
         render_run_detail(*run, run_models);
@@ -2134,7 +2134,7 @@ void App::draw_add_model_form() {
             return true;
         };
 
-        ModelValue value;
+        zetta::ml::ModelValue value;
         value.name = add_model_name_;
         value.kind = add_model_kind_;
         nlohmann::json metrics;
@@ -2155,7 +2155,7 @@ void App::draw_add_model_form() {
             // record must pass when it reloads / reconciles. create_model stamps
             // `created` + leaves weights unset, both schema-valid, so a value that
             // passes here also passes on reload.
-            if (!validate_model_value(zetta::to_json(value), &error)) {
+            if (!zetta::ml::validate_model_value(zetta::ml::to_json(value), &error)) {
                 add_model_error_ = error;
             } else if (auto model = node_.create_model(value)) {
                 std::string summary = "Registered model";
@@ -2171,7 +2171,7 @@ void App::draw_add_model_form() {
                             std::istreambuf_iterator<char>());
                         summary += model->set_weights(bytes)
                                        ? " + weights (" +
-                                             format_bytes(bytes.size()) + ")"
+                                             zetta::util::format_bytes(bytes.size()) + ")"
                                        : " (weights attach failed)";
                     } else {
                         summary += " (weights file unreadable)";
@@ -2197,7 +2197,7 @@ void App::draw_models() {
     // Model handles — models arrive from a train job, the API, or replication —
     // plus the inline "Add model" affordance to register/import one. Held by id and
     // re-resolved each frame, like the Runs panel.
-    const std::vector<std::shared_ptr<Model>> models = node_.models();
+    const std::vector<std::shared_ptr<zetta::ml::Model>> models = node_.models();
     ImGui::TextDisabled("%zu model(s)", models.size());
 
     draw_add_model_form();
@@ -2211,7 +2211,7 @@ void App::draw_models() {
     ImGui::BeginChild("##model_list", ImVec2(list_w, panel_h),
                       ImGuiChildFlags_Borders);
     if (models.empty()) ImGui::TextDisabled("(no models)");
-    for (const std::shared_ptr<Model>& model : models) {
+    for (const std::shared_ptr<zetta::ml::Model>& model : models) {
         ImGui::PushID(model->id().c_str());
         ImGui::TextColored(kInkQuiet, "%-11s", model->kind().c_str());
         ImGui::SameLine();
@@ -2234,7 +2234,7 @@ void App::draw_models() {
     ImGui::SameLine();
     ImGui::BeginChild("##model_detail", ImVec2(0, panel_h),
                       ImGuiChildFlags_Borders);
-    if (const std::shared_ptr<Model> model = node_.find_model(selected_model_)) {
+    if (const std::shared_ptr<zetta::ml::Model> model = node_.find_model(selected_model_)) {
         render_model_card(*model);
         ImGui::Spacing();
         mono_line(kInkQuiet, "created:  ", model->created());
@@ -2262,7 +2262,7 @@ void App::draw_datasets() {
     // placement across the cluster (which node owns which partition). Recomputed
     // each frame via Node::datasets(), so it never drifts from the truth; the only
     // UI state is the selected dataset's table id (re-resolved each frame).
-    const std::vector<DatasetSummary> datasets = node_.datasets();
+    const std::vector<zetta::data::DatasetSummary> datasets = node_.datasets();
 
     // Add-dataset affordance (#587): pick a parquet/jsonl/json/csv file and load
     // it as a *partitioned* table, so it joins the list below with its partitions
@@ -2290,8 +2290,8 @@ void App::draw_datasets() {
     // Re-resolve the selection against the live datasets: if the selected table is
     // gone (or nothing is selected yet), fall back to the first dataset so the
     // detail pane always shows a real one.
-    const auto find_selected = [&]() -> const DatasetSummary* {
-        for (const DatasetSummary& dataset : datasets)
+    const auto find_selected = [&]() -> const zetta::data::DatasetSummary* {
+        for (const zetta::data::DatasetSummary& dataset : datasets)
             if (dataset.table_id == selected_dataset_) return &dataset;
         return nullptr;
     };
@@ -2308,7 +2308,7 @@ void App::draw_datasets() {
     ImGui::BeginChild("##dataset_list", ImVec2(list_w, panel_h),
                       ImGuiChildFlags_Borders);
     if (datasets.empty()) ImGui::TextDisabled("(no datasets)");
-    for (const DatasetSummary& dataset : datasets) {
+    for (const zetta::data::DatasetSummary& dataset : datasets) {
         ImGui::PushID(dataset.table_id.c_str());
         ImGui::TextColored(kInkQuiet, "%-6s", dataset.format.c_str());
         ImGui::SameLine();
@@ -2328,7 +2328,7 @@ void App::draw_datasets() {
     ImGui::SameLine();
     ImGui::BeginChild("##dataset_detail", ImVec2(0, panel_h),
                       ImGuiChildFlags_Borders);
-    if (const DatasetSummary* dataset = find_selected()) {
+    if (const zetta::data::DatasetSummary* dataset = find_selected()) {
         eyebrow(mono_font_, "DATASET");
         mono_line(kInkPrimary, "name        ", dataset->name);
         mono_line(kInkSecondary, "database    ", dataset->database);
@@ -2339,7 +2339,7 @@ void App::draw_datasets() {
         mono_line(kInkSecondary, "format      ", dataset->format);
         mono_line(kInkSecondary, "replication ", dataset->replication);
         mono_line(kInkSecondary, "rows        ", std::to_string(dataset->rows));
-        mono_line(kInkSecondary, "size        ", format_bytes(dataset->size_bytes));
+        mono_line(kInkSecondary, "size        ", zetta::util::format_bytes(dataset->size_bytes));
         mono_line(kInkSecondary, "columns     ",
                   std::to_string(dataset->columns.size()));
 
@@ -2367,7 +2367,7 @@ void App::draw_datasets() {
     ImGui::EndChild();
 }
 
-void App::draw_dataset_placement(const DatasetSummary& dataset) {
+void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
     // A non-partitioned (replicate-to-all) dataset has no catalog entries — it
     // lives in full on every node — so there is no per-partition placement to show.
     if (dataset.partitions.empty()) {
@@ -2383,23 +2383,23 @@ void App::draw_dataset_placement(const DatasetSummary& dataset) {
     // catalog, so a partition owned by a node that has since left (or a foreign
     // owner not yet connected) still appears — the placement is the catalog's
     // global truth, not just this node's local view.
-    std::unordered_map<std::string, std::vector<const DatasetPlacement*>> owned;
+    std::unordered_map<std::string, std::vector<const zetta::data::DatasetPlacement*>> owned;
     std::vector<std::string> node_order;
     const auto note_node = [&](const std::string& node_id) {
         if (owned.find(node_id) == owned.end()) {
-            owned.emplace(node_id, std::vector<const DatasetPlacement*>{});
+            owned.emplace(node_id, std::vector<const zetta::data::DatasetPlacement*>{});
             node_order.push_back(node_id);
         }
     };
-    const std::vector<NodeStatus> nodes = cluster_.nodes();
+    const std::vector<zetta::cluster::NodeStatus> nodes = cluster_.nodes();
     std::unordered_set<std::string> is_member;
     std::string self_id;
-    for (const NodeStatus& node : nodes) {
+    for (const zetta::cluster::NodeStatus& node : nodes) {
         note_node(node.node_id);
         is_member.insert(node.node_id);
         if (node.is_self) self_id = node.node_id;
     }
-    for (const DatasetPlacement& placement : dataset.partitions) {
+    for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
         for (const std::string& owner : placement.owner_nodes) {
             note_node(owner);
             owned[owner].push_back(&placement);
@@ -2430,7 +2430,7 @@ void App::draw_dataset_placement(const DatasetSummary& dataset) {
 
         for (std::size_t index = 0; index < node_order.size(); ++index) {
             const std::string& node_id = node_order[index];
-            const std::vector<const DatasetPlacement*>& parts = owned[node_id];
+            const std::vector<const zetta::data::DatasetPlacement*>& parts = owned[node_id];
             const bool owns = !parts.empty();
             const int row = static_cast<int>(index) / columns;
             const int col = static_cast<int>(index) % columns;
@@ -2476,7 +2476,7 @@ void App::draw_dataset_placement(const DatasetSummary& dataset) {
             }
             // The covered row span, so the box says not just how many but how much.
             std::uint64_t rows_here = 0;
-            for (const DatasetPlacement* placement : parts) {
+            for (const zetta::data::DatasetPlacement* placement : parts) {
                 rows_here += placement->row_end - placement->row_start;
             }
             if (owns) {
@@ -2511,7 +2511,7 @@ void App::draw_dataset_placement(const DatasetSummary& dataset) {
         ImGui::TableSetupColumn("row range");
         ImGui::TableSetupColumn("owner nodes");
         ImGui::TableHeadersRow();
-        for (const DatasetPlacement& placement : dataset.partitions) {
+        for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             if (g_mono_font) ImGui::PushFont(g_mono_font);
@@ -2565,9 +2565,9 @@ void App::draw_job_scaling_controls() {
 
     // 1) Objective — "set the reward". The three reward models the autoscaler can
     //    optimize, in declaration order (the combo index maps to ScalingObjective).
-    static constexpr std::array<ScalingObjective, 3> kObjectives{
-        ScalingObjective::MinimizeCost, ScalingObjective::RuntimeTarget,
-        ScalingObjective::DataShape};
+    static constexpr std::array<zetta::compute::ScalingObjective, 3> kObjectives{
+        zetta::compute::ScalingObjective::MinimizeCost, zetta::compute::ScalingObjective::RuntimeTarget,
+        zetta::compute::ScalingObjective::DataShape};
     if (scaling_objective_ < 0 ||
         scaling_objective_ >= static_cast<int>(kObjectives.size())) {
         scaling_objective_ = 0;
@@ -2589,7 +2589,7 @@ void App::draw_job_scaling_controls() {
         ImGui::EndCombo();
     }
 
-    const ScalingObjective objective = kObjectives[scaling_objective_];
+    const zetta::compute::ScalingObjective objective = kObjectives[scaling_objective_];
 
     // 2) Bounds — the hard envelope the autoscaler must stay inside (min/max node
     //    count + a cost cap; 0 = unlimited). A runtime target only matters for the
@@ -2607,7 +2607,7 @@ void App::draw_job_scaling_controls() {
     ImGui::InputDouble("Cost cap (0 = unlimited)", &scaling_cost_cap_, 0.0, 0.0,
                        "%.1f");
     if (scaling_cost_cap_ < 0.0) scaling_cost_cap_ = 0.0;
-    if (objective == ScalingObjective::RuntimeTarget) {
+    if (objective == zetta::compute::ScalingObjective::RuntimeTarget) {
         ImGui::SetNextItemWidth(160.0f);
         ImGui::InputDouble("Target seconds", &scaling_target_seconds_, 0.0, 0.0,
                            "%.1f");
@@ -2642,15 +2642,15 @@ void App::draw_job_scaling_controls() {
     // 4) Score it — the real, pure decision. reward (higher is better),
     //    recommended node count, the scale up/hold/down action relative to the
     //    sample, whether the cost cap holds, and the human-readable reason.
-    ScalingPolicy policy;
+    zetta::compute::ScalingPolicy policy;
     policy.objective = objective;
     policy.bounds.min_nodes = static_cast<std::uint32_t>(scaling_min_nodes_);
     policy.bounds.max_nodes = static_cast<std::uint32_t>(scaling_max_nodes_);
     policy.bounds.cost_cap = scaling_cost_cap_;
     policy.target_seconds = scaling_target_seconds_;
-    const ScalingSample sample{scaling_progress_, scaling_elapsed_, scaling_cost_,
+    const zetta::compute::ScalingSample sample{scaling_progress_, scaling_elapsed_, scaling_cost_,
                                static_cast<std::uint32_t>(scaling_nodes_)};
-    const ScalingDecision decision = policy.evaluate(sample);
+    const zetta::compute::ScalingDecision decision = policy.evaluate(sample);
 
     ImGui::SeparatorText("Decision");
     ImGui::Text("recommended nodes: %u", decision.recommended_nodes);
@@ -2674,7 +2674,7 @@ void App::draw_jobs() {
     // replicated, already-validated ComputeJob handles, like the Runs panel —
     // creating/scheduling a job is a later slice. The detail pane adds the per-job
     // objective/scaling preview (draw_job_scaling_controls).
-    const std::vector<std::shared_ptr<ComputeJob>> jobs = node_.jobs();
+    const std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs = node_.jobs();
     ImGui::TextDisabled("%zu job(s)", jobs.size());
 
     const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
@@ -2685,7 +2685,7 @@ void App::draw_jobs() {
     ImGui::BeginChild("##job_list", ImVec2(list_w, panel_h),
                       ImGuiChildFlags_Borders);
     if (jobs.empty()) ImGui::TextDisabled("(no jobs)");
-    for (const std::shared_ptr<ComputeJob>& job : jobs) {
+    for (const std::shared_ptr<zetta::compute::ComputeJob>& job : jobs) {
         ImGui::PushID(job->id().c_str());
         ImGui::TextColored(job_status_color(job->status()), "%-9s",
                            std::string(to_string(job->status())).c_str());
@@ -2706,7 +2706,7 @@ void App::draw_jobs() {
     ImGui::SameLine();
     ImGui::BeginChild("##job_detail", ImVec2(0, panel_h),
                       ImGuiChildFlags_Borders);
-    if (const std::shared_ptr<ComputeJob> job = node_.find_job(selected_job_)) {
+    if (const std::shared_ptr<zetta::compute::ComputeJob> job = node_.find_job(selected_job_)) {
         // Reset the scaling controls whenever the selection changes, so they
         // start from sensible defaults per job rather than leaking the previous
         // job's edits.

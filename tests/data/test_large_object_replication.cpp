@@ -21,15 +21,15 @@
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::DatasetPartitionValue;
-using zetta::LargeObject;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::data::DatasetPartitionValue;
+using zetta::data::LargeObject;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicatedBlobStore;
-using zetta::ReplicationManager;
-using zetta::sha256_hex;
+using zetta::data::ReplicatedBlobStore;
+using zetta::cluster::ReplicationManager;
+using zetta::util::sha256_hex;
 using zetta::test::TempDir;
 
 namespace {
@@ -61,8 +61,8 @@ TEST(LargeObjectReplication, BodyTransfersAndVerifiesAcrossNodes) {
         out.write(payload.data(), static_cast<std::streamsize>(payload.size()));
     }
 
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
     ReplicatedBlobStore blobs_a{dir_a.path(), repl_a};
@@ -134,12 +134,12 @@ TEST(LargeObjectReplication, BodyTransfersAndVerifiesAcrossNodes) {
 
 TEST(ReplicatedBlobStore, VerifiesHashAndRejectsMismatch) {
     TempDir dir;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     ReplicationManager replication{node_id};
     ReplicatedBlobStore blobs{dir.path(), replication};
 
-    const std::string db_id = zetta::new_uuid();
-    const std::string lo_id = zetta::new_uuid();
+    const std::string db_id = zetta::util::new_uuid();
+    const std::string lo_id = zetta::util::new_uuid();
     const std::string body = "the real bytes";
     // Record metadata directly (key format mirrors src/core/catalog.hpp).
     replication.set("lo:" + lo_id,
@@ -165,11 +165,11 @@ TEST(ReplicatedBlobStore, AcceptsLegacyObjectWithEmptyHash) {
     // Objects imported before SHA-256 existed carry an empty hash; the body must
     // still transfer (verified by size only), not be rejected forever.
     TempDir dir;
-    ReplicationManager replication{zetta::new_uuid()};
+    ReplicationManager replication{zetta::util::new_uuid()};
     ReplicatedBlobStore blobs{dir.path(), replication};
-    const std::string lo_id = zetta::new_uuid();
+    const std::string lo_id = zetta::util::new_uuid();
     const std::string body = "legacy body with no recorded hash";
-    replication.set("lo:" + lo_id, nlohmann::json{{"db", zetta::new_uuid()},
+    replication.set("lo:" + lo_id, nlohmann::json{{"db", zetta::util::new_uuid()},
                                                   {"name", "legacy.bin"},
                                                   {"size", body.size()},
                                                   {"sha256", ""}});
@@ -199,12 +199,12 @@ void seed_partition_blob(ReplicationManager& replication,
                                                   {"size", body.size()},
                                                   {"sha256", sha256_hex(body)}});
     DatasetPartitionValue partition;
-    partition.table = "tbl:" + zetta::new_uuid();
+    partition.table = "tbl:" + zetta::util::new_uuid();
     partition.blob_ref = bare_ref ? lo_id : ("lo:" + lo_id);
     partition.row_range = {0, 100};
     partition.owner_nodes = owner_nodes;
     partition.created = "2026-06-29T00:00:00Z";
-    replication.set("part:" + zetta::new_uuid(), zetta::to_json(partition));
+    replication.set("part:" + zetta::util::new_uuid(), zetta::data::to_json(partition));
 }
 
 }  // namespace
@@ -214,10 +214,10 @@ TEST(ReplicatedBlobStore, PartitionBodyFetchedAndHeldOnlyByOwners) {
     // non-owner neither lists it as missing nor accepts a pushed copy. Both
     // stores see the same replicate-to-all catalog (so seed both documents).
     TempDir owner_dir, other_dir;
-    const std::string owner_id = zetta::new_uuid();
-    const std::string other_id = zetta::new_uuid();
-    const std::string lo_id = zetta::new_uuid();
-    const std::string db_id = zetta::new_uuid();
+    const std::string owner_id = zetta::util::new_uuid();
+    const std::string other_id = zetta::util::new_uuid();
+    const std::string lo_id = zetta::util::new_uuid();
+    const std::string db_id = zetta::util::new_uuid();
     const std::string body = sample_payload();
 
     ReplicationManager repl_owner{owner_id};
@@ -243,10 +243,10 @@ TEST(ReplicatedBlobStore, PartitionBodyFetchedAndHeldOnlyByOwners) {
 TEST(ReplicatedBlobStore, ReplicationFactorPlacesBodyOnExactlyRfNodes) {
     // With owner_nodes of size rf, exactly rf nodes fetch + hold the body.
     TempDir dirs[3];
-    const std::string ids[3] = {zetta::new_uuid(), zetta::new_uuid(),
-                                zetta::new_uuid()};
-    const std::string lo_id = zetta::new_uuid();
-    const std::string db_id = zetta::new_uuid();
+    const std::string ids[3] = {zetta::util::new_uuid(), zetta::util::new_uuid(),
+                                zetta::util::new_uuid()};
+    const std::string lo_id = zetta::util::new_uuid();
+    const std::string db_id = zetta::util::new_uuid();
     const std::string body = "partition body, rf=2";
     const std::vector<std::string> owners = {ids[0], ids[1]};  // rf = 2
 
@@ -268,10 +268,10 @@ TEST(ReplicatedBlobStore, UnplacedPartitionBodyReplicatesToAll) {
     // A partition with no recorded owners (not yet placed) must not be stranded:
     // its body falls back to replicate-to-all so any node still fetches it.
     TempDir dir;
-    ReplicationManager replication{zetta::new_uuid()};
-    const std::string lo_id = zetta::new_uuid();
+    ReplicationManager replication{zetta::util::new_uuid()};
+    const std::string lo_id = zetta::util::new_uuid();
     const std::string body = "unplaced partition body";
-    seed_partition_blob(replication, lo_id, zetta::new_uuid(), body,
+    seed_partition_blob(replication, lo_id, zetta::util::new_uuid(), body,
                         /*owner_nodes=*/{});
     ReplicatedBlobStore blobs{dir.path(), replication};
     EXPECT_TRUE(contains(blobs.missing_blobs(), lo_id));
@@ -282,10 +282,10 @@ TEST(ReplicatedBlobStore, OwnerCheckToleratesBareBlobRef) {
     // blob_ref may be recorded as a bare uuid (no "lo:" prefix); placement must
     // still resolve it to the right owner set.
     TempDir owner_dir, other_dir;
-    const std::string owner_id = zetta::new_uuid();
-    const std::string other_id = zetta::new_uuid();
-    const std::string lo_id = zetta::new_uuid();
-    const std::string db_id = zetta::new_uuid();
+    const std::string owner_id = zetta::util::new_uuid();
+    const std::string other_id = zetta::util::new_uuid();
+    const std::string lo_id = zetta::util::new_uuid();
+    const std::string db_id = zetta::util::new_uuid();
     const std::string body = "bare-ref partition body";
 
     ReplicationManager repl_owner{owner_id};

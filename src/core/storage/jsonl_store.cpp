@@ -8,16 +8,16 @@
 #include <system_error>
 #include <utility>
 
-namespace zetta {
+namespace zetta::storage {
 namespace fs = std::filesystem;
 
-JsonlStore::JsonlStore(fs::path dir) : dir_(std::move(dir)) {
+zetta::storage::JsonlStore::JsonlStore(fs::path dir) : dir_(std::move(dir)) {
     std::error_code ec;
     fs::create_directories(dir_, ec);
     load();
 }
 
-void JsonlStore::load() {
+void zetta::storage::JsonlStore::load() {
     records_.clear();
     ids_.clear();
     id_index_.clear();
@@ -42,7 +42,7 @@ void JsonlStore::load() {
                 id = parsed["_zid"].get<std::string>();
                 doc = std::move(parsed["doc"]);
             } else {
-                id = new_uuid();
+                id = zetta::util::new_uuid();
                 doc = std::move(parsed);
             }
             ids_.push_back(id);
@@ -52,7 +52,7 @@ void JsonlStore::load() {
     }
 }
 
-void JsonlStore::add(std::string id, nlohmann::json doc) {
+void zetta::storage::JsonlStore::add(std::string id, nlohmann::json doc) {
     const std::size_t index = records_.size();
     const nlohmann::json line{{"_zid", id}, {"doc", doc}};
     records_.push_back(std::move(doc));
@@ -72,4 +72,4 @@ fs::path JsonlStore::chunk_path(std::size_t chunk_index) const {
     return dir_ / name;
 }
 
-}  // namespace zetta
+}  // namespace zetta::storage

@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace zetta {
+namespace zetta::governance {
 
 std::string_view to_string(ResourceKind kind) {
     switch (kind) {
@@ -88,4 +88,4 @@ std::optional<Scope> scope_from_json(const nlohmann::json& document) {
     return parsed;
 }
 
-}  // namespace zetta
+}  // namespace zetta::governance

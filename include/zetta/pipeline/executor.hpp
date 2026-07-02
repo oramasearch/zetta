@@ -24,11 +24,10 @@
 // a faithful, schema-valid Run from the graph's structure. Real per-step compute
 // plugs in behind the StepExecutor seam without touching the orchestrator — the
 // same shape as the gate's Check seam and the storage engine's StorageEngine.
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::pipeline {
 
-// What executing one step produced. A step emits zero or more typed artifacts
 // (datasets / models / indexes) and, for a source step, zero or more lineage
 // sources it pulled from. A step fails by returning ok=false with a reason; the
 // orchestrator then stops (fail-fast) and marks the run Failed.
@@ -124,4 +123,4 @@ private:
 std::optional<std::vector<std::shared_ptr<ir::Node>>> topological_order(
     const ir::ExecutionGraph& graph);
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

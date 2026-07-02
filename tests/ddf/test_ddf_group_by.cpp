@@ -32,11 +32,11 @@ namespace {
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::CpuDevice;
@@ -54,8 +54,8 @@ using zetta::query::QueryService;
 using zetta::test::TempDir;
 
 // Build an in-memory store from row docs (ids are not exercised here).
-zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         store.add("row-" + std::to_string(i), rows[i]);
     }
@@ -110,7 +110,7 @@ struct ComputeNode {
           cluster(std::move(cluster_id), cluster_config(port, seeds)),
           coordinator(cluster, workers) {
         node.start();
-        const zetta::JsonStore store = make_store(rows);
+        const zetta::storage::JsonStore store = make_store(rows);
         auto loaded = zetta::ddf::load_data_frame(store, churn_schema(), device);
         EXPECT_TRUE(loaded.ok()) << loaded.status.message;
         frame = std::move(loaded.frame);

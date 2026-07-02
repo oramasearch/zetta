@@ -13,7 +13,7 @@
 
 #include "zetta/parquet/reader.hpp"
 
-namespace zetta {
+namespace zetta::usecases::churn {
 namespace fs = std::filesystem;
 
 namespace {
@@ -470,4 +470,4 @@ nlohmann::json entity_resolution_attribute(const ChurnDataset& dataset,
     return entity_resolution_annotation(candidates, mentions, strategy);
 }
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

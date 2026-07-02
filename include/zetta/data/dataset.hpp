@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta::data {
 
 // Where one of a dataset's partitions physically lives, flattened from the
 // partition catalog (DatasetPartition; ENT-36 / TBL-13): the contiguous row slice
@@ -48,4 +48,4 @@ struct DatasetSummary {
                                                //   cluster (empty = not partitioned)
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

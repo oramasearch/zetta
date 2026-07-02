@@ -12,7 +12,7 @@
 namespace zetta::ml {
 
 NearDataTrainResult run_near_data_train_job(
-    compute::JobCoordinator& coordinator, Node& node, ComputeJob& job,
+    compute::JobCoordinator& coordinator, Node& node, zetta::compute::ComputeJob& job,
     const std::string& table, const ddf::DataFrameSchema& schema,
     const std::vector<std::string>& feature_columns,
     const std::string& label_column, const GbdtParams& params,
@@ -27,14 +27,14 @@ NearDataTrainResult run_near_data_train_job(
     // survive the call and surface in system.pipeline_jobs (#589).
     auto record_instrumentation = [&] {
         node.record_pipeline_job({.job_id = job.id(),
-                                  .kind = NearDataJobKind::Train,
+                                  .kind = zetta::compute::NearDataJobKind::Train,
                                   .node = node.node_id(),
                                   .partitions_read = out.partitions_read,
                                   .rows_read = out.rows_read,
                                   .local_bytes_read = out.local_bytes_read,
                                   .wire_bytes_moved = out.wire_bytes_moved,
                                   .status = out.status,
-                                  .recorded_at = now_iso8601()});
+                                  .recorded_at = zetta::util::now_iso8601()});
     };
 
     // (1) Compute near data: materialize this node's shard from its OWNED partitions
@@ -95,8 +95,8 @@ NearDataTrainResult run_near_data_train_job(
     // (3) Per-row TreeSHAP drivers over the same shard, with the trained model. A
     // self-created `explain` ComputeJob (so it appears in system.zetta_jobs), under the
     // same project/graph as the train job.
-    std::shared_ptr<ComputeJob> explain_job =
-        node.create_job(JobKind::Explain, job.project(), job.graph());
+    std::shared_ptr<zetta::compute::ComputeJob> explain_job =
+        node.create_job(zetta::compute::JobKind::Explain, job.project(), job.graph());
     out.explain_job_id = explain_job->id();
     DistributedExplainResult explained = run_explain_job(
         coordinator, *explain_job, trained.model, shard.frame, entity_column,
@@ -110,8 +110,8 @@ NearDataTrainResult run_near_data_train_job(
     // (4) The global ranked at-risk list over the same shard. A self-created `score`
     // ComputeJob; the gather + device sort_by_key + broadcast make the ranking
     // identical on every node.
-    std::shared_ptr<ComputeJob> score_job =
-        node.create_job(JobKind::Score, job.project(), job.graph());
+    std::shared_ptr<zetta::compute::ComputeJob> score_job =
+        node.create_job(zetta::compute::JobKind::Score, job.project(), job.graph());
     out.score_job_id = score_job->id();
     DistributedScoreResult scored =
         run_score_job(coordinator, *score_job, shard.frame, trained.model,
@@ -122,10 +122,10 @@ NearDataTrainResult run_near_data_train_job(
 
     // The pipeline succeeds only when all three phases did — the per-row drivers + rank
     // are part of the deliverable, not optional decoration.
-    out.status = (explained.status == JobStatus::Succeeded &&
-                  scored.status == JobStatus::Succeeded)
-                     ? JobStatus::Succeeded
-                     : JobStatus::Failed;
+    out.status = (explained.status == zetta::compute::JobStatus::Succeeded &&
+                  scored.status == zetta::compute::JobStatus::Succeeded)
+                     ? zetta::compute::JobStatus::Succeeded
+                     : zetta::compute::JobStatus::Failed;
     record_instrumentation();
     return out;
 }

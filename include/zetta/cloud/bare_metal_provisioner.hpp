@@ -9,7 +9,7 @@
 #include "zetta/cloud/burst_provisioner.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // How to burst ephemeral worker nodes on the **local host** — the configuration the
 // bare-metal cloud-burst backend (#436) is driven by. It mirrors the Azure
@@ -109,4 +109,4 @@ public:
                            BareMetalControlPlane>::BurstProvisioner;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

@@ -4,7 +4,7 @@
 
 #include "zetta/util/sha256.hpp"
 
-using zetta::sha256_hex;
+using zetta::util::sha256_hex;
 
 // NIST / well-known SHA-256 vectors.
 TEST(Sha256, KnownVectors) {

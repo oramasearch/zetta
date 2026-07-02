@@ -88,9 +88,9 @@ TestResult run_allreduce(const TestOptions& options, TestContext& context) {
     LoopbackCluster cluster(nodes);
     if (!cluster.connected()) return TestResult::fail("cluster did not converge");
 
-    std::vector<std::unique_ptr<Collectives>> collectives;
+    std::vector<std::unique_ptr<zetta::cluster::Collectives>> collectives;
     for (std::size_t i = 0; i < nodes; ++i) {
-        collectives.push_back(std::make_unique<Collectives>(cluster.cluster(i)));
+        collectives.push_back(std::make_unique<zetta::cluster::Collectives>(cluster.cluster(i)));
     }
 
     constexpr std::size_t width = 4;
@@ -103,7 +103,7 @@ TestResult run_allreduce(const TestOptions& options, TestContext& context) {
                 local[j] = static_cast<double>((i + 1) * (j + 1));
             }
             results[i] = collectives[i]->allreduce("tk.allreduce", local,
-                                                   CollectiveOp::Sum);
+                                                   zetta::cluster::CollectiveOp::Sum);
         });
     }
     for (auto& thread : threads) thread.join();
@@ -168,7 +168,7 @@ TestResult run_group_by_consistency(const TestOptions& options, TestContext& con
     // Single-node ground truth over the full dataset.
     context.emit("computing the single-node ground truth");
     CpuDevice truth_device;
-    JsonStore full;
+    zetta::storage::JsonStore full;
     for (std::size_t i = 0; i < rows; ++i) full.add("row-" + std::to_string(i), make_row(i));
     ddf::DataFrameResult full_frame = ddf::scan(full, schema, truth_device);
     if (!full_frame.ok()) return TestResult::fail("truth scan failed");
@@ -182,7 +182,7 @@ TestResult run_group_by_consistency(const TestOptions& options, TestContext& con
     if (!cluster.connected()) return TestResult::fail("cluster did not converge");
 
     std::vector<std::unique_ptr<CpuDevice>> devices(nodes);
-    std::vector<JsonStore> shards(nodes);
+    std::vector<zetta::storage::JsonStore> shards(nodes);
     for (std::size_t i = 0; i < nodes; ++i) devices[i] = std::make_unique<CpuDevice>();
     for (std::size_t i = 0; i < rows; ++i) {
         shards[i % nodes].add("row-" + std::to_string(i), make_row(i));
@@ -196,9 +196,9 @@ TestResult run_group_by_consistency(const TestOptions& options, TestContext& con
         frames.push_back(std::move(scanned.frame));
     }
 
-    std::vector<std::unique_ptr<Collectives>> collectives;
+    std::vector<std::unique_ptr<zetta::cluster::Collectives>> collectives;
     for (std::size_t i = 0; i < nodes; ++i) {
-        collectives.push_back(std::make_unique<Collectives>(cluster.cluster(i)));
+        collectives.push_back(std::make_unique<zetta::cluster::Collectives>(cluster.cluster(i)));
     }
 
     std::vector<ddf::GroupByOutcome> results(nodes);
@@ -265,7 +265,7 @@ TestResult run_compute_near_data(const TestOptions& options, TestContext& contex
     // Single-node ground truth over the whole dataset.
     context.emit("computing the single-node oracle over the full dataset");
     CpuDevice truth_device;
-    JsonStore full;
+    zetta::storage::JsonStore full;
     for (std::size_t i = 0; i < rows; ++i) full.add("row-" + std::to_string(i), make_row(i));
     ddf::DataFrameResult full_frame = ddf::scan(full, schema, truth_device);
     if (!full_frame.ok()) return TestResult::fail("oracle scan failed");
@@ -286,17 +286,17 @@ TestResult run_compute_near_data(const TestOptions& options, TestContext& contex
     for (std::size_t i = 0; i < nodes; ++i) {
         devices[i] = std::make_unique<CpuDevice>();
         Node& node = cluster.node(i);
-        std::shared_ptr<Database> database = node.create_database("data");
+        std::shared_ptr<zetta::data::Database> database = node.create_database("data");
         if (!database) return TestResult::fail("create_database failed on node " +
                                                std::to_string(i));
-        std::shared_ptr<Table> table = database->create_table("events");
+        std::shared_ptr<zetta::data::Table> table = database->create_table("events");
         if (!table) return TestResult::fail("create_table failed on node " +
                                             std::to_string(i));
-        table->set_partitioner(std::make_shared<RoundRobinPartitioner>(partitions));
+        table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(partitions));
         for (std::size_t r = 0; r < rows; ++r) {
             if (r % nodes == i) table->add_row(make_row(r));
         }
-        const PartitionWriteResult written = write_partitioned(node, *database, *table);
+        const zetta::data::PartitionWriteResult written = write_partitioned(node, *database, *table);
         if (!written.ok()) return TestResult::fail("write_partitioned failed on node " +
                                                    std::to_string(i) + ": " + written.error);
         table_ids[i] = table->id();
@@ -313,11 +313,11 @@ TestResult run_compute_near_data(const TestOptions& options, TestContext& contex
     // SPMD: a thread per node runs the near-data group-by concurrently (the
     // collectives need every participant present).
     context.emit("running the near-data group-by on every node");
-    std::vector<std::shared_ptr<ComputeJob>> jobs(nodes);
+    std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs(nodes);
     std::vector<ddf::NearDataGroupByResult> results(nodes);
     std::vector<std::thread> threads;
     for (std::size_t i = 0; i < nodes; ++i) {
-        jobs[i] = cluster.node(i).create_job(JobKind::Ddf);
+        jobs[i] = cluster.node(i).create_job(zetta::compute::JobKind::Ddf);
         threads.emplace_back([&, i] {
             results[i] = ddf::run_near_data_group_by_job(
                 *coordinators[i], cluster.node(i), *jobs[i], table_ids[i], schema, spec,
@@ -331,7 +331,7 @@ TestResult run_compute_near_data(const TestOptions& options, TestContext& contex
     std::uint64_t total_rows_read = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
         const ddf::NearDataGroupByResult& result = results[i];
-        if (result.status != JobStatus::Succeeded) {
+        if (result.status != zetta::compute::JobStatus::Succeeded) {
             return TestResult::fail("node " + std::to_string(i) +
                                     " near-data job did not succeed: " + jobs[i]->detail());
         }
@@ -446,8 +446,8 @@ TestResult run_partition_rebalance(const TestOptions& options, TestContext& cont
     // deterministic form of the gossip path.
     ScratchDir dir_a;
     ScratchDir dir_b;
-    ReplicationManager repl_a{new_uuid()};
-    ReplicationManager repl_b{new_uuid()};
+    zetta::cluster::ReplicationManager repl_a{zetta::util::new_uuid()};
+    zetta::cluster::ReplicationManager repl_b{zetta::util::new_uuid()};
     NodeConfig cfg_a;
     cfg_a.data_dir = dir_a.path().string();
     cfg_a.preflight = false;
@@ -468,10 +468,10 @@ TestResult run_partition_rebalance(const TestOptions& options, TestContext& cont
     context.emit("partitioning " + std::to_string(rows) + " rows over " +
                  std::to_string(write_members) + " members (rf=" +
                  std::to_string(replication_factor) + ")");
-    std::shared_ptr<Database> database = writer.create_database("warehouse");
-    std::shared_ptr<Table> table =
-        database->create_table("events", ReplicationStrategy::partitioned());
-    table->set_partitioner(std::make_shared<RendezvousPlacement>(
+    std::shared_ptr<zetta::data::Database> database = writer.create_database("warehouse");
+    std::shared_ptr<zetta::data::Table> table =
+        database->create_table("events", zetta::data::ReplicationStrategy::partitioned());
+    table->set_partitioner(std::make_shared<zetta::data::RendezvousPlacement>(
         /*partition_count=*/64, replication_factor));
     for (std::size_t i = 0; i < rows; ++i) {
         table->add_row(nlohmann::json{{"id", "row-" + std::to_string(i)},
@@ -483,7 +483,7 @@ TestResult run_partition_rebalance(const TestOptions& options, TestContext& cont
         members.push_back("node-" + std::to_string(i));
     }
     const auto write =
-        zetta::write_partitioned(writer, *database, *table, members);
+        zetta::data::write_partitioned(writer, *database, *table, members);
     if (!write.ok()) return TestResult::fail("partitioned write failed: " + write.error);
     if (write.partitions.size() < 2) {
         return TestResult::fail("expected a spread of partitions, got " +
@@ -505,8 +505,8 @@ TestResult run_partition_rebalance(const TestOptions& options, TestContext& cont
     std::vector<std::string> grown = members;
     grown.push_back(joiner);
     context.emit(joiner + " joins — rebalancing between jobs");
-    const RebalanceResult rebalanced =
-        zetta::rebalance_partitions(writer, grown, members);
+    const zetta::data::RebalanceResult rebalanced =
+        zetta::data::rebalance_partitions(writer, grown, members);
     if (rebalanced.moved == 0) {
         return TestResult::fail("the join moved no partitions");
     }
@@ -630,7 +630,7 @@ TestResult run_featurize_partitions(const TestOptions& options, TestContext& con
     // The single-node featurize oracle over the whole dataset.
     context.emit("computing the single-node featurize oracle");
     CpuDevice truth_device;
-    JsonStore full;
+    zetta::storage::JsonStore full;
     std::size_t excluded = 0;
     for (std::size_t i = 0; i < rows; ++i) {
         full.add("row-" + std::to_string(i), make_conversation(i));
@@ -663,9 +663,9 @@ TestResult run_featurize_partitions(const TestOptions& options, TestContext& con
         if (!database) return TestResult::fail("node " + std::to_string(i) + " has no database");
         auto table = database->create_table("conversations");
         if (!table) return TestResult::fail("node " + std::to_string(i) + " has no table");
-        table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
+        table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(4));
         for (std::size_t r = i; r < rows; r += nodes) table->add_row(make_conversation(r));
-        const PartitionWriteResult written = write_partitioned(node, *database, *table);
+        const zetta::data::PartitionWriteResult written = write_partitioned(node, *database, *table);
         if (!written.ok()) {
             return TestResult::fail("node " + std::to_string(i) + " partition write failed: " +
                                     written.error);
@@ -677,11 +677,11 @@ TestResult run_featurize_partitions(const TestOptions& options, TestContext& con
     for (auto& coordinator : coordinators) coordinator->start();
 
     const ddf::FeaturizeSpec spec = engineered_spec();
-    std::vector<std::shared_ptr<ComputeJob>> jobs(nodes);
+    std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs(nodes);
     std::vector<ddf::NearDataFeaturizeResult> results(nodes);
     std::vector<std::thread> threads;
     for (std::size_t i = 0; i < nodes; ++i) {
-        jobs[i] = cluster.node(i).create_job(JobKind::Featurize);
+        jobs[i] = cluster.node(i).create_job(zetta::compute::JobKind::Featurize);
         threads.emplace_back([&, i] {
             results[i] = ddf::run_near_data_featurize_job(
                 *coordinators[i], cluster.node(i), *jobs[i], table_ids[i],
@@ -694,7 +694,7 @@ TestResult run_featurize_partitions(const TestOptions& options, TestContext& con
 
     std::uint64_t total_rows_read = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
-        if (results[i].status != JobStatus::Succeeded) {
+        if (results[i].status != zetta::compute::JobStatus::Succeeded) {
             return TestResult::fail("node " + std::to_string(i) +
                                     " featurize job failed: " + jobs[i]->detail());
         }

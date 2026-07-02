@@ -41,7 +41,7 @@
 // src/core/cluster.cpp is the networking adapter: the one .cpp allowed to use
 // the Corosio backend (via zetta::runtime::net). Cluster's public header
 // exposes no backend types, so the rest of zetta stays decoupled.
-namespace zetta {
+namespace zetta::cluster {
 
 namespace capy = boost::capy;
 namespace net = zetta::runtime::net;
@@ -69,7 +69,7 @@ struct Cluster::State {
     std::thread network_thread;
     std::uint16_t bound_port = 0;
     ReplicationManager* replication = nullptr;  // gossip target (optional)
-    BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
+    zetta::data::BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
     std::chrono::steady_clock::duration idle_timeout{};
     std::chrono::steady_clock::duration reconnect_interval{};
     bool log_events = false;
@@ -680,7 +680,7 @@ std::string to_string(ClusterRole role) {
 }
 
 Cluster::Cluster(std::string node_id, ClusterConfig config,
-                 ReplicationManager* replication, BlobStore* blobs)
+                 ReplicationManager* replication, zetta::data::BlobStore* blobs)
     : state_(std::make_unique<State>()),
       node_id_(std::move(node_id)),
       config_(std::move(config)),
@@ -887,7 +887,7 @@ SignalResponse Cluster::request(const std::string& node_id,
 
     Signal request;
     request.kind = SignalKind::Request;
-    request.id = new_uuid();  // correlates the response back to this call
+    request.id = zetta::util::new_uuid();  // correlates the response back to this call
     request.method = method;
     request.payload = payload;
 
@@ -941,4 +941,4 @@ bool Cluster::send_task(const std::string& node_id, const std::string& method,
     return true;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cluster

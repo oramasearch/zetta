@@ -13,14 +13,14 @@
 #include "zetta/util/sha256.hpp"
 
 namespace fs = std::filesystem;
-using zetta::import_n8n_workflow;
-using zetta::import_n8n_workflow_file;
+using zetta::pipeline::import_n8n_workflow;
+using zetta::pipeline::import_n8n_workflow_file;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ProjectInputKind;
-using zetta::ProjectInputSource;
+using zetta::pipeline::ProjectInputKind;
+using zetta::pipeline::ProjectInputSource;
 using zetta::test::TempDir;
-using zetta::validate_n8n_workflow;
+using zetta::pipeline::validate_n8n_workflow;
 
 namespace {
 
@@ -79,7 +79,7 @@ TEST(N8nImport, ImportsAndRoundTripsChurnFixture) {
     EXPECT_EQ(result.input->size(), raw.size());
 
     // sha256 is computed at the boundary over the raw bytes.
-    EXPECT_EQ(result.input->content_hash(), zetta::sha256_hex(raw));
+    EXPECT_EQ(result.input->content_hash(), zetta::util::sha256_hex(raw));
 
     // The payload round-trips byte-for-byte for later re-compilation.
     ASSERT_TRUE(result.input->read_payload().has_value());
@@ -104,7 +104,7 @@ TEST(N8nImport, Sha256IsStableAcrossImports) {
 
     // Identical content -> identical hash, equal to sha256 of the raw bytes.
     EXPECT_EQ(first.input->content_hash(), second.input->content_hash());
-    EXPECT_EQ(first.input->content_hash(), zetta::sha256_hex(raw));
+    EXPECT_EQ(first.input->content_hash(), zetta::util::sha256_hex(raw));
     // Distinct records (duplicates allowed), same fingerprint.
     EXPECT_NE(first.input->id(), second.input->id());
     EXPECT_EQ(project->input_count(), 2u);

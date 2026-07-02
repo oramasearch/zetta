@@ -6,7 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 
 class Project;
 class ProjectInput;
@@ -53,4 +53,4 @@ N8nImportResult import_n8n_workflow_file(Project& project,
                                          const std::filesystem::path& path,
                                          std::string created_by = {});
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

@@ -689,7 +689,7 @@ nlohmann::json OutcomeLog::to_json() const {
 
 OutcomeLog outcome_log_from_playbook(const Playbook& playbook,
                                      std::string generated_at) {
-    if (generated_at.empty()) generated_at = now_iso8601();
+    if (generated_at.empty()) generated_at = zetta::util::now_iso8601();
     OutcomeLog log;
     log.rows.reserve(playbook.entries.size());
     for (const PlaybookEntry& entry : playbook.entries) {

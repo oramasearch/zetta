@@ -9,7 +9,7 @@
 
 #include "zetta/compute/compute_job.hpp"
 
-namespace zetta {
+namespace zetta::compute {
 
 namespace {
 
@@ -47,8 +47,8 @@ std::optional<AutoscalerConfig> AutoscalerConfig::from_json(
     AutoscalerConfig config;
 
     if (value.contains("node_spec")) {
-        std::optional<NodeCapability> spec =
-            NodeCapability::from_json(value["node_spec"]);
+        std::optional<zetta::cloud::NodeCapability> spec =
+            zetta::cloud::NodeCapability::from_json(value["node_spec"]);
         if (!spec) return std::nullopt;
         config.node_spec = *spec;
     }
@@ -76,7 +76,7 @@ std::optional<AutoscalerConfig> AutoscalerConfig::from_json(
 }
 
 JobAutoscaler::JobAutoscaler(const ComputeJob& job, ScalingPolicy policy,
-                             Provisioner& provisioner, ObservationSource observe,
+                             zetta::cloud::Provisioner& provisioner, ObservationSource observe,
                              AutoscalerConfig config)
     : job_(job),
       policy_(std::move(policy)),
@@ -166,14 +166,14 @@ AutoscaleTick JobAutoscaler::tick() {
 
     if (target > before) {
         // Grow: ask the backend to ensure `target` nodes total (best-effort).
-        const ProvisionResult provisioned =
-            provisioner_.provision(ProvisionRequest{target, config_.node_spec});
+        const zetta::cloud::ProvisionResult provisioned =
+            provisioner_.provision(zetta::cloud::ProvisionRequest{target, config_.node_spec});
         result.detail = provisioned.detail;
     } else if (target < before) {
         // Shrink: release the surplus, tearing down from the tail of the fleet
         // (LIFO — most-recently-listed first). teardown is idempotent and may be a
         // no-op for given hardware, which is reported, not failed.
-        const std::vector<ProvisionedNode> fleet = provisioner_.provisioned();
+        const std::vector<zetta::cloud::ProvisionedNode> fleet = provisioner_.provisioned();
         const std::uint32_t to_release = before - target;
         std::uint32_t released = 0;
         for (auto node = fleet.rbegin();
@@ -208,4 +208,4 @@ AutoscaleTick JobAutoscaler::tick() {
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::compute

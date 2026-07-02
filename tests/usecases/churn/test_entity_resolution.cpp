@@ -15,23 +15,23 @@
 #include "zetta/pipeline/validation.hpp"
 
 namespace fs = std::filesystem;
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::ChurnAccount;
-using zetta::ChurnDataset;
-using zetta::ChurnEvent;
-using zetta::CorrectnessGate;
-using zetta::entity_resolution_annotation;
-using zetta::entity_resolution_attribute;
-using zetta::EntityResolver;
-using zetta::EntityResolutionCheck;
-using zetta::LabeledMention;
-using zetta::load_churn_dataset;
-using zetta::normalize_entity_name;
-using zetta::ResolutionCandidate;
-using zetta::ResolutionStrategy;
-using zetta::ResolvedMention;
-using zetta::ValidationReport;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::usecases::churn::ChurnAccount;
+using zetta::usecases::churn::ChurnDataset;
+using zetta::usecases::churn::ChurnEvent;
+using zetta::pipeline::CorrectnessGate;
+using zetta::usecases::churn::entity_resolution_annotation;
+using zetta::usecases::churn::entity_resolution_attribute;
+using zetta::usecases::churn::EntityResolver;
+using zetta::usecases::churn::EntityResolutionCheck;
+using zetta::usecases::churn::LabeledMention;
+using zetta::usecases::churn::load_churn_dataset;
+using zetta::usecases::churn::normalize_entity_name;
+using zetta::usecases::churn::ResolutionCandidate;
+using zetta::usecases::churn::ResolutionStrategy;
+using zetta::usecases::churn::ResolvedMention;
+using zetta::pipeline::ValidationReport;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 
@@ -128,7 +128,7 @@ TEST(EntityResolver, AnnotationFromCorrectResolutionPassesTheGate) {
 
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts", attribute);
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -198,7 +198,7 @@ TEST(EntityResolver, FixtureFullNameResolutionPassesTheGate) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts",
                    entity_resolution_attribute(result.dataset));
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -213,7 +213,7 @@ TEST(EntityResolver, FixtureBrandResolutionBlocksDeploy) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts",
                    entity_resolution_attribute(result.dataset, ResolutionStrategy::Brand));
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph);
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);  // RULE-1: conflation blocks deploy

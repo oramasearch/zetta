@@ -26,7 +26,7 @@
 // schema-validate (the same as the other ephemeral read views).
 //
 // See docs/compute/pipeline-instrumentation.md.
-namespace zetta {
+namespace zetta::compute {
 
 // The near-data op a recorded job ran — mirrors the near-data runners. Kept as its
 // own small enum (rather than reusing `JobKind`) so the read view names the op the
@@ -60,4 +60,4 @@ struct PipelineJobInstrumentation {
     std::string recorded_at;             // ISO-8601 UTC stamp at record time
 };
 
-}  // namespace zetta
+}  // namespace zetta::compute

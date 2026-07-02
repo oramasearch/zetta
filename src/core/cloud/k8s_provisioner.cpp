@@ -2,7 +2,7 @@
 
 #include "../json_boundary.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 using detail::read_string;
 
@@ -40,4 +40,4 @@ std::optional<K8sConfig> K8sConfig::from_json(const nlohmann::json& value) {
     return config;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

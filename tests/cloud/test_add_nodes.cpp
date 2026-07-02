@@ -13,17 +13,17 @@
 #include "zetta/cloud/node_capability.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-using zetta::add_nodes;
-using zetta::AddNodesRequest;
-using zetta::AddNodesResult;
-using zetta::Gpu;
-using zetta::GpuKind;
-using zetta::LocalProvisioner;
-using zetta::NodeCapability;
-using zetta::ProvisionedNode;
-using zetta::ProvisionRequest;
-using zetta::ProvisionResult;
-using zetta::Provisioner;
+using zetta::cloud::add_nodes;
+using zetta::cloud::AddNodesRequest;
+using zetta::cloud::AddNodesResult;
+using zetta::cloud::Gpu;
+using zetta::cloud::GpuKind;
+using zetta::cloud::LocalProvisioner;
+using zetta::cloud::NodeCapability;
+using zetta::cloud::ProvisionedNode;
+using zetta::cloud::ProvisionRequest;
+using zetta::cloud::ProvisionResult;
+using zetta::cloud::Provisioner;
 
 namespace {
 

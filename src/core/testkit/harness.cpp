@@ -36,7 +36,7 @@ std::uint16_t reserve_cluster_base() {
 
 ScratchDir::ScratchDir() {
     std::error_code ec;
-    path_ = std::filesystem::temp_directory_path(ec) / "zetta-testkit" / new_uuid();
+    path_ = std::filesystem::temp_directory_path(ec) / "zetta-testkit" / zetta::util::new_uuid();
     std::filesystem::create_directories(path_, ec);
 }
 
@@ -50,7 +50,7 @@ ScratchDir::~ScratchDir() {
 struct LoopbackCluster::Entry {
     ScratchDir dir;
     std::unique_ptr<Node> node;
-    std::unique_ptr<Cluster> cluster;
+    std::unique_ptr<zetta::cluster::Cluster> cluster;
 };
 
 LoopbackCluster::LoopbackCluster(std::size_t node_count) {
@@ -66,14 +66,14 @@ LoopbackCluster::LoopbackCluster(std::size_t node_count) {
         entry->node = std::make_unique<Node>(node_config);
         entry->node->start();
 
-        ClusterConfig cluster_config;
+        zetta::cluster::ClusterConfig cluster_config;
         cluster_config.listen_host = "127.0.0.1";
         cluster_config.listen_port =
             static_cast<std::uint16_t>(base + index * kNodeWindow);
         cluster_config.port_range = kNodeWindow;
         cluster_config.seeds = seeds;
         entry->cluster =
-            std::make_unique<Cluster>(new_uuid(), std::move(cluster_config));
+            std::make_unique<zetta::cluster::Cluster>(zetta::util::new_uuid(), std::move(cluster_config));
         entry->cluster->start();
 
         // Dial the actually-bound address (port_range may have stepped over a busy
@@ -116,7 +116,7 @@ LoopbackCluster::~LoopbackCluster() {
 }
 
 Node& LoopbackCluster::node(std::size_t index) { return *entries_.at(index)->node; }
-Cluster& LoopbackCluster::cluster(std::size_t index) {
+zetta::cluster::Cluster& LoopbackCluster::cluster(std::size_t index) {
     return *entries_.at(index)->cluster;
 }
 const std::string& LoopbackCluster::node_id(std::size_t index) const {
@@ -127,10 +127,10 @@ const std::string& LoopbackCluster::node_id(std::size_t index) const {
 
 namespace {
 
-ChurnAccount account(std::string id, std::string name, std::string brand,
+zetta::usecases::churn::ChurnAccount account(std::string id, std::string name, std::string brand,
                      std::string entity, std::string tier, double mrr,
                      std::int64_t seats, std::int64_t tenure, bool churned) {
-    ChurnAccount a;
+    zetta::usecases::churn::ChurnAccount a;
     a.account_id = std::move(id);
     a.name = std::move(name);
     a.brand = std::move(brand);
@@ -147,9 +147,9 @@ ChurnAccount account(std::string id, std::string name, std::string brand,
     return a;
 }
 
-ChurnEvent event(std::string id, std::string account_id, std::string ts,
+zetta::usecases::churn::ChurnEvent event(std::string id, std::string account_id, std::string ts,
                  std::string type, double value, std::string mention = {}) {
-    ChurnEvent e;
+    zetta::usecases::churn::ChurnEvent e;
     e.event_id = std::move(id);
     e.account_id = std::move(account_id);
     e.event_ts = std::move(ts);
@@ -162,8 +162,8 @@ ChurnEvent event(std::string id, std::string account_id, std::string ts,
 
 }  // namespace
 
-ChurnDataset sample_churn_dataset() {
-    ChurnDataset dataset;
+zetta::usecases::churn::ChurnDataset sample_churn_dataset() {
+    zetta::usecases::churn::ChurnDataset dataset;
     dataset.name = "testkit-synthetic-churn";
     dataset.description = "in-code synthetic churn dataset for the test suite";
     dataset.entity_field = "account_id";
@@ -202,7 +202,7 @@ ChurnDataset sample_churn_dataset() {
     // point-in-time featurizer must drop).
     int next = 1;
     auto id = [&next] { return "evt_" + std::to_string(next++); };
-    std::vector<ChurnEvent> events;
+    std::vector<zetta::usecases::churn::ChurnEvent> events;
 
     // Comms mentions for every FedEx sibling (drives the resolution case), incl. a
     // spelling variant the FullName resolver still matches.
@@ -235,7 +235,7 @@ ChurnDataset sample_churn_dataset() {
     events.push_back(event(id(), "acct_globex", "2026-02-14T09:00:00Z", "support_ticket", 1));
 
     // Engagement (logins) so healthy accounts have activity.
-    for (const ChurnAccount& a : dataset.accounts) {
+    for (const zetta::usecases::churn::ChurnAccount& a : dataset.accounts) {
         events.push_back(event(id(), a.account_id, "2026-02-25T08:00:00Z", "login", 1));
         events.push_back(event(id(), a.account_id, "2026-02-26T08:00:00Z", "feature_use", 1));
     }
@@ -250,7 +250,7 @@ ChurnDataset sample_churn_dataset() {
 
 // ----- testkit-specific encoding extras --------------------------------------
 // The churn numeric encoding + the standard pipeline schemas / featurize spec are
-// the canonical ones in churn_solution.cpp (zetta::encode_churn_dataset /
+// the canonical ones in churn_solution.cpp (zetta::usecases::churn::encode_churn_dataset /
 // churn_events_schema / churn_accounts_schema / churn_featurize_spec), reused here
 // rather than copied. Only the tunable GBDT params + make_store live in the testkit.
 
@@ -265,8 +265,8 @@ ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
     return params;
 }
 
-JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         store.add("row-" + std::to_string(index), rows[index]);
     }

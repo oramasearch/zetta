@@ -29,7 +29,7 @@
 // This slice ships a **built-in** catalog (SolutionCatalog::builtin()); loading
 // user-authored catalogs from disk and instantiating a solution into a Project
 // are later slices.
-namespace zetta {
+namespace zetta::pipeline {
 
 // One AI solution blueprint: identity + presentation + the deployable graph.
 struct Solution {
@@ -82,4 +82,4 @@ private:
     std::vector<Solution> solutions_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

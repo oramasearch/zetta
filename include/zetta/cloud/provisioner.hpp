@@ -9,7 +9,7 @@
 
 #include "zetta/cloud/node_capability.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // A node the provisioner has stood up — or, for the given-hardware (Local)
 // backend, an existing cluster node it is reporting. Identity + where to reach
@@ -95,4 +95,4 @@ public:
                                const std::string& /*instance_type*/) {}
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

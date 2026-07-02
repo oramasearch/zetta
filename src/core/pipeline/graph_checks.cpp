@@ -13,7 +13,7 @@
 
 #include "zetta/ir/execution_graph.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 
 namespace {
 
@@ -331,4 +331,4 @@ CheckResult DataLeakageCheck::evaluate(const ir::ExecutionGraph& graph) const {
                 " ML step(s) are point-in-time correct and target-leakage free");
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

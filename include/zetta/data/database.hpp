@@ -11,11 +11,10 @@
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/data/table.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::data {
 
-// A named set of tables, persisted in its own folder (named by a UUID) under
 // the node's data dir. Each table is a subfolder; database.json holds the
 // human name. Ownership/lookups use shared_ptr handles, never raw pointers.
 //
@@ -24,7 +23,7 @@ class ReplicationManager;
 class Database {
 public:
     Database(std::string id, std::string name, std::filesystem::path dir,
-             ReplicationManager* replication = nullptr,
+             zetta::cluster::ReplicationManager* replication = nullptr,
              ReplicationStrategy replication_strategy = {});
 
     const std::string& id() const { return id_; }
@@ -85,8 +84,8 @@ private:
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<Table>> tables_;
     LargeObjectStore large_objects_;
-    ReplicationManager* replication_;  // null = not replicated
+    zetta::cluster::ReplicationManager* replication_;  // null = not replicated
     ReplicationStrategy replication_strategy_;  // ENT-35; default ReplicateToAll
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

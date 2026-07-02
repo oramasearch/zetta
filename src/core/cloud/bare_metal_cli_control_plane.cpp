@@ -11,7 +11,7 @@
 #include "zetta/cloud/command_runner.hpp"
 #include "zetta/util/uuid.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 namespace {
 
@@ -89,7 +89,7 @@ std::vector<ProvisionedNode> parse_nodes(const std::string& json_text) {
 std::vector<std::string> run_argv(const BareMetalConfig& config) {
     std::vector<std::string> run{config.runtime, "run", "-d"};
     flag(run, "--label", config.pool_label);
-    flag(run, "--name", config.name_prefix + "-" + new_uuid());
+    flag(run, "--name", config.name_prefix + "-" + zetta::util::new_uuid());
     if (!config.network.empty()) flag(run, "--network", config.network);
     if (config.gpus) flag(run, "--gpus", "all");
     if (!config.seed_peer.empty()) {
@@ -155,4 +155,4 @@ std::vector<ProvisionedNode> BareMetalCliControlPlane::list(
     return parse_nodes(listed.stdout_text);
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

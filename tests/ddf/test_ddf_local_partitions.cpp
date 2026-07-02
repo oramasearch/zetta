@@ -44,15 +44,15 @@ namespace {
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::DatasetPartitionValue;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::data::DatasetPartitionValue;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RoundRobinPartitioner;
+using zetta::data::RoundRobinPartitioner;
 using zetta::compute::CpuDevice;
 using zetta::compute::DataType;
 using zetta::ddf::Aggregate;
@@ -156,8 +156,8 @@ TEST(DdfLocalPartitions, LoaderReadsOnlyOwnedPartitions) {
 
     // Partition the table: round-robin over 4 partitions, all owned by this node
     // (place defaults to this node). N non-empty partitions -> N catalog rows.
-    const zetta::PartitionWriteResult written =
-        zetta::write_partitioned(node, *database, *table);
+    const zetta::data::PartitionWriteResult written =
+        zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
     ASSERT_EQ(written.rows_written, kRows);
     ASSERT_EQ(written.partitions.size(), 4u);
@@ -181,7 +181,7 @@ TEST(DdfLocalPartitions, LoaderReadsOnlyOwnedPartitions) {
     EXPECT_GT(shard.bytes_read, 0u);
 
     // The group-by over the loaded shard equals the group-by over the full table.
-    zetta::JsonStore full;
+    zetta::storage::JsonStore full;
     for (std::size_t i = 0; i < kRows; ++i) {
         full.add("row-" + std::to_string(i), make_row(i, kGroups));
     }
@@ -213,7 +213,7 @@ TEST(DdfLocalPartitions, LoaderFeedsOtherDdfOps) {
     constexpr std::size_t kRows = 60;
     constexpr int kGroups = 5;
     for (std::size_t i = 0; i < kRows; ++i) table->add_row(make_row(i, kGroups));
-    ASSERT_TRUE(zetta::write_partitioned(node, *database, *table).ok());
+    ASSERT_TRUE(zetta::data::write_partitioned(node, *database, *table).ok());
 
     CpuDevice device;
     zetta::ddf::LocalShardResult shard =
@@ -228,7 +228,7 @@ TEST(DdfLocalPartitions, LoaderFeedsOtherDdfOps) {
     zetta::ddf::DataFrameResult filtered_shard = zetta::ddf::filter(shard.frame, keep_high);
     ASSERT_TRUE(filtered_shard.ok()) << filtered_shard.status.message;
 
-    zetta::JsonStore full;
+    zetta::storage::JsonStore full;
     for (std::size_t i = 0; i < kRows; ++i) {
         full.add("row-" + std::to_string(i), make_row(i, kGroups));
     }
@@ -270,7 +270,7 @@ TEST(DdfLocalPartitions, MissingOwnedBodyFailsFast) {
 
     constexpr std::size_t kRows = 40;
     for (std::size_t i = 0; i < kRows; ++i) table->add_row(make_row(i, 5));
-    ASSERT_TRUE(zetta::write_partitioned(node, *database, *table).ok());
+    ASSERT_TRUE(zetta::data::write_partitioned(node, *database, *table).ok());
 
     // A catalog entry owned by THIS node, but whose body was never stored locally.
     DatasetPartitionValue missing;
@@ -308,8 +308,8 @@ struct NearDataNode {
         EXPECT_TRUE(table);
         table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
         for (const nlohmann::json& row : shard_rows) table->add_row(row);
-        const zetta::PartitionWriteResult written =
-            zetta::write_partitioned(node, *database, *table);
+        const zetta::data::PartitionWriteResult written =
+            zetta::data::write_partitioned(node, *database, *table);
         EXPECT_TRUE(written.ok()) << written.error;
         table_id = table->id();
     }
@@ -338,7 +338,7 @@ TEST(DdfLocalPartitions, NearDataGroupByMatchesOracleAndMovesOnlyPartials) {
 
     // Single-node ground truth over the whole dataset.
     CpuDevice truth_device;
-    zetta::JsonStore full;
+    zetta::storage::JsonStore full;
     for (std::size_t i = 0; i < kRows; ++i) {
         full.add("row-" + std::to_string(i), make_row(i, kGroups));
     }

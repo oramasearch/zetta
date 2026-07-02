@@ -5,7 +5,7 @@
 
 #include "zetta/ir/execution_graph.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 
 std::string_view to_string(StepPlacement placement) {
     switch (placement) {
@@ -158,4 +158,4 @@ ClusterPlan project_cluster_plan(
     return plan;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

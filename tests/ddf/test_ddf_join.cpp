@@ -31,11 +31,11 @@ namespace {
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::CpuDevice;
@@ -114,7 +114,7 @@ HostRelation events_relation() {
 // multi-chunk read path in to_host_relation).
 DataFrame make_frame(CpuDevice& device, const std::vector<Json>& rows,
                      const DataFrameSchema& schema) {
-    zetta::JsonStore store;
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         store.add("r" + std::to_string(i), rows[i]);
     }

@@ -20,7 +20,7 @@
 #include <cstring>
 #endif
 
-namespace zetta {
+namespace zetta::cluster {
 namespace {
 
 // --- Per-platform raw counter reads ------------------------------------------
@@ -246,7 +246,7 @@ NodeMetricsSampler::NodeMetricsSampler() {
 NodeMetrics NodeMetricsSampler::sample(const std::string& storage_path) {
     std::lock_guard<std::mutex> lock(mutex_);
     NodeMetrics metrics;
-    metrics.sampled_at = now_iso8601();
+    metrics.sampled_at = zetta::util::now_iso8601();
 
     metrics.cpu_cores = std::thread::hardware_concurrency();
 
@@ -315,4 +315,4 @@ NodeMetrics NodeMetricsSampler::sample(const std::string& storage_path) {
     return metrics;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cluster

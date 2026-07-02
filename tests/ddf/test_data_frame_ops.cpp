@@ -31,8 +31,8 @@ using zetta::ddf::load_data_frame;
 using zetta::ddf::slice;
 using zetta::ddf::sort;
 
-zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         store.add("row-" + std::to_string(i), rows[i]);
     }
@@ -40,7 +40,7 @@ zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
 }
 
 // Load a {key:float64, id:int64} frame from the given rows.
-DataFrame load_key_id(CpuDevice& device, const zetta::JsonStore& store,
+DataFrame load_key_id(CpuDevice& device, const zetta::storage::JsonStore& store,
                       std::size_t chunk_rows = zetta::ddf::kDefaultChunkRows) {
     DataFrameSchema schema;
     schema.columns = {

@@ -4,9 +4,9 @@
 
 #include "zetta/pipeline/validation.hpp"
 
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::ValidationReport;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::pipeline::ValidationReport;
 
 TEST(ValidationReport, EmptyReportPasses) {
     const ValidationReport report;
@@ -52,7 +52,7 @@ TEST(ValidationReport, RoundTripsThroughJson) {
 
     const nlohmann::json document = report;  // to_json ADL hook
 
-    const auto parsed = zetta::validation_report_from_json(document);
+    const auto parsed = zetta::pipeline::validation_report_from_json(document);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(*parsed, report);
     EXPECT_EQ(parsed->verdict(), CheckStatus::Fail);
@@ -75,7 +75,7 @@ TEST(ValidationReport, ParsesAReasonlessCheck) {
         "checks": [{"name": "compiles", "status": "pass"}],
         "block_deploy": false
     })");
-    const auto parsed = zetta::validation_report_from_json(document);
+    const auto parsed = zetta::pipeline::validation_report_from_json(document);
     ASSERT_TRUE(parsed);
     ASSERT_EQ(parsed->checks.size(), 1u);
     EXPECT_EQ(parsed->checks.at(0).name, "compiles");
@@ -85,37 +85,37 @@ TEST(ValidationReport, ParsesAReasonlessCheck) {
 
 TEST(ValidationReport, RejectsMalformedJsonAtTheBoundary) {
     // Not an object.
-    EXPECT_FALSE(zetta::validation_report_from_json(nlohmann::json::array()));
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(nlohmann::json::array()));
 
     // Missing block_deploy.
-    EXPECT_FALSE(zetta::validation_report_from_json(
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(
         nlohmann::json{{"checks", nlohmann::json::array()}}));
 
     // block_deploy is the wrong type.
-    EXPECT_FALSE(zetta::validation_report_from_json(
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(
         nlohmann::json{{"checks", nlohmann::json::array()},
                        {"block_deploy", "yes"}}));
 
     // checks is not an array.
-    EXPECT_FALSE(zetta::validation_report_from_json(
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(
         nlohmann::json{{"checks", 5}, {"block_deploy", false}}));
 
     // Unknown status name.
-    EXPECT_FALSE(zetta::validation_report_from_json(
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(
         nlohmann::json::parse(R"({
             "checks": [{"name": "x", "status": "maybe"}],
             "block_deploy": false
         })")));
 
     // A check missing its name.
-    EXPECT_FALSE(zetta::validation_report_from_json(
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(
         nlohmann::json::parse(R"({
             "checks": [{"status": "pass"}],
             "block_deploy": false
         })")));
 
     // A stated verdict that contradicts the checks.
-    EXPECT_FALSE(zetta::validation_report_from_json(
+    EXPECT_FALSE(zetta::pipeline::validation_report_from_json(
         nlohmann::json::parse(R"({
             "checks": [{"name": "x", "status": "fail"}],
             "verdict": "pass",
@@ -128,9 +128,9 @@ TEST(ValidationStatus, StringRoundTrip) {
          {CheckStatus::Pass, CheckStatus::Warn, CheckStatus::Fail}) {
         CheckStatus parsed{};
         ASSERT_TRUE(
-            zetta::check_status_from_string(zetta::to_string(status), parsed));
+            zetta::pipeline::check_status_from_string(zetta::pipeline::to_string(status), parsed));
         EXPECT_EQ(parsed, status);
     }
     CheckStatus unused{};
-    EXPECT_FALSE(zetta::check_status_from_string("nope", unused));
+    EXPECT_FALSE(zetta::pipeline::check_status_from_string("nope", unused));
 }

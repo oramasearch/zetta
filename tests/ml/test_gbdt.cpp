@@ -39,12 +39,12 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
-using zetta::Model;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
+using zetta::ml::Model;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::CpuDevice;
@@ -295,8 +295,8 @@ struct ComputeNode {
     JobCoordinator coordinator;
 };
 
-zetta::JsonStore make_store(const std::vector<Json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<Json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         store.add("row-" + std::to_string(index), rows[index]);
     }
@@ -519,19 +519,19 @@ std::vector<Json> feature_table_rows(const FeatureTable& table) {
 
 FeatureTable churn_feature_table() {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     EXPECT_TRUE(loaded.ok()) << loaded.error;
-    const zetta::ChurnNumericShards numeric =
-        zetta::encode_churn_dataset(loaded.dataset);
+    const zetta::usecases::churn::ChurnNumericShards numeric =
+        zetta::usecases::churn::encode_churn_dataset(loaded.dataset);
     CpuDevice device;
     auto events = load_data_frame(make_store(numeric.events),
-                                  zetta::churn_events_schema(), device);
+                                  zetta::usecases::churn::churn_events_schema(), device);
     auto accounts = load_data_frame(make_store(numeric.accounts),
-                                    zetta::churn_accounts_schema(), device);
+                                    zetta::usecases::churn::churn_accounts_schema(), device);
     EXPECT_TRUE(events.ok());
     EXPECT_TRUE(accounts.ok());
     auto result = point_in_time_featurize(events.frame, accounts.frame,
-                                          zetta::churn_featurize_spec(numeric.as_of));
+                                          zetta::usecases::churn::churn_featurize_spec(numeric.as_of));
     EXPECT_TRUE(result.ok()) << result.status.message;
     return std::move(result.table);
 }
@@ -544,7 +544,7 @@ TEST(GbdtChurn, TrainsToTargetAucAndProducesModel) {
 
     const auto result = run_distributed_train(
         rows, table.feature_names, table.label_name,
-        zetta::default_churn_gbdt_params(),
+        zetta::usecases::churn::default_churn_gbdt_params(),
         /*node_count=*/1, 22200, /*register_model=*/true);
     ASSERT_TRUE(result.ok());
     // The churn signal is learnable: a strong AUC on the (small) fixture.
@@ -568,7 +568,7 @@ TEST(GbdtChurn, TrainsToTargetAucAndProducesModel) {
 TEST(GbdtChurn, SingleNodeEqualsMultiNode) {
     const FeatureTable table = churn_feature_table();
     const std::vector<Json> rows = feature_table_rows(table);
-    const GbdtParams params = zetta::default_churn_gbdt_params();
+    const GbdtParams params = zetta::usecases::churn::default_churn_gbdt_params();
 
     const auto single = run_distributed_train(
         rows, table.feature_names, table.label_name, params, 1, 22210, false);

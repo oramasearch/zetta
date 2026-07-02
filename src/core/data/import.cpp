@@ -11,7 +11,7 @@
 
 #include "zetta/data/table.hpp"
 
-namespace zetta {
+namespace zetta::data {
 namespace {
 
 std::string lower_ext(const std::filesystem::path& path) {
@@ -71,4 +71,4 @@ ImportResult import_records(Table& table, const std::filesystem::path& path) {
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

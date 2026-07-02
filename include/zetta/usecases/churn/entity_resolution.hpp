@@ -17,7 +17,7 @@
 // canonical failure the [entity-resolution gate](checks/entity_resolution_check.hpp)
 // exists to catch.
 //
-// This is the *producer* the existing `zetta::EntityResolutionCheck` was built to
+// This is the *producer* the existing `zetta::usecases::churn::EntityResolutionCheck` was built to
 // guard: the resolver runs over the mentions, emits the schema-shaped
 // `entity_resolution` annotation, and a featurize/clean step carries that annotation
 // so the gate verifies the resolution before deploy (RULE-1). The two compose —
@@ -32,7 +32,7 @@
 // boundary here. Its *output* rides the existing `entity_resolution` format
 // (schemas/entity_resolution.schema.json), schema-validated where it enters the gate
 // (`EntityResolutionCheck`). See docs/use-cases/entity-resolution.md.
-namespace zetta {
+namespace zetta::usecases::churn {
 
 // A candidate CRM account a raw mention can resolve to. `name` is the match key for
 // the division-correct `FullName` strategy; `brand` is the (coarser) match key for
@@ -113,7 +113,7 @@ struct LabeledMention {
 // unresolved mention is recorded with a deterministic, per-mention
 // `unresolved:<normalized-mention>` account so it is neither silently dropped nor
 // falsely merged with other unresolved mentions. Attach the result to an
-// ExecutionGraph node's `attributes` to drive `zetta::EntityResolutionCheck`. The
+// ExecutionGraph node's `attributes` to drive `zetta::usecases::churn::EntityResolutionCheck`. The
 // output rides the existing `entity_resolution` format (schema-validated at the gate
 // boundary) — it introduces no new JSON format.
 nlohmann::json entity_resolution_annotation(
@@ -126,4 +126,4 @@ nlohmann::json entity_resolution_annotation(
 // "Fedex  Freight," both normalize to "fedex freight". Exposed for tests + reuse.
 std::string normalize_entity_name(std::string_view text);
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

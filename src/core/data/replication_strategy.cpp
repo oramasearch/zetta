@@ -3,7 +3,7 @@
 #include <array>
 #include <cstdint>
 
-namespace zetta {
+namespace zetta::data {
 
 std::string_view to_string(ReplicationStrategyKind kind) {
     switch (kind) {
@@ -79,4 +79,4 @@ ReplicationStrategy replication_strategy_from_meta(const nlohmann::json& meta) {
     return {};  // present-but-malformed → safe default (full replication)
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

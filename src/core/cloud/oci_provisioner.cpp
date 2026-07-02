@@ -2,7 +2,7 @@
 
 #include "../json_boundary.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 using detail::read_string;
 using detail::read_uint32;
@@ -53,4 +53,4 @@ std::optional<OciConfig> OciConfig::from_json(const nlohmann::json& value) {
     return config;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

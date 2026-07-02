@@ -27,17 +27,17 @@
 #include "zetta/data/table.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Database;
-using zetta::DatasetPartition;
+using zetta::data::Database;
+using zetta::data::DatasetPartition;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RebalanceResult;
-using zetta::RendezvousPlacement;
-using zetta::ReplicatedBlobStore;
-using zetta::ReplicationManager;
-using zetta::ReplicationStrategy;
-using zetta::SinglePartitioner;
-using zetta::Table;
+using zetta::data::RebalanceResult;
+using zetta::data::RendezvousPlacement;
+using zetta::data::ReplicatedBlobStore;
+using zetta::cluster::ReplicationManager;
+using zetta::data::ReplicationStrategy;
+using zetta::data::SinglePartitioner;
+using zetta::data::Table;
 using zetta::query::QueryService;
 using zetta::test::TempDir;
 
@@ -55,7 +55,7 @@ NodeConfig config_for(const TempDir& tmp) {
 // document (the substrate the blob-movement test reads).
 struct Fixture {
     Fixture(const TempDir& tmp, std::size_t count)
-        : node_id(zetta::new_uuid()), replication(node_id) {
+        : node_id(zetta::util::new_uuid()), replication(node_id) {
         node = std::make_unique<Node>(config_for(tmp), &replication);
         node->start();
         database = node->create_database("warehouse");
@@ -112,19 +112,19 @@ void expect_ranges_tile(const Node& node, std::uint64_t total) {
 // test can prove the add_nodes wiring never tears a member down. The add_nodes
 // control action programs against the abstract Provisioner&, so this stands in for
 // any cloud-burst backend.
-class FakeAddProvisioner : public zetta::Provisioner {
+class FakeAddProvisioner : public zetta::cloud::Provisioner {
 public:
     explicit FakeAddProvisioner(std::vector<std::string> new_ids)
         : new_ids_(std::move(new_ids)) {}
 
     int teardown_calls = 0;
 
-    zetta::ProvisionResult provision(
-        const zetta::ProvisionRequest& request) override {
-        zetta::ProvisionResult result;
+    zetta::cloud::ProvisionResult provision(
+        const zetta::cloud::ProvisionRequest& request) override {
+        zetta::cloud::ProvisionResult result;
         const std::size_t target = std::min(request.count, new_ids_.size());
         for (std::size_t index = 0; index < target; ++index) {
-            zetta::ProvisionedNode node;
+            zetta::cloud::ProvisionedNode node;
             node.node_id = new_ids_[index];
             node.address = new_ids_[index] + ":7777";
             node.capability = request.spec;
@@ -140,7 +140,7 @@ public:
         return false;
     }
 
-    std::vector<zetta::ProvisionedNode> provisioned() const override { return {}; }
+    std::vector<zetta::cloud::ProvisionedNode> provisioned() const override { return {}; }
 
 private:
     std::vector<std::string> new_ids_;
@@ -157,7 +157,7 @@ TEST(PartitionRebalance, RendezvousMovesAboutOneOverNToNewNodeRfOne) {
         /*partition_count=*/64, /*replication_factor=*/1));
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+    const auto write = zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table,
                                                 members);
     ASSERT_TRUE(write.ok()) << write.error;
     ASSERT_GT(write.partitions.size(), 3u);  // a spread of distinct partitions
@@ -168,14 +168,14 @@ TEST(PartitionRebalance, RendezvousMovesAboutOneOverNToNewNodeRfOne) {
 
     const std::vector<std::string> grown{"node-a", "node-b", "node-c", "node-d"};
     const RebalanceResult result =
-        zetta::rebalance_partitions(*fx.node, grown, members);
+        zetta::data::rebalance_partitions(*fx.node, grown, members);
 
     EXPECT_EQ(result.examined, fx.node->dataset_partition_count());
     EXPECT_GT(result.moved, 0u);                  // adding a node moves some
     EXPECT_LT(result.moved, result.examined);     // but NOT a full rehash (the HRW win)
 
     // Each move handed the partition to the new node; nothing else changed.
-    for (const zetta::PartitionMove& move : result.moves) {
+    for (const zetta::data::PartitionMove& move : result.moves) {
         ASSERT_EQ(move.to.size(), 1u);
         EXPECT_EQ(move.to.front(), "node-d");
     }
@@ -198,7 +198,7 @@ TEST(PartitionRebalance, RendezvousMovesAboutOneOverNToNewNodeRfOne) {
 
     // Determinism: re-running with the now-current membership moves nothing.
     const RebalanceResult again =
-        zetta::rebalance_partitions(*fx.node, grown, grown);
+        zetta::data::rebalance_partitions(*fx.node, grown, grown);
     EXPECT_EQ(again.moved, 0u);
 }
 
@@ -211,14 +211,14 @@ TEST(PartitionRebalance, ReplicationFactorPreservedAcrossRebalance) {
         /*partition_count=*/32, /*replication_factor=*/2));
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+    const auto write = zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table,
                                                 members);
     ASSERT_TRUE(write.ok()) << write.error;
     ASSERT_GT(write.partitions.size(), 1u);
 
     const std::vector<std::string> grown{"node-a", "node-b", "node-c", "node-d"};
     const RebalanceResult result =
-        zetta::rebalance_partitions(*fx.node, grown, members);
+        zetta::data::rebalance_partitions(*fx.node, grown, members);
     EXPECT_GT(result.moved, 0u);
 
     const std::set<std::string> grown_set = as_set(grown);
@@ -247,11 +247,11 @@ TEST(PartitionRebalance, MovedPartitionBodiesFetchByNewOwner) {
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
     ASSERT_TRUE(
-        zetta::write_partitioned(*fx.node, *fx.database, *fx.table, members).ok());
+        zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table, members).ok());
 
     const std::vector<std::string> grown{"node-a", "node-b", "node-c", "node-d"};
     const RebalanceResult result =
-        zetta::rebalance_partitions(*fx.node, grown, members);
+        zetta::data::rebalance_partitions(*fx.node, grown, members);
     ASSERT_GT(result.moved, 0u);
 
     // The bodies node-d now owns (its catalog share).
@@ -285,7 +285,7 @@ TEST(PartitionRebalance, ReplicateToAllPartitionsAreSkipped) {
     fx.table->set_partitioner(std::make_shared<SinglePartitioner>());
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+    const auto write = zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table,
                                                 members);
     ASSERT_TRUE(write.ok()) << write.error;
     ASSERT_EQ(fx.node->dataset_partition_count(), 1u);
@@ -293,7 +293,7 @@ TEST(PartitionRebalance, ReplicateToAllPartitionsAreSkipped) {
 
     const std::vector<std::string> grown{"node-a", "node-b", "node-c", "node-d"};
     const RebalanceResult result =
-        zetta::rebalance_partitions(*fx.node, grown, members);
+        zetta::data::rebalance_partitions(*fx.node, grown, members);
     EXPECT_EQ(result.moved, 0u);
     EXPECT_GE(result.skipped, 1u);
     // A replicate-to-all partition is unchanged (sharded rebalance is not its job).
@@ -310,7 +310,7 @@ TEST(PartitionRebalance, TickRebalancesWhenAMemberJoins) {
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
     ASSERT_TRUE(
-        zetta::write_partitioned(*fx.node, *fx.database, *fx.table, members).ok());
+        zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table, members).ok());
 
     // Membership lives in the document as node:<id> keys (each node seeds its own;
     // peers merge). Seed the write-time members, then tick to set the baseline —
@@ -355,7 +355,7 @@ TEST(PartitionRebalance, AddNodesRebalancesOntoNewMembers) {
         /*partition_count=*/64, /*replication_factor=*/1));
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+    const auto write = zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table,
                                                 members);
     ASSERT_TRUE(write.ok()) << write.error;
     ASSERT_GT(write.partitions.size(), 3u);
@@ -372,7 +372,7 @@ TEST(PartitionRebalance, AddNodesRebalancesOntoNewMembers) {
     // add_nodes brings up one permanent member and rebalances partitions onto it —
     // the new member's id is taken from the provision result.
     FakeAddProvisioner provider{/*new_ids=*/{"node-d"}};
-    const zetta::AddNodesResult result = zetta::add_nodes(*fx.node, provider, 1);
+    const zetta::cloud::AddNodesResult result = zetta::cloud::add_nodes(*fx.node, provider, 1);
 
     ASSERT_TRUE(result.satisfied);
     ASSERT_EQ(result.members.size(), 1u);
@@ -413,7 +413,7 @@ TEST(PartitionRebalance, AddNodesWithNoNewMemberLeavesPlacement) {
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
     ASSERT_TRUE(
-        zetta::write_partitioned(*fx.node, *fx.database, *fx.table, members).ok());
+        zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table, members).ok());
     for (const auto& member : members) {
         fx.replication.set("node:" + member,
                            nlohmann::json{{"address", member + ":7777"}});
@@ -423,7 +423,7 @@ TEST(PartitionRebalance, AddNodesWithNoNewMemberLeavesPlacement) {
     // The provisioner brings up nothing (a zero count, or a backend that came up
     // short) → no new member → no rebalance.
     FakeAddProvisioner provider{/*new_ids=*/{}};
-    const zetta::AddNodesResult result = zetta::add_nodes(*fx.node, provider, 0);
+    const zetta::cloud::AddNodesResult result = zetta::cloud::add_nodes(*fx.node, provider, 0);
     EXPECT_TRUE(result.members.empty());
 
     EXPECT_EQ(owners_by_id(*fx.node), before);  // placement unchanged
@@ -499,7 +499,7 @@ TEST(PartitionRebalance, CatalogConvergesOnEveryNodeAfterJoin) {
         /*partition_count=*/64, /*replication_factor=*/1));
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c"};
-    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+    const auto write = zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table,
                                                 members);
     ASSERT_TRUE(write.ok()) << write.error;
     ASSERT_GT(write.partitions.size(), 3u);
@@ -507,7 +507,7 @@ TEST(PartitionRebalance, CatalogConvergesOnEveryNodeAfterJoin) {
 
     // --- a peer (B): converges to A's initial placement --------------------------
     TempDir dir_b;
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
     ReplicationManager repl_b{id_b};
     Node node_b{config_for(dir_b), &repl_b};
     node_b.start();
@@ -584,7 +584,7 @@ TEST(PartitionRebalance, LeaveReassignsPartitionsAwayFromDepartedNode) {
         /*partition_count=*/64, /*replication_factor=*/2));
 
     const std::vector<std::string> members{"node-a", "node-b", "node-c", "node-d"};
-    const auto write = zetta::write_partitioned(*fx.node, *fx.database, *fx.table,
+    const auto write = zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table,
                                                 members);
     ASSERT_TRUE(write.ok()) << write.error;
 
@@ -598,7 +598,7 @@ TEST(PartitionRebalance, LeaveReassignsPartitionsAwayFromDepartedNode) {
     // node-d leaves: rebalance against the survivors.
     const std::vector<std::string> survivors{"node-a", "node-b", "node-c"};
     const RebalanceResult result =
-        zetta::rebalance_partitions(*fx.node, survivors, members);
+        zetta::data::rebalance_partitions(*fx.node, survivors, members);
     EXPECT_GT(result.moved, 0u);
 
     const std::set<std::string> survivor_set = as_set(survivors);

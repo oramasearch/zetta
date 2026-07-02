@@ -37,8 +37,8 @@ NodeConfig scratch_config(const ScratchDir& dir) {
     return config;
 }
 
-Resource project_resource(std::string name) {
-    return Resource{ResourceKind::Project, std::move(name)};
+zetta::governance::Resource project_resource(std::string name) {
+    return zetta::governance::Resource{zetta::governance::ResourceKind::Project, std::move(name)};
 }
 
 // Key-scoped access: a request inherits exactly its key's scope + capabilities;
@@ -49,21 +49,21 @@ TestResult run_access_control(const TestOptions&, TestContext& context) {
     node.start();
     context.emit("issuing a key scoped to the churn project");
 
-    auto principal = node.create_principal("analyst", PrincipalKind::User);
+    auto principal = node.create_principal("analyst", zetta::governance::PrincipalKind::User);
     if (!principal) return TestResult::fail("could not create the principal");
-    Scope scope;
-    scope.grant(ResourceKind::Project, "churn");
-    CapabilitySet capabilities;
-    capabilities.grant(CapabilityDomain::Orchestration, "start_run");
+    zetta::governance::Scope scope;
+    scope.grant(zetta::governance::ResourceKind::Project, "churn");
+    zetta::governance::CapabilitySet capabilities;
+    capabilities.grant(zetta::governance::CapabilityDomain::Orchestration, "start_run");
     auto key = principal->create_key(scope, capabilities);
     if (!key) return TestResult::fail("could not issue the key");
 
     const bool in_scope = node.authorize(key->id(), project_resource("churn")).allowed;
     const bool out_of_scope = node.authorize(key->id(), project_resource("fraud")).allowed;
     const bool right_granted =
-        node.authorize(key->id(), Operation{CapabilityDomain::Orchestration, "start_run"}).allowed;
+        node.authorize(key->id(), zetta::governance::Operation{zetta::governance::CapabilityDomain::Orchestration, "start_run"}).allowed;
     const bool right_missing =
-        node.authorize(key->id(), Operation{CapabilityDomain::Api, "deploy"}).allowed;
+        node.authorize(key->id(), zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "deploy"}).allowed;
     const bool unknown_key = node.authorize("no-such-key", project_resource("churn")).allowed;
     node.stop();
 
@@ -86,25 +86,25 @@ TestResult run_audit(const TestOptions&, TestContext& context) {
     Node node{scratch_config(dir)};
     node.start();
 
-    const auto compiled = compile_intent("reduce churn");
+    const auto compiled = zetta::pipeline::compile_intent("reduce churn");
     if (!compiled) return TestResult::fail("could not compile the churn graph");
     context.emit("deploying a graph + authorizing access");
-    if (!node.deploy_graph(compiled->graph, DeploymentTarget::local(), "churn")) {
+    if (!node.deploy_graph(compiled->graph, zetta::pipeline::DeploymentTarget::local(), "churn")) {
         return TestResult::fail("deploy_graph was rejected");
     }
-    auto principal = node.create_principal("svc", PrincipalKind::Service);
+    auto principal = node.create_principal("svc", zetta::governance::PrincipalKind::Service);
     if (!principal) return TestResult::fail("could not create the principal");
-    Scope scope;
-    scope.grant(ResourceKind::Database, "churn");
+    zetta::governance::Scope scope;
+    scope.grant(zetta::governance::ResourceKind::Database, "churn");
     auto key = principal->create_key(scope);
     if (!key) return TestResult::fail("could not issue the key");
-    node.authorize(key->id(), Resource{ResourceKind::Database, "churn"});  // allow
-    node.authorize(key->id(), Resource{ResourceKind::Database, "fraud"});  // deny
+    node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Database, "churn"});  // allow
+    node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Database, "fraud"});  // deny
 
     int deployed = 0, data_access = 0;
     for (const auto& event : node.audit_events()) {
-        if (event->action() == AuditAction::GraphDeployed) ++deployed;
-        if (event->action() == AuditAction::DataAccess) ++data_access;
+        if (event->action() == zetta::governance::AuditAction::GraphDeployed) ++deployed;
+        if (event->action() == zetta::governance::AuditAction::DataAccess) ++data_access;
     }
     const std::size_t total = node.audit_event_count();
     node.stop();
@@ -123,13 +123,13 @@ TestResult run_audit(const TestOptions&, TestContext& context) {
 // coarse (Brand) resolver conflates the FedEx siblings and is blocked (TC-4 / RULE-1).
 TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& context) {
     const bool brand = options.get_choice("resolver", 0) == 1;
-    const ResolutionStrategy strategy =
-        brand ? ResolutionStrategy::Brand : ResolutionStrategy::FullName;
+    const zetta::usecases::churn::ResolutionStrategy strategy =
+        brand ? zetta::usecases::churn::ResolutionStrategy::Brand : zetta::usecases::churn::ResolutionStrategy::FullName;
     context.emit(brand ? "resolving with the coarse Brand strategy (the trap)"
                        : "resolving division-correct (FullName)");
 
-    const ChurnDataset dataset = sample_churn_dataset();
-    const auto compiled = compile_intent("reduce churn and improve retention");
+    const zetta::usecases::churn::ChurnDataset dataset = sample_churn_dataset();
+    const auto compiled = zetta::pipeline::compile_intent("reduce churn and improve retention");
     if (!compiled) return TestResult::fail("could not compile the churn graph");
     ir::ExecutionGraph graph = compiled->graph;
     auto clean = graph.find_node("build_features");
@@ -137,15 +137,15 @@ TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& c
     clean->attributes["entity_resolution"] =
         entity_resolution_attribute(dataset, strategy).at("entity_resolution");
 
-    const ValidationReport report = default_gate().run(graph);
-    CheckStatus resolution_status = CheckStatus::Pass;
-    for (const CheckResult& check : report.checks) {
+    const zetta::pipeline::ValidationReport report = zetta::pipeline::default_gate().run(graph);
+    zetta::pipeline::CheckStatus resolution_status = zetta::pipeline::CheckStatus::Pass;
+    for (const zetta::pipeline::CheckResult& check : report.checks) {
         if (check.name == "entity_resolution") resolution_status = check.status;
     }
 
     if (brand) {
         if (report.passed() || !report.block_deploy ||
-            resolution_status != CheckStatus::Fail) {
+            resolution_status != zetta::pipeline::CheckStatus::Fail) {
             return TestResult::fail("the conflating resolver should have blocked the gate");
         }
         TestResult result = TestResult::pass(
@@ -155,7 +155,7 @@ TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& c
         return result;
     }
     if (!report.passed() || report.block_deploy ||
-        resolution_status != CheckStatus::Pass) {
+        resolution_status != zetta::pipeline::CheckStatus::Pass) {
         return TestResult::fail("the division-correct resolver should have passed the gate");
     }
     TestResult result = TestResult::pass(
@@ -168,43 +168,43 @@ TestResult run_entity_resolution_gate(const TestOptions& options, TestContext& c
 // requested count, destroy removes one node, list reports what is up. It lets the
 // burst-identity lifecycle run against the **real** AzureProvisioner (the reference
 // ADR-20 ephemeral-burst backend) with no cloud SDK / CLI.
-class FakeBurstControlPlane : public AzureControlPlane {
+class FakeBurstControlPlane : public zetta::cloud::AzureControlPlane {
 public:
-    ProvisionResult bring_up(const AzureConfig&,
-                             const ProvisionRequest& request) override {
+    zetta::cloud::ProvisionResult bring_up(const zetta::cloud::AzureConfig&,
+                             const zetta::cloud::ProvisionRequest& request) override {
         pool_.clear();
         for (std::size_t index = 0; index < request.count; ++index) {
-            ProvisionedNode node;
+            zetta::cloud::ProvisionedNode node;
             node.node_id = "burst-" + std::to_string(index);
             node.address = "10.9.0." + std::to_string(index + 1) + ":7777";
             node.capability = request.spec;
             pool_.push_back(node);
         }
-        ProvisionResult result;
+        zetta::cloud::ProvisionResult result;
         result.nodes = pool_;
         result.satisfied = pool_.size() == request.count;
         result.detail = "scaled";
         return result;
     }
 
-    bool destroy(const AzureConfig&, const std::string& node_id) override {
+    bool destroy(const zetta::cloud::AzureConfig&, const std::string& node_id) override {
         const auto found = std::find_if(
             pool_.begin(), pool_.end(),
-            [&](const ProvisionedNode& node) { return node.node_id == node_id; });
+            [&](const zetta::cloud::ProvisionedNode& node) { return node.node_id == node_id; });
         if (found == pool_.end()) return false;
         pool_.erase(found);
         return true;
     }
 
-    std::vector<ProvisionedNode> list(const AzureConfig&) const override {
+    std::vector<zetta::cloud::ProvisionedNode> list(const zetta::cloud::AzureConfig&) const override {
         return pool_;
     }
 
 private:
-    std::vector<ProvisionedNode> pool_;
+    std::vector<zetta::cloud::ProvisionedNode> pool_;
 };
 
-std::size_t count_audit(const Node& node, AuditAction action) {
+std::size_t count_audit(const Node& node, zetta::governance::AuditAction action) {
     std::size_t total = 0;
     for (const auto& event : node.audit_events()) {
         if (event->action() == action) ++total;
@@ -226,43 +226,43 @@ TestResult run_burst_identity(const TestOptions& options, TestContext& context) 
     node.start();
 
     FakeBurstControlPlane control_plane;
-    BurstIdentityManager identities{node};
+    zetta::cloud::BurstIdentityManager identities{node};
     const std::string job = "job-churn-burst";
 
     // Scope each burst key to the job's project + a TTL'd orchestration right, so the
     // identity is both narrow (only its job) and short-lived (expires with the burst).
-    Scope scope;
-    scope.grant(ResourceKind::Project, "churn");
-    CapabilitySet capabilities;
-    capabilities.grant(CapabilityDomain::Orchestration, "run",
+    zetta::governance::Scope scope;
+    scope.grant(zetta::governance::ResourceKind::Project, "churn");
+    zetta::governance::CapabilitySet capabilities;
+    capabilities.grant(zetta::governance::CapabilityDomain::Orchestration, "run",
                        "2999-01-01T00:00:00.000Z");
 
     // Bind the burst provisioner's identity hooks to the real manager: mint on
     // provision, bulk-revoke on the teardown that drains the pool.
-    AzureProvisioner::IdentityHooks hooks;
-    hooks.mint = [&](const std::vector<ProvisionedNode>& nodes) {
+    zetta::cloud::AzureProvisioner::IdentityHooks hooks;
+    hooks.mint = [&](const std::vector<zetta::cloud::ProvisionedNode>& nodes) {
         identities.mint(job, nodes, scope, capabilities);
     };
     hooks.revoke = [&] { identities.revoke(job); };
 
-    AzureConfig config;
+    zetta::cloud::AzureConfig config;
     config.subscription_id = "sub-test";
     config.resource_group = "zetta-rg";
     config.location = "eastus";
-    AzureProvisioner provisioner{control_plane, config, hooks};
+    zetta::cloud::AzureProvisioner provisioner{control_plane, config, hooks};
 
     // ---- burst N nodes -> mint N distinct identities --------------------------
     context.emit("bursting " + std::to_string(count) + " nodes");
-    NodeCapability spec;
+    zetta::cloud::NodeCapability spec;
     spec.cores = 8;
-    const ProvisionResult burst =
-        provisioner.provision(ProvisionRequest{count, spec});
+    const zetta::cloud::ProvisionResult burst =
+        provisioner.provision(zetta::cloud::ProvisionRequest{count, spec});
     if (!burst.satisfied || burst.nodes.size() != count) {
         node.stop();
         return TestResult::fail("the burst did not bring up the requested nodes");
     }
 
-    const std::vector<BurstIdentity> minted = identities.minted(job);
+    const std::vector<zetta::cloud::BurstIdentity> minted = identities.minted(job);
     if (minted.size() != count) {
         node.stop();
         return TestResult::fail("provision did not mint one identity per burst node");
@@ -271,7 +271,7 @@ TestResult run_burst_identity(const TestOptions& options, TestContext& context) 
     // The N identities are distinct: distinct nodes, distinct principals, distinct
     // keys (no two burst nodes share a credential).
     std::set<std::string> node_ids, principals, keys;
-    for (const BurstIdentity& identity : minted) {
+    for (const zetta::cloud::BurstIdentity& identity : minted) {
         node_ids.insert(identity.node_id);
         principals.insert(identity.principal_id);
         keys.insert(identity.key_id);
@@ -281,7 +281,7 @@ TestResult run_burst_identity(const TestOptions& options, TestContext& context) 
         return TestResult::fail("the minted identities were not all distinct");
     }
     if (node.principal_count() != count ||
-        count_audit(node, AuditAction::KeyIssued) != count) {
+        count_audit(node, zetta::governance::AuditAction::KeyIssued) != count) {
         node.stop();
         return TestResult::fail("expected N service principals + N key_issued events");
     }
@@ -289,14 +289,14 @@ TestResult run_burst_identity(const TestOptions& options, TestContext& context) 
     // ---- tear the burst down -> revoke with no orphans ------------------------
     context.emit("tearing the burst down");
     std::vector<std::string> live_ids;
-    for (const ProvisionedNode& live : provisioner.provisioned()) {
+    for (const zetta::cloud::ProvisionedNode& live : provisioner.provisioned()) {
         live_ids.push_back(live.node_id);
     }
     for (const std::string& id : live_ids) provisioner.teardown(id);
 
     const std::size_t orphan_principals = node.principal_count();
     const std::size_t still_minted = identities.minted(job).size();
-    const std::size_t revoked_events = count_audit(node, AuditAction::KeyRevoked);
+    const std::size_t revoked_events = count_audit(node, zetta::governance::AuditAction::KeyRevoked);
     node.stop();
 
     if (orphan_principals != 0 || still_minted != 0) {

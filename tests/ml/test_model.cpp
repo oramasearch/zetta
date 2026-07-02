@@ -18,15 +18,15 @@
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::Model;
-using zetta::ModelValue;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::ml::Model;
+using zetta::ml::ModelValue;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicatedBlobStore;
-using zetta::ReplicationManager;
-using zetta::sha256_hex;
+using zetta::data::ReplicatedBlobStore;
+using zetta::cluster::ReplicationManager;
+using zetta::util::sha256_hex;
 using zetta::query::QueryService;
 using zetta::test::TempDir;
 
@@ -159,7 +159,7 @@ TEST(Model, PersistsWeightsAcrossRestartViaDisk) {
 
 TEST(Model, PersistsMetadataAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string id;
     {
         ReplicationManager replication{node_id};
@@ -201,32 +201,32 @@ TEST(Model, SchemaRejectsMalformedValuesAtTheBoundary) {
 
     // A well-formed value passes.
     EXPECT_TRUE(
-        zetta::validate_model_value(zetta::to_json(sample_value()), &error))
+        zetta::ml::validate_model_value(zetta::ml::to_json(sample_value()), &error))
         << error;
 
     // Missing the required `kind`.
-    EXPECT_FALSE(zetta::validate_model_value(json{{"name", "x"}}, &error));
+    EXPECT_FALSE(zetta::ml::validate_model_value(json{{"name", "x"}}, &error));
     // Empty `kind` (minLength 1).
-    EXPECT_FALSE(zetta::validate_model_value(json{{"kind", ""}}, &error));
+    EXPECT_FALSE(zetta::ml::validate_model_value(json{{"kind", ""}}, &error));
     // Non-numeric metric value.
-    EXPECT_FALSE(zetta::validate_model_value(
+    EXPECT_FALSE(zetta::ml::validate_model_value(
         json{{"kind", "classifier"}, {"metrics", {{"auc", "high"}}}}, &error));
     // Weights missing the required sha256.
-    EXPECT_FALSE(zetta::validate_model_value(
+    EXPECT_FALSE(zetta::ml::validate_model_value(
         json{{"kind", "classifier"}, {"weights", {{"size", 10}}}}, &error));
     // A stray top-level field (additionalProperties: false).
-    EXPECT_FALSE(zetta::validate_model_value(
+    EXPECT_FALSE(zetta::ml::validate_model_value(
         json{{"kind", "classifier"}, {"surprise", 1}}, &error));
 
     // parse_model_value rejects the same and returns nullopt with a reason.
-    EXPECT_FALSE(zetta::parse_model_value(json{{"name", "x"}}, &error));
+    EXPECT_FALSE(zetta::ml::parse_model_value(json{{"name", "x"}}, &error));
     EXPECT_FALSE(error.empty());
 }
 
 TEST(Model, InvalidModelJsonOnDiskIsSkipped) {
     TempDir tmp;
     // Plant a folder with a malformed model.json (no kind) before start().
-    const std::filesystem::path bad = tmp.path() / zetta::new_uuid();
+    const std::filesystem::path bad = tmp.path() / zetta::util::new_uuid();
     std::filesystem::create_directories(bad);
     {
         std::ofstream out(bad / "model.json");
@@ -273,8 +273,8 @@ TEST(Model, ReplicatesMetadataAndWeightsBodyAcrossNodes) {
     TempDir dir_a, dir_b;
     const std::string weights = sample_weights();
 
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
     ReplicatedBlobStore blobs_a{dir_a.path(), repl_a};
@@ -349,7 +349,7 @@ TEST(Model, RankedDriversSortedByMagnitude) {
          {{{"feature", "tenure_months"}, {"importance", 0.12}},
           {{"feature", "support_tickets"}, {"importance", -0.41}},
           {{"feature", "monthly_charges"}, {"importance", 0.27}}}}};
-    const auto drivers = zetta::ranked_drivers(feature_schema);
+    const auto drivers = zetta::ml::ranked_drivers(feature_schema);
     ASSERT_EQ(drivers.size(), 3u);
     // Strongest |importance| first: |-0.41| > |0.27| > |0.12|. The sign is kept
     // (a driver can push a prediction either way).
@@ -365,9 +365,9 @@ TEST(Model, RankedDriversSortedByMagnitude) {
 // feature_schema is free-form, so ranked_drivers reads it tolerantly. A schema
 // with no `drivers` key (the common case) yields an empty list.
 TEST(Model, RankedDriversToleratesMalformedAndMissing) {
-    EXPECT_TRUE(zetta::ranked_drivers(nlohmann::json::object()).empty());
+    EXPECT_TRUE(zetta::ml::ranked_drivers(nlohmann::json::object()).empty());
     EXPECT_TRUE(
-        zetta::ranked_drivers(nlohmann::json{{"tenure_months", "number"}}).empty());
+        zetta::ml::ranked_drivers(nlohmann::json{{"tenure_months", "number"}}).empty());
 
     nlohmann::json mixed = {
         {"drivers",
@@ -377,7 +377,7 @@ TEST(Model, RankedDriversToleratesMalformedAndMissing) {
           {{"feature", 7}, {"importance", 0.9}},           // feature not a string
           {{"feature", "bad_imp"}, {"importance", "high"}},  // importance not a number
           "not-an-object"}}};
-    const auto drivers = zetta::ranked_drivers(mixed);
+    const auto drivers = zetta::ml::ranked_drivers(mixed);
     ASSERT_EQ(drivers.size(), 1u);
     EXPECT_EQ(drivers[0].feature, "plan");
     EXPECT_DOUBLE_EQ(drivers[0].importance, 0.5);

@@ -18,7 +18,7 @@
 #include "zetta/node.hpp"
 #include "zetta/storage/json_store.hpp"
 
-namespace zetta {
+namespace zetta::usecases::churn {
 namespace {
 
 using Json = nlohmann::json;
@@ -77,8 +77,8 @@ std::int64_t event_type_code(const std::string& type) {
 }
 
 // Fill a JsonStore with synthetic row ids (the storage engine the loader reads).
-JsonStore make_store(const std::vector<Json>& rows) {
-    JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<Json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         store.add("row-" + std::to_string(index), rows[index]);
     }
@@ -182,8 +182,8 @@ ChurnSolutionResult run_churn_solution(Node& node,
 
     // The encoded shards must outlive execute() (the connect/clean steps load them
     // into DDF eagerly); local stores on this frame are exactly that lifetime.
-    const JsonStore events = make_store(shards.events);
-    const JsonStore accounts = make_store(shards.accounts);
+    const zetta::storage::JsonStore events = make_store(shards.events);
+    const zetta::storage::JsonStore accounts = make_store(shards.accounts);
 
     ChurnPipelineConfig pipeline;
     pipeline.events_store = &events;
@@ -201,7 +201,7 @@ ChurnSolutionResult run_churn_solution(Node& node,
 
     auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device,
                                                      std::move(pipeline));
-    GraphExecutor executor{churn};
+    zetta::pipeline::GraphExecutor executor{churn};
 
     ChurnSolutionResult result;
     result.execution = executor.execute(node, graph, options.project, options.graph);
@@ -324,4 +324,4 @@ ChurnDataset demo_churn_dataset() {
     return dataset;
 }
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

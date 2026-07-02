@@ -4,9 +4,9 @@
 
 #include "zetta/data/replication_strategy.hpp"
 
-using zetta::kDefaultReplicationFactor;
-using zetta::ReplicationStrategy;
-using zetta::ReplicationStrategyKind;
+using zetta::data::kDefaultReplicationFactor;
+using zetta::data::ReplicationStrategy;
+using zetta::data::ReplicationStrategyKind;
 
 TEST(ReplicationStrategy, DefaultIsReplicateToAll) {
     ReplicationStrategy strategy;
@@ -41,9 +41,9 @@ TEST(ReplicationStrategy, KindNames) {
               "partitioned_with_replicas");
 
     ReplicationStrategyKind kind{};
-    EXPECT_TRUE(zetta::replication_strategy_kind_from_string("partitioned", kind));
+    EXPECT_TRUE(zetta::data::replication_strategy_kind_from_string("partitioned", kind));
     EXPECT_EQ(kind, ReplicationStrategyKind::Partitioned);
-    EXPECT_FALSE(zetta::replication_strategy_kind_from_string("nope", kind));
+    EXPECT_FALSE(zetta::data::replication_strategy_kind_from_string("nope", kind));
 }
 
 TEST(ReplicationStrategy, JsonRoundTrip) {
@@ -95,14 +95,14 @@ TEST(ReplicationStrategy, FromJsonRejectsMalformed) {
 TEST(ReplicationStrategy, FromMetaDefaultsWhenAbsentOrMalformed) {
     // Absent "replication" field → default.
     EXPECT_TRUE(
-        zetta::replication_strategy_from_meta(nlohmann::json{{"name", "t"}})
+        zetta::data::replication_strategy_from_meta(nlohmann::json{{"name", "t"}})
             .is_default());
     // Present-but-malformed → safe default (full replication), never a throw.
-    EXPECT_TRUE(zetta::replication_strategy_from_meta(
+    EXPECT_TRUE(zetta::data::replication_strategy_from_meta(
                     nlohmann::json{{"replication", nlohmann::json{{"kind", "x"}}}})
                     .is_default());
     // Present + valid → parsed.
-    EXPECT_EQ(zetta::replication_strategy_from_meta(nlohmann::json{
+    EXPECT_EQ(zetta::data::replication_strategy_from_meta(nlohmann::json{
                   {"replication", ReplicationStrategy::partitioned().to_json()}}),
               ReplicationStrategy::partitioned());
 }

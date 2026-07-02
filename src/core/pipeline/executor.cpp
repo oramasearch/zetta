@@ -8,7 +8,7 @@
 #include "zetta/node.hpp"
 #include "zetta/util/timestamp.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace {
 
 // A short, human-readable label for a step in logs + lineage: its name when it
@@ -137,7 +137,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
     if (!result.run) return result;  // node could not create the run
     Run& run = *result.run;
 
-    run.add_log({now_iso8601(), "info",
+    run.add_log({zetta::util::now_iso8601(), "info",
                  "run created: " + std::to_string(graph.node_count()) +
                      " step(s)"});
 
@@ -146,7 +146,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
     // gate's job (a separate slice); here we reject only what makes the graph
     // unrunnable, and record the rejection on the run.
     if (graph.empty()) {
-        run.add_log({now_iso8601(), "error",
+        run.add_log({zetta::util::now_iso8601(), "error",
                      "execution graph has no steps; nothing to run"});
         run.set_status(RunStatus::Failed);
         result.error = "execution graph has no steps";
@@ -154,7 +154,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
     }
     const auto order = topological_order(graph);
     if (!order) {
-        run.add_log({now_iso8601(), "error",
+        run.add_log({zetta::util::now_iso8601(), "error",
                      "execution graph has a cycle; cannot order steps"});
         run.set_status(RunStatus::Failed);
         result.error = "execution graph has a cycle";
@@ -162,12 +162,12 @@ ExecutionResult GraphExecutor::execute(Node& node,
     }
 
     run.set_status(RunStatus::Running);
-    run.add_log({now_iso8601(), "info", "run started"});
+    run.add_log({zetta::util::now_iso8601(), "info", "run started"});
 
     std::vector<RunOutput> outputs;
     RunLineage lineage;
     for (const std::shared_ptr<ir::Node>& step : *order) {
-        run.add_log({now_iso8601(), "info",
+        run.add_log({zetta::util::now_iso8601(), "info",
                      std::string(to_string(step->kind)) + ": " +
                          step_label(*step)});
         StepOutcome outcome = step_executor_->run_step(*step);
@@ -179,7 +179,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
             result.ok = false;
             result.failed_step = step->id;
             result.error = outcome.error;
-            run.add_log({now_iso8601(), "error",
+            run.add_log({zetta::util::now_iso8601(), "error",
                          std::string(to_string(step->kind)) + " step '" +
                              step_label(*step) + "' failed: " + outcome.error});
             break;  // fail-fast: downstream steps do not run
@@ -187,7 +187,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
         for (const RunOutput& output : outcome.outputs) outputs.push_back(output);
     }
 
-    lineage.freshness = now_iso8601();
+    lineage.freshness = zetta::util::now_iso8601();
     // A deterministic local orchestration that completed is fully trusted; a
     // partial (failed) run carries no confidence. Real model-derived confidence
     // is later work — see docs/pipeline/execution.md.
@@ -197,7 +197,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
     run.set_outputs(std::move(outputs));
     run.set_lineage(std::move(lineage));
     if (result.ok) {
-        run.add_log({now_iso8601(), "info",
+        run.add_log({zetta::util::now_iso8601(), "info",
                      "run succeeded: " +
                          std::to_string(run.outputs().size()) + " output(s)"});
         run.set_status(RunStatus::Succeeded);
@@ -207,4 +207,4 @@ ExecutionResult GraphExecutor::execute(Node& node,
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

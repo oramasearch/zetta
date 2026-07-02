@@ -2,7 +2,7 @@
 
 #include "../json_boundary.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 using detail::read_string;
 
@@ -51,4 +51,4 @@ std::optional<GcpConfig> GcpConfig::from_json(const nlohmann::json& value) {
     return config;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

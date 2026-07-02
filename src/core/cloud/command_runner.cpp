@@ -7,7 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-namespace zetta {
+namespace zetta::cloud {
 
 CommandRunner default_command_runner() {
     return [](const std::vector<std::string>& argv) -> CommandResult {
@@ -72,4 +72,4 @@ CommandRunner default_command_runner() {
     };
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

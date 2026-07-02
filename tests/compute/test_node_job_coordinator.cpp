@@ -26,12 +26,12 @@
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::CollectiveOp;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::CollectiveOp;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::JobCoordinator;
@@ -188,7 +188,7 @@ TEST(NodeJobCoordinator, AttachedNodeRunsDistributedJobAcrossMembership) {
 // (auto worker count): the collective reduces locally, so the job still reaches
 // Succeeded with the node's own sum.
 TEST(NodeJobCoordinator, SingleNodeRunsJobThroughOwnedCoordinator) {
-    ClusterNode solo{zetta::new_uuid(), 46320, {}};
+    ClusterNode solo{zetta::util::new_uuid(), 46320, {}};
     solo.cluster.start();
     solo.node.attach_cluster(solo.cluster);  // worker_count = 0 -> auto
     ASSERT_NE(solo.node.job_coordinator(), nullptr);
@@ -216,7 +216,7 @@ TEST(NodeJobCoordinator, SingleNodeRunsJobThroughOwnedCoordinator) {
 // and the node can be restarted (the attachment is remembered) to get a fresh
 // coordinator. This is the "torn down cleanly on stop" half of the acceptance.
 TEST(NodeJobCoordinator, StopTearsDownCoordinatorAndRestartReattaches) {
-    ClusterNode solo{zetta::new_uuid(), 46330, {}};
+    ClusterNode solo{zetta::util::new_uuid(), 46330, {}};
     solo.cluster.start();
     solo.node.attach_cluster(solo.cluster, /*worker_count=*/2);
     ASSERT_NE(solo.node.job_coordinator(), nullptr);

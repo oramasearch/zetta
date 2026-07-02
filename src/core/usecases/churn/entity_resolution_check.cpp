@@ -8,7 +8,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::usecases::churn {
 
 namespace {
 
@@ -107,7 +107,7 @@ std::string join(const std::vector<std::string>& items, const char* separator) {
 
 // The outcome of evaluating one entity-resolution step.
 struct StepOutcome {
-    CheckStatus status = CheckStatus::Pass;
+    zetta::pipeline::CheckStatus status = zetta::pipeline::CheckStatus::Pass;
     std::string reason;
     std::size_t entity_count = 0;   // distinct ground-truth entities in this step
     std::size_t account_count = 0;  // distinct resolved accounts in this step
@@ -120,7 +120,7 @@ StepOutcome evaluate_step(const ir::Node& node) {
 
     std::string schema_error;
     if (!validate_payload(payload, schema_error)) {
-        return {CheckStatus::Fail,
+        return {zetta::pipeline::CheckStatus::Fail,
                 "step '" + step_label(node) +
                     "' has a malformed entity_resolution payload: " + schema_error,
                 0, 0};
@@ -150,7 +150,7 @@ StepOutcome evaluate_step(const ir::Node& node) {
         }
     }
     if (!conflations.empty()) {
-        outcome.status = CheckStatus::Fail;
+        outcome.status = zetta::pipeline::CheckStatus::Fail;
         outcome.reason =
             "step '" + step_label(node) + "': " + join(conflations, "; ");
         return outcome;
@@ -166,7 +166,7 @@ StepOutcome evaluate_step(const ir::Node& node) {
         }
     }
     if (!fragments.empty()) {
-        outcome.status = CheckStatus::Warn;
+        outcome.status = zetta::pipeline::CheckStatus::Warn;
         outcome.reason =
             "step '" + step_label(node) + "': " + join(fragments, "; ");
         return outcome;
@@ -177,7 +177,7 @@ StepOutcome evaluate_step(const ir::Node& node) {
 
 }  // namespace
 
-CheckResult EntityResolutionCheck::evaluate(const ir::ExecutionGraph& graph) const {
+zetta::pipeline::CheckResult EntityResolutionCheck::evaluate(const ir::ExecutionGraph& graph) const {
     std::vector<const ir::Node*> steps;
     for (const std::shared_ptr<ir::Node>& node : graph.nodes()) {
         if (node->attributes.is_object() &&
@@ -186,10 +186,10 @@ CheckResult EntityResolutionCheck::evaluate(const ir::ExecutionGraph& graph) con
         }
     }
     if (steps.empty()) {
-        return {name(), CheckStatus::Pass, "no entity-resolution step to evaluate"};
+        return {name(), zetta::pipeline::CheckStatus::Pass, "no entity-resolution step to evaluate"};
     }
 
-    CheckStatus worst = CheckStatus::Pass;
+    zetta::pipeline::CheckStatus worst = zetta::pipeline::CheckStatus::Pass;
     std::vector<std::string> fail_reasons;
     std::vector<std::string> warn_reasons;
     std::size_t total_entities = 0;
@@ -198,28 +198,28 @@ CheckResult EntityResolutionCheck::evaluate(const ir::ExecutionGraph& graph) con
         const StepOutcome outcome = evaluate_step(*node);
         total_entities += outcome.entity_count;
         total_accounts += outcome.account_count;
-        if (outcome.status == CheckStatus::Fail) {
+        if (outcome.status == zetta::pipeline::CheckStatus::Fail) {
             fail_reasons.push_back(outcome.reason);
-            worst = CheckStatus::Fail;
-        } else if (outcome.status == CheckStatus::Warn) {
+            worst = zetta::pipeline::CheckStatus::Fail;
+        } else if (outcome.status == zetta::pipeline::CheckStatus::Warn) {
             warn_reasons.push_back(outcome.reason);
-            if (worst == CheckStatus::Pass) worst = CheckStatus::Warn;
+            if (worst == zetta::pipeline::CheckStatus::Pass) worst = zetta::pipeline::CheckStatus::Warn;
         }
     }
 
-    if (worst == CheckStatus::Fail) {
-        return {name(), CheckStatus::Fail,
+    if (worst == zetta::pipeline::CheckStatus::Fail) {
+        return {name(), zetta::pipeline::CheckStatus::Fail,
                 "entity resolution conflates separate accounts — " +
                     join(fail_reasons, "; ")};
     }
-    if (worst == CheckStatus::Warn) {
-        return {name(), CheckStatus::Warn,
+    if (worst == zetta::pipeline::CheckStatus::Warn) {
+        return {name(), zetta::pipeline::CheckStatus::Warn,
                 "entity resolution under-merges — " + join(warn_reasons, "; ")};
     }
-    return {name(), CheckStatus::Pass,
+    return {name(), zetta::pipeline::CheckStatus::Pass,
             std::to_string(total_entities) + " entities resolved across " +
                 std::to_string(total_accounts) + " accounts in " +
                 std::to_string(steps.size()) + " step(s); no conflation"};
 }
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

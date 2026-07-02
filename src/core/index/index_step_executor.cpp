@@ -17,7 +17,7 @@
 #include "zetta/storage/jsonl_store.hpp"
 #include "zetta/data/table.hpp"
 
-namespace zetta {
+namespace zetta::index {
 namespace {
 
 // A short, human-readable label for a step in logs + outputs: its name when it
@@ -30,16 +30,16 @@ std::string step_label(const ir::Node& step) {
 // by name only; a table in zetta lives in a database, so resolve it within the
 // `database` the step optionally names, else by scanning the node's databases for
 // the first table with that name. Empty handle when none matches.
-std::shared_ptr<Table> find_source_table(Node& node, const std::string& table,
+std::shared_ptr<zetta::data::Table> find_source_table(Node& node, const std::string& table,
                                          const std::string& database_hint) {
     if (!database_hint.empty()) {
-        const std::shared_ptr<Database> database = node.find_database(database_hint);
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(database_hint);
         return database ? database->find_table(table) : nullptr;
     }
     for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<Database> database = node.find_database(name);
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
         if (!database) continue;
-        if (const std::shared_ptr<Table> found = database->find_table(table)) {
+        if (const std::shared_ptr<zetta::data::Table> found = database->find_table(table)) {
             return found;
         }
     }
@@ -56,10 +56,10 @@ std::string chunk_id(std::size_t chunk) {
 
 }  // namespace
 
-std::vector<IndexPartition> read_index_partitions(const StorageEngine& store) {
+std::vector<IndexPartition> read_index_partitions(const zetta::storage::StorageEngine& store) {
     std::vector<IndexPartition> partitions;
     const std::size_t total = store.size();
-    constexpr std::size_t kPartitionRows = JsonlStore::kRecordsPerChunk;
+    constexpr std::size_t kPartitionRows = zetta::storage::JsonlStore::kRecordsPerChunk;
     for (std::size_t start = 0; start < total; start += kPartitionRows) {
         IndexPartition partition;
         partition.id = chunk_id(start / kPartitionRows);
@@ -80,13 +80,13 @@ IndexStepExecutor::IndexStepExecutor(Node& node)
 IndexStepExecutor::IndexStepExecutor(Node& node, IndexRegistry& registry)
     : node_(node), registry_(registry) {}
 
-StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
+zetta::pipeline::StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
     const std::string label = step_label(step);
 
     // (1) The validated `{ table, kind, backend, fields }` boundary.
     const std::optional<IndexSpec> spec = index_spec_from_node(step);
     if (!spec) {
-        return StepOutcome{
+        return zetta::pipeline::StepOutcome{
             /*ok=*/false,
             "index step '" + label +
                 "' has no valid index spec in its attributes "
@@ -98,7 +98,7 @@ StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
     // (2) Resolve the backend (name AND kind must match a registered backend).
     const std::shared_ptr<IndexBackend> backend = registry_.resolve(*spec);
     if (!backend) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "no index backend resolves '" + spec->backend +
                                "' for kind '" +
                                std::string(to_string(spec->kind)) + "'",
@@ -111,10 +111,10 @@ StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
     if (step.attributes.is_object()) {
         database_hint = step.attributes.value("database", std::string{});
     }
-    const std::shared_ptr<Table> table =
+    const std::shared_ptr<zetta::data::Table> table =
         find_source_table(node_, spec->table, database_hint);
     if (!table) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "index source table '" + spec->table + "' not found",
                            {},
                            {}};
@@ -125,7 +125,7 @@ StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
     // (4) Build the real index over the partitions.
     const IndexStatus status = backend->build(*spec, partitions);
     if (!status.ok()) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "index build failed: " + status.message, {}, {}};
     }
 
@@ -138,7 +138,7 @@ StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
     value.fields = spec->fields;
     const std::shared_ptr<Index> index = node_.create_index(std::move(value));
     if (!index) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "could not record index entity for '" + spec->table +
                                "'",
                            {},
@@ -147,14 +147,14 @@ StepOutcome IndexStepExecutor::run_index(const ir::Node& step) const {
 
     // (6) The output references the REAL Index id (resolvable via find_index; the
     // built index is queryable via node.index_registry().resolve(spec)->query).
-    StepOutcome outcome;
-    outcome.outputs.push_back(RunOutput{"index", label, index->id()});
+    zetta::pipeline::StepOutcome outcome;
+    outcome.outputs.push_back(zetta::pipeline::RunOutput{"index", label, index->id()});
     return outcome;
 }
 
-StepOutcome IndexStepExecutor::run_step(const ir::Node& step) const {
+zetta::pipeline::StepOutcome IndexStepExecutor::run_step(const ir::Node& step) const {
     if (step.kind == ir::StepKind::Index) return run_index(step);
     return default_.run_step(step);
 }
 
-}  // namespace zetta
+}  // namespace zetta::index

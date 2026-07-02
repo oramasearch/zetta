@@ -17,17 +17,17 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::AuditAction;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::ComputeJobValue;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::governance::AuditAction;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::ComputeJobValue;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::query::QueryService;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::test::TempDir;
 
 namespace {
@@ -174,7 +174,7 @@ TEST(ComputeJob, PersistsAcrossRestartViaDisk) {
 
 TEST(ComputeJob, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string id;
     {
         ReplicationManager replication{node_id};
@@ -215,8 +215,8 @@ TEST(ComputeJob, PersistsAcrossRestartViaCRDT) {
 TEST(ComputeJob, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
@@ -279,32 +279,32 @@ TEST(ComputeJob, SchemaRejectsMalformedValuesAtTheBoundary) {
     std::string error;
 
     // A well-formed value passes.
-    EXPECT_TRUE(zetta::validate_compute_job_value(
-        zetta::to_json(sample_value()), &error))
+    EXPECT_TRUE(zetta::compute::validate_compute_job_value(
+        zetta::compute::to_json(sample_value()), &error))
         << error;
 
     // Unknown kind enum.
-    EXPECT_FALSE(zetta::validate_compute_job_value(
+    EXPECT_FALSE(zetta::compute::validate_compute_job_value(
         json{{"kind", "teleport"}, {"status", "queued"}}, &error));
     // Unknown status enum.
-    EXPECT_FALSE(zetta::validate_compute_job_value(
+    EXPECT_FALSE(zetta::compute::validate_compute_job_value(
         json{{"kind", "train"}, {"status", "exploded"}}, &error));
     // Missing the required kind field.
-    EXPECT_FALSE(zetta::validate_compute_job_value(
+    EXPECT_FALSE(zetta::compute::validate_compute_job_value(
         json{{"status", "queued"}}, &error));
     // Missing the required status field.
-    EXPECT_FALSE(zetta::validate_compute_job_value(
+    EXPECT_FALSE(zetta::compute::validate_compute_job_value(
         json{{"kind", "train"}}, &error));
     // Wrong type for a field.
-    EXPECT_FALSE(zetta::validate_compute_job_value(
+    EXPECT_FALSE(zetta::compute::validate_compute_job_value(
         json{{"kind", "train"}, {"status", "queued"}, {"project", 7}}, &error));
     // A stray top-level field (additionalProperties: false).
-    EXPECT_FALSE(zetta::validate_compute_job_value(
+    EXPECT_FALSE(zetta::compute::validate_compute_job_value(
         json{{"kind", "train"}, {"status", "queued"}, {"surprise", 1}},
         &error));
 
     // parse_compute_job_value rejects the same and returns nullopt with a reason.
-    EXPECT_FALSE(zetta::parse_compute_job_value(
+    EXPECT_FALSE(zetta::compute::parse_compute_job_value(
         json{{"kind", "teleport"}, {"status", "queued"}}, &error));
     EXPECT_FALSE(error.empty());
 }
@@ -312,7 +312,7 @@ TEST(ComputeJob, SchemaRejectsMalformedValuesAtTheBoundary) {
 TEST(ComputeJob, InvalidJobJsonOnDiskIsSkipped) {
     TempDir tmp;
     // Plant a folder with a malformed job.json (bad kind) before start().
-    const std::filesystem::path bad = tmp.path() / zetta::new_uuid();
+    const std::filesystem::path bad = tmp.path() / zetta::util::new_uuid();
     std::filesystem::create_directories(bad);
     {
         std::ofstream out(bad / "job.json");

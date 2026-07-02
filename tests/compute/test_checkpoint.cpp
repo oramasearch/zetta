@@ -16,11 +16,11 @@
 #include "zetta/query/service.hpp"
 #include "zetta/util/sha256.hpp"
 
-using zetta::JobKind;
+using zetta::compute::JobKind;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::query::QueryService;
-using zetta::sha256_hex;
+using zetta::util::sha256_hex;
 using zetta::compute::CheckpointCode;
 using zetta::compute::CheckpointStatus;
 using zetta::compute::FileCheckpointStore;

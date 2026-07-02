@@ -12,21 +12,21 @@
 #include "zetta/cloud/node_capability.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-using zetta::AuditAction;
-using zetta::AuditEventValue;
-using zetta::AuditSink;
-using zetta::BurstApprovalGate;
-using zetta::BurstApprover;
-using zetta::BurstCap;
-using zetta::BurstEstimate;
-using zetta::default_burst_cost;
-using zetta::Gpu;
-using zetta::GpuKind;
-using zetta::NodeCapability;
-using zetta::ProvisionedNode;
-using zetta::ProvisionRequest;
-using zetta::ProvisionResult;
-using zetta::Provisioner;
+using zetta::governance::AuditAction;
+using zetta::governance::AuditEventValue;
+using zetta::governance::AuditSink;
+using zetta::cloud::BurstApprovalGate;
+using zetta::cloud::BurstApprover;
+using zetta::cloud::BurstCap;
+using zetta::cloud::BurstEstimate;
+using zetta::cloud::default_burst_cost;
+using zetta::cloud::Gpu;
+using zetta::cloud::GpuKind;
+using zetta::cloud::NodeCapability;
+using zetta::cloud::ProvisionedNode;
+using zetta::cloud::ProvisionRequest;
+using zetta::cloud::ProvisionResult;
+using zetta::cloud::Provisioner;
 
 namespace {
 

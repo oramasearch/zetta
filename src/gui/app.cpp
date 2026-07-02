@@ -165,7 +165,7 @@ void apply_orama_theme(ImGuiStyle& style) {
 // top of render_frame()). Null until the first font-atlas build.
 ImFont* g_mono_font = nullptr;
 
-App::App(Node& node, Cluster& cluster)
+App::App(Node& node, zetta::cluster::Cluster& cluster)
     : node_(node),
       cluster_(cluster),
       query_(std::make_unique<query::QueryService>(node, &cluster)),
@@ -203,14 +203,14 @@ App::App(Node& node, Cluster& cluster)
     // capability check, correctness gate, and audit record (in GovernedConsole) wrap
     // this identically either way, so the run stays gated + governed.
     governed_console_->set_graph_runner(
-        [this](const ir::ExecutionGraph& graph) -> ExecutionResult {
-            if (!is_churn_graph(graph)) return node_.run_graph(graph);
+        [this](const ir::ExecutionGraph& graph) -> zetta::pipeline::ExecutionResult {
+            if (!zetta::usecases::churn::is_churn_graph(graph)) return node_.run_graph(graph);
             compute::CpuDevice device;
-            ChurnSolutionOptions options;
+            zetta::usecases::churn::ChurnSolutionOptions options;
             options.project = "console";
             options.graph = "console-churn";
             return run_churn_solution_on_node(node_, device, graph,
-                                              demo_churn_dataset(), options)
+                                              zetta::usecases::churn::demo_churn_dataset(), options)
                 .execution;
         });
 }
@@ -537,9 +537,9 @@ void App::handle_incoming_files() {
         // placed across the cluster. The add runs on this (main) thread, which
         // owns the node, like the other ingestion paths.
         if (intent == FileIntent::Dataset) {
-            AddDatasetOptions options;
+            zetta::data::AddDatasetOptions options;
             options.members = node_.cluster_members();
-            const AddDatasetResult loaded = add_dataset_file(node_, path, options);
+            const zetta::data::AddDatasetResult loaded = add_dataset_file(node_, path, options);
             if (loaded.ok()) {
                 io_status_ = "Added dataset " + loaded.table->name() + " (" +
                              std::to_string(loaded.rows) + " row(s), " +
@@ -569,7 +569,7 @@ void App::handle_incoming_files() {
                              path.filename().string() + ")";
                 continue;
             }
-            const ImportResult r = import_records(*table, path);
+            const zetta::data::ImportResult r = import_records(*table, path);
             io_status_ = r.ok() ? "Imported " + std::to_string(r.added) +
                                       " record(s) into " + table->name()
                                 : "Import failed: " + r.error;
@@ -582,7 +582,7 @@ void App::handle_incoming_files() {
             }
             const auto lo = db->large_objects().import_file(path);
             io_status_ = lo ? "Stored " + lo->name + " (" +
-                                  format_bytes(lo->size) + ") as a large object"
+                                  zetta::util::format_bytes(lo->size) + ") as a large object"
                             : "Store failed: " + path.string();
         }
     }
@@ -607,7 +607,7 @@ void App::stage_n8n_artifact(const std::string& path) {
     // the real storage boundary on Create. (No new format is introduced — this
     // reuses the existing n8n_workflow_schema.)
     std::string error;
-    if (!validate_n8n_workflow(content, &error)) {
+    if (!zetta::pipeline::validate_n8n_workflow(content, &error)) {
         new_project_artifact_valid_ = false;
         new_project_artifact_status_ = error;
         return;

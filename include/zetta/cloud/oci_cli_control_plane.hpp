@@ -6,7 +6,7 @@
 #include "zetta/cloud/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 #include "zetta/cloud/oci_provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // OciCliControlPlane — the **reference** OciControlPlane binding (#432): it drives
 // Oracle Cloud Infrastructure by shelling out to the `oci` CLI (no OCI C++ SDK,
@@ -67,4 +67,4 @@ private:
     CommandRunner runner_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

@@ -13,11 +13,11 @@
 #include "zetta/data/table.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::test::TempDir;
 
 namespace {
@@ -42,9 +42,9 @@ bool converge(Node& a, Node& b, Predicate done) {
     return false;
 }
 
-std::set<std::string> skus(const zetta::Table& table) {
+std::set<std::string> skus(const zetta::data::Table& table) {
     std::set<std::string> result;
-    const zetta::StorageEngine& store = table.store();
+    const zetta::storage::StorageEngine& store = table.store();
     for (std::size_t i = 0; i < store.size(); ++i) {
         result.insert(store.at(i).at("sku").get<std::string>());
     }
@@ -56,8 +56,8 @@ std::set<std::string> skus(const zetta::Table& table) {
 TEST(DataReplication, DataCreatedOnOneNodeAppearsOnAnothersDisk) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
@@ -122,8 +122,8 @@ TEST(DataReplication, DataCreatedOnOneNodeAppearsOnAnothersDisk) {
 TEST(DataReplication, ReplicationStrategyTravelsToAPeerAndDisk) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
@@ -149,7 +149,7 @@ TEST(DataReplication, ReplicationStrategyTravelsToAPeerAndDisk) {
 
     // A partitioned-with-replicas database (ENT-35) created on node A only, plus a
     // table that inherits its strategy.
-    using zetta::ReplicationStrategy;
+    using zetta::data::ReplicationStrategy;
     auto shop = a.create_database(
         "shop", ReplicationStrategy::partitioned_with_replicas(2));
     ASSERT_TRUE(shop);
@@ -190,7 +190,7 @@ TEST(DataReplication, ReplicationStrategyTravelsToAPeerAndDisk) {
 
 TEST(DataReplication, ReplicatedDocumentPersistsAcrossRestart) {
     TempDir dir;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     {
         ReplicationManager replication{node_id};
         Node node{config_for(dir), &replication};

@@ -7,9 +7,10 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::data {
+
 class Database;
 class Table;
 class DatasetPartition;
@@ -104,4 +105,4 @@ struct AddDatasetResult {
 AddDatasetResult add_dataset_file(Node& node, const std::filesystem::path& path,
                                   const AddDatasetOptions& options = {});
 
-}  // namespace zetta
+}  // namespace zetta::data

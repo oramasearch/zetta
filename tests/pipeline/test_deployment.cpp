@@ -17,13 +17,13 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::DeploymentKind;
-using zetta::DeploymentTarget;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::pipeline::DeploymentKind;
+using zetta::pipeline::DeploymentTarget;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 using zetta::query::QueryService;
@@ -72,11 +72,11 @@ bool converge(Node& a, Node& b, Predicate done) {
 // ---- DeploymentTarget value type + boundary validation ---------------------
 
 TEST(DeploymentTarget, NamesAndJsonRoundTrip) {
-    EXPECT_EQ(zetta::to_string(DeploymentKind::Local), "local");
-    EXPECT_EQ(zetta::to_string(DeploymentKind::Kubernetes), "kubernetes");
-    EXPECT_EQ(zetta::deployment_kind_from_name("cloud"),
+    EXPECT_EQ(zetta::pipeline::to_string(DeploymentKind::Local), "local");
+    EXPECT_EQ(zetta::pipeline::to_string(DeploymentKind::Kubernetes), "kubernetes");
+    EXPECT_EQ(zetta::pipeline::deployment_kind_from_name("cloud"),
               std::optional{DeploymentKind::Cloud});
-    EXPECT_FALSE(zetta::deployment_kind_from_name("nope").has_value());
+    EXPECT_FALSE(zetta::pipeline::deployment_kind_from_name("nope").has_value());
 
     const DeploymentTarget local = DeploymentTarget::local();
     EXPECT_TRUE(local.is_local());
@@ -156,7 +156,7 @@ TEST(Deployment, DeployGraphIsGatedRule1) {
     EXPECT_EQ(node.deployment_count(), 0u);      // nothing was placed
     ASSERT_EQ(node.audit_event_count(), audit_before + 1u);  // the blocked decision is audited
     auto event = node.audit_events().back();
-    EXPECT_EQ(event->action(), zetta::AuditAction::GraphDeployed);
+    EXPECT_EQ(event->action(), zetta::governance::AuditAction::GraphDeployed);
     EXPECT_FALSE(event->allowed());
     EXPECT_NE(event->detail().find("entity_resolution"), std::string::npos);
 
@@ -230,7 +230,7 @@ TEST(Deployment, PersistsAcrossRestartViaDisk) {
 
 TEST(Deployment, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string id;
     {
         ReplicationManager replication{node_id};
@@ -274,8 +274,8 @@ TEST(Deployment, PersistsAcrossRestartViaCRDT) {
 TEST(Deployment, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};

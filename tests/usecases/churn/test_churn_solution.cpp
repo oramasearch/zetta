@@ -27,30 +27,30 @@
 // #398 acceptance: the catalog churn SolutionCatalog blueprint deploys + runs on the
 // REAL engine (featurize -> train -> explain -> rank -> playbook), producing a real
 // trained Model + ranked drivers — not the stubbed DefaultStepExecutor. The wiring
-// under test is zetta::run_churn_solution (churn_solution.hpp), driven by the catalog
+// under test is zetta::usecases::churn::run_churn_solution (churn_solution.hpp), driven by the catalog
 // "churn-prediction" graph. Single-node here; the single-node == multi-node
 // equivalence of the underlying jobs is proven in the per-op suites.
 namespace {
 
 namespace fs = std::filesystem;
 
-using zetta::ChurnSolutionOptions;
-using zetta::ChurnSolutionResult;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::Deployment;
-using zetta::DeploymentKind;
-using zetta::DeploymentTarget;
-using zetta::JobKind;
-using zetta::JobStatus;
-using zetta::Model;
+using zetta::usecases::churn::ChurnSolutionOptions;
+using zetta::usecases::churn::ChurnSolutionResult;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::pipeline::Deployment;
+using zetta::pipeline::DeploymentKind;
+using zetta::pipeline::DeploymentTarget;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
+using zetta::ml::Model;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RetentionAction;
-using zetta::RunOutput;
-using zetta::RunStatus;
-using zetta::Solution;
-using zetta::SolutionCatalog;
+using zetta::usecases::churn::RetentionAction;
+using zetta::pipeline::RunOutput;
+using zetta::pipeline::RunStatus;
+using zetta::pipeline::Solution;
+using zetta::pipeline::SolutionCatalog;
 using zetta::compute::CpuDevice;
 using zetta::compute::JobCoordinator;
 using zetta::ml::EntityScore;
@@ -99,14 +99,14 @@ TEST(ChurnSolution, DeployCatalogChurnAndRunProducesRealModelAndDrivers) {
     // The committed synthetic churn fixture as this node's input (single-node =>
     // the whole dataset).
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
 
     ComputeNode host(24500);
 
     // (0) Deploy: the gate passes (RULE-1) and the placement is recorded — the
     // "deploy" half of the acceptance.
-    ASSERT_TRUE(zetta::default_gate().run(graph).passed())
+    ASSERT_TRUE(zetta::pipeline::default_gate().run(graph).passed())
         << "catalog churn blueprint must pass the correctness gate";
     const DeploymentTarget target{DeploymentKind::Local, {}, {}};
     const std::shared_ptr<Deployment> deployment =
@@ -118,7 +118,7 @@ TEST(ChurnSolution, DeployCatalogChurnAndRunProducesRealModelAndDrivers) {
     ChurnSolutionOptions options;
     options.project = "churn-project";
     options.graph = "churn-graph-1";
-    const ChurnSolutionResult result = zetta::run_churn_solution(
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
         host.node, host.coordinator, device, graph, loaded.dataset, options);
 
     // The run succeeded end to end and is schema-valid.
@@ -127,7 +127,7 @@ TEST(ChurnSolution, DeployCatalogChurnAndRunProducesRealModelAndDrivers) {
     EXPECT_EQ(result.execution.run->status(), RunStatus::Succeeded);
     EXPECT_TRUE(result.execution.failed_step.empty());
     std::string schema_error;
-    EXPECT_TRUE(zetta::validate_run_value(result.execution.run->metadata(),
+    EXPECT_TRUE(zetta::pipeline::validate_run_value(result.execution.run->metadata(),
                                           &schema_error))
         << schema_error;
 
@@ -197,10 +197,10 @@ TEST(ChurnSolution, DemoDatasetRunsEndToEnd) {
 
     ComputeNode host(24510);
     CpuDevice device;
-    const zetta::ChurnDataset demo = zetta::demo_churn_dataset();
+    const zetta::usecases::churn::ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
     ASSERT_FALSE(demo.accounts.empty());
 
-    const ChurnSolutionResult result = zetta::run_churn_solution(
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
         host.node, host.coordinator, device, solution->graph, demo);
 
     ASSERT_TRUE(result.ok()) << result.execution.error;
@@ -243,9 +243,9 @@ TEST(ChurnSolution, RunOnNodeOverLiveCoordinatorProducesRealModel) {
         << "attach_cluster must bring up the live coordinator";
 
     CpuDevice device;
-    const zetta::ChurnDataset demo = zetta::demo_churn_dataset();
+    const zetta::usecases::churn::ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
     // No coordinator argument — it runs on the node's OWN live spine.
-    const ChurnSolutionResult result = zetta::run_churn_solution_on_node(
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
         host.node, device, solution->graph, demo);
 
     ASSERT_TRUE(result.ok()) << result.execution.error;
@@ -275,8 +275,8 @@ TEST(ChurnSolution, RunOnNodeWithoutClusterFailsClearly) {
     ASSERT_EQ(node.job_coordinator(), nullptr);
 
     CpuDevice device;
-    const ChurnSolutionResult result = zetta::run_churn_solution_on_node(
-        node, device, solution->graph, zetta::demo_churn_dataset());
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        node, device, solution->graph, zetta::usecases::churn::demo_churn_dataset());
 
     EXPECT_FALSE(result.ok());
     EXPECT_FALSE(result.execution.error.empty());
@@ -290,15 +290,15 @@ TEST(ChurnSolution, IsChurnGraphRecognizesBackbone) {
         SolutionCatalog::builtin().find("churn-prediction");
     ASSERT_NE(solution, nullptr);
     // The catalog churn blueprint has the connect -> clean -> model backbone.
-    EXPECT_TRUE(zetta::is_churn_graph(solution->graph));
+    EXPECT_TRUE(zetta::usecases::churn::is_churn_graph(solution->graph));
 
     // A graph missing the featurize (clean) step is not churn-shaped.
     zetta::ir::ExecutionGraph load_then_train;
     load_then_train.add_node(zetta::ir::StepKind::Connect, "load");
     load_then_train.add_node(zetta::ir::StepKind::Model, "train");
-    EXPECT_FALSE(zetta::is_churn_graph(load_then_train));
+    EXPECT_FALSE(zetta::usecases::churn::is_churn_graph(load_then_train));
 
-    EXPECT_FALSE(zetta::is_churn_graph(zetta::ir::ExecutionGraph{}));
+    EXPECT_FALSE(zetta::usecases::churn::is_churn_graph(zetta::ir::ExecutionGraph{}));
 }
 
 }  // namespace

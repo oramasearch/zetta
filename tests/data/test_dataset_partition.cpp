@@ -12,13 +12,13 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::DatasetPartition;
-using zetta::DatasetPartitionValue;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::data::DatasetPartition;
+using zetta::data::DatasetPartitionValue;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::query::QueryService;
 using zetta::test::TempDir;
 
@@ -58,8 +58,8 @@ bool converge(Node& a, Node& b, Predicate done) {
 
 TEST(DatasetPartitionValue, RoundTripsThroughJson) {
     const DatasetPartitionValue value = sample_value();
-    const nlohmann::json json = zetta::to_json(value);
-    const auto parsed = zetta::parse_dataset_partition_value(json);
+    const nlohmann::json json = zetta::data::to_json(value);
+    const auto parsed = zetta::data::parse_dataset_partition_value(json);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(parsed->table, "tbl-1");
     EXPECT_EQ(parsed->blob_ref, "lo-7");
@@ -72,14 +72,14 @@ TEST(DatasetPartitionValue, RoundTripsThroughJson) {
 TEST(DatasetPartitionValue, RejectsMalformedAtTheBoundary) {
     std::string error;
     // Missing the required `table`.
-    EXPECT_FALSE(zetta::parse_dataset_partition_value(
+    EXPECT_FALSE(zetta::data::parse_dataset_partition_value(
         nlohmann::json{{"blob_ref", "lo-1"}}, &error));
     EXPECT_FALSE(error.empty());
     // Unknown property (sealed shape).
-    EXPECT_FALSE(zetta::parse_dataset_partition_value(
+    EXPECT_FALSE(zetta::data::parse_dataset_partition_value(
         nlohmann::json{{"table", "t"}, {"bogus", 1}}));
     // Wrong type for owner_nodes.
-    EXPECT_FALSE(zetta::parse_dataset_partition_value(
+    EXPECT_FALSE(zetta::data::parse_dataset_partition_value(
         nlohmann::json{{"table", "t"}, {"owner_nodes", "not-an-array"}}));
 }
 
@@ -162,8 +162,8 @@ TEST(DatasetPartition, VisibleInSystemTable) {
 TEST(DatasetPartition, ReplicatesToEveryNodeAndIsQueryable) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};

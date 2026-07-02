@@ -21,17 +21,17 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/data/table.hpp"
 
-using zetta::ExecutionResult;
-using zetta::GraphExecutor;
-using zetta::Index;
-using zetta::IndexBackend;
-using zetta::IndexQuery;
-using zetta::IndexStepExecutor;
+using zetta::pipeline::ExecutionResult;
+using zetta::pipeline::GraphExecutor;
+using zetta::index::Index;
+using zetta::index::IndexBackend;
+using zetta::index::IndexQuery;
+using zetta::index::IndexStepExecutor;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RunOutput;
-using zetta::RunStatus;
-using zetta::Table;
+using zetta::pipeline::RunOutput;
+using zetta::pipeline::RunStatus;
+using zetta::data::Table;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 using zetta::test::TempDir;
@@ -255,8 +255,8 @@ TEST(IndexStepExecutor, BuildsIntoAnExplicitRegistry) {
     node.start();
     auto table = seed_accounts(node);
 
-    zetta::IndexRegistry registry;
-    registry.add(std::make_shared<zetta::InMemoryIndexBackend>());
+    zetta::index::IndexRegistry registry;
+    registry.add(std::make_shared<zetta::index::InMemoryIndexBackend>());
 
     ExecutionGraph graph;
     add_index_step(graph, search_attributes({"plan"}));

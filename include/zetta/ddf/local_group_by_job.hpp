@@ -43,7 +43,7 @@ struct NearDataGroupByResult {
     GroupByResult result;
     // The job's terminal status (Succeeded when the round completed, Failed on a
     // local-shard load error, a bad spec / column / device error, or a timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
 
@@ -55,7 +55,7 @@ struct NearDataGroupByResult {
     std::uint64_t wire_bytes_moved = 0;   // collective-plane bytes this node moved
                                           //   running the op (the partials)
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Run `spec` as a compute-near-data group-by ComputeJob across the cluster: this
@@ -72,7 +72,7 @@ struct NearDataGroupByResult {
 // the union over the nodes that do hold data). A local-shard load failure fails
 // this node's job cleanly and is recorded.
 NearDataGroupByResult run_near_data_group_by_job(
-    compute::JobCoordinator& coordinator, Node& node, ComputeJob& job,
+    compute::JobCoordinator& coordinator, Node& node, zetta::compute::ComputeJob& job,
     const std::string& table, const DataFrameSchema& schema,
     const GroupBySpec& spec, compute::ComputeDevice& device,
     const std::string& round_tag = {},

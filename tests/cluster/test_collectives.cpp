@@ -12,13 +12,13 @@
 #include "zetta/cluster/collectives.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::CollectiveMessage;
-using zetta::CollectiveOp;
-using zetta::Collectives;
-using zetta::decode_collective_message;
-using zetta::encode_collective_message;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::CollectiveMessage;
+using zetta::cluster::CollectiveOp;
+using zetta::cluster::Collectives;
+using zetta::cluster::decode_collective_message;
+using zetta::cluster::encode_collective_message;
 
 namespace {
 
@@ -137,15 +137,15 @@ TEST(CollectiveOpNames, RoundTrip) {
     for (const CollectiveOp op :
          {CollectiveOp::Sum, CollectiveOp::Product, CollectiveOp::Minimum,
           CollectiveOp::Maximum}) {
-        EXPECT_EQ(zetta::collective_op_from_string(zetta::to_string(op)), op);
+        EXPECT_EQ(zetta::cluster::collective_op_from_string(zetta::cluster::to_string(op)), op);
     }
-    EXPECT_FALSE(zetta::collective_op_from_string("nonsense"));
+    EXPECT_FALSE(zetta::cluster::collective_op_from_string("nonsense"));
 }
 
 // --- Single node: collectives degenerate cleanly ----------------------------
 
 TEST(Collectives, SingletonClusterReducesLocally) {
-    Cluster cluster{zetta::new_uuid(), ClusterConfig{}};
+    Cluster cluster{zetta::util::new_uuid(), ClusterConfig{}};
     Collectives collectives{cluster};
     cluster.start();
 

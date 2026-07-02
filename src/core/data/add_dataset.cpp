@@ -22,7 +22,7 @@
 #include "zetta/data/rendezvous_placement.hpp"
 #include "zetta/data/table.hpp"
 
-namespace zetta {
+namespace zetta::data {
 namespace dataset_file {
 
 const char* format_name(Format format) {
@@ -355,4 +355,4 @@ AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

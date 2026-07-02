@@ -10,7 +10,7 @@
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_input.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
 namespace {
@@ -135,4 +135,4 @@ N8nImportResult import_n8n_workflow_file(Project& project, const fs::path& path,
                                path.filename().string(), std::move(created_by));
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

@@ -1,6 +1,6 @@
 #include "zetta/cloud/cloud_provider.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 const CloudProviderCatalog& CloudProviderCatalog::builtin() {
     // Built once, on first use. Pure metadata — see cloud_provider.hpp: nothing
@@ -120,4 +120,4 @@ const CloudProvider* CloudProviderCatalog::find(const std::string& id) const {
     return nullptr;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

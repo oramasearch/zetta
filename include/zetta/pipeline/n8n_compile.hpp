@@ -27,7 +27,7 @@
 // R1 covers the node kinds in the churn workflows (the fixture
 // tests/fixtures/churn_workflow.json); n8n_step_kind's table is the extension
 // point as the use-case catalog grows. See docs/pipeline/n8n-compile.md.
-namespace zetta {
+namespace zetta::pipeline {
 
 class ProjectInput;
 
@@ -56,4 +56,4 @@ std::optional<ir::ExecutionGraph> compile_n8n_workflow(const std::string& conten
 std::optional<ir::ExecutionGraph> compile_n8n_workflow(const ProjectInput& input,
                                                        std::string* error = nullptr);
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

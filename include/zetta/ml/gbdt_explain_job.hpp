@@ -79,11 +79,11 @@ struct DistributedExplainResult {
     std::size_t global_entity_count = 0;
     // The job's terminal status (Succeeded when the round completed; Failed on a bad
     // column / a device error / a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Explain `model`'s predictions over this node's shard `features` as an `explain`
@@ -100,7 +100,7 @@ struct DistributedExplainResult {
 // identical on every participating node**; it defaults to a deterministic,
 // model-derived tag.
 DistributedExplainResult run_explain_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job, const GbdtModel& model,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job, const GbdtModel& model,
     const ddf::DataFrame& features, const std::string& entity_column = {},
     const std::string& round_tag = {},
     std::chrono::milliseconds timeout = kDefaultExplainTimeout);

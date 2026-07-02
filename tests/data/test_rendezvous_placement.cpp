@@ -14,10 +14,10 @@
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
 
-using zetta::Partitioner;
-using zetta::PartitionId;
-using zetta::RendezvousPlacement;
-using zetta::rendezvous_owners;
+using zetta::data::Partitioner;
+using zetta::data::PartitionId;
+using zetta::data::RendezvousPlacement;
+using zetta::data::rendezvous_owners;
 
 namespace {
 

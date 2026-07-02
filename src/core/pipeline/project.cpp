@@ -18,12 +18,12 @@
 
 #include "../catalog.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
 Project::Project(std::string id, std::string name, std::string created,
                  std::string updated, std::string owner, fs::path dir,
-                 ReplicationManager* replication, AuditSink* audit)
+                 zetta::cluster::ReplicationManager* replication, zetta::governance::AuditSink* audit)
     : id_(std::move(id)),
       name_(std::move(name)),
       created_(std::move(created)),
@@ -146,10 +146,10 @@ std::shared_ptr<ProjectInput> Project::create_input(ProjectInputKind kind,
                                                     std::string payload,
                                                     std::string filename,
                                                     std::string created_by) {
-    const std::string id = new_uuid();
-    const std::string content_hash = sha256_hex(payload);
+    const std::string id = zetta::util::new_uuid();
+    const std::string content_hash = zetta::util::sha256_hex(payload);
     const auto size = static_cast<std::uintmax_t>(payload.size());
-    const std::string created_at = now_iso8601();
+    const std::string created_at = zetta::util::now_iso8601();
     if (replication_) {
         replication_->set(
             catalog::input_key(id),
@@ -234,7 +234,7 @@ fs::path Project::graph_file(const std::string& graph_id) const {
 std::shared_ptr<ProjectGraph> Project::create_graph(std::string name,
                                                     ir::ExecutionGraph graph) {
     if (name.empty() || find_graph(name)) return nullptr;
-    const std::string graph_id = new_uuid();
+    const std::string graph_id = zetta::util::new_uuid();
     auto stored = std::make_shared<ProjectGraph>(
         graph_id, id_, std::move(name), std::move(graph), graph_file(graph_id));
     stored->persist();
@@ -247,7 +247,7 @@ std::shared_ptr<ProjectGraph> Project::create_graph(std::string name,
     // (no sink) already carrying its own replicated audit event.
     if (audit_) {
         audit_->record_audit_event(
-            {AuditAction::GraphCreated, owner_, stored->name(), true,
+            {zetta::governance::AuditAction::GraphCreated, owner_, stored->name(), true,
              "graph '" + stored->name() + "' created in project '" + name_ + "'",
              {}});
     }
@@ -342,7 +342,7 @@ bool Project::drop_graph(const std::string& name) {
     // Audit the graph change (FEAT-9), once we know one was actually removed.
     if (removed && audit_) {
         audit_->record_audit_event(
-            {AuditAction::GraphDropped, owner_, name, true,
+            {zetta::governance::AuditAction::GraphDropped, owner_, name, true,
              "graph '" + name + "' dropped from project '" + name_ + "'", {}});
     }
     return removed;
@@ -355,4 +355,4 @@ std::vector<std::string> Project::graph_names() const {
     return names;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

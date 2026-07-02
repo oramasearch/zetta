@@ -8,11 +8,10 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::pipeline {
 
-// One execution of a deployed graph — its lifecycle status. Grounded in the run
 // events (RunStarted / RunSucceeded / RunFailed, plus a pre-start Pending):
 //   Pending → Running → Succeeded | Failed.
 enum class RunStatus {
@@ -90,7 +89,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
                                         std::string* error = nullptr);
 
 // A Run record: one execution of a deployed graph (status / logs / outputs /
-// lineage). A top-level entity with no parent, modeled like zetta::Project —
+// lineage). A top-level entity with no parent, modeled like zetta::pipeline::Project —
 // **replicated state** (flat key `run:<uuid>`) whose in-memory + on-disk
 // (`<run-uuid>/run.json`) forms are a projection of the Automerge CRDT document.
 //
@@ -104,7 +103,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
 class Run {
 public:
     Run(std::string id, RunValue value, std::filesystem::path dir,
-        ReplicationManager* replication = nullptr);
+        zetta::cluster::ReplicationManager* replication = nullptr);
 
     const std::string& id() const { return id_; }
     const std::string& project() const { return value_.project; }
@@ -143,7 +142,7 @@ private:
     std::string id_;
     RunValue value_;
     std::filesystem::path dir_;
-    ReplicationManager* replication_;  // null = standalone (not replicated)
+    zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

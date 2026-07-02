@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <limits>
 
-namespace zetta {
+namespace zetta::cloud {
 
 std::string_view to_string(GpuKind kind) {
     switch (kind) {
@@ -121,4 +121,4 @@ std::optional<NodeCapability> NodeCapability::from_json(
     return capability;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

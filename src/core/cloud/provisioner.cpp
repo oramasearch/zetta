@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace zetta {
+namespace zetta::cloud {
 
 nlohmann::json ProvisionedNode::to_json() const {
     nlohmann::json document{{"node_id", node_id},
@@ -31,4 +31,4 @@ std::optional<ProvisionedNode> ProvisionedNode::from_json(
     return node;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

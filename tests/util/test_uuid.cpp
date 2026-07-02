@@ -6,7 +6,7 @@
 
 #include "zetta/util/uuid.hpp"
 
-using zetta::new_uuid;
+using zetta::util::new_uuid;
 
 TEST(Uuid, CanonicalV4Format) {
     const std::string u = new_uuid();

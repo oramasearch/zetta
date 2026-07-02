@@ -3,21 +3,21 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::ReplicationManager;
-using zetta::ReplicationPolicy;
+using zetta::cluster::ReplicationManager;
+using zetta::cluster::ReplicationPolicy;
 
 TEST(Replication, DefaultPolicyReplicatesToAllNodes) {
-    ReplicationManager manager{zetta::new_uuid()};
+    ReplicationManager manager{zetta::util::new_uuid()};
     EXPECT_EQ(manager.policy(), ReplicationPolicy::ReplicateToAllNodes);
 }
 
 TEST(Replication, MergePropagatesState) {
-    ReplicationManager source{zetta::new_uuid()};
+    ReplicationManager source{zetta::util::new_uuid()};
     source.set("title", "hello");
     source.set("count", 3);
     source.set("nested", nlohmann::json{{"a", 1}, {"b", 2}});
 
-    ReplicationManager replica{zetta::new_uuid()};
+    ReplicationManager replica{zetta::util::new_uuid()};
     replica.merge(source.save());
 
     const nlohmann::json snapshot = replica.snapshot();
@@ -27,7 +27,7 @@ TEST(Replication, MergePropagatesState) {
 }
 
 TEST(Replication, EntryCountAndVersionTrackTheDocument) {
-    ReplicationManager manager{zetta::new_uuid()};
+    ReplicationManager manager{zetta::util::new_uuid()};
     EXPECT_EQ(manager.entry_count(), 0u);
     EXPECT_EQ(manager.version(), "empty");
 
@@ -42,8 +42,8 @@ TEST(Replication, EntryCountAndVersionTrackTheDocument) {
 }
 
 TEST(Replication, ConvergedDocumentsShareAVersion) {
-    ReplicationManager a{zetta::new_uuid()};
-    ReplicationManager b{zetta::new_uuid()};
+    ReplicationManager a{zetta::util::new_uuid()};
+    ReplicationManager b{zetta::util::new_uuid()};
     a.set("from_a", "alpha");
     b.set("from_b", "beta");
 
@@ -61,8 +61,8 @@ TEST(Replication, ConvergedDocumentsShareAVersion) {
 }
 
 TEST(Replication, ConcurrentEditsMergeConflictFree) {
-    ReplicationManager a{zetta::new_uuid()};
-    ReplicationManager b{zetta::new_uuid()};
+    ReplicationManager a{zetta::util::new_uuid()};
+    ReplicationManager b{zetta::util::new_uuid()};
     a.set("shared", 1);
     b.merge(a.save());  // both start with shared=1
 

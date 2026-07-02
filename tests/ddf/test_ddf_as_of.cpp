@@ -39,8 +39,8 @@ using zetta::ddf::DataFrameSchema;
 using zetta::ddf::load_data_frame;
 
 // Build an in-memory store from a list of row docs.
-zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         store.add("row-" + std::to_string(i), rows[i]);
     }
@@ -62,7 +62,7 @@ DataFrameSchema event_schema() {
 
 TEST(DdfAsOf, ExcludesFutureRowsAcrossEntities) {
     // Two entities, each with one row before and one row after the cutoff (ts=100).
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"entity", 1}, {"ts", 50}, {"value", 10.0}},   // <= as_of  (kept)
         {{"entity", 1}, {"ts", 150}, {"value", 99.0}},  // >  as_of  (the leak)
         {{"entity", 2}, {"ts", 80}, {"value", 5.0}},    // <= as_of  (kept)
@@ -90,7 +90,7 @@ TEST(DdfAsOf, ExcludesFutureRowsAcrossEntities) {
 }
 
 TEST(DdfAsOf, EntityWithOnlyFutureRowsStaysDenseWithZeroCount) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"entity", 1}, {"ts", 50}, {"value", 10.0}},
         {{"entity", 7}, {"ts", 999}, {"value", 42.0}},  // entirely in the future
     });
@@ -116,7 +116,7 @@ TEST(DdfAsOf, EntityWithOnlyFutureRowsStaysDenseWithZeroCount) {
 // --- the trailing window (the "window function" half) ------------------------
 
 TEST(DdfAsOf, WindowStartExcludesRowsBeforeTheLowerBound) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"entity", 1}, {"ts", 10}, {"value", 1.0}},   // before window  (excluded)
         {{"entity", 1}, {"ts", 60}, {"value", 2.0}},   // in window      (kept)
         {{"entity", 1}, {"ts", 90}, {"value", 3.0}},   // in window      (kept)
@@ -144,7 +144,7 @@ TEST(DdfAsOf, WindowStartExcludesRowsBeforeTheLowerBound) {
 // --- other reductions --------------------------------------------------------
 
 TEST(DdfAsOf, MaximumReducesQualifyingRowsOnly) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"entity", 1}, {"ts", 10}, {"value", 3.0}},
         {{"entity", 1}, {"ts", 20}, {"value", 8.0}},
         {{"entity", 1}, {"ts", 999}, {"value", 100.0}},  // future high value (the leak)
@@ -179,9 +179,9 @@ std::int64_t iso_date_ordinal(const std::string& iso) {
 
 TEST(DdfAsOf, ChurnFixtureFeaturizeDropsPostT0Events) {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
-    const zetta::ChurnDataset& dataset = loaded.dataset;
+    const zetta::usecases::churn::ChurnDataset& dataset = loaded.dataset;
 
     // Featurize: convert the (string id, ISO timestamp) events into the numeric
     // (entity, ts, value) frame the as-of op operates over. A real featurize step
@@ -193,12 +193,12 @@ TEST(DdfAsOf, ChurnFixtureFeaturizeDropsPostT0Events) {
         return it->second;
     };
     std::vector<nlohmann::json> rows;
-    for (const zetta::ChurnEvent& event : dataset.events) {
+    for (const zetta::usecases::churn::ChurnEvent& event : dataset.events) {
         rows.push_back({{"entity", key_for(event.account_id)},
                         {"ts", iso_date_ordinal(event.event_ts)},
                         {"value", event.value}});
     }
-    const zetta::JsonStore store = make_store(rows);
+    const zetta::storage::JsonStore store = make_store(rows);
 
     CpuDevice device;
     auto frame = load_data_frame(store, event_schema(), device);
@@ -211,7 +211,7 @@ TEST(DdfAsOf, ChurnFixtureFeaturizeDropsPostT0Events) {
     std::map<std::int64_t, double> expected_sum, leaky_sum;
     std::map<std::int64_t, std::int64_t> expected_count;
     std::size_t total_qualifying = 0;
-    for (const zetta::ChurnEvent& event : dataset.events) {
+    for (const zetta::usecases::churn::ChurnEvent& event : dataset.events) {
         const std::int64_t key = entity_index.at(event.account_id);
         leaky_sum[key] += event.value;
         if (iso_date_ordinal(event.event_ts) <= as_of) {
@@ -321,7 +321,7 @@ TEST(DdfAsOfJson, RejectsBadInput) {
 // --- error cases -------------------------------------------------------------
 
 TEST(DdfAsOf, RejectsMissingColumn) {
-    const zetta::JsonStore store = make_store({{{"entity", 1}, {"ts", 1}, {"value", 1.0}}});
+    const zetta::storage::JsonStore store = make_store({{{"entity", 1}, {"ts", 1}, {"value", 1.0}}});
     CpuDevice device;
     auto frame = load_data_frame(store, event_schema(), device);
     ASSERT_TRUE(frame.ok());
@@ -337,7 +337,7 @@ TEST(DdfAsOf, RejectsMissingColumn) {
 }
 
 TEST(DdfAsOf, RejectsNonIntegerEntityColumn) {
-    const zetta::JsonStore store = make_store({{{"entity", 1.5}, {"ts", 1}, {"value", 1.0}}});
+    const zetta::storage::JsonStore store = make_store({{{"entity", 1.5}, {"ts", 1}, {"value", 1.0}}});
     DataFrameSchema schema;
     schema.columns = {
         ColumnSchema{.name = "entity", .dtype = DataType::Float64},  // not an integer key
@@ -359,7 +359,7 @@ TEST(DdfAsOf, RejectsNonIntegerEntityColumn) {
 }
 
 TEST(DdfAsOf, RejectsWindowStartAboveAsOf) {
-    const zetta::JsonStore store = make_store({{{"entity", 1}, {"ts", 1}, {"value", 1.0}}});
+    const zetta::storage::JsonStore store = make_store({{{"entity", 1}, {"ts", 1}, {"value", 1.0}}});
     CpuDevice device;
     auto frame = load_data_frame(store, event_schema(), device);
     ASSERT_TRUE(frame.ok());

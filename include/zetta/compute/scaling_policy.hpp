@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::compute {
 
 // The job objective / reward model (ENT-34, ADR-29; part of the native
 // distributed accelerated compute pass for UC-1 churn — ARC-11/#264). A
@@ -18,7 +18,7 @@ namespace zetta {
 //
 // This slice is a **pure value type + boundary validation** plus the objective
 // evaluation, modeled exactly like its sibling compute-pass value types
-// (zetta::NodeCapability / zetta::ProvisionedNode in provisioner.hpp): JSON
+// (zetta::cloud::NodeCapability / zetta::cloud::ProvisionedNode in provisioner.hpp): JSON
 // parse/serialize with a from_json that rejects malformed input at the boundary.
 // A ComputeJob carries a ScalingPolicy by id (`scaling_policy`); persisting /
 // replicating policies as their own entity and wiring `evaluate()` into the live
@@ -132,4 +132,4 @@ struct ScalingPolicy {
     bool operator==(const ScalingPolicy&) const = default;
 };
 
-}  // namespace zetta
+}  // namespace zetta::compute

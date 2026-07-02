@@ -32,7 +32,7 @@
 // submodule is present the real engine is linked; when it is absent build()/query()
 // degrade to `Unsupported` (drop() is still Ok — nothing was built). `engine_available()`
 // reports which. See docs/indexing/oramacore-fulltext-index.md.
-namespace zetta {
+namespace zetta::index {
 
 class OramaCoreFulltextIndex final : public IndexBackend {
 public:
@@ -87,8 +87,9 @@ public:
     std::size_t built_count() const;
 
 private:
-    struct Impl;                 // holds the oramacore-cpp engine state (pImpl)
+    struct Impl;
+
     std::unique_ptr<Impl> impl_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

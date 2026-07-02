@@ -28,13 +28,13 @@ namespace {
 // reaches (deny-by-default), and the rights its **capabilities** grant (each TTL'd;
 // an expired grant is flagged red). A pure view over the already-validated key —
 // `now` is the current ISO-8601 stamp the capability TTLs are compared against.
-void render_access_key(const AccessKey& key, const std::string& now) {
+void render_access_key(const zetta::governance::AccessKey& key, const std::string& now) {
     const std::string short_id = key.id().substr(0, key.id().find('-'));
     ImGui::SeparatorText(("key " + short_id).c_str());
     mono_line(kInkQuiet, "created:  ", key.created());
 
     // Scope — which resources this key may touch (the resource axis, RULE-3).
-    const Scope& scope = key.scope();
+    const zetta::governance::Scope& scope = key.scope();
     if (scope.unrestricted) {
         ImGui::TextColored(kWarnColor, "scope: unrestricted (admin)");
     } else if (scope.grants.empty()) {
@@ -42,7 +42,7 @@ void render_access_key(const AccessKey& key, const std::string& now) {
     } else {
         ImGui::TextDisabled("scope:");
         ImGui::Indent();
-        for (const Resource& resource : scope.grants) {
+        for (const zetta::governance::Resource& resource : scope.grants) {
             ImGui::BulletText("%s: %s",
                               std::string(to_string(resource.kind)).c_str(),
                               resource.name.c_str());
@@ -52,13 +52,13 @@ void render_access_key(const AccessKey& key, const std::string& now) {
 
     // Capabilities — which rights this key may exercise (the verb axis, ENT-22),
     // optionally TTL'd. No wildcard: a key with none denies every operation.
-    const CapabilitySet& capabilities = key.capabilities();
+    const zetta::governance::CapabilitySet& capabilities = key.capabilities();
     if (capabilities.grants.empty()) {
         ImGui::TextDisabled("capabilities: (none, denies every operation)");
     } else {
         ImGui::TextDisabled("capabilities:");
         ImGui::Indent();
-        for (const Capability& capability : capabilities.grants) {
+        for (const zetta::governance::Capability& capability : capabilities.grants) {
             const std::string right =
                 std::string(to_string(capability.domain)) + ":" + capability.action;
             if (capability.expires_at.empty()) {
@@ -79,7 +79,7 @@ void render_access_key(const AccessKey& key, const std::string& now) {
 
 // Render the full detail of one principal: identity + its access keys (each with
 // its scope + capability grants). A pure view — no mutation.
-void render_principal_detail(const Principal& principal) {
+void render_principal_detail(const zetta::governance::Principal& principal) {
     ImGui::Text("%s", principal.name().c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("[%s]",
@@ -87,15 +87,15 @@ void render_principal_detail(const Principal& principal) {
     mono_line(kInkQuiet, "id:       ", principal.id());
     mono_line(kInkQuiet, "created:  ", principal.created());
 
-    const std::vector<std::shared_ptr<AccessKey>>& keys = principal.keys();
+    const std::vector<std::shared_ptr<zetta::governance::AccessKey>>& keys = principal.keys();
     ImGui::Spacing();
     ImGui::TextDisabled("%zu access key(s)", keys.size());
     if (keys.empty()) {
         ImGui::TextDisabled("(no keys, this principal can authenticate nothing)");
         return;
     }
-    const std::string now = now_iso8601();
-    for (const std::shared_ptr<AccessKey>& key : keys) {
+    const std::string now = zetta::util::now_iso8601();
+    for (const std::shared_ptr<zetta::governance::AccessKey>& key : keys) {
         ImGui::PushID(key->id().c_str());
         render_access_key(*key, now);
         ImGui::PopID();
@@ -106,7 +106,7 @@ void render_principal_detail(const Principal& principal) {
 // (graph change / deploy / data access) with its time, actor, target, the
 // allow/deny outcome (color-coded), and the human-readable detail. Chronological,
 // matching Node::audit_events(); a pure view over already-validated events.
-void render_audit_log(const std::vector<std::shared_ptr<AuditEvent>>& events) {
+void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::AuditEvent>>& events) {
     ImGui::TextDisabled("%zu event(s)", events.size());
     if (events.empty()) {
         ImGui::TextDisabled("(no audit events)");
@@ -125,7 +125,7 @@ void render_audit_log(const std::vector<std::shared_ptr<AuditEvent>>& events) {
         ImGui::TableSetupColumn("Outcome");
         ImGui::TableSetupColumn("Detail");
         ImGui::TableHeadersRow();
-        for (const std::shared_ptr<AuditEvent>& event : events) {
+        for (const std::shared_ptr<zetta::governance::AuditEvent>& event : events) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(event->time().c_str());
@@ -200,7 +200,7 @@ void App::draw_admin() {
                       ImGuiChildFlags_Borders);
     if (principal_names.empty()) ImGui::TextDisabled("(no principals)");
     for (const std::string& name : principal_names) {
-        const std::shared_ptr<Principal> principal = node_.find_principal(name);
+        const std::shared_ptr<zetta::governance::Principal> principal = node_.find_principal(name);
         if (!principal) continue;
         ImGui::PushID(name.c_str());
         ImGui::TextDisabled("%-7s",
@@ -217,7 +217,7 @@ void App::draw_admin() {
     ImGui::SameLine();
     ImGui::BeginChild("##principal_detail", ImVec2(0, panel_h),
                       ImGuiChildFlags_Borders);
-    if (const std::shared_ptr<Principal> principal =
+    if (const std::shared_ptr<zetta::governance::Principal> principal =
             node_.find_principal(selected_principal_)) {
         render_principal_detail(*principal);
     } else {

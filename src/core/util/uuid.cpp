@@ -7,7 +7,7 @@
 #include <random>
 #include <string_view>
 
-namespace zetta {
+namespace zetta::util {
 
 namespace {
 
@@ -59,4 +59,4 @@ std::array<std::byte, 16> uuid_to_bytes(std::string_view uuid) {
     return bytes;
 }
 
-}  // namespace zetta
+}  // namespace zetta::util

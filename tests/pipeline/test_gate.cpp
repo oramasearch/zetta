@@ -9,13 +9,13 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
 
-using zetta::Check;
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::CorrectnessGate;
-using zetta::make_check;
-using zetta::NonEmptyGraphCheck;
-using zetta::ValidationReport;
+using zetta::pipeline::Check;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CorrectnessGate;
+using zetta::pipeline::make_check;
+using zetta::pipeline::NonEmptyGraphCheck;
+using zetta::pipeline::ValidationReport;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 
@@ -68,7 +68,7 @@ TEST(CorrectnessGate, IgnoresANullCheck) {
 // ---- RULE-1: a failing check blocks deploy with a clear reason --------------
 
 TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ExecutionGraph empty_graph;  // nothing to deploy
 
     const ValidationReport report = gate.run(empty_graph);
@@ -85,7 +85,7 @@ TEST(CorrectnessGate, FailingCheckBlocksDeployWithAReason) {
 }
 
 TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
 
     const ValidationReport report = gate.run(one_step_graph());
 
@@ -98,7 +98,7 @@ TEST(CorrectnessGate, PassingGraphAllowsDeploy) {
 }
 
 TEST(CorrectnessGate, DefaultGateShipsTheBaselineChecks) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     ASSERT_EQ(gate.check_count(), 4u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
@@ -156,14 +156,14 @@ TEST(CorrectnessGate, MakeCheckStampsTheRegisteredName) {
 // ---- the produced report is a well-formed ValidationReport ------------------
 
 TEST(CorrectnessGate, ProducedReportRoundTripsThroughJson) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(ExecutionGraph{});  // a failing run
 
     const nlohmann::json document = report;  // to_json ADL hook
     EXPECT_EQ(document.at("verdict"), "fail");
     EXPECT_EQ(document.at("block_deploy"), true);
 
-    const auto parsed = zetta::validation_report_from_json(document);
+    const auto parsed = zetta::pipeline::validation_report_from_json(document);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(*parsed, report);
 }

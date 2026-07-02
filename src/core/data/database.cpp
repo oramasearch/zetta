@@ -12,11 +12,11 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::data {
 namespace fs = std::filesystem;
 
 Database::Database(std::string id, std::string name, fs::path dir,
-                   ReplicationManager* replication,
+                   zetta::cluster::ReplicationManager* replication,
                    ReplicationStrategy replication_strategy)
     : id_(std::move(id)),
       name_(std::move(name)),
@@ -68,7 +68,7 @@ std::shared_ptr<Table> Database::create_table(
     // No explicit strategy → inherit this database's (ENT-35).
     const ReplicationStrategy strategy =
         replication_strategy.value_or(replication_strategy_);
-    const std::string id = new_uuid();
+    const std::string id = zetta::util::new_uuid();
     if (replication_) {
         // The default (ReplicateToAll) is omitted, so the tbl: value is unchanged
         // from before tables carried a strategy.
@@ -138,4 +138,4 @@ std::vector<std::string> Database::table_names() const {
     return names;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

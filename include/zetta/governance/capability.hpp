@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::governance {
 
 // The governance domain a right belongs to (ENT-22). A capability grants a
 // **specific** right, and ENT-22 groups rights into three coarse domains:
@@ -48,7 +48,7 @@ struct Operation {
 // FEAT-9 slice (see docs/governance/access-control.md).
 //
 // `expires_at` is an optional ISO-8601 UTC stamp in the SAME fixed-width format
-// as zetta::now_iso8601() (millisecond precision, trailing 'Z'), so chronology
+// as zetta::util::now_iso8601() (millisecond precision, trailing 'Z'), so chronology
 // is a plain lexicographic compare. Empty means **no TTL** — the capability
 // never expires. A capability is considered expired once `now >= expires_at`.
 struct Capability {
@@ -114,4 +114,4 @@ std::optional<Capability> capability_from_json(const nlohmann::json& document);
 std::optional<CapabilitySet> capability_set_from_json(
     const nlohmann::json& document);
 
-}  // namespace zetta
+}  // namespace zetta::governance

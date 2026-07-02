@@ -28,7 +28,7 @@
 // and nothing is gossiped through the CRDT. The payload rides a schema-validated
 // JSON boundary (`node_metrics_wire_schema()`), the same discipline as the
 // `CollectiveMessage` payload that shares this transport.
-namespace zetta {
+namespace zetta::cluster {
 
 // One node's telemetry as carried over the wire / held in the cache: the sampled
 // NodeMetrics plus the id of the node it describes. `age_seconds` + `is_local`
@@ -99,4 +99,4 @@ private:
     std::map<std::string, Entry> entries_;  // node_id → latest sample
 };
 
-}  // namespace zetta
+}  // namespace zetta::cluster

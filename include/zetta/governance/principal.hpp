@@ -13,9 +13,9 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/scope.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::governance {
 
 // What sort of actor a principal is (ENT-20): an authenticated actor is a user,
 // a service, or a node. The kind is governance context (the subject of grants +
@@ -51,7 +51,7 @@ class Principal {
 public:
     Principal(std::string id, PrincipalKind kind, std::string name,
               std::string created, std::filesystem::path dir,
-              ReplicationManager* replication = nullptr);
+              zetta::cluster::ReplicationManager* replication = nullptr);
 
     const std::string& id() const { return id_; }
     PrincipalKind kind() const { return kind_; }
@@ -105,7 +105,7 @@ private:
     std::string created_;
     std::filesystem::path dir_;
     std::vector<std::shared_ptr<AccessKey>> keys_;
-    ReplicationManager* replication_;  // null = not replicated
+    zetta::cluster::ReplicationManager* replication_;  // null = not replicated
 };
 
-}  // namespace zetta
+}  // namespace zetta::governance

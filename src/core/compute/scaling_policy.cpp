@@ -7,7 +7,7 @@
 #include <limits>
 #include <sstream>
 
-namespace zetta {
+namespace zetta::compute {
 
 std::string_view to_string(ScalingObjective objective) {
     switch (objective) {
@@ -228,4 +228,4 @@ std::optional<ScalingPolicy> ScalingPolicy::from_json(const nlohmann::json& valu
     return policy;
 }
 
-}  // namespace zetta
+}  // namespace zetta::compute

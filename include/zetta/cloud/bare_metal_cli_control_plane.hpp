@@ -6,7 +6,7 @@
 #include "zetta/cloud/bare_metal_provisioner.hpp"
 #include "zetta/cloud/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 
-namespace zetta {
+namespace zetta::cloud {
 
 // BareMetalCliControlPlane — the **reference** BareMetalControlPlane binding (#436):
 // it brings up worker nodes on the local host by shelling out to the host container
@@ -53,4 +53,4 @@ private:
     CommandRunner runner_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

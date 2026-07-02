@@ -14,13 +14,13 @@
 
 #include "temp_dir.hpp"
 
-using zetta::HashPartitioner;
-using zetta::Partitioner;
-using zetta::partitioner_from_json;
-using zetta::PartitionId;
-using zetta::RoundRobinPartitioner;
-using zetta::SinglePartitioner;
-using zetta::Table;
+using zetta::data::HashPartitioner;
+using zetta::data::Partitioner;
+using zetta::data::partitioner_from_json;
+using zetta::data::PartitionId;
+using zetta::data::RoundRobinPartitioner;
+using zetta::data::SinglePartitioner;
+using zetta::data::Table;
 
 namespace {
 

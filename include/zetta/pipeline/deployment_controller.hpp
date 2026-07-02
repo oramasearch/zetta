@@ -5,11 +5,10 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::pipeline {
 
-// Outcome of one reconcile pass — what the control plane saw and did. Cheap to
 // build; surfaced in the status line and asserted in tests.
 struct ReconcileReport {
     std::size_t local_deployments = 0;  // deployments placed on THIS node (R1)
@@ -57,4 +56,4 @@ private:
     std::uint64_t passes_ = 0;
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

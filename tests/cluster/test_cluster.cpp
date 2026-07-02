@@ -9,10 +9,10 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::NodeStatus;
-using zetta::ReplicationManager;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::NodeStatus;
+using zetta::cluster::ReplicationManager;
 
 namespace {
 
@@ -28,9 +28,9 @@ TEST(Cluster, PortRangeLetsNodesShareAHost) {
     config.listen_port = 42100;
     config.port_range = 8;
 
-    Cluster first(zetta::new_uuid(), config);
+    Cluster first(zetta::util::new_uuid(), config);
     first.start();
-    Cluster second(zetta::new_uuid(), config);  // same base + range
+    Cluster second(zetta::util::new_uuid(), config);  // same base + range
     second.start();
 
     // Binding is synchronous in start(), so the second node falls forward.
@@ -46,7 +46,7 @@ TEST(Cluster, DefaultsToAllInterfacesAndAdvertisesReachableAddress) {
     // never advertises the bare 0.0.0.0 — that isn't dial-able.
     EXPECT_EQ(ClusterConfig{}.listen_host, "0.0.0.0");
 
-    Cluster node(zetta::new_uuid(), ClusterConfig{});
+    Cluster node(zetta::util::new_uuid(), ClusterConfig{});
     node.start();
     const std::vector<std::string> addresses = node.listen_addresses();
     ASSERT_FALSE(addresses.empty());
@@ -63,7 +63,7 @@ TEST(Cluster, SpecificHostAdvertisesExactlyThatAddress) {
     config.listen_port = 42150;
     config.port_range = 4;
 
-    Cluster node(zetta::new_uuid(), config);
+    Cluster node(zetta::util::new_uuid(), config);
     node.start();
 
     // A non-wildcard bind is reachable exactly where it bound — one address.
@@ -81,7 +81,7 @@ TEST(Cluster, WildcardBindExpandsToReachableAddresses) {
     config.listen_port = 42160;
     config.port_range = 4;
 
-    Cluster node(zetta::new_uuid(), config);
+    Cluster node(zetta::util::new_uuid(), config);
     node.start();
 
     // A wildcard bind isn't itself dial-able, so it expands to the machine's
@@ -103,7 +103,7 @@ TEST(Cluster, PeersConnectAsEquals) {
     first_config.listen_host = "127.0.0.1";
     first_config.listen_port = 42200;
     first_config.port_range = 1;
-    Cluster first(zetta::new_uuid(), first_config);
+    Cluster first(zetta::util::new_uuid(), first_config);
     first.start();
     sleep_ms(100);  // let it bind/listen
 
@@ -112,7 +112,7 @@ TEST(Cluster, PeersConnectAsEquals) {
     second_config.listen_port = 42201;
     second_config.port_range = 1;
     second_config.seeds = {"127.0.0.1:42200"};
-    Cluster second(zetta::new_uuid(), second_config);
+    Cluster second(zetta::util::new_uuid(), second_config);
     second.start();
 
     bool connected = false;
@@ -141,7 +141,7 @@ TEST(Cluster, PeersConnectAsEquals) {
 
 TEST(Cluster, RemovesDeadPeerAndReconnects) {
     // Fast timeouts so the test doesn't wait on the 6s default.
-    const std::string id_a = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
     ReplicationManager repl_a{id_a};
     ClusterConfig cfg_a;
     cfg_a.listen_host = "127.0.0.1";
@@ -164,7 +164,7 @@ TEST(Cluster, RemovesDeadPeerAndReconnects) {
         return std::make_unique<Cluster>(id, cfg, &repl);
     };
 
-    const std::string id_b1 = zetta::new_uuid();
+    const std::string id_b1 = zetta::util::new_uuid();
     ReplicationManager repl_b1{id_b1};
     auto b = make_peer(id_b1, repl_b1);
     b->start();
@@ -187,7 +187,7 @@ TEST(Cluster, RemovesDeadPeerAndReconnects) {
 
     // A fresh node at the same address (new id) reconnects and replaces it —
     // no ghost entry left behind.
-    const std::string id_b2 = zetta::new_uuid();
+    const std::string id_b2 = zetta::util::new_uuid();
     ReplicationManager repl_b2{id_b2};
     auto b2 = make_peer(id_b2, repl_b2);
     b2->start();
@@ -201,8 +201,8 @@ TEST(Cluster, RemovesDeadPeerAndReconnects) {
 TEST(Cluster, GossipsReplicationStatusBetweenNodes) {
     // Each node seeds its own entry; after they connect, gossip should converge
     // their documents and nodes() should report the peer in-sync.
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
     repl_a.set(id_a, nlohmann::json{{"address", "127.0.0.1:43010"}});

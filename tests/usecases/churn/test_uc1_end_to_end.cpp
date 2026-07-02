@@ -66,36 +66,36 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using zetta::AuditAction;
-using zetta::CapabilityDomain;
-using zetta::CapabilitySet;
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::ChurnDataset;
-using zetta::ChurnPipelineConfig;
-using zetta::ChurnStepExecutor;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::CorrectnessGate;
-using zetta::ExecutionResult;
-using zetta::GraphExecutor;
-using zetta::IntentShape;
-using zetta::JobKind;
-using zetta::JobStatus;
-using zetta::JsonStore;
-using zetta::Model;
+using zetta::governance::AuditAction;
+using zetta::governance::CapabilityDomain;
+using zetta::governance::CapabilitySet;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::usecases::churn::ChurnDataset;
+using zetta::usecases::churn::ChurnPipelineConfig;
+using zetta::usecases::churn::ChurnStepExecutor;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::pipeline::CorrectnessGate;
+using zetta::pipeline::ExecutionResult;
+using zetta::pipeline::GraphExecutor;
+using zetta::pipeline::IntentShape;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
+using zetta::storage::JsonStore;
+using zetta::ml::Model;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::Operation;
-using zetta::PrincipalKind;
-using zetta::Resource;
-using zetta::ResourceKind;
-using zetta::ResolutionStrategy;
-using zetta::RetentionAction;
-using zetta::RunOutput;
-using zetta::RunStatus;
-using zetta::Scope;
-using zetta::ValidationReport;
+using zetta::governance::Operation;
+using zetta::governance::PrincipalKind;
+using zetta::governance::Resource;
+using zetta::governance::ResourceKind;
+using zetta::usecases::churn::ResolutionStrategy;
+using zetta::usecases::churn::RetentionAction;
+using zetta::pipeline::RunOutput;
+using zetta::pipeline::RunStatus;
+using zetta::governance::Scope;
+using zetta::pipeline::ValidationReport;
 using zetta::compute::CpuDevice;
 using zetta::compute::JobCoordinator;
 using zetta::ddf::ColumnSchema;
@@ -159,12 +159,12 @@ struct ComputeNode {
 // the gate); Brand conflates the FedEx siblings (the TC-4 trap that fails it).
 zetta::ir::ExecutionGraph churn_graph_with_resolution(const ChurnDataset& dataset,
                                                       ResolutionStrategy strategy) {
-    auto compiled = zetta::compile_intent("reduce churn and improve retention");
+    auto compiled = zetta::pipeline::compile_intent("reduce churn and improve retention");
     zetta::ir::ExecutionGraph graph = compiled ? compiled->graph
                                                : zetta::ir::ExecutionGraph{};
     if (auto clean = graph.find_node("build_features")) {
         clean->attributes["entity_resolution"] =
-            zetta::entity_resolution_attribute(dataset, strategy).at(
+            zetta::usecases::churn::entity_resolution_attribute(dataset, strategy).at(
                 "entity_resolution");
     }
     return graph;
@@ -190,12 +190,12 @@ bool check_has_status(const ValidationReport& report, const std::string& name,
 TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
     // ---- the fixture: synthetic, committed, no foreign runtime ----------------
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
     const ChurnDataset& dataset = loaded.dataset;
 
     // ---- the churn graph with division-correct entity resolution attached -----
-    const auto compiled = zetta::compile_intent("reduce churn and improve retention");
+    const auto compiled = zetta::pipeline::compile_intent("reduce churn and improve retention");
     ASSERT_TRUE(compiled.has_value());
     EXPECT_EQ(compiled->shape, IntentShape::Churn);
     const zetta::ir::ExecutionGraph graph =
@@ -203,7 +203,7 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
     ASSERT_TRUE(graph.find_node("build_features"));
 
     // ---- RULE-1: the correctness gate must pass before anything is placed -----
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -245,22 +245,22 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
 
     // ---- the gate passed + access granted => place the graph (governed) -------
     auto deployment =
-        node.deploy_graph(graph, zetta::DeploymentTarget::local(), "churn");
+        node.deploy_graph(graph, zetta::pipeline::DeploymentTarget::local(), "churn");
     ASSERT_TRUE(deployment);  // records a graph_deployed audit event
 
     // ---- run the real UC-1 pipeline behind the StepExecutor seam --------------
-    const zetta::ChurnNumericShards numeric = zetta::encode_churn_dataset(dataset);
+    const zetta::usecases::churn::ChurnNumericShards numeric = zetta::usecases::churn::encode_churn_dataset(dataset);
     const JsonStore events = make_store(numeric.events);
     const JsonStore accounts = make_store(numeric.accounts);
     CpuDevice device;
 
     ChurnPipelineConfig config;
     config.events_store = &events;
-    config.events_schema = zetta::churn_events_schema();
+    config.events_schema = zetta::usecases::churn::churn_events_schema();
     config.accounts_store = &accounts;
-    config.accounts_schema = zetta::churn_accounts_schema();
-    config.featurize = zetta::churn_featurize_spec(numeric.as_of);
-    config.params = zetta::default_churn_gbdt_params();
+    config.accounts_schema = zetta::usecases::churn::churn_accounts_schema();
+    config.featurize = zetta::usecases::churn::churn_featurize_spec(numeric.as_of);
+    config.params = zetta::usecases::churn::default_churn_gbdt_params();
     config.entity_column = "entity";
     config.model_name = "churn_model";
     config.project = "churn";
@@ -278,7 +278,7 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
     EXPECT_EQ(result.run->status(), RunStatus::Succeeded);
     EXPECT_TRUE(result.failed_step.empty());
     std::string schema_error;
-    EXPECT_TRUE(zetta::validate_run_value(result.run->metadata(), &schema_error))
+    EXPECT_TRUE(zetta::pipeline::validate_run_value(result.run->metadata(), &schema_error))
         << schema_error;
 
     // (1) A real, registered Model the run's `model` output references.
@@ -363,14 +363,14 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
 // compute is placed. This is the teeth behind "division-correct resolution".
 TEST(Uc1EndToEnd, ConflatingResolutionBlocksTheGatedRun) {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
 
     const zetta::ir::ExecutionGraph graph =
         churn_graph_with_resolution(loaded.dataset, ResolutionStrategy::Brand);
     ASSERT_TRUE(graph.find_node("build_features"));
 
-    const ValidationReport report = zetta::default_gate().run(graph);
+    const ValidationReport report = zetta::pipeline::default_gate().run(graph);
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);  // RULE-1: conflation blocks deploy
     EXPECT_TRUE(check_has_status(report, "entity_resolution", CheckStatus::Fail));

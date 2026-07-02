@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace zetta {
+namespace zetta::data {
 
 namespace {
 
@@ -183,4 +183,4 @@ std::shared_ptr<Partitioner> partitioner_from_json(const nlohmann::json& value,
     return nullptr;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

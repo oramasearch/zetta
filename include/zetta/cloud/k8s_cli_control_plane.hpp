@@ -6,7 +6,7 @@
 #include "zetta/cloud/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 #include "zetta/cloud/k8s_provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // K8sCliControlPlane — the **reference** K8sControlPlane binding (#434): it drives
 // a Kubernetes cluster by shelling out to the `kubectl` CLI (no Kubernetes client
@@ -53,4 +53,4 @@ private:
     CommandRunner runner_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

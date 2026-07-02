@@ -3,7 +3,7 @@
 #include <chrono>
 #include <format>
 
-namespace zetta {
+namespace zetta::util {
 
 std::string now_iso8601() {
     using namespace std::chrono;
@@ -23,4 +23,4 @@ std::string now_iso8601() {
                        minute.count(), second.count(), millisecond.count());
 }
 
-}  // namespace zetta
+}  // namespace zetta::util

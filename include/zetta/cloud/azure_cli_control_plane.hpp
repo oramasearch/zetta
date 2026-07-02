@@ -6,7 +6,7 @@
 #include "zetta/cloud/azure_provisioner.hpp"
 #include "zetta/cloud/command_runner.hpp"  // CommandRunner / CommandResult (shared, vendor-neutral)
 
-namespace zetta {
+namespace zetta::cloud {
 
 // AzCliControlPlane — the **reference** AzureControlPlane binding (#376): it
 // drives Azure by shelling out to the `az` CLI (no Azure C++ SDK, honoring the
@@ -49,4 +49,4 @@ private:
     CommandRunner runner_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

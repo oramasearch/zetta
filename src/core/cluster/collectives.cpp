@@ -7,7 +7,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 
-namespace zetta {
+namespace zetta::cluster {
 
 namespace {
 
@@ -378,4 +378,4 @@ std::optional<std::vector<std::vector<double>>> Collectives::gather(
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cluster

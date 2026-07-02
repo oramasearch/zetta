@@ -10,7 +10,7 @@
 #include "zetta/node.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
 
-namespace zetta {
+namespace zetta::data {
 namespace {
 
 // The set of owners as a sorted set, for an order-independent "did ownership
@@ -88,4 +88,4 @@ RebalanceResult rebalance_partitions(
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

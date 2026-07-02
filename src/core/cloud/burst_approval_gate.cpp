@@ -7,7 +7,7 @@
 
 #include "zetta/governance/audit_event.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 namespace {
 
@@ -90,7 +90,7 @@ std::optional<BurstCap> BurstCap::from_json(const nlohmann::json& value) {
 }
 
 BurstApprovalGate::BurstApprovalGate(Provisioner& inner, BurstCap cap,
-                                     AuditSink* audit, BurstApprover approver,
+                                     zetta::governance::AuditSink* audit, BurstApprover approver,
                                      CostEstimator cost)
     : inner_(inner),
       cap_(std::move(cap)),
@@ -123,7 +123,7 @@ ProvisionResult BurstApprovalGate::provision(const ProvisionRequest& request) {
     // cost cap. `allowed` carries the outcome (approved vs. blocked).
     if (audit_) {
         audit_->record_audit_event(
-            {AuditAction::ProvisionRequested, /*actor=*/{},
+            {zetta::governance::AuditAction::ProvisionRequested, /*actor=*/{},
              /*target=*/std::to_string(est.nodes) + " nodes", approved,
              describe(cap_, est, approved), /*time=*/{}});
     }
@@ -146,4 +146,4 @@ std::vector<ProvisionedNode> BurstApprovalGate::provisioned() const {
     return inner_.provisioned();
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

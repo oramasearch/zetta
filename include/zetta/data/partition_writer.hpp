@@ -5,9 +5,10 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::data {
+
 class Database;
 class Table;
 class DatasetPartition;
@@ -68,4 +69,4 @@ PartitionWriteResult write_partitioned(
     Node& node, Database& database, Table& table,
     const std::vector<std::string>& members = {});
 
-}  // namespace zetta
+}  // namespace zetta::data

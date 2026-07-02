@@ -11,7 +11,7 @@
 #include "zetta/pipeline/n8n_import.hpp"
 #include "zetta/pipeline/project_input.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace {
 
 using ir::EdgeKind;
@@ -180,4 +180,4 @@ std::optional<ExecutionGraph> compile_n8n_workflow(const ProjectInput& input,
     return compile_n8n_workflow(*payload, error);
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

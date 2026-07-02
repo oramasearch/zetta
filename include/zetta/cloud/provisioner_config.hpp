@@ -5,7 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::cloud {
 
 // ProvisionerConfig — one cloud-burst provisioner's deployment context, detected
 // from the operator's own local CLI (`detect_provisioner_configs`) and held on the
@@ -34,4 +34,4 @@ struct ProvisionerConfig {
     bool operator==(const ProvisionerConfig&) const = default;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

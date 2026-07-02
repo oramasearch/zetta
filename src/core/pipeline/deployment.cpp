@@ -5,7 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
 Deployment::Deployment(std::string id, std::string graph_name,
@@ -37,4 +37,4 @@ void Deployment::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

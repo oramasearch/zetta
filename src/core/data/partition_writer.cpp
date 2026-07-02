@@ -15,7 +15,7 @@
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
 
-namespace zetta {
+namespace zetta::data {
 namespace {
 
 // The default surrogate field a RoundRobinPartitioner reads; the write path stamps
@@ -27,7 +27,7 @@ constexpr const char* kSurrogateField = "_seq";
 // One blob line per row, mirroring the JsonlStore on-disk shape
 // ({ "_zid": <row-id>, "doc": <row> }), so a partition body is a self-describing
 // slice of the table.
-std::string serialize_partition(const StorageEngine& store,
+std::string serialize_partition(const zetta::storage::StorageEngine& store,
                                 const std::vector<std::size_t>& ordinals) {
     std::string blob;
     for (const std::size_t ordinal : ordinals) {
@@ -60,7 +60,7 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
     // Bucket each row's ordinal under its assigned partition. std::map keeps the
     // partition ids ascending, which is the order the cumulative row ranges and the
     // catalog entries are emitted in.
-    const StorageEngine& store = table.store();
+    const zetta::storage::StorageEngine& store = table.store();
     std::map<PartitionId, std::vector<std::size_t>> buckets;
     for (std::size_t ordinal = 0; ordinal < store.size(); ++ordinal) {
         // Stamp the monotonic surrogate (the row ordinal) onto the assignment
@@ -112,4 +112,4 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

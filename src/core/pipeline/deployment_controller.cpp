@@ -8,7 +8,7 @@
 #include <memory>
 #include <string>
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace {
 
 // A short id for log lines — the UUID's first segment (mirrors headless.cpp).
@@ -70,7 +70,7 @@ ReconcileReport DeploymentController::reconcile() {
                 : "deployment-controller: self-heal — restarted deployment " +
                       short_id(deployment->id()) + " after " +
                       std::to_string(failed_runs) + " failed run(s)";
-        run->add_log({now_iso8601(), "info", note});
+        run->add_log({zetta::util::now_iso8601(), "info", note});
         run->set_status(RunStatus::Running);
 
         ++report.runs_started;
@@ -80,4 +80,4 @@ ReconcileReport DeploymentController::reconcile() {
     return report;
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

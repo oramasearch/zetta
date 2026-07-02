@@ -10,11 +10,11 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
 
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::CorrectnessGate;
-using zetta::EntityResolutionCheck;
-using zetta::ValidationReport;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CorrectnessGate;
+using zetta::usecases::churn::EntityResolutionCheck;
+using zetta::pipeline::ValidationReport;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 
@@ -187,7 +187,7 @@ TEST(EntityResolutionCheck, AggregatesWorstStatusAcrossSteps) {
 // ---- end to end through the default gate (RULE-1) ---------------------------
 
 TEST(EntityResolutionCheck, DefaultGateBlocksDeployOnConflation) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph_with_resolution({
         {"FedEx Freight", "fedex_freight", "acct_fedex"},
         {"FedEx Ground",  "fedex_ground",  "acct_fedex"},
@@ -207,7 +207,7 @@ TEST(EntityResolutionCheck, DefaultGateBlocksDeployOnConflation) {
 }
 
 TEST(EntityResolutionCheck, DefaultGateAllowsDivisionCorrectResolution) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report =
         gate.run(graph_with_resolution(fedex_resolved_correctly()));
     EXPECT_TRUE(report.passed());

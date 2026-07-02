@@ -40,11 +40,11 @@ namespace {
 namespace fs = std::filesystem;
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::CpuDevice;
@@ -63,8 +63,8 @@ using zetta::ddf::WindowedFeature;
 using zetta::test::TempDir;
 using Json = nlohmann::json;
 
-zetta::JsonStore make_store(const std::vector<Json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<Json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         store.add("row-" + std::to_string(index), rows[index]);
     }
@@ -482,9 +482,9 @@ struct ChurnNumeric {
     std::int64_t as_of = 0;
 };
 
-ChurnNumeric encode_churn(const zetta::ChurnDataset& dataset) {
+ChurnNumeric encode_churn(const zetta::usecases::churn::ChurnDataset& dataset) {
     ChurnNumeric out;
-    for (const zetta::ChurnAccount& account : dataset.accounts) {
+    for (const zetta::usecases::churn::ChurnAccount& account : dataset.accounts) {
         const std::int64_t key =
             static_cast<std::int64_t>(out.entity_index.size());
         out.entity_index.emplace(account.account_id, key);
@@ -494,7 +494,7 @@ ChurnNumeric encode_churn(const zetta::ChurnDataset& dataset) {
                                 {"tenure_days", account.tenure_days},
                                 {"churned", account.churned ? 1 : 0}});
     }
-    for (const zetta::ChurnEvent& event : dataset.events) {
+    for (const zetta::usecases::churn::ChurnEvent& event : dataset.events) {
         out.events.push_back({{"entity", out.entity_index.at(event.account_id)},
                               {"ts", day_of_year_2026(event.event_ts)},
                               {"value", event.value},
@@ -567,7 +567,7 @@ GroundTruth ground_truth(const ChurnNumeric& numeric) {
 
 TEST(DdfFeaturize, ChurnFixturePointInTimeNoLeakage) {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
     const ChurnNumeric numeric = encode_churn(loaded.dataset);
     GroundTruth truth = ground_truth(numeric);  // non-const: [] inserts 0 for a missing key
@@ -772,7 +772,7 @@ void expect_tables_equal(const FeatureTable& actual, const FeatureTable& expecte
 
 TEST(DdfFeaturize, DistributedMatchesSingleNode) {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
     const ChurnNumeric numeric = encode_churn(loaded.dataset);
     const FeaturizeSpec spec = churn_spec(numeric.as_of);

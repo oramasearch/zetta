@@ -9,7 +9,7 @@
 #include "zetta/cloud/burst_provisioner.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // Where on Azure to burst ephemeral compute nodes, how to size and price them,
 // and how each node joins the cluster — the configuration the reference
@@ -114,4 +114,4 @@ public:
     }
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

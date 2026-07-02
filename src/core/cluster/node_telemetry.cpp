@@ -5,7 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::cluster {
 namespace {
 
 // The draft-07 schema for a `node.metrics` payload, embedded + compiled once at
@@ -215,4 +215,4 @@ std::vector<NodeTelemetrySample> NodeTelemetryExchange::snapshot(
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cluster

@@ -13,11 +13,11 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::test::TempDir;
 
 namespace {
@@ -120,7 +120,7 @@ TEST(Project, PersistsAcrossRestartViaDisk) {
 
 TEST(Project, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string id;
     {
         ReplicationManager replication{node_id};
@@ -161,8 +161,8 @@ TEST(Project, PersistsAcrossRestartViaCRDT) {
 TEST(Project, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};

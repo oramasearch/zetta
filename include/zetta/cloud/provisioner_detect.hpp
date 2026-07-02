@@ -6,7 +6,7 @@
 #include "zetta/cloud/command_runner.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // Detect which cloud-burst provisioners this node can drive by asking the
 // operator's own **local CLIs** for their active deployment context — the
@@ -45,4 +45,4 @@ std::vector<std::string> azure_vm_sizes(const std::string& subscription,
                                         const std::string& location,
                                         CommandRunner runner = {});
 
-}  // namespace zetta
+}  // namespace zetta::cloud

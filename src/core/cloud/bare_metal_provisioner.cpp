@@ -2,7 +2,7 @@
 
 #include "../json_boundary.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 using detail::read_string;
 
@@ -38,4 +38,4 @@ std::optional<BareMetalConfig> BareMetalConfig::from_json(
     return config;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

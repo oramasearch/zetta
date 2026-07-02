@@ -9,7 +9,7 @@
 #include "zetta/cloud/burst_provisioner.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // Where in a Kubernetes cluster to burst ephemeral worker pods, what image they
 // run, and how each joins the cluster — the configuration the Kubernetes
@@ -107,4 +107,4 @@ public:
     using BurstProvisioner<K8sConfig, K8sControlPlane>::BurstProvisioner;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

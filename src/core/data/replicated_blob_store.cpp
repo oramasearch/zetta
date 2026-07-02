@@ -17,7 +17,7 @@
 
 #include "../catalog.hpp"
 
-namespace zetta {
+namespace zetta::data {
 namespace fs = std::filesystem;
 
 namespace {
@@ -59,7 +59,7 @@ std::unordered_map<std::string, std::vector<std::string>> partition_owner_index(
 }  // namespace
 
 ReplicatedBlobStore::ReplicatedBlobStore(fs::path data_dir,
-                                         ReplicationManager& replication)
+                                         zetta::cluster::ReplicationManager& replication)
     : data_dir_(std::move(data_dir)), replication_(replication) {}
 
 bool ReplicatedBlobStore::node_holds_partition_blob(
@@ -167,7 +167,7 @@ bool ReplicatedBlobStore::store_blob(const std::string& id,
     // SHA-256 existed carry an empty hash — verify by size and accept (matching
     // the preflight check, which also skips an empty hash).
     if (target->has_sha256 && !target->sha256.empty() &&
-        sha256_hex(bytes) != target->sha256) {
+        zetta::util::sha256_hex(bytes) != target->sha256) {
         return false;
     }
     const fs::path& path = target->path;
@@ -184,4 +184,4 @@ bool ReplicatedBlobStore::store_blob(const std::string& id,
     return !ec;
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

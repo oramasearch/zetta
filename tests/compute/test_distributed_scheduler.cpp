@@ -13,12 +13,12 @@
 #include "zetta/cluster/signal.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::Signal;
-using zetta::SignalHandler;
-using zetta::SignalKind;
-using zetta::SignalResponse;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::Signal;
+using zetta::cluster::SignalHandler;
+using zetta::cluster::SignalKind;
+using zetta::cluster::SignalResponse;
 using zetta::compute::DistributedScheduler;
 
 namespace {
@@ -54,8 +54,8 @@ std::string square_executor(std::string_view /*method*/,
 // from A over the signal plane, ran them, and shipped the results back. That
 // makes the cross-node steal deterministic to assert, not timing-dependent.
 TEST(DistributedScheduler, IdleNodeStealsAllWorkFromASourceNode) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -110,8 +110,8 @@ TEST(DistributedScheduler, IdleNodeStealsAllWorkFromASourceNode) {
 // share of it. Correctness is deterministic; we only assert that *some* tasks
 // crossed the wire (not an exact split, which depends on timing).
 TEST(DistributedScheduler, WorkIsSharedAcrossNodes) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -174,8 +174,8 @@ TEST(DistributedScheduler, WorkIsSharedAcrossNodes) {
 // lease cannot fire within the test window, so the only thing that re-queues the
 // killed helper's tasks is its disappearance from the cluster.
 TEST(DistributedScheduler, KilledWorkerMidJobReexecutesAndJobCompletes) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -273,8 +273,8 @@ TEST(DistributedScheduler, KilledWorkerMidJobReexecutesAndJobCompletes) {
 // deterministic evidence of participation (the new node stole and ran tasks, and
 // every handed-out task came back) rather than a flaky wall-clock speedup.
 TEST(DistributedScheduler, WorkerJoiningMidJobParticipatesAndJobCompletes) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -363,7 +363,7 @@ Signal make_request(std::string method, std::string payload) {
 }  // namespace
 
 TEST(DistributedScheduler, StealRequestPayloadIsValidatedAtTheBoundary) {
-    Cluster cluster{zetta::new_uuid(), ClusterConfig{}};  // not started
+    Cluster cluster{zetta::util::new_uuid(), ClusterConfig{}};  // not started
     DistributedScheduler scheduler{cluster, /*worker_count=*/1};
     scheduler.set_executor(square_executor);
 
@@ -390,7 +390,7 @@ TEST(DistributedScheduler, StealRequestPayloadIsValidatedAtTheBoundary) {
 }
 
 TEST(DistributedScheduler, NonStealSignalsGoToTheFallbackHandler) {
-    Cluster cluster{zetta::new_uuid(), ClusterConfig{}};
+    Cluster cluster{zetta::util::new_uuid(), ClusterConfig{}};
     DistributedScheduler scheduler{cluster, /*worker_count=*/1};
     RecordingFallback fallback;
     scheduler.set_fallback_handler(&fallback);

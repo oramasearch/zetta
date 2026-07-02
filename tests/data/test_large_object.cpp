@@ -8,7 +8,7 @@
 #include "zetta/data/large_object.hpp"
 
 namespace fs = std::filesystem;
-using zetta::LargeObjectStore;
+using zetta::data::LargeObjectStore;
 using zetta::test::TempDir;
 
 namespace {

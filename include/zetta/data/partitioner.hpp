@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::data {
 
 // A partition index in [0, partition_count). A partitioned table is split into a
 // fixed number of partitions P (chosen P >> nodes), and a partition is the unit
@@ -204,10 +204,10 @@ private:
 // anything malformed: not an object, an unknown "strategy", a missing/non-integer
 // or < 1 "partition_count", a hash strategy without a non-empty unique-string
 // "key_columns", or a round_robin strategy with an empty "surrogate_field". This
-// is the hand-written non-throwing pattern of zetta::ScalingPolicy::from_json
+// is the hand-written non-throwing pattern of zetta::compute::ScalingPolicy::from_json
 // (a value-type DTO boundary, not the pboettch path), so malformed config fails
 // fast at the boundary instead of mis-placing rows. Round-trips with to_json().
 std::shared_ptr<Partitioner> partitioner_from_json(const nlohmann::json& value,
                                                    std::string* error = nullptr);
 
-}  // namespace zetta
+}  // namespace zetta::data

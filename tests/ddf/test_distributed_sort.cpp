@@ -26,8 +26,8 @@
 // shuffle message's JSON boundary.
 namespace {
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::compute::CpuDevice;
 using zetta::compute::DataType;
 using zetta::compute::SortOrder;
@@ -54,8 +54,8 @@ bool wait_for(Predicate predicate) {
     return false;
 }
 
-zetta::JsonStore make_store(const std::vector<double>& keys) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<double>& keys) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < keys.size(); ++i) {
         // id == key so we can confirm the payload follows the key through the sort.
         store.add("row-" + std::to_string(i),
@@ -182,7 +182,7 @@ TEST(PartitionMessageJson, RejectsBadInput) {
 // --- single node -------------------------------------------------------------
 
 TEST(DistributedSort, SingleNodeReturnsLocallySortedShard) {
-    Cluster cluster{zetta::new_uuid(), ClusterConfig{}};
+    Cluster cluster{zetta::util::new_uuid(), ClusterConfig{}};
     CpuDevice device;
     DistributedSorter sorter{cluster, device};
     cluster.start();

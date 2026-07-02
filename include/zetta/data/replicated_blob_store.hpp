@@ -11,11 +11,10 @@
 
 #include "zetta/data/blob_store.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::data {
 
-// A BlobStore that works purely from the replicated CRDT metadata + the on-disk
 // layout — it touches neither the Node tree nor its in-memory large-object
 // stores, so the cluster's network thread can call it without data races.
 //
@@ -40,7 +39,7 @@ class ReplicationManager;
 class ReplicatedBlobStore final : public BlobStore {
 public:
     ReplicatedBlobStore(std::filesystem::path data_dir,
-                        ReplicationManager& replication);
+                        zetta::cluster::ReplicationManager& replication);
 
     std::vector<std::string> missing_blobs() const override;
     std::optional<std::string> read_blob(const std::string& id) const override;
@@ -74,7 +73,7 @@ private:
         const std::string& large_object_id) const;
 
     std::filesystem::path data_dir_;
-    ReplicationManager& replication_;
+    zetta::cluster::ReplicationManager& replication_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

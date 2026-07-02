@@ -17,9 +17,9 @@
 #include "zetta/pipeline/project_input.hpp"
 
 namespace fs = std::filesystem;
-using zetta::compile_n8n_workflow;
-using zetta::import_n8n_workflow_file;
-using zetta::n8n_step_kind;
+using zetta::pipeline::compile_n8n_workflow;
+using zetta::pipeline::import_n8n_workflow_file;
+using zetta::pipeline::n8n_step_kind;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::ir::EdgeKind;

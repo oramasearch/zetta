@@ -2,7 +2,7 @@
 
 #include <cstdio>
 
-namespace zetta {
+namespace zetta::util {
 
 std::string format_bytes(std::uintmax_t bytes) {
     static const char* kUnits[] = {"B", "KB", "MB", "GB", "TB", "PB"};
@@ -22,4 +22,4 @@ std::string format_bytes(std::uintmax_t bytes) {
     return buf;
 }
 
-}  // namespace zetta
+}  // namespace zetta::util

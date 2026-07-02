@@ -2,7 +2,7 @@
 
 #include <cstdio>
 
-namespace zetta {
+namespace zetta::util {
 
 std::string format_duration(std::chrono::nanoseconds d) {
     const double ns = static_cast<double>(d.count());
@@ -36,4 +36,4 @@ std::string format_duration(std::chrono::nanoseconds d) {
     return "0 ns";  // magnitude < 1 ns (i.e. exactly zero)
 }
 
-}  // namespace zetta
+}  // namespace zetta::util

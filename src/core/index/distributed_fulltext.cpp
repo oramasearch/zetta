@@ -16,7 +16,7 @@
 #include "zetta/node.hpp"
 #include "zetta/data/table.hpp"
 
-namespace zetta {
+namespace zetta::index {
 namespace {
 
 // Separator that splits a sub-index's logical "table" into the base table + the
@@ -119,7 +119,7 @@ nlohmann::json_schema::json_validator& hits_validator() {
 // holds the body locally. Mirrors zetta::ddf's local-partition body read.
 std::optional<std::string> read_blob_body(Node& node, const std::string& blob_ref) {
     for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<Database> database = node.find_database(name);
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
         if (!database) continue;
         if (std::optional<std::string> body =
                 database->large_objects().read(blob_ref)) {
@@ -134,9 +134,9 @@ std::optional<std::string> read_blob_body(Node& node, const std::string& blob_re
 // when no table of that name is found (it may already be an id).
 std::string resolve_table_id(Node& node, const std::string& table) {
     for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<Database> database = node.find_database(name);
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
         if (!database) continue;
-        if (const std::shared_ptr<Table> found = database->find_table(table)) {
+        if (const std::shared_ptr<zetta::data::Table> found = database->find_table(table)) {
             return found->id();
         }
     }
@@ -319,7 +319,7 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(std::string_view paylo
 // --- DistributedFulltextIndex ------------------------------------------------
 
 DistributedFulltextIndex::DistributedFulltextIndex(
-    Cluster& cluster, std::shared_ptr<IndexBackend> backend, SignalHandler* delegate)
+    zetta::cluster::Cluster& cluster, std::shared_ptr<IndexBackend> backend, SignalHandler* delegate)
     : cluster_(cluster),
       backend_(backend ? std::move(backend)
                        : std::make_shared<OramaCoreFulltextIndex>()),
@@ -335,7 +335,7 @@ DistributedFulltextIndex::~DistributedFulltextIndex() {
 std::vector<std::string> DistributedFulltextIndex::participants() const {
     std::vector<std::string> ids;
     ids.push_back(cluster_.node_id());
-    for (const ClusterPeer& peer : cluster_.peers()) ids.push_back(peer.node_id);
+    for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) ids.push_back(peer.node_id);
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
     return ids;
@@ -350,8 +350,8 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
     // Enumerate this node's owned partitions of the table, ascending by row range so
     // the build is deterministic / reproducible (compute-near-data: only the bodies
     // this node physically holds).
-    std::vector<std::shared_ptr<DatasetPartition>> owned;
-    for (const std::shared_ptr<DatasetPartition>& partition :
+    std::vector<std::shared_ptr<zetta::data::DatasetPartition>> owned;
+    for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :
          node.dataset_partitions()) {
         if (!partition || partition->table() != table_id) continue;
         const std::vector<std::string>& owners = partition->owner_nodes();
@@ -359,8 +359,8 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
         owned.push_back(partition);
     }
     std::sort(owned.begin(), owned.end(),
-              [](const std::shared_ptr<DatasetPartition>& a,
-                 const std::shared_ptr<DatasetPartition>& b) {
+              [](const std::shared_ptr<zetta::data::DatasetPartition>& a,
+                 const std::shared_ptr<zetta::data::DatasetPartition>& b) {
                   return a->row_range().start < b->row_range().start;
               });
 
@@ -374,7 +374,7 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
     }
 
     std::vector<IndexSpec> subs;
-    for (const std::shared_ptr<DatasetPartition>& partition : owned) {
+    for (const std::shared_ptr<zetta::data::DatasetPartition>& partition : owned) {
         if (partition->blob_ref().empty()) continue;  // unplaced / empty partition
         const std::optional<std::string> body =
             read_blob_body(node, partition->blob_ref());
@@ -476,8 +476,8 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     request.top_k = query.top_k;
     const std::string payload = encode_fulltext_query(request);
 
-    for (const ClusterPeer& peer : cluster_.peers()) {
-        const SignalResponse response = cluster_.request(
+    for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) {
+        const zetta::cluster::SignalResponse response = cluster_.request(
             peer.node_id, std::string(kQueryMethod), payload, timeout);
         wire += payload.size();
         if (!response.ok) {
@@ -515,37 +515,37 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     return out;
 }
 
-SignalResponse DistributedFulltextIndex::on_request(const Signal& request) {
+zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta::cluster::Signal& request) {
     if (request.method == kQueryMethod) {
         std::string decode_error;
         const std::optional<FulltextQueryRequest> message =
             decode_fulltext_query(request.payload, &decode_error);
         if (!message) {
-            return SignalResponse{.ok = false,
+            return zetta::cluster::SignalResponse{.ok = false,
                                   .error = "fulltext.query: " + decode_error};
         }
         IndexStatus status;
         std::vector<FulltextHit> hits =
             query_local(message->spec(), message->query(), &status);
         if (!status.ok()) {
-            return SignalResponse{.ok = false,
+            return zetta::cluster::SignalResponse{.ok = false,
                                   .error = "fulltext.query local: " + status.message};
         }
         FulltextQueryResponse response;
         response.from = cluster_.node_id();
         response.hits = std::move(hits);
-        return SignalResponse{.ok = true, .payload = encode_fulltext_hits(response)};
+        return zetta::cluster::SignalResponse{.ok = true, .payload = encode_fulltext_hits(response)};
     }
     if (delegate_) return delegate_->on_request(request);
     return SignalHandler::on_request(request);  // safe default
 }
 
-void DistributedFulltextIndex::on_event(const Signal& event) {
+void DistributedFulltextIndex::on_event(const zetta::cluster::Signal& event) {
     if (delegate_) delegate_->on_event(event);
 }
 
-void DistributedFulltextIndex::on_task(const Signal& task) {
+void DistributedFulltextIndex::on_task(const zetta::cluster::Signal& task) {
     if (delegate_) delegate_->on_task(task);
 }
 
-}  // namespace zetta
+}  // namespace zetta::index

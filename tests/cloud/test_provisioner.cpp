@@ -9,13 +9,13 @@
 #include "zetta/cloud/node_capability.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-using zetta::Gpu;
-using zetta::GpuKind;
-using zetta::NodeCapability;
-using zetta::ProvisionedNode;
-using zetta::ProvisionRequest;
-using zetta::ProvisionResult;
-using zetta::Provisioner;
+using zetta::cloud::Gpu;
+using zetta::cloud::GpuKind;
+using zetta::cloud::NodeCapability;
+using zetta::cloud::ProvisionedNode;
+using zetta::cloud::ProvisionRequest;
+using zetta::cloud::ProvisionResult;
+using zetta::cloud::Provisioner;
 
 namespace {
 
@@ -83,14 +83,14 @@ NodeCapability gpu_node(std::uint32_t cores, std::uint64_t memory_bytes,
 // ---- GpuKind names ---------------------------------------------------------
 
 TEST(NodeCapability, GpuKindNamesRoundTrip) {
-    EXPECT_EQ(zetta::to_string(GpuKind::None), "none");
-    EXPECT_EQ(zetta::to_string(GpuKind::Cuda), "cuda");
-    EXPECT_EQ(zetta::to_string(GpuKind::Metal), "metal");
+    EXPECT_EQ(zetta::cloud::to_string(GpuKind::None), "none");
+    EXPECT_EQ(zetta::cloud::to_string(GpuKind::Cuda), "cuda");
+    EXPECT_EQ(zetta::cloud::to_string(GpuKind::Metal), "metal");
 
     GpuKind kind{};
-    EXPECT_TRUE(zetta::gpu_kind_from_string("rocm", kind));
+    EXPECT_TRUE(zetta::cloud::gpu_kind_from_string("rocm", kind));
     EXPECT_EQ(kind, GpuKind::Rocm);
-    EXPECT_FALSE(zetta::gpu_kind_from_string("tpu", kind));  // unknown
+    EXPECT_FALSE(zetta::cloud::gpu_kind_from_string("tpu", kind));  // unknown
 }
 
 // ---- the meet-or-exceed comparison -----------------------------------------

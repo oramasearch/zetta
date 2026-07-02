@@ -49,11 +49,10 @@
 namespace zetta {
 
 class Node;
-class Database;
-class Table;
-class DatasetPartition;
-class Partitioner;
-
+namespace data { class Database; }
+namespace data { class Table; }
+namespace data { class DatasetPartition; }
+namespace data { class Partitioner; }
 namespace input {
 
 // What a lowered `load_dataset(...)` IR node asks to load: the dataset `source`
@@ -110,7 +109,7 @@ DatasetResolver default_dataset_resolver();
 // table.
 struct LoadDatasetOptions {
     std::string database = "datasets";
-    std::shared_ptr<Partitioner> partitioner;  // null = a plain (un-partitioned) table
+    std::shared_ptr<zetta::data::Partitioner> partitioner;  // null = a plain (un-partitioned) table
     std::vector<std::string> members;          // for write_partitioned placement
 };
 
@@ -118,10 +117,10 @@ struct LoadDatasetOptions {
 // is empty, `table` is the populated table, `rows` the count loaded, and (when a
 // partitioner was configured) `partitions` lists the catalog entries written.
 struct DatasetLoadResult {
-    std::shared_ptr<Database> database;
-    std::shared_ptr<Table> table;
+    std::shared_ptr<zetta::data::Database> database;
+    std::shared_ptr<zetta::data::Table> table;
     std::size_t rows = 0;
-    std::vector<std::shared_ptr<DatasetPartition>> partitions;  // when partitioned
+    std::vector<std::shared_ptr<zetta::data::DatasetPartition>> partitions;  // when partitioned
     std::string error;  // empty on success
 
     bool ok() const { return error.empty(); }
@@ -147,19 +146,19 @@ DatasetLoadResult run_load_dataset_step(
 // other step kind (and any non-Parquet connect verb) delegates to
 // `DefaultStepExecutor`, so a mixed graph still runs end-to-end. One instance binds
 // to one `node` + `resolver` + `options`; inject it into a `GraphExecutor`.
-class DatasetStepExecutor final : public StepExecutor {
+class DatasetStepExecutor final : public zetta::pipeline::StepExecutor {
 public:
     explicit DatasetStepExecutor(
         Node& node, DatasetResolver resolver = default_dataset_resolver(),
         LoadDatasetOptions options = {});
 
-    StepOutcome run_step(const ir::Node& step) const override;
+    zetta::pipeline::StepOutcome run_step(const ir::Node& step) const override;
 
 private:
     Node& node_;
     DatasetResolver resolver_;
     LoadDatasetOptions options_;
-    DefaultStepExecutor fallback_;
+    zetta::pipeline::DefaultStepExecutor fallback_;
 };
 
 }  // namespace input

@@ -318,8 +318,8 @@ TEST(PlaybookNarrator, ConstrainedFallsBackOnFailureAndOffline) {
 // End-to-end acceptance: featurize -> train -> score + explain -> playbook
 // =====================================================================
 
-zetta::JsonStore make_store(const std::vector<Json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<Json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         store.add("row-" + std::to_string(index), rows[index]);
     }
@@ -346,14 +346,14 @@ std::int64_t event_type_code(const std::string& type) {
 struct ChurnEncoded {
     std::vector<Json> events;
     std::vector<Json> accounts;
-    std::map<std::int64_t, zetta::ChurnAccount> by_key;  // entity key -> account
+    std::map<std::int64_t, zetta::usecases::churn::ChurnAccount> by_key;  // entity key -> account
     std::int64_t as_of = 0;
 };
 
-ChurnEncoded encode_churn(const zetta::ChurnDataset& dataset) {
+ChurnEncoded encode_churn(const zetta::usecases::churn::ChurnDataset& dataset) {
     ChurnEncoded out;
     std::map<std::string, std::int64_t> entity_index;
-    for (const zetta::ChurnAccount& account : dataset.accounts) {
+    for (const zetta::usecases::churn::ChurnAccount& account : dataset.accounts) {
         const std::int64_t key = static_cast<std::int64_t>(entity_index.size());
         entity_index.emplace(account.account_id, key);
         out.by_key.emplace(key, account);
@@ -363,7 +363,7 @@ ChurnEncoded encode_churn(const zetta::ChurnDataset& dataset) {
                                 {"tenure_days", account.tenure_days},
                                 {"churned", account.churned ? 1 : 0}});
     }
-    for (const zetta::ChurnEvent& event : dataset.events) {
+    for (const zetta::usecases::churn::ChurnEvent& event : dataset.events) {
         out.events.push_back({{"entity", entity_index.at(event.account_id)},
                               {"ts", day_of_year_2026(event.event_ts)},
                               {"value", event.value},
@@ -416,12 +416,12 @@ FeaturizeSpec churn_spec(std::int64_t as_of) {
 
 struct ChurnPipeline {
     FeatureTable table;
-    std::map<std::int64_t, zetta::ChurnAccount> by_key;
+    std::map<std::int64_t, zetta::usecases::churn::ChurnAccount> by_key;
 };
 
 ChurnPipeline build_pipeline() {
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     EXPECT_TRUE(loaded.ok()) << loaded.error;
     const ChurnEncoded numeric = encode_churn(loaded.dataset);
     CpuDevice device;

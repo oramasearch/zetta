@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::governance {
 
 // The governed action an audit event records (ENT-23). The closed taxonomy of
 // auditable actions in this slice of the audit trail (FEAT-9): graph changes,
@@ -128,4 +128,4 @@ private:
     std::filesystem::path dir_;  // the shared audit/ directory
 };
 
-}  // namespace zetta
+}  // namespace zetta::governance

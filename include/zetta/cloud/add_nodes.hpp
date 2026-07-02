@@ -10,9 +10,9 @@
 #include "zetta/cloud/node_capability.hpp"
 #include "zetta/cloud/provisioner.hpp"  // Provisioner, ProvisionedNode
 
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::cloud {
 
 // AddNodesRequest — the control-command payload for "add N permanent nodes to
 // this cluster" (#518). It is the *permanent* counterpart to a burst
@@ -120,4 +120,4 @@ AddNodesResult add_nodes(Node& node, Provisioner& provider, std::size_t count,
 // now simply `provision` (off-thread-able) followed by this.
 void apply_added_nodes(Node& node, const AddNodesResult& result);
 
-}  // namespace zetta
+}  // namespace zetta::cloud

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta::data {
 
 // A source/sink for large-object **bodies**, so the cluster can transfer them
 // peer-to-peer without knowing the storage details. Large-object *metadata*
@@ -29,4 +29,4 @@ public:
     virtual bool store_blob(const std::string& id, const std::string& bytes) = 0;
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

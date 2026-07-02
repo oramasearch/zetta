@@ -9,12 +9,12 @@
 
 #include "zetta/cluster/signal.hpp"
 
-namespace zetta {
+namespace zetta::data { class BlobStore; }
+
+namespace zetta::cluster {
 
 class ReplicationManager;
-class BlobStore;
 
-// zetta is multi-leader by default (the CRDT data plane needs no leader).
 // Leadership applies only to exclusive resources (locks, sequences, …), and is
 // per-(node, resource): a node holds zero to many roles at once. This single
 // value is a placeholder for that future per-resource set — today always
@@ -85,6 +85,7 @@ struct ClusterConfig {
 // types (the adapter is src/core/cluster.cpp).
 class Cluster {
 public:
+    struct State;
     // `replication`, when given, is gossiped to peers: on each connection the
     // nodes exchange their replicated documents (save/merge) and report their
     // replication status, which surfaces in nodes(). `blobs`, when given, lets
@@ -94,7 +95,7 @@ public:
     // Passing nullptr for either disables that part (membership-only at minimum).
     Cluster(std::string node_id, ClusterConfig config,
             ReplicationManager* replication = nullptr,
-            BlobStore* blobs = nullptr);
+            zetta::data::BlobStore* blobs = nullptr);
     ~Cluster();
 
     Cluster(const Cluster&) = delete;
@@ -174,7 +175,6 @@ public:
     // Opaque networking state, defined in cluster.cpp — hides the Corosio
     // backend, the io_context thread, and the peer table. Public so the
     // file-local networking coroutines can name it; still incomplete here.
-    struct State;
 
 private:
     std::unique_ptr<State> state_;
@@ -183,4 +183,4 @@ private:
     ClusterRole role_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cluster

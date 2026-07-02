@@ -9,11 +9,10 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::ml {
 
-// One ranked driver of a model's prediction — a feature and the magnitude of its
 // influence (an explainability signal, e.g. a SHAP importance). `importance` can
 // be signed (a feature can push a prediction up or down); drivers are ranked by
 // |importance| descending, so the strongest influences read first.
@@ -87,7 +86,7 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
                                             std::string* error = nullptr);
 
 // A Model record: a trained model registered on the node (ENT-14 / FEAT-6). A
-// top-level entity with no parent, modeled like zetta::Run — **replicated state**
+// top-level entity with no parent, modeled like zetta::pipeline::Run — **replicated state**
 // (flat key `model:<uuid>`) whose in-memory + on-disk (`<model-uuid>/model.json`)
 // forms are a projection of the Automerge CRDT document.
 //
@@ -106,7 +105,7 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
 class Model {
 public:
     Model(std::string id, ModelValue value, std::filesystem::path dir,
-          ReplicationManager* replication = nullptr);
+          zetta::cluster::ReplicationManager* replication = nullptr);
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return value_.name; }
@@ -167,7 +166,7 @@ private:
     std::string id_;
     ModelValue value_;
     std::filesystem::path dir_;
-    ReplicationManager* replication_;  // null = standalone (not replicated)
+    zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
 };
 
-}  // namespace zetta
+}  // namespace zetta::ml

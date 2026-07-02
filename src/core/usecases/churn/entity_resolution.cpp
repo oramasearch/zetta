@@ -5,7 +5,7 @@
 #include <sstream>
 #include <utility>
 
-namespace zetta {
+namespace zetta::usecases::churn {
 
 namespace {
 
@@ -140,4 +140,4 @@ nlohmann::json entity_resolution_annotation(
     return nlohmann::json{{"entity_resolution", {{"records", std::move(records)}}}};
 }
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

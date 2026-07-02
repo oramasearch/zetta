@@ -3,7 +3,7 @@
 #include <unordered_set>
 #include <utility>
 
-namespace zetta {
+namespace zetta::index {
 
 // IndexSpec::key() lives here with the registry (the seam's primary consumer)
 // rather than in its own tiny TU. The key identifies an index within a backend
@@ -97,4 +97,4 @@ std::shared_ptr<IndexBackend> IndexRegistry::resolve(const ir::Node& step) const
     return resolve(*spec);
 }
 
-}  // namespace zetta
+}  // namespace zetta::index

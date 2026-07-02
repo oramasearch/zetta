@@ -36,13 +36,13 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using zetta::Database;
-using zetta::GraphExecutor;
+using zetta::data::Database;
+using zetta::pipeline::GraphExecutor;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RoundRobinPartitioner;
-using zetta::RunStatus;
-using zetta::Table;
+using zetta::data::RoundRobinPartitioner;
+using zetta::pipeline::RunStatus;
+using zetta::data::Table;
 using zetta::input::DatasetLoadResult;
 using zetta::input::dataset_load_spec;
 using zetta::input::DatasetStepExecutor;
@@ -253,7 +253,7 @@ TEST(DatasetsShim, GraphExecutorRunsTheLoadStepEndToEnd) {
 
     auto executor = std::make_shared<DatasetStepExecutor>(node);
     GraphExecutor runner(executor);
-    const zetta::ExecutionResult result = runner.execute(node, lowered.graph);
+    const zetta::pipeline::ExecutionResult result = runner.execute(node, lowered.graph);
 
     ASSERT_TRUE(result.run);
     ASSERT_TRUE(result.ok) << result.error;
@@ -261,7 +261,7 @@ TEST(DatasetsShim, GraphExecutorRunsTheLoadStepEndToEnd) {
 
     // The connect step emitted a dataset output pointing at the real table.
     ASSERT_EQ(result.run->outputs().size(), 1u);
-    const zetta::RunOutput& output = result.run->outputs().front();
+    const zetta::pipeline::RunOutput& output = result.run->outputs().front();
     EXPECT_EQ(output.kind, "dataset");
     EXPECT_EQ(output.ref.rfind("tbl:", 0), 0u);
 

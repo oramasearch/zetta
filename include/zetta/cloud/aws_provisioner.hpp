@@ -9,7 +9,7 @@
 #include "zetta/cloud/burst_provisioner.hpp"
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 // Where on AWS to burst ephemeral compute nodes, how to size and price them, and
 // how each node joins the cluster — the configuration the AWS cloud-burst backend
@@ -112,4 +112,4 @@ public:
     }
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

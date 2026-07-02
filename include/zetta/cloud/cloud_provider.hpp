@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta::cloud {
 
 // One read-only inspect command a provider would run: a human `display` string
 // (shown verbatim in the consent gate) plus the `argv` that actually runs it —
@@ -101,4 +101,4 @@ private:
     std::vector<CloudProvider> providers_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

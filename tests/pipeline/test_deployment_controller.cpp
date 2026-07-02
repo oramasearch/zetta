@@ -16,14 +16,14 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::DeploymentTarget;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::pipeline::DeploymentTarget;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReconcileReport;
-using zetta::ReplicationManager;
-using zetta::RunStatus;
+using zetta::pipeline::ReconcileReport;
+using zetta::cluster::ReplicationManager;
+using zetta::pipeline::RunStatus;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 using zetta::test::TempDir;
@@ -49,9 +49,9 @@ ExecutionGraph sample_graph() {
 }
 
 // The runs the controller has tied to a given deployment.
-std::vector<std::shared_ptr<zetta::Run>> runs_for(Node& node,
+std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_for(Node& node,
                                                   const std::string& deployment) {
-    std::vector<std::shared_ptr<zetta::Run>> result;
+    std::vector<std::shared_ptr<zetta::pipeline::Run>> result;
     for (const auto& run : node.runs()) {
         if (run->deployment() == deployment) result.push_back(run);
     }
@@ -231,8 +231,8 @@ TEST(DeploymentController, TickDrivesReconcileAndCounters) {
 TEST(DeploymentController, DoesNotReconcilePeerPlacedDeployments) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};

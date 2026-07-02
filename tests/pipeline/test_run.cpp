@@ -15,17 +15,17 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
-using zetta::Run;
-using zetta::RunLineage;
-using zetta::RunLogEntry;
-using zetta::RunOutput;
-using zetta::RunStatus;
-using zetta::RunValue;
+using zetta::cluster::ReplicationManager;
+using zetta::pipeline::Run;
+using zetta::pipeline::RunLineage;
+using zetta::pipeline::RunLogEntry;
+using zetta::pipeline::RunOutput;
+using zetta::pipeline::RunStatus;
+using zetta::pipeline::RunValue;
 using zetta::test::TempDir;
 
 namespace {
@@ -171,7 +171,7 @@ TEST(Run, PersistsAcrossRestartViaDisk) {
 
 TEST(Run, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string id;
     {
         ReplicationManager replication{node_id};
@@ -213,8 +213,8 @@ TEST(Run, PersistsAcrossRestartViaCRDT) {
 TEST(Run, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
@@ -277,39 +277,39 @@ TEST(Run, SchemaRejectsMalformedValuesAtTheBoundary) {
     std::string error;
 
     // A well-formed value passes.
-    EXPECT_TRUE(zetta::validate_run_value(zetta::to_json(sample_value()), &error))
+    EXPECT_TRUE(zetta::pipeline::validate_run_value(zetta::pipeline::to_json(sample_value()), &error))
         << error;
 
     // Unknown status enum.
-    EXPECT_FALSE(zetta::validate_run_value(
+    EXPECT_FALSE(zetta::pipeline::validate_run_value(
         json{{"status", "exploded"}}, &error));
     // Missing the required status field.
-    EXPECT_FALSE(zetta::validate_run_value(json{{"project", "p"}}, &error));
+    EXPECT_FALSE(zetta::pipeline::validate_run_value(json{{"project", "p"}}, &error));
     // Wrong type for a field.
-    EXPECT_FALSE(zetta::validate_run_value(
+    EXPECT_FALSE(zetta::pipeline::validate_run_value(
         json{{"status", "running"}, {"logs", "not-an-array"}}, &error));
     // Confidence out of range.
-    EXPECT_FALSE(zetta::validate_run_value(
+    EXPECT_FALSE(zetta::pipeline::validate_run_value(
         json{{"status", "running"}, {"lineage", {{"confidence", 2.0}}}},
         &error));
     // An unknown output kind.
-    EXPECT_FALSE(zetta::validate_run_value(
+    EXPECT_FALSE(zetta::pipeline::validate_run_value(
         json{{"status", "running"},
              {"outputs", json::array({{{"kind", "spreadsheet"}}})}},
         &error));
     // A stray top-level field (additionalProperties: false).
-    EXPECT_FALSE(zetta::validate_run_value(
+    EXPECT_FALSE(zetta::pipeline::validate_run_value(
         json{{"status", "running"}, {"surprise", 1}}, &error));
 
     // parse_run_value rejects the same and returns nullopt with a reason.
-    EXPECT_FALSE(zetta::parse_run_value(json{{"status", "exploded"}}, &error));
+    EXPECT_FALSE(zetta::pipeline::parse_run_value(json{{"status", "exploded"}}, &error));
     EXPECT_FALSE(error.empty());
 }
 
 TEST(Run, InvalidRunJsonOnDiskIsSkipped) {
     TempDir tmp;
     // Plant a folder with a malformed run.json (bad status) before start().
-    const std::filesystem::path bad = tmp.path() / zetta::new_uuid();
+    const std::filesystem::path bad = tmp.path() / zetta::util::new_uuid();
     std::filesystem::create_directories(bad);
     {
         std::ofstream out(bad / "run.json");

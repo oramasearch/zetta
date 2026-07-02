@@ -27,7 +27,7 @@
 //   connect -> load to DDF       (load_data_frame: numeric shard -> DataFrame)
 //   clean   -> featurize         (run_featurize_job, ddf/featurize_job.hpp #388)
 //   model   -> train + calibrate (run_train_job, ml/gbdt_train_job.hpp #390/#391;
-//                                 registers a real zetta::Model on the node)
+//                                 registers a real zetta::ml::Model on the node)
 //   index   -> score / rank      (run_score_job, ml/gbdt_score_job.hpp #392 — the
 //                                 ranked at-risk list)
 //   serve   -> explain (TreeSHAP) (run_explain_job, ml/gbdt_explain_job.hpp #393 —
@@ -49,7 +49,7 @@
 // GraphExecutor and can't conjure a coordinator / input data, so real compute is
 // driven by constructing a ChurnStepExecutor and handing it to GraphExecutor:
 //
-//   zetta::GraphExecutor executor{std::make_shared<ChurnStepExecutor>(
+//   zetta::pipeline::GraphExecutor executor{std::make_shared<ChurnStepExecutor>(
 //       node, coordinator, device, std::move(config))};
 //   auto result = executor.execute(node, churn_graph, project, graph_id);
 //
@@ -64,15 +64,12 @@
 // FeaturizeSpec / GbdtParams boundaries — so malformed data still fails fast there.
 //
 // See docs/use-cases/churn-step-executor.md.
-namespace zetta {
+namespace zetta::storage { class StorageEngine; }
+namespace zetta { class Node; }
+namespace zetta::compute { class ComputeDevice; }
+namespace zetta::compute { class JobCoordinator; }
 
-class Node;
-class StorageEngine;
-
-namespace compute {
-class ComputeDevice;
-class JobCoordinator;
-}  // namespace compute
+namespace zetta::usecases::churn {
 
 // One row of the retention playbook the `act` step produces: a high-risk account
 // paired with the single feature that drove its risk the most (its per-entity
@@ -93,11 +90,11 @@ struct RetentionAction {
 struct ChurnPipelineConfig {
     // The events shard: entity key + numeric timestamp + the value / type columns the
     // windowed features reduce (e.g. entity, ts, value, type).
-    const StorageEngine* events_store = nullptr;
+    const zetta::storage::StorageEngine* events_store = nullptr;
     ddf::DataFrameSchema events_schema;
     // The accounts (dimension) shard: entity key + static account columns + the label
     // (e.g. entity, mrr, seats, tenure_days, churned).
-    const StorageEngine* accounts_store = nullptr;
+    const zetta::storage::StorageEngine* accounts_store = nullptr;
     ddf::DataFrameSchema accounts_schema;
 
     ddf::FeaturizeSpec featurize;        // the point-in-time (leakage-free) feature graph
@@ -119,7 +116,7 @@ struct ChurnPipelineConfig {
 // churn graph. After execution the produced-artifact accessors expose the real
 // results (the registered model id, the ranked at-risk list, the drivers, the
 // playbook) — the Run's outputs reference them.
-class ChurnStepExecutor final : public StepExecutor {
+class ChurnStepExecutor final : public zetta::pipeline::StepExecutor {
 public:
     ChurnStepExecutor(Node& node, compute::JobCoordinator& coordinator,
                       compute::ComputeDevice& device, ChurnPipelineConfig config);
@@ -131,11 +128,11 @@ public:
     // Execute one churn step for real (see the kind->compute mapping above). Returns
     // the artifacts it materialized (the Run's outputs) + lineage sources, or ok=false
     // with a reason on a compute failure (the orchestrator then fail-fasts the run).
-    StepOutcome run_step(const ir::Node& step) const override;
+    zetta::pipeline::StepOutcome run_step(const ir::Node& step) const override;
 
     // --- Produced artifacts (populated as the matching step runs) ---------------
 
-    // The registered zetta::Model's id (set by the model step). Resolvable via
+    // The registered zetta::ml::Model's id (set by the model step). Resolvable via
     // Node::find_model — this is the "real Model" the run's `model` output references.
     const std::string& model_id() const;
     // The trained GBDT model (set by the model step).
@@ -157,14 +154,13 @@ public:
 private:
     struct State;
 
-    // The per-kind compute (each mutates the pImpl state through state_, so all stay
     // const — the orchestrator only ever holds a const StepExecutor&).
-    StepOutcome run_connect(const ir::Node& step) const;
-    StepOutcome run_clean(const ir::Node& step) const;
-    StepOutcome run_model(const ir::Node& step) const;
-    StepOutcome run_index(const ir::Node& step) const;
-    StepOutcome run_serve(const ir::Node& step) const;
-    StepOutcome run_act(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_connect(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_clean(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_model(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_index(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_serve(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_act(const ir::Node& step) const;
 
     // Lazily load both numeric input shards to DDF (idempotent). Returns false +
     // fills `error` on a device / schema / value failure.
@@ -177,4 +173,4 @@ private:
     std::unique_ptr<State> state_;  // pImpl: cross-step pipeline state (mutated in run_step)
 };
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

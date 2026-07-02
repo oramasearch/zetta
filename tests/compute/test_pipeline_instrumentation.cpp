@@ -29,15 +29,15 @@
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::CollectiveOp;
-using zetta::JobKind;
-using zetta::JobStatus;
-using zetta::NearDataJobKind;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::CollectiveOp;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
+using zetta::compute::NearDataJobKind;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::PipelineJobInstrumentation;
+using zetta::compute::PipelineJobInstrumentation;
 using zetta::compute::JobCoordinator;
 using zetta::query::QueryService;
 using zetta::compute::JobRound;
@@ -186,7 +186,7 @@ TEST(PipelineInstrumentation, CollectiveRoundsTracksLiveCoordinator) {
     cluster_config.listen_host = "127.0.0.1";
     cluster_config.listen_port = 46540;
     cluster_config.port_range = 1;
-    Cluster cluster{zetta::new_uuid(), cluster_config};
+    Cluster cluster{zetta::util::new_uuid(), cluster_config};
     ASSERT_TRUE(node.start());
     cluster.start();
     node.attach_cluster(cluster, /*worker_count=*/2);

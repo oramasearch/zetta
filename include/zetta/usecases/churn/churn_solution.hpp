@@ -22,7 +22,7 @@
 // churn drivers", running the actual featurize -> train -> explain -> rank ->
 // playbook pipeline instead of the stubbed DefaultStepExecutor.
 //
-// The real per-step compute already exists as zetta::ChurnStepExecutor (#396),
+// The real per-step compute already exists as zetta::usecases::churn::ChurnStepExecutor (#396),
 // but it is driven *by injection* into a GraphExecutor and needs a lot the seam
 // can't supply on its own: a started JobCoordinator, a ComputeDevice, and this
 // node's NUMERIC input shards (the churn pipeline operates purely on numeric DDF
@@ -54,19 +54,13 @@
 // re-prove it.
 //
 // See docs/use-cases/churn-solution.md.
-namespace zetta {
+namespace zetta::storage { class StorageEngine; }
+namespace zetta { class Node; }
+namespace zetta::compute { class ComputeDevice; }
+namespace zetta::compute { class JobCoordinator; }
+namespace zetta::ir { class ExecutionGraph; }
 
-class Node;
-class StorageEngine;
-
-namespace compute {
-class ComputeDevice;
-class JobCoordinator;
-}  // namespace compute
-
-namespace ir {
-class ExecutionGraph;
-}
+namespace zetta::usecases::churn {
 
 // The proven, fast GBDT hyperparameters for the churn pipeline (30 trees, depth 3,
 // 16 bins, learning rate 0.3) — light enough to run on a click yet strong enough to
@@ -110,7 +104,7 @@ struct ChurnSolutionOptions {
 
 // What running the churn solution on the real engine produced.
 struct ChurnSolutionResult {
-    ExecutionResult execution;  // the Run handle + ok / failed_step / error
+    zetta::pipeline::ExecutionResult execution;  // the Run handle + ok / failed_step / error
     std::string model_id;       // the registered Model id (resolvable via find_model)
     std::vector<ml::EntityScore> ranked;  // the global at-risk list, highest risk first
     std::vector<std::pair<std::string, double>>
@@ -183,4 +177,4 @@ bool is_churn_graph(const ir::ExecutionGraph& graph);
 // without depending on the committed test fixture.
 ChurnDataset demo_churn_dataset();
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

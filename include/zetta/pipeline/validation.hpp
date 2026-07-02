@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 
 // Outcome of a single validation check. The order encodes severity
 // (Pass < Warn < Fail), so a report's overall verdict is simply the worst
@@ -83,4 +83,4 @@ void to_json(nlohmann::json& document, const ValidationReport& report);
 std::optional<ValidationReport> validation_report_from_json(
     const nlohmann::json& document);
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

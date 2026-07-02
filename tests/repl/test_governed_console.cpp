@@ -18,18 +18,18 @@
 #include "zetta/governance/scope.hpp"
 #include "zetta/pipeline/validation.hpp"
 
-using zetta::AuditAction;
-using zetta::CapabilityDomain;
-using zetta::CapabilitySet;
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::CorrectnessGate;
-using zetta::make_check;
+using zetta::governance::AuditAction;
+using zetta::governance::CapabilityDomain;
+using zetta::governance::CapabilitySet;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CorrectnessGate;
+using zetta::pipeline::make_check;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::Operation;
-using zetta::PrincipalKind;
-using zetta::Scope;
+using zetta::governance::Operation;
+using zetta::governance::PrincipalKind;
+using zetta::governance::Scope;
 using zetta::test::TempDir;
 using zetta::repl::Frontend;
 using zetta::repl::GovernedConsole;
@@ -56,7 +56,7 @@ const char* kSqlSelect = "SELECT * FROM shop.items;";
 const char* kPython = "ds = load_dataset(\"orders\")\nmodel = train(ds)";
 
 // The last audit event the node recorded.
-std::shared_ptr<zetta::AuditEvent> last_event(const Node& node) {
+std::shared_ptr<zetta::governance::AuditEvent> last_event(const Node& node) {
     auto events = node.audit_events();
     return events.empty() ? nullptr : events.back();
 }

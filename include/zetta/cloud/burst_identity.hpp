@@ -8,9 +8,9 @@
 #include "zetta/cloud/provisioner.hpp"  // ProvisionedNode
 #include "zetta/governance/scope.hpp"
 
-namespace zetta {
+namespace zetta { class Node; }
 
-class Node;
+namespace zetta::cloud {
 
 // A short-lived service identity minted for one burst compute node: the service
 // Principal and its single AccessKey. This is the credential a burst node
@@ -58,8 +58,8 @@ public:
     // duplicate principal, no second audit event).
     std::vector<BurstIdentity> mint(const std::string& job_id,
                                     const std::vector<ProvisionedNode>& nodes,
-                                    const Scope& scope,
-                                    const CapabilitySet& capabilities = {});
+                                    const zetta::governance::Scope& scope,
+                                    const zetta::governance::CapabilitySet& capabilities = {});
 
     // Bulk-revoke every identity minted for `job_id`: drop each service principal
     // (which drops its key), recording a `key_revoked` audit event per identity.
@@ -75,4 +75,4 @@ private:
     Node& node_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

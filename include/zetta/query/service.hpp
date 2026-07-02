@@ -13,8 +13,7 @@
 namespace zetta {
 
 class Node;
-class Cluster;
-
+namespace cluster { class Cluster; }
 namespace query {
 
 // The facade the UI (and tests) call: parse `sql` with the Postgres dialect and
@@ -25,7 +24,7 @@ namespace query {
 // replication status).
 class QueryService {
 public:
-    explicit QueryService(Node& node, const Cluster* cluster = nullptr)
+    explicit QueryService(Node& node, const zetta::cluster::Cluster* cluster = nullptr)
         : executor_(node, cluster) {}
 
     struct Outcome {

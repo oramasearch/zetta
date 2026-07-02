@@ -31,13 +31,18 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
 
+namespace zetta::cluster { class Cluster; }
+namespace zetta::pipeline { struct ExecutionResult; }
+namespace zetta::ir { class ExecutionGraph; }
+namespace zetta::compute { class JobCoordinator; }
+
+namespace zetta::cluster { class ReplicationManager; }
+
+
+
 namespace zetta {
 
-class ReplicationManager;
-class Cluster;
-struct ExecutionResult;
-namespace ir { class ExecutionGraph; }
-namespace compute { class JobCoordinator; }
+
 
 // Where a node's persistent state lives and how it presents itself. More
 // fields (listen address, replication peers, cache sizes) land alongside the
@@ -95,9 +100,9 @@ struct IntegrityReport {
 // audit trail and records a governed action (graph change / deploy / data
 // access) as an AuditEvent. It implements AuditSink so the entities it owns (a
 // Project's graph CRUD) can append events without depending on Node directly.
-class Node : public AuditSink {
+class Node : public governance::AuditSink {
 public:
-    explicit Node(NodeConfig config, ReplicationManager* replication = nullptr);
+    explicit Node(NodeConfig config, zetta::cluster::ReplicationManager* replication = nullptr);
 
     // Out-of-line so the unique_ptr<compute::JobCoordinator> member (held as an
     // incomplete type here, to keep the heavy compute/cluster headers out of this
@@ -123,9 +128,9 @@ public:
     // replication strategy (ENT-35) is recorded + persisted + replicated; the
     // default ReplicateToAll preserves current behavior. Tables created in the
     // database inherit it unless they override (see Database::create_table).
-    std::shared_ptr<Database> create_database(
-        std::string name, ReplicationStrategy replication_strategy = {});
-    std::shared_ptr<Database> find_database(const std::string& name) const;
+    std::shared_ptr<zetta::data::Database> create_database(
+        std::string name, zetta::data::ReplicationStrategy replication_strategy = {});
+    std::shared_ptr<zetta::data::Database> find_database(const std::string& name) const;
     bool drop_database(const std::string& name);
     bool rename_database(const std::string& from, const std::string& to);
     std::vector<std::string> database_names() const;
@@ -135,9 +140,9 @@ public:
     // project.hpp / docs/pipeline/projects.md), mirroring the database CRUD shape.
     // create stamps created/updated and takes an optional owner key;
     // create/rename yield an empty handle / false on an empty name or a clash.
-    std::shared_ptr<Project> create_project(std::string name,
+    std::shared_ptr<zetta::pipeline::Project> create_project(std::string name,
                                             std::string owner = {});
-    std::shared_ptr<Project> find_project(const std::string& name) const;
+    std::shared_ptr<zetta::pipeline::Project> find_project(const std::string& name) const;
     bool drop_project(const std::string& name);
     bool rename_project(const std::string& from, const std::string& to);
     std::vector<std::string> project_names() const;
@@ -171,7 +176,7 @@ public:
     // starts on the next start(). `cluster` must outlive the node (or stop()/a
     // detach must run first) — stop() tears the coordinator down. Calling it again
     // replaces the attachment.
-    void attach_cluster(Cluster& cluster, unsigned worker_count = 0);
+    void attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count = 0);
 
     // This node's long-lived JobCoordinator over its real cluster, or nullptr when
     // no cluster has been attached (a standalone node, or before attach_cluster).
@@ -189,11 +194,11 @@ public:
     // deployments() / find_deployment() (and the system.zetta_deployments SQL
     // table). The graph is recorded as a summary (name + node/edge counts) since
     // the IR has no serialized form yet. Reconcile/self-heal is a later slice.
-    std::shared_ptr<Deployment> deploy_graph(const ir::ExecutionGraph& graph,
-                                             DeploymentTarget target,
+    std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(const ir::ExecutionGraph& graph,
+                                             zetta::pipeline::DeploymentTarget target,
                                              std::string graph_name);
-    std::shared_ptr<Deployment> find_deployment(const std::string& id) const;
-    std::vector<std::shared_ptr<Deployment>> deployments() const {
+    std::shared_ptr<zetta::pipeline::Deployment> find_deployment(const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments() const {
         return deployments_;
     }
     std::size_t deployment_count() const { return deployments_.size(); }
@@ -206,12 +211,12 @@ public:
     // half of the slice is the mutators on the returned Run handle (set_status /
     // add_log / set_outputs / set_lineage), which capture into the CRDT and
     // persist. runs() is in a stable order (created, then id).
-    std::shared_ptr<Run> create_run(std::string project = {},
+    std::shared_ptr<zetta::pipeline::Run> create_run(std::string project = {},
                                     std::string graph = {},
                                     std::string deployment = {});
-    std::shared_ptr<Run> find_run(const std::string& id) const;
+    std::shared_ptr<zetta::pipeline::Run> find_run(const std::string& id) const;
     bool drop_run(const std::string& id);
-    std::vector<std::shared_ptr<Run>> runs() const { return runs_; }
+    std::vector<std::shared_ptr<zetta::pipeline::Run>> runs() const { return runs_; }
     std::size_t run_count() const { return runs_.size(); }
 
     // CRUD for models (a trained model registered on the node — see model.hpp /
@@ -223,10 +228,10 @@ public:
     // attached separately via the returned Model handle's set_weights (the body
     // is stored on disk + fingerprinted, then transfers peer-to-peer over the
     // large-object body seam). models() is in a stable order (created, then id).
-    std::shared_ptr<Model> create_model(ModelValue value);
-    std::shared_ptr<Model> find_model(const std::string& id) const;
+    std::shared_ptr<zetta::ml::Model> create_model(zetta::ml::ModelValue value);
+    std::shared_ptr<zetta::ml::Model> find_model(const std::string& id) const;
     bool drop_model(const std::string& id);
-    std::vector<std::shared_ptr<Model>> models() const { return models_; }
+    std::vector<std::shared_ptr<zetta::ml::Model>> models() const { return models_; }
     std::size_t model_count() const { return models_.size(); }
 
     // CRUD for indexes (a registered index over a table — search / vector /
@@ -238,10 +243,10 @@ public:
     // on persist/reconcile). An index is metadata only: this records its
     // definition; building it is the IndexBackend seam's job (index_backend.hpp).
     // indexes() is in a stable order (created, then id).
-    std::shared_ptr<Index> create_index(IndexValue value);
-    std::shared_ptr<Index> find_index(const std::string& id) const;
+    std::shared_ptr<zetta::index::Index> create_index(zetta::index::IndexValue value);
+    std::shared_ptr<zetta::index::Index> find_index(const std::string& id) const;
     bool drop_index(const std::string& id);
-    std::vector<std::shared_ptr<Index>> indexes() const { return indexes_; }
+    std::vector<std::shared_ptr<zetta::index::Index>> indexes() const { return indexes_; }
     std::size_t index_count() const { return indexes_.size(); }
 
     // The per-node registry of IndexBackends — the container + selector the run
@@ -255,8 +260,8 @@ public:
     // (index/index_step_executor.hpp) resolves + builds through it, and a built
     // index is queryable for the node's lifetime via
     // `index_registry().resolve(spec)->query(spec, q)`. See docs/indexing/index-step-executor.md.
-    IndexRegistry& index_registry() { return index_registry_; }
-    const IndexRegistry& index_registry() const { return index_registry_; }
+    zetta::index::IndexRegistry& index_registry() { return index_registry_; }
+    const zetta::index::IndexRegistry& index_registry() const { return index_registry_; }
 
     // CRUD for compute jobs (one unit of native distributed accelerated compute —
     // ARC-11 / ENT-31; see compute_job.hpp / docs/compute/compute-jobs.md). Like runs,
@@ -268,14 +273,14 @@ public:
     // persists, and — on the first transition into a terminal state — records a
     // `job_finished` audit event (FEAT-9). jobs() is in a stable order (created,
     // then id).
-    std::shared_ptr<ComputeJob> create_job(JobKind kind,
+    std::shared_ptr<zetta::compute::ComputeJob> create_job(zetta::compute::JobKind kind,
                                            std::string project = {},
                                            std::string graph = {},
                                            std::string run = {},
                                            std::string scaling_policy = {});
-    std::shared_ptr<ComputeJob> find_job(const std::string& id) const;
+    std::shared_ptr<zetta::compute::ComputeJob> find_job(const std::string& id) const;
     bool drop_job(const std::string& id);
-    std::vector<std::shared_ptr<ComputeJob>> jobs() const { return jobs_; }
+    std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs() const { return jobs_; }
     std::size_t job_count() const { return jobs_.size(); }
 
     // This node's durable **checkpoint store** for burst-job eviction tolerance
@@ -304,12 +309,12 @@ public:
     // partition is visible on every node (via dataset_partitions() + the
     // system.dataset_partitions SQL table). dataset_partitions() is in a stable
     // order (created, then id).
-    std::shared_ptr<DatasetPartition> create_dataset_partition(
-        DatasetPartitionValue value);
-    std::shared_ptr<DatasetPartition> find_dataset_partition(
+    std::shared_ptr<zetta::data::DatasetPartition> create_dataset_partition(
+        zetta::data::DatasetPartitionValue value);
+    std::shared_ptr<zetta::data::DatasetPartition> find_dataset_partition(
         const std::string& id) const;
     bool drop_dataset_partition(const std::string& id);
-    std::vector<std::shared_ptr<DatasetPartition>> dataset_partitions() const {
+    std::vector<std::shared_ptr<zetta::data::DatasetPartition>> dataset_partitions() const {
         return dataset_partitions_;
     }
     std::size_t dataset_partition_count() const {
@@ -328,7 +333,7 @@ public:
     // every call — never stored/hand-synced — so it can't drift from the truth. The
     // `system` database (a virtual catalog) is not a dataset and is excluded. See
     // dataset.hpp / docs/data/system-datasets.md.
-    std::vector<DatasetSummary> datasets() const;
+    std::vector<zetta::data::DatasetSummary> datasets() const;
 
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
     // docs/cloud/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
@@ -338,8 +343,8 @@ public:
     // reads this cache and never triggers a cloud call. The latest report per
     // provider id replaces the previous one; cloud_inspections() is in provider
     // insertion order.
-    void record_cloud_inspection(CloudInspectReport report);
-    std::vector<CloudInspectReport> cloud_inspections() const {
+    void record_cloud_inspection(zetta::cloud::CloudInspectReport report);
+    std::vector<zetta::cloud::CloudInspectReport> cloud_inspections() const {
         return cloud_inspections_;
     }
 
@@ -351,8 +356,8 @@ public:
     // for the read-only `system.zetta_provisioners` view and for wiring the headed
     // Add-nodes control. The latest config per target id replaces the previous one;
     // provisioner_configs() is in target insertion order.
-    void record_provisioner_config(ProvisionerConfig config);
-    std::vector<ProvisionerConfig> provisioner_configs() const {
+    void record_provisioner_config(zetta::cloud::ProvisionerConfig config);
+    std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs() const {
         return provisioner_configs_;
     }
 
@@ -365,7 +370,7 @@ public:
     // CPU + network gauges are rates measured against the previous sample, which
     // the sampler updates each call. The storage gauge is taken over the node's
     // `data_dir` filesystem.
-    NodeMetrics sample_node_metrics() {
+    zetta::cluster::NodeMetrics sample_node_metrics() {
         return node_metrics_sampler_.sample(config_.data_dir);
     }
 
@@ -377,7 +382,7 @@ public:
     // node caches what it receives — see node_telemetry.hpp / docs/gui/cluster-node-gauges.md).
     // Ephemeral + non-replicated like the sample itself; empty until a cluster is
     // attached (the exchange rides the JobCoordinator's signal-handler chain).
-    std::vector<NodeTelemetrySample> telemetry_snapshot() const {
+    std::vector<zetta::cluster::NodeTelemetrySample> telemetry_snapshot() const {
         if (!telemetry_) return {};
         return telemetry_->snapshot();
     }
@@ -392,11 +397,11 @@ public:
     // most-recent kMaxPipelineJobs records are kept, oldest dropped). Thread-safe —
     // a background interactive run records while the GUI / query thread reads.
     static constexpr std::size_t kMaxPipelineJobs = 512;
-    void record_pipeline_job(PipelineJobInstrumentation instrumentation);
+    void record_pipeline_job(zetta::compute::PipelineJobInstrumentation instrumentation);
 
     // The recorded near-data pipeline jobs, oldest first (a snapshot copy, safe to
     // read off the node's threads). The source for `system.pipeline_jobs`.
-    std::vector<PipelineJobInstrumentation> pipeline_jobs() const;
+    std::vector<zetta::compute::PipelineJobInstrumentation> pipeline_jobs() const;
 
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/governance/access-control.md), mirroring the project CRUD shape. create stamps
@@ -404,9 +409,9 @@ public:
     // an empty handle / false on an empty name or a clash. A principal owns its
     // access keys (Principal::create_key); a request's reach is the scope of the
     // key it logged in with (RULE-3).
-    std::shared_ptr<Principal> create_principal(
-        std::string name, PrincipalKind kind = PrincipalKind::User);
-    std::shared_ptr<Principal> find_principal(const std::string& name) const;
+    std::shared_ptr<zetta::governance::Principal> create_principal(
+        std::string name, zetta::governance::PrincipalKind kind = zetta::governance::PrincipalKind::User);
+    std::shared_ptr<zetta::governance::Principal> find_principal(const std::string& name) const;
     bool drop_principal(const std::string& name);
     bool rename_principal(const std::string& from, const std::string& to);
     std::vector<std::string> principal_names() const;
@@ -414,13 +419,13 @@ public:
     // The principals in insertion order — the live source for the
     // system.zetta_principals / system.zetta_keys read views (each principal owns
     // its keys via Principal::keys()).
-    std::vector<std::shared_ptr<Principal>> principals() const {
+    std::vector<std::shared_ptr<zetta::governance::Principal>> principals() const {
         return principals_;
     }
 
     // Resolve the access key presented at login (by its id), or an empty handle.
     // Keys are globally identified by UUID; this searches every principal.
-    std::shared_ptr<AccessKey> find_access_key(const std::string& key_id) const;
+    std::shared_ptr<zetta::governance::AccessKey> find_access_key(const std::string& key_id) const;
 
     // The V1 key-scoped access decision (RULE-3 / PERM-1 / ADR-6): a request that
     // logged in with `key_id` inherits that key's scope, so `resource` is allowed
@@ -429,8 +434,8 @@ public:
     // Every decision is recorded as a `data_access` AuditEvent (allow/deny + the
     // reason), so authorize is the data-access seam of the audit trail (FEAT-9) —
     // which is why it is non-const (it appends to the immutable trail).
-    AccessDecision authorize(const std::string& key_id,
-                             const Resource& resource);
+    zetta::governance::AccessDecision authorize(const std::string& key_id,
+                             const zetta::governance::Resource& resource);
 
     // The immutable, append-only audit trail (ENT-23 / FEAT-9). Graph changes,
     // deploys, and data-access decisions each record an AuditEvent; the events
@@ -439,8 +444,8 @@ public:
     // it stamps a fresh id + time, persists the event, captures it into the CRDT
     // when replicated, and appends it to the trail. The (future) request path
     // calls it to record data accesses at real read/write points.
-    void record_audit_event(AuditEventValue value) override;
-    std::vector<std::shared_ptr<AuditEvent>> audit_events() const {
+    void record_audit_event(zetta::governance::AuditEventValue value) override;
+    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events() const {
         return audit_events_;
     }
     std::size_t audit_event_count() const { return audit_events_.size(); }
@@ -450,14 +455,14 @@ public:
     // an unknown/empty key id, or no matching (live) capability, denies. The
     // verb/right counterpart to the resource overload above; the two compose (an
     // operation on a resource checks both).
-    AccessDecision authorize(const std::string& key_id,
-                             const Operation& operation) const;
+    zetta::governance::AccessDecision authorize(const std::string& key_id,
+                             const zetta::governance::Operation& operation) const;
 
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.
-    DeploymentController& deployment_controller() { return controller_; }
-    const DeploymentController& deployment_controller() const {
+    zetta::pipeline::DeploymentController& deployment_controller() { return controller_; }
+    const zetta::pipeline::DeploymentController& deployment_controller() const {
         return controller_;
     }
 
@@ -469,7 +474,7 @@ public:
     // `project` / `graph_id` label the Run. Returns the ExecutionResult (the Run
     // handle + whether it succeeded). For a custom per-step executor, use
     // GraphExecutor directly.
-    ExecutionResult run_graph(const ir::ExecutionGraph& graph,
+    zetta::pipeline::ExecutionResult run_graph(const ir::ExecutionGraph& graph,
                               std::string project = {},
                               std::string graph_id = {});
 
@@ -496,11 +501,11 @@ private:
 
     // Rebuild databases_ by scanning config_.data_dir. Called from start().
     void load_databases();
-    std::shared_ptr<Database> find_database_by_id(const std::string& id) const;
+    std::shared_ptr<zetta::data::Database> find_database_by_id(const std::string& id) const;
 
     // Rebuild projects_ by scanning config_.data_dir. Called from start().
     void load_projects();
-    std::shared_ptr<Project> find_project_by_id(const std::string& id) const;
+    std::shared_ptr<zetta::pipeline::Project> find_project_by_id(const std::string& id) const;
 
     // Rebuild deployments_ by scanning config_.data_dir. Called from start().
     void load_deployments();
@@ -538,7 +543,7 @@ private:
 
     // Rebuild principals_ by scanning config_.data_dir. Called from start().
     void load_principals();
-    std::shared_ptr<Principal> find_principal_by_id(const std::string& id) const;
+    std::shared_ptr<zetta::governance::Principal> find_principal_by_id(const std::string& id) const;
 
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
@@ -575,44 +580,44 @@ private:
     void reconcile_access_keys(const nlohmann::json& snapshot);
     void reconcile_audit_events(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
-    std::shared_ptr<Database> materialize_database(
-        std::string id, std::string name, ReplicationStrategy strategy = {});
+    std::shared_ptr<zetta::data::Database> materialize_database(
+        std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
     bool materialize_drop_database(const std::string& id);
-    std::shared_ptr<Project> materialize_project(std::string id,
+    std::shared_ptr<zetta::pipeline::Project> materialize_project(std::string id,
                                                  std::string name,
                                                  std::string created,
                                                  std::string updated,
                                                  std::string owner);
     bool materialize_drop_project(const std::string& id);
-    std::shared_ptr<Deployment> materialize_deployment(
-        std::string id, std::string graph_name, DeploymentTarget target,
+    std::shared_ptr<zetta::pipeline::Deployment> materialize_deployment(
+        std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
         std::string node_id, std::size_t node_count, std::size_t edge_count,
         std::string created);
     bool materialize_drop_deployment(const std::string& id);
-    std::shared_ptr<Run> materialize_run(std::string id, RunValue value);
+    std::shared_ptr<zetta::pipeline::Run> materialize_run(std::string id, zetta::pipeline::RunValue value);
     bool materialize_drop_run(const std::string& id);
-    std::shared_ptr<Model> materialize_model(std::string id, ModelValue value);
+    std::shared_ptr<zetta::ml::Model> materialize_model(std::string id, zetta::ml::ModelValue value);
     bool materialize_drop_model(const std::string& id);
-    std::shared_ptr<Index> materialize_index(std::string id, IndexValue value);
+    std::shared_ptr<zetta::index::Index> materialize_index(std::string id, zetta::index::IndexValue value);
     bool materialize_drop_index(const std::string& id);
-    std::shared_ptr<ComputeJob> materialize_job(std::string id,
-                                                ComputeJobValue value);
+    std::shared_ptr<zetta::compute::ComputeJob> materialize_job(std::string id,
+                                                zetta::compute::ComputeJobValue value);
     bool materialize_drop_job(const std::string& id);
-    std::shared_ptr<DatasetPartition> materialize_dataset_partition(
-        std::string id, DatasetPartitionValue value);
+    std::shared_ptr<zetta::data::DatasetPartition> materialize_dataset_partition(
+        std::string id, zetta::data::DatasetPartitionValue value);
     bool materialize_drop_dataset_partition(const std::string& id);
-    std::shared_ptr<Principal> materialize_principal(std::string id,
-                                                     PrincipalKind kind,
+    std::shared_ptr<zetta::governance::Principal> materialize_principal(std::string id,
+                                                     zetta::governance::PrincipalKind kind,
                                                      std::string name,
                                                      std::string created);
     bool materialize_drop_principal(const std::string& id);
     // Apply a replicated audit event (a peer's, or one rebuilt from the document)
     // by id, without capturing. Append-only — there is no drop counterpart.
-    std::shared_ptr<AuditEvent> materialize_audit_event(std::string id,
-                                                        AuditEventValue value);
+    std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
+                                                        zetta::governance::AuditEventValue value);
 
     NodeConfig config_;
-    ReplicationManager* replication_;  // null = standalone (not replicated)
+    zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
     std::string node_id_;              // this node's stable UUID (set by start())
     std::string last_seen_version_;    // CRDT version last reconciled/persisted
     std::vector<std::string> last_membership_;  // node:<id> set last seen (#517)
@@ -620,38 +625,38 @@ private:
     bool running_ = false;
     Clock::time_point started_at_{};
     std::uint64_t ticks_ = 0;
-    std::vector<std::shared_ptr<Database>> databases_;      // insertion order
-    std::vector<std::shared_ptr<Project>> projects_;        // insertion order
-    std::vector<std::shared_ptr<Deployment>> deployments_;  // sorted by created
-    std::vector<std::shared_ptr<Run>> runs_;                // sorted (created, id)
-    std::vector<std::shared_ptr<Model>> models_;            // sorted (created, id)
-    std::vector<std::shared_ptr<Index>> indexes_;           // sorted (created, id)
-    std::vector<std::shared_ptr<ComputeJob>> jobs_;         // sorted (created, id)
-    std::vector<std::shared_ptr<DatasetPartition>>
+    std::vector<std::shared_ptr<zetta::data::Database>> databases_;      // insertion order
+    std::vector<std::shared_ptr<zetta::pipeline::Project>> projects_;        // insertion order
+    std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments_;  // sorted by created
+    std::vector<std::shared_ptr<zetta::pipeline::Run>> runs_;                // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::ml::Model>> models_;            // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::index::Index>> indexes_;           // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs_;         // sorted (created, id)
+    std::vector<std::shared_ptr<zetta::data::DatasetPartition>>
         dataset_partitions_;                                // sorted (created, id)
-    std::vector<CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
-    std::vector<ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
-    NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
+    std::vector<zetta::cloud::CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
+    std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
+    zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
     // the most-recent recorded jobs' local-vs-wire counters, the source for the
     // `system.pipeline_jobs` view. Ephemeral / observed; NOT replicated. Guarded by
     // its own mutex (mutable so pipeline_jobs() can lock from a const method) — a
     // background run records while a query thread reads.
     mutable std::mutex pipeline_jobs_mutex_;
-    std::vector<PipelineJobInstrumentation> pipeline_jobs_;
-    std::vector<std::shared_ptr<Principal>> principals_;    // insertion order
-    std::vector<std::shared_ptr<AuditEvent>> audit_events_; // sorted (time, id)
-    IndexRegistry index_registry_;            // IndexBackend container (#528)
+    std::vector<zetta::compute::PipelineJobInstrumentation> pipeline_jobs_;
+    std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
+    std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
     // Durable, local (non-replicated) checkpoint store for eviction tolerance
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.
     compute::FileCheckpointStore checkpoint_store_;
-    DeploymentController controller_{*this};  // control plane (driven by tick())
+    zetta::pipeline::DeploymentController controller_{*this};  // control plane (driven by tick())
     // The compute plane over the real cluster (#579): non-owning pointer to the
     // attached Cluster (null = no cluster), the requested worker count (0 = auto),
     // and the long-lived coordinator (null until attach_cluster + a running node).
     // Held as an incomplete type via unique_ptr; destroyed in stop()/~Node before
     // the cluster, so its handler unwind never touches a dead cluster.
-    Cluster* cluster_ = nullptr;
+    zetta::cluster::Cluster* cluster_ = nullptr;
     unsigned compute_workers_ = 0;
     // Cluster-wide live telemetry over the signal plane (#584): the cache of this
     // node's + peers' `node.metrics` events, wired as the coordinator's signal
@@ -660,7 +665,7 @@ private:
     // start_coordinator(), and tick() broadcasts this node's sample through it.
     // `last_telemetry_sample_` throttles that broadcast to ~1 Hz. Ephemeral; not
     // replicated.
-    std::unique_ptr<NodeTelemetryExchange> telemetry_;
+    std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
     std::unique_ptr<compute::JobCoordinator> coordinator_;
 };

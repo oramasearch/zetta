@@ -7,8 +7,8 @@
 
 #include "temp_dir.hpp"
 
-using zetta::NodeMetrics;
-using zetta::NodeMetricsSampler;
+using zetta::cluster::NodeMetrics;
+using zetta::cluster::NodeMetricsSampler;
 using zetta::test::TempDir;
 
 // Always-true invariants of a sample, regardless of which counter groups the

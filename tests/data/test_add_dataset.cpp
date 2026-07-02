@@ -26,15 +26,15 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using zetta::AddDatasetOptions;
-using zetta::AddDatasetResult;
-using zetta::add_dataset_file;
-using zetta::Database;
-using zetta::DatasetSummary;
+using zetta::data::AddDatasetOptions;
+using zetta::data::AddDatasetResult;
+using zetta::data::add_dataset_file;
+using zetta::data::Database;
+using zetta::data::DatasetSummary;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::Table;
-using zetta::dataset_file::Format;
+using zetta::data::Table;
+using zetta::data::dataset_file::Format;
 using zetta::test::TempDir;
 
 NodeConfig config_for(const TempDir& tmp) {
@@ -79,7 +79,7 @@ const DatasetSummary* find_dataset(const std::vector<DatasetSummary>& datasets,
 // =====================================================================
 
 TEST(AddDataset, ClassifiesFormatsByExtension) {
-    using zetta::dataset_file::format_from_path;
+    using zetta::data::dataset_file::format_from_path;
     EXPECT_EQ(format_from_path("a/b/data.parquet"), Format::Parquet);
     EXPECT_EQ(format_from_path("DATA.PQ"), Format::Parquet);
     EXPECT_EQ(format_from_path("events.jsonl"), Format::Jsonl);
@@ -91,7 +91,7 @@ TEST(AddDataset, ClassifiesFormatsByExtension) {
 }
 
 TEST(AddDataset, DialogExtensionsCoverEveryFormat) {
-    const std::string extensions = zetta::dataset_file::dialog_extensions();
+    const std::string extensions = zetta::data::dataset_file::dialog_extensions();
     for (const char* ext : {"parquet", "pq", "jsonl", "ndjson", "json", "csv"}) {
         EXPECT_NE(extensions.find(ext), std::string::npos) << ext;
     }

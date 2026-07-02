@@ -22,22 +22,22 @@
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::Index;
-using zetta::IndexBackend;
-using zetta::IndexDocument;
-using zetta::IndexKind;
-using zetta::IndexPartition;
-using zetta::IndexQuery;
-using zetta::IndexRegistry;
-using zetta::IndexSpec;
-using zetta::IndexStatusCode;
-using zetta::IndexValue;
-using zetta::InMemoryIndexBackend;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::index::Index;
+using zetta::index::IndexBackend;
+using zetta::index::IndexDocument;
+using zetta::index::IndexKind;
+using zetta::index::IndexPartition;
+using zetta::index::IndexQuery;
+using zetta::index::IndexRegistry;
+using zetta::index::IndexSpec;
+using zetta::index::IndexStatusCode;
+using zetta::index::IndexValue;
+using zetta::index::InMemoryIndexBackend;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::query::QueryService;
 using zetta::test::TempDir;
 
@@ -89,11 +89,11 @@ zetta::ir::Node index_step(nlohmann::json attributes) {
 // ----- IndexKind + IndexSpec -------------------------------------------------
 
 TEST(IndexKind, NamesRoundTrip) {
-    EXPECT_EQ(zetta::to_string(IndexKind::Search), "search");
-    EXPECT_EQ(zetta::to_string(IndexKind::Vector), "vector");
-    EXPECT_EQ(zetta::to_string(IndexKind::Feature), "feature");
-    EXPECT_EQ(zetta::index_kind_from_name("vector"), IndexKind::Vector);
-    EXPECT_FALSE(zetta::index_kind_from_name("nope").has_value());
+    EXPECT_EQ(zetta::index::to_string(IndexKind::Search), "search");
+    EXPECT_EQ(zetta::index::to_string(IndexKind::Vector), "vector");
+    EXPECT_EQ(zetta::index::to_string(IndexKind::Feature), "feature");
+    EXPECT_EQ(zetta::index::index_kind_from_name("vector"), IndexKind::Vector);
+    EXPECT_FALSE(zetta::index::index_kind_from_name("nope").has_value());
 }
 
 TEST(IndexSpec, KeyIsBackendIndependentAndFieldOrdered) {
@@ -112,7 +112,7 @@ TEST(IndexSpec, KeyIsBackendIndependentAndFieldOrdered) {
 // ----- index_spec_from_node (the IR `index` step boundary) -------------------
 
 TEST(IndexSpecFromNode, ExtractsAValidIndexStep) {
-    const auto spec = zetta::index_spec_from_node(index_step(
+    const auto spec = zetta::index::index_spec_from_node(index_step(
         {{"table", "accounts"},
          {"kind", "search"},
          {"backend", "memory_search"},
@@ -127,44 +127,44 @@ TEST(IndexSpecFromNode, ExtractsAValidIndexStep) {
 
 TEST(IndexSpecFromNode, RejectsMalformedOrNonIndexNodes) {
     // Not an index step.
-    EXPECT_FALSE(zetta::index_spec_from_node(zetta::ir::Node{
+    EXPECT_FALSE(zetta::index::index_spec_from_node(zetta::ir::Node{
         "s", zetta::ir::StepKind::Model, "m",
         {{"table", "t"},
          {"kind", "search"},
          {"backend", "memory_search"},
          {"fields", {"f"}}}}));
     // Missing table.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"kind", "search"}, {"backend", "memory_search"}, {"fields", {"f"}}})));
     // Empty table.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"table", ""},
          {"kind", "search"},
          {"backend", "memory_search"},
          {"fields", {"f"}}})));
     // Unknown kind.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"table", "t"},
          {"kind", "bogus"},
          {"backend", "memory_search"},
          {"fields", {"f"}}})));
     // Empty backend.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"table", "t"}, {"kind", "search"}, {"backend", ""}, {"fields", {"f"}}})));
     // Empty fields array.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"table", "t"},
          {"kind", "search"},
          {"backend", "memory_search"},
          {"fields", nlohmann::json::array()}})));
     // Duplicate fields.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"table", "t"},
          {"kind", "search"},
          {"backend", "memory_search"},
          {"fields", {"f", "f"}}})));
     // Non-string field.
-    EXPECT_FALSE(zetta::index_spec_from_node(index_step(
+    EXPECT_FALSE(zetta::index::index_spec_from_node(index_step(
         {{"table", "t"},
          {"kind", "search"},
          {"backend", "memory_search"},
@@ -313,7 +313,7 @@ TEST(IndexRegistry, ResolvedBackendBuildsAndAnswersAQuery) {
          {"fields", {"plan", "region"}}});
     auto backend = registry.resolve(step);
     ASSERT_TRUE(backend);
-    const IndexSpec spec = *zetta::index_spec_from_node(step);
+    const IndexSpec spec = *zetta::index::index_spec_from_node(step);
 
     ASSERT_TRUE(backend->build(spec, sample_partitions()).ok());
     IndexQuery q;
@@ -330,42 +330,42 @@ TEST(IndexValue, SchemaRejectsMalformedValuesAtTheBoundary) {
     std::string error;
 
     EXPECT_TRUE(
-        zetta::validate_index_value(zetta::to_json(sample_value()), &error))
+        zetta::index::validate_index_value(zetta::index::to_json(sample_value()), &error))
         << error;
 
     // Missing required fields.
-    EXPECT_FALSE(zetta::validate_index_value(
+    EXPECT_FALSE(zetta::index::validate_index_value(
         json{{"kind", "search"}, {"backend", "b"}, {"fields", {"f"}}}, &error));
     // Empty table (minLength 1).
-    EXPECT_FALSE(zetta::validate_index_value(
+    EXPECT_FALSE(zetta::index::validate_index_value(
         json{{"table", ""},
              {"kind", "search"},
              {"backend", "b"},
              {"fields", {"f"}}},
         &error));
     // Unknown kind (enum).
-    EXPECT_FALSE(zetta::validate_index_value(
+    EXPECT_FALSE(zetta::index::validate_index_value(
         json{{"table", "t"},
              {"kind", "graph"},
              {"backend", "b"},
              {"fields", {"f"}}},
         &error));
     // Empty fields (minItems 1).
-    EXPECT_FALSE(zetta::validate_index_value(
+    EXPECT_FALSE(zetta::index::validate_index_value(
         json{{"table", "t"},
              {"kind", "search"},
              {"backend", "b"},
              {"fields", json::array()}},
         &error));
     // Duplicate fields (uniqueItems).
-    EXPECT_FALSE(zetta::validate_index_value(
+    EXPECT_FALSE(zetta::index::validate_index_value(
         json{{"table", "t"},
              {"kind", "search"},
              {"backend", "b"},
              {"fields", {"f", "f"}}},
         &error));
     // A stray field (additionalProperties: false).
-    EXPECT_FALSE(zetta::validate_index_value(
+    EXPECT_FALSE(zetta::index::validate_index_value(
         json{{"table", "t"},
              {"kind", "search"},
              {"backend", "b"},
@@ -374,13 +374,13 @@ TEST(IndexValue, SchemaRejectsMalformedValuesAtTheBoundary) {
         &error));
 
     // parse_index_value rejects the same and returns nullopt with a reason.
-    EXPECT_FALSE(zetta::parse_index_value(json{{"table", "t"}}, &error));
+    EXPECT_FALSE(zetta::index::parse_index_value(json{{"table", "t"}}, &error));
     EXPECT_FALSE(error.empty());
 }
 
 TEST(IndexValue, RoundTripsThroughJson) {
     const IndexValue original = sample_value();
-    const auto parsed = zetta::parse_index_value(zetta::to_json(original));
+    const auto parsed = zetta::index::parse_index_value(zetta::index::to_json(original));
     ASSERT_TRUE(parsed.has_value());
     EXPECT_EQ(parsed->table, "accounts");
     EXPECT_EQ(parsed->kind, IndexKind::Search);
@@ -465,7 +465,7 @@ TEST(NodeIndex, PersistsAcrossRestartViaDisk) {
 
 TEST(NodeIndex, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string id;
     {
         ReplicationManager replication{node_id};
@@ -501,7 +501,7 @@ TEST(NodeIndex, PersistsAcrossRestartViaCRDT) {
 
 TEST(NodeIndex, InvalidIndexJsonOnDiskIsSkipped) {
     TempDir tmp;
-    const std::filesystem::path bad = tmp.path() / zetta::new_uuid();
+    const std::filesystem::path bad = tmp.path() / zetta::util::new_uuid();
     std::filesystem::create_directories(bad);
     {
         std::ofstream out(bad / "index.json");
@@ -542,8 +542,8 @@ TEST(NodeIndex, RegistryVisibleViaSystemTable) {
 
 TEST(NodeIndex, ReplicatesMetadataAcrossNodes) {
     TempDir dir_a, dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};
     Node a{config_for(dir_a), &repl_a};

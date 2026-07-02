@@ -8,7 +8,7 @@
 #include "zetta/node.hpp"
 #include "zetta/data/partition_rebalance.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 namespace {
 
@@ -96,7 +96,7 @@ void apply_added_nodes(Node& node, const AddNodesResult& result) {
     // — there is no membership delta, so leave placement untouched.
     if (added_member) {
         const std::vector<std::string> members(grown.begin(), grown.end());
-        rebalance_partitions(node, members, previous);
+        zetta::data::rebalance_partitions(node, members, previous);
     }
 }
 
@@ -115,4 +115,4 @@ AddNodesResult add_nodes(Node& node, Provisioner& provider, std::size_t count,
     return add_nodes(node, provider, AddNodesRequest{count, spec});
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

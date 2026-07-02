@@ -6,7 +6,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 
 // Where a deployment is placed — the "placement dial" (ENT-6 / FEAT-4, ADR-7).
 // Declaration order is the dial's local→cloud progression. R1 ships **Local**
@@ -54,4 +54,4 @@ struct DeploymentTarget {
     static std::optional<DeploymentTarget> from_json(const nlohmann::json& value);
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

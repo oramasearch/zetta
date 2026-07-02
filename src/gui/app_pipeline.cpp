@@ -43,7 +43,7 @@ namespace zetta::gui {
 namespace {
 
 // The gate status as an uppercase badge ("PASS" / "WARN" / "FAIL").
-std::string status_badge(CheckStatus status) {
+std::string status_badge(zetta::pipeline::CheckStatus status) {
     std::string text = to_string(status);
     for (char& character : text) {
         character =
@@ -53,11 +53,11 @@ std::string status_badge(CheckStatus status) {
 }
 
 // The text colour for a check status.
-ImVec4 status_color(CheckStatus status) {
+ImVec4 status_color(zetta::pipeline::CheckStatus status) {
     switch (status) {
-        case CheckStatus::Pass: return kPassColor;
-        case CheckStatus::Warn: return kWarnColor;
-        case CheckStatus::Fail: return kFailColor;
+        case zetta::pipeline::CheckStatus::Pass: return kPassColor;
+        case zetta::pipeline::CheckStatus::Warn: return kWarnColor;
+        case zetta::pipeline::CheckStatus::Fail: return kFailColor;
     }
     return kFailColor;
 }
@@ -82,12 +82,12 @@ constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
 //   fan-out    → ink   (SPMD across every node — neutral, distributed compute)
 //   all nodes  → quiet (a load whose result is replicated everywhere)
 //   coordinator→ amber (a single-node funnel point — attention, not distributed)
-ImVec4 placement_color(StepPlacement placement) {
+ImVec4 placement_color(zetta::pipeline::StepPlacement placement) {
     switch (placement) {
-        case StepPlacement::NearData:    return kDotActive;
-        case StepPlacement::FanOut:      return kInkSecondary;
-        case StepPlacement::AllNodes:    return kInkQuiet;
-        case StepPlacement::Coordinator: return kWarnColor;
+        case zetta::pipeline::StepPlacement::NearData:    return kDotActive;
+        case zetta::pipeline::StepPlacement::FanOut:      return kInkSecondary;
+        case zetta::pipeline::StepPlacement::AllNodes:    return kInkQuiet;
+        case zetta::pipeline::StepPlacement::Coordinator: return kWarnColor;
     }
     return kInkQuiet;
 }
@@ -151,8 +151,8 @@ void App::draw_gate() {
             if (!graph) {
                 gate_error_ = "invalid graph: " + parse_error;
             } else {
-                gate_report_ = std::make_unique<ValidationReport>(
-                    default_gate().run(*graph));
+                gate_report_ = std::make_unique<zetta::pipeline::ValidationReport>(
+                    zetta::pipeline::default_gate().run(*graph));
             }
         }
     }
@@ -162,14 +162,14 @@ void App::draw_gate() {
     }
 
     if (!gate_report_) return;
-    const ValidationReport& report = *gate_report_;
+    const zetta::pipeline::ValidationReport& report = *gate_report_;
 
     // The block-on-fail banner is the headline state this panel exists to show.
     ImGui::Spacing();
     if (report.block_deploy) {
         std::size_t failures = 0;
-        for (const CheckResult& check : report.checks) {
-            if (check.status == CheckStatus::Fail) ++failures;
+        for (const zetta::pipeline::CheckResult& check : report.checks) {
+            if (check.status == zetta::pipeline::CheckStatus::Fail) ++failures;
         }
         ImGui::TextColored(kFailColor,
                            "Deploy blocked: %zu check(s) failed (verdict: %s)",
@@ -192,7 +192,7 @@ void App::draw_gate() {
         ImGui::TableSetupColumn("Reason", ImGuiTableColumnFlags_WidthStretch,
                                 0.55f);
         ImGui::TableHeadersRow();
-        for (const CheckResult& check : report.checks) {
+        for (const zetta::pipeline::CheckResult& check : report.checks) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(check.name.c_str());
@@ -215,16 +215,16 @@ void App::draw_deploy() {
         "Pick an AI solution, choose where to run it, and deploy. The "
         "correctness gate must pass first; no deploy without it.");
 
-    const SolutionCatalog& catalog = SolutionCatalog::builtin();
+    const zetta::pipeline::SolutionCatalog& catalog = zetta::pipeline::SolutionCatalog::builtin();
 
     // 1) Solution picker — the AI Solution Library blueprints (the GUI's source
     //    of deployable graphs until a graph editor lands). Selection is by id.
-    const Solution* selected = catalog.find(selected_solution_);
+    const zetta::pipeline::Solution* selected = catalog.find(selected_solution_);
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("##solution",
                           selected ? selected->name.c_str()
                                    : "Select an AI solution...")) {
-        for (const Solution& solution : catalog.solutions()) {
+        for (const zetta::pipeline::Solution& solution : catalog.solutions()) {
             const bool is_selected = solution.id == selected_solution_;
             if (ImGui::Selectable(solution.name.c_str(), is_selected)) {
                 selected_solution_ = solution.id;
@@ -250,19 +250,19 @@ void App::draw_deploy() {
     //    Local only; the rest are shown disabled and labelled "(planned)" so the
     //    dial communicates the roadmap without being choosable. The combo index
     //    mirrors DeploymentKind's declaration order; deploy still guards on Local.
-    static constexpr std::array<DeploymentKind, 4> kDial{
-        DeploymentKind::Local, DeploymentKind::Kubernetes, DeploymentKind::Vpc,
-        DeploymentKind::Cloud};
-    const auto dial_label = [](DeploymentKind kind) -> std::string {
+    static constexpr std::array<zetta::pipeline::DeploymentKind, 4> kDial{
+        zetta::pipeline::DeploymentKind::Local, zetta::pipeline::DeploymentKind::Kubernetes, zetta::pipeline::DeploymentKind::Vpc,
+        zetta::pipeline::DeploymentKind::Cloud};
+    const auto dial_label = [](zetta::pipeline::DeploymentKind kind) -> std::string {
         std::string label = to_string(kind);
         if (!label.empty()) label[0] = static_cast<char>(std::toupper(label[0]));
-        return kind == DeploymentKind::Local ? label : label + " (planned)";
+        return kind == zetta::pipeline::DeploymentKind::Local ? label : label + " (planned)";
     };
     ImGui::SetNextItemWidth(-FLT_MIN);
     if (ImGui::BeginCombo("##placement",
                           dial_label(kDial[deploy_placement_]).c_str())) {
         for (int index = 0; index < static_cast<int>(kDial.size()); ++index) {
-            const bool functional = kDial[index] == DeploymentKind::Local;
+            const bool functional = kDial[index] == zetta::pipeline::DeploymentKind::Local;
             ImGui::BeginDisabled(!functional);
             const bool is_selected = index == deploy_placement_;
             if (ImGui::Selectable(dial_label(kDial[index]).c_str(),
@@ -281,11 +281,11 @@ void App::draw_deploy() {
     ImGui::BeginDisabled(selected == nullptr);
     if (primary_button("Deploy")) {
         const ir::ExecutionGraph& graph = selected->graph;
-        const ValidationReport report = default_gate().run(graph);
+        const zetta::pipeline::ValidationReport report = zetta::pipeline::default_gate().run(graph);
         if (report.block_deploy) {
             std::string reason;
-            for (const CheckResult& check : report.checks) {
-                if (check.status == CheckStatus::Fail) {
+            for (const zetta::pipeline::CheckResult& check : report.checks) {
+                if (check.status == zetta::pipeline::CheckStatus::Fail) {
                     reason = check.name + ": " + check.reason;
                     break;
                 }
@@ -294,8 +294,8 @@ void App::draw_deploy() {
             deploy_status_ = "Gate blocked deploy: " +
                              (reason.empty() ? "graph failed validation" : reason);
         } else {
-            const DeploymentTarget target{kDial[deploy_placement_], {}, {}};
-            const std::shared_ptr<Deployment> deployment =
+            const zetta::pipeline::DeploymentTarget target{kDial[deploy_placement_], {}, {}};
+            const std::shared_ptr<zetta::pipeline::Deployment> deployment =
                 node_.deploy_graph(graph, target, selected->name);
             if (deployment) {
                 deploy_failed_ = false;
@@ -343,7 +343,7 @@ void App::draw_deploy() {
     // 4) Deployment status — the recorded placements (acceptance: "see its
     //    status"). Sourced from the replicated deployments() list.
     ImGui::SeparatorText("Deployments");
-    const std::vector<std::shared_ptr<Deployment>> deployments =
+    const std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments =
         node_.deployments();
     if (deployments.empty()) {
         ImGui::TextDisabled("(none yet)");
@@ -360,7 +360,7 @@ void App::draw_deploy() {
         ImGui::TableSetupColumn("Created");
         ImGui::TableHeadersRow();
         if (mono_font_) ImGui::PushFont(mono_font_);
-        for (const std::shared_ptr<Deployment>& deployment : deployments) {
+        for (const std::shared_ptr<zetta::pipeline::Deployment>& deployment : deployments) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(deployment->graph_name().c_str());
@@ -379,7 +379,7 @@ void App::draw_deploy() {
 }
 
 void App::run_churn_demo() {
-    const Solution* selected = SolutionCatalog::builtin().find(selected_solution_);
+    const zetta::pipeline::Solution* selected = zetta::pipeline::SolutionCatalog::builtin().find(selected_solution_);
     if (selected == nullptr || selected->id != "churn-prediction") {
         churn_run_failed_ = true;
         churn_run_status_ = "Select the churn solution to run it.";
@@ -387,7 +387,7 @@ void App::run_churn_demo() {
     }
 
     compute::CpuDevice device;
-    ChurnSolutionOptions options;
+    zetta::usecases::churn::ChurnSolutionOptions options;
     options.project = "deploy-panel";
     options.graph = "churn-prediction";
 
@@ -398,23 +398,23 @@ void App::run_churn_demo() {
     // on the App's node_ (so the Runs / Models / Jobs / Admin panels reflect them).
     // Synchronous on the UI thread that owns the node — the same deliberate per-click
     // pattern as run_cloud_inspect.
-    ChurnSolutionResult result = run_churn_solution_on_node(
-        node_, device, selected->graph, demo_churn_dataset(), options);
+    zetta::usecases::churn::ChurnSolutionResult result = run_churn_solution_on_node(
+        node_, device, selected->graph, zetta::usecases::churn::demo_churn_dataset(), options);
 
     // Defensive fallback: a node with no compute plane attached (no cluster) can't run
     // over the live spine. The headed app always attaches a cluster, so this is just a
     // safety net — bring up a throwaway single-node loopback so the demo still works.
     if (node_.job_coordinator() == nullptr) {
-        ClusterConfig compute_cfg;
+        zetta::cluster::ClusterConfig compute_cfg;
         compute_cfg.listen_host = "127.0.0.1";
         compute_cfg.listen_port = 47000;
         compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse)
-        Cluster compute_cluster("churn-run", compute_cfg);
+        zetta::cluster::Cluster compute_cluster("churn-run", compute_cfg);
         compute_cluster.start();
         compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
         coordinator.start();
         result = run_churn_solution(node_, coordinator, device, selected->graph,
-                                    demo_churn_dataset(), options);
+                                    zetta::usecases::churn::demo_churn_dataset(), options);
         coordinator.stop();
     }
 
@@ -433,7 +433,7 @@ void App::run_churn_demo() {
     churn_run_status_ = line;
 }
 
-void App::open_graph(const ProjectGraph& stored) {
+void App::open_graph(const zetta::pipeline::ProjectGraph& stored) {
     // A fresh working copy: edits apply here and only land in the IR on Save, so
     // an edit is a deliberate, atomic act (and Revert is just "drop this copy").
     editing_graph_ = std::make_unique<ir::ExecutionGraph>(stored.graph());
@@ -542,20 +542,20 @@ void App::draw_graph_workspace() {
     ImGui::Checkbox("Cluster plan", &show_cluster_plan_);
     ImGui::SameLine();
     ImGui::TextDisabled("project this graph over the current cluster");
-    const ClusterPlan plan = show_cluster_plan_ ? build_graph_plan() : ClusterPlan{};
+    const zetta::pipeline::ClusterPlan plan = show_cluster_plan_ ? build_graph_plan() : zetta::pipeline::ClusterPlan{};
 
     draw_graph_canvas(show_cluster_plan_ ? &plan : nullptr);
     if (show_cluster_plan_) draw_graph_plan(plan);
     draw_graph_editor(*project);
 }
 
-ClusterPlan App::build_graph_plan() const {
-    if (!editing_graph_) return ClusterPlan{};
+zetta::pipeline::ClusterPlan App::build_graph_plan() const {
+    if (!editing_graph_) return zetta::pipeline::ClusterPlan{};
 
     // Members projected over = the live cluster (system.zetta_nodes / the spatial
     // Cluster view's source), so the plan tracks joins/leaves with no separate copy.
     std::vector<std::string> members;
-    for (const NodeStatus& node : cluster_.nodes()) members.push_back(node.node_id);
+    for (const zetta::cluster::NodeStatus& node : cluster_.nodes()) members.push_back(node.node_id);
 
     // Partition catalog (system.dataset_partitions): table id → the sorted union of
     // its partitions' owner nodes. A table absent here is not partitioned, so a step
@@ -597,16 +597,16 @@ ClusterPlan App::build_graph_plan() const {
         direct_owners[node->id] = owners->second;
     }
 
-    return project_cluster_plan(*editing_graph_, members, direct_owners);
+    return zetta::pipeline::project_cluster_plan(*editing_graph_, members, direct_owners);
 }
 
-void App::draw_graph_canvas(const ClusterPlan* plan) {
+void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan) {
     ir::ExecutionGraph& graph = *editing_graph_;
 
     // Index the plan by step id so each node box can show its projected placement.
-    std::unordered_map<std::string, const StepPlan*> plan_of;
+    std::unordered_map<std::string, const zetta::pipeline::StepPlan*> plan_of;
     if (plan != nullptr) {
-        for (const StepPlan& step : plan->steps) plan_of[step.node_id] = &step;
+        for (const zetta::pipeline::StepPlan& step : plan->steps) plan_of[step.node_id] = &step;
     }
 
     const float font = ImGui::GetFontSize();
@@ -734,7 +734,7 @@ void App::draw_graph_canvas(const ClusterPlan* plan) {
                 // moves to the top so the badge fits below it; without a plan the
                 // name stays vertically centred (plain edit view).
                 const auto plan_it = plan_of.find(item.node->id);
-                const StepPlan* step_plan =
+                const zetta::pipeline::StepPlan* step_plan =
                     plan_it != plan_of.end() ? plan_it->second : nullptr;
                 const float stripe_w = font * 0.22f;
                 float name_x = item.top_left.x + pad;
@@ -775,7 +775,7 @@ void App::draw_graph_canvas(const ClusterPlan* plan) {
     ImGui::EndChild();
 }
 
-void App::draw_graph_plan(const ClusterPlan& plan) {
+void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
     const float font = ImGui::GetFontSize();
 
     ImGui::Spacing();
@@ -787,7 +787,7 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
         plan.members.size());
 
     // Legend — the four placement classes and what each means.
-    const auto legend_item = [&](StepPlacement placement, const char* meaning) {
+    const auto legend_item = [&](zetta::pipeline::StepPlacement placement, const char* meaning) {
         status_dot(placement_color(placement));
         if (mono_font_) ImGui::PushFont(mono_font_);
         ImGui::TextColored(placement_color(placement), "%s",
@@ -796,18 +796,18 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
         ImGui::SameLine();
         ImGui::TextDisabled("· %s", meaning);
     };
-    legend_item(StepPlacement::NearData,
+    legend_item(zetta::pipeline::StepPlacement::NearData,
                 "runs on the partition owners, near its data");
-    legend_item(StepPlacement::FanOut,
+    legend_item(zetta::pipeline::StepPlacement::FanOut,
                 "SPMD across every node; partials combine over collectives");
-    legend_item(StepPlacement::AllNodes, "a load replicated to every node");
-    legend_item(StepPlacement::Coordinator, "runs once on the coordinator");
+    legend_item(zetta::pipeline::StepPlacement::AllNodes, "a load replicated to every node");
+    legend_item(zetta::pipeline::StepPlacement::Coordinator, "runs once on the coordinator");
 
     // The current cluster as a node strip. When a step is selected in the canvas
     // (or the table below), the nodes it is projected to run on get the coral
     // "runs here" treatment — the direct graph↔cluster link.
-    const StepPlan* selected_step = nullptr;
-    for (const StepPlan& step : plan.steps)
+    const zetta::pipeline::StepPlan* selected_step = nullptr;
+    for (const zetta::pipeline::StepPlan& step : plan.steps)
         if (step.node_id == selected_node_id_) selected_step = &step;
     const auto runs_here = [&](const std::string& node_id) {
         return selected_step != nullptr &&
@@ -818,14 +818,14 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
     const auto short_id = [](const std::string& id) {
         return id.substr(0, id.find('-'));
     };
-    const auto health_color = [](const NodeStatus& node) -> ImVec4 {
+    const auto health_color = [](const zetta::cluster::NodeStatus& node) -> ImVec4 {
         if (node.is_self) return kDotActive;
         if (!node.replication.known) return kInkQuiet;
         return node.replication.in_sync ? kSuccessColor : kWarnColor;
     };
 
     ImGui::Spacing();
-    const std::vector<NodeStatus> nodes = cluster_.nodes();
+    const std::vector<zetta::cluster::NodeStatus> nodes = cluster_.nodes();
     const float box_w = font * 9.0f;
     const float box_h = font * 2.3f;
     const float gap = font * 0.6f;
@@ -839,7 +839,7 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
         const int columns =
             std::max(1, static_cast<int>((avail + gap) / (box_w + gap)));
         for (std::size_t index = 0; index < nodes.size(); ++index) {
-            const NodeStatus& node = nodes[index];
+            const zetta::cluster::NodeStatus& node = nodes[index];
             const int row = static_cast<int>(index) / columns;
             const int col = static_cast<int>(index) % columns;
             const ImVec2 top_left(origin.x + col * (box_w + gap),
@@ -892,10 +892,10 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
         ImGui::TextDisabled("(add steps to project a plan)");
         return;
     }
-    const auto targets_summary = [&](const StepPlan& step) -> std::string {
+    const auto targets_summary = [&](const zetta::pipeline::StepPlan& step) -> std::string {
         if (step.target_nodes.empty()) return "—";
         switch (step.placement) {
-            case StepPlacement::NearData: {
+            case zetta::pipeline::StepPlacement::NearData: {
                 std::string ids;
                 for (std::size_t i = 0; i < step.target_nodes.size(); ++i) {
                     if (i) ids += ", ";
@@ -904,11 +904,11 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
                 return std::to_string(step.target_nodes.size()) + " owner(s) · " +
                        ids;
             }
-            case StepPlacement::FanOut:
-            case StepPlacement::AllNodes:
+            case zetta::pipeline::StepPlacement::FanOut:
+            case zetta::pipeline::StepPlacement::AllNodes:
                 return "all " + std::to_string(step.target_nodes.size()) +
                        " node(s)";
-            case StepPlacement::Coordinator:
+            case zetta::pipeline::StepPlacement::Coordinator:
                 return short_id(step.target_nodes.front()) + " (coordinator)";
         }
         return "—";
@@ -925,7 +925,7 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
         ImGui::TableSetupColumn("Runs on", ImGuiTableColumnFlags_WidthStretch,
                                 0.42f);
         ImGui::TableHeadersRow();
-        for (const StepPlan& step : plan.steps) {
+        for (const zetta::pipeline::StepPlan& step : plan.steps) {
             const auto node = editing_graph_->find_node(step.node_id);
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
@@ -957,7 +957,7 @@ void App::draw_graph_plan(const ClusterPlan& plan) {
     }
 }
 
-void App::draw_graph_editor(Project& project) {
+void App::draw_graph_editor(zetta::pipeline::Project& project) {
     ir::ExecutionGraph& graph = *editing_graph_;
     const float font = ImGui::GetFontSize();
 

@@ -2,7 +2,7 @@
 
 #include <utility>
 
-namespace zetta {
+namespace zetta::governance {
 
 std::string_view to_string(CapabilityDomain domain) {
     switch (domain) {
@@ -120,4 +120,4 @@ std::optional<CapabilitySet> capability_set_from_json(
     return parsed;
 }
 
-}  // namespace zetta
+}  // namespace zetta::governance

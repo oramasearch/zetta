@@ -8,11 +8,10 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::data {
 
-// A half-open range of row ordinals [start, end) covered by a partition. The row
 // ordinals are the table's logical row positions, so a partition names a
 // contiguous slice of a table without copying its keys.
 struct PartitionRowRange {
@@ -66,7 +65,7 @@ std::optional<DatasetPartitionValue> parse_dataset_partition_value(
 
 // A DatasetPartition: one entry in the partition catalog (ENT-36 / TBL-13) — a
 // record of where a slice of a table's data physically lives. A top-level entity
-// with no parent, modeled like zetta::ComputeJob: **replicated state** (flat key
+// with no parent, modeled like zetta::compute::ComputeJob: **replicated state** (flat key
 // `part:<uuid>`) whose in-memory + on-disk (`<part-uuid>/partition.json`) forms are
 // a projection of the Automerge CRDT document.
 //
@@ -79,7 +78,7 @@ class DatasetPartition {
 public:
     DatasetPartition(std::string id, DatasetPartitionValue value,
                      std::filesystem::path dir,
-                     ReplicationManager* replication = nullptr);
+                     zetta::cluster::ReplicationManager* replication = nullptr);
 
     const std::string& id() const { return id_; }
     const std::string& table() const { return value_.table; }
@@ -117,7 +116,7 @@ private:
     std::string id_;
     DatasetPartitionValue value_;
     std::filesystem::path dir_;
-    ReplicationManager* replication_;  // null = standalone (not replicated)
+    zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

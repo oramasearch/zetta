@@ -7,7 +7,7 @@
 #include "zetta/node.hpp"
 #include "zetta/governance/principal.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 
 namespace {
 
@@ -28,7 +28,7 @@ std::string burst_principal_name(const std::string& job_id,
 
 std::vector<BurstIdentity> BurstIdentityManager::mint(
     const std::string& job_id, const std::vector<ProvisionedNode>& nodes,
-    const Scope& scope, const CapabilitySet& capabilities) {
+    const zetta::governance::Scope& scope, const zetta::governance::CapabilitySet& capabilities) {
     std::vector<BurstIdentity> minted;
     minted.reserve(nodes.size());
     for (const ProvisionedNode& node : nodes) {
@@ -39,13 +39,13 @@ std::vector<BurstIdentity> BurstIdentityManager::mint(
         auto principal = node_.find_principal(name);
         const bool fresh = !principal;
         if (!principal) {
-            principal = node_.create_principal(name, PrincipalKind::Service);
+            principal = node_.create_principal(name, zetta::governance::PrincipalKind::Service);
         }
         if (!principal) continue;  // creation failed (disk error)
 
         // One short-lived, job-scoped key per identity (reuse the existing one on a
         // re-mint so the credential is stable).
-        std::shared_ptr<AccessKey> key =
+        std::shared_ptr<zetta::governance::AccessKey> key =
             principal->keys().empty() ? principal->create_key(scope, capabilities)
                                       : principal->keys().front();
         if (!key) continue;
@@ -54,7 +54,7 @@ std::vector<BurstIdentity> BurstIdentityManager::mint(
         // a fresh governed action.
         if (fresh) {
             node_.record_audit_event(
-                {AuditAction::KeyIssued, {}, key->id(), true,
+                {zetta::governance::AuditAction::KeyIssued, {}, key->id(), true,
                  "burst identity minted for job " + job_id + " on node " +
                      node.node_id,
                  {}});
@@ -84,7 +84,7 @@ std::size_t BurstIdentityManager::revoke(const std::string& job_id) {
                                        ? principal->id()
                                        : principal->keys().front()->id();
         node_.record_audit_event(
-            {AuditAction::KeyRevoked, {}, target, true,
+            {zetta::governance::AuditAction::KeyRevoked, {}, target, true,
              "burst identity revoked for job " + job_id + " on node " + node_id,
              {}});
         if (node_.drop_principal(name)) ++revoked;
@@ -109,4 +109,4 @@ std::vector<BurstIdentity> BurstIdentityManager::minted(
     return result;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

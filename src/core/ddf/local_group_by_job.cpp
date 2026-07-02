@@ -10,7 +10,7 @@
 namespace zetta::ddf {
 
 NearDataGroupByResult run_near_data_group_by_job(
-    compute::JobCoordinator& coordinator, Node& node, ComputeJob& job,
+    compute::JobCoordinator& coordinator, Node& node, zetta::compute::ComputeJob& job,
     const std::string& table, const DataFrameSchema& schema,
     const GroupBySpec& spec, compute::ComputeDevice& device,
     const std::string& round_tag, std::chrono::milliseconds timeout) {
@@ -20,14 +20,14 @@ NearDataGroupByResult run_near_data_group_by_job(
     // so the counters survive the call and surface in system.pipeline_jobs (#589).
     auto record_instrumentation = [&] {
         node.record_pipeline_job({.job_id = job.id(),
-                                  .kind = NearDataJobKind::GroupBy,
+                                  .kind = zetta::compute::NearDataJobKind::GroupBy,
                                   .node = node.node_id(),
                                   .partitions_read = out.partitions_read,
                                   .rows_read = out.rows_read,
                                   .local_bytes_read = out.local_bytes_read,
                                   .wire_bytes_moved = out.wire_bytes_moved,
                                   .status = out.status,
-                                  .recorded_at = now_iso8601()});
+                                  .recorded_at = zetta::util::now_iso8601()});
     };
 
     // (1) Compute near data: materialize this node's shard from its OWNED

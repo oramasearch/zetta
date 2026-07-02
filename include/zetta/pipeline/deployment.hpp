@@ -8,7 +8,7 @@
 
 #include "zetta/pipeline/deployment_target.hpp"
 
-namespace zetta {
+namespace zetta::pipeline {
 
 // A recorded **placement of an execution graph onto a target** (ENT-6 / FEAT-4).
 // Deploying a validated ExecutionGraph to a DeploymentTarget records one of
@@ -62,4 +62,4 @@ private:
     std::filesystem::path dir_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

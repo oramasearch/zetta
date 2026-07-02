@@ -16,9 +16,9 @@
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/pipeline/project_input.hpp"
 
-using zetta::compile_intent;
-using zetta::CompiledIntent;
-using zetta::IntentShape;
+using zetta::pipeline::compile_intent;
+using zetta::pipeline::CompiledIntent;
+using zetta::pipeline::IntentShape;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::ir::ExecutionGraph;
@@ -114,7 +114,7 @@ TEST(IntentCompilerTest, SkeletonRoundTripsThroughJsonBoundary) {
 TEST(IntentCompilerTest, SkeletonPassesDefaultGate) {
     const auto compiled = compile_intent("retention scoring for subscribers");
     ASSERT_TRUE(compiled);
-    EXPECT_TRUE(zetta::default_gate().run(compiled->graph).passed());
+    EXPECT_TRUE(zetta::pipeline::default_gate().run(compiled->graph).passed());
 }
 
 // Compilation is deterministic: the same intent yields an identical graph.

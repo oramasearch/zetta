@@ -6,7 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::governance {
 namespace fs = std::filesystem;
 
 namespace {
@@ -152,4 +152,4 @@ void AuditEvent::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::governance

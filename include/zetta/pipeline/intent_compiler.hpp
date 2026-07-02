@@ -24,7 +24,7 @@
 // generic-but-complete six-stage skeleton so the result is always well-formed and
 // editable. Real NL parsing / LLM-driven synthesis plugs in later behind the same
 // `compile_intent` front door without changing its contract.
-namespace zetta {
+namespace zetta::pipeline {
 
 // The template the heuristic mapped an intent onto — recorded so a caller (and a
 // test) can see *why* a given skeleton was produced, keeping the mapping
@@ -58,4 +58,4 @@ struct CompiledIntent {
 std::optional<CompiledIntent> compile_intent(std::string_view intent,
                                              std::string* error = nullptr);
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

@@ -9,7 +9,7 @@
 #include "zetta/cloud/azure_provisioner.hpp"
 #include "zetta/cloud/command_runner.hpp"
 
-namespace zetta {
+namespace zetta::cloud {
 namespace {
 
 // Trim ASCII whitespace both ends — CLI -o tsv output carries a trailing newline.
@@ -132,4 +132,4 @@ std::vector<ProvisionerConfig> detect_provisioner_configs(CommandRunner runner) 
     return detected;
 }
 
-}  // namespace zetta
+}  // namespace zetta::cloud

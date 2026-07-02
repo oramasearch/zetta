@@ -9,20 +9,20 @@
 #include <fstream>
 #include <utility>
 
-namespace zetta {
+namespace zetta::data {
 
 Table::Table(std::string id, std::string name, std::filesystem::path dir,
-             ReplicationManager* replication,
+             zetta::cluster::ReplicationManager* replication,
              ReplicationStrategy replication_strategy)
     : id_(std::move(id)),
       name_(std::move(name)),
       dir_(std::move(dir)),
-      store_(std::make_unique<JsonlStore>(dir_)),
+      store_(std::make_unique<zetta::storage::JsonlStore>(dir_)),
       replication_(replication),
       replication_strategy_(std::move(replication_strategy)) {}
 
 std::size_t Table::add_row(nlohmann::json doc) {
-    const std::string row_id = new_uuid();
+    const std::string row_id = zetta::util::new_uuid();
     // CRDT first (the source of truth), then the local store projection.
     if (replication_) {
         replication_->set(catalog::row_key(row_id),
@@ -55,4 +55,4 @@ void Table::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::data

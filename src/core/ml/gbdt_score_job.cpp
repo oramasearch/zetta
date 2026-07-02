@@ -88,7 +88,7 @@ ComputeStatus rank_on_device(ComputeDevice& device, std::vector<double>& entitie
 }  // namespace
 
 DistributedScoreResult run_score_job(compute::JobCoordinator& coordinator,
-                                     ComputeJob& job,
+                                     zetta::compute::ComputeJob& job,
                                      const ddf::DataFrame& features,
                                      const GbdtModel& model,
                                      const std::string& entity_column,

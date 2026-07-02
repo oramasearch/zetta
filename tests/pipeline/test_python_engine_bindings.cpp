@@ -26,25 +26,25 @@
 //   train(ds, target=…)               -> model step  -> native GBDT train (a real Model)
 //   rank(model) / score(…)            -> index step  -> distributed batch scoring
 //   explain(model)                    -> serve step  -> exact TreeSHAP (churn drivers)
-//   cluster.add_nodes(n, provider=…)  -> act step    -> zetta::add_nodes (permanent-add)
+//   cluster.add_nodes(n, provider=…)  -> act step    -> zetta::cloud::add_nodes (permanent-add)
 //
 // The three ML verbs need no new execution code: lowering them to model/index/serve
 // makes the existing ChurnStepExecutor (via run_churn_solution) run them. The cluster
 // control verb runs through the dedicated binding run_add_nodes_step.
 namespace {
 
-using zetta::AddNodesResult;
-using zetta::ChurnSolutionResult;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::Model;
+using zetta::cloud::AddNodesResult;
+using zetta::usecases::churn::ChurnSolutionResult;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::ml::Model;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ProvisionedNode;
-using zetta::ProvisionRequest;
-using zetta::ProvisionResult;
-using zetta::Provisioner;
-using zetta::RunStatus;
+using zetta::cloud::ProvisionedNode;
+using zetta::cloud::ProvisionRequest;
+using zetta::cloud::ProvisionResult;
+using zetta::cloud::Provisioner;
+using zetta::pipeline::RunStatus;
 using zetta::compute::CpuDevice;
 using zetta::compute::JobCoordinator;
 using zetta::input::PythonFrontend;
@@ -139,10 +139,10 @@ TEST(PythonEngineBindings, ChurnScriptTrainsRanksAndExplainsEndToEnd) {
 
     ComputeNode host(24560);
     CpuDevice device;
-    const zetta::ChurnDataset demo = zetta::demo_churn_dataset();
+    const zetta::usecases::churn::ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
     ASSERT_FALSE(demo.accounts.empty());
 
-    const ChurnSolutionResult result = zetta::run_churn_solution(
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
         host.node, host.coordinator, device, lowered.graph, demo);
 
     // The lowered graph executed end to end on the real engine.
@@ -173,7 +173,7 @@ TEST(PythonEngineBindings, ChurnScriptTrainsRanksAndExplainsEndToEnd) {
 // =====================================================================
 
 // cluster.add_nodes(3, provider=…) lowers to an act step; run_add_nodes_step reads
-// the count and drives zetta::add_nodes over the injected provisioner.
+// the count and drives zetta::cloud::add_nodes over the injected provisioner.
 TEST(PythonEngineBindings, ClusterAddNodesDrivesThePermanentAddAction) {
     const auto lowered =
         PythonFrontend{}.compile("cluster.add_nodes(3, provider='azure')\n");

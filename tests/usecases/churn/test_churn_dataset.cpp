@@ -18,18 +18,18 @@
 #include "zetta/pipeline/validation.hpp"
 
 namespace fs = std::filesystem;
-using zetta::ChurnAccount;
-using zetta::ChurnDataFormat;
-using zetta::ChurnDataset;
-using zetta::ChurnEvent;
-using zetta::CheckStatus;
-using zetta::CorrectnessGate;
-using zetta::Database;
-using zetta::entity_resolution_attribute;
-using zetta::EntityResolutionCheck;
-using zetta::import_records;
-using zetta::load_churn_dataset;
-using zetta::ValidationReport;
+using zetta::usecases::churn::ChurnAccount;
+using zetta::usecases::churn::ChurnDataFormat;
+using zetta::usecases::churn::ChurnDataset;
+using zetta::usecases::churn::ChurnEvent;
+using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CorrectnessGate;
+using zetta::data::Database;
+using zetta::usecases::churn::entity_resolution_attribute;
+using zetta::usecases::churn::EntityResolutionCheck;
+using zetta::data::import_records;
+using zetta::usecases::churn::load_churn_dataset;
+using zetta::pipeline::ValidationReport;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
 using zetta::test::TempDir;
@@ -202,7 +202,7 @@ TEST(ChurnDataset, DivisionCorrectResolutionPassesTheGate) {
     graph.add_node(StepKind::Clean, "resolve_accounts",
                    entity_resolution_attribute(result.dataset));
 
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph);
     EXPECT_TRUE(report.passed());
     EXPECT_FALSE(report.block_deploy);
@@ -234,12 +234,12 @@ TEST(ChurnDataset, ConflatingTwoSiblingsBlocksDeploy) {
     ExecutionGraph graph;
     graph.add_node(StepKind::Clean, "resolve_accounts", attribute);
 
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     const ValidationReport report = gate.run(graph);
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);  // RULE-1: conflation blocks deploy
 
-    const zetta::CheckResult check = EntityResolutionCheck{}.evaluate(graph);
+    const zetta::pipeline::CheckResult check = EntityResolutionCheck{}.evaluate(graph);
     EXPECT_EQ(check.status, CheckStatus::Fail);
     EXPECT_NE(check.reason.find(first_account), std::string::npos);
 }

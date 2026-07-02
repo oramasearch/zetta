@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <string>
 
-namespace zetta {
+namespace zetta::data {
 
 class Table;
 
@@ -24,4 +24,4 @@ struct ImportResult {
 // before any row is added, so a parse error imports nothing.
 ImportResult import_records(Table& table, const std::filesystem::path& path);
 
-}  // namespace zetta
+}  // namespace zetta::data

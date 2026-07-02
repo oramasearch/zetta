@@ -24,7 +24,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/storage/engine.hpp"
 
-namespace zetta {
+namespace zetta::usecases::churn {
 namespace {
 
 // A short, human-readable label for a step: its name, else its (UUID) id — the
@@ -132,14 +132,14 @@ bool ChurnStepExecutor::ensure_inputs_loaded(std::string& error) const {
 // connect -> load to DDF. Both numeric shards are loaded (idempotent) the first time
 // any connect step runs; each connect step records a dataset output + a lineage
 // source from its attributes.
-StepOutcome ChurnStepExecutor::run_connect(const ir::Node& step) const {
-    StepOutcome outcome;
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_connect(const ir::Node& step) const {
+    zetta::pipeline::StepOutcome outcome;
     std::string error;
     if (!ensure_inputs_loaded(error)) {
-        return StepOutcome{/*ok=*/false, error, {}, {}};
+        return zetta::pipeline::StepOutcome{/*ok=*/false, error, {}, {}};
     }
     outcome.sources.push_back(connect_source(step));
-    outcome.outputs.push_back(RunOutput{
+    outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "dataset", step_label(step), "connect:" + step.id});
     return outcome;
 }
@@ -147,55 +147,55 @@ StepOutcome ChurnStepExecutor::run_connect(const ir::Node& step) const {
 // clean -> featurize. Run the point-in-time featurization as a `featurize`
 // ComputeJob, then materialize the device-backed feature frame the downstream steps
 // train/score/explain over.
-StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) const {
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) const {
     State& state = *state_;
     std::string error;
     if (!ensure_inputs_loaded(error)) {
-        return StepOutcome{/*ok=*/false, error, {}, {}};
+        return zetta::pipeline::StepOutcome{/*ok=*/false, error, {}, {}};
     }
 
-    std::shared_ptr<ComputeJob> job =
-        node_.create_job(JobKind::Featurize, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job =
+        node_.create_job(zetta::compute::JobKind::Featurize, config_.project, config_.graph);
     if (!job) {
-        return StepOutcome{/*ok=*/false, "could not create featurize job", {}, {}};
+        return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create featurize job", {}, {}};
     }
     const ddf::DistributedFeaturizeResult result = ddf::run_featurize_job(
         coordinator_, *job, state.events, state.accounts, config_.featurize);
     if (!result.ok()) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "featurize job failed: " + job->detail(), {}, {}};
     }
     state.feature_table = std::move(result.table);
 
     auto frame = state.feature_table.to_data_frame(device_);
     if (!frame.ok()) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "materialize feature frame: " + frame.status.message,
                            {}, {}};
     }
     state.feature_frame = std::move(frame.frame);
     state.features_ready = true;
 
-    StepOutcome outcome;
-    outcome.outputs.push_back(RunOutput{
+    zetta::pipeline::StepOutcome outcome;
+    outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "dataset", step_label(step), "features:" + job->id()});
     return outcome;
 }
 
 // model -> train GBDT + (opt-in) calibrate. Run the distributed `train` ComputeJob,
-// which registers a real zetta::Model on the node (the root). The run's `model`
+// which registers a real zetta::ml::Model on the node (the root). The run's `model`
 // output references that Model's real id.
-StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) const {
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) const {
     State& state = *state_;
     if (!state.features_ready) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "model step ran before features were built", {}, {}};
     }
 
-    std::shared_ptr<ComputeJob> job =
-        node_.create_job(JobKind::Train, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job =
+        node_.create_job(zetta::compute::JobKind::Train, config_.project, config_.graph);
     if (!job) {
-        return StepOutcome{/*ok=*/false, "could not create train job", {}, {}};
+        return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create train job", {}, {}};
     }
     const ml::DistributedTrainResult result = ml::run_train_job(
         coordinator_, *job, state.feature_frame,
@@ -203,21 +203,21 @@ StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) const {
         config_.params, &node_, config_.model_name, /*round_tag=*/{},
         config_.calibration);
     if (!result.ok()) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "train job failed: " + job->detail(), {}, {}};
     }
     state.model = result.model;
     state.model_id = result.model_id;
     state.model_ready = true;
 
-    StepOutcome outcome;
+    zetta::pipeline::StepOutcome outcome;
     // The ref is the REAL registered Model id (resolvable via Node::find_model) —
     // when the root didn't register a model (a non-root in a multi-node run), fall
     // back to a logical handle so the run output is still well-formed.
     const std::string ref =
         state.model_id.empty() ? "model:" + job->id() : state.model_id;
     outcome.outputs.push_back(
-        RunOutput{"model", step_label(step), ref});
+        zetta::pipeline::RunOutput{"model", step_label(step), ref});
     return outcome;
 }
 
@@ -226,10 +226,10 @@ StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) const {
 // distributed `score` ComputeJob to produce the global at-risk list (highest risk
 // first). The index lets a retention team resolve an at-risk `entity` back to its
 // account record; the ranked list is the at-risk deliverable the act step joins.
-StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) const {
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) const {
     State& state = *state_;
     if (!state.model_ready) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "index step ran before the model was trained", {}, {}};
     }
 
@@ -238,47 +238,47 @@ StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) const {
     // real Index id when built. When no Search backend is registered the build is
     // skipped (the at-risk list is still produced) — backward compatible.
     std::string index_ref;
-    IndexValue index_value;
+    zetta::index::IndexValue index_value;
     index_value.table = "churn_accounts";
-    index_value.kind = IndexKind::Search;
-    index_value.backend = std::string(InMemoryIndexBackend::kName);
+    index_value.kind = zetta::index::IndexKind::Search;
+    index_value.backend = std::string(zetta::index::InMemoryIndexBackend::kName);
     index_value.fields = {config_.entity_column};
-    if (const std::shared_ptr<IndexBackend> backend =
+    if (const std::shared_ptr<zetta::index::IndexBackend> backend =
             node_.index_registry().resolve(index_value.spec());
         backend && config_.accounts_store != nullptr) {
-        const std::vector<IndexPartition> partitions =
-            read_index_partitions(*config_.accounts_store);
-        const IndexStatus status = backend->build(index_value.spec(), partitions);
+        const std::vector<zetta::index::IndexPartition> partitions =
+            zetta::index::read_index_partitions(*config_.accounts_store);
+        const zetta::index::IndexStatus status = backend->build(index_value.spec(), partitions);
         if (!status.ok()) {
-            return StepOutcome{/*ok=*/false,
+            return zetta::pipeline::StepOutcome{/*ok=*/false,
                                "entity index build failed: " + status.message,
                                {}, {}};
         }
-        if (const std::shared_ptr<Index> index =
+        if (const std::shared_ptr<zetta::index::Index> index =
                 node_.create_index(index_value)) {
             index_ref = index->id();
         }
     }
 
-    std::shared_ptr<ComputeJob> job =
-        node_.create_job(JobKind::Score, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job =
+        node_.create_job(zetta::compute::JobKind::Score, config_.project, config_.graph);
     if (!job) {
-        return StepOutcome{/*ok=*/false, "could not create score job", {}, {}};
+        return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create score job", {}, {}};
     }
     const ml::DistributedScoreResult result =
         ml::run_score_job(coordinator_, *job, state.feature_frame, state.model,
                           config_.entity_column, config_.top_k);
     if (!result.ok()) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "score job failed: " + job->detail(), {}, {}};
     }
     state.ranked = result.ranked;
     state.ranked_ready = true;
 
-    StepOutcome outcome;
+    zetta::pipeline::StepOutcome outcome;
     // Prefer the real Index id; fall back to the at-risk-list handle when no index
     // backend was registered (so the run output is always well-formed).
-    outcome.outputs.push_back(RunOutput{
+    outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "index", step_label(step),
         index_ref.empty() ? "atrisk:" + job->id() : index_ref});
     return outcome;
@@ -286,23 +286,23 @@ StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) const {
 
 // serve -> explain (TreeSHAP). Run the distributed `explain` ComputeJob for the
 // per-entity attributions + the global mean-|phi| driver ranking.
-StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) const {
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) const {
     State& state = *state_;
     if (!state.model_ready) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "serve step ran before the model was trained", {}, {}};
     }
 
-    std::shared_ptr<ComputeJob> job =
-        node_.create_job(JobKind::Explain, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job =
+        node_.create_job(zetta::compute::JobKind::Explain, config_.project, config_.graph);
     if (!job) {
-        return StepOutcome{/*ok=*/false, "could not create explain job", {}, {}};
+        return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create explain job", {}, {}};
     }
     const ml::DistributedExplainResult result =
         ml::run_explain_job(coordinator_, *job, state.model, state.feature_frame,
                             config_.entity_column);
     if (!result.ok()) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "explain job failed: " + job->detail(), {}, {}};
     }
     state.feature_names = result.feature_names;
@@ -311,9 +311,9 @@ StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) const {
     state.explanations = result.explanations;
     state.explained = true;
 
-    StepOutcome outcome;
+    zetta::pipeline::StepOutcome outcome;
     // The drivers are an artifact (the population churn-driver ranking) — a dataset.
-    outcome.outputs.push_back(RunOutput{
+    outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "dataset", step_label(step), "drivers:" + job->id()});
     return outcome;
 }
@@ -321,10 +321,10 @@ StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) const {
 // act -> retention playbook. Host-side join of the at-risk list with each entity's
 // dominant SHAP driver (who to contact + why). Not a heavy compute job — it composes
 // the index + serve outputs.
-StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) const {
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) const {
     State& state = *state_;
     if (!state.ranked_ready) {
-        return StepOutcome{/*ok=*/false,
+        return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "act step ran before the at-risk list was built", {}, {}};
     }
 
@@ -348,13 +348,13 @@ StepOutcome ChurnStepExecutor::run_act(const ir::Node& step) const {
         state.playbook.push_back(std::move(action));
     }
 
-    StepOutcome outcome;
-    outcome.outputs.push_back(RunOutput{
+    zetta::pipeline::StepOutcome outcome;
+    outcome.outputs.push_back(zetta::pipeline::RunOutput{
         "dataset", step_label(step), "playbook:" + step.id});
     return outcome;
 }
 
-StepOutcome ChurnStepExecutor::run_step(const ir::Node& step) const {
+zetta::pipeline::StepOutcome ChurnStepExecutor::run_step(const ir::Node& step) const {
     switch (step.kind) {
         case ir::StepKind::Connect: return run_connect(step);
         case ir::StepKind::Clean:   return run_clean(step);
@@ -363,7 +363,7 @@ StepOutcome ChurnStepExecutor::run_step(const ir::Node& step) const {
         case ir::StepKind::Serve:   return run_serve(step);
         case ir::StepKind::Act:     return run_act(step);
     }
-    return StepOutcome{/*ok=*/false, "unknown step kind", {}, {}};
+    return zetta::pipeline::StepOutcome{/*ok=*/false, "unknown step kind", {}, {}};
 }
 
 const std::string& ChurnStepExecutor::model_id() const { return state_->model_id; }
@@ -407,4 +407,4 @@ const std::vector<RetentionAction>& ChurnStepExecutor::playbook() const {
     return state_->playbook;
 }
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

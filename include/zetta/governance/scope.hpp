@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::governance {
 
 // What kind of node-owned resource an access grant names. V1 (RULE-3 / ADR-6)
 // scopes keys to the **coarse, top-level** resources — databases and projects.
@@ -78,4 +78,4 @@ void to_json(nlohmann::json& document, const Scope& scope);
 std::optional<Resource> resource_from_json(const nlohmann::json& document);
 std::optional<Scope> scope_from_json(const nlohmann::json& document);
 
-}  // namespace zetta
+}  // namespace zetta::governance

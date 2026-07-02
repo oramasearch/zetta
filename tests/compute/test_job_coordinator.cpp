@@ -19,13 +19,13 @@
 
 using namespace std::chrono_literals;
 
-using zetta::AuditAction;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::CollectiveOp;
-using zetta::ComputeJob;
-using zetta::JobKind;
-using zetta::JobStatus;
+using zetta::governance::AuditAction;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::CollectiveOp;
+using zetta::compute::ComputeJob;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
 using zetta::Node;
 using zetta::NodeConfig;
 using zetta::compute::JobCoordinator;
@@ -256,7 +256,7 @@ TEST(JobCoordinator, MapDistributesTasksToIdlePeer) {
 // A single-node cluster degenerates cleanly: the collective reduces locally, so
 // the coordinator still drives the job to Succeeded with the node's own sum.
 TEST(JobCoordinator, SingleNodeDrivesJobToSucceeded) {
-    ComputeNode solo{zetta::new_uuid(), 46220, {}, /*workers=*/2};
+    ComputeNode solo{zetta::util::new_uuid(), 46220, {}, /*workers=*/2};
     solo.cluster.start();
     solo.coordinator.start();
 
@@ -286,7 +286,7 @@ TEST(JobCoordinator, SingleNodeDrivesJobToSucceeded) {
 // A job body that reports failure marks the job Failed and records the reason —
 // the coordinator never leaves a job stuck in Running.
 TEST(JobCoordinator, FailedAlgorithmMarksJobFailed) {
-    ComputeNode solo{zetta::new_uuid(), 46230, {}, /*workers=*/1};
+    ComputeNode solo{zetta::util::new_uuid(), 46230, {}, /*workers=*/1};
     solo.cluster.start();
     solo.coordinator.start();
 

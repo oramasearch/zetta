@@ -39,20 +39,20 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using zetta::ChurnPipelineConfig;
-using zetta::ChurnStepExecutor;
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::ExecutionResult;
-using zetta::GraphExecutor;
-using zetta::JobKind;
-using zetta::JobStatus;
-using zetta::Model;
+using zetta::usecases::churn::ChurnPipelineConfig;
+using zetta::usecases::churn::ChurnStepExecutor;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::pipeline::ExecutionResult;
+using zetta::pipeline::GraphExecutor;
+using zetta::compute::JobKind;
+using zetta::compute::JobStatus;
+using zetta::ml::Model;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::RetentionAction;
-using zetta::RunOutput;
-using zetta::RunStatus;
+using zetta::usecases::churn::RetentionAction;
+using zetta::pipeline::RunOutput;
+using zetta::pipeline::RunStatus;
 using zetta::compute::CpuDevice;
 using zetta::compute::JobCoordinator;
 using zetta::ddf::ColumnSchema;
@@ -71,8 +71,8 @@ using Json = nlohmann::json;
 // churn_accounts_schema, churn_featurize_spec, default_churn_gbdt_params) — the
 // same the GBDT / TreeSHAP suites share.
 
-zetta::JsonStore make_store(const std::vector<Json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<Json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t index = 0; index < rows.size(); ++index) {
         store.add("row-" + std::to_string(index), rows[index]);
     }
@@ -118,30 +118,30 @@ struct ComputeNode {
 TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
     // The churn ExecutionGraph: the intent compiler's churn skeleton
     // (connect x2 -> clean -> model -> index -> serve -> act).
-    const auto compiled = zetta::compile_intent("reduce churn and improve retention");
+    const auto compiled = zetta::pipeline::compile_intent("reduce churn and improve retention");
     ASSERT_TRUE(compiled.has_value());
-    EXPECT_EQ(compiled->shape, zetta::IntentShape::Churn);
+    EXPECT_EQ(compiled->shape, zetta::pipeline::IntentShape::Churn);
     const zetta::ir::ExecutionGraph& graph = compiled->graph;
 
     // This node's numeric input shards (single-node => the whole fixture).
     const fs::path churn_dir = fs::path(ZETTA_TEST_FIXTURES_DIR) / "churn";
-    const auto loaded = zetta::load_churn_dataset(churn_dir);
+    const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
-    const zetta::ChurnNumericShards numeric =
-        zetta::encode_churn_dataset(loaded.dataset);
-    const zetta::JsonStore events = make_store(numeric.events);
-    const zetta::JsonStore accounts = make_store(numeric.accounts);
+    const zetta::usecases::churn::ChurnNumericShards numeric =
+        zetta::usecases::churn::encode_churn_dataset(loaded.dataset);
+    const zetta::storage::JsonStore events = make_store(numeric.events);
+    const zetta::storage::JsonStore accounts = make_store(numeric.accounts);
 
     ComputeNode host(24400);
     CpuDevice device;
 
     ChurnPipelineConfig config;
     config.events_store = &events;
-    config.events_schema = zetta::churn_events_schema();
+    config.events_schema = zetta::usecases::churn::churn_events_schema();
     config.accounts_store = &accounts;
-    config.accounts_schema = zetta::churn_accounts_schema();
-    config.featurize = zetta::churn_featurize_spec(numeric.as_of);
-    config.params = zetta::default_churn_gbdt_params();
+    config.accounts_schema = zetta::usecases::churn::churn_accounts_schema();
+    config.featurize = zetta::usecases::churn::churn_featurize_spec(numeric.as_of);
+    config.params = zetta::usecases::churn::default_churn_gbdt_params();
     config.entity_column = "entity";
     config.model_name = "churn_model";
 
@@ -160,7 +160,7 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
 
     // The produced run is schema-valid (it only emits closed output kinds).
     std::string schema_error;
-    EXPECT_TRUE(zetta::validate_run_value(result.run->metadata(), &schema_error))
+    EXPECT_TRUE(zetta::pipeline::validate_run_value(result.run->metadata(), &schema_error))
         << schema_error;
 
     // (1) A `model` output that references a REAL registered Model.
@@ -181,10 +181,10 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
         std::find_if(outputs.begin(), outputs.end(),
                      [](const RunOutput& o) { return o.kind == "index"; });
     ASSERT_NE(index_output, outputs.end()) << "run has no index output";
-    std::shared_ptr<zetta::Index> built_index =
+    std::shared_ptr<zetta::index::Index> built_index =
         host.node.find_index(index_output->ref);
     ASSERT_TRUE(built_index) << "index output ref does not resolve to a real Index";
-    EXPECT_EQ(built_index->kind(), zetta::IndexKind::Search);
+    EXPECT_EQ(built_index->kind(), zetta::index::IndexKind::Search);
     // The built index resolves an entity id back to its account row.
     auto index_backend = host.node.index_registry().resolve(built_index->spec());
     ASSERT_TRUE(index_backend);
@@ -241,23 +241,23 @@ TEST(ChurnStepExecutor, RunGraphProducesRealModelRankedListAndDrivers) {
 // Failed (fail-fast) — here the model step has no features because the configured
 // shards are empty, so featurization yields nothing trainable.
 TEST(ChurnStepExecutor, FailingComputeFailsTheRun) {
-    const auto compiled = zetta::compile_intent("predict churn");
+    const auto compiled = zetta::pipeline::compile_intent("predict churn");
     ASSERT_TRUE(compiled.has_value());
 
     // Empty shards: connect loads empty frames, featurize/train then fail.
-    const zetta::JsonStore events = make_store({});
-    const zetta::JsonStore accounts = make_store({});
+    const zetta::storage::JsonStore events = make_store({});
+    const zetta::storage::JsonStore accounts = make_store({});
 
     ComputeNode host(24410);
     CpuDevice device;
 
     ChurnPipelineConfig config;
     config.events_store = &events;
-    config.events_schema = zetta::churn_events_schema();
+    config.events_schema = zetta::usecases::churn::churn_events_schema();
     config.accounts_store = &accounts;
-    config.accounts_schema = zetta::churn_accounts_schema();
-    config.featurize = zetta::churn_featurize_spec(180);
-    config.params = zetta::default_churn_gbdt_params();
+    config.accounts_schema = zetta::usecases::churn::churn_accounts_schema();
+    config.featurize = zetta::usecases::churn::churn_featurize_spec(180);
+    config.params = zetta::usecases::churn::default_churn_gbdt_params();
 
     auto churn = std::make_shared<ChurnStepExecutor>(host.node, host.coordinator,
                                                      device, config);

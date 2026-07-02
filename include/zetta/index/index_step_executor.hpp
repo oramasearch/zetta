@@ -39,24 +39,22 @@
 // graph JSON (read through index_spec_from_node), and the recorded Index entity is
 // validated at its own JSON-Schema boundary (parse_index_value) — so malformed
 // data still fails fast there. See docs/indexing/index-step-executor.md.
-namespace zetta {
+namespace zetta::storage { class StorageEngine; }
+namespace zetta { class Node; }
 
-class Node;
-class StorageEngine;
+namespace zetta::index {
 
-// Read a storage engine's rows into IndexPartitions — the unit IndexBackend::build
-// ingests (one IndexDocument{ id, doc } per row, chunked like the storage engine so
 // a build can fan across cores/nodes later). Shared by IndexStepExecutor and any
 // other executor that builds an index over a table's rows. An empty store yields no
 // partitions (a valid empty build).
-std::vector<IndexPartition> read_index_partitions(const StorageEngine& store);
+std::vector<IndexPartition> read_index_partitions(const zetta::storage::StorageEngine& store);
 
 // A step's source table is named in its IndexSpec (`spec.table`), and a table in
 // zetta lives in a database. By default the source table is resolved by name
 // across the node's databases (first match); an `index` step may carry an optional
 // `database` attribute to qualify it (`<database>.<table>`). This is the one place
 // the step's raw attributes are read beyond index_spec_from_node.
-class IndexStepExecutor final : public StepExecutor {
+class IndexStepExecutor final : public zetta::pipeline::StepExecutor {
 public:
     // Build over the node's own IndexRegistry (the usual case — the registry the
     // node ships the reference backends in, plus anything the host added).
@@ -71,14 +69,14 @@ public:
     // reason on a missing/invalid spec, an unresolved backend, a missing source
     // table, a build failure, or an entity-record failure — the orchestrator then
     // fail-fasts the run.
-    StepOutcome run_step(const ir::Node& step) const override;
+    zetta::pipeline::StepOutcome run_step(const ir::Node& step) const override;
 
 private:
-    StepOutcome run_index(const ir::Node& step) const;
+    zetta::pipeline::StepOutcome run_index(const ir::Node& step) const;
 
     Node& node_;
     IndexRegistry& registry_;
-    DefaultStepExecutor default_;  // delegate for the non-index step kinds
+    zetta::pipeline::DefaultStepExecutor default_;  // delegate for the non-index step kinds
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

@@ -10,9 +10,10 @@
 
 #include "zetta/cloud/provisioner.hpp"
 
-namespace zetta {
+namespace zetta::governance { class AuditSink; }
 
-class AuditSink;  // include/zetta/governance/audit_event.hpp — where the gate records.
+namespace zetta::cloud {
+
 
 // A configured ceiling on a single provision burst (APR-3 / RSK-9), the cap the
 // large-burst approval gate enforces. Two **independent, optional** dimensions; a
@@ -93,7 +94,7 @@ public:
     // bursts (empty → deny-by-default). `cost` estimates a burst's cost (empty →
     // default_burst_cost). `inner` must outlive the gate.
     BurstApprovalGate(Provisioner& inner, BurstCap cap,
-                      AuditSink* audit = nullptr, BurstApprover approver = {},
+                      zetta::governance::AuditSink* audit = nullptr, BurstApprover approver = {},
                       CostEstimator cost = {});
 
     // Gate a provision request. Within cap → delegate to the inner backend. Over
@@ -117,9 +118,9 @@ public:
 private:
     Provisioner& inner_;
     BurstCap cap_;
-    AuditSink* audit_;
+    zetta::governance::AuditSink* audit_;
     BurstApprover approver_;
     CostEstimator cost_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

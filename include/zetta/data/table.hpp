@@ -11,11 +11,10 @@
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/storage/engine.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::data {
 
-// A named collection of JSON documents (rows), persisted on disk in its own
 // folder (named by a UUID) via a JSONL storage engine. The folder name is the
 // id; the human name lives in table.json beside the row chunks.
 //
@@ -25,7 +24,7 @@ class ReplicationManager;
 class Table {
 public:
     Table(std::string id, std::string name, std::filesystem::path dir,
-          ReplicationManager* replication = nullptr,
+          zetta::cluster::ReplicationManager* replication = nullptr,
           ReplicationStrategy replication_strategy = {});
 
     const std::string& id() const { return id_; }
@@ -40,8 +39,8 @@ public:
         return replication_strategy_;
     }
 
-    StorageEngine& store() { return *store_; }
-    const StorageEngine& store() const { return *store_; }
+    zetta::storage::StorageEngine& store() { return *store_; }
+    const zetta::storage::StorageEngine& store() const { return *store_; }
 
     // Insert a row (persisted immediately + captured into the CRDT); returns the
     // new row count. The row's id is generated here and used as its CRDT key.
@@ -72,10 +71,10 @@ private:
     std::string id_;
     std::string name_;
     std::filesystem::path dir_;
-    std::unique_ptr<StorageEngine> store_;
-    ReplicationManager* replication_;  // null = not replicated
+    std::unique_ptr<zetta::storage::StorageEngine> store_;
+    zetta::cluster::ReplicationManager* replication_;  // null = not replicated
     std::shared_ptr<Partitioner> partitioner_;  // null = not partitioned
     ReplicationStrategy replication_strategy_;  // ENT-35; default ReplicateToAll
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

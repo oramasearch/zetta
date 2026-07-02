@@ -15,7 +15,7 @@
 //
 // It is a concrete Check that plugs into the CorrectnessGate (gate.hpp) without
 // touching the gate, and ships in default_gate().
-namespace zetta {
+namespace zetta::usecases::churn {
 
 // What an entity-resolution step looks like in the IR:
 //
@@ -50,10 +50,10 @@ namespace zetta {
 //     block deploy).
 //   * A graph with no entity-resolution step has nothing to conflate, so the
 //     check passes vacuously.
-class EntityResolutionCheck final : public Check {
+class EntityResolutionCheck final : public zetta::pipeline::Check {
 public:
     std::string name() const override { return "entity_resolution"; }
-    CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
+    zetta::pipeline::CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
 
-}  // namespace zetta
+}  // namespace zetta::usecases::churn

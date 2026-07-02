@@ -36,25 +36,25 @@ namespace {
 
 using namespace std::chrono_literals;
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::DistributedFulltextIndex;
-using zetta::FulltextHit;
-using zetta::FulltextQueryRequest;
-using zetta::FulltextQueryResponse;
-using zetta::IndexBackend;
-using zetta::IndexDocument;
-using zetta::IndexKind;
-using zetta::IndexPartition;
-using zetta::IndexQuery;
-using zetta::IndexQueryResult;
-using zetta::IndexSpec;
-using zetta::IndexStatus;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::index::DistributedFulltextIndex;
+using zetta::index::FulltextHit;
+using zetta::index::FulltextQueryRequest;
+using zetta::index::FulltextQueryResponse;
+using zetta::index::IndexBackend;
+using zetta::index::IndexDocument;
+using zetta::index::IndexKind;
+using zetta::index::IndexPartition;
+using zetta::index::IndexQuery;
+using zetta::index::IndexQueryResult;
+using zetta::index::IndexSpec;
+using zetta::index::IndexStatus;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::OramaCoreFulltextIndex;
-using zetta::RoundRobinPartitioner;
-using zetta::Table;
+using zetta::index::OramaCoreFulltextIndex;
+using zetta::data::RoundRobinPartitioner;
+using zetta::data::Table;
 using zetta::test::TempDir;
 
 // ----- a deterministic, partition-INDEPENDENT reference scorer ----------------
@@ -174,7 +174,7 @@ std::vector<std::string> consolidated_oracle(const std::vector<Table*>& tables,
     std::vector<IndexPartition> all;
     for (Table* table : tables) {
         for (IndexPartition& partition :
-             zetta::read_index_partitions(table->store())) {
+             zetta::index::read_index_partitions(table->store())) {
             all.push_back(std::move(partition));
         }
     }
@@ -254,7 +254,7 @@ TEST(DistributedFulltextMerge, RanksByScoreDescThenRowIdAsc) {
         {{"r3", 5.0}, {"r4", 1.0}},
     };
     const std::vector<FulltextHit> merged =
-        zetta::merge_fulltext_hits(sources, /*top_k=*/0);
+        zetta::index::merge_fulltext_hits(sources, /*top_k=*/0);
     // r3 (5) > r1 (3) > r2 (1) == r4 (1) -> the tie breaks on row id ascending.
     ASSERT_EQ(merged.size(), 4u);
     EXPECT_EQ(merged[0].row_id, "r3");
@@ -269,7 +269,7 @@ TEST(DistributedFulltextMerge, DedupsByRowIdKeepingMaxScoreAndCapsTopK) {
         {{"dup", 7.0}, {"b", 1.0}},  // "dup" appears twice — keep the higher (7)
     };
     const std::vector<FulltextHit> merged =
-        zetta::merge_fulltext_hits(sources, /*top_k=*/2);
+        zetta::index::merge_fulltext_hits(sources, /*top_k=*/2);
     ASSERT_EQ(merged.size(), 2u);  // capped to top 2
     EXPECT_EQ(merged[0].row_id, "a");
     EXPECT_DOUBLE_EQ(merged[0].score, 9.0);
@@ -292,7 +292,7 @@ TEST(DistributedFulltextWire, QueryRequestRoundTripsThroughTheSchema) {
 
     std::string error;
     const auto decoded =
-        zetta::decode_fulltext_query(zetta::encode_fulltext_query(request), &error);
+        zetta::index::decode_fulltext_query(zetta::index::encode_fulltext_query(request), &error);
     ASSERT_TRUE(decoded) << error;
     EXPECT_EQ(decoded->table, "articles");
     EXPECT_EQ(decoded->kind, IndexKind::Search);
@@ -306,20 +306,20 @@ TEST(DistributedFulltextWire, QueryRequestRoundTripsThroughTheSchema) {
 
 TEST(DistributedFulltextWire, MalformedMessagesAreRejectedAtTheBoundary) {
     std::string error;
-    EXPECT_FALSE(zetta::decode_fulltext_query("{not json", &error));
+    EXPECT_FALSE(zetta::index::decode_fulltext_query("{not json", &error));
     // Missing required `term`.
-    EXPECT_FALSE(zetta::decode_fulltext_query(
+    EXPECT_FALSE(zetta::index::decode_fulltext_query(
         R"({"table":"a","kind":"search","fields":["t"]})", &error));
     // Unknown kind (enum violation).
-    EXPECT_FALSE(zetta::decode_fulltext_query(
+    EXPECT_FALSE(zetta::index::decode_fulltext_query(
         R"({"table":"a","kind":"bogus","fields":["t"],"term":"q"})", &error));
     // A non-scalar term (array) is rejected.
-    EXPECT_FALSE(zetta::decode_fulltext_query(
+    EXPECT_FALSE(zetta::index::decode_fulltext_query(
         R"({"table":"a","kind":"search","fields":["t"],"term":[1,2]})", &error));
 
     // Hits response: a hit missing `score` is rejected.
-    EXPECT_FALSE(zetta::decode_fulltext_hits(R"({"hits":[{"id":"r1"}]})", &error));
-    EXPECT_TRUE(zetta::decode_fulltext_hits(R"({"hits":[]})", &error));  // empty ok
+    EXPECT_FALSE(zetta::index::decode_fulltext_hits(R"({"hits":[{"id":"r1"}]})", &error));
+    EXPECT_TRUE(zetta::index::decode_fulltext_hits(R"({"hits":[]})", &error));  // empty ok
 }
 
 TEST(DistributedFulltextWire, HitsResponseRoundTrips) {
@@ -328,7 +328,7 @@ TEST(DistributedFulltextWire, HitsResponseRoundTrips) {
     response.hits = {{"r1", 12.5}, {"r3", 2.0}};
     std::string error;
     const auto decoded =
-        zetta::decode_fulltext_hits(zetta::encode_fulltext_hits(response), &error);
+        zetta::index::decode_fulltext_hits(zetta::index::encode_fulltext_hits(response), &error);
     ASSERT_TRUE(decoded) << error;
     EXPECT_EQ(decoded->from, "node-a");
     ASSERT_EQ(decoded->hits.size(), 2u);
@@ -351,8 +351,8 @@ TEST(DistributedFulltext, PerPartitionMergeMatchesConsolidatedOracleSingleNode) 
     // genuinely merges hits from multiple per-partition sub-indexes.
     table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
     for (const nlohmann::json& row : postgres_corpus()) table->add_row(row);
-    const zetta::PartitionWriteResult written =
-        zetta::write_partitioned(node, *database, *table);
+    const zetta::data::PartitionWriteResult written =
+        zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
     ASSERT_GT(written.partitions.size(), 1u);  // genuinely multi-partition
 
@@ -407,8 +407,8 @@ struct FulltextNode {
         EXPECT_TRUE(created);
         created->set_partitioner(std::make_shared<RoundRobinPartitioner>(3));
         for (const nlohmann::json& row : shard_rows) created->add_row(row);
-        const zetta::PartitionWriteResult written =
-            zetta::write_partitioned(node, *database, *created);
+        const zetta::data::PartitionWriteResult written =
+            zetta::data::write_partitioned(node, *database, *created);
         EXPECT_TRUE(written.ok()) << written.error;
         table = created;
         const auto build =
@@ -501,8 +501,8 @@ TEST(DistributedFulltext, BuildsRealFulltextSubIndexesAndRanksLikeOracle) {
     ASSERT_TRUE(table);
     table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
     for (const nlohmann::json& row : postgres_corpus()) table->add_row(row);
-    const zetta::PartitionWriteResult written =
-        zetta::write_partitioned(node, *database, *table);
+    const zetta::data::PartitionWriteResult written =
+        zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
 
     Cluster cluster(node.node_id(), cluster_config(47090, {}));
@@ -514,7 +514,7 @@ TEST(DistributedFulltext, BuildsRealFulltextSubIndexesAndRanksLikeOracle) {
 
     // The single consolidated BM25F index over all rows = the reference oracle.
     OramaCoreFulltextIndex oracle_backend;
-    std::vector<IndexPartition> all = zetta::read_index_partitions(table->store());
+    std::vector<IndexPartition> all = zetta::index::read_index_partitions(table->store());
     ASSERT_TRUE(oracle_backend.build(spec, all).ok());
 
     const IndexQuery query = text_query("postgres");

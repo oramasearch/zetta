@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::cloud {
 
 // The node capability model (ENT-32, part of the native distributed accelerated
 // compute pass for UC-1 churn — ARC-13). It describes a single node's compute
@@ -17,7 +17,7 @@ namespace zetta {
 // `satisfies()` is the meet-or-exceed comparison that links the two.
 //
 // NOTE: this is the *compute* capability of a machine — entirely distinct from
-// zetta::Capability (include/zetta/governance/capability.hpp), which is an access-control
+// zetta::governance::Capability (include/zetta/governance/capability.hpp), which is an access-control
 // right. The names are kept apart deliberately (NodeCapability vs Capability).
 
 // The accelerator family on a node. `None` is a CPU-only node; the named kinds
@@ -87,4 +87,4 @@ struct NodeCapability {
     static std::optional<NodeCapability> from_json(const nlohmann::json& value);
 };
 
-}  // namespace zetta
+}  // namespace zetta::cloud

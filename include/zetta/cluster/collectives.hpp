@@ -46,7 +46,7 @@
 // and broadcasts the result. A k-ary tree / ring reduction (to cut the root's
 // fan-in at large scale) is a later optimization behind this same API. See
 // docs/cluster/collectives.md.
-namespace zetta {
+namespace zetta::cluster {
 
 class Cluster;
 
@@ -223,4 +223,4 @@ private:
     std::map<std::string, Round> rounds_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::cluster

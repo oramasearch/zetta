@@ -7,7 +7,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 namespace fs = std::filesystem;
 
 std::string_view to_string(ProjectInputKind kind) {
@@ -92,4 +92,4 @@ void ProjectInput::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

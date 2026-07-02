@@ -11,7 +11,7 @@
 
 namespace fs = std::filesystem;
 using nlohmann::json;
-using zetta::JsonlStore;
+using zetta::storage::JsonlStore;
 using zetta::test::TempDir;
 
 TEST(JsonlStore, AddSizeAndRead) {

@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta::cloud {
 
 // The result of running one external command: its exit code and captured output.
 // stdout_text is what a CLI binding parses (JSON, a value); stderr_text feeds the
@@ -31,4 +31,4 @@ using CommandRunner = std::function<CommandResult(const std::vector<std::string>
 // without one.
 CommandRunner default_command_runner();
 
-}  // namespace zetta
+}  // namespace zetta::cloud

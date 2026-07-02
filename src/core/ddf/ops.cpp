@@ -328,12 +328,12 @@ ComputeStatus build_binary(ComputeDevice& device, const DataFrame& frame,
 
 // --- scan --------------------------------------------------------------------
 
-DataFrameResult scan(const StorageEngine& store, ComputeDevice& device,
+DataFrameResult scan(const zetta::storage::StorageEngine& store, ComputeDevice& device,
                      std::size_t chunk_rows) {
     return load_data_frame(store, infer_schema(store), device, chunk_rows);
 }
 
-DataFrameResult scan(const StorageEngine& store, const DataFrameSchema& schema,
+DataFrameResult scan(const zetta::storage::StorageEngine& store, const DataFrameSchema& schema,
                      ComputeDevice& device, std::size_t chunk_rows) {
     return load_data_frame(store, schema, device, chunk_rows);
 }

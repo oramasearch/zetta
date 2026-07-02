@@ -8,7 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::pipeline {
 
 // What a project input represents. The first ingestion slice of FEAT-1 captures
 // two kinds (see docs/pipeline/project-inputs.md):
@@ -110,4 +110,4 @@ private:
     std::filesystem::path dir_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::pipeline

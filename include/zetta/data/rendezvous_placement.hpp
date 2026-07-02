@@ -9,7 +9,7 @@
 
 #include "zetta/data/partitioner.hpp"
 
-namespace zetta {
+namespace zetta::data {
 
 // Rendezvous (highest-random-weight, HRW) placement of a partition onto cluster
 // node(s) — the partition→node half of the `Partitioner` seam (ADR-31 / ENT-37,
@@ -89,4 +89,4 @@ private:
     std::size_t replication_factor_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

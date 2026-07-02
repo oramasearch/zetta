@@ -16,20 +16,20 @@
 #include "zetta/governance/scope.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::AccessDecision;
-using zetta::Capability;
-using zetta::CapabilityDomain;
-using zetta::CapabilitySet;
-using zetta::Cluster;
-using zetta::ClusterConfig;
+using zetta::governance::AccessDecision;
+using zetta::governance::Capability;
+using zetta::governance::CapabilityDomain;
+using zetta::governance::CapabilitySet;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::Operation;
-using zetta::PrincipalKind;
-using zetta::ReplicationManager;
-using zetta::Resource;
-using zetta::ResourceKind;
-using zetta::Scope;
+using zetta::governance::Operation;
+using zetta::governance::PrincipalKind;
+using zetta::cluster::ReplicationManager;
+using zetta::governance::Resource;
+using zetta::governance::ResourceKind;
+using zetta::governance::Scope;
 using zetta::test::TempDir;
 
 namespace {
@@ -52,7 +52,7 @@ Operation operation(CapabilityDomain domain, std::string action) {
 }
 
 // Fixed ISO-8601 UTC stamps for deterministic TTL tests (same fixed-width
-// format as zetta::now_iso8601(), so comparisons are chronological).
+// format as zetta::util::now_iso8601(), so comparisons are chronological).
 constexpr std::string_view kPast = "2020-01-01T00:00:00.000Z";
 constexpr std::string_view kNow = "2026-06-25T00:00:00.000Z";
 constexpr std::string_view kFuture = "2099-01-01T00:00:00.000Z";
@@ -96,7 +96,7 @@ TEST(Scope, PermitsExactlyWhatIsGranted) {
 }
 
 TEST(Scope, UnrestrictedPermitsEverything) {
-    const Scope scope = zetta::unrestricted_scope();
+    const Scope scope = zetta::governance::unrestricted_scope();
     EXPECT_TRUE(scope.permits(database("anything")));
     EXPECT_TRUE(scope.permits(project("anything")));
     EXPECT_TRUE(scope.permits(database("")));
@@ -107,15 +107,15 @@ TEST(Scope, UnrestrictedPermitsEverything) {
 TEST(Authorize, AllowsInScopeAndDeniesOutOfScope) {
     Scope scope;
     scope.grant(ResourceKind::Database, "churn");
-    const zetta::AccessKey key{"key-id", "principal-id", scope,
+    const zetta::governance::AccessKey key{"key-id", "principal-id", scope,
                                CapabilitySet{}, "2026-01-01", TempDir{}.path()};
 
-    const AccessDecision allowed = zetta::authorize(key, database("churn"));
+    const AccessDecision allowed = zetta::governance::authorize(key, database("churn"));
     EXPECT_TRUE(allowed.allowed);
     EXPECT_TRUE(static_cast<bool>(allowed));
     EXPECT_NE(allowed.reason.find("in scope"), std::string::npos);
 
-    const AccessDecision denied = zetta::authorize(key, database("fraud"));
+    const AccessDecision denied = zetta::governance::authorize(key, database("fraud"));
     EXPECT_FALSE(denied.allowed);
     EXPECT_NE(denied.reason.find("outside"), std::string::npos);
     EXPECT_NE(denied.reason.find("fraud"), std::string::npos);
@@ -130,23 +130,23 @@ TEST(Scope, RoundTripsThroughJson) {
         .grant(ResourceKind::Project, "retention");
 
     const nlohmann::json document = scope;  // to_json ADL hook
-    const auto parsed = zetta::scope_from_json(document);
+    const auto parsed = zetta::governance::scope_from_json(document);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(*parsed, scope);
 }
 
 TEST(Scope, RejectsMalformedJsonAtTheBoundary) {
     // Not an object.
-    EXPECT_FALSE(zetta::scope_from_json(nlohmann::json::array()));
+    EXPECT_FALSE(zetta::governance::scope_from_json(nlohmann::json::array()));
     // Missing `grants`.
-    EXPECT_FALSE(zetta::scope_from_json(
+    EXPECT_FALSE(zetta::governance::scope_from_json(
         nlohmann::json{{"unrestricted", false}}));
     // `unrestricted` wrong type.
-    EXPECT_FALSE(zetta::scope_from_json(
+    EXPECT_FALSE(zetta::governance::scope_from_json(
         nlohmann::json{{"unrestricted", "no"},
                        {"grants", nlohmann::json::array()}}));
     // An unknown resource kind must fail fast (never silently drop a grant).
-    EXPECT_FALSE(zetta::scope_from_json(
+    EXPECT_FALSE(zetta::governance::scope_from_json(
         nlohmann::json::parse(
             R"({"unrestricted": false, "grants": [{"kind": "table", "name": "x"}]})")));
 }
@@ -154,13 +154,13 @@ TEST(Scope, RejectsMalformedJsonAtTheBoundary) {
 TEST(AccessKey, MetadataCarriesPrincipalAndScope) {
     Scope scope;
     scope.grant(ResourceKind::Project, "churn");
-    const zetta::AccessKey key{"key-id", "principal-id", scope,
+    const zetta::governance::AccessKey key{"key-id", "principal-id", scope,
                                CapabilitySet{}, "2026-01-01", TempDir{}.path()};
     const nlohmann::json meta = key.metadata();
     EXPECT_EQ(meta.at("principal"), "principal-id");
     EXPECT_EQ(meta.at("created"), "2026-01-01");
 
-    const auto parsed = zetta::scope_from_json(meta.at("scope"));
+    const auto parsed = zetta::governance::scope_from_json(meta.at("scope"));
     ASSERT_TRUE(parsed);
     EXPECT_EQ(*parsed, scope);
 }
@@ -223,23 +223,23 @@ TEST(Capability, AuthorizeAllowsMatchAndDeniesOtherwise) {
     CapabilitySet capabilities;
     capabilities.grant(CapabilityDomain::Data, "read");
     capabilities.grant(CapabilityDomain::Api, "deploy", std::string(kPast));
-    const zetta::AccessKey key{"key-id", "principal-id", Scope{}, capabilities,
+    const zetta::governance::AccessKey key{"key-id", "principal-id", Scope{}, capabilities,
                                "2026-01-01", TempDir{}.path()};
 
     const AccessDecision allowed =
-        zetta::authorize(key, operation(CapabilityDomain::Data, "read"), kNow);
+        zetta::governance::authorize(key, operation(CapabilityDomain::Data, "read"), kNow);
     EXPECT_TRUE(allowed.allowed);
     EXPECT_NE(allowed.reason.find("permitted"), std::string::npos);
 
     // No matching capability at all.
     const AccessDecision missing =
-        zetta::authorize(key, operation(CapabilityDomain::Data, "write"), kNow);
+        zetta::governance::authorize(key, operation(CapabilityDomain::Data, "write"), kNow);
     EXPECT_FALSE(missing.allowed);
     EXPECT_NE(missing.reason.find("no matching capability"), std::string::npos);
 
     // Matching capability, but its TTL has elapsed — a distinct deny reason.
     const AccessDecision expired =
-        zetta::authorize(key, operation(CapabilityDomain::Api, "deploy"), kNow);
+        zetta::governance::authorize(key, operation(CapabilityDomain::Api, "deploy"), kNow);
     EXPECT_FALSE(expired.allowed);
     EXPECT_NE(expired.reason.find("expired"), std::string::npos);
 }
@@ -255,22 +255,22 @@ TEST(Capability, RoundTripsThroughJson) {
     EXPECT_FALSE(document.at(0).contains("expires_at"));
     EXPECT_EQ(document.at(1).at("expires_at"), kFuture);
 
-    const auto parsed = zetta::capability_set_from_json(document);
+    const auto parsed = zetta::governance::capability_set_from_json(document);
     ASSERT_TRUE(parsed);
     EXPECT_EQ(*parsed, capabilities);
 }
 
 TEST(Capability, RejectsMalformedJsonAtTheBoundary) {
     // Not an array.
-    EXPECT_FALSE(zetta::capability_set_from_json(nlohmann::json::object()));
+    EXPECT_FALSE(zetta::governance::capability_set_from_json(nlohmann::json::object()));
     // An unknown domain must fail fast (never silently drop a grant).
-    EXPECT_FALSE(zetta::capability_set_from_json(
+    EXPECT_FALSE(zetta::governance::capability_set_from_json(
         nlohmann::json::parse(R"([{"domain": "filesystem", "action": "read"}])")));
     // A missing action.
-    EXPECT_FALSE(zetta::capability_set_from_json(
+    EXPECT_FALSE(zetta::governance::capability_set_from_json(
         nlohmann::json::parse(R"([{"domain": "data"}])")));
     // A wrong-typed expires_at.
-    EXPECT_FALSE(zetta::capability_set_from_json(
+    EXPECT_FALSE(zetta::governance::capability_set_from_json(
         nlohmann::json::parse(
             R"([{"domain": "data", "action": "read", "expires_at": 1}])")));
 }
@@ -280,12 +280,12 @@ TEST(Capability, DomainRoundTripsThroughStrings) {
          {CapabilityDomain::Api, CapabilityDomain::Data,
           CapabilityDomain::Orchestration}) {
         CapabilityDomain parsed{};
-        ASSERT_TRUE(zetta::capability_domain_from_string(
-            zetta::to_string(domain), parsed));
+        ASSERT_TRUE(zetta::governance::capability_domain_from_string(
+            zetta::governance::to_string(domain), parsed));
         EXPECT_EQ(parsed, domain);
     }
     CapabilityDomain ignored{};
-    EXPECT_FALSE(zetta::capability_domain_from_string("network", ignored));
+    EXPECT_FALSE(zetta::governance::capability_domain_from_string("network", ignored));
 }
 
 // The acceptance test (issue #315): an operation is allowed only with a matching
@@ -357,11 +357,11 @@ TEST(AccessControl, ExpiredCapabilityIsDeniedThroughTheNode) {
 TEST(Principal, KindRoundTripsThroughStrings) {
     for (const auto kind : {PrincipalKind::User, PrincipalKind::Service,
                             PrincipalKind::Node}) {
-        const auto parsed = zetta::principal_kind_from(zetta::to_string(kind));
+        const auto parsed = zetta::governance::principal_kind_from(zetta::governance::to_string(kind));
         ASSERT_TRUE(parsed.has_value());
         EXPECT_EQ(*parsed, kind);
     }
-    EXPECT_FALSE(zetta::principal_kind_from("robot").has_value());
+    EXPECT_FALSE(zetta::governance::principal_kind_from("robot").has_value());
 }
 
 // ----- Node CRUD + the key-scoped access decision (the acceptance test) ------
@@ -401,7 +401,7 @@ TEST(AccessControl, UnrestrictedKeyReachesEverything) {
     node.start();
     auto admin = node.create_principal("admin", PrincipalKind::Service);
     ASSERT_TRUE(admin);
-    auto key = admin->create_key(zetta::unrestricted_scope());
+    auto key = admin->create_key(zetta::governance::unrestricted_scope());
     ASSERT_TRUE(key);
     EXPECT_TRUE(node.authorize(key->id(), database("anything")).allowed);
     EXPECT_TRUE(node.authorize(key->id(), project("else")).allowed);
@@ -436,7 +436,7 @@ TEST(Principal, CreateFindDropRename) {
     // Drop removes the principal and its keys.
     auto with_key = node.find_principal("alice2");
     ASSERT_TRUE(with_key);
-    with_key->create_key(zetta::unrestricted_scope());
+    with_key->create_key(zetta::governance::unrestricted_scope());
     EXPECT_TRUE(node.drop_principal("alice2"));
     EXPECT_EQ(node.principal_count(), 1u);
     EXPECT_FALSE(node.drop_principal("alice2"));  // already gone
@@ -481,7 +481,7 @@ TEST(AccessControl, PersistsAcrossRestartViaDisk) {
 
 TEST(AccessControl, PersistsAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string key_id;
     {
         ReplicationManager replication{node_id};
@@ -552,7 +552,7 @@ TEST(AccessControl, CapabilitiesPersistAcrossRestartViaDisk) {
 
 TEST(AccessControl, CapabilitiesPersistAcrossRestartViaCRDT) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     std::string key_id;
     {
         ReplicationManager replication{node_id};
@@ -586,8 +586,8 @@ TEST(AccessControl, CapabilitiesPersistAcrossRestartViaCRDT) {
 TEST(AccessControl, ReplicatesToPeer) {
     TempDir dir_a;
     TempDir dir_b;
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ReplicationManager repl_a{id_a};
     ReplicationManager repl_b{id_b};

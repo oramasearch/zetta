@@ -6,12 +6,12 @@
 
 #include "zetta/compute/scaling_policy.hpp"
 
-using zetta::ScalingAction;
-using zetta::ScalingBounds;
-using zetta::ScalingDecision;
-using zetta::ScalingObjective;
-using zetta::ScalingPolicy;
-using zetta::ScalingSample;
+using zetta::compute::ScalingAction;
+using zetta::compute::ScalingBounds;
+using zetta::compute::ScalingDecision;
+using zetta::compute::ScalingObjective;
+using zetta::compute::ScalingPolicy;
+using zetta::compute::ScalingSample;
 
 namespace {
 
@@ -45,20 +45,20 @@ ScalingSample sample(double progress, double elapsed, double cost,
 // ---- objective / action enum names -----------------------------------------
 
 TEST(ScalingPolicy, ObjectiveNamesRoundTrip) {
-    EXPECT_EQ(zetta::to_string(ScalingObjective::MinimizeCost), "minimize_cost");
-    EXPECT_EQ(zetta::to_string(ScalingObjective::RuntimeTarget), "runtime_target");
-    EXPECT_EQ(zetta::to_string(ScalingObjective::DataShape), "data_shape");
+    EXPECT_EQ(zetta::compute::to_string(ScalingObjective::MinimizeCost), "minimize_cost");
+    EXPECT_EQ(zetta::compute::to_string(ScalingObjective::RuntimeTarget), "runtime_target");
+    EXPECT_EQ(zetta::compute::to_string(ScalingObjective::DataShape), "data_shape");
 
     ScalingObjective objective{};
-    EXPECT_TRUE(zetta::scaling_objective_from_string("runtime_target", objective));
+    EXPECT_TRUE(zetta::compute::scaling_objective_from_string("runtime_target", objective));
     EXPECT_EQ(objective, ScalingObjective::RuntimeTarget);
-    EXPECT_FALSE(zetta::scaling_objective_from_string("maximize_joy", objective));
+    EXPECT_FALSE(zetta::compute::scaling_objective_from_string("maximize_joy", objective));
 }
 
 TEST(ScalingPolicy, ActionNames) {
-    EXPECT_EQ(zetta::to_string(ScalingAction::ScaleDown), "scale_down");
-    EXPECT_EQ(zetta::to_string(ScalingAction::Hold), "hold");
-    EXPECT_EQ(zetta::to_string(ScalingAction::ScaleUp), "scale_up");
+    EXPECT_EQ(zetta::compute::to_string(ScalingAction::ScaleDown), "scale_down");
+    EXPECT_EQ(zetta::compute::to_string(ScalingAction::Hold), "hold");
+    EXPECT_EQ(zetta::compute::to_string(ScalingAction::ScaleUp), "scale_up");
 }
 
 // ---- clamp_nodes -----------------------------------------------------------

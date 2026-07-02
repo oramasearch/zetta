@@ -6,11 +6,10 @@
 #include <string>
 #include <vector>
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::data {
 
-// Metadata for one stored file ("large object", after Postgres' LO API). This
 // metadata is what replicates (in the CRDT); the body transfers separately and
 // is verified against `size` + `sha256`.
 struct LargeObject {
@@ -34,7 +33,7 @@ class LargeObjectStore {
 public:
     explicit LargeObjectStore(std::filesystem::path dir,
                               std::string database_id = {},
-                              ReplicationManager* replication = nullptr);
+                              zetta::cluster::ReplicationManager* replication = nullptr);
 
     // Import a file as a new large object (analogous to lo_import). Returns the
     // assigned metadata, or nullopt if the source can't be read / written.
@@ -85,8 +84,8 @@ private:
 
     std::filesystem::path dir_;
     std::string database_id_;          // for the CRDT `lo:` value's `db` field
-    ReplicationManager* replication_;  // null = not replicated
+    zetta::cluster::ReplicationManager* replication_;  // null = not replicated
     std::vector<LargeObject> objects_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::data

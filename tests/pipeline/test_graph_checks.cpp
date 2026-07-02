@@ -9,12 +9,12 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
 
-using zetta::CheckResult;
-using zetta::CheckStatus;
-using zetta::CorrectnessGate;
-using zetta::DataLeakageCheck;
-using zetta::SchemaTypeCheck;
-using zetta::ValidationReport;
+using zetta::pipeline::CheckResult;
+using zetta::pipeline::CheckStatus;
+using zetta::pipeline::CorrectnessGate;
+using zetta::pipeline::DataLeakageCheck;
+using zetta::pipeline::SchemaTypeCheck;
+using zetta::pipeline::ValidationReport;
 using zetta::ir::EdgeKind;
 using zetta::ir::ExecutionGraph;
 using zetta::ir::StepKind;
@@ -273,7 +273,7 @@ TEST(DataLeakageCheck, MalformedAsOfTimestampFails) {
 // ---- end to end through the gate (RULE-1) ----------------------------------
 
 TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
-    const CorrectnessGate gate = zetta::default_gate();
+    const CorrectnessGate gate = zetta::pipeline::default_gate();
     ASSERT_EQ(gate.check_count(), 4u);
     EXPECT_EQ(gate.checks()[0]->name(), "non_empty_graph");
     EXPECT_EQ(gate.checks()[1]->name(), "schema_type");
@@ -282,7 +282,7 @@ TEST(GraphChecksThroughGate, DefaultGateShipsTheConcreteChecks) {
 }
 
 TEST(GraphChecksThroughGate, CleanGraphDeploys) {
-    const ValidationReport report = zetta::default_gate().run(clean_graph());
+    const ValidationReport report = zetta::pipeline::default_gate().run(clean_graph());
     EXPECT_TRUE(report.passed()) << report.checks.size();
     EXPECT_FALSE(report.block_deploy);
 }
@@ -296,7 +296,7 @@ TEST(GraphChecksThroughGate, LeakyGraphBlocksDeploy) {
                                             {"data_as_of", "2024-06-01"}}})}},
         "n-model");
 
-    const ValidationReport report = zetta::default_gate().run(graph);
+    const ValidationReport report = zetta::pipeline::default_gate().run(graph);
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);  // RULE-1
 }
@@ -309,7 +309,7 @@ TEST(GraphChecksThroughGate, MistypedGraphBlocksDeploy) {
                    json{{"requires", {{"revenue", "float"}}}}, "n-model");
     graph.add_edge("n-load", "n-model", EdgeKind::DataFlow);
 
-    const ValidationReport report = zetta::default_gate().run(graph);
+    const ValidationReport report = zetta::pipeline::default_gate().run(graph);
     EXPECT_FALSE(report.passed());
     EXPECT_TRUE(report.block_deploy);
 }

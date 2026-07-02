@@ -9,11 +9,10 @@
 
 #include "zetta/governance/audit_event.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::compute {
 
-// The lifecycle state of a compute job (ARC-11 / ENT-31). The closed taxonomy of
 // states a job moves through, grounded in the job events:
 //   Queued → Running → Succeeded | Failed.
 // Succeeded / Failed are terminal (a finished job is never restarted in place).
@@ -50,7 +49,7 @@ bool is_terminal(JobStatus status);
 // key `job:<uuid>` carries (the id is the key / folder name, so it isn't repeated
 // here). This is exactly the shape validated by the ComputeJob JSON Schema at
 // every boundary (disk + the document). The `project` / `graph` / `run` /
-// `scaling_policy` refs are optional plain ids (the zetta::ScalingPolicy reward
+// `scaling_policy` refs are optional plain ids (the zetta::compute::ScalingPolicy reward
 // model value type is built — see scaling_policy.hpp — but a job references it by
 // id only; persisting policies as their own replicated entity is a later slice).
 struct ComputeJobValue {
@@ -91,7 +90,7 @@ std::optional<ComputeJobValue> parse_compute_job_value(
 // A ComputeJob: one unit of native distributed accelerated compute (ARC-11 /
 // ENT-31) — featurize / train / explain / score / a DDF op — with a lifecycle
 // (Queued → Running → Succeeded | Failed). A top-level entity with no parent,
-// modeled like zetta::Run: **replicated state** (flat key `job:<uuid>`) whose
+// modeled like zetta::pipeline::Run: **replicated state** (flat key `job:<uuid>`) whose
 // in-memory + on-disk (`<job-uuid>/job.json`) forms are a projection of the
 // Automerge CRDT document.
 //
@@ -107,8 +106,8 @@ std::optional<ComputeJobValue> parse_compute_job_value(
 class ComputeJob {
 public:
     ComputeJob(std::string id, ComputeJobValue value, std::filesystem::path dir,
-               ReplicationManager* replication = nullptr,
-               AuditSink* audit = nullptr);
+               zetta::cluster::ReplicationManager* replication = nullptr,
+               zetta::governance::AuditSink* audit = nullptr);
 
     const std::string& id() const { return id_; }
     JobKind kind() const { return value_.kind; }
@@ -147,8 +146,8 @@ private:
     std::string id_;
     ComputeJobValue value_;
     std::filesystem::path dir_;
-    ReplicationManager* replication_;  // null = standalone (not replicated)
-    AuditSink* audit_;                 // null = not audited (no node behind it)
+    zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
+    zetta::governance::AuditSink* audit_;                 // null = not audited (no node behind it)
 };
 
-}  // namespace zetta
+}  // namespace zetta::compute

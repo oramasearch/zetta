@@ -5,7 +5,7 @@
 #include <mutex>
 #include <string>
 
-namespace zetta {
+namespace zetta::cluster {
 
 // A live snapshot of one node's host resource utilization — CPU, memory, GPU +
 // VRAM, storage, network. This is the engine telemetry source behind the
@@ -99,4 +99,4 @@ private:
     std::chrono::steady_clock::time_point prev_net_time_{};
 };
 
-}  // namespace zetta
+}  // namespace zetta::cluster

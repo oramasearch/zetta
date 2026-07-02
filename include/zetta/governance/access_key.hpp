@@ -9,7 +9,7 @@
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/scope.hpp"
 
-namespace zetta {
+namespace zetta::governance {
 
 // An access key (ENT-21): the login credential whose existing data access
 // **scopes** a principal's reach. This is the V1 access model (RULE-3 / PERM-1 /
@@ -103,4 +103,4 @@ AccessDecision authorize(const AccessKey& key, const Resource& resource);
 AccessDecision authorize(const AccessKey& key, const Operation& operation,
                          std::string_view now);
 
-}  // namespace zetta
+}  // namespace zetta::governance

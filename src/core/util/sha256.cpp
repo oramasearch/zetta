@@ -6,7 +6,7 @@
 // A small, self-contained SHA-256 (FIPS 180-4) so zetta-core has no crypto
 // dependency. Not constant-time; we only use it for content fingerprints, never
 // secrets.
-namespace zetta {
+namespace zetta::util {
 namespace {
 
 constexpr std::array<std::uint32_t, 64> kRoundConstants = {
@@ -91,4 +91,4 @@ std::string sha256_hex(std::string_view bytes) {
     return hex;
 }
 
-}  // namespace zetta
+}  // namespace zetta::util

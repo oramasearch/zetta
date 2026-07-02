@@ -11,14 +11,14 @@
 #include "zetta/cluster/signal.hpp"
 #include "zetta/util/uuid.hpp"
 
-using zetta::Cluster;
-using zetta::ClusterConfig;
-using zetta::decode_signal;
-using zetta::encode_signal;
-using zetta::Signal;
-using zetta::SignalHandler;
-using zetta::SignalKind;
-using zetta::SignalResponse;
+using zetta::cluster::Cluster;
+using zetta::cluster::ClusterConfig;
+using zetta::cluster::decode_signal;
+using zetta::cluster::encode_signal;
+using zetta::cluster::Signal;
+using zetta::cluster::SignalHandler;
+using zetta::cluster::SignalKind;
+using zetta::cluster::SignalResponse;
 
 namespace {
 
@@ -165,8 +165,8 @@ TEST(Signal, RejectsMalformedEnvelopesAtTheBoundary) {
 // --- Transport: RPC / events / tasks over a loopback cluster ----------------
 
 TEST(SignalPlane, RpcRequestGetsAResponseFromAPeer) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -208,7 +208,7 @@ TEST(SignalPlane, RpcRequestGetsAResponseFromAPeer) {
 }
 
 TEST(SignalPlane, RequestToAnUnknownPeerFailsFast) {
-    Cluster a{zetta::new_uuid(), ClusterConfig{}};
+    Cluster a{zetta::util::new_uuid(), ClusterConfig{}};
     a.start();
     const SignalResponse response =
         a.request("00000000-no-such-peer", "x", "y", std::chrono::seconds(1));
@@ -218,8 +218,8 @@ TEST(SignalPlane, RequestToAnUnknownPeerFailsFast) {
 }
 
 TEST(SignalPlane, RequestToAPeerWithNoHandlerReportsTheRemoteError) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -249,8 +249,8 @@ TEST(SignalPlane, RequestToAPeerWithNoHandlerReportsTheRemoteError) {
 }
 
 TEST(SignalPlane, EventAndTaskAreDeliveredToAPeer) {
-    const std::string id_a = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
 
     ClusterConfig config_a;
     config_a.listen_host = "127.0.0.1";
@@ -292,9 +292,9 @@ TEST(SignalPlane, EventAndTaskAreDeliveredToAPeer) {
 
 TEST(SignalPlane, BroadcastEventReachesEveryPeer) {
     // A hub connected to two peers; a broadcast lands on both.
-    const std::string id_hub = zetta::new_uuid();
-    const std::string id_b = zetta::new_uuid();
-    const std::string id_c = zetta::new_uuid();
+    const std::string id_hub = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+    const std::string id_c = zetta::util::new_uuid();
 
     ClusterConfig config_hub;
     config_hub.listen_host = "127.0.0.1";

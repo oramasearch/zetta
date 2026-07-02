@@ -14,7 +14,7 @@ class TempDir {
 public:
     TempDir()
         : path_(std::filesystem::temp_directory_path() /
-                ("zetta-test-" + new_uuid())) {
+                ("zetta-test-" + zetta::util::new_uuid())) {
         std::filesystem::create_directories(path_);
     }
 

@@ -30,8 +30,8 @@ using zetta::ddf::infer_schema;
 using zetta::ddf::load_data_frame;
 
 // Build an in-memory store from a list of row docs (ids are not exercised here).
-zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    zetta::JsonStore store;
+zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows.size(); ++i) {
         store.add("row-" + std::to_string(i), rows[i]);
     }
@@ -41,7 +41,7 @@ zetta::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
 // --- round-trip --------------------------------------------------------------
 
 TEST(DataFrame, LoadsTypedColumnsAndRoundTrips) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"score", 0.5}, {"age", 30}, {"flag", 1}},
         {{"score", 1.5}, {"age", 41}, {"flag", 0}},
         {{"score", -2.0}, {"age", 19}, {"flag", 1}},
@@ -78,7 +78,7 @@ TEST(DataFrame, LoadsTypedColumnsAndRoundTrips) {
 
 TEST(DataFrame, IntegerColumnAcceptsFloatFeatureValues) {
     // A Float column accepts integer JSON values (widened), not the reverse.
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"v", 7}},
         {{"v", 8}},
     });
@@ -99,7 +99,7 @@ TEST(DataFrame, IntegerColumnAcceptsFloatFeatureValues) {
 TEST(DataFrame, ChunksRowsAcrossBuffers) {
     std::vector<nlohmann::json> rows;
     for (int i = 0; i < 7; ++i) rows.push_back({{"x", i}});
-    const zetta::JsonStore store = make_store(rows);
+    const zetta::storage::JsonStore store = make_store(rows);
 
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
@@ -129,7 +129,7 @@ TEST(DataFrame, ChunksRowsAcrossBuffers) {
 
 TEST(DataFrame, LoadsFromTable) {
     zetta::test::TempDir tmp;
-    zetta::Table table("tbl-uuid", "events", tmp.path() / "tbl");
+    zetta::data::Table table("tbl-uuid", "events", tmp.path() / "tbl");
     table.add_row({{"amount", 10.0}, {"count", 2}});
     table.add_row({{"amount", 20.5}, {"count", 5}});
 
@@ -155,7 +155,7 @@ TEST(DataFrame, LoadsFromTable) {
 // --- field override ----------------------------------------------------------
 
 TEST(DataFrame, ColumnFieldOverrideReadsAlternateKey) {
-    const zetta::JsonStore store = make_store({{{"raw_value", 11}}});
+    const zetta::storage::JsonStore store = make_store({{{"raw_value", 11}}});
     DataFrameSchema schema;
     schema.columns = {
         ColumnSchema{.name = "value", .field = "raw_value", .dtype = DataType::Int32}};
@@ -173,7 +173,7 @@ TEST(DataFrame, ColumnFieldOverrideReadsAlternateKey) {
 // --- schema inference --------------------------------------------------------
 
 TEST(DataFrame, InferSchemaPicksNumericFieldsAndTypes) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"f", 1.5}, {"n", 3}, {"label", "churn"}},
         {{"f", 2.5}, {"n", 4}, {"label", "stay"}},
     });
@@ -197,7 +197,7 @@ TEST(DataFrame, InferSchemaPicksNumericFieldsAndTypes) {
 }
 
 TEST(DataFrame, InferSkipsFieldsMissingFromSomeRows) {
-    const zetta::JsonStore store = make_store({
+    const zetta::storage::JsonStore store = make_store({
         {{"a", 1}, {"b", 2}},
         {{"a", 3}},  // b absent here -> b is not dense -> dropped
     });
@@ -207,14 +207,14 @@ TEST(DataFrame, InferSkipsFieldsMissingFromSomeRows) {
 }
 
 TEST(DataFrame, InferEmptyStoreYieldsEmptySchema) {
-    const zetta::JsonStore store;
+    const zetta::storage::JsonStore store;
     EXPECT_TRUE(infer_schema(store).empty());
 }
 
 // --- empty store -------------------------------------------------------------
 
 TEST(DataFrame, EmptyStoreYieldsZeroRowColumns) {
-    const zetta::JsonStore store;
+    const zetta::storage::JsonStore store;
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
 
@@ -231,7 +231,7 @@ TEST(DataFrame, EmptyStoreYieldsZeroRowColumns) {
 // --- value boundary ----------------------------------------------------------
 
 TEST(DataFrame, RejectsMissingField) {
-    const zetta::JsonStore store = make_store({{{"y", 1}}});  // no "x"
+    const zetta::storage::JsonStore store = make_store({{{"y", 1}}});  // no "x"
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
     CpuDevice device;
@@ -241,7 +241,7 @@ TEST(DataFrame, RejectsMissingField) {
 }
 
 TEST(DataFrame, RejectsNonNumberField) {
-    const zetta::JsonStore store = make_store({{{"x", "oops"}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", "oops"}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Float64}};
     CpuDevice device;
@@ -251,7 +251,7 @@ TEST(DataFrame, RejectsNonNumberField) {
 }
 
 TEST(DataFrame, RejectsRealIntoIntegerColumn) {
-    const zetta::JsonStore store = make_store({{{"x", 3.5}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 3.5}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
     CpuDevice device;
@@ -261,7 +261,7 @@ TEST(DataFrame, RejectsRealIntoIntegerColumn) {
 }
 
 TEST(DataFrame, RejectsNegativeIntoUnsignedColumn) {
-    const zetta::JsonStore store = make_store({{{"x", -1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", -1}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::UInt32}};
     CpuDevice device;
@@ -271,7 +271,7 @@ TEST(DataFrame, RejectsNegativeIntoUnsignedColumn) {
 }
 
 TEST(DataFrame, RejectsOutOfRangeValue) {
-    const zetta::JsonStore store = make_store({{{"x", 300}}});  // > 255
+    const zetta::storage::JsonStore store = make_store({{{"x", 300}}});  // > 255
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::UInt8}};
     CpuDevice device;
@@ -281,7 +281,7 @@ TEST(DataFrame, RejectsOutOfRangeValue) {
 }
 
 TEST(DataFrame, RejectsZeroChunkRows) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
     CpuDevice device;
@@ -293,7 +293,7 @@ TEST(DataFrame, RejectsZeroChunkRows) {
 // --- read-back boundary ------------------------------------------------------
 
 TEST(DataFrame, ToHostRejectsDtypeMismatch) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
     CpuDevice device;
@@ -306,7 +306,7 @@ TEST(DataFrame, ToHostRejectsDtypeMismatch) {
 }
 
 TEST(DataFrame, ToHostRejectsUnknownColumn) {
-    const zetta::JsonStore store = make_store({{{"x", 1}}});
+    const zetta::storage::JsonStore store = make_store({{{"x", 1}}});
     DataFrameSchema schema;
     schema.columns = {ColumnSchema{.name = "x", .dtype = DataType::Int32}};
     CpuDevice device;

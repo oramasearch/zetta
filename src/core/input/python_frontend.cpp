@@ -17,8 +17,11 @@
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 
+
+
 namespace zetta::input {
 namespace {
+struct Expr;
 
 using ir::EdgeKind;
 using ir::ExecutionGraph;
@@ -63,7 +66,6 @@ enum class ExprKind {
     Call,       // callee(args…)    (callee == `base`)
 };
 
-struct Expr;
 using ExprPtr = std::unique_ptr<Expr>;
 
 // One call argument: positional (keyword empty) or keyword (`name=value`).
@@ -868,7 +870,7 @@ std::optional<ir::StepKind> python_step_kind(std::string_view verb) {
         {"endpoint", StepKind::Serve},       {"expose", StepKind::Serve},
         {"publish", StepKind::Serve},        {"explain", StepKind::Serve},
         // act — take an action on the world, incl. cluster control. `add_nodes` is
-        // the permanent-add control action (zetta::add_nodes): provisioning nodes is
+        // the permanent-add control action (zetta::cloud::add_nodes): provisioning nodes is
         // a side effect on the cluster, so it lowers to the act stage.
         {"notify", StepKind::Act},           {"alert", StepKind::Act},
         {"send", StepKind::Act},             {"act", StepKind::Act},
