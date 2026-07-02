@@ -24,7 +24,7 @@ namespace zetta {
 // with no full rehash. It is also leaderless-friendly: the result is a pure,
 // deterministic function of `(partition, members, replication_factor)`, so every
 // node computes the same placement with no election (the same property the
-// [collectives](docs/collectives.md) rely on to pick a root).
+// [collectives](docs/cluster/collectives.md) rely on to pick a root).
 //
 // `members` is the current cluster membership (each a node id / CRDT actor UUID,
 // e.g. from `Cluster::nodes()`); order does **not** matter — the function sorts

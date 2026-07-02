@@ -13,7 +13,7 @@ namespace zetta {
 // fixed number of partitions P (chosen P >> nodes), and a partition is the unit
 // of placement and rebalancing: whole partitions (as blobs) move between nodes
 // on a membership change, rather than every row being rehashed. See ADR-31 /
-// ENT-37 and docs/partitioner.md.
+// ENT-37 and docs/data/partitioner.md.
 using PartitionId = std::uint32_t;
 
 // The partitioning seam (ADR-31 / ENT-37) — the pluggable policy that decides

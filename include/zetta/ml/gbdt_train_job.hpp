@@ -44,7 +44,7 @@
 // **No new wire format.** The histograms ride the schema-validated
 // `CollectiveMessage` (via `JobRound::allreduce`), the weights body carries its own
 // validated `GbdtModel` boundary, and the job + model records are schema-validated
-// at their own boundaries. See docs/gbdt.md.
+// at their own boundaries. See docs/ml/gbdt.md.
 namespace zetta {
 class Node;
 }
@@ -64,7 +64,7 @@ inline constexpr std::chrono::milliseconds kDefaultGbdtTimeout{10000};
 // rows). The model trains on the train rows only; the held-out `(raw score, label)`
 // pairs are gathered to the root, the calibrator is fit there and broadcast back, so
 // every node attaches an identical calibrator to its model. Disabled by default —
-// the produced model is then uncalibrated, exactly as before. See docs/calibration.md.
+// the produced model is then uncalibrated, exactly as before. See docs/ml/calibration.md.
 struct CalibrationConfig {
     bool enabled = false;
     CalibrationMethod method = CalibrationMethod::Platt;
@@ -81,7 +81,7 @@ struct CalibrationConfig {
 // a checkpoint simply forces a fresh start rather than desyncing the lock-step
 // histogram rounds). The config must be **uniform across participants** (like
 // `round_tag` / calibration). Disabled by default (`store == nullptr`) — the loop is
-// then exactly the unchanged trainer. See docs/job-checkpoint.md.
+// then exactly the unchanged trainer. See docs/compute/job-checkpoint.md.
 struct TrainCheckpointConfig {
     compute::CheckpointStore* store = nullptr;  // null = checkpointing off (default)
     std::uint32_t checkpoint_every = 1;   // checkpoint after every N boosting rounds

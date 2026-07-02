@@ -53,7 +53,7 @@
 // optimization behind this same API. Non-throwing throughout (zetta-core's
 // no-exceptions convention): the entry points return a `compute::ComputeStatus`.
 //
-// See docs/gbdt.md.
+// See docs/ml/gbdt.md.
 namespace zetta::ml {
 
 // --- Hyperparameters ---------------------------------------------------------
@@ -188,7 +188,7 @@ using AllReduce =
 // boosting round and **resume from the last checkpoint** after a spot eviction,
 // without re-growing the trees already committed. The default {} is "train from
 // scratch, no hook" — exactly the unchanged loop, so existing callers are unaffected.
-// See docs/job-checkpoint.md.
+// See docs/compute/job-checkpoint.md.
 struct TrainHooks {
     // Seed the ensemble from a previously-checkpointed partial model + its
     // accumulated per-feature gains: training resumes at tree index
@@ -259,7 +259,7 @@ GbdtTrainResult train_gbdt(const std::vector<std::vector<double>>& columns,
 // `holdout_labels` the {0,1} targets. Non-throwing: fails (a failing ComputeStatus,
 // no calibration attached) when the shapes disagree or the held-out labels are a
 // single class. AUC is preserved (the map is monotone); reliability (Brier / ECE)
-// improves. See docs/calibration.md.
+// improves. See docs/ml/calibration.md.
 compute::ComputeStatus calibrate_model(
     GbdtModel& model, const std::vector<std::vector<double>>& holdout_columns,
     const std::vector<double>& holdout_labels, CalibrationMethod method);

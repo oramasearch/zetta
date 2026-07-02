@@ -3,7 +3,7 @@
 // GUI-internal animation + sparkline state for the cluster node-box gauges
 // (#584). It is a thin renderer's working copy of the engine's
 // `Node::telemetry_snapshot()` (system.node_metrics gathered cluster-wide over the
-// signal plane — see docs/cluster-node-gauges.md): the engine owns the data; this
+// signal plane — see docs/gui/cluster-node-gauges.md): the engine owns the data; this
 // only holds what's needed to ANIMATE it (an eased value per gauge so the bars
 // glide between the ~1 Hz samples, plus a short history ring for the sparklines).
 //

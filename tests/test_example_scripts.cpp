@@ -9,7 +9,7 @@
 // The sim-Python example-script harness (issue #523): the example programs ARE the
 // integration tests. Each runs end to end — parse (PythonFrontend) -> IR -> gate
 // (default_gate) -> run (Node::run_graph) — and asserts on its outputs; a failure
-// surfaces with the offending statement. See docs/example-scripts.md.
+// surfaces with the offending statement. See docs/testing/example-scripts.md.
 namespace {
 
 using zetta::ir::StepKind;

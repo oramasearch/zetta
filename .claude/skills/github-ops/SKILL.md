@@ -1,15 +1,15 @@
 ---
 name: github-ops
-description: Work with GitHub issues, PRs, and CI for the homer6/zetta repo via the gh CLI. Use when the user wants to view, create, edit, prioritize, or close issues; open/review/merge PRs; check CI; search code; or track the backlog. Enforces zetta conventions — Conventional Commits, NEVER mention Claude/AI/Codex or add Claude as author, push directly to main (personal repo, no PR ceremony by default), docs-in-the-same-commit, p1–p4 priority + area labels, and the "pull ALL information when inspecting an issue/PR" rule.
+description: Work with GitHub issues, PRs, and CI for the oramasearch/zetta repo via the gh CLI. Use when the user wants to view, create, edit, prioritize, or close issues; open/review/merge PRs; check CI; search code; or track the backlog. Enforces zetta conventions — Conventional Commits, NEVER mention Claude/AI/Codex or add Claude as author, all work on a feature branch landing via a PR (never push directly to main), docs-in-the-same-commit, p1–p4 priority + area labels, and the "pull ALL information when inspecting an issue/PR" rule.
 ---
 
-# GitHub Ops (homer6/zetta)
+# GitHub Ops (oramasearch/zetta)
 
-Manage GitHub issues, pull requests, and CI for the **`homer6/zetta`** repo using
-the `gh` CLI. **Issues are the source of truth for the backlog.** It's a single,
-private, personal repo — there's no org, no multi-repo cross-refs, no ClickUp/Codex.
+Manage GitHub issues, pull requests, and CI for the **`oramasearch/zetta`** repo using
+the `gh` CLI. **Issues are the source of truth for the backlog.** It's a private
+repo in the `oramasearch` org; cross-repo references use full URLs.
 
-`--repo homer6/zetta` (or `-R homer6/zetta`) on every command, or rely on the cwd
+`--repo oramasearch/zetta` (or `-R oramasearch/zetta`) on every command, or rely on the cwd
 git remote when inside the checkout.
 
 ## Prerequisites
@@ -27,12 +27,20 @@ Explicit project policy: no "Claude", "AI", "Codex", "Generated with…",
 `Co-Authored-By: Claude`, or similar — in commits, PR titles/bodies, issue text,
 or comments. The author is always the user (`homer6`).
 
-### Push directly to `main` (no PR ceremony by default)
+### Feature branch + PR (never push directly to `main`)
 
-zetta is a personal repo. The default flow is **commit + push to `main`** — no
-branch, no PR — and the docs are part of the **same commit** as the change
-(update `CLAUDE.md`, `README.md`, `docs/*.md`, and the affected skill; grep for
-stale terms first). Only open a PR if the user explicitly asks for one.
+All work goes on a **feature branch** (`<type>/<short-slug>`, e.g.
+`docs/domain-restructure`) and lands via a **PR** — do not push directly to
+`main`. The docs are part of the **same commits** as the change (update
+`CLAUDE.md`, `README.md`, `docs/<domain>/*.md` + the domain README index, and
+the affected skill; grep for stale terms first).
+
+```bash
+git checkout -b <type>/<short-slug> origin/main
+# …work, commit…
+git push -u origin <type>/<short-slug>
+gh pr create -R oramasearch/zetta --base main --assignee @me
+```
 
 ### Commit messages — Conventional Commits
 
@@ -61,33 +69,33 @@ call, **re-pull before writing your conclusion.**
 
 ```bash
 # Issue — full
-gh issue view <N> -R homer6/zetta --comments \
+gh issue view <N> -R oramasearch/zetta --comments \
   --json assignees,author,body,closed,closedAt,comments,createdAt,labels,milestone,number,state,stateReason,title,updatedAt,url
-gh api repos/homer6/zetta/issues/<N>/timeline \
+gh api repos/oramasearch/zetta/issues/<N>/timeline \
   -H "Accept: application/vnd.github.mockingbird-preview+json" --paginate
 
 # PR — full (run these in parallel)
-gh pr view <N> -R homer6/zetta --comments \
+gh pr view <N> -R oramasearch/zetta --comments \
   --json additions,assignees,author,baseRefName,body,changedFiles,closingIssuesReferences,comments,commits,createdAt,deletions,files,headRefName,isDraft,labels,mergeStateStatus,mergeable,mergedAt,number,reviewDecision,reviews,state,statusCheckRollup,title,url
-gh api repos/homer6/zetta/pulls/<N>/comments --paginate
-gh api repos/homer6/zetta/pulls/<N>/reviews --paginate
-gh pr diff <N> -R homer6/zetta
+gh api repos/oramasearch/zetta/pulls/<N>/comments --paginate
+gh api repos/oramasearch/zetta/pulls/<N>/reviews --paginate
+gh pr diff <N> -R oramasearch/zetta
 ```
 
 Narrow `--json` is fine **only** for a true single-field lookup ("is #5 closed?"
 → `--json state`); say in chat that you're pulling a metadata-only slice.
 
-### Issue lifecycle — close on commit-to-main with a how-it-was-solved comment
+### Issue lifecycle — close on merge with a how-it-was-solved comment
 
-Since work lands directly on `main`, close the tracking issue **when the commit
-that resolves it is pushed**, with a comment naming the commit SHA and explaining
+Close the tracking issue **when the PR that resolves it merges**, with a
+comment naming the PR / commit SHA and explaining
 how it was solved + how to test. Re-open if a regression surfaces later. Don't use
 `Fixes #N`/`Closes #N` auto-close keywords — close manually so the closing comment
 carries the explanation; use `Related to #N` in the commit footer instead.
 
 ```bash
-gh issue close <N> -R homer6/zetta --comment "$(cat <<'EOF'
-Done in <sha> (pushed to main).
+gh issue close <N> -R oramasearch/zetta --comment "$(cat <<'EOF'
+Done in PR #<N> (merged to main).
 
 ## How it was solved
 - <what changed — file paths>
@@ -102,8 +110,7 @@ EOF
 )"
 ```
 
-(If the user asked for a PR instead: `gh pr create --base main --assignee @me`,
-then close the issue when it merges with the same comment shape.)
+
 
 ### Priority + area labels
 
@@ -112,27 +119,27 @@ Aim for a roughly uniform priority spread — if everything is p1, nothing is.
 
 ```bash
 # Priority (create once per repo)
-gh label create p1 -R homer6/zetta -c b60205 -d "Critical — blocking, do first"
-gh label create p2 -R homer6/zetta -c d93f0b -d "High — important"
-gh label create p3 -R homer6/zetta -c fbca04 -d "Medium — valuable"
-gh label create p4 -R homer6/zetta -c 0e8a16 -d "Low — nice to have / backlog"
+gh label create p1 -R oramasearch/zetta -c b60205 -d "Critical — blocking, do first"
+gh label create p2 -R oramasearch/zetta -c d93f0b -d "High — important"
+gh label create p3 -R oramasearch/zetta -c fbca04 -d "Medium — valuable"
+gh label create p4 -R oramasearch/zetta -c 0e8a16 -d "Low — nice to have / backlog"
 # Areas (zetta subsystems)
-gh label create replication -R homer6/zetta -c 1d76db -d "CRDT / replication"
-gh label create cluster     -R homer6/zetta -c 1d76db -d "Cluster / networking"
-gh label create query       -R homer6/zetta -c 5319e7 -d "Query layer / SQL / system tables"
-gh label create storage     -R homer6/zetta -c 0052cc -d "Storage engines / on-disk format"
-gh label create runtime     -R homer6/zetta -c c5def5 -d "Async runtime / coroutines"
-gh label create gui         -R homer6/zetta -c bfd4f2 -d "Headed SDL3+ImGui UI"
-gh label create design      -R homer6/zetta -c d4c5f9 -d "Design-only; not yet built"
+gh label create replication -R oramasearch/zetta -c 1d76db -d "CRDT / replication"
+gh label create cluster     -R oramasearch/zetta -c 1d76db -d "Cluster / networking"
+gh label create query       -R oramasearch/zetta -c 5319e7 -d "Query layer / SQL / system tables"
+gh label create storage     -R oramasearch/zetta -c 0052cc -d "Storage engines / on-disk format"
+gh label create runtime     -R oramasearch/zetta -c c5def5 -d "Async runtime / coroutines"
+gh label create gui         -R oramasearch/zetta -c bfd4f2 -d "Headed SDL3+ImGui UI"
+gh label create design      -R oramasearch/zetta -c d4c5f9 -d "Design-only; not yet built"
 ```
 
 When asked to "prioritize", list open issues, propose a distribution, confirm,
 then apply. Apply/inspect:
 
 ```bash
-gh issue edit <N> -R homer6/zetta --add-label p2 --add-label replication
-gh issue list -R homer6/zetta --label p1
-gh issue list -R homer6/zetta --state open --json number,title,labels \
+gh issue edit <N> -R oramasearch/zetta --add-label p2 --add-label replication
+gh issue list -R oramasearch/zetta --label p1
+gh issue list -R oramasearch/zetta --state open --json number,title,labels \
   --jq '.[] | {n:.number, t:.title, pri:([.labels[].name|select(startswith("p"))][0]//"unranked")}'
 ```
 
@@ -149,7 +156,7 @@ Assign issues you create to `homer6` (or `@me`) so the backlog isn't orphaned.
 ### Create
 
 ```bash
-gh issue create -R homer6/zetta \
+gh issue create -R oramasearch/zetta \
   --title "Short title under ~70 chars" \
   --assignee homer6 \
   --label p3 --label replication \
@@ -176,21 +183,21 @@ Always HEREDOC the body (backticks, `$`, checkboxes are safe inside `<<'EOF'`).
 ### View / List / Edit / Comment / Close
 
 ```bash
-gh issue view <N> -R homer6/zetta --comments           # full read (see rule above)
-gh issue list -R homer6/zetta                          # open issues
-gh issue list -R homer6/zetta --label cluster --state all
-gh issue list -R homer6/zetta --search "replication"
-gh issue edit <N> -R homer6/zetta --add-label p1 --remove-label p3
-gh issue comment <N> -R homer6/zetta --body "$(cat <<'EOF' ... EOF
+gh issue view <N> -R oramasearch/zetta --comments           # full read (see rule above)
+gh issue list -R oramasearch/zetta                          # open issues
+gh issue list -R oramasearch/zetta --label cluster --state all
+gh issue list -R oramasearch/zetta --search "replication"
+gh issue edit <N> -R oramasearch/zetta --add-label p1 --remove-label p3
+gh issue comment <N> -R oramasearch/zetta --body "$(cat <<'EOF' ... EOF
 )"
-gh issue close <N> -R homer6/zetta --comment "..."     # with how-it-was-solved
-gh issue reopen <N> -R homer6/zetta
+gh issue close <N> -R oramasearch/zetta --comment "..."     # with how-it-was-solved
+gh issue reopen <N> -R oramasearch/zetta
 ```
 
 ## Pull Requests (only when the user asks for one)
 
 ```bash
-gh pr create -R homer6/zetta --base main --assignee @me \
+gh pr create -R oramasearch/zetta --base main --assignee @me \
   --title "feat(scope): imperative subject" \
   --body "$(cat <<'EOF'
 ## Summary
@@ -201,11 +208,11 @@ gh pr create -R homer6/zetta --base main --assignee @me \
 - [ ] ...
 EOF
 )"
-gh pr view <N> -R homer6/zetta --comments    # full read (see rule above)
-gh pr diff <N> -R homer6/zetta
-gh pr checks <N> -R homer6/zetta
-gh pr review <N> -R homer6/zetta --comment --body "..."   # never approve/merge unless asked
-gh pr merge <N> -R homer6/zetta --squash
+gh pr view <N> -R oramasearch/zetta --comments    # full read (see rule above)
+gh pr diff <N> -R oramasearch/zetta
+gh pr checks <N> -R oramasearch/zetta
+gh pr review <N> -R oramasearch/zetta --comment --body "..."   # never approve/merge unless asked
+gh pr merge <N> -R oramasearch/zetta --squash
 ```
 
 If the user pastes a PR URL or says `review <N>`, treat it as a review request:
@@ -216,11 +223,11 @@ explicitly asked.
 ## Search / Labels / CI / Releases
 
 ```bash
-gh search issues "topic" --repo homer6/zetta --state open
-gh search code "ReplicationManager" --repo homer6/zetta
-gh label list -R homer6/zetta
-gh run list -R homer6/zetta            # GitHub Actions (none configured yet)
-gh release list -R homer6/zetta
+gh search issues "topic" --repo oramasearch/zetta --state open
+gh search code "ReplicationManager" --repo oramasearch/zetta
+gh label list -R oramasearch/zetta
+gh run list -R oramasearch/zetta            # GitHub Actions (none configured yet)
+gh release list -R oramasearch/zetta
 ```
 
 ## API fallback (`gh api`)
@@ -228,11 +235,11 @@ gh release list -R homer6/zetta
 When a `gh` subcommand fails or lacks a field:
 
 ```bash
-gh api repos/homer6/zetta/issues/<N> --jq '{title,state,body}'
-gh api repos/homer6/zetta/issues/<N>/comments --jq '.[].body'
-gh api repos/homer6/zetta/issues/<N>/comments -f body="text"          # post
-gh api repos/homer6/zetta/issues/<N> -X PATCH -f state="closed"
-gh api repos/homer6/zetta/labels --jq '.[].name'
+gh api repos/oramasearch/zetta/issues/<N> --jq '{title,state,body}'
+gh api repos/oramasearch/zetta/issues/<N>/comments --jq '.[].body'
+gh api repos/oramasearch/zetta/issues/<N>/comments -f body="text"          # post
+gh api repos/oramasearch/zetta/issues/<N> -X PATCH -f state="closed"
+gh api repos/oramasearch/zetta/labels --jq '.[].name'
 ```
 
 ## Downloading images from issues/PRs
@@ -242,7 +249,7 @@ grepping the body/comments, then download with the gh token (plain `-L`, never
 `--location-trusted` — it would leak the token across the redirect):
 
 ```bash
-gh issue view <N> -R homer6/zetta --comments --json body,comments \
+gh issue view <N> -R oramasearch/zetta --comments --json body,comments \
   --jq '.body, (.comments[].body)' \
   | grep -oE 'https://(github\.com/user-attachments/assets|[a-z-]*\.?githubusercontent\.com)/[^ )"]+'
 curl -sL -H "Authorization: Bearer $(gh auth token)" "<url>" -o /tmp/asset.png
@@ -252,5 +259,5 @@ file /tmp/asset.png   # confirm it's an image, not HTML
 ## Known bugs
 
 - `gh issue view` "Projects (classic) is being deprecated" → `gh < 2.82.1`;
-  upgrade, or fall back to `gh api repos/homer6/zetta/issues/<N>`.
+  upgrade, or fall back to `gh api repos/oramasearch/zetta/issues/<N>`.
 - Bodies with special characters break the shell → always HEREDOC (`<<'EOF'`).

@@ -421,7 +421,7 @@ constexpr std::array<const char*, kGaugeCount> kGaugeLabels{"CPU", "MEM", "GPU",
 // rebalance), system.pipeline_jobs (near-data vs wire bytes), system.collective_rounds
 // (scatter/gather) — so the canvas visibly animates a live run without inventing any
 // number. update_cluster_pipeline() diffs a per-frame snapshot into brief flows;
-// draw_pipeline_flow() glides them over the boxes. See docs/cluster-pipeline-animation.md.
+// draw_pipeline_flow() glides them over the boxes. See docs/gui/cluster-pipeline-animation.md.
 //
 // Flow palette: near-data / local work reads GREEN (it stays home — the near-data
 // win the instrumentation makes checkable), wire / collective movement reads INK (it

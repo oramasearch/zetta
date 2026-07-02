@@ -35,7 +35,7 @@
 // **No new wire format / JSON.** The partials ride the schema-validated
 // `CollectiveMessage`; the op spec carries its own validated boundary
 // (`GroupBySpec`, group_by.hpp); the job record is schema-validated at its own
-// boundary. See docs/ddf-groupby.md.
+// boundary. See docs/ddf/ddf-groupby.md.
 namespace zetta::ddf {
 
 // The outcome of running a distributed groupby-aggregate as a ComputeJob.

@@ -32,7 +32,7 @@ struct ReconcileReport {
 // R1 is **local only**: a node reconciles the deployments it itself placed
 // (target local, `node == node_id()`). Deployments placed on a *peer* are that
 // peer's responsibility; cross-node failover (a survivor adopting a dead node's
-// placements) needs leadership/lease (see docs/replication.md → Consistency
+// placements) needs leadership/lease (see docs/cluster/replication.md → Consistency
 // model) and is a later slice — like ClusterRole, declared before it is built.
 class DeploymentController {
 public:

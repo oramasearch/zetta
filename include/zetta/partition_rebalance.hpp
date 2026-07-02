@@ -70,7 +70,7 @@ struct RebalanceResult {
 // Non-throwing; it only mutates the catalog (no physical body GC — a demoted
 // owner's stale on-disk copy is harmless: missing_blobs won't re-fetch it,
 // store_blob refuses it, and the catalog defines ownership). See
-// docs/partition-rebalance.md.
+// docs/data/partition-rebalance.md.
 RebalanceResult rebalance_partitions(
     Node& node, const std::vector<std::string>& members,
     const std::vector<std::string>& previous_members = {});

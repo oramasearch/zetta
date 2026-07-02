@@ -72,7 +72,7 @@ std::optional<IndexValue> parse_index_value(const nlohmann::json& value,
 // `fields` are fixed at creation (an index is rebuilt, not re-specified — changing
 // what it indexes is a new index). apply_value updates the projection from the
 // document with NO capture (reconciliation). Lookups hand back shared_ptr handles,
-// like Model / Run. See docs/index-backend.md.
+// like Model / Run. See docs/indexing/index-backend.md.
 class Index {
 public:
     Index(std::string id, IndexValue value, std::filesystem::path dir,

@@ -31,7 +31,7 @@
 // and run green. CMake guards the engine behind `ZETTA_WITH_ORAMACORE`: when the
 // submodule is present the real engine is linked; when it is absent build()/query()
 // degrade to `Unsupported` (drop() is still Ok — nothing was built). `engine_available()`
-// reports which. See docs/oramacore-fulltext-index.md.
+// reports which. See docs/indexing/oramacore-fulltext-index.md.
 namespace zetta {
 
 class OramaCoreFulltextIndex final : public IndexBackend {

@@ -9,10 +9,10 @@
 > slice and the focus of "what's next" below.
 >
 > This is a *plan*, not a spec: the "how" sections weigh options rather than commit
-> to one. It complements [true-hybrid.md](../true-hybrid.md) (the equal-peer,
+> to one. It complements [true-hybrid.md](../architecture/true-hybrid.md) (the equal-peer,
 > heterogeneous-hardware vision the `Provisioner` seam serves), the
-> [add-nodes-control.md](../add-nodes-control.md) / [provisioner.md](../provisioner.md) /
-> [provisioner-detection.md](../provisioner-detection.md) references, and
+> [add-nodes-control.md](../gui/add-nodes-control.md) / [provisioner.md](../cloud/provisioner.md) /
+> [provisioner-detection.md](../cloud/provisioner-detection.md) references, and
 > [research/azure-cli-compute.md](../research/azure-cli-compute.md).
 
 ## The goal

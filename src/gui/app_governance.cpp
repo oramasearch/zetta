@@ -238,7 +238,7 @@ void App::draw_admin() {
 // options, optionally point it at custom data, and run it — the case exercises the
 // real engine (a distributed case stands up a real multi-node loopback cluster) and
 // reports a structured pass/fail with metrics + a log. The run happens on a worker
-// thread so the UI stays responsive. See docs/test-suite.md.
+// thread so the UI stays responsive. See docs/testing/test-suite.md.
 void App::draw_test_suite() {
     ImGui::SeparatorText("Test suite");
 

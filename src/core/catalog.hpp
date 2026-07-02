@@ -29,7 +29,7 @@
 //   graph:<graph_uuid> -> { project: <proj_uuid>, name,       (an ExecutionGraph
 //                          graph: { nodes, edges } }            IR under a project
 //                          — the whole serialized graph as one value; see
-//                          project_graph.hpp / docs/execution-graph.md)
+//                          project_graph.hpp / docs/pipeline/execution-graph.md)
 //   deployment:<dep_uuid> -> { graph_name, target: {…}, node, node_count,
 //                          edge_count, created }  (a graph placed onto a target;
 //                          a top-level entity with no parent — see deployment.hpp)
@@ -72,7 +72,7 @@
 //                          and the nodes that own a copy. The catalog is
 //                          replicate-to-all so placement is globally visible
 //                          (ENT-36 / TBL-13); a top-level entity — see
-//                          dataset_partition.hpp / docs/dataset-partitions.md)
+//                          dataset_partition.hpp / docs/data/dataset-partitions.md)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,

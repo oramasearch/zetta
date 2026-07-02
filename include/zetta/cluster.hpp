@@ -18,7 +18,7 @@ class BlobStore;
 // Leadership applies only to exclusive resources (locks, sequences, …), and is
 // per-(node, resource): a node holds zero to many roles at once. This single
 // value is a placeholder for that future per-resource set — today always
-// Follower. See docs/replication.md → Consistency model.
+// Follower. See docs/cluster/replication.md → Consistency model.
 enum class ClusterRole { Follower, Candidate, Leader };
 
 // Human-readable role name ("follower" / "candidate" / "leader").
@@ -135,7 +135,7 @@ public:
     // --- Signal plane (RPC / events / tasks) --------------------------------
     //
     // A typed, ephemeral message layer over the same peer connections (NOT
-    // routed through the replicated document). See docs/signal-plane.md.
+    // routed through the replicated document). See docs/cluster/signal-plane.md.
 
     // Register the handler invoked for incoming requests / events / tasks. It
     // runs on the cluster's network thread, so it must be cheap and thread-safe

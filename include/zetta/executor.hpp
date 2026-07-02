@@ -54,7 +54,7 @@ public:
 
 // The default step executor for R1: interprets a step's StepKind to derive the
 // artifact it materializes, with no real compute. The mapping (also in
-// docs/execution.md):
+// docs/pipeline/execution.md):
 //
 //   connect -> a `dataset` output + a lineage source (from the step's
 //              `attributes`: "source"+"table", else "source"/"uri"/"path",

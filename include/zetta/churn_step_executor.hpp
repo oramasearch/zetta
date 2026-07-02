@@ -63,7 +63,7 @@
 // ComputeJob records, the GBDT weights body (gbdt_model.schema.json), and the
 // FeaturizeSpec / GbdtParams boundaries — so malformed data still fails fast there.
 //
-// See docs/churn-step-executor.md.
+// See docs/use-cases/churn-step-executor.md.
 namespace zetta {
 
 class Node;

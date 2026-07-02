@@ -45,7 +45,7 @@
 // Implemented as a star (depth-1 tree): the root gathers from all participants
 // and broadcasts the result. A k-ary tree / ring reduction (to cut the root's
 // fan-in at large scale) is a later optimization behind this same API. See
-// docs/collectives.md.
+// docs/cluster/collectives.md.
 namespace zetta {
 
 class Cluster;

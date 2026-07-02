@@ -45,7 +45,7 @@
 // account, so this matches the single-node (left-join) reference there; a true left
 // join, emitting zero-event accounts with COALESCE-0 features, lands when
 // distributed_join gains outer-join support, behind this same entry. See
-// docs/ddf-featurize.md.
+// docs/ddf/ddf-featurize.md.
 namespace zetta::ddf {
 
 // The outcome of running a distributed featurization as a ComputeJob.

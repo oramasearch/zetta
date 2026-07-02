@@ -69,7 +69,7 @@ cmake -S . -B build -G Ninja -DZETTA_ENABLE_CUDA=ON
 This requires `find_package(CUDAToolkit)` to succeed (configure fails loudly
 otherwise) and compiles `src/core/compute/cuda_device.cu` with nvcc. The CUDA
 headers stay confined to that library — they never reach `zetta-core` — mirroring
-how SDL/ImGui are kept out. See [compute-device.md](compute-device.md) for the
+how SDL/ImGui are kept out. See [compute-device.md](compute/compute-device.md) for the
 backend and its verification caveats.
 
 ## Run
@@ -89,17 +89,17 @@ backend and its verification caveats.
 On startup a node runs a **preflight integrity check** by default (disable with
 `--no-preflight`): it re-hashes each local large-object body against its recorded
 SHA-256 and looks for dangling references, logging a `preflight:` summary. See
-[storage.md](storage.md).
+[storage.md](data/storage.md).
 
 On startup a node prints its id, the address(es) it's reachable at, and the
-command to add another node — see [cluster.md](cluster.md).
+command to add another node — see [cluster.md](cluster/cluster.md).
 
 In headed mode, the **Query (postgres)** panel runs SQL against the selected
 database; the **Correctness gate** panel validates an execution graph and shows
-the per-check report + block-on-fail state (see [gate.md](gate.md)); the
+the per-check report + block-on-fail state (see [gate.md](pipeline/gate.md)); the
 **Projects | Databases | Tables | Rows | Large Objects** explorer reflects
 changes live (the leftmost **Projects** column creates/selects/renames AI
-projects — see [projects.md](projects.md)).
+projects — see [projects.md](pipeline/projects.md)).
 
 ## Test
 

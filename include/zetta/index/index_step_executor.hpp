@@ -9,7 +9,7 @@
 // The generic StepExecutor that wires an IR `index` step to a real IndexBackend
 // (#528) — the run-path slice that drives a deployed `index` step through the
 // resolved backend, "actually building the index over the table's partitions and
-// serving queries from it" (the slice docs/index-backend.md named as later work).
+// serving queries from it" (the slice docs/indexing/index-backend.md named as later work).
 //
 // DefaultStepExecutor (executor.hpp) emits a *logical* `index:<id>` placeholder
 // for an `index` step — "no real index is materialized in R1". This executor
@@ -38,7 +38,7 @@
 // **No new JSON format.** The index step's attributes ride the already-IR-validated
 // graph JSON (read through index_spec_from_node), and the recorded Index entity is
 // validated at its own JSON-Schema boundary (parse_index_value) — so malformed
-// data still fails fast there. See docs/index-step-executor.md.
+// data still fails fast there. See docs/indexing/index-step-executor.md.
 namespace zetta {
 
 class Node;

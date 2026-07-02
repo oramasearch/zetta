@@ -23,7 +23,7 @@
 // CLI REPL, `tests/test_governed_console.cpp`) and under the GUI screen, which is
 // a thin renderer that only sets the acting key + database and forwards each run.
 //
-// Two frontends, governed two ways (see docs/governed-console.md):
+// Two frontends, governed two ways (see docs/governance/governed-console.md):
 //
 //   - **SQL** runs through the dialect-agnostic [query service](../query/service.hpp)
 //     — its own validated executor — so it is governed by the **capability check +

@@ -37,7 +37,7 @@ struct BurstIdentity {
 // The job→identity association is carried in the service principal's **name**
 // (`burst/<job-id>/<node-id>`), so the set to revoke is **derived** from the node's
 // replicated principals — never a parallel, separately-maintained copy of state
-// (the CRDT stays the source of truth; see docs/replication.md). Because of this,
+// (the CRDT stays the source of truth; see docs/cluster/replication.md). Because of this,
 // `minted()` and `revoke()` keep working after a restart: they read the identities
 // straight back off the reconstructed principal tree.
 //

@@ -31,7 +31,7 @@
 // already-validated `ChurnAccount`s, or in tests), so there is no new JSON *parse*
 // boundary here. Its *output* rides the existing `entity_resolution` format
 // (schemas/entity_resolution.schema.json), schema-validated where it enters the gate
-// (`EntityResolutionCheck`). See docs/entity-resolution.md.
+// (`EntityResolutionCheck`). See docs/use-cases/entity-resolution.md.
 namespace zetta {
 
 // A candidate CRM account a raw mention can resolve to. `name` is the match key for

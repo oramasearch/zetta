@@ -53,7 +53,7 @@
 // returns a `compute::ComputeStatus` alongside its result. The distributed variant —
 // the same featurization driven across the cluster through the
 // [job coordinator](../compute/job_coordinator.hpp) as a recorded `featurize`
-// `ComputeJob` — is `run_featurize_job` in featurize_job.hpp. See docs/ddf-featurize.md.
+// `ComputeJob` — is `run_featurize_job` in featurize_job.hpp. See docs/ddf/ddf-featurize.md.
 namespace zetta::ddf {
 
 // --- The spec ----------------------------------------------------------------

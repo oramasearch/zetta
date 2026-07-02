@@ -10,7 +10,7 @@
 // plug into the CorrectnessGate's `Check` seam (gate.hpp) without touching the
 // gate itself. They read a small, documented set of **annotations** from each
 // step's free-form `attributes` bag (see schemas/graph_step_annotations.schema.json
-// and docs/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
+// and docs/pipeline/gate-checks.md) and turn a mistyped or leaky graph into a clear-reason
 // gate failure (RULE-1 — no deploy without a passing gate).
 //
 // Both validate the annotations they read against the JSON Schema at the boundary

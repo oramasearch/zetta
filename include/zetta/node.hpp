@@ -132,7 +132,7 @@ public:
     std::size_t database_count() const { return databases_.size(); }
 
     // CRUD for projects (the central, user-managed AI artifact — see
-    // project.hpp / docs/projects.md), mirroring the database CRUD shape.
+    // project.hpp / docs/pipeline/projects.md), mirroring the database CRUD shape.
     // create stamps created/updated and takes an optional owner key;
     // create/rename yield an empty handle / false on an empty name or a clash.
     std::shared_ptr<Project> create_project(std::string name,
@@ -176,7 +176,7 @@ public:
     // This node's long-lived JobCoordinator over its real cluster, or nullptr when
     // no cluster has been attached (a standalone node, or before attach_cluster).
     // The single entry the native distributed compute algorithms submit work
-    // through; see compute/job_coordinator.hpp / docs/job-coordinator.md.
+    // through; see compute/job_coordinator.hpp / docs/compute/job-coordinator.md.
     compute::JobCoordinator* job_coordinator() { return coordinator_.get(); }
     const compute::JobCoordinator* job_coordinator() const {
         return coordinator_.get();
@@ -199,7 +199,7 @@ public:
     std::size_t deployment_count() const { return deployments_.size(); }
 
     // CRUD for runs (one execution of a deployed graph — see run.hpp /
-    // docs/runs.md). Runs have no human name: they are keyed by id, so find /
+    // docs/pipeline/runs.md). Runs have no human name: they are keyed by id, so find /
     // drop take the id. create stamps created/updated, starts Pending, and takes
     // optional project + graph + deployment references (the deployment ref ties a
     // run to the placement the reconcile loop is keeping alive). The "update"
@@ -215,7 +215,7 @@ public:
     std::size_t run_count() const { return runs_.size(); }
 
     // CRUD for models (a trained model registered on the node — see model.hpp /
-    // docs/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
+    // docs/ml/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
     // find / drop take the id; the registry is models() + the
     // system.zetta_models SQL table. create stamps `created` and requires a
     // non-empty `kind` (empty handle otherwise); the caller fills the rest of the
@@ -230,7 +230,7 @@ public:
     std::size_t model_count() const { return models_.size(); }
 
     // CRUD for indexes (a registered index over a table — search / vector /
-    // feature; ENT-39 / ENT-40, see index/index.hpp / docs/index-backend.md). Like
+    // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
     // models, indexes are keyed by id (no human name), so find / drop take the id;
     // the registry is indexes() + the system.zetta_indexes SQL table. create stamps
     // `created` and requires a non-empty `table` / `backend` and at least one field
@@ -254,12 +254,12 @@ public:
     // enumerates the CPU device; a host may add more. The IndexStepExecutor
     // (index/index_step_executor.hpp) resolves + builds through it, and a built
     // index is queryable for the node's lifetime via
-    // `index_registry().resolve(spec)->query(spec, q)`. See docs/index-step-executor.md.
+    // `index_registry().resolve(spec)->query(spec, q)`. See docs/indexing/index-step-executor.md.
     IndexRegistry& index_registry() { return index_registry_; }
     const IndexRegistry& index_registry() const { return index_registry_; }
 
     // CRUD for compute jobs (one unit of native distributed accelerated compute —
-    // ARC-11 / ENT-31; see compute_job.hpp / docs/compute-jobs.md). Like runs,
+    // ARC-11 / ENT-31; see compute_job.hpp / docs/compute/compute-jobs.md). Like runs,
     // jobs have no human name: they are keyed by id, so find / drop take the id.
     // create stamps created/updated, starts Queued, takes the job `kind` and
     // optional project / graph / run / scaling_policy (reward) references, and
@@ -279,7 +279,7 @@ public:
     std::size_t job_count() const { return jobs_.size(); }
 
     // This node's durable **checkpoint store** for burst-job eviction tolerance
-    // (RULE-5 / RSK-9; see compute/checkpoint.hpp / docs/job-checkpoint.md), rooted
+    // (RULE-5 / RSK-9; see compute/checkpoint.hpp / docs/compute/job-checkpoint.md), rooted
     // at `<data_dir>/checkpoints`. A long-running job body (e.g. the distributed
     // GBDT trainer) checkpoints its progress here and **resumes from the last
     // checkpoint** after the node's process restarts. Checkpoints are **local,
@@ -294,7 +294,7 @@ public:
     std::vector<compute::JobCheckpoint> checkpoints() const;
 
     // CRUD for dataset partitions — the partition catalog (ENT-36 / TBL-13; see
-    // dataset_partition.hpp / docs/dataset-partitions.md). A partition records
+    // dataset_partition.hpp / docs/data/dataset-partitions.md). A partition records
     // where a slice of a table's data physically lives (its table id, the
     // large-object body holding its bytes, the row range, column stats, and the
     // owner nodes). Like jobs, partitions have no human name: they are keyed by id,
@@ -327,11 +327,11 @@ public:
     // Recomputed from the live tree (databases → tables) + dataset_partitions() on
     // every call — never stored/hand-synced — so it can't drift from the truth. The
     // `system` database (a virtual catalog) is not a dataset and is excluded. See
-    // dataset.hpp / docs/system-datasets.md.
+    // dataset.hpp / docs/data/system-datasets.md.
     std::vector<DatasetSummary> datasets() const;
 
     // In-memory cache of consent-gated cloud inspect results (CloudInspector;
-    // docs/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
+    // docs/cloud/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
     // see RULE-7 in CLAUDE.md). The Cloud Inspector records a report here only
     // AFTER the user consents to that one inspection; `system.zetta_cloud_status`
@@ -344,7 +344,7 @@ public:
     }
 
     // Cloud-burst provisioner deployment contexts detected from this node's own
-    // local CLIs (detect_provisioner_configs; docs/provisioners.md). **Ephemeral,
+    // local CLIs (detect_provisioner_configs; docs/cloud/provisioner-detection.md). **Ephemeral,
     // observed state with NO CRDT backing** — like cloud_inspections(), node-local
     // and never replicated/persisted, because it reflects *this* node's CLI auth +
     // defaults. It carries no credentials (the CLI keeps its own); it is the source
@@ -357,7 +357,7 @@ public:
     }
 
     // Sample this node's **live host resource utilization** — CPU / memory / GPU
-    // + VRAM / storage / network (see node_metrics.hpp / docs/node-metrics.md).
+    // + VRAM / storage / network (see node_metrics.hpp / docs/cluster/node-metrics.md).
     // **Ephemeral, observed state with NO CRDT backing**: it is read straight
     // from the host's OS counters here and now, never stored or replicated (like
     // cloud_inspections()). It is the source for the read-only
@@ -374,7 +374,7 @@ public:
     // the headed cluster view animates per-node gauges from (#584). Where
     // `sample_node_metrics()` measures only this host, the per-node series are
     // gathered over the signal plane (each node broadcasts its own sample, every
-    // node caches what it receives — see node_telemetry.hpp / docs/cluster-node-gauges.md).
+    // node caches what it receives — see node_telemetry.hpp / docs/gui/cluster-node-gauges.md).
     // Ephemeral + non-replicated like the sample itself; empty until a cluster is
     // attached (the exchange rides the JobCoordinator's signal-handler chain).
     std::vector<NodeTelemetrySample> telemetry_snapshot() const {
@@ -399,7 +399,7 @@ public:
     std::vector<PipelineJobInstrumentation> pipeline_jobs() const;
 
     // CRUD for principals (authenticated actors — see principal.hpp /
-    // docs/access-control.md), mirroring the project CRUD shape. create stamps
+    // docs/governance/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
     // an empty handle / false on an empty name or a clash. A principal owns its
     // access keys (Principal::create_key); a request's reach is the scope of the
@@ -463,7 +463,7 @@ public:
 
     // Execute an ExecutionGraph on this node, producing a Run (FEAT-5). A thin,
     // discoverable entry point over the standalone GraphExecutor (executor.hpp /
-    // docs/execution.md): it creates a Run, walks the graph's steps in dependency
+    // docs/pipeline/execution.md): it creates a Run, walks the graph's steps in dependency
     // order, accumulates per-step logs + typed outputs + lineage, and drives the
     // Run to Succeeded (or Failed on an empty/cyclic graph or a failing step).
     // `project` / `graph_id` label the Run. Returns the ExecutionResult (the Run

@@ -26,7 +26,7 @@
 // cross-node half — idle/faster *nodes* stealing pending tasks from peers over
 // the signal plane — is `zetta::compute::DistributedScheduler`
 // (include/zetta/compute/distributed_scheduler.hpp), which is built on this and
-// reuses it as its local execution engine. See docs/work-stealing-scheduler.md.
+// reuses it as its local execution engine. See docs/compute/work-stealing-scheduler.md.
 //
 // Why a sibling to `zetta::runtime::thread_pool` rather than that pool directly:
 // Capy's `thread_pool` (the seam's backend today) schedules off a single shared
@@ -35,7 +35,7 @@
 // with an explicit, countable steal operation (the legibility this scheduler is
 // built around). Task bodies may still enter the coroutine world via
 // `zetta::runtime::block_on`; the scheduler itself stays agnostic to what a task
-// does. See docs/runtime.md.
+// does. See docs/architecture/runtime.md.
 namespace zetta::compute {
 
 // A unit of work: any nullary callable. Copyable (so it can sit in a deque and
