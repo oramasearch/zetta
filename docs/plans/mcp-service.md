@@ -1,6 +1,7 @@
 # Plan: the MCP + REST control surface
 
-Status: proposed · 2026-07-02 · realizes [product/control-surfaces.md](../product/control-surfaces.md)
+Status: proposed · 2026-07-02 · tracking: epic [#614](https://github.com/oramasearch/zetta/issues/614)
+(slices #615–#621; UX companions #622–#626) · realizes [product/control-surfaces.md](../product/control-surfaces.md)
 (API-6 / API-8; sets up FEAT-13). Reference implementation for the pattern:
 worktree-manager's `wtm-mcp` (Streamable HTTP JSON-RPC on `POST /mcp`,
 cpp-httplib, loopback + bearer token, full dashboard parity, prompts as the
