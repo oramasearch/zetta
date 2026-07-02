@@ -42,6 +42,12 @@ conventions**. Everything else is disclosed progressively, in four layers:
 4. **`docs/<domain>/<page>.md`** — one page per shipped slice (symbols, issue
    refs, boundaries, scope notes).
 
+**"Let's reload the full project context"** → read
+[`docs/full-context.md`](docs/full-context.md) — the kept-current map of
+repos, systems of record, shipped state, the active wave, and working
+agreements. Update it whenever project state shifts (PR merges, plan
+changes, new foundations).
+
 For navigating the source tree, read
 **[`docs/architecture/code-map.md`](docs/architecture/code-map.md)** — the
 annotated file-by-file map (kept in sync by the docs discipline below).

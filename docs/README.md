@@ -12,7 +12,9 @@ The docs are organized for **progressive disclosure**, by domain:
 3. **The page** — one page per shipped slice, with symbols, issue refs, and
    boundaries.
 
-Orientation shortcuts: [product/orama-zetta.md](product/orama-zetta.md) is the
+Orientation shortcuts: [full-context.md](full-context.md) is the **reload
+map** (the whole project's where-to-look, kept current);
+[product/orama-zetta.md](product/orama-zetta.md) is the
 **read-first** product framing; [architecture/architecture.md](architecture/architecture.md)
 is the system narrative; [architecture/code-map.md](architecture/code-map.md) is
 the annotated file-by-file map of the codebase; [build.md](build.md) is build /
