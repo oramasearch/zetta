@@ -42,7 +42,7 @@ shows pass/fail, the metrics (the backend used, partitions indexed, matched + ra
 bytes read near data vs moved over wire), and the log.
 
 **Headless:** the case is exercised (at `nodes=2`, `copies=3`) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests

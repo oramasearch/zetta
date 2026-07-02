@@ -1,6 +1,6 @@
 # Wiring the churn solution to the real engine (`zetta::run_churn_solution`)
 
-`zetta::run_churn_solution` (`include/zetta/churn_solution.hpp`) is the bridge from
+`zetta::run_churn_solution` (`include/zetta/usecases/churn/churn_solution.hpp`) is the bridge from
 the catalog **churn-prediction** blueprint — the one a user picks in the
 [Deploy panel](../pipeline/solution-catalog.md) — to a **real trained [Model](../ml/models.md) +
 ranked at-risk list + churn drivers**, running the actual
@@ -9,10 +9,10 @@ featurize → train → explain → rank → playbook pipeline instead of the st
 part of the native distributed accelerated-compute pass (#264).
 
 ```
-include/zetta/churn_solution.hpp   run_churn_solution, ChurnSolutionOptions/Result,
+include/zetta/usecases/churn/churn_solution.hpp   run_churn_solution, ChurnSolutionOptions/Result,
                                    encode_churn_dataset, the standard churn config,
                                    demo_churn_dataset
-src/core/churn_solution.cpp        the encoder + config builders + the runner
+src/core/usecases/churn/churn_solution.cpp        the encoder + config builders + the runner
 ```
 
 ## Why a bridge was needed
@@ -147,7 +147,7 @@ reflect the run.
 
 ## Tests
 
-`tests/test_churn_solution.cpp` is the #398 acceptance:
+`tests/usecases/churn/test_churn_solution.cpp` is the #398 acceptance:
 
 - **Deploy + run the catalog churn solution.** It takes
   `SolutionCatalog::builtin().find("churn-prediction")`, deploys it (the gate passes

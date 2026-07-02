@@ -2,8 +2,8 @@
 
 The first **concrete** correctness checks that plug into the
 [correctness gate](gate.md) (`#309`, an atomic slice of FEAT-3). They implement
-the gate's `Check` seam (`include/zetta/graph_checks.hpp`,
-`src/core/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
+the gate's `Check` seam (`include/zetta/pipeline/graph_checks.hpp`,
+`src/core/pipeline/graph_checks.cpp`) and turn a **mistyped or leaky** execution graph into
 a clear-reason gate **failure** that blocks deploy (RULE-1), while letting a clean
 graph through.
 
@@ -117,7 +117,7 @@ source profile and `schema_type` fails; add a feature with `"data_as_of":
 "2024-06-01"` and `data_leakage` fails — either blocks deploy with a reason.
 
 ```cpp
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/serialization.hpp"
 using namespace zetta;
 
@@ -135,7 +135,7 @@ The annotation fields have a formal contract,
 (JSON Schema draft-07). Each step's `attributes` bag is validated against it
 **before** a check reads it (via `pboettch/json-schema-validator`, the same path
 the [Run record](runs.md) uses); the runtime copy of the schema lives inline in
-`src/core/graph_checks.cpp` — **keep the two in sync**. Only the named fields are
+`src/core/pipeline/graph_checks.cpp` — **keep the two in sync**. Only the named fields are
 constrained, so any other attribute is allowed; but a present field that is the
 wrong shape (`requires` as an array, a `features` entry without a `name`, an
 `as_of` that isn't an ISO-8601 instant) fails the check with the validator's

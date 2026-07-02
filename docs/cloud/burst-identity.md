@@ -3,7 +3,7 @@
 When the cluster **bursts** compute nodes for a job — standing up extra nodes
 through the [`Provisioner`](provisioner.md) seam — each burst node needs an
 identity to authenticate to the cluster. The **`BurstIdentityManager`**
-(`include/zetta/burst_identity.hpp`) mints those identities **in bulk on
+(`include/zetta/cloud/burst_identity.hpp`) mints those identities **in bulk on
 provision** and **revokes them in bulk on teardown**, by **reusing the existing
 identity model** ([`Principal` + `AccessKey`](../governance/access-control.md), `#304`) — no new
 identity system. It realizes **ARC-13** and mitigates **RSK-9** (long-lived,
@@ -95,7 +95,7 @@ The example above mints + revokes by hand. The **production ephemeral-burst path
 automatically. Every cloud backend
 ([`AzureProvisioner`](azure-provisioner.md), AWS, GCP, OCI, k8s, bare-metal) is a
 [`BurstProvisioner`](cloud-provisioner-pattern.md) carrying an optional
-**`IdentityHooks`** pair (`include/zetta/burst_provisioner.hpp`): `mint` is invoked
+**`IdentityHooks`** pair (`include/zetta/cloud/burst_provisioner.hpp`): `mint` is invoked
 with the nodes a `provision` brought up, and `revoke` is invoked once, when the
 burst's **last** node is torn down (the pool drains). Bind them to a
 `BurstIdentityManager` for the job and the whole lifecycle runs hands-off:
@@ -151,7 +151,7 @@ The events are emitted only for the **local** mint/revoke action — the reverse
 `materialize_*` reconciliation paths never emit, so a peer's burst identity arrives
 already-audited as its own replicated `audit:` event. The two new actions are part
 of the AuditEvent JSON Schema (the inline source of truth in
-`src/core/audit_event.cpp`, mirrored by
+`src/core/governance/audit_event.cpp`, mirrored by
 [`schemas/audit_event.schema.json`](../../schemas/audit_event.schema.json)), so a
 malformed action still fails validation at the boundary. These same `key_issued` /
 `key_revoked` actions are reusable by the future "grant a capability as a
@@ -159,9 +159,9 @@ first-class event" FEAT-9 slice.
 
 ## Tests
 
-`tests/test_burst_identity.cpp` covers the acceptance criterion (bulk-mint N,
+`tests/cloud/test_burst_identity.cpp` covers the acceptance criterion (bulk-mint N,
 bulk-revoke on teardown, audit events recorded) against the real `Provisioner`
-seam (a `FakeProvisioner` like the one in `tests/test_provisioner.cpp`):
+seam (a `FakeProvisioner` like the one in `tests/cloud/test_provisioner.cpp`):
 
 - **bulk mint → bulk revoke, audited** — provision 3, mint 3 (one service
   principal + one job-scoped key each, 3 `key_issued` events), then `revoke` all 3
@@ -190,14 +190,14 @@ The same acceptance is a **runnable, parameterized in-app case**,
 `governance.burst_identity` in the [test suite](../testing/test-suite.md) catalog
 (`zetta::testkit`) — burst N nodes (a tunable burst-size option) through the real
 provisioner ↔ manager wiring and assert N distinct identities minted + revoked with
-no orphans, both headless (`tests/test_testkit.cpp`) and from the headed
+no orphans, both headless (`tests/testkit/test_testkit.cpp`) and from the headed
 **Operations → Test suite** panel.
 
 ## Pointers
 
-- `include/zetta/burst_identity.hpp` — `zetta::BurstIdentity` /
+- `include/zetta/cloud/burst_identity.hpp` — `zetta::BurstIdentity` /
   `BurstIdentityManager`.
-- `src/core/burst_identity.cpp` — bulk mint / revoke / list over the Node's
+- `src/core/cloud/burst_identity.cpp` — bulk mint / revoke / list over the Node's
   principal CRUD + audit sink.
 - [provisioner.md](provisioner.md) — the `Provisioner` seam these identities are
   minted for (the source of burst nodes).

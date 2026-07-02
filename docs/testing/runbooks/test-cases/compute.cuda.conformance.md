@@ -14,7 +14,7 @@ and is **skipped** on a CPU-only build (the default).
    `-DZETTA_ENABLE_CUDA=ON` (the opt-in CUDA build).
 2. **CUDA build → pass.** When the backend is compiled in, the case **passes**,
    reporting `cuda = available` and noting that the CPU↔CUDA operator parity suite
-   runs as `tests/test_cuda_device.cpp`.
+   runs as `tests/compute/test_cuda_device.cpp`.
 3. **CPU-only build → skip.** On the default CPU-only build no CUDA backend is
    present, so the case is **skipped** with `cuda = not built` and a hint to
    configure with `-DZETTA_ENABLE_CUDA=ON` on a CUDA host. It computes nothing
@@ -28,7 +28,7 @@ pane shows pass (on a CUDA build) or skipped (CPU-only), the `cuda` metric, and 
 log.
 
 **Headless:** the case is exercised by
-`tests/test_testkit.cpp::ComputeCasesPass`, which accepts either Pass (CUDA build)
+`tests/testkit/test_testkit.cpp::ComputeCasesPass`, which accepts either Pass (CUDA build)
 or Skipped (CPU-only build):
 
 ```bash
@@ -50,7 +50,7 @@ This case takes no options.
 - The actual operator parity, every operator agreeing between `CpuDevice` and
   `CudaDevice` plus the edge-case parity (integer-dtype rejection, safe integer
   divide, bounds-checked `gather`/`scatter`, deterministic duplicate-index
-  `scatter`), is asserted by `tests/test_cuda_device.cpp`, which compiles only in a
+  `scatter`), is asserted by `tests/compute/test_cuda_device.cpp`, which compiles only in a
   CUDA build and runs only on a host with a GPU.
 
 ## Related

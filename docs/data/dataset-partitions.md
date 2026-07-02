@@ -37,7 +37,7 @@ JSON projection, boundary validation against a formal JSON Schema. If you know
 
 ## The type
 
-A `DatasetPartition` (`include/zetta/dataset_partition.hpp`) is a top-level entity
+A `DatasetPartition` (`include/zetta/data/dataset_partition.hpp`) is a top-level entity
 with no parent. Its value:
 
 | Field | Type | Notes |
@@ -162,7 +162,7 @@ shape checks. The schema is the single source of truth for the value shape — t
 shape is sealed (`additionalProperties: false`), `table` is required, and
 `owner_nodes` must be an array of strings — and is exposed via
 `zetta::dataset_partition_value_schema()`. It lives inline in
-`src/core/dataset_partition.cpp`; [`schemas/dataset_partition.schema.json`](../../schemas/dataset_partition.schema.json)
+`src/core/data/dataset_partition.cpp`; [`schemas/dataset_partition.schema.json`](../../schemas/dataset_partition.schema.json)
 is **generated** from it and kept in sync by `tests/test_schemas.cpp` (regenerate
 with `ZETTA_WRITE_SCHEMAS=1 ctest --test-dir build -R Schemas`).
 
@@ -183,7 +183,7 @@ validator is the `pboettch/json-schema-validator` library, linked **PRIVATE** to
 
 ## Tests
 
-`tests/test_dataset_partition.cpp` covers the value type's JSON round-trip + the
+`tests/data/test_dataset_partition.cpp` covers the value type's JSON round-trip + the
 schema boundary rejecting malformed values, the Node CRUD (create / find / drop +
 the empty-`table` rejection), survival across a restart (disk projection), the
 `system.dataset_partitions` view (rows, projection, `WHERE`), and — the

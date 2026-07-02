@@ -1,7 +1,7 @@
 # Provisioner seam + node capability model
 
-The **`Provisioner`** seam (`include/zetta/provisioner.hpp`) and the **node
-capability model** (`include/zetta/node_capability.hpp`) are the first slice of
+The **`Provisioner`** seam (`include/zetta/cloud/provisioner.hpp`) and the **node
+capability model** (`include/zetta/cloud/node_capability.hpp`) are the first slice of
 the **native distributed accelerated compute** pass for UC-1 churn (`#264`). They
 realize **ARC-13** and entity **ENT-32**. This slice is the **abstraction only**
 — the interface plus the value types — with a fake test double. The concrete
@@ -102,7 +102,7 @@ public:
 
 ## The Local backend (`LocalProvisioner`)
 
-`zetta::LocalProvisioner` (`include/zetta/local_provisioner.hpp`) is the first
+`zetta::LocalProvisioner` (`include/zetta/cloud/local_provisioner.hpp`) is the first
 concrete `Provisioner` — the **given-hardware** path (ARC-13, `#374`). It does
 **not** stand up VMs: it reports and uses the nodes **already in the cluster**,
 best-effort. This is the case where we don't control the infrastructure — the
@@ -151,7 +151,7 @@ so they join, `teardown` releases one + bulk-revokes when the pool drains, and
 `provisioned` lists the live burst fleet. Every vendor follows **one shape** — a
 `<Vendor>Provisioner` (the burst orchestration) delegating to a
 `<Vendor>ControlPlane` seam, whose reference binding shells out to the vendor CLI
-through the shared [`CommandRunner`](../../include/zetta/command_runner.hpp) (no cloud
+through the shared [`CommandRunner`](../../include/zetta/cloud/command_runner.hpp) (no cloud
 SDK / client lib in `zetta-core`). [`AzureProvisioner`](azure-provisioner.md)
 (`#376`) is the **reference**; the mirrors are:
 
@@ -162,12 +162,12 @@ SDK / client lib in `zetta-core`). [`AzureProvisioner`](azure-provisioner.md)
 - [`zetta::OciProvisioner`](oci-provisioner.md) (`#432`) — an `OciCliControlPlane`
   `oci` binding (the Instance Pool + preemptible shape, OCID-resolved by display
   name) + a validated `OciConfig`.
-- [`zetta::K8sProvisioner`](k8s-provisioner.md) (`include/zetta/k8s_provisioner.hpp`,
+- [`zetta::K8sProvisioner`](k8s-provisioner.md) (`include/zetta/cloud/k8s_provisioner.hpp`,
   ARC-13 / ADR-20, `#434`) — a `K8sCliControlPlane` `kubectl` binding that bursts
   worker pods into an **existing cluster** (a Deployment scaled to N) + a validated
   `K8sConfig`.
 - [`zetta::BareMetalProvisioner`](bare-metal-provisioner.md)
-  (`include/zetta/bare_metal_provisioner.hpp`, ARC-13 / ADR-20, `#436`) — a
+  (`include/zetta/cloud/bare_metal_provisioner.hpp`, ARC-13 / ADR-20, `#436`) — a
   `BareMetalCliControlPlane` binding that bursts **local worker containers** on the
   host via its runtime (`docker` / `podman`) + a validated `BareMetalConfig`. Unlike
   the given-hardware `LocalProvisioner` (which only *reports*), it actually brings up
@@ -200,7 +200,7 @@ in-memory only.
 
 ## Tests
 
-`tests/test_provisioner.cpp` covers the acceptance criterion and the value types:
+`tests/cloud/test_provisioner.cpp` covers the acceptance criterion and the value types:
 
 - **`FakeProvisioner` round-trip** — a capacity-bounded in-memory test double
   provisions N nodes meeting a spec, lists them, and tears them down; each
@@ -215,7 +215,7 @@ in-memory only.
   `to_json`/`from_json` (CPU-only and GPU nodes), and `from_json` rejects
   malformed documents (non-object, missing/negative fields, unknown GPU kind).
 
-`tests/test_local_provisioner.cpp` covers the `LocalProvisioner` backend against
+`tests/cloud/test_local_provisioner.cpp` covers the `LocalProvisioner` backend against
 a fixed sample fleet (two CUDA boxes + one CPU box) read through an injected
 source: the acceptance criterion (`provision` returns the current cluster nodes;
 `teardown` is a no-op; `provisioned` lists the whole cluster), best-effort

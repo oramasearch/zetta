@@ -73,7 +73,7 @@ travels in the CRDT, the *body* does not.
 So a freshly-replicated object shows up immediately (metadata) and its body
 fills in shortly after; until then `LargeObject::body_present` is false and the
 UI marks it "syncing body". `read`/`export` return nothing until the body lands.
-The `BlobStore` seam (`include/zetta/blob_store.hpp`) is what the cluster uses to
+The `BlobStore` seam (`include/zetta/data/blob_store.hpp`) is what the cluster uses to
 fetch/serve/verify bodies; `ReplicatedBlobStore` implements it purely from the
 CRDT metadata + on-disk paths (so it's safe to call from the network thread).
 

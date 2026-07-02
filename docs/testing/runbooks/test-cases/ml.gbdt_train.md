@@ -31,7 +31,7 @@ suite → Machine learning → Train GBDT (AUC)**. Set the options in the modal 
 click **Run**; the result pane shows pass/fail, the metrics (AUC, log loss,
 accuracy, top driver), and the log.
 
-**Headless:** the case is exercised by `tests/test_testkit.cpp::MlCasesPass`:
+**Headless:** the case is exercised by `tests/testkit/test_testkit.cpp::MlCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

@@ -29,7 +29,7 @@ groupby-aggregate op verified group by group.
 **Run**; the result pane shows pass/fail, the metrics (rows / groups), and the log.
 
 **Headless:** the case is exercised (at `rows=500`, default `groups`) by
-`tests/test_testkit.cpp::DdfCasesPass`:
+`tests/testkit/test_testkit.cpp::DdfCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

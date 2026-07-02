@@ -15,7 +15,7 @@ the panel reads from.
 
 ## The type
 
-A `Run` (`include/zetta/run.hpp`) is a top-level entity with no parent, modeled
+A `Run` (`include/zetta/pipeline/run.hpp`) is a top-level entity with no parent, modeled
 exactly like [`zetta::Project`](projects.md). Its value:
 
 | Field | Type | Notes |
@@ -201,7 +201,7 @@ objective/scaling controls — is the [Jobs panel](../gui/jobs-panel.md).
 
 ## Tests
 
-`tests/test_run.cpp` covers create / update (status + logs + outputs + lineage) /
+`tests/pipeline/test_run.cpp` covers create / update (status + logs + outputs + lineage) /
 query, confidence clamping, survival across a restart (both disk-only and
 CRDT-only), replication of a run + a later status change to a connected peer, the
 JSON-Schema boundary rejecting malformed values, and a malformed `run.json` being

@@ -45,8 +45,8 @@ click **Run** (this case takes no options). The result pane shows pass/fail, the
 metrics (steps, edges, gate checks, run status, outputs), and the log.
 
 **Headless:** the example cases are exercised by
-`tests/test_testkit.cpp::ExampleScriptCasesRunGreen` and by
-`tests/test_example_scripts.cpp`:
+`tests/testkit/test_testkit.cpp::ExampleScriptCasesRunGreen` and by
+`tests/testkit/test_example_scripts.cpp`:
 
 ```bash
 cmake --build build --target zetta-tests

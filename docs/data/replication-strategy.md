@@ -16,9 +16,9 @@
 > placement dial (R1 Local only) and `ScalingPolicy` uses for the reward model before
 > the autoscaler that consumes it.
 
-A `zetta::ReplicationStrategy` (`include/zetta/replication_strategy.hpp`) is the
+A `zetta::ReplicationStrategy` (`include/zetta/data/replication_strategy.hpp`) is the
 per-entity counterpart to `ReplicationManager`'s **node-wide** `ReplicationPolicy`
-(`include/zetta/replication.hpp`): the manager's policy is one knob for the whole
+(`include/zetta/cluster/replication.hpp`): the manager's policy is one knob for the whole
 replicated document; the strategy is a choice **carried by each database and
 table** describing *how that entity's replicated state is laid out across the
 cluster*.
@@ -42,7 +42,7 @@ strategy, a database defaults to `ReplicateToAll`, and a **table inherits its
 database's strategy** unless it overrides:
 
 ```cpp
-#include "zetta/replication_strategy.hpp"
+#include "zetta/data/replication_strategy.hpp"
 
 // A database whose tables are partitioned with 3 replicas by default.
 auto db = node.create_database(
@@ -102,10 +102,10 @@ for top-level replicated *records*), mirroring
 
 ## Where it lives
 
-- `include/zetta/replication_strategy.hpp` / `src/core/replication_strategy.cpp`
+- `include/zetta/data/replication_strategy.hpp` / `src/core/data/replication_strategy.cpp`
   — the value type, kind names, JSON boundary, and the `replication_strategy_from_meta`
   reader.
-- `include/zetta/database.hpp` / `include/zetta/table.hpp` — each carries a
+- `include/zetta/data/database.hpp` / `include/zetta/data/table.hpp` — each carries a
   `replication_strategy()` accessor; `Database::create_table` takes an optional
   override (inherits the database's otherwise).
 - `include/zetta/node.hpp` — `Node::create_database(name, strategy = {})`.

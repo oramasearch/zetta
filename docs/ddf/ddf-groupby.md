@@ -17,10 +17,10 @@ through the [job coordinator](../compute/job-coordinator.md)
 include/zetta/ddf/group_by.hpp   the AggregateOp / GroupBySpec / GroupByResult / GroupByPartial types + entry points
 src/core/ddf/group_by.cpp        the local op, the partial merge / wire form, the JSON boundary
 schemas/group_by_spec.schema.json   the spec JSON boundary (draft-07)
-tests/test_group_by.cpp          single-node, the partial/merge/wire, the JSON boundary, the multi-node acceptance
+tests/ddf/test_group_by.cpp          single-node, the partial/merge/wire, the JSON boundary, the multi-node acceptance
 include/zetta/ddf/group_by_job.hpp   run_group_by_job — the op as a recorded ComputeJob (#387)
 src/core/ddf/group_by_job.cpp        drives distributed_group_by through the coordinator's job lifecycle
-tests/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.zetta_jobs)
+tests/ddf/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.zetta_jobs)
 ```
 
 ## What it is
@@ -198,7 +198,7 @@ a conditional rule enforced in code on top of the draft-07 shape.
 
 ## Tests
 
-`tests/test_group_by.cpp` covers the op names, the **JSON boundary** (round-trip +
+`tests/ddf/test_group_by.cpp` covers the op names, the **JSON boundary** (round-trip +
 every malformed shape), the **single-node** op across the full aggregate set, the
 **partial** (wire round-trip, `from_wire` rejections, a hand-merge of the three
 shards), and — the acceptance — `GroupBy.DistributedMatchesSingleNode`: a 3-node

@@ -19,7 +19,7 @@ user-authored catalogs from disk, instantiating a solution into a
 
 ## The library — `zetta::SolutionCatalog`
 
-A `Solution` (`include/zetta/solution_catalog.hpp`) is one AI-solution blueprint:
+A `Solution` (`include/zetta/pipeline/solution_catalog.hpp`) is one AI-solution blueprint:
 identity + presentation + the deployable graph.
 
 | Field | Type | Notes |
@@ -76,7 +76,7 @@ layers, failing fast with a human-readable, path-qualified reason:
    Schema** (draft-07) via `pboettch/json-schema-validator`: a `solutions` array
    of `{ id, name, summary, category, graph }`, with the step/edge-kind enums and
    `additionalProperties: false`. The schema is the single declarative source of
-   truth, embedded in `src/core/solution_catalog.cpp` and mirrored by
+   truth, embedded in `src/core/pipeline/solution_catalog.cpp` and mirrored by
    [`schemas/solution_catalog.schema.json`](../../schemas/solution_catalog.schema.json)
    — keep the two in sync.
 2. **Graph structure** — each blueprint's `graph` is then parsed through
@@ -159,7 +159,7 @@ fallback when no cluster is attached. The wiring it calls — `zetta::run_churn_
 
 ## Tests
 
-`tests/test_solution_catalog.cpp` covers the built-in library (non-empty, unique
+`tests/pipeline/test_solution_catalog.cpp` covers the built-in library (non-empty, unique
 ids, every blueprint passes the gate), `find()` by id and on miss, and the
 boundary parser: it accepts a valid document and rejects a missing required field,
 an unknown step kind, an unknown top-level key, a dangling edge (caught by the IR

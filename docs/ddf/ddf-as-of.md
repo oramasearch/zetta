@@ -14,7 +14,7 @@ feature computed "as of *t0*" can never see an event that happened after *t0*.
 include/zetta/ddf/as_of.hpp        the AsOfAggregate spec + AsOfResult + as_of_aggregate()
 src/core/ddf/as_of.cpp             the host-side reference op + the spec's JSON boundary
 schemas/as_of_aggregate.schema.json the aggregation-spec JSON boundary (draft-07)
-tests/test_ddf_as_of.cpp           acceptance (synthetic + the churn fixture), windowing, JSON, errors
+tests/ddf/test_ddf_as_of.cpp           acceptance (synthetic + the churn fixture), windowing, JSON, errors
 ```
 
 ## Why this is *the* churn primitive

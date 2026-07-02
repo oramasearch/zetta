@@ -1,6 +1,6 @@
 # OCI provisioner (cloud burst)
 
-The **`OciProvisioner`** (`include/zetta/oci_provisioner.hpp`) is the Oracle Cloud
+The **`OciProvisioner`** (`include/zetta/cloud/oci_provisioner.hpp`) is the Oracle Cloud
 Infrastructure cloud-burst backend behind the [`Provisioner`](provisioner.md) seam
 — a **mirror** of the reference [`AzureProvisioner`](azure-provisioner.md) (`#376`)
 and [`GcpProvisioner`](gcp-provisioner.md) (`#378`), following the
@@ -41,7 +41,7 @@ or SDK binding could replace it without touching the provisioner.
 > **"No cloud SDK lives behind the seam."** Same rule the `Provisioner` header
 > states and the same isolation SDL/ImGui and CUDA get. The `oci` binding is plain
 > subprocess + JSON parsing — no OCI headers, no new build dependency. The shared
-> `CommandRunner` (`include/zetta/command_runner.hpp`) is the same exec seam the
+> `CommandRunner` (`include/zetta/cloud/command_runner.hpp`) is the same exec seam the
 > Azure `az` and GCP `gcloud` bindings use.
 
 ## The burst lifecycle
@@ -91,7 +91,7 @@ brought up, and revoke the whole job once the last node is torn down. Because th
 burst credentials are **short-lived** (TTL'd capabilities, see
 [access-control.md](../governance/access-control.md)), a node lost to a preemptible reclaim —
 which never calls `teardown` — has its credential expire on its own; bulk revoke is
-the clean-shutdown path, the TTL is the backstop. `tests/test_oci_provisioner.cpp`
+the clean-shutdown path, the TTL is the backstop. `tests/cloud/test_oci_provisioner.cpp`
 exercises this against a real `BurstIdentityManager`.
 
 ## Configuration (`OciConfig`)
@@ -136,7 +136,7 @@ emitted by `to_json` only when set; the numeric `ocpus` / `memory_in_gbs` and th
 
 ## The reference `oci` binding (`OciCliControlPlane`)
 
-`OciCliControlPlane` (`include/zetta/oci_cli_control_plane.hpp`) is the reference
+`OciCliControlPlane` (`include/zetta/cloud/oci_cli_control_plane.hpp`) is the reference
 `OciControlPlane`. It borrows the **Instance Pool + preemptible shape** (not the
 SDK): a stable, named Instance Pool (created from an Instance Configuration) *is*
 the burst pool, resizing it is the burst, detaching+terminating an instance is
@@ -175,7 +175,7 @@ using CommandRunner = std::function<CommandResult(const std::vector<std::string>
 ```
 
 `CommandRunner` is **shared, vendor-neutral** infrastructure
-(`include/zetta/command_runner.hpp`) — the same exec seam the Azure `az` and GCP
+(`include/zetta/cloud/command_runner.hpp`) — the same exec seam the Azure `az` and GCP
 `gcloud` bindings use (see
 [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md)). The runner takes
 **argv** (program + arguments, no shell — so no shell-injection risk) and returns
@@ -215,7 +215,7 @@ reference binding consumes that shape directly.
 
 ## Tests
 
-`tests/test_oci_provisioner.cpp` mirrors the Azure / GCP tests — the config
+`tests/cloud/test_oci_provisioner.cpp` mirrors the Azure / GCP tests — the config
 boundary, the lifecycle, and the reference binding:
 
 - **`OciConfig` JSON boundary** — round-trips a minimal and a full config; the

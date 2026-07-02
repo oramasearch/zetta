@@ -31,7 +31,7 @@ boundary validation against a formal JSON Schema. If you know `Run`, you know
 
 ## The type
 
-A `ComputeJob` (`include/zetta/compute_job.hpp`) is a top-level entity with no
+A `ComputeJob` (`include/zetta/compute/compute_job.hpp`) is a top-level entity with no
 parent. Its value:
 
 | Field | Type | Notes |
@@ -170,7 +170,7 @@ is validated against a **formal JSON Schema** (draft-07) rather than ad-hoc shap
 checks. The schema is the single source of truth for the value shape — `kind` and
 `status` are closed enums and `additionalProperties` is `false` — and is exposed
 via `zetta::compute_job_value_schema()`. It lives inline in
-`src/core/compute_job.cpp` and is mirrored, for reference, in
+`src/core/compute/compute_job.cpp` and is mirrored, for reference, in
 [`schemas/compute_job.schema.json`](../../schemas/compute_job.schema.json) (keep the
 two in sync).
 
@@ -194,7 +194,7 @@ never cross the library boundary as a thrown type.
 
 ## Tests
 
-`tests/test_compute_job.cpp` covers create / update (lifecycle) / query, the
+`tests/compute/test_compute_job.cpp` covers create / update (lifecycle) / query, the
 `job_created` + `job_finished` audit emission (including that non-terminal
 transitions don't audit and a terminal state audits exactly once), survival
 across a restart (both disk-only and CRDT-only), replication of a job + a later

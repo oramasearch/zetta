@@ -19,8 +19,8 @@ src/core/ddf/featurize.cpp               the single-node op (as-of + group-by + 
 src/core/ddf/featurize_job.cpp           the distributed op (distributed_join + distributed_group_by on a JobRound)
 src/core/ddf/local_featurize_job.cpp     load the local partitions, then drive run_featurize_job (compute-near-data)
 schemas/featurize_spec.schema.json       the featurization-spec JSON boundary (draft-07)
-tests/test_ddf_featurize.cpp             JSON boundary, single-node (churn + static) + the churn fixture (leakage assertion), distributed
-tests/test_ddf_featurize_partitions.cpp  the near-data featurize over a partitioned loopback cluster (#532)
+tests/ddf/test_ddf_featurize.cpp             JSON boundary, single-node (churn + static) + the churn fixture (leakage assertion), distributed
+tests/ddf/test_ddf_featurize_partitions.cpp  the near-data featurize over a partitioned loopback cluster (#532)
 ```
 
 ## No leakage — the non-negotiable property

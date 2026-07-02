@@ -148,7 +148,7 @@ faithful path for a general table that may carry non-numeric columns).
   `src/core/input/datasets_bindings.cpp` — `dataset_load_spec`,
   `is_dataset_load_step`, the `DatasetResolver` IO seam + `default_dataset_resolver`,
   `run_load_dataset_step`, and `DatasetStepExecutor` (#521).
-- `tests/test_datasets_bindings.cpp` — the #521 acceptance: lowering →
+- `tests/pipeline/test_datasets_bindings.cpp` — the #521 acceptance: lowering →
   spec read-back → load via the native reader → column projection → a partitioned
   table → end-to-end through the `GraphExecutor`, plus the error paths.
 

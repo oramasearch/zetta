@@ -7,7 +7,7 @@
 >
 > **Status:** reference / background. It is the cited basis for the `gcloud`
 > command shapes the **GCP cloud-burst provisioner** uses — `GcpCliControlPlane`
-> (`src/core/gcp_cli_control_plane.cpp`); see
+> (`src/core/cloud/gcp_cli_control_plane.cpp`); see
 > [gcp-provisioner.md](../cloud/gcp-provisioner.md). zetta's burst backend uses only the
 > **Managed Instance Group + Spot** slice (§2.7–2.8); the rest (Cloud Run, GKE,
 > Batch, Cloud Functions, GPU/TPU) is background for choosing primitives and for

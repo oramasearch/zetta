@@ -1,6 +1,6 @@
 # Azure provisioner (reference cloud burst)
 
-The **`AzureProvisioner`** (`include/zetta/azure_provisioner.hpp`) is the
+The **`AzureProvisioner`** (`include/zetta/cloud/azure_provisioner.hpp`) is the
 **reference** cloud-burst backend behind the [`Provisioner`](provisioner.md) seam
 — the first concrete *cloud* backend (the given-hardware
 [`LocalProvisioner`](provisioner.md#the-local-backend-localprovisioner), `#374`,
@@ -125,7 +125,7 @@ config reads cleanly.
 
 ## The reference `az` binding (`AzCliControlPlane`)
 
-`AzCliControlPlane` (`include/zetta/azure_cli_control_plane.hpp`) is the reference
+`AzCliControlPlane` (`include/zetta/cloud/azure_cli_control_plane.hpp`) is the reference
 `AzureControlPlane`. It borrows the **VMSS + Spot shape** (not the SDK): a stable,
 named scale set *is* the burst pool, scaling it up is the burst, deleting
 instances is teardown. It builds `az vmss` argv, runs them through an injected
@@ -157,7 +157,7 @@ using CommandRunner = std::function<CommandResult(const std::vector<std::string>
 ```
 
 `CommandRunner` is **shared, vendor-neutral** infrastructure
-(`include/zetta/command_runner.hpp`) — the same exec seam the AWS / GCP CLI
+(`include/zetta/cloud/command_runner.hpp`) — the same exec seam the AWS / GCP CLI
 bindings will run through (see
 [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md)). The runner takes
 **argv** (program + arguments, no shell — so no shell-injection risk) and returns
@@ -195,7 +195,7 @@ metadata), and the reference binding consumes that shape directly.
 
 ## Tests
 
-`tests/test_azure_provisioner.cpp` covers the config boundary, the lifecycle, and
+`tests/cloud/test_azure_provisioner.cpp` covers the config boundary, the lifecycle, and
 the reference binding:
 
 - **`AzureConfig` JSON boundary** — round-trips a minimal and a full config; the

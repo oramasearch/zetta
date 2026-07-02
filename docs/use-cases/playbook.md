@@ -10,7 +10,7 @@ ranked-with-reasons output, or the full playbook.
 
 - Header: [`include/zetta/ml/playbook.hpp`](../../include/zetta/ml/playbook.hpp).
 - Impl: [`src/core/ml/playbook.cpp`](../../src/core/ml/playbook.cpp).
-- Tests: [`tests/test_playbook.cpp`](../../tests/test_playbook.cpp).
+- Tests: [`tests/ml/test_playbook.cpp`](../../tests/ml/test_playbook.cpp).
 - Background: [`docs/use-cases/uc1.md`](uc1.md) §4.4–4.7.
 
 ## The division of labor (the whole point)
@@ -144,7 +144,7 @@ is laid down now so the data exists when that learning layer is built.
 
 ## Proven against the churn fixture
 
-The acceptance test (`tests/test_playbook.cpp`) runs the whole UC-1 pipeline on the
+The acceptance test (`tests/ml/test_playbook.cpp`) runs the whole UC-1 pipeline on the
 synthetic [churn fixture](churn-dataset.md): featurize → train a GBDT →
 `predict_proba` (risk) + `tree_shap` (drivers) per account → `generate_playbook` on
 the **deterministic / offline fallback path** (no LLM, the CI acceptance). It asserts

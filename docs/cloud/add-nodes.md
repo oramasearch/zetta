@@ -1,6 +1,6 @@
 # Add nodes (permanent cluster expansion)
 
-**`add_nodes`** (`include/zetta/add_nodes.hpp`) is the **permanent-add control
+**`add_nodes`** (`include/zetta/cloud/add_nodes.hpp`) is the **permanent-add control
 entry point** (`#518`): the plain "add 10 nodes to this cluster" action, on top of
 the [`Provisioner`](provisioner.md) seam. It drives a provisioner (the cloud-burst
 [`AzureProvisioner`](azure-provisioner.md) per the issue, or any backend) to bring
@@ -158,7 +158,7 @@ new permanent members plus whether the full count came up.
 
 ## Tests
 
-`tests/test_add_nodes.cpp` covers the control action and the JSON boundary against a
+`tests/cloud/test_add_nodes.cpp` covers the control action and the JSON boundary against a
 fake `Provisioner`:
 
 - **control action** — adds N permanent members carrying the requested capability
@@ -173,7 +173,7 @@ fake `Provisioner`:
   an invalid embedded `spec`).
 
 The **rebalance wiring** (#519) is covered in
-`tests/test_partition_rebalance.cpp` (alongside the rebalance pass it drives):
+`tests/data/test_partition_rebalance.cpp` (alongside the rebalance pass it drives):
 `add_nodes(node, …)` over a partitioned table spreads ≈ rf/N of the partitions onto
 the new member (verified through `node.dataset_partitions()`), keeps every row
 covered exactly once, and never tears a member down; a zero / best-effort-short add

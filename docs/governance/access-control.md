@@ -241,12 +241,12 @@ slice.
 
 ## Pointers
 
-- `include/zetta/principal.hpp` — `zetta::Principal` (ENT-20) + `PrincipalKind`.
-- `include/zetta/access_key.hpp` — `zetta::AccessKey` (ENT-21), `AccessDecision`,
+- `include/zetta/governance/principal.hpp` — `zetta::Principal` (ENT-20) + `PrincipalKind`.
+- `include/zetta/governance/access_key.hpp` — `zetta::AccessKey` (ENT-21), `AccessDecision`,
   `authorize()`.
-- `include/zetta/scope.hpp` — `zetta::Scope` / `Resource` / `ResourceKind` (the
+- `include/zetta/governance/scope.hpp` — `zetta::Scope` / `Resource` / `ResourceKind` (the
   deny-by-default *resource* decision).
-- `include/zetta/capability.hpp` — `zetta::Capability` / `CapabilitySet` /
+- `include/zetta/governance/capability.hpp` — `zetta::Capability` / `CapabilitySet` /
   `Operation` / `CapabilityDomain` (ENT-22; the deny-by-default *rights* decision,
   TTL'd).
 - `include/zetta/node.hpp` — principal CRUD + `Node::authorize` (resource +

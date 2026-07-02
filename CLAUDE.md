@@ -131,7 +131,7 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
 
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,
-  included **only** by the adapter `src/core/cluster.cpp`. **Never name
+  included **only** by the adapter `src/core/cluster/cluster.cpp`. **Never name
   `boost::capy` / `boost::corosio` directly** outside those seams.
 
 - **No exceptions across zetta-core seams.** Boundary functions are

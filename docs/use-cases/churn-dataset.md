@@ -1,7 +1,7 @@
 # Synthetic churn dataset (UC-1 fixture) + loader
 
 The **synthetic churn dataset** (`zetta::ChurnDataset`,
-`include/zetta/churn_dataset.hpp`) is a small, committed, synthetic
+`include/zetta/usecases/churn/churn_dataset.hpp`) is a small, committed, synthetic
 (non-customer) churn dataset — **accounts** + **comms/usage events** — that the
 native tests load directly, plus a tiny C++ loader. It is the **root task of
 FEAT-6** ("learns from your data") for **UC-1 churn** (#402; supports TC-4,
@@ -103,7 +103,7 @@ correctly*, not by construction. Passing `ResolutionStrategy::Brand` collapses e
 ## The loader
 
 ```cpp
-#include "zetta/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_dataset.hpp"
 
 zetta::ChurnDatasetResult result = zetta::load_churn_dataset(dir);  // JSONL by default
 if (!result.ok()) { /* result.error is a path-qualified reason */ }
@@ -128,7 +128,7 @@ Three draft-07 JSON Schemas define and guard the formats:
 - `schemas/churn_account.schema.json` — one account,
 - `schemas/churn_event.schema.json` — one event.
 
-Each is **mirrored by an embedded copy in `src/core/churn_dataset.cpp`** (the
+Each is **mirrored by an embedded copy in `src/core/usecases/churn/churn_dataset.cpp`** (the
 validator — `pboettch/json-schema-validator` — is PRIVATE to zetta-core, so the
 embedded copy is what runs); keep the committed file and the embedded copy in
 sync. CSV cells are coerced to the typed JSON shape and validated against the
@@ -165,7 +165,7 @@ re-run the parquet generator, and re-run the tests (`JsonlAndCsvLoadIdentically`
 
 ## How the tests consume it
 
-`tests/test_churn_dataset.cpp` exercises the acceptance bar: the fixture loads
+`tests/usecases/churn/test_churn_dataset.cpp` exercises the acceptance bar: the fixture loads
 and schema-validates; JSONL == CSV; the six FedEx siblings are separate accounts;
 events straddle `as_of_date`; accounts import into a zetta `Table`; the
 division-correct resolution passes the gate while a conflation blocks deploy; and

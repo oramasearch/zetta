@@ -4,8 +4,8 @@
 of the cluster observability epic ([#575](https://github.com/oramasearch/zetta/issues/575)
 area 2): each node box shows live CPU / memory / GPU + VRAM / storage / network
 utilization. The GUI is a thin renderer — it polls this table; all the telemetry
-logic lives in **`zetta-core`** (`include/zetta/node_metrics.hpp` /
-`src/core/node_metrics.cpp`), so it is headless-testable and carries no SDL.
+logic lives in **`zetta-core`** (`include/zetta/cluster/node_metrics.hpp` /
+`src/core/cluster/node_metrics.cpp`), so it is headless-testable and carries no SDL.
 
 ## What it is
 
@@ -97,12 +97,12 @@ schema boundary to validate (and `test_schemas` confirms none was added).
 
 ## Tests
 
-- `tests/test_node_metrics.cpp` — the sampler: timestamp + cores present, the
+- `tests/cluster/test_node_metrics.cpp` — the sampler: timestamp + cores present, the
   memory/storage gauges are consistent (total > 0, used ≤ total, percent in
   [0,100]), a missing storage path degrades gracefully, CPU% becomes available
   across an interval, GPU is absent in the core build, and network utilization
   degrades.
-- `tests/test_query.cpp` (`QueryService.SelectsNodeMetricsSystemTable`) — the SQL
+- `tests/data/test_query.cpp` (`QueryService.SelectsNodeMetricsSystemTable`) — the SQL
   read view: `SELECT * FROM system.node_metrics` returns one row for this node,
   GPU/`net_percent` are `null`, storage is populated, and projection works.
 

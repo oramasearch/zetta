@@ -1,6 +1,6 @@
 # GCP provisioner (cloud burst)
 
-The **`GcpProvisioner`** (`include/zetta/gcp_provisioner.hpp`) is the GCP
+The **`GcpProvisioner`** (`include/zetta/cloud/gcp_provisioner.hpp`) is the GCP
 cloud-burst backend behind the [`Provisioner`](provisioner.md) seam — the first
 **mirror** of the reference [`AzureProvisioner`](azure-provisioner.md) (`#376`),
 following the [cloud-provisioner CLI pattern](cloud-provisioner-pattern.md). It
@@ -39,7 +39,7 @@ REST or SDK binding could replace it without touching the provisioner.
 > **"No cloud SDK lives behind the seam."** This is the same rule the
 > `Provisioner` header states and the same isolation SDL/ImGui and CUDA get. The
 > `gcloud` binding is plain subprocess + JSON parsing — no GCP headers, no new
-> build dependency. The shared `CommandRunner` (`include/zetta/command_runner.hpp`)
+> build dependency. The shared `CommandRunner` (`include/zetta/cloud/command_runner.hpp`)
 > is the same exec seam the Azure `az` binding uses.
 
 ## The burst lifecycle
@@ -132,7 +132,7 @@ reads cleanly.
 
 ## The reference `gcloud` binding (`GcpCliControlPlane`)
 
-`GcpCliControlPlane` (`include/zetta/gcp_cli_control_plane.hpp`) is the reference
+`GcpCliControlPlane` (`include/zetta/cloud/gcp_cli_control_plane.hpp`) is the reference
 `GcpControlPlane`. It borrows the **Managed Instance Group + Spot shape** (not the
 SDK): a stable, named MIG *is* the burst pool, scaling it up is the burst, deleting
 instances is teardown. It builds `gcloud compute` argv, runs them through an
@@ -165,7 +165,7 @@ using CommandRunner = std::function<CommandResult(const std::vector<std::string>
 ```
 
 `CommandRunner` is **shared, vendor-neutral** infrastructure
-(`include/zetta/command_runner.hpp`) — the same exec seam the Azure `az` binding
+(`include/zetta/cloud/command_runner.hpp`) — the same exec seam the Azure `az` binding
 uses and the AWS `aws` binding will (see
 [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md)). The runner takes
 **argv** (program + arguments, no shell — so no shell-injection risk) and returns
@@ -203,7 +203,7 @@ directly.
 
 ## Tests
 
-`tests/test_gcp_provisioner.cpp` mirrors the Azure test — the config boundary, the
+`tests/cloud/test_gcp_provisioner.cpp` mirrors the Azure test — the config boundary, the
 lifecycle, and the reference binding:
 
 - **`GcpConfig` JSON boundary** — round-trips a minimal and a full config; the

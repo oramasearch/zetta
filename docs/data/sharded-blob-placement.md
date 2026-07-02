@@ -19,7 +19,7 @@ Large-object bodies move peer-to-peer over the
 missing the body of. Previously this was unconditional **replicate-to-all**: every
 node listed every body it lacked and fetched it.
 
-Now `ReplicatedBlobStore` (`src/core/replicated_blob_store.cpp`) is
+Now `ReplicatedBlobStore` (`src/core/data/replicated_blob_store.cpp`) is
 **partition-aware**:
 
 - **`missing_blobs()`** — a large-object body that is the backing blob of a dataset
@@ -91,7 +91,7 @@ same seam.
 
 ## Tests
 
-`tests/test_large_object_replication.cpp` (alongside the other `ReplicatedBlobStore`
+`tests/data/test_large_object_replication.cpp` (alongside the other `ReplicatedBlobStore`
 unit tests):
 
 - **`PartitionBodyFetchedAndHeldOnlyByOwners`** — an owner lists the body as missing
@@ -105,10 +105,10 @@ unit tests):
 
 ## Where it lives
 
-- `src/core/replicated_blob_store.cpp` / `include/zetta/replicated_blob_store.hpp`
+- `src/core/data/replicated_blob_store.cpp` / `include/zetta/data/replicated_blob_store.hpp`
   — the partition-owner index + the owner check in `missing_blobs` / `store_blob`.
-- `include/zetta/dataset_partition.hpp` — the `owner_nodes` / `blob_ref` source.
-- `src/core/cluster.cpp` — the `LOREQ`/`LORES` loop that consumes `missing_blobs()`
+- `include/zetta/data/dataset_partition.hpp` — the `owner_nodes` / `blob_ref` source.
+- `src/core/cluster/cluster.cpp` — the `LOREQ`/`LORES` loop that consumes `missing_blobs()`
   (unchanged; it just asks for fewer bodies on a non-owner).
 
 See [large-objects.md](large-objects.md),

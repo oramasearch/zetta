@@ -1,6 +1,6 @@
 # Bare-metal provisioner (local host)
 
-The **`BareMetalProvisioner`** (`include/zetta/bare_metal_provisioner.hpp`) is the
+The **`BareMetalProvisioner`** (`include/zetta/cloud/bare_metal_provisioner.hpp`) is the
 bare-metal (local-host) cloud-burst backend behind the
 [`Provisioner`](provisioner.md) seam — a **mirror** of the reference
 [`AzureProvisioner`](azure-provisioner.md) (`#376`) and the
@@ -19,7 +19,7 @@ the cloud/Kubernetes backends — only the config type and the CLI binding diffe
 > **Bare metal is the local host — not a remote cloud or cluster.** Each worker runs
 > as a **local container** via the host's container runtime (`docker` / `podman`).
 > Why containers? The `Provisioner` seam runs commands through a **synchronous**
-> [`CommandRunner`](../../include/zetta/command_runner.hpp) (fork/execvp, runs to
+> [`CommandRunner`](../../include/zetta/cloud/command_runner.hpp) (fork/execvp, runs to
 > completion, no shell) — and `docker run -d` *starts a detached worker and returns
 > immediately*, which is exactly what makes a long-lived worker launchable through
 > that seam, cross-OS (macOS / Linux / Windows). The bare-metal guide frames this as
@@ -120,7 +120,7 @@ are emitted by `to_json` only when set; `gpus` is always emitted.
 
 ## The reference runtime binding (`BareMetalCliControlPlane`)
 
-`BareMetalCliControlPlane` (`include/zetta/bare_metal_cli_control_plane.hpp`) is the
+`BareMetalCliControlPlane` (`include/zetta/cloud/bare_metal_cli_control_plane.hpp`) is the
 reference `BareMetalControlPlane`. It borrows the **local-container shape**: a stable
 **pool label** marks the burst workers, launching `count` labelled containers is the
 burst, force-removing one is teardown. It builds runtime argv, runs them through an
@@ -149,7 +149,7 @@ using CommandRunner = std::function<CommandResult(const std::vector<std::string>
 ```
 
 `CommandRunner` is **shared, vendor-neutral** infrastructure
-(`include/zetta/command_runner.hpp`) — the same exec seam the cloud / Kubernetes
+(`include/zetta/cloud/command_runner.hpp`) — the same exec seam the cloud / Kubernetes
 bindings use (see [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md)). The
 runner takes **argv** (program + arguments, no shell — so no shell-injection risk)
 and returns `{ exit_code, stdout_text, stderr_text }`. The default
@@ -188,7 +188,7 @@ id/name + IP), and the reference binding consumes that shape directly.
 
 ## Tests
 
-`tests/test_bare_metal_provisioner.cpp` mirrors the sibling tests — the config
+`tests/cloud/test_bare_metal_provisioner.cpp` mirrors the sibling tests — the config
 boundary, the lifecycle, and the reference binding:
 
 - **`BareMetalConfig` JSON boundary** — round-trips a minimal and a full config; the

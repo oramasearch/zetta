@@ -122,7 +122,7 @@ optimization behind the same API.
 
 ## Tests
 
-[`tests/test_distributed_fulltext.cpp`](../../tests/test_distributed_fulltext.cpp):
+[`tests/index/test_distributed_fulltext.cpp`](../../tests/index/test_distributed_fulltext.cpp):
 
 - **the pure merge** — global ranking (score desc, id asc), dedup keeping the max
   score, `top_k` cap.
@@ -148,7 +148,7 @@ as a runnable case): it builds the per-partition full-text index over a real loo
 cluster and asserts the scatter-gather ranking matches the consolidated oracle on every
 node. It uses the real `oramacore_fulltext` (BM25F) backend when the submodule is
 compiled in, and the partition-independent reference scorer otherwise (the same plumbing,
-always green) — runnable headless (`tests/test_testkit.cpp`) and in the
+always green) — runnable headless (`tests/testkit/test_testkit.cpp`) and in the
 **Operations → Test suite** panel.
 
 ## What this slice is (and isn't)

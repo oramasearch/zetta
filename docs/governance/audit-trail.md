@@ -21,7 +21,7 @@ gates). It builds directly on the [key-scoped access model](access-control.md)
 
 ## The type
 
-An `AuditEvent` (`include/zetta/audit_event.hpp`) is a top-level entity with no
+An `AuditEvent` (`include/zetta/governance/audit_event.hpp`) is a top-level entity with no
 parent, modeled like the other replicated entities — but, unlike them, it is
 **immutable and append-only**: there is no mutator and no drop path. Its value:
 
@@ -72,7 +72,7 @@ for (const auto& event : node.audit_events()) {    // listed, chronological
 ## The sink seam
 
 A graph change happens on a `Project`, not on the `Node` that owns the trail, so
-the two are decoupled by an **`AuditSink`** (`include/zetta/audit_event.hpp`):
+the two are decoupled by an **`AuditSink`** (`include/zetta/governance/audit_event.hpp`):
 a one-method seam (`record_audit_event`). `Node` *is* the sink (it implements
 `AuditSink`), and a `Project` holds a non-owning `AuditSink*` the same way it
 holds a `ReplicationManager*` — null means "not audited". This mirrors how the
@@ -127,7 +127,7 @@ Schema, using the same `pboettch/json-schema-validator` path as the
 reason** instead of corrupting the trail — a bad file is skipped at load, a bad
 CRDT value is ignored at reconcile.
 
-The schema is the inline source of truth in `src/core/audit_event.cpp`, mirrored
+The schema is the inline source of truth in `src/core/governance/audit_event.cpp`, mirrored
 for reference by
 [`schemas/audit_event.schema.json`](../../schemas/audit_event.schema.json) — keep
 the two in sync.
@@ -157,9 +157,9 @@ read-only table.
 
 ## Pointers
 
-- `include/zetta/audit_event.hpp` — `zetta::AuditEvent` / `AuditEventValue` /
+- `include/zetta/governance/audit_event.hpp` — `zetta::AuditEvent` / `AuditEventValue` /
   `AuditAction` (ENT-23) + the `AuditSink` seam + JSON schema/validate/parse.
-- `src/core/audit_event.cpp` — the value, JSON form, and JSON-Schema boundary
+- `src/core/governance/audit_event.cpp` — the value, JSON form, and JSON-Schema boundary
   validation.
 - `include/zetta/node.hpp` — `Node::record_audit_event` / `audit_events` and the
   emission seams (`deploy_graph`, `authorize`).

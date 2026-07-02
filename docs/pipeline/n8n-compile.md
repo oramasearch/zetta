@@ -19,7 +19,7 @@ R1 covers the node kinds in the **churn** workflows (the fixture
 
 ## The API
 
-`include/zetta/n8n_compile.hpp` (namespace `zetta`):
+`include/zetta/pipeline/n8n_compile.hpp` (namespace `zetta`):
 
 | Function | Returns | Behavior |
 |---|---|---|
@@ -138,7 +138,7 @@ boundary unchanged).
 
 ## Tests
 
-`tests/test_n8n_compile.cpp`:
+`tests/pipeline/test_n8n_compile.cpp`:
 
 - the churn fixture compiles into a **well-formed** graph with the right step
   kinds and edges (and survives an `ir::to_json` → `ir::from_json` round-trip);

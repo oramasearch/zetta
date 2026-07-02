@@ -30,7 +30,7 @@ suite → Machine learning → Calibrate probabilities**. Set the options in the
 and click **Run**; the result pane shows pass/fail, the metrics (Brier before,
 Brier after, method), and the log.
 
-**Headless:** the case is exercised by `tests/test_testkit.cpp::MlCasesPass`:
+**Headless:** the case is exercised by `tests/testkit/test_testkit.cpp::MlCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests
@@ -54,7 +54,7 @@ ctest --test-dir build -R 'Testkit.MlCasesPass' --output-on-failure
   out-of-range value fails the case.
 - The result reports the Brier score before vs after + the method. The engine
   guarantee that calibration **improves Brier / ECE while preserving AUC** (the
-  ranking) is demonstrated in `tests/test_calibration.cpp`; this case checks the
+  ranking) is demonstrated in `tests/ml/test_calibration.cpp`; this case checks the
   fit + validity and surfaces the Brier delta.
 
 ## Related

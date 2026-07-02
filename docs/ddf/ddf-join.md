@@ -10,7 +10,7 @@ accelerated-compute pass for UC-1 churn,
 ```
 include/zetta/ddf/join.hpp   the join types + the local + distributed entry points
 src/core/ddf/join.cpp        to_host_relation, hash/sort-merge join, repartition, distributed_join
-tests/test_ddf_join.cpp      local joins, the serialize/partition boundary, and the
+tests/ddf/test_ddf_join.cpp      local joins, the serialize/partition boundary, and the
                              single-node == multi-node acceptance
 ```
 
@@ -126,7 +126,7 @@ on the [DataFrame core](ddf.md) and [collectives](../cluster/collectives.md).
 
 ## Tests
 
-`tests/test_ddf_join.cpp` covers:
+`tests/ddf/test_ddf_join.cpp` covers:
 
 - **Local joins** (no cluster): hash vs sort-merge agreeing on the fixture, the
   duplicate-key cartesian product, the empty-result case, and a key-only relation.

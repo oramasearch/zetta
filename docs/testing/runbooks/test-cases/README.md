@@ -21,8 +21,8 @@ the log. Cluster cases stand up a real multi-node loopback cluster on a worker
 thread (the UI stays responsive).
 
 **Headless** (CI / no display): the catalog is validated by the gtest binary. Each
-category maps to one gtest in `tests/test_testkit.cpp` (examples also in
-`tests/test_example_scripts.cpp`):
+category maps to one gtest in `tests/testkit/test_testkit.cpp` (examples also in
+`tests/testkit/test_example_scripts.cpp`):
 
 ```bash
 cmake --build build --target zetta-tests
@@ -35,7 +35,7 @@ case is headless-runnable.
 
 ## The cases
 
-### Compute & device — `tests/test_testkit.cpp::ComputeCasesPass`
+### Compute & device — `tests/testkit/test_testkit.cpp::ComputeCasesPass`
 - [`compute.cpu.elementwise`](compute.cpu.elementwise.md) — CPU device elementwise / map operators
 - [`compute.cpu.reduce_sort`](compute.cpu.reduce_sort.md) — CPU device reduce + sort operators
 - [`compute.cuda.conformance`](compute.cuda.conformance.md) — CPU↔CUDA operator conformance (skipped on a CPU-only build)
@@ -69,7 +69,7 @@ case is headless-runnable.
 ### UC-1 pipeline — `Uc1PipelineGatedAndGoverned`
 - [`pipeline.uc1_end_to_end`](pipeline.uc1_end_to_end.md) — the UC-1 churn pipeline, gated + governed (#399)
 
-### Example scripts — `ExampleScriptCasesRunGreen` / `tests/test_example_scripts.cpp`
+### Example scripts — `ExampleScriptCasesRunGreen` / `tests/testkit/test_example_scripts.cpp`
 - [`examples.churn_pipeline`](examples.churn_pipeline.md) — the full taxonomy churn pipeline (green)
 - [`examples.minimal_train`](examples.minimal_train.md) — the smallest green sample (load → train)
 - [`examples.method_chain`](examples.method_chain.md) — method chaining lowers to a linear path

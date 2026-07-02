@@ -13,8 +13,8 @@ a black box**. The compiler only seeds a sensible starting point; review and edi
 are expected.
 
 ```
-include/zetta/intent_compiler.hpp   compile_intent, CompiledIntent, IntentShape
-src/core/intent_compiler.cpp         the templated/heuristic mapping
+include/zetta/pipeline/intent_compiler.hpp   compile_intent, CompiledIntent, IntentShape
+src/core/pipeline/intent_compiler.cpp         the templated/heuristic mapping
 ```
 
 ## Altitude: a templated mapping, not language understanding
@@ -39,7 +39,7 @@ The standalone entry point takes the intent text and returns the skeleton plus
 the template that produced it (so *why* a graph was produced stays inspectable):
 
 ```cpp
-#include "zetta/intent_compiler.hpp"
+#include "zetta/pipeline/intent_compiler.hpp"
 
 std::optional<zetta::CompiledIntent> compiled = zetta::compile_intent(
     "Score every active account for churn risk and tell me why.");

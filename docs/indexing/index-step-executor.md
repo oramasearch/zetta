@@ -90,7 +90,7 @@ q.term  = "pro";
 auto hits = backend->query(index->spec(), q);                   // the matching row ids
 ```
 
-`tests/test_index_step_executor.cpp` is the acceptance: it builds an index over a
+`tests/index/test_index_step_executor.cpp` is the acceptance: it builds an index over a
 seeded `main.accounts` table through a graph's `index` step, then queries the built
 index and asserts the returned row ids match the table's rows for that field/value
 — *built and queryable*. It also covers the failure boundaries (unresolved backend,

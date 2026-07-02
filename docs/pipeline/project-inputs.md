@@ -20,7 +20,7 @@ Nothing here interprets or compiles a payload; that is a later FEAT-1 slice. A
 
 ## The type
 
-A `ProjectInput` (`include/zetta/project_input.hpp`) is provenance metadata plus
+A `ProjectInput` (`include/zetta/pipeline/project_input.hpp`) is provenance metadata plus
 a raw payload body:
 
 | Field | Type | Notes |
@@ -160,7 +160,7 @@ simply be awaiting transfer.)
 
 ## Tests
 
-`tests/test_project_input.cpp` covers create/fetch/drop with provenance
+`tests/pipeline/test_project_input.cpp` covers create/fetch/drop with provenance
 (computed `content_hash`, payload round-trip), `capture_intent` (an
 intent/pasted input retrievable with provenance, plus empty/whitespace-only
 intent rejected with nothing stored), survival across a restart (both disk-only

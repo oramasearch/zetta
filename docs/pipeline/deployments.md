@@ -18,7 +18,7 @@ placements shown back.
 
 ## The target — `DeploymentTarget`
 
-A `DeploymentTarget` (`include/zetta/deployment_target.hpp`) is the placement the
+A `DeploymentTarget` (`include/zetta/pipeline/deployment_target.hpp`) is the placement the
 orchestrator deploys onto. It carries a **Cloud Interface binding** (which
 concrete cluster/host/account) and a **credentials reference** (a key into stored
 credentials — never the secret itself).
@@ -48,7 +48,7 @@ malformed target never enters the in-memory tree.
 
 ## The record — `Deployment`
 
-Deploying records a `Deployment` (`include/zetta/deployment.hpp`) — metadata only,
+Deploying records a `Deployment` (`include/zetta/pipeline/deployment.hpp`) — metadata only,
 mirroring [`Project`](projects.md):
 
 | Field | Type | Notes |
@@ -176,7 +176,7 @@ launchable straight from a deployment record.
 
 ## Tests
 
-`tests/test_deployment.cpp` covers the `DeploymentTarget` JSON round-trip +
+`tests/pipeline/test_deployment.cpp` covers the `DeploymentTarget` JSON round-trip +
 boundary validation, placing a graph onto a local target (and rejecting an empty
 graph / non-local target), the `system.zetta_deployments` query surface, survival
 across a restart (both disk-only and CRDT-only), and replication of a deployment

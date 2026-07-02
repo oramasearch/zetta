@@ -74,7 +74,7 @@ a new storage engine lands, this column will reflect it without a schema change.
 ## Engine source: `Node::datasets()`
 
 `std::vector<DatasetSummary> Node::datasets() const`
-([`include/zetta/dataset.hpp`](../../include/zetta/dataset.hpp)) is the reusable
+([`include/zetta/data/dataset.hpp`](../../include/zetta/data/dataset.hpp)) is the reusable
 engine source behind the view. It is the **single live source** for both the SQL
 view *and* the [GUI Datasets panel](../gui/datasets-panel.md), so the two cannot diverge
 (the "prefer a table plus a panel that renders it" convention). Each
@@ -117,7 +117,7 @@ entering here, so there is nothing new to schema-validate.
 
 ## Tests
 
-`tests/test_query.cpp` → `QueryService.SelectsDatasetsSystemTable` (headless):
+`tests/data/test_query.cpp` → `QueryService.SelectsDatasetsSystemTable` (headless):
 an empty node has no datasets; a plain table reports its inferred schema / rows /
 size / `jsonl` format with no placement; a table with two partition-catalog
 entries reports `partition_count = 2` and a `placement` naming each slice's owner

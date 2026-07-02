@@ -1,6 +1,6 @@
 # Large-burst cost-cap approval gate
 
-The **`BurstApprovalGate`** (`include/zetta/burst_approval_gate.hpp`) guards the
+The **`BurstApprovalGate`** (`include/zetta/cloud/burst_approval_gate.hpp`) guards the
 [`Provisioner`](provisioner.md) seam against runaway burst cost. It realizes
 **APR-3** and protects against **RSK-9** ("runaway burst cost") in the native
 distributed accelerated-compute pass for UC-1 churn (`#264` / ARC-13, `#379`).
@@ -107,7 +107,7 @@ Every time the gate **engages** (an over-cap burst) it records one
 
 `provision_requested` is added to the closed `AuditAction` enum and to the
 AuditEvent JSON Schema (`schemas/audit_event.schema.json` + the embedded mirror
-in `src/core/audit_event.cpp`), so the new action validates at the storage
+in `src/core/governance/audit_event.cpp`), so the new action validates at the storage
 boundary like every other audit value. A null `AuditSink` means "not audited"
 (e.g. a gate used in isolation in a test).
 
@@ -125,7 +125,7 @@ the gate in-memory and does not yet persist it.
 
 ## Tests
 
-`tests/test_burst_approval_gate.cpp` covers the acceptance criteria and the value
+`tests/cloud/test_burst_approval_gate.cpp` covers the acceptance criteria and the value
 types:
 
 - **below the cap proceeds** — a within-cap (and at-cap) burst passes straight

@@ -28,7 +28,7 @@ predicate. The leaf DDF ops, exercised end to end on a [`CpuDevice`](../../../co
 **Run**; the result pane shows pass/fail, the metrics (scanned / kept), and the log.
 
 **Headless:** the case is exercised (at `rows=500`, default `threshold`) by
-`tests/test_testkit.cpp::DdfCasesPass`:
+`tests/testkit/test_testkit.cpp::DdfCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

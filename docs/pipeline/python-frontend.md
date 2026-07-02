@@ -231,8 +231,8 @@ the existing [`GraphExecutor`](execution.md) / `ChurnStepExecutor` and passes th
   `load_dataset(...)` IR node → a (partitioned) table via the native Parquet reader),
   behind the injectable `DatasetResolver` IO seam (#521). See
   [datasets-shim.md](datasets-shim.md).
-- `tests/test_python_frontend.cpp` — the lowering acceptance + the subset coverage.
-- `tests/test_python_engine_bindings.cpp` — the #522 end-to-end acceptance: a
+- `tests/pipeline/test_python_frontend.cpp` — the lowering acceptance + the subset coverage.
+- `tests/pipeline/test_python_engine_bindings.cpp` — the #522 end-to-end acceptance: a
   lowered sim-Python churn script runs through the real engine, and a lowered
   `cluster.add_nodes` step drives `zetta::add_nodes`.
 

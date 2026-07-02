@@ -14,7 +14,7 @@ reference** the optional CUDA backend
 ```
 include/zetta/compute/cpu_device.hpp   the CpuDevice class
 src/core/compute/cpu_device.cpp        the operator implementations
-tests/test_cpu_device.cpp              one numerical test per operator (the reference)
+tests/compute/test_cpu_device.cpp              one numerical test per operator (the reference)
 ```
 
 ## CpuDevice vs. HostStubDevice
@@ -105,7 +105,7 @@ calls, which the primitive guarantees.
 
 ## Tests
 
-`tests/test_cpu_device.cpp` is the reference suite: one correctness test per
+`tests/compute/test_cpu_device.cpp` is the reference suite: one correctness test per
 operator (exact expected results), argument-validation tests (dtype / shape /
 out-of-range rejection), and large-input cases (≥ 500k–1M elements) that force
 the multi-chunk path so the threaded reduce / scan / map are exercised, not just

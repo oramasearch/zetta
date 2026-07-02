@@ -42,7 +42,7 @@ modal and click **Run**; the result pane shows pass/fail, the metrics (top drive
 AUC, bytes read near data vs partials over wire, audit events), and the log.
 
 **Headless:** the case is exercised (at `nodes=2`, `rows=96`) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests

@@ -19,7 +19,7 @@ replicates, and the `system.zetta_models` registry table.
 
 ## The type
 
-A `Model` (`include/zetta/model.hpp`) is a top-level entity with no parent,
+A `Model` (`include/zetta/ml/model.hpp`) is a top-level entity with no parent,
 modeled exactly like [`zetta::Run`](../pipeline/runs.md) — keyed by id (models have no
 human-name lookup; the registry is `Node::models()` + the system table). Its
 value (`ModelValue`):
@@ -193,9 +193,9 @@ bytes the caller already has.
 
 ## Pointers
 
-- [`include/zetta/model.hpp`](../../include/zetta/model.hpp) — the `Model` type +
+- [`include/zetta/ml/model.hpp`](../../include/zetta/ml/model.hpp) — the `Model` type +
   `ModelValue` + schema/validation entry points.
-- [`src/core/model.cpp`](../../src/core/model.cpp) — value, mutators, weights body
+- [`src/core/ml/model.cpp`](../../src/core/ml/model.cpp) — value, mutators, weights body
   I/O, JSON-Schema boundary validation.
 - [models-panel.md](../gui/models-panel.md) — the headed standalone **Models view**
   (`App::draw_models`): list + detail over this registry, plus the inline

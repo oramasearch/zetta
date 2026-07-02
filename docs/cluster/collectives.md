@@ -4,7 +4,7 @@
 primitive the native distributed accelerated-compute pass for UC-1 churn (#264,
 ADR-28 / ARC-10) uses to combine per-node compute *partials* across the cluster:
 gradient histograms, partial aggregates, and the like. `zetta::Collectives`
-(`include/zetta/collectives.hpp`) implements four collectives, modeled on MPI:
+(`include/zetta/cluster/collectives.hpp`) implements four collectives, modeled on MPI:
 
 | collective  | what it does                                                                 |
 |-------------|------------------------------------------------------------------------------|
@@ -145,7 +145,7 @@ payload — a compact JSON object:
 at the boundary** on receipt, exactly like the [signal envelope](signal-plane.md#wire-format--the-schema-boundary)
 and the [Run record](../pipeline/runs.md): against a draft-07 **JSON Schema**
 (`schemas/collective_message.schema.json`, mirrored embedded in
-`src/core/collectives.cpp`, via `pboettch/json-schema-validator`). `tag` is
+`src/core/cluster/collectives.cpp`, via `pboettch/json-schema-validator`). `tag` is
 required, no unknown fields are allowed, and `values` must be an array of
 numbers — a malformed payload is rejected with a path-qualified reason and the
 RPC fails, never corrupting a round. `encode_collective_message` /
@@ -155,9 +155,9 @@ RPC fails, never corrupting a round. `encode_collective_message` /
 ## Where it sits
 
 ```
-include/zetta/collectives.hpp   Collectives + CollectiveOp + CollectiveMessage
+include/zetta/cluster/collectives.hpp   Collectives + CollectiveOp + CollectiveMessage
                                 + encode/decode (the wire seam)
-src/core/collectives.cpp        the round logic + the JSON-Schema boundary
+src/core/cluster/collectives.cpp        the round logic + the JSON-Schema boundary
 schemas/collective_message.schema.json   the draft-07 schema (mirror)
 ```
 

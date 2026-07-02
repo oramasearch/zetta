@@ -30,7 +30,7 @@ suite → Machine learning → Explain with TreeSHAP**. Set the options in the m
 and click **Run**; the result pane shows pass/fail, the metrics (base + Σφ,
 predict_raw, dominant driver), and the log.
 
-**Headless:** the case is exercised by `tests/test_testkit.cpp::MlCasesPass`:
+**Headless:** the case is exercised by `tests/testkit/test_testkit.cpp::MlCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

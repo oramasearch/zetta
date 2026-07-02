@@ -9,9 +9,9 @@ realizes **FEAT-5 / FEAT-6 / UC-1** and is part of the native distributed
 accelerated-compute pass (#264).
 
 ```
-include/zetta/churn_step_executor.hpp   ChurnStepExecutor, ChurnPipelineConfig,
+include/zetta/usecases/churn/churn_step_executor.hpp   ChurnStepExecutor, ChurnPipelineConfig,
                                         RetentionAction
-src/core/churn_step_executor.cpp        the per-kind compute (each a ComputeJob)
+src/core/usecases/churn/churn_step_executor.cpp        the per-kind compute (each a ComputeJob)
 ```
 
 It is the consumer every prior compute slice was built toward: it **composes** the
@@ -77,8 +77,8 @@ coordinator or input data, so it stays on `DefaultStepExecutor`. Real compute is
 driven like this:
 
 ```cpp
-#include "zetta/churn_step_executor.hpp"
-#include "zetta/executor.hpp"
+#include "zetta/usecases/churn/churn_step_executor.hpp"
+#include "zetta/pipeline/executor.hpp"
 
 // A started coordinator over this node's cluster, and a compute device.
 zetta::compute::JobCoordinator coordinator{cluster, /*worker_count=*/2};
@@ -156,7 +156,7 @@ struct, not parsed JSON.
 
 ## Tests
 
-`tests/test_churn_step_executor.cpp` is the integration test (single-node loopback
+`tests/usecases/churn/test_churn_step_executor.cpp` is the integration test (single-node loopback
 cluster + a started coordinator):
 
 - **Acceptance** — `run_graph` over the churn graph (`compile_intent`'s churn skeleton)

@@ -1,7 +1,7 @@
 # Entity resolution in featurization (TC-4)
 
 The **entity resolver** (`zetta::EntityResolver`,
-[`include/zetta/entity_resolution.hpp`](../../include/zetta/entity_resolution.hpp))
+[`include/zetta/usecases/churn/entity_resolution.hpp`](../../include/zetta/usecases/churn/entity_resolution.hpp))
 is the data step that runs **before** churn featurization: it maps the raw
 account-name strings on comms events — the `mention`s — to a canonical CRM
 account, so a customer's events aggregate against the right account. It is the
@@ -98,7 +98,7 @@ unresolved mention. Attach the result to an `ExecutionGraph` node's `attributes`
 run it through the gate.
 
 For the churn fixture, `entity_resolution_attribute(dataset, strategy = FullName)`
-([`churn_dataset.hpp`](../../include/zetta/churn_dataset.hpp)) does this end to end:
+([`churn_dataset.hpp`](../../include/zetta/usecases/churn/churn_dataset.hpp)) does this end to end:
 it builds the candidate directory from the dataset's accounts and the labeled
 mentions from its comms events, then calls `entity_resolution_annotation`.
 

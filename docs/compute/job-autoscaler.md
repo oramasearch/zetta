@@ -1,6 +1,6 @@
 # Autoscaler control loop (JobAutoscaler)
 
-The **`JobAutoscaler`** (`include/zetta/job_autoscaler.hpp`) is the control loop
+The **`JobAutoscaler`** (`include/zetta/compute/job_autoscaler.hpp`) is the control loop
 that finally *acts on* a job's reward objective. The
 [`ScalingPolicy`](scaling-policy.md) slice computes a `ScalingDecision`; this loop
 **closes the loop**: each tick it observes a running
@@ -158,7 +158,7 @@ which the `from_json` boundary checks **mirror** — keep the two in sync.
 
 ## Tests
 
-`tests/test_job_autoscaler.cpp` is the deterministic acceptance suite (a simulated
+`tests/compute/test_job_autoscaler.cpp` is the deterministic acceptance suite (a simulated
 job + a fake provisioner): it scales **up under a runtime target** and **down
 under a cost objective**, sheds immediately on a **cost-cap breach**, holds the
 fleet on an **alternating signal** (hysteresis), degrades to **best-effort** under

@@ -7,7 +7,7 @@
 >
 > **Status:** reference / background. It is the cited basis for the `kubectl`
 > command shapes the **Kubernetes cloud-burst provisioner** uses —
-> `K8sCliControlPlane` (`src/core/k8s_cli_control_plane.cpp`); see
+> `K8sCliControlPlane` (`src/core/cloud/k8s_cli_control_plane.cpp`); see
 > [k8s-provisioner.md](../cloud/k8s-provisioner.md). zetta's burst backend uses only the
 > **Deployment + scale** slice (§3.2 Deployments, §5.1 manual scaling, §6.2
 > nodeSelector node targeting); the rest (Pods, StatefulSets, DaemonSets, Jobs,

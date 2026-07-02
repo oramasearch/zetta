@@ -1,6 +1,6 @@
 # Validation
 
-`zetta::ValidationReport` (`include/zetta/validation.hpp`) is the
+`zetta::ValidationReport` (`include/zetta/pipeline/validation.hpp`) is the
 **correctness-gate result** for a graph version: the record of which checks ran,
 how each fared, the overall verdict, and whether the result should block a
 deploy. It realizes the closed spec **ENT-5** and is the first slice of the

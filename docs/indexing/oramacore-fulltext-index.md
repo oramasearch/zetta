@@ -146,7 +146,7 @@ interface.
 - [`include/zetta/index/oramacore_fulltext_index.hpp`](../../include/zetta/index/oramacore_fulltext_index.hpp) /
   [`src/core/index/oramacore_fulltext_index.cpp`](../../src/core/index/oramacore_fulltext_index.cpp) —
   the backend (pImpl over the engine; `ZETTA_WITH_ORAMACORE`-guarded).
-- [`tests/test_oramacore_fulltext_index.cpp`](../../tests/test_oramacore_fulltext_index.cpp) —
+- [`tests/index/test_oramacore_fulltext_index.cpp`](../../tests/index/test_oramacore_fulltext_index.cpp) —
   build + query a full-text index over a small table (the acceptance), the
   registry/IR-step end-to-end path, and the engine-absent degradation.
 - [index-backend.md](index-backend.md) — the `IndexBackend` seam + `IndexRegistry` +

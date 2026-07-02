@@ -15,8 +15,8 @@ error and wires Parquet into the dataset loader path.
   the typed-columns reader; `include/zetta/parquet/reader.hpp`,
   `src/core/parquet/reader.cpp` (namespace `zetta::parquet`) for the untyped
   whole-file rows reader.
-- **Test:** `tests/test_parquet_reader.cpp` (the DDF reader, TC-9 parity) +
-  `tests/test_churn_dataset.cpp::ParquetFormatLoadsIdentically` (the rows reader);
+- **Test:** `tests/data/test_parquet_reader.cpp` (the DDF reader, TC-9 parity) +
+  `tests/usecases/churn/test_churn_dataset.cpp::ParquetFormatLoadsIdentically` (the rows reader);
   the same parity is also a GUI-runnable in-app **test-suite** case
   (`ddf.parquet_reader_parity`, [test-suite.md](../testing/test-suite.md)).
 - **Fixture + golden:** `tests/fixtures/parquet/saas_sample.parquet` +
@@ -130,7 +130,7 @@ has its own schema:
 
 ## Test + golden (no foreign runtime)
 
-`tests/test_parquet_reader.cpp` loads the **projected subset** (engineered numeric
+`tests/data/test_parquet_reader.cpp` loads the **projected subset** (engineered numeric
 columns + `outcome`) of `saas_sample.parquet` into a DataFrame and asserts it
 matches the committed pyarrow golden **exactly on all four axes the TC-9 / #499
 acceptance names** — schema, row count, dtypes, and values:

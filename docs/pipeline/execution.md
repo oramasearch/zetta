@@ -10,9 +10,9 @@ This page documents the **orchestrator**: `zetta::GraphExecutor` and the
 `zetta::StepExecutor` seam it runs each step through.
 
 ```
-include/zetta/executor.hpp   GraphExecutor, StepExecutor, DefaultStepExecutor,
+include/zetta/pipeline/executor.hpp   GraphExecutor, StepExecutor, DefaultStepExecutor,
                              StepOutcome, ExecutionResult, topological_order
-src/core/executor.cpp        the orchestrator + the default per-step executor
+src/core/pipeline/executor.cpp        the orchestrator + the default per-step executor
 ```
 
 ## Altitude: orchestration, not (yet) heavy compute
@@ -30,7 +30,7 @@ and the `StorageEngine` seam ([storage.md](../data/storage.md)).
 The discoverable entry point is on the node:
 
 ```cpp
-#include "zetta/executor.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/node.hpp"
 
 zetta::ir::ExecutionGraph graph = /* … build or load from a ProjectGraph … */;
@@ -139,7 +139,7 @@ and that the run survives a restart (a reload through the boundary).
 
 ## Tests
 
-`tests/test_executor.cpp` covers the topological ordering (edge-respecting,
+`tests/pipeline/test_executor.cpp` covers the topological ordering (edge-respecting,
 deterministic, cycle/self-loop rejection), the end-to-end acceptance flow (deploy
 a churn graph, then execute it → a `Succeeded` run with the expected outputs +
 lineage + logs), the `Failed` path (a failing step stops the run, downstream

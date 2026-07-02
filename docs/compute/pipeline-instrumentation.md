@@ -63,7 +63,7 @@ SELECT job_id, kind, local_bytes_read, wire_bytes_moved
 | `recorded_at` | ISO-8601 UTC stamp at record time |
 
 **Source.** `Node::pipeline_jobs()` returns a snapshot of a **bounded, in-memory
-ring** (`PipelineJobInstrumentation`, `include/zetta/pipeline_instrumentation.hpp`)
+ring** (`PipelineJobInstrumentation`, `include/zetta/compute/pipeline_instrumentation.hpp`)
 the near-data runners append to via `Node::record_pipeline_job(...)` once a job
 completes. The ring keeps the most-recent `Node::kMaxPipelineJobs` (512) records
 (oldest dropped) so a long-lived node can't grow it without limit. It is guarded by
@@ -111,26 +111,26 @@ no schema was added.
 
 ## Where it's wired
 
-- `include/zetta/pipeline_instrumentation.hpp` — the `PipelineJobInstrumentation`
+- `include/zetta/compute/pipeline_instrumentation.hpp` — the `PipelineJobInstrumentation`
   record + `NearDataJobKind`.
 - `include/zetta/node.hpp` / `src/core/node.cpp` — `Node::record_pipeline_job()` /
   `Node::pipeline_jobs()` (the bounded ring).
 - `src/core/ddf/local_group_by_job.cpp`, `src/core/ddf/local_featurize_job.cpp`,
   `src/core/ml/local_train_job.cpp` — the near-data runners record their counters
   before returning.
-- `include/zetta/collectives.hpp` / `src/core/collectives.cpp` —
+- `include/zetta/cluster/collectives.hpp` / `src/core/cluster/collectives.cpp` —
   `Collectives::rounds_completed()` + the per-round increment.
 - `src/core/query/executor.cpp` — the `system.pipeline_jobs` /
   `system.collective_rounds` row builders + dispatch.
 
 ## Tests
 
-- `tests/test_pipeline_instrumentation.cpp` — the views: `system.pipeline_jobs`
+- `tests/compute/test_pipeline_instrumentation.cpp` — the views: `system.pipeline_jobs`
   exposes recorded counters (+ projection / WHERE), the ring is bounded, an empty
   registry yields no rows; `system.collective_rounds` reports `attached=false` on a
   standalone node and tracks the live coordinator (rounds advance) after a job runs
   an allreduce + barrier through the node-owned coordinator.
-- `tests/test_ddf_local_partitions.cpp`
+- `tests/ddf/test_ddf_local_partitions.cpp`
   (`NearDataGroupByMatchesOracleAndMovesOnlyPartials`) — the **live interactive
   run** acceptance: across a real loopback cluster the near-data group-by's
   per-job counters are queryable on every node via `system.pipeline_jobs`, matching

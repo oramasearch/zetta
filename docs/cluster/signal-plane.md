@@ -24,7 +24,7 @@ their messages through this layer.
 
 ## The four kinds
 
-`zetta::SignalKind` (`include/zetta/signal.hpp`), ordered
+`zetta::SignalKind` (`include/zetta/cluster/signal.hpp`), ordered
 `request → response → event → task`. A `zetta::Signal` carries:
 
 | field     | meaning                                                            |
@@ -125,7 +125,7 @@ newline, so it survives the newline-framed transport):
 The envelope is **validated at the boundary** on receipt, exactly like the
 [Run record](../pipeline/runs.md) and the [audit trail](../governance/audit-trail.md): against a draft-07
 **JSON Schema** (`schemas/signal_envelope.schema.json`, mirrored embedded in
-`src/core/signal.cpp` — that embedded copy is the one enforced at runtime, via
+`src/core/cluster/signal.cpp` — that embedded copy is the one enforced at runtime, via
 `pboettch/json-schema-validator`). `kind` is a closed enum and no unknown fields
 are allowed, then the kind-specific required fields (a request/response needs an
 `id`; a request/event/task needs a `method`; a response needs `ok`) are checked
@@ -136,16 +136,16 @@ rejected with a path-qualified reason and **never reaches a handler**;
 zetta's no-exceptions-across-the-core-seam convention.
 
 `zetta::encode_signal` / `zetta::decode_signal` (declared in
-`include/zetta/signal.hpp`) are the serialization seam; the
+`include/zetta/cluster/signal.hpp`) are the serialization seam; the
 [cluster](cluster.md) transport only adds/strips the `ZETTA/1 SIGNAL ` framing.
 
 ## Where it sits
 
 ```
-include/zetta/signal.hpp   Signal / SignalKind / SignalResponse / SignalHandler;
+include/zetta/cluster/signal.hpp   Signal / SignalKind / SignalResponse / SignalHandler;
                            encode_signal / decode_signal (the envelope seam)
-src/core/signal.cpp        the envelope JSON form + its JSON-Schema boundary
-src/core/cluster.cpp       the transport: a per-peer outbox, the per-link writer,
+src/core/cluster/signal.cpp        the envelope JSON form + its JSON-Schema boundary
+src/core/cluster/cluster.cpp       the transport: a per-peer outbox, the per-link writer,
                            RPC correlation, and signal dispatch on the read pump
 src/core/base64.hpp        shared base64 (the signal payload + the gossip blobs)
 schemas/signal_envelope.schema.json   the draft-07 schema (mirror)

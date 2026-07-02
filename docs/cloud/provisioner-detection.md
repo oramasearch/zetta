@@ -28,13 +28,13 @@ main() ── detect_provisioner_configs()         # run the local CLIs (read-on
 ```
 
 - **`detect_provisioner_configs(CommandRunner = {})`**
-  (`include/zetta/provisioner_detect.hpp`, `src/core/provisioner_detect.cpp`) runs
+  (`include/zetta/cloud/provisioner_detect.hpp`, `src/core/cloud/provisioner_detect.cpp`) runs
   each detector and returns what was found. Every detector runs a couple of fast,
   read-only, non-interactive CLI commands through the shared
   [`CommandRunner`](provisioner.md) seam (so it is testable against a fake and
   never touches a real cloud in CI). A CLI that is absent, not logged in, or
   returns nothing yields nothing for that provider — never an error.
-- **`ProvisionerConfig`** (`include/zetta/provisioner_config.hpp`) is the detected
+- **`ProvisionerConfig`** (`include/zetta/cloud/provisioner_config.hpp`) is the detected
   context: `target` (catalog id), `cli`, a one-line `summary`, and the provider's
   own validated `XConfig::to_json()` shape in `config`. It carries **no
   credentials**.
@@ -80,9 +80,9 @@ detector lights up its target with no other change.
 
 ## Tests
 
-- `tests/test_provisioner_detect.cpp` — the Azure detector against a fake
+- `tests/cloud/test_provisioner_detect.cpp` — the Azure detector against a fake
   `CommandRunner` (logged-in, no-defaults fallback, CLI-missing, malformed output).
-- `tests/test_query.cpp::SelectsProvisionersSystemTable` — `system.zetta_provisioners`
+- `tests/data/test_query.cpp::SelectsProvisionersSystemTable` — `system.zetta_provisioners`
   reflects recorded configs (and latest-per-target wins).
 
 ## See also

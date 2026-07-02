@@ -28,7 +28,7 @@ modal and click **Run**; the result pane shows pass/fail, the metrics (element
 count, max `|error|`), and the log.
 
 **Headless:** the case is exercised (at `count=256`) by
-`tests/test_testkit.cpp::ComputeCasesPass`:
+`tests/testkit/test_testkit.cpp::ComputeCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

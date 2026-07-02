@@ -91,8 +91,8 @@ there to re-issue one.)
 
 ## API (a facade over Automerge)
 
-`zetta::ReplicationManager` (`include/zetta/replication.hpp`) exposes only JSON +
-bytes; Automerge is hidden in the adapter `src/core/replication.cpp`, so the rest
+`zetta::ReplicationManager` (`include/zetta/cluster/replication.hpp`) exposes only JSON +
+bytes; Automerge is hidden in the adapter `src/core/cluster/replication.cpp`, so the rest
 of zetta stays decoupled from the backend.
 
 - `set(key, json)` — a local change (any JSON value, stored as JSON text in the CRDT).
@@ -109,7 +109,7 @@ It is thread-safe (the cluster's network thread and local callers both touch it)
 
 The [cluster](cluster.md) carries replication. When a node is built with a
 `ReplicationManager`, each peer connection runs a gossip exchange on a ~½s timer
-(adapter: `src/core/cluster.cpp`):
+(adapter: `src/core/cluster/cluster.cpp`):
 
 - `ZETTA/1 SYNC <base64 of save()>` — the whole document; the receiver `merge()`s
   it (conflict-free, so order and duplicates don't matter).
@@ -142,7 +142,7 @@ replication status. It surfaces three ways:
 
 Real database data (DDL **and** rows) replicates: every node converges on the
 same data, in memory and **on disk**. (Done + tested — see
-`tests/test_data_replication.cpp`.)
+`tests/cluster/test_data_replication.cpp`.)
 
 **The CRDT document is authoritative; the on-disk store + in-memory `Node` tree
 are a materialized *projection* of it.** Concretely:
@@ -204,10 +204,10 @@ are a materialized *projection* of it.** Concretely:
 
 ## Status / next steps
 
-- **Done + tested:** the CRDT core (`tests/test_replication.cpp`); **gossip over
-  the cluster** with per-node status in `nodes()` (`tests/test_cluster.cpp`); and
+- **Done + tested:** the CRDT core (`tests/cluster/test_replication.cpp`); **gossip over
+  the cluster** with per-node status in `nodes()` (`tests/cluster/test_cluster.cpp`); and
   **data replication** — DDL + rows captured into the document, reconciled onto
-  every node's disk, and persisted across restart (`tests/test_data_replication.cpp`).
+  every node's disk, and persisted across restart (`tests/cluster/test_data_replication.cpp`).
 - **Documented, not built:** the leadership / `zetta_leadership` table and Raft
   (see *Consistency model* above) — design only for now.
 - **Known limits (v1):** the whole document is re-saved on each change and

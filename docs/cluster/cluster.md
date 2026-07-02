@@ -126,8 +126,8 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 ## How it works
 
 - Networking is **Corosio** (coroutine-native TCP), confined to the adapter
-  `src/core/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
-  public API (`include/zetta/cluster.hpp`) exposes no backend types.
+  `src/core/cluster/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
+  public API (`include/zetta/cluster/cluster.hpp`) exposes no backend types.
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
   an accept loop plus one dial coroutine per `--peer`.

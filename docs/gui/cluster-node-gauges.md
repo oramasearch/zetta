@@ -63,7 +63,7 @@ the GUI, every frame:
 ```
 
 - The engine half is **`zetta::NodeTelemetryExchange`**
-  (`include/zetta/node_telemetry.hpp`, `src/core/node_telemetry.cpp`): a
+  (`include/zetta/cluster/node_telemetry.hpp`, `src/core/cluster/node_telemetry.cpp`): a
   `SignalHandler` wired as the [`JobCoordinator`](../compute/job-coordinator.md)'s **fallback**
   (so it coexists with the steal / collective signals the coordinator already
   routes), caching each peer's `node.metrics` event and the local node's own
@@ -122,7 +122,7 @@ The animation stays within the render cadence and never starves a live resize:
 
 ## Tests
 
-- `tests/test_node_telemetry.cpp` — the wire boundary (encode/decode round-trip,
+- `tests/cluster/test_node_telemetry.cpp` — the wire boundary (encode/decode round-trip,
   graceful-degradation by omission, malformed-payload rejection at the schema
   boundary) and the exchange cache (record local, receive peers keyed by
   `Signal::from`, ignore other events, expire stale entries).

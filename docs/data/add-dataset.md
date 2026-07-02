@@ -12,9 +12,9 @@ cluster holds; this is how you put one there from the GUI.
 There are two layers, the repo's usual **engine-in-zetta-core / GUI-as-thin-renderer**
 split:
 
-- **`zetta::add_dataset_file`** (`include/zetta/add_dataset.hpp`,
-  `src/core/add_dataset.cpp`) — the reusable engine backend. No SDL, so it is
-  headless-testable (`tests/test_add_dataset.cpp`).
+- **`zetta::add_dataset_file`** (`include/zetta/data/add_dataset.hpp`,
+  `src/core/data/add_dataset.cpp`) — the reusable engine backend. No SDL, so it is
+  headless-testable (`tests/data/test_add_dataset.cpp`).
 - The headed affordance (`src/gui/app.cpp` + `src/gui/app_operations.cpp`) — a
   button + drag-drop + a File-menu item that call `add_dataset_file` on the UI
   thread.
