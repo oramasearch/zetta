@@ -8,7 +8,7 @@ description: Add or change capabilities on zetta's programmatic control surface 
 Read first: **[docs/api/registry-design.md](../../../docs/api/registry-design.md)**
 (the settled design) and **[docs/api/adding-a-capability.md](../../../docs/api/adding-a-capability.md)**
 (the full recipe + review self-check). The experience contract this work serves is
-[docs/product/ax.md](../../../docs/product/ax.md). This is the working distillation.
+[docs/product/experience/ax.md](../../../docs/product/experience/ax.md). This is the working distillation.
 
 ## Adding a capability
 

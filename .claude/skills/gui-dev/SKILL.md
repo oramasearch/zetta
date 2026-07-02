@@ -10,7 +10,7 @@ Read first, in order: **[docs/gui/architecture.md](../../../docs/gui/architectur
 (tokens · copy rules · self-check), and the rule card
 [src/gui/CLAUDE.md](../../../src/gui/CLAUDE.md) (thin-renderer + rendering
 gotchas). The experience contract this work serves is
-[docs/product/ux.md](../../../docs/product/ux.md). This checklist assumes them.
+[docs/product/experience/ux.md](../../../docs/product/experience/ux.md). This checklist assumes them.
 
 ## Adding or changing a view
 

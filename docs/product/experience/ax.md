@@ -4,7 +4,7 @@ LLMs and programs driving the cluster. Agents are a first-class persona
 (PER-4); AX is designed, not incidental.
 
 - **MCP with full parity**
-  ([../api/registry-design.md](../api/registry-design.md)): every capability a
+  ([../api/registry-design.md](../../api/registry-design.md)): every capability a
   schema-validated tool whose description is one agent-actionable sentence
   stating side effects; **prompts as progressive disclosure** (orientation →
   use-case runs → journeys → investigation → feedback) so an agent never
@@ -25,7 +25,7 @@ LLMs and programs driving the cluster. Agents are a first-class persona
   trace/span/duration; `get_trace` shows intent · plan · performance · result
   shape including per-node spans of distributed work — an agent can always
   answer "what actually happened?"
-  ([../architecture/observability.md](../architecture/observability.md)).
+  ([../architecture/observability.md](../../architecture/observability.md)).
 - **Errors an agent can act on**: domain failures return the engine's
   path-qualified reason verbatim; consent challenges name exactly what an
   approval would permit — and can never be satisfied by the calling key
