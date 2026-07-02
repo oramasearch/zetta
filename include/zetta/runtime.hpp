@@ -45,6 +45,27 @@ Value block_on(task<Value> coroutine) {
     return std::move(*result);
 }
 
+// --- Non-blocking spawn: run a coroutine off the calling thread ---------------
+//
+// Schedule `coroutine` on the shared runtime pool and **return immediately** — the
+// coroutine runs concurrently while the caller keeps going. `on_complete` is
+// invoked once, when the coroutine finishes. This is the seam's off-the-caller-
+// thread primitive: it is how any long-running work (a provider CLI subprocess, a
+// network round-trip) is run without blocking a latency path such as the GUI
+// frame loop, WITHOUT any caller spawning a raw std::thread — the runtime seam is
+// that interface (see CLAUDE.md "async is coroutines, through the seam").
+//
+// `on_complete` runs on a **pool worker thread**, so it must only touch
+// thread-safe state (atomics / a mutex) — never the UI or the Node directly. The
+// canonical pattern: the coroutine writes its result into shared state, then
+// `on_complete` flips a done flag the caller polls each frame, and the caller
+// applies the result on its own thread.
+//
+// Prefer a coroutine **function** whose inputs are taken by value (they live in
+// the coroutine frame) over a capturing lambda — a capturing-lambda coroutine
+// dangles once the temporary lambda is destroyed (same caveat as parallel_for).
+void spawn(task<> coroutine, std::function<void()> on_complete);
+
 // --- Data parallelism: parallel_for over the shared runtime thread pool -------
 //
 // A blocking data-parallel primitive for CPU-bound work — the seam's answer to

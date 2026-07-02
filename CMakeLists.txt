@@ -355,6 +355,7 @@ add_library(zetta-core STATIC
   src/core/deployment_controller.cpp
   src/core/node_capability.cpp
   src/core/provisioner.cpp
+  src/core/provisioner_detect.cpp
   src/core/add_nodes.cpp
   src/core/local_provisioner.cpp
   src/core/command_runner.cpp
@@ -527,6 +528,7 @@ add_executable(zetta
   src/gui/app_pipeline.cpp
   src/gui/app_operations.cpp
   src/gui/app_governance.cpp
+  src/gui/cloud_wiring.cpp
   src/gui/repl_console.cpp
 )
 

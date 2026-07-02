@@ -713,6 +713,11 @@ void App::run() {
     while (running_) {
         if (stop_requested()) break;
         node_.tick();
+        // Apply any finished async "Add nodes" op on the UI thread (the thread that
+        // owns the node). Cheap no-op when nothing is in flight; runs regardless of
+        // the active view so a background provision completes even if the user
+        // navigated away from the Cluster panel.
+        poll_add_nodes();
 
         // A user text-size change (View → Text size) rebuilds the font atlas
         // here, between frames — never mid-frame, while the atlas is in use.

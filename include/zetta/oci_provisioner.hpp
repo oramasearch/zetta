@@ -104,6 +104,14 @@ public:
 class OciProvisioner : public BurstProvisioner<OciConfig, OciControlPlane> {
 public:
     using BurstProvisioner<OciConfig, OciControlPlane>::BurstProvisioner;
+
+    // Steer the next burst: region → OCI `region`, instance type → `shape`. An
+    // empty dimension is left unchanged.
+    void set_placement(const std::string& region,
+                       const std::string& instance_type) override {
+        if (!region.empty()) config_.region = region;
+        if (!instance_type.empty()) config_.shape = instance_type;
+    }
 };
 
 }  // namespace zetta

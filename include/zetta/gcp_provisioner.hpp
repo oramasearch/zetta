@@ -101,6 +101,14 @@ public:
 class GcpProvisioner : public BurstProvisioner<GcpConfig, GcpControlPlane> {
 public:
     using BurstProvisioner<GcpConfig, GcpControlPlane>::BurstProvisioner;
+
+    // Steer the next burst: region → GCP `zone`, instance type → `machine_type`.
+    // An empty dimension is left unchanged.
+    void set_placement(const std::string& region,
+                       const std::string& instance_type) override {
+        if (!region.empty()) config_.zone = region;
+        if (!instance_type.empty()) config_.machine_type = instance_type;
+    }
 };
 
 }  // namespace zetta

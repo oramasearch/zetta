@@ -109,4 +109,15 @@ AddNodesResult add_nodes(Node& node, Provisioner& provider,
 AddNodesResult add_nodes(Node& node, Provisioner& provider, std::size_t count,
                          const NodeCapability& spec = {});
 
+// Apply an already-provisioned AddNodesResult to `node` — the **Node-mutating
+// half** of the Node-aware add_nodes, split out so a caller that ran the slow,
+// Node-free provision OFF the UI thread (e.g. a `runtime::spawn`ed coroutine
+// driving a provider CLI) can apply the result back **on the thread that owns the
+// Node**. It adds each new member to the replicated membership and, when
+// membership actually grew, drives the between-jobs partition rebalance (#519) —
+// exactly what `add_nodes(Node&, …)` does after its own provision. Idempotent on
+// already-present members (a re-add rebalances nothing). `add_nodes(Node&, …)` is
+// now simply `provision` (off-thread-able) followed by this.
+void apply_added_nodes(Node& node, const AddNodesResult& result);
+
 }  // namespace zetta

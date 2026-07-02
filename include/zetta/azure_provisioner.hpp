@@ -103,6 +103,15 @@ class AzureProvisioner
     : public BurstProvisioner<AzureConfig, AzureControlPlane> {
 public:
     using BurstProvisioner<AzureConfig, AzureControlPlane>::BurstProvisioner;
+
+    // Steer the next burst's placement: region → Azure `location`, instance type →
+    // the `vm_size` SKU (the first candidate the control plane's SKU fallback
+    // tries). An empty dimension is left unchanged.
+    void set_placement(const std::string& region,
+                       const std::string& instance_type) override {
+        if (!region.empty()) config_.location = region;
+        if (!instance_type.empty()) config_.vm_size = instance_type;
+    }
 };
 
 }  // namespace zetta

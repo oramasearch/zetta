@@ -11,12 +11,14 @@
 #include "zetta/local_provisioner.hpp"
 #include "zetta/node.hpp"
 #include "zetta/provisioner.hpp"
+#include "zetta/provisioner_detect.hpp"
 #include "zetta/replicated_blob_store.hpp"
 #include "zetta/replication.hpp"
 #include "zetta/uuid.hpp"
 #include "zetta/version.hpp"
 
 #include "gui/app.hpp"
+#include "gui/cloud_wiring.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -25,6 +27,7 @@
 #include <fstream>
 #include <string>
 #include <system_error>
+#include <utility>
 
 #include <nlohmann/json.hpp>
 
@@ -213,19 +216,30 @@ int main(int argc, char** argv) {
     std::printf("zetta: add another node with: %s\n",
                 cluster.peer_command().c_str());
 
+    // Detect which cloud-burst targets this node can drive from the operator's own
+    // local CLIs (`az` logged in, …) and record each on the node so it surfaces as
+    // system.zetta_provisioners — in BOTH modes, since the table is useful headless
+    // too. No credentials are stored: the CLI keeps its own auth, and the control
+    // plane uses that same CLI to act. The headed App then wires a Provisioner per
+    // detected target into its consent-gated Add-nodes control (below).
+    for (zetta::ProvisionerConfig& detected : zetta::detect_provisioner_configs()) {
+        std::printf("zetta: detected cloud provisioner: %s — %s\n",
+                    detected.target.c_str(), detected.summary.c_str());
+        node.record_provisioner_config(std::move(detected));
+    }
+
     int rc = 0;
     if (opts.mode == Mode::Headless) {
         rc = zetta::run_headless(node, cluster);
     } else {
-        zetta::gui::App app(node, cluster);
+        // The provisioners the Cluster view's "Add nodes" control drives. Both
+        // holders are declared BEFORE the App so they outlive it: App keeps raw
+        // references to them (set_provisioner), so it must be destroyed first.
 
-        // Wire the given-hardware Provisioner the Cluster view's "Add nodes"
-        // control drives: a LocalProvisioner that reports the nodes already in the
-        // cluster (best-effort — it brings up no new machines and touches no
+        // Given-hardware target: a LocalProvisioner that reports the nodes already
+        // in the cluster (best-effort — it brings up no new machines and touches no
         // cloud), reading the live fleet from Cluster::nodes() on each call so it
-        // tracks self-healing membership. Cloud provisioners (which create billable
-        // resources) are injected by a configured deployment and stay consent-gated
-        // in the control. The provisioner must outlive app.run().
+        // tracks self-healing membership.
         zetta::LocalProvisioner local_provisioner([&cluster] {
             std::vector<zetta::ProvisionedNode> fleet;
             for (const zetta::NodeStatus& peer : cluster.nodes()) {
@@ -233,7 +247,27 @@ int main(int argc, char** argv) {
             }
             return fleet;
         });
+
+        // Cloud-burst targets: a CLI-backed Provisioner per context detected above.
+        // A target with no detected context stays unwired (the Add-nodes consent
+        // gate then shows "no provisioner wired"), unchanged.
+        zetta::gui::CloudProvisioners cloud_provisioners;
+
+        zetta::gui::App app(node, cluster);
         app.set_provisioner("local", local_provisioner);
+
+        // Burst nodes auto-join this cluster by seeding from a reachable address.
+        const std::string seed_peer = cluster.listen_addresses().empty()
+                                          ? std::string{}
+                                          : cluster.listen_addresses().front();
+        for (const zetta::gui::CloudProvisioners::Wiring& wiring :
+             cloud_provisioners.wire(app, node.provisioner_configs(), seed_peer)) {
+            if (wiring.wired) {
+                std::printf(
+                    "zetta: cloud provisioner wired for %s (local CLI)\n",
+                    wiring.id.c_str());
+            }
+        }
 
         if (app.init()) {
             app.run();

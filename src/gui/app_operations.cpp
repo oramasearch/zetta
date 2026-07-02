@@ -18,8 +18,14 @@
 #include "zetta/node.hpp"
 #include "zetta/pipeline_instrumentation.hpp"
 #include "zetta/provisioner.hpp"
+#include "zetta/provisioner_detect.hpp"
 #include "zetta/run.hpp"
+#include "zetta/runtime.hpp"
 #include "zetta/scaling_policy.hpp"
+
+#include <chrono>
+#include <mutex>
+#include <optional>
 
 #include <SDL3/SDL.h>
 
@@ -45,6 +51,39 @@
 #include <vector>
 
 namespace zetta::gui {
+
+// Shared state for the in-flight async "Add nodes" op (forward-declared in
+// app.hpp). The provision coroutine writes `result` under `mutex` and the
+// completion flips `done`; the UI thread polls `done` each frame, applies the
+// result on its own thread, and clears the op (poll_add_nodes). Held by shared_ptr
+// so the coroutine + its completion keep it alive independent of the App field.
+struct AddNodesOp {
+    std::string target_id;
+    std::string target_name;
+    std::size_t requested = 0;
+    Provisioner* provisioner = nullptr;  // read only by the coroutine (no Node touch)
+    std::chrono::steady_clock::time_point started;
+
+    std::mutex mutex;                       // guards `result`
+    std::optional<AddNodesResult> result;   // set by the coroutine before `done`
+    std::atomic<bool> done{false};          // flipped by the spawn completion
+};
+
+// Shared state for the async VM-size dropdown fetch (forward-declared in app.hpp).
+// The coroutine runs `az vm list-skus` for `location` off the UI thread and writes
+// `result` under `mutex`; poll_add_nodes reads `done` and copies the options out.
+struct VmSizesOp {
+    std::string subscription;
+    std::string location;
+    std::mutex mutex;
+    std::vector<std::string> result;
+    std::atomic<bool> done{false};
+};
+
+// Defined below (near run_add_nodes); forward-declared so draw_add_nodes_control
+// can spawn it.
+zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op);
+
 namespace {
 
 // A run's status, color-coded along its lifecycle: pending (neutral) → running
@@ -1356,7 +1395,7 @@ void App::draw_add_nodes_control() {
             "Uses the nodes already in this cluster; brings up no new machines and "
             "touches no cloud.");
         ImGui::Spacing();
-        ImGui::BeginDisabled(!wired);
+        ImGui::BeginDisabled(!wired || add_nodes_op_ != nullptr);
         const std::string label =
             "Add " + std::to_string(add_nodes_count_) + plural;
         if (primary_button(label.c_str())) run_add_nodes(*target);
@@ -1376,6 +1415,113 @@ void App::draw_add_nodes_control() {
             ImGui::BulletText("%s", path.c_str());
         }
         if (mono_font_) ImGui::PopFont();
+
+        // Editable placement — dropdowns of the detected available options. Region
+        // options come from the detected config (az account list-locations); the
+        // VM-size options are fetched per-region OFF the UI thread (az vm list-skus).
+        // Both are applied to the injected provisioner via set_placement before the
+        // add. The operator steers where a burst lands; the backend also falls back
+        // across VM sizes automatically on a capacity shortage.
+        // Bind the detected configs to a local — provisioner_configs() returns by
+        // value, so a pointer into a temporary would dangle after the loop.
+        const std::vector<ProvisionerConfig> provisioner_configs =
+            node_.provisioner_configs();
+        const ProvisionerConfig* detected_cfg = nullptr;
+        for (const ProvisionerConfig& pc : provisioner_configs) {
+            if (pc.target == target->id) {
+                detected_cfg = &pc;
+                break;
+            }
+        }
+
+        // Pre-fill the current region/size from the detected config when the target
+        // changes, and reset the size options so they re-fetch for the new target.
+        if (add_nodes_placement_target_ != target->id) {
+            add_nodes_placement_target_ = target->id;
+            add_nodes_region_.clear();
+            add_nodes_vm_size_.clear();
+            add_nodes_size_options_.clear();
+            add_nodes_sizes_region_.clear();
+            if (detected_cfg) {
+                const nlohmann::json& cfg = detected_cfg->config;
+                add_nodes_region_ = cfg.value(
+                    "location", cfg.value("region", cfg.value("zone", std::string{})));
+                add_nodes_vm_size_ = cfg.value(
+                    "vm_size",
+                    cfg.value("instance_type",
+                              cfg.value("machine_type",
+                                        cfg.value("shape", std::string{}))));
+            }
+        }
+
+        // Region changed (or first render) → fetch its VM-size options off the UI
+        // thread. Marking add_nodes_sizes_region_ at launch prevents a re-launch
+        // while the fetch is in flight; poll_add_nodes copies the options out.
+        const std::string subscription =
+            detected_cfg ? detected_cfg->config.value("subscription_id", std::string{})
+                         : std::string{};
+        if (target->id == "azure" && !add_nodes_region_.empty() &&
+            !subscription.empty() && add_nodes_sizes_region_ != add_nodes_region_) {
+            add_nodes_sizes_region_ = add_nodes_region_;
+            const auto cached = add_nodes_sizes_cache_.find(add_nodes_region_);
+            if (cached != add_nodes_sizes_cache_.end()) {
+                add_nodes_size_options_ = cached->second;  // instant (already fetched)
+                add_nodes_sizes_op_.reset();
+            } else {
+                add_nodes_size_options_.clear();
+                auto sizes_op = std::make_shared<VmSizesOp>();
+                sizes_op->subscription = subscription;
+                sizes_op->location = add_nodes_region_;
+                add_nodes_sizes_op_ = sizes_op;
+                zetta::runtime::spawn(fetch_vm_sizes_task(sizes_op), [sizes_op] {
+                    sizes_op->done.store(true, std::memory_order_release);
+                });
+            }
+        }
+
+        ImGui::Spacing();
+        eyebrow(mono_font_, "PLACEMENT");
+        ImGui::BeginDisabled(add_nodes_op_ != nullptr);
+
+        // Region — a dropdown of the detected regions (free-text if none detected).
+        ImGui::SetNextItemWidth(240.0f);
+        if (detected_cfg && !detected_cfg->available_regions.empty()) {
+            if (ImGui::BeginCombo("Region", add_nodes_region_.c_str())) {
+                for (const std::string& region : detected_cfg->available_regions) {
+                    if (ImGui::Selectable(region.c_str(),
+                                          region == add_nodes_region_)) {
+                        add_nodes_region_ = region;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            ImGui::InputText("Region", &add_nodes_region_);
+        }
+
+        // VM size — a dropdown of the region's available sizes; a "Loading…" note
+        // while fetching, free-text as a fallback when the list is unavailable.
+        if (add_nodes_sizes_op_) {
+            ImGui::TextColored(kInkQuiet, "Loading VM sizes for %s…",
+                               add_nodes_region_.c_str());
+        } else if (!add_nodes_size_options_.empty()) {
+            ImGui::SetNextItemWidth(240.0f);
+            if (ImGui::BeginCombo("VM size", add_nodes_vm_size_.c_str())) {
+                for (const std::string& sku : add_nodes_size_options_) {
+                    if (ImGui::Selectable(sku.c_str(), sku == add_nodes_vm_size_)) {
+                        add_nodes_vm_size_ = sku;
+                    }
+                }
+                ImGui::EndCombo();
+            }
+        } else {
+            ImGui::SetNextItemWidth(240.0f);
+            ImGui::InputText("VM size", &add_nodes_vm_size_);
+        }
+        ImGui::EndDisabled();
+        ImGui::TextColored(kInkQuiet,
+            "Dropdowns of what your subscription can deploy. The backend also falls "
+            "back across sizes on a capacity shortage at create time.");
 
         // The consent gate — a tinted (amber) callout so the permission boundary
         // reads as a deliberate, deny-by-default stop. The Allow button IS the
@@ -1399,7 +1545,9 @@ void App::draw_add_nodes_control() {
             const std::string allow = "Allow adding " +
                                       std::to_string(add_nodes_count_) + plural +
                                       " via " + target->name;
+            ImGui::BeginDisabled(add_nodes_op_ != nullptr);
             if (primary_button(allow.c_str())) run_add_nodes(*target);
+            ImGui::EndDisabled();
         } else {
             // Honest about the seam: the control + consent gate are real, but a
             // configured cloud provisioner for this target hasn't been injected in
@@ -1414,20 +1562,97 @@ void App::draw_add_nodes_control() {
         ImGui::PopStyleColor();
     }
 
-    if (!add_nodes_status_.empty()) {
+    // An add is running: show a live progress bar (elapsed vs the ETA baseline for
+    // this target) instead of the last result. The provision runs on a background
+    // coroutine (runtime::spawn), so the frame loop keeps animating this every
+    // frame and the window stays responsive; poll_add_nodes() clears it on finish.
+    if (add_nodes_op_) {
         ImGui::Spacing();
-        ImGui::TextColored(add_nodes_status_warn_ ? kWarnColor : kSuccessColor,
-                           "%s", add_nodes_status_.c_str());
+        const double elapsed = std::chrono::duration<double>(
+                                   std::chrono::steady_clock::now() -
+                                   add_nodes_op_->started)
+                                   .count();
+        const auto eta_it = add_nodes_eta_seconds_.find(add_nodes_op_->target_id);
+        // Seed the estimate from the last successful add for this target; with no
+        // baseline yet, fall back to a nominal cloud-burst duration so the bar
+        // still creeps forward (it caps at 99% until the op actually completes).
+        const double eta = (eta_it != add_nodes_eta_seconds_.end() &&
+                            eta_it->second > 0.0)
+                               ? eta_it->second
+                               : 90.0;
+        const float fraction =
+            elapsed < eta ? static_cast<float>(elapsed / eta) : 0.99f;
+        const std::string overlay =
+            std::to_string(static_cast<int>(elapsed + 0.5)) + "s / ~" +
+            std::to_string(static_cast<int>(eta + 0.5)) + "s";
+        ImGui::ProgressBar(fraction,
+                           ImVec2(ImGui::GetContentRegionAvail().x, 0.0f),
+                           overlay.c_str());
+        ImGui::TextColored(kInkSecondary,
+                           "Adding via %s on a background coroutine — the UI "
+                           "stays responsive.",
+                           add_nodes_op_->target_name.c_str());
+    } else if (!add_nodes_status_.empty()) {
+        ImGui::Spacing();
+        if (add_nodes_status_warn_) {
+            // A provider CLI / ARM failure can run to many lines (the real cause
+            // lives deep in a JSON `details` array), so render it in full —
+            // wrapped + scrollable — with a one-click **Copy** so the whole thing
+            // can be pasted into an issue or a search, instead of being clipped to
+            // one unreadable, unselectable line.
+            if (ImGui::SmallButton("Copy error")) {
+                ImGui::SetClipboardText(add_nodes_status_.c_str());
+            }
+            ImGui::PushStyleColor(ImGuiCol_Text, kWarnColor);
+            ImGui::BeginChild(
+                "##add_nodes_error",
+                ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8.0f),
+                ImGuiChildFlags_Borders);
+            ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+            ImGui::TextUnformatted(add_nodes_status_.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
+            ImGui::PopStyleColor();
+        } else {
+            ImGui::TextColored(kSuccessColor, "%s", add_nodes_status_.c_str());
+        }
     }
 }
 
+// The provision half of add_nodes, run OFF the UI thread as a coroutine. Takes the
+// op by value (a shared_ptr) so the coroutine frame owns its inputs — never capture
+// by reference (the dangling-parameter footgun). It runs the provider CLI (the slow
+// part; NO Node access), stores the result under the op's mutex, then completes;
+// runtime::spawn's completion flips op->done, which poll_add_nodes() picks up.
+zetta::runtime::task<> provision_task(std::shared_ptr<AddNodesOp> op) {
+    AddNodesResult result =
+        add_nodes(*op->provisioner, AddNodesRequest{op->requested, NodeCapability{}});
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        op->result = std::move(result);
+    }
+    co_return;
+}
+
+// Fetch the VM-size dropdown options for a region OFF the UI thread (az vm
+// list-skus is slow). Inputs by value into the frame; the completion flips done.
+zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op) {
+    std::vector<std::string> sizes = azure_vm_sizes(op->subscription, op->location);
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        op->result = std::move(sizes);
+    }
+    co_return;
+}
+
 void App::run_add_nodes(const CloudProvider& target) {
-    // The single point that touches the Provisioner — reached only from the Local
-    // "Add" button or a cloud target's explicit "Allow". Synchronous on the UI
-    // thread (which owns the node), like run_cloud_inspect, so the add and the
-    // partition rebalance it triggers race with nothing. The Node-aware add_nodes
-    // overload also rebalances sharded partitions onto any new members (#519); it
-    // never tears a node down.
+    // Reached only from the Local "Add" button or a cloud target's explicit
+    // "Allow". The slow provision runs OFF the UI thread (runtime::spawn) so a
+    // minutes-long `az vmss create` never freezes the window; poll_add_nodes()
+    // applies the result on the UI thread when it finishes. No-op if an add is
+    // already in flight (the buttons are disabled meanwhile).
+    if (add_nodes_op_) return;
+
     Provisioner* provisioner = provisioner_for(target.id);
     if (provisioner == nullptr) {
         add_nodes_status_ =
@@ -1436,16 +1661,73 @@ void App::run_add_nodes(const CloudProvider& target) {
         return;
     }
 
-    const std::size_t count = static_cast<std::size_t>(add_nodes_count_);
-    const AddNodesResult result = add_nodes(node_, *provisioner, count);
+    // Steer where this burst lands from the editable Region / VM size fields (a
+    // no-op on the given-hardware Local target). Applied on the UI thread before
+    // the provision coroutine reads the config off-thread.
+    provisioner->set_placement(add_nodes_region_, add_nodes_vm_size_);
 
-    // Report what came up, honestly: members.size() of the requested count, plus
-    // the backend's detail (for given hardware, why it's bounded by the existing
-    // cluster). Amber when short (best-effort), green when the full count was met.
+    auto op = std::make_shared<AddNodesOp>();
+    op->target_id = target.id;
+    op->target_name = target.name;
+    op->requested = static_cast<std::size_t>(add_nodes_count_);
+    op->provisioner = provisioner;
+    op->started = std::chrono::steady_clock::now();
+    add_nodes_op_ = op;
+    add_nodes_status_.clear();  // hide the previous result while this one runs
+
+    // Fire the provision coroutine off the UI thread; the completion (on a pool
+    // worker) flips `done`, which poll_add_nodes() reads each frame. The captured
+    // shared_ptr keeps the op alive until the completion runs.
+    zetta::runtime::spawn(provision_task(op), [op] {
+        op->done.store(true, std::memory_order_release);
+    });
+}
+
+void App::poll_add_nodes() {
+    // The async VM-size dropdown fetch: when the coroutine finishes, copy the
+    // options out and clear the op (the combo then renders them).
+    if (add_nodes_sizes_op_ &&
+        add_nodes_sizes_op_->done.load(std::memory_order_acquire)) {
+        std::shared_ptr<VmSizesOp> sizes = add_nodes_sizes_op_;
+        {
+            std::lock_guard<std::mutex> lock(sizes->mutex);
+            add_nodes_size_options_ = std::move(sizes->result);
+        }
+        add_nodes_sizes_cache_[sizes->location] = add_nodes_size_options_;  // cache it
+        add_nodes_sizes_op_.reset();
+    }
+
+    if (!add_nodes_op_ || !add_nodes_op_->done.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    // The coroutine finished. Take its result and apply it to the node ON THE UI
+    // THREAD (the thread that owns the node) — the fast membership + rebalance half.
+    std::shared_ptr<AddNodesOp> op = add_nodes_op_;
+    AddNodesResult result;
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        if (op->result) result = std::move(*op->result);
+    }
+    apply_added_nodes(node_, result);
+
+    const double elapsed = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now() - op->started)
+                               .count();
+    // Seed the ETA baseline from a run that actually brought something up, so a
+    // fast failure doesn't make the next estimate absurdly low.
+    if (result.satisfied || !result.members.empty()) {
+        add_nodes_eta_seconds_[op->target_id] = elapsed;
+    }
+
     add_nodes_status_warn_ = !result.satisfied;
-    add_nodes_status_ = target.name + " · " + std::to_string(result.members.size()) +
-                        " of " + std::to_string(count) + " node(s)";
+    add_nodes_status_ = op->target_name + " · " +
+                        std::to_string(result.members.size()) + " of " +
+                        std::to_string(op->requested) + " node(s) · took " +
+                        std::to_string(static_cast<int>(elapsed + 0.5)) + "s";
     if (!result.detail.empty()) add_nodes_status_ += " · " + result.detail;
+
+    add_nodes_op_.reset();
 }
 
 void App::draw_cloud() {

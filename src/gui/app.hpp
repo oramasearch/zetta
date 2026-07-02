@@ -51,6 +51,18 @@ namespace gui {
 
 class ReplConsole;  // the CMP-6 REPL component (src/gui/repl_console.hpp)
 
+// In-flight async "Add nodes" op (defined in app_operations.cpp). A
+// runtime::spawn'd coroutine runs the provider CLI OFF the UI thread and writes
+// its result into this shared state; the UI thread polls it each frame, applies
+// the result to the node (apply_added_nodes) on its own thread, and renders a
+// progress bar. Held by shared_ptr so the coroutine + its completion keep it alive.
+struct AddNodesOp;
+
+// In-flight async fetch of the VM-size dropdown options for a region (`az vm
+// list-skus` is region-dependent + slow, so it runs off the UI thread via
+// runtime::spawn, like AddNodesOp). Defined in app_operations.cpp.
+struct VmSizesOp;
+
 // The headed run mode: an SDL3 + Dear ImGui window rendering a live view of a
 // zetta::Node. Owns the window, renderer, and ImGui context for its lifetime —
 // construct it, init(), run(), then let it destruct.
@@ -183,13 +195,20 @@ private:
     // rule). A target with no injected Provisioner renders but reports it isn't
     // wired.
     void draw_add_nodes_control();
-    // The single point that drives zetta::add_nodes(node_, …) over the injected
-    // Provisioner for `target` — reached ONLY from the Local "Add" button or a
-    // cloud target's explicit "Allow" (the consent action), never on a passive
-    // render. Synchronous on the UI thread (which owns the node), like
-    // run_cloud_inspect, so the add + the partition rebalance it triggers race with
-    // nothing; the new members surface in the canvas once they gossip in.
+    // Launch an "Add nodes" op over the injected Provisioner for `target` — reached
+    // ONLY from the Local "Add" button or a cloud target's explicit "Allow" (the
+    // consent action), never on a passive render. The slow provision (the provider
+    // CLI) runs OFF the UI thread as a runtime::spawn'd coroutine, so a minutes-long
+    // `az vmss create` no longer freezes the window; poll_add_nodes() applies the
+    // result on the UI thread when it finishes. A no-op while an op is already in
+    // flight (the button is disabled meanwhile).
     void run_add_nodes(const CloudProvider& target);
+    // Poll the in-flight async add-nodes op each frame: when the coroutine has
+    // finished, apply its result to the node (apply_added_nodes, on the UI thread),
+    // record the run's duration as the ETA baseline, set the status line, and clear
+    // the op. Cheap no-op when nothing is in flight. Called from render_frame so it
+    // completes regardless of which view is showing.
+    void poll_add_nodes();
     // The Provisioner injected for `target_id` (set_provisioner), or nullptr when
     // none is wired for that target.
     Provisioner* provisioner_for(const std::string& target_id) const;
@@ -352,6 +371,29 @@ private:
     int add_nodes_count_ = 1;
     std::string add_nodes_status_;
     bool add_nodes_status_warn_ = false;
+    // The in-flight async add-nodes op (null = idle). The provision runs off the
+    // UI thread via runtime::spawn; the frame loop polls this + renders a progress
+    // bar. `add_nodes_eta_seconds_` is a within-session baseline — the duration of
+    // the last successful add for this target, seeding the progress bar's ETA on
+    // the next one (0 = no baseline yet, so the bar shows elapsed-only).
+    std::shared_ptr<AddNodesOp> add_nodes_op_;
+    std::map<std::string, double> add_nodes_eta_seconds_;
+    // Editable placement for a cloud add: region + VM size, applied to the injected
+    // provisioner via Provisioner::set_placement before the add so the operator can
+    // steer where a burst lands (complementing the backend's own SKU fallback).
+    // Pre-filled from the detected system.zetta_provisioners config when the target
+    // changes (tracked by add_nodes_placement_target_).
+    std::string add_nodes_region_;
+    std::string add_nodes_vm_size_;
+    std::string add_nodes_placement_target_;
+    // VM-size dropdown options for the current region + the async fetch that
+    // populates them (az vm list-skus, off the UI thread — polled by poll_add_nodes).
+    std::vector<std::string> add_nodes_size_options_;
+    std::string add_nodes_sizes_region_;  // region add_nodes_size_options_ are for
+    std::shared_ptr<VmSizesOp> add_nodes_sizes_op_;  // in-flight fetch (null = idle)
+    // Per-region cache of fetched size lists — `az vm list-skus` is ~50s, so a
+    // region is fetched at most once per session (re-selecting it is instant).
+    std::map<std::string, std::vector<std::string>> add_nodes_sizes_cache_;
 
     // Cloud Inspector (permission-gated). `selected_cloud_provider_` is the
     // catalog id selected in the list. `cloud_consent_provider_` is the id the
