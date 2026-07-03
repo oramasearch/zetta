@@ -8,11 +8,13 @@ index over a whole table, this builds a **full-text sub-index per LOCAL partitio
 (compute-near-data) and answers a query by **scatter-gather + merge/rank** across
 those sub-indexes — never one big index.
 
-The acceptance is that the distributed query's ranked results **match a single
-consolidated-index oracle**. This is the standard sharded-search shape — per-shard
-local scoring, then a coordinator merges the ranked hits by score — exactly how
-production search engines default to local-IDF *query-then-fetch*: exact for the
-global top-k when the per-shard ranking is unambiguous.
+This is the standard sharded-search shape — per-shard local scoring, then a
+coordinator merges the ranked hits by score — exactly how production search
+engines default to local-IDF *query-then-fetch*. Its contract: the **hit set is
+exact** and every coordinator agrees on **one global ranking**; the rank *order*
+equals a single consolidated index's only when every shard's corpus statistics
+agree with the consolidated ones (see
+[the exactness analysis below](#when-per-partition-matches-a-single-index)).
 
 ## Shape
 
@@ -108,17 +110,44 @@ reaches the index:
 These are hand-mirrored embedded schemas (like `collective_message.schema.json`), not
 the generated/drift-checked [schema-as-code](../architecture/schemas.md) set.
 
-## Why per-partition matches a single index
+## When per-partition matches a single index
 
 BM25F scoring uses corpus statistics (per-term document frequency, average field
 length), so a per-partition sub-index scores with **local** statistics — the standard
-sharded-search caveat. The distributed ranking therefore equals the consolidated index
-for the global top-k whenever the per-shard ranking is **unambiguous** (the term
-frequency dominates, so a doc's relative order is stable under local-IDF variation) —
-the same property production engines rely on for their default local-IDF
-query-then-fetch. The acceptance corpus is tf-dominated for exactly this reason. A
-global-statistics pass (the exact, `dfs_query_then_fetch` analogue) is a later
-optimization behind the same API.
+sharded-search caveat. What that guarantees, precisely
+([#611](https://github.com/oramasearch/zetta/issues/611) settled this):
+
+- **The hit set is exact.** Whether a row matches is a per-row property, so a full
+  query returns exactly the rows the consolidated index would.
+- **Every coordinator agrees.** Each node's scatter-gather runs the same
+  deterministic merge over the same per-shard answers — one identical global
+  ranking on every node.
+- **The rank order is exact only when every shard's statistics agree with the
+  consolidated ones.** "Clearly separated term frequencies" are NOT sufficient:
+  the `k1` saturation `tf~/(k1 + tf~)` compresses *any* tf separation into a
+  bounded score ratio (about 2.2× at `k1 = 1.2`), while local IDF varies with
+  shard composition by more than that — a shard where the term matches one of two
+  rows scores it `ln 2 ≈ 0.69` against `ln(1 + 0.5/2.5) ≈ 0.18` for a shard where
+  both rows match, a 3.8× swing. A tf-1 row sharing a shard with a non-matching
+  row can outrank a tf-5 row whose shard-mates all match — the exact failure #611
+  observed.
+
+So an *acceptance fixture* for exact rank equality must pin the statistics, not
+the term frequencies: give every shard the **same df/N ratio** as the consolidated
+corpus (then IDF cancels — `ln(1 + (N−n+0.5)/(n+0.5))` is equal whenever `n/N`
+is) and **uniform per-field token lengths** (then the length normalization
+cancels), leaving each row's score a function of its own tf only. The gtest
+corpus is engineered exactly so (one matching + one non-matching row per
+partition, uniform field lengths — see `postgres_corpus` in
+[`tests/index/test_distributed_fulltext.cpp`](../../tests/index/test_distributed_fulltext.cpp)),
+and the test asserts the fixture invariant explicitly so a placement change fails
+with the reason rather than as a ranking flip.
+
+Exact rank equality for *arbitrary* corpora and shardings needs the
+**global-statistics pass** (the `dfs_query_then_fetch` analogue: gather per-term
+df + field-length totals across shards first, score every shard with the merged
+globals) — a later slice behind this same API, tracked in
+[#657](https://github.com/oramasearch/zetta/issues/657).
 
 ## Tests
 
@@ -139,17 +168,22 @@ The merge + scatter-gather are proven **engine-agnostically** with a determinist
 **partition-independent** reference scorer (term frequency — a doc's score depends only
 on the doc + query), so the suite runs without the private `oramacore-cpp` submodule;
 the real **BM25F** path is exercised when the engine is compiled in (skipped otherwise,
-like the other [oramacore tests](oramacore-fulltext-index.md), on a tf-dominated,
-unambiguous corpus).
+like the other [oramacore tests](oramacore-fulltext-index.md)) on the
+statistics-engineered corpus described above — its distributed ranking *and scores*
+equal the consolidated oracle's exactly, and the test asserts the
+one-match-one-miss-per-partition fixture invariant explicitly.
 
 The same acceptance is a **GUI-runnable [test-suite](../testing/test-suite.md) case**,
 `cluster.fulltext_index` (the **TC-13** acceptance, the way TC-9/TC-10/TC-11 each surface
 as a runnable case): it builds the per-partition full-text index over a real loopback
-cluster and asserts the scatter-gather ranking matches the consolidated oracle on every
-node. It uses the real `oramacore_fulltext` (BM25F) backend when the submodule is
-compiled in, and the partition-independent reference scorer otherwise (the same plumbing,
-always green) — runnable headless (`tests/testkit/test_testkit.cpp`) and in the
-**Operations → Test suite** panel.
+cluster and asserts against the consolidated oracle on every node. Its knobs (`nodes` /
+`copies` / `partitions` / `top_k`) compose shards freely, so the assertion follows the
+backend's contract: with the real `oramacore_fulltext` (BM25F) backend it asserts the
+**exact hit set** plus **one identical global ranking on every coordinator** (local-IDF
+query-then-fetch); with the partition-independent reference scorer (used when the
+submodule is absent — the same plumbing, always green) the ranking is additionally
+**exactly equal** to the oracle. Runnable headless (`tests/testkit/test_testkit.cpp`)
+and in the **Operations → Test suite** panel.
 
 ## What this slice is (and isn't)
 
@@ -158,8 +192,9 @@ owned partition (compute-near-data), answer a query by scatter-gather + merge/ra
 matching the consolidated oracle. It is a usable building block alongside (not a
 replacement for) the consolidated [index step executor](index-step-executor.md) —
 wiring it into the deploy/run path as the default `index`-step behaviour, exact
-global-statistics scoring, a true point-to-point gather (vs. one RPC per peer), and the
-other index kinds (vector / semantic / feature) remain additive behind the same seam.
+global-statistics scoring ([#657](https://github.com/oramasearch/zetta/issues/657)), a
+true point-to-point gather (vs. one RPC per peer), and the other index kinds (vector /
+semantic / feature) remain additive behind the same seam.
 
 ## Pointers
 

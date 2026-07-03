@@ -25,11 +25,16 @@
 // zetta::ddf::load_local_partitions), and a query is answered by **scatter-gather +
 // merge/rank** across those sub-indexes — never one big index.
 //
-// The acceptance is that the distributed query's ranked results **match a single
-// consolidated-index oracle**. This is the standard sharded-search shape (per-shard
-// local scoring, then a coordinator merges the ranked hits by score): exact for the
-// global top-k when per-shard ranking is unambiguous, the way production search
-// engines default to local-IDF query-then-fetch.
+// This is the standard sharded-search shape (per-shard local scoring, then a
+// coordinator merges the ranked hits by score) — the local-IDF *query-then-fetch*
+// production search engines default to. Its contract (#611): the hit SET is exact
+// (matching is per-row), and every coordinator produces one identical global
+// ranking; the rank ORDER equals a single consolidated index's only when every
+// shard's corpus statistics for the query terms (df/N, average field lengths)
+// agree with the consolidated ones — per-shard IDF variation can otherwise
+// reorder hits regardless of how separated their term frequencies are. The exact
+// general fix is a global-statistics pass (the dfs_query_then_fetch analogue), a
+// later slice behind this same API. See docs/indexing/distributed-fulltext.md.
 //
 //   build_local(node, spec)  — enumerate this node's owned partitions of the table,
 //                              read each body from local disk (no LOREQ, no

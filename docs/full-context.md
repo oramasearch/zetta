@@ -72,9 +72,15 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   foundations (API registry + observability core + coroutine-first bridge,
   three conventions, experience contracts, product build-out, four skills;
   11/11 tests). `dev` promoted to `main` immediately after.
-- **Tests**: 1077/1079 green; the 2 failures are pre-existing on clean `dev`
-  ([#611](https://github.com/oramasearch/zetta/issues/611), fulltext
-  ranking-oracle, reproduced + analyzed).
+- **Tests**: the fulltext ranking-oracle pair
+  ([#611](https://github.com/oramasearch/zetta/issues/611)) is fixed in
+  [PR #660](https://github.com/oramasearch/zetta/pull/660) — a
+  statistics-engineered gtest fixture + the local-IDF query-then-fetch
+  contract in the testkit case; the exact general fix (global-statistics
+  pass) is [#657](https://github.com/oramasearch/zetta/issues/657). Two
+  ml-domain failures remain pre-existing on clean `dev` locally
+  ([#664](https://github.com/oramasearch/zetta/issues/664), GBDT near-data
+  histogram-allreduce).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.
