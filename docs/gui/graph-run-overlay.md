@@ -89,9 +89,17 @@ which goes through the existing, already-validated Run write path.
 ## Scope notes (deliberately later)
 
 - Per-step **timings** (the observability spans) on the canvas — the run log
-  carries per-line stamps; a duration read is a later slice.
-- Animated **flows along the edges** (the #590 comet vocabulary) between steps.
+  carries per-line stamps; a duration read is a later slice
+  ([#676](https://github.com/oramasearch/zetta/issues/676)).
+- Animated **flows along the edges** (the #590 comet vocabulary) between steps
+  ([#678](https://github.com/oramasearch/zetta/issues/678)).
 - A dedicated run **picker** — the overlay follows the newest referencing run;
-  older runs are read in the Runs view.
+  older runs are read in the Runs view
+  ([#677](https://github.com/oramasearch/zetta/issues/677)).
+- An **Indexes panel** for the index-output click-through
+  ([#675](https://github.com/oramasearch/zetta/issues/675)), and a durable
+  run↔stored-graph id link across every initiator so the name/deployment
+  matching heuristics shrink to fallbacks
+  ([#679](https://github.com/oramasearch/zetta/issues/679)).
 - `system.pipeline_jobs` job-level activity stays on the Cluster view's
   animation; the graph canvas shows run-record truth only.
