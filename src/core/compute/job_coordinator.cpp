@@ -28,17 +28,29 @@ JobCoordinator::JobCoordinator(zetta::cluster::Cluster& cluster, unsigned worker
 JobCoordinator::~JobCoordinator() = default;
 
 JobStatus JobCoordinator::run(ComputeJob& job, const Algorithm& algorithm) {
+    // ComputeJob entity writes go through the owner gate (#624): the record is
+    // node-owned (main-thread-only tree), and run() may be driving on a
+    // background-action worker. Inline when no gate is wired (synchronous
+    // callers; coordinators with no node behind them).
+    const auto on_owner = [this](const std::function<void()>& work) {
+        if (owner_gate_) owner_gate_(work);
+        else work();
+    };
+
     // One trace per distributed job (#640): the trace id lives on the
     // replicated job record, so every SPMD participant that runs this job —
     // on any node — records its spans into the SAME trace. The first
     // coordinator to run a job without one stamps it.
-    if (job.value().trace_id.empty()) {
-        job.set_trace_id(zetta::observability::make_root_trace().trace_id);
-    }
+    std::string trace_id;
+    on_owner([&] {
+        if (job.value().trace_id.empty()) {
+            job.set_trace_id(zetta::observability::make_root_trace().trace_id);
+        }
+        trace_id = job.value().trace_id;
+        job.set_status(JobStatus::Running);
+    });
     const zetta::observability::TraceContext trace{
-        job.value().trace_id, zetta::observability::make_span_id()};
-
-    job.set_status(JobStatus::Running);
+        trace_id, zetta::observability::make_span_id()};
 
     zetta::observability::ScopedSpan job_span(
         recorder_, trace, "job:" + std::string(to_string(job.kind())));
@@ -57,7 +69,7 @@ JobStatus JobCoordinator::run(ComputeJob& job, const Algorithm& algorithm) {
 
     const JobStatus terminal =
         outcome.ok ? JobStatus::Succeeded : JobStatus::Failed;
-    job.set_status(terminal, outcome.detail);
+    on_owner([&] { job.set_status(terminal, outcome.detail); });
     job_span.set_attribute("result_shape",
                            nlohmann::json{{"status", to_string(terminal)},
                                           {"detail", outcome.detail}});

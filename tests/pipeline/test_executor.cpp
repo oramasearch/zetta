@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -357,6 +358,45 @@ TEST(Executor, RunRecordsATraceWithPerStepSpans) {
         }
     }
     EXPECT_EQ(step_spans, 6u);
+
+    node.stop();
+}
+
+// ---- cooperative cancel (#624) ----------------------------------------------
+
+TEST(Executor, CancelBetweenStepsEndsTheRunFailed) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    // The flag is set BEFORE execute(), so the first between-steps check sees
+    // it: no step runs, the run ends Failed with the cancelled log line.
+    std::atomic<bool> cancel{true};
+    GraphExecutor executor;
+    const ExecutionResult result =
+        executor.execute(node, churn_pipeline(), "proj", "graph", &cancel);
+
+    ASSERT_TRUE(result.run);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.error, "run cancelled by user");
+    EXPECT_TRUE(result.failed_step.empty()) << "no step failed — it was cancelled";
+    EXPECT_EQ(result.run->status(), RunStatus::Failed);
+    EXPECT_TRUE(result.run->outputs().empty()) << "no step ran";
+    EXPECT_TRUE(has_log_containing(result.run, "run cancelled by user"));
+
+    node.stop();
+}
+
+TEST(Executor, NullCancelExecutesEveryStep) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    GraphExecutor executor;
+    const ExecutionResult result =
+        executor.execute(node, churn_pipeline(), "proj", "graph", nullptr);
+    EXPECT_TRUE(result.ok);
+    EXPECT_EQ(result.run->status(), RunStatus::Succeeded);
 
     node.stop();
 }

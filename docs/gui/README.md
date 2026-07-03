@@ -28,6 +28,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [cluster-node-gauges.md](cluster-node-gauges.md) — animated per-node resource gauges + sparklines on the cluster node boxes, fed by the signal-plane telemetry exchange (#584).
 - [cluster-pipeline-animation.md](cluster-pipeline-animation.md) — the distributed-algorithm-at-work animation over the cluster canvas: a thin renderer diffing the live instrumentation views (#590).
 - [graph-run-overlay.md](graph-run-overlay.md) — the Graph Workspace live-run overlay: per-step status on the canvas from the live Run record, pinned failures, output click-through (#626).
+- [long-running-actions.md](long-running-actions.md) — long actions off the UI thread (#624): cloud inspect, the churn run, dataset add — worker + per-frame poll, progress in the owning panel, cancel where supported, completion in the activity feed.
 - [add-nodes-control.md](add-nodes-control.md) — the Add nodes control in the Cluster view: Local runs on a click, every cloud target is consent-gated deny-by-default (#583).
 
 ## Load-bearing rendering notes

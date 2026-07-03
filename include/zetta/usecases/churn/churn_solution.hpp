@@ -1,8 +1,12 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -12,6 +16,7 @@
 #include "zetta/usecases/churn/churn_step_executor.hpp"  // RetentionAction
 #include "zetta/ddf/data_frame.hpp"       // ddf::DataFrameSchema
 #include "zetta/ddf/featurize.hpp"        // ddf::FeaturizeSpec
+#include "zetta/ir/execution_graph.hpp"   // AsyncChurnRun owns its graph snapshot
 #include "zetta/pipeline/executor.hpp"             // ExecutionResult
 #include "zetta/ml/gbdt.hpp"              // ml::GbdtParams
 #include "zetta/ml/gbdt_score.hpp"        // ml::EntityScore
@@ -65,7 +70,6 @@ namespace zetta::storage { class StorageEngine; }
 namespace zetta { class Node; }
 namespace zetta::compute { class ComputeDevice; }
 namespace zetta::compute { class CoordinatedLaunchListener; }
-namespace zetta::ir { class ExecutionGraph; }
 
 namespace zetta::usecases::churn {
 
@@ -111,6 +115,10 @@ struct ChurnSolutionOptions {
     // False = run this node's copy alone — only correct on a single-member
     // cluster (a lone submitter fails the SPMD collective rounds otherwise).
     bool coordinate = true;
+    // Optional cooperative cancel flag (#624): non-owning, may be null, must
+    // outlive the run. Checked between graph steps (GraphExecutor::execute);
+    // a cancelled run ends Failed with a "run cancelled" log line.
+    const std::atomic<bool>* cancel = nullptr;
 };
 
 // What running the churn solution on the real engine produced.
@@ -168,6 +176,80 @@ ChurnSolutionResult run_churn_solution_on_node(
     Node& node, compute::ComputeDevice& device,
     const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
     const ChurnSolutionOptions& options = {});
+
+// --- Run the churn solution WITHOUT blocking the caller's thread (#624) ------
+//
+// AsyncChurnRun drives run_churn_solution_on_node on a dedicated worker thread
+// so an interactive caller (the headed Deploy panel, the Graph Workspace) stays
+// responsive for the whole featurize -> train -> explain -> rank pipeline. It is
+// safe against the "Node tree is main-thread-only" invariant because every
+// node-tree write on the run path gates through Node::run_on_owner — so the Run,
+// its ComputeJobs, and the registered Model land on the live node WHILE the run
+// executes, and progress is observable through the SAME live records every
+// surface reads: the Run's status + logs (system.runs) and its jobs
+// (system.jobs). An MCP caller polling those views and a GUI panel rendering
+// them see one source (#614's job-handle semantics).
+//
+// Lifecycle: start() snapshots its inputs by value (graph / dataset / options —
+// the worker owns them; the test-suite worker discipline), owns a CPU compute
+// device for the run, and launches the worker. Poll done() from the owner loop;
+// read result() only once done() is true. request_cancel() is cooperative —
+// checked between graph steps, so the in-flight step completes and the run ends
+// Failed with a "run cancelled" log. `node` must outlive the handle.
+//
+// The destructor requests cancel and joins the worker, PUMPING the node's owner
+// gate while it waits (the worker may be blocked handing a node write to the
+// owner loop — joining without draining would deadlock). Destroy the handle on
+// the node's owner thread.
+class AsyncChurnRun {
+public:
+    // Launch the run. Never returns null; a node with no compute plane fails
+    // inside the worker like the synchronous runner (result().execution.error).
+    static std::shared_ptr<AsyncChurnRun> start(Node& node,
+                                                ir::ExecutionGraph graph,
+                                                ChurnDataset dataset,
+                                                ChurnSolutionOptions options);
+    ~AsyncChurnRun();
+
+    AsyncChurnRun(const AsyncChurnRun&) = delete;
+    AsyncChurnRun& operator=(const AsyncChurnRun&) = delete;
+
+    // True once the worker has finished and result() is valid.
+    bool done() const { return done_.load(std::memory_order_acquire); }
+
+    // Ask the run to stop at the next between-steps check (cooperative; the
+    // in-flight step completes). Idempotent.
+    void request_cancel() { cancel_.store(true, std::memory_order_release); }
+    bool cancel_requested() const {
+        return cancel_.load(std::memory_order_acquire);
+    }
+
+    // The project label the run + its jobs carry (options.project) — what a
+    // panel filters system.runs / system.jobs by while the run executes.
+    const std::string& project() const { return project_; }
+
+    // When the run was launched (for elapsed-time affordances).
+    std::chrono::steady_clock::time_point started() const { return started_; }
+
+    // The run's outcome. Valid only once done() is true.
+    const ChurnSolutionResult& result() const { return result_; }
+
+private:
+    AsyncChurnRun(Node& node, ir::ExecutionGraph graph, ChurnDataset dataset,
+                  ChurnSolutionOptions options);
+
+    Node& node_;
+    ir::ExecutionGraph graph_;
+    ChurnDataset dataset_;
+    ChurnSolutionOptions options_;
+    std::string project_;
+    std::unique_ptr<compute::ComputeDevice> device_;
+    std::chrono::steady_clock::time_point started_;
+    std::atomic<bool> cancel_{false};
+    std::atomic<bool> done_{false};
+    ChurnSolutionResult result_;  // written by the worker before done_ flips
+    std::thread worker_;
+};
 
 // Whether `graph` is churn-shaped — has the featurize -> train backbone the
 // ChurnStepExecutor pipeline needs: at least one connect (a source to load), one

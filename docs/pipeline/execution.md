@@ -62,6 +62,13 @@ The `Run` is created on the node, so it is owned, persisted, and (when the node
 is replicated) captured into the CRDT exactly like any other run — both
 standalone and replicated nodes are supported.
 
+Since #624 `execute` may be driven from a **background worker**: every
+node-tree write (the Run creation + the Run's mutators) gates through
+`Node::run_on_owner` ([../architecture/owner-gate.md](../architecture/owner-gate.md);
+inline for owner-thread callers), and an optional `cancel` flag (the last
+parameter) is checked **between steps** — a cancelled run ends Failed with a
+"run cancelled by user" log line and `error`.
+
 ## What execution does
 
 `execute` creates a `Run` (so the attempt is always recorded, even on failure),

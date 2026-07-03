@@ -128,7 +128,9 @@ deploy → reconcile → run control plane records run shells with the stubbed
 `DefaultStepExecutor`). For the churn blueprint the panel also offers a **"Run over
 the cluster"** action (`App::run_churn_demo`) that runs the actual
 featurize → train → explain → rank → playbook pipeline over a built-in demo dataset
-— the real [`ChurnStepExecutor`](../use-cases/churn-step-executor.md), not the stub. On success
+— the real [`ChurnStepExecutor`](../use-cases/churn-step-executor.md), not the stub —
+off the UI thread with live progress + cancel (#624,
+[../gui/long-running-actions.md](../gui/long-running-actions.md)). On success
 it shows the registered model's short id, the number of accounts ranked, and the
 top churn driver; the run also registers a real [Model](../ml/models.md) + recorded
 [ComputeJobs](../compute/compute-jobs.md) on the node, so the [Runs](runs.md) and

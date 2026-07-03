@@ -28,7 +28,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested`. |
+| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested` / `cloud_inspected` / `dataset_added` (#624). |
 | `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
 | `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
 | `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |

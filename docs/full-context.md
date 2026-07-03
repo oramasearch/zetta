@@ -180,6 +180,17 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   spans), traced testkit (`testkit:<case.id>` spans), the GUI Traces view
   (the per-operation trace pane beside #668's Activity feed), and the
   `submit_feedback` capability (bundle as a large object, explicit export).
+- **#624 shipped (long-running actions off the UI thread)**: the Node
+  **owner-thread gate** (`Node::run_on_owner`, drained in `tick()`;
+  [architecture/owner-gate.md](architecture/owner-gate.md)) lets background
+  workers drive engine runs safely — the churn run (`AsyncChurnRun`, Deploy
+  panel + Graph Workspace, cooperative between-steps cancel), dataset add
+  (`AsyncDatasetAdd`, worker decode + pump-sliced materialize + cancel), and
+  the consent-approved cloud inspect (spawn/poll) all keep the UI interactive
+  with live progress from the same records MCP polls (system.runs /
+  system.jobs). New audit actions `cloud_inspected` + `dataset_added` put
+  their completions in the activity feed
+  ([gui/long-running-actions.md](gui/long-running-actions.md)).
 - **#530 shipped** (UC-1 featurize → train over partitions):
   `zetta::ml::run_near_data_featurize_train_job` composes #532 featurize +
   #533 train so the GBDT trains on the feature table, and `cluster.uc1_at_scale`

@@ -12,7 +12,9 @@
         "job_finished",
         "key_issued",
         "key_revoked",
-        "provision_requested"
+        "provision_requested",
+        "cloud_inspected",
+        "dataset_added"
       ],
       "type": "string"
     },

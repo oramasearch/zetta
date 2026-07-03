@@ -3,7 +3,6 @@
 #include "gui/tones.hpp"
 
 #include "zetta/usecases/churn/churn_solution.hpp"
-#include "zetta/compute/cpu_device.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/node.hpp"
@@ -22,6 +21,8 @@
 #include <array>
 #include <cctype>
 #include <cfloat>
+#include <chrono>
+#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -280,16 +281,28 @@ void App::draw_deploy() {
     //     node's LIVE JobCoordinator (the #579 compute spine over the real cluster, not
     //     an isolated loopback — #580). Only the churn blueprint maps to the real churn
     //     pipeline today, so the action is offered only for it; it runs over a built-in
-    //     demo dataset.
+    //     demo dataset. The run executes OFF the UI thread (#624): while in
+    //     flight the panel renders live progress from the run's own records
+    //     (the Run + its jobs — the same rows system.runs / system.jobs serve)
+    //     and offers a cooperative cancel.
     if (selected != nullptr && selected->id == "churn-prediction") {
         ImGui::Spacing();
+        const bool churn_running = churn_run_ != nullptr;
+        ImGui::BeginDisabled(churn_running);
         if (primary_button("Run over the cluster")) {
             run_churn_demo();
         }
+        ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::TextDisabled(
             "trains a real model on a built-in demo dataset, over the live cluster");
-        banner(churn_run_failed_ ? Tone::Error : Tone::Ok, churn_run_status_);
+        if (churn_running) {
+            draw_churn_run_progress();
+        } else {
+            // The finished run's outcome, toned by how it ended (#632).
+            banner(churn_run_failed_ ? Tone::Error : Tone::Ok,
+                   churn_run_status_);
+        }
     }
 
     // 4) Deployment status — the recorded placements (acceptance: "see its
@@ -375,8 +388,8 @@ void App::run_churn_demo() {
         churn_run_status_ = "Select the churn solution to run it.";
         return;
     }
+    if (churn_run_) return;  // one churn run at a time (the button is disabled)
 
-    compute::CpuDevice device;
     zetta::usecases::churn::ChurnSolutionOptions options;
     options.project = "deploy-panel";
     options.graph = "churn-prediction";
@@ -388,26 +401,62 @@ void App::run_churn_demo() {
     // own disjoint shard, so the featurize / train / explain / rank jobs combine
     // over the real cluster membership, and the produced Model + jobs + Run land on
     // the live cluster (so the Runs / Models / Jobs / Admin panels reflect them).
-    // Synchronous on the UI thread that owns the node — the same deliberate
-    // per-click pattern as run_cloud_inspect. The headed app always attaches a
-    // cluster; if none is attached the runner fails with a clear reason, surfaced
-    // below like any failed run.
-    const zetta::usecases::churn::ChurnSolutionResult result = run_churn_solution_on_node(
-        node_, device, selected->graph, zetta::usecases::churn::demo_churn_dataset(), options);
-
-    if (!result.ok()) {
-        churn_run_failed_ = true;
-        churn_run_status_ = "Run failed: " +
-                            (result.execution.error.empty()
-                                 ? std::string("the churn pipeline did not complete")
-                                 : result.execution.error);
-        return;
-    }
+    // OFF the UI thread (#624): AsyncChurnRun drives the pipeline on a core
+    // worker whose node writes gate through Node::run_on_owner, so this panel
+    // keeps rendering — live progress comes from the Run + jobs records
+    // themselves, and poll_background_ops() applies the outcome to the status
+    // line below. The headed app always attaches a cluster; if none is attached
+    // the runner fails with a clear reason, surfaced like any failed run.
+    churn_run_status_.clear();
     churn_run_failed_ = false;
-    std::string line = "Trained model " + result.model_id.substr(0, 8) + " · " +
-                       std::to_string(result.ranked.size()) + " accounts ranked";
-    if (!result.top_driver.empty()) line += " · top driver: " + result.top_driver;
-    churn_run_status_ = line;
+    churn_run_from_deploy_ = true;
+    churn_run_ = zetta::usecases::churn::AsyncChurnRun::start(
+        node_, selected->graph, zetta::usecases::churn::demo_churn_dataset(),
+        options);
+}
+
+void App::draw_churn_run_progress() {
+    // Everything rendered here comes from the run's OWN records on the node —
+    // the Run (status + logs) created by the in-flight pipeline — the same
+    // rows system.runs serves, so this panel and an MCP caller polling SQL
+    // watch one source (#624). The Run appears a beat after launch (its
+    // creation gates through the owner thread), so tolerate its absence.
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                      churn_run_->started())
+            .count();
+    char headline[96];
+    std::snprintf(headline, sizeof(headline),
+                  "Running the churn solution · %.0fs", elapsed);
+    status_label(Tone::Active, headline);
+
+    std::shared_ptr<zetta::pipeline::Run> run;
+    for (const std::shared_ptr<zetta::pipeline::Run>& candidate : node_.runs()) {
+        if (candidate && candidate->project() == churn_run_->project()) {
+            run = candidate;  // runs are sorted by (created, id): newest wins
+        }
+    }
+    if (run) {
+        if (!run->logs().empty()) {
+            if (mono_font_) ImGui::PushFont(mono_font_);
+            ImGui::TextColored(kInkSecondary, "%s",
+                               run->logs().back().message.c_str());
+            if (mono_font_) ImGui::PopFont();
+        }
+        entity_link("view run", View::Runs, run->id());
+        ImGui::SameLine();
+    }
+    ImGui::BeginDisabled(churn_run_->cancel_requested());
+    if (ImGui::Button("Cancel run")) {
+        // Cooperative: the in-flight step completes, the remaining steps are
+        // skipped, and the run ends Failed with a "run cancelled" log line.
+        churn_run_->request_cancel();
+    }
+    ImGui::EndDisabled();
+    if (churn_run_->cancel_requested()) {
+        ImGui::SameLine();
+        ImGui::TextColored(kInkQuiet, "cancelling after the current step…");
+    }
 }
 
 }  // namespace zetta::gui

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <string>
@@ -98,14 +99,26 @@ public:
     // with `project` / `graph_id` (both optional, free-string references, fixed at
     // creation). Steps run in dependency (topological) order; each emits a log
     // line; outputs + lineage aggregate as they go. The run ends:
-    //   - Failed   if the graph is empty, has a cycle, or a step failed
-    //              (fail-fast: later steps do not run);
+    //   - Failed   if the graph is empty, has a cycle, a step failed
+    //              (fail-fast: later steps do not run), or `cancel` was set;
     //   - Succeeded otherwise.
     // Both standalone and replicated nodes are supported — the Run's own mutators
     // capture into the CRDT (when replicated) and persist to disk either way.
+    //
+    // Threading (#624): every node-tree write (the Run creation + the Run's
+    // mutators) is gated through Node::run_on_owner, so execute() may be driven
+    // from a background-action worker while the owner loop keeps rendering /
+    // ticking. Synchronous owner-thread callers are unchanged (the gate runs
+    // inline).
+    //
+    // Cancellation (#624): `cancel` is an optional non-owning cooperative flag
+    // (must outlive the call). It is checked BETWEEN steps — the in-flight step
+    // completes — and a cancelled run ends Failed with a "run cancelled" log
+    // line and `error` = "run cancelled by user".
     ExecutionResult execute(Node& node, const ir::ExecutionGraph& graph,
                             std::string project = {},
-                            std::string graph_id = {}) const;
+                            std::string graph_id = {},
+                            const std::atomic<bool>* cancel = nullptr) const;
 
     // The step executor this orchestrator runs each step with.
     const StepExecutor& step_executor() const { return *step_executor_; }

@@ -147,12 +147,16 @@ engine (this `true`) or the structural `DefaultStepExecutor` (`false`).
 Two interactive surfaces route through the live coordinator (#580):
 
 - The [Deploy panel](../pipeline/solution-catalog.md#run-on-the-real-engine-churn)'s **"Run over
-  the cluster"** action for the churn blueprint (`App::run_churn_demo`) calls
-  `run_churn_solution_on_node` over a `CpuDevice` + the `demo_churn_dataset()` —
-  synchronous on the UI thread, the same per-click pattern as the
-  [Cloud Inspector](../cloud/cloud-inspector.md). The headed app always attaches a
-  cluster; if none is attached the runner's clear failure reason is surfaced as the
-  run status (no throwaway loopback fallback, #637).
+  the cluster"** action for the churn blueprint (`App::run_churn_demo`) starts an
+  **`AsyncChurnRun`** over the `demo_churn_dataset()` — the run executes OFF the
+  UI thread on a core worker whose node writes gate through `Node::run_on_owner`
+  (#624, [../architecture/owner-gate.md](../architecture/owner-gate.md)), so the
+  panel renders live progress from the Run + jobs records and offers a
+  cooperative between-steps cancel. The Graph Workspace's "Run graph" routes a
+  churn-shaped graph through the same shared handle (the #626 overlay animates
+  it live). The headed app always attaches a cluster; if none is attached the
+  runner's clear failure reason is surfaced as the run status (no throwaway
+  loopback fallback, #637).
 - The [governed Console](../governance/governed-console.md) routes a **churn-shaped sim-Python
   program** (`is_churn_graph`) through the real engine on the live coordinator via the
   console's injectable **graph runner** seam — still capability-scoped + gate-checked +

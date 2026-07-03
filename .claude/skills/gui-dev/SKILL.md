@@ -35,7 +35,10 @@ gotchas). The experience contract this work serves is
 4. **Navigation**: change views only via `App::navigate_to(view, entity_id)`;
    consume the per-view pending selection in master-detail panels.
 5. **Never block the frame**: long work → worker thread or a recorded job
-   polled from its `system` view (#624 pattern). Cloud consent gates are
+   polled from its `system` view (the shipped #624 pattern —
+   [docs/gui/long-running-actions.md](../../../docs/gui/long-running-actions.md):
+   op handles + `App::poll_background_ops`, node writes via the owner gate).
+   Cloud consent gates are
    sacred (see the rule card's hard rule).
 
 ## Before shipping

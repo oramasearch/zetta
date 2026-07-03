@@ -16,8 +16,10 @@
 
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/node.hpp"
 #include "zetta/parquet/reader.hpp"
+#include "zetta/runtime.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
 #include "zetta/data/table.hpp"
@@ -147,17 +149,38 @@ nlohmann::json csv_cell_to_json(const std::string& cell) {
         return cell;  // out of int64 range → keep the digits verbatim
     }
 
-    // Float: let from_chars decide, but require it to consume the whole cell so a
-    // value like "1.2.3" or "3 apples" stays a string, and require a digit so a
-    // bare "." / "-" does not slip through.
+    // Float: parse the cell as a JSON number literal — locale-independent and
+    // whole-cell by construction, so "1.2.3" / "3 apples" stay strings. (The
+    // std::from_chars double overload is availability-gated on macOS in
+    // current libc++; the JSON grammar is the portable spelling of "a clean
+    // float literal".)
     if (cell.find_first_of("0123456789") != std::string::npos) {
-        double real = 0.0;
-        const auto parsed = std::from_chars(begin, end, real);
-        if (parsed.ec == std::errc() && parsed.ptr == end) return real;
+        const auto parsed =
+            nlohmann::json::parse(cell, nullptr, /*allow_exceptions=*/false);
+        if (parsed.is_number_float()) return parsed.get<double>();
     }
 
     return cell;  // plain string
 }
+
+// The cancelled-load reason, shared by the decode + materialize phases.
+constexpr const char* kCancelledError = "cancelled by user";
+
+// Live decode instrumentation (#624): an optional row counter a background
+// decode bumps as it parses (a panel renders it live) and an optional
+// cooperative cancel flag it honors between rows. Both null on the
+// synchronous path.
+struct DecodeProgress {
+    std::atomic<std::size_t>* rows_decoded = nullptr;
+    const std::atomic<bool>* cancel = nullptr;
+
+    void count(std::size_t rows) const {
+        if (rows_decoded) rows_decoded->store(rows, std::memory_order_release);
+    }
+    bool cancelled() const {
+        return cancel && cancel->load(std::memory_order_acquire);
+    }
+};
 
 // Decode a CSV file's bytes into rows: the first non-empty line is the header
 // (column names), each subsequent line one object keyed by the header, cells
@@ -165,12 +188,17 @@ nlohmann::json csv_cell_to_json(const std::string& cell) {
 // absent; extra cells are dropped. `error` is set (and {} returned) when there is
 // no header row.
 std::vector<nlohmann::json> decode_csv(const std::string& bytes,
-                                       std::string& error) {
+                                       std::string& error,
+                                       const DecodeProgress& progress = {}) {
     std::vector<nlohmann::json> rows;
     std::istringstream stream(bytes);
     std::string line;
     std::vector<std::string> header;
     while (std::getline(stream, line)) {
+        if (progress.cancelled()) {
+            error = kCancelledError;
+            return {};
+        }
         if (!line.empty() && line.back() == '\r') line.pop_back();  // CRLF
         if (header.empty()) {
             if (line.empty()) continue;  // skip leading blank lines
@@ -186,6 +214,7 @@ std::vector<nlohmann::json> decode_csv(const std::string& bytes,
                 column < cells.size() ? csv_cell_to_json(cells[column]) : nullptr;
         }
         rows.push_back(std::move(row));
+        progress.count(rows.size());
     }
     if (header.empty()) error = "csv file has no header row";
     return rows;
@@ -195,12 +224,17 @@ std::vector<nlohmann::json> decode_csv(const std::string& bytes,
 // line that does not parse fails the whole load (all-or-nothing, like
 // import_records).
 std::vector<nlohmann::json> decode_jsonl(const std::string& bytes,
-                                         std::string& error) {
+                                         std::string& error,
+                                         const DecodeProgress& progress = {}) {
     std::vector<nlohmann::json> rows;
     std::istringstream stream(bytes);
     std::string line;
     std::size_t line_number = 0;
     while (std::getline(stream, line)) {
+        if (progress.cancelled()) {
+            error = kCancelledError;
+            return {};
+        }
         ++line_number;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         // A line of only whitespace is skipped.
@@ -211,6 +245,7 @@ std::vector<nlohmann::json> decode_jsonl(const std::string& bytes,
             return {};
         }
         rows.push_back(std::move(value));
+        progress.count(rows.size());
     }
     return rows;
 }
@@ -277,47 +312,44 @@ std::string unique_table_name(const Database& database, std::string base) {
     }
 }
 
-}  // namespace
-
-AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
-                                  const AddDatasetOptions& options) {
-    AddDatasetResult result;
-    result.format = dataset_file::format_from_path(path);
-
-    if (result.format == dataset_file::Format::Unknown) {
-        result.error =
-            "unsupported file type '" + path.extension().string() +
-            "' (add a parquet, jsonl, json, or csv file)";
-        return result;
-    }
-
-    std::string error;
+// Read + decode `path` into rows by format (the slow, pure phase — no node
+// access). On failure `error` says why and {} is returned.
+std::vector<nlohmann::json> decode_dataset_file(
+    const fs::path& path, dataset_file::Format format, std::string& error,
+    const DecodeProgress& progress = {}) {
     const std::string bytes = read_file_bytes(path, error);
-    if (!error.empty()) {
-        result.error = error;
-        return result;
-    }
-
-    // Decode the bytes into rows by format.
+    if (!error.empty()) return {};
     std::vector<nlohmann::json> rows;
-    switch (result.format) {
+    switch (format) {
         case dataset_file::Format::Parquet: rows = decode_parquet(bytes, error); break;
-        case dataset_file::Format::Jsonl:   rows = decode_jsonl(bytes, error); break;
+        case dataset_file::Format::Jsonl:   rows = decode_jsonl(bytes, error, progress); break;
         case dataset_file::Format::Json:    rows = decode_json(bytes, error); break;
-        case dataset_file::Format::Csv:     rows = decode_csv(bytes, error); break;
-        case dataset_file::Format::Unknown: break;  // handled above
+        case dataset_file::Format::Csv:     rows = decode_csv(bytes, error, progress); break;
+        case dataset_file::Format::Unknown:
+            error = "unsupported file type '" + path.extension().string() +
+                    "' (add a parquet, jsonl, json, or csv file)";
+            break;
     }
-    if (!error.empty()) {
-        result.error = error;
-        return result;
+    // Whole-file decoders (parquet/json) report only on completion.
+    if (error.empty()) progress.count(rows.size());
+    if (progress.cancelled()) {
+        error = kCancelledError;
+        return {};
     }
+    return rows;
+}
 
-    // Materialize into a table on the node.
+// Create (or find) the target database + a uniquely named table for `path`
+// (the first, cheap materialize step). Fills result.database / result.table;
+// on failure sets result.error.
+void create_target_table(Node& node, const fs::path& path,
+                         const AddDatasetOptions& options,
+                         AddDatasetResult& result) {
     std::shared_ptr<Database> database = node.find_database(options.database);
     if (!database) database = node.create_database(options.database);
     if (!database) {
         result.error = "could not create database '" + options.database + "'";
-        return result;
+        return;
     }
     result.database = database;
 
@@ -327,32 +359,202 @@ AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
     std::shared_ptr<Table> table = database->create_table(table_name);
     if (!table) {
         result.error = "could not create table '" + table_name + "'";
-        return result;
+        return;
     }
     result.table = table;
+}
 
-    for (nlohmann::json& row : rows) table->add_row(std::move(row));
-    result.rows = table->row_count();
+// Partition the populated table so its slices are placed across the cluster.
+// RendezvousPlacement shards rows into P partitions and HRW-places each onto
+// specific owner node(s) — so the placement actually spreads (vs. the
+// replicate-to-all strategies). Skip an empty dataset (nothing to place).
+void partition_target_table(Node& node, const AddDatasetOptions& options,
+                            AddDatasetResult& result) {
+    if (!options.partitioned || result.rows == 0 || !result.table) return;
+    result.table->set_partitioner(std::make_shared<RendezvousPlacement>(
+        options.partition_count, options.replication_factor));
+    PartitionWriteResult written = write_partitioned(
+        node, *result.database, *result.table, options.members);
+    if (!written.ok()) {
+        // The table + its rows are already created (and visible); surface the
+        // partition failure rather than swallowing it.
+        result.error = "partition: " + written.error;
+        return;
+    }
+    result.partitions = std::move(written.partitions);
+}
 
-    // Partition the populated table so its slices are placed across the cluster.
-    // RendezvousPlacement shards rows into P partitions and HRW-places each onto
-    // specific owner node(s) — so the placement actually spreads (vs. the
-    // replicate-to-all strategies). Skip an empty dataset (nothing to place).
-    if (options.partitioned && result.rows > 0) {
-        table->set_partitioner(std::make_shared<RendezvousPlacement>(
-            options.partition_count, options.replication_factor));
-        PartitionWriteResult written =
-            write_partitioned(node, *database, *table, options.members);
-        if (!written.ok()) {
-            // The table + its rows are already created (and visible); surface the
-            // partition failure rather than swallowing it.
-            result.error = "partition: " + written.error;
-            return result;
-        }
-        result.partitions = std::move(written.partitions);
+// Record the completed add on the audit trail (#624), so it surfaces in the
+// activity feed (system.activity) like every other completed action.
+void audit_dataset_added(Node& node, const AddDatasetResult& result) {
+    if (!result.ok() || !result.table) return;
+    zetta::governance::AuditEventValue event;
+    event.action = zetta::governance::AuditAction::DatasetAdded;
+    event.target = result.table->id();
+    event.detail = "dataset '" + result.table->name() + "' added: " +
+                   std::to_string(result.rows) + " row(s), " +
+                   std::to_string(result.partitions.size()) + " partition(s), " +
+                   dataset_file::format_name(result.format);
+    node.record_audit_event(std::move(event));
+}
+
+}  // namespace
+
+AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
+                                  const AddDatasetOptions& options) {
+    AddDatasetResult result;
+    result.format = dataset_file::format_from_path(path);
+
+    std::string error;
+    std::vector<nlohmann::json> rows =
+        decode_dataset_file(path, result.format, error);
+    if (!error.empty()) {
+        result.error = error;
+        return result;
     }
 
+    // Materialize into a table on the node.
+    create_target_table(node, path, options, result);
+    if (!result.table) return result;
+
+    for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
+    result.rows = result.table->row_count();
+
+    partition_target_table(node, options, result);
+    audit_dataset_added(node, result);
     return result;
+}
+
+// --- AsyncDatasetAdd (#624) ---------------------------------------------------
+
+// The state the spawned decode worker shares with the handle. Held by
+// shared_ptr from both sides, so dropping the handle mid-decode is safe — the
+// worker owns everything it touches and dies with the last reference.
+struct AsyncDatasetAdd::DecodeState {
+    fs::path path;
+    dataset_file::Format format = dataset_file::Format::Unknown;
+    std::atomic<std::size_t> rows_decoded{0};
+    std::atomic<bool> cancel{false};
+    std::atomic<bool> finished{false};
+    std::vector<nlohmann::json> rows;  // written before `finished` flips
+    std::string error;                 // same
+};
+
+namespace {
+
+// The decode coroutine: pure file work on a runtime pool worker (no node
+// access). Takes its state by value (shared_ptr) — the coroutine frame owns
+// it, the spawn-precedent discipline against dangling captures.
+zetta::runtime::task<> decode_dataset_task(
+    std::shared_ptr<AsyncDatasetAdd::DecodeState> state) {
+    DecodeProgress progress{&state->rows_decoded, &state->cancel};
+    state->rows =
+        decode_dataset_file(state->path, state->format, state->error, progress);
+    co_return;
+}
+
+// Rows materialized per pump() — small enough that a slice stays well inside a
+// frame at ~30fps idle, large enough that a million-row file lands in seconds.
+constexpr std::size_t kRowsPerPump = 4096;
+
+}  // namespace
+
+std::shared_ptr<AsyncDatasetAdd> AsyncDatasetAdd::start(
+    Node& node, std::filesystem::path path, AddDatasetOptions options) {
+    return std::shared_ptr<AsyncDatasetAdd>(
+        new AsyncDatasetAdd(node, std::move(path), std::move(options)));
+}
+
+AsyncDatasetAdd::AsyncDatasetAdd(Node& node, std::filesystem::path path,
+                                 AddDatasetOptions options)
+    : node_(node), options_(std::move(options)) {
+    decode_ = std::make_shared<DecodeState>();
+    decode_->path = std::move(path);
+    decode_->format = dataset_file::format_from_path(decode_->path);
+    result_.format = decode_->format;
+    std::shared_ptr<DecodeState> state = decode_;
+    zetta::runtime::spawn(
+        decode_dataset_task(state),
+        // Completion runs on a pool worker: flip the (atomic) flag the owner
+        // loop polls via pump(); everything else is behind it (release/acquire).
+        [state] { state->finished.store(true, std::memory_order_release); });
+}
+
+std::size_t AsyncDatasetAdd::rows_decoded() const {
+    return decode_->rows_decoded.load(std::memory_order_acquire);
+}
+
+void AsyncDatasetAdd::request_cancel() {
+    decode_->cancel.store(true, std::memory_order_release);
+}
+
+bool AsyncDatasetAdd::cancel_requested() const {
+    return decode_->cancel.load(std::memory_order_acquire);
+}
+
+const std::filesystem::path& AsyncDatasetAdd::source_path() const {
+    return decode_->path;
+}
+
+void AsyncDatasetAdd::pump() {
+    switch (phase_) {
+        case Phase::Decoding: {
+            if (!decode_->finished.load(std::memory_order_acquire)) return;
+            if (!decode_->error.empty()) {  // includes a mid-decode cancel
+                result_.error = decode_->error;
+                phase_ = Phase::Done;
+                return;
+            }
+            if (cancel_requested()) {
+                // The cancel landed after the decode finished: bail before
+                // anything touches the node, so a cancelled add that never
+                // materialized leaves no trace.
+                result_.error = kCancelledError;
+                phase_ = Phase::Done;
+                return;
+            }
+            rows_total_ = decode_->rows.size();
+            create_target_table(node_, decode_->path, options_, result_);
+            if (!result_.table) {
+                phase_ = Phase::Done;
+                return;
+            }
+            phase_ = Phase::Materializing;
+            return;  // rows start on the next pump — keep every slice bounded
+        }
+        case Phase::Materializing: {
+            if (cancel_requested()) {
+                // Nothing durable should survive a cancelled add: drop the
+                // partially-populated table (it was created this add).
+                if (result_.database && result_.table) {
+                    result_.database->drop_table(result_.table->name());
+                }
+                result_.table.reset();
+                result_.error = kCancelledError;
+                phase_ = Phase::Done;
+                return;
+            }
+            std::vector<nlohmann::json>& rows = decode_->rows;
+            const std::size_t end =
+                std::min(rows.size(), next_row_ + kRowsPerPump);
+            for (; next_row_ < end; ++next_row_) {
+                result_.table->add_row(std::move(rows[next_row_]));
+            }
+            if (next_row_ < rows.size()) return;  // more slices to go
+            result_.rows = result_.table->row_count();
+            phase_ = Phase::Partitioning;
+            return;  // partition write gets its own pump
+        }
+        case Phase::Partitioning: {
+            // One slice today: chunking inside write_partitioned is a later
+            // slice. A cancel here is too late — the add completes.
+            partition_target_table(node_, options_, result_);
+            audit_dataset_added(node_, result_);
+            phase_ = Phase::Done;
+            return;
+        }
+        case Phase::Done: return;
+    }
 }
 
 }  // namespace zetta::data

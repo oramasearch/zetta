@@ -178,16 +178,23 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
         return zetta::pipeline::StepOutcome{/*ok=*/false, error, {}, {}};
     }
 
-    std::shared_ptr<zetta::compute::ComputeJob> job =
-        node_.create_job(zetta::compute::JobKind::Featurize, config_.project, config_.graph);
+    // Node-tree writes/reads gate onto the owner thread (#624) — this step may
+    // be computing on a background-action worker while the owner loop renders.
+    std::shared_ptr<zetta::compute::ComputeJob> job;
+    node_.run_on_owner([&] {
+        job = node_.create_job(zetta::compute::JobKind::Featurize,
+                               config_.project, config_.graph);
+    });
     if (!job) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create featurize job", {}, {}};
     }
     const ddf::DistributedFeaturizeResult result = ddf::run_featurize_job(
         coordinator_, *job, state.events, state.accounts, config_.featurize);
     if (!result.ok()) {
+        std::string detail;
+        node_.run_on_owner([&] { detail = job->detail(); });
         return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "featurize job failed: " + job->detail(), {}, {}};
+                           "featurize job failed: " + detail, {}, {}};
     }
     // The featurize job broadcasts the GLOBAL feature table (identical on every
     // node), but the downstream jobs are SPMD over each node's OWN rows — train
@@ -234,8 +241,11 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
                            "model step ran before features were built", {}, {}};
     }
 
-    std::shared_ptr<zetta::compute::ComputeJob> job =
-        node_.create_job(zetta::compute::JobKind::Train, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job;
+    node_.run_on_owner([&] {
+        job = node_.create_job(zetta::compute::JobKind::Train, config_.project,
+                               config_.graph);
+    });
     if (!job) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create train job", {}, {}};
     }
@@ -245,8 +255,10 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_model(const ir::Node& step) 
         config_.params, &node_, config_.model_name, /*round_tag=*/{},
         config_.calibration);
     if (!result.ok()) {
+        std::string detail;
+        node_.run_on_owner([&] { detail = job->detail(); });
         return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "train job failed: " + job->detail(), {}, {}};
+                           "train job failed: " + detail, {}, {}};
     }
     state.model = result.model;
     state.model_id = result.model_id;
@@ -285,9 +297,10 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
     index_value.kind = zetta::index::IndexKind::Search;
     index_value.backend = std::string(zetta::index::InMemoryIndexBackend::kName);
     index_value.fields = {config_.entity_column};
-    if (const std::shared_ptr<zetta::index::IndexBackend> backend =
-            node_.index_registry().resolve(index_value.spec());
-        backend && config_.accounts_store != nullptr) {
+    std::shared_ptr<zetta::index::IndexBackend> backend;
+    node_.run_on_owner(
+        [&] { backend = node_.index_registry().resolve(index_value.spec()); });
+    if (backend && config_.accounts_store != nullptr) {
         const std::vector<zetta::index::IndexPartition> partitions =
             zetta::index::read_index_partitions(*config_.accounts_store);
         const zetta::index::IndexStatus status = backend->build(index_value.spec(), partitions);
@@ -296,14 +309,16 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
                                "entity index build failed: " + status.message,
                                {}, {}};
         }
-        if (const std::shared_ptr<zetta::index::Index> index =
-                node_.create_index(index_value)) {
-            index_ref = index->id();
-        }
+        std::shared_ptr<zetta::index::Index> index;
+        node_.run_on_owner([&] { index = node_.create_index(index_value); });
+        if (index) index_ref = index->id();
     }
 
-    std::shared_ptr<zetta::compute::ComputeJob> job =
-        node_.create_job(zetta::compute::JobKind::Score, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job;
+    node_.run_on_owner([&] {
+        job = node_.create_job(zetta::compute::JobKind::Score, config_.project,
+                               config_.graph);
+    });
     if (!job) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create score job", {}, {}};
     }
@@ -311,8 +326,10 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_index(const ir::Node& step) 
         ml::run_score_job(coordinator_, *job, state.feature_frame, state.model,
                           config_.entity_column, config_.top_k);
     if (!result.ok()) {
+        std::string detail;
+        node_.run_on_owner([&] { detail = job->detail(); });
         return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "score job failed: " + job->detail(), {}, {}};
+                           "score job failed: " + detail, {}, {}};
     }
     state.ranked = result.ranked;
     state.ranked_ready = true;
@@ -335,8 +352,11 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) 
                            "serve step ran before the model was trained", {}, {}};
     }
 
-    std::shared_ptr<zetta::compute::ComputeJob> job =
-        node_.create_job(zetta::compute::JobKind::Explain, config_.project, config_.graph);
+    std::shared_ptr<zetta::compute::ComputeJob> job;
+    node_.run_on_owner([&] {
+        job = node_.create_job(zetta::compute::JobKind::Explain,
+                               config_.project, config_.graph);
+    });
     if (!job) {
         return zetta::pipeline::StepOutcome{/*ok=*/false, "could not create explain job", {}, {}};
     }
@@ -344,8 +364,10 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_serve(const ir::Node& step) 
         ml::run_explain_job(coordinator_, *job, state.model, state.feature_frame,
                             config_.entity_column);
     if (!result.ok()) {
+        std::string detail;
+        node_.run_on_owner([&] { detail = job->detail(); });
         return zetta::pipeline::StepOutcome{/*ok=*/false,
-                           "explain job failed: " + job->detail(), {}, {}};
+                           "explain job failed: " + detail, {}, {}};
     }
     state.feature_names = result.feature_names;
     state.mean_abs_shap = result.mean_abs_shap;

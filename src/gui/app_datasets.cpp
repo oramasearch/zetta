@@ -3,6 +3,7 @@
 #include "gui/app_operations_internal.hpp"
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/add_dataset.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
@@ -71,10 +72,61 @@ void App::draw_datasets() {
     if (primary_button("Add dataset...")) open_add_dataset_dialog();
     ImGui::SameLine();
     ImGui::TextDisabled("or drop a file here · %zu dataset(s)", datasets.size());
-    // The shared ingestion outcome (e.g. "Added dataset … (N rows, M
-    // partitions)") — also shown on Home, surfaced here so an add gives feedback
-    // in place, toned by whether the ingest failed (#632).
-    banner(io_status_error_ ? Tone::Error : Tone::Ok, io_status_);
+    // The in-flight add's live progress (#624): the decode runs on a worker,
+    // the materialize in bounded owner-thread slices, so this panel keeps
+    // rendering — with a real fraction once the row total is known, and a
+    // cancel that stops the add and drops the partial table.
+    if (dataset_add_) {
+        const std::size_t total = dataset_add_->rows_total();
+        char progress_line[160];
+        float fraction = -1.0f;  // indeterminate while decoding
+        using Phase = zetta::data::AsyncDatasetAdd::Phase;
+        switch (dataset_add_->phase()) {
+            case Phase::Decoding:
+                std::snprintf(progress_line, sizeof(progress_line),
+                              "decoding %s · %zu row(s)",
+                              dataset_add_->source_path().filename().c_str(),
+                              dataset_add_->rows_decoded());
+                break;
+            case Phase::Materializing:
+                std::snprintf(progress_line, sizeof(progress_line),
+                              "adding rows · %zu/%zu",
+                              dataset_add_->rows_added(), total);
+                fraction = total > 0 ? static_cast<float>(
+                                           dataset_add_->rows_added()) /
+                                           static_cast<float>(total)
+                                     : 0.0f;
+                break;
+            case Phase::Partitioning:
+                std::snprintf(progress_line, sizeof(progress_line),
+                              "placing partitions across the cluster…");
+                fraction = 1.0f;
+                break;
+            case Phase::Done:
+                progress_line[0] = '\0';
+                break;
+        }
+        if (progress_line[0] != '\0') {
+            status_label(Tone::Active, progress_line);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(dataset_add_->cancel_requested());
+            if (ImGui::SmallButton("Cancel")) dataset_add_->request_cancel();
+            ImGui::EndDisabled();
+            // ImGui renders an animated negative fraction as an indeterminate
+            // marquee (the decode's total is unknown until it finishes).
+            const float bar =
+                fraction < 0.0f
+                    ? -1.0f * static_cast<float>(ImGui::GetTime())
+                    : fraction;
+            ImGui::ProgressBar(bar, ImVec2(260.0f, 0.0f),
+                               fraction < 0.0f ? "" : nullptr);
+        }
+    } else {
+        // The shared ingestion outcome (e.g. "Added dataset … (N rows, M
+        // partitions)") — also shown on Home, surfaced here so an add gives
+        // feedback in place, toned by whether the ingest failed (#632).
+        banner(io_status_error_ ? Tone::Error : Tone::Ok, io_status_);
+    }
     ImGui::Spacing();
 
     // Each row's title is the dataset name (the table name) with the on-disk
