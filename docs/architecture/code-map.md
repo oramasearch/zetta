@@ -100,6 +100,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     n8n_compile.hpp         zetta::pipeline::compile_n8n_workflow — n8n workflow JSON → ExecutionGraph IR (nodes→steps, connections→edges; #308)
     graph_plan.hpp          zetta::pipeline::project_cluster_plan/ClusterPlan/StepPlan/StepPlacement — project how an ExecutionGraph would run over the current cluster (near-data / fan-out / all-nodes / coordinator per step, near-data locality propagated forward along DataFlow edges); pure + deterministic, the engine of the Graph Workspace plan view (#591, #575 area 6); no new JSON boundary
     executor.hpp            zetta::pipeline::GraphExecutor / StepExecutor — orchestrate a graph into a Run
+    run_progress.hpp        zetta::pipeline::project_run_progress/RunProgress/StepRunProgress/StepRunStatus — project a Run's logs+outputs onto an ExecutionGraph (per-step pending/running/succeeded/failed + failing reason + attributed outputs); pure + per-frame cheap, the engine of the Graph Workspace live-run overlay (#626); no new JSON boundary
     validation.hpp          zetta::pipeline::ValidationReport — correctness-gate result (ENT-5/FEAT-3)
     gate.hpp                zetta::pipeline::CorrectnessGate — gate runner: checks → report (RULE-1)
     graph_checks.hpp        zetta::pipeline::SchemaTypeCheck + DataLeakageCheck — the #309 concrete checks
@@ -267,6 +268,7 @@ src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + c
     n8n_compile.cpp         zetta::pipeline::compile_n8n_workflow — n8n node-type→StepKind table + connections→edges → ExecutionGraph IR
     graph_plan.cpp          project_cluster_plan — per-step cluster placement projection (kind → placement; near-data owner propagation along DataFlow edges; drop stale owners) for the Graph Workspace plan view (#591)
     executor.cpp            GraphExecutor + topological_order + DefaultStepExecutor (graph → Run)
+    run_progress.cpp        project_run_progress — derive per-step run status from the GraphExecutor log grammar + attribute outputs to producing steps (#626)
     validation.cpp          ValidationReport verdict + JSON round-trip/validation
     gate.cpp                CorrectnessGate runner + NonEmptyGraphCheck + make_check
     graph_checks.cpp        SchemaTypeCheck + DataLeakageCheck (#309) + annotation JSON-Schema validation
@@ -379,7 +381,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
   app_internal.hpp          shared GUI-only helpers: the Orama design tokens, Tone + tone_color/tone_dot_color/tone_background + the status widget forms status_label (rows) / status_pill (headers) / status_dot(tone) (#636), the widget grammar (page_header/header_action/section_card/stat_tile/empty_state/banner, #630), the master-detail scaffold (MasterRow/detail_header/master_detail, #634), wash/eyebrow/mono_line/primary_button, extern g_mono_font/g_heading_font (not in the public include/zetta surface)
-  tones.hpp                 the ONE mapping site from engine statuses to visual tones (#636): tone_of(RunStatus/JobStatus/ScalingAction/CheckStatus/TestOutcome/cluster::NodeStatus/StepPlacement) + tone_of_log_level + tone_of_utilization (the shared gauge thresholds), with static_asserts locking the cross-lifecycle agreements
+  tones.hpp                 the ONE mapping site from engine statuses to visual tones (#636): tone_of(RunStatus/StepRunStatus/JobStatus/ScalingAction/CheckStatus/TestOutcome/cluster::NodeStatus/StepPlacement) + tone_of_log_level + tone_of_utilization (the shared gauge thresholds), with static_asserts locking the cross-lifecycle agreements
   app_views.cpp             the view registry (App::view_registry, one ViewInfo row per view) + navigate_to/take_pending_selection + entity_link + the sidebar rail (#628) + sidebar badges
   cloud_wiring.hpp/.cpp     zetta::gui::CloudProvisioners — wires the cloud-burst Provisioner backends (Azure/AWS/GCP/OCI/K8s/bare-metal) into the headed App's "Add nodes" control from the node's detected provisioner configs (detect_provisioner_configs → App::set_provisioner) and OWNS them for the App's lifetime (stable-address std::optional members, declared before the App); the consent gate stays deny-by-default — a provider with no detected config stays unwired, and every cloud add remains per-action consent-gated
   cluster_telemetry.hpp     zetta::gui::NodeGaugeState/Sparkline/Gauge — pure-data (no ImGui) animation state for the cluster node-box gauges (#584): per-gauge eased value + sparkline history ring, keyed by node id; a thin renderer's working copy of Node::telemetry_snapshot(); the drawing lives in app_cluster.cpp
@@ -388,7 +390,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
                             the home/data-flow, explorer, and admin+audit App::draw_* panels — each an App member TU over app.hpp + app_internal.hpp (#464)
   app_operations_internal.hpp
                             helpers shared by the per-view operations TUs below (#638): the cluster node-box palette (kClusterBox*), entity_short_id, join_refs, and the render_model_card declaration (defined in app_models.cpp; also used by the Runs detail) — internal to src/gui, not in the public include/zetta surface
-  app_graph_workspace.cpp   the Graph Workspace view (open_graph + draw_graph_workspace + draw_graph_canvas + draw_graph_editor) and its graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591)
+  app_graph_workspace.cpp   the Graph Workspace view (open_graph + draw_graph_workspace + draw_graph_canvas + draw_graph_editor), its graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591), and the live-run overlay (latest_run_for_open_graph + draw_graph_run_status + run_open_graph + the canvas status dots/pulse/pinned failure; #626)
   app_deploy.cpp            the correctness gate (draw_gate) + Deploy panel (draw_deploy) + the live churn demo run (run_churn_demo)
   app_runs.cpp              the Runs / outputs / lineage view (draw_runs + render_run_detail)
   app_models.cpp            the Models registry view (draw_models + draw_add_model_form) + render_model_card (shared with the Runs detail via app_operations_internal.hpp)

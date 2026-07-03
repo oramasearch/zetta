@@ -64,6 +64,7 @@ add_executable(zetta-tests
   data/test_partition_rebalance.cpp
   governance/test_access_control.cpp
   pipeline/test_executor.cpp
+  pipeline/test_run_progress.cpp
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp
   usecases/churn/test_uc1_end_to_end.cpp

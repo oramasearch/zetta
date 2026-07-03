@@ -182,5 +182,12 @@ so a built index is queryable. See [index-step-executor.md](../indexing/index-st
   (a deployment records only a summary); once a deployment references a stored
   graph by id, a run can be launched straight from a deployment record.
 
+A run's progress inside its graph is a derived read: `pipeline::project_run_progress`
+(`run_progress.hpp`, #626) projects the run's logs + outputs onto the graph — per-step
+pending/running/succeeded/failed, the failing reason, and each step's attributed
+outputs — the engine of the headed Graph Workspace's
+[live-run overlay](../gui/graph-run-overlay.md). It reads the exact log grammar the
+executor writes, so the two are tested together (`tests/pipeline/test_run_progress.cpp`).
+
 See also [runs.md](runs.md), [execution-graph.md](execution-graph.md),
 [deployments.md](deployments.md), and [architecture.md](../architecture/architecture.md).
