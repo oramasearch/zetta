@@ -1,0 +1,254 @@
+#include "gui/app.hpp"
+#include "gui/app_internal.hpp"
+
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/scaling_policy.hpp"
+#include "zetta/node.hpp"
+
+#include <imgui.h>
+
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace zetta::gui {
+namespace {
+
+// A compute job's status, color-coded along its lifecycle: queued (neutral) →
+// running (amber) → succeeded (green) | failed (red). Same palette as runs.
+ImVec4 job_status_color(zetta::compute::JobStatus status) {
+    switch (status) {
+        case zetta::compute::JobStatus::Queued:    return kInkQuiet;
+        case zetta::compute::JobStatus::Running:   return kWarnColor;
+        case zetta::compute::JobStatus::Succeeded: return kSuccessColor;
+        case zetta::compute::JobStatus::Failed:    return kErrorColor;
+    }
+    return kInkQuiet;
+}
+
+// A scaling action's color: scale-up green (more capacity), hold neutral,
+// scale-down amber (shedding nodes). A quick read of the autoscaler's intent.
+ImVec4 scaling_action_color(zetta::compute::ScalingAction action) {
+    switch (action) {
+        case zetta::compute::ScalingAction::ScaleUp:   return kSuccessColor;
+        case zetta::compute::ScalingAction::Hold:      return kInkQuiet;
+        case zetta::compute::ScalingAction::ScaleDown: return kWarnColor;
+    }
+    return kInkQuiet;
+}
+
+}  // namespace
+
+void App::reset_scaling_controls() {
+    scaling_objective_ = 0;          // minimize_cost
+    scaling_min_nodes_ = 1;
+    scaling_max_nodes_ = 8;
+    scaling_cost_cap_ = 0.0;
+    scaling_target_seconds_ = 600.0;
+    scaling_nodes_ = 2;
+    scaling_progress_ = 0.4;
+    scaling_elapsed_ = 120.0;
+    scaling_cost_ = 50.0;
+}
+
+void App::draw_job_scaling_controls() {
+    // Per-job objective/scaling controls — a LIVE PREVIEW over the built
+    // ScalingPolicy::evaluate(). It is a "what-if" calculator, not a write path:
+    // ScalingPolicy is not persisted and the autoscaler is unbuilt (both later
+    // slices), so this scores an editable policy + sample with the real, pure
+    // evaluate() and shows the resulting decision — set the reward objective +
+    // bounds, add/remove nodes, watch the recommendation move. Nothing here
+    // mutates the job.
+    ImGui::SeparatorText("Objective & scaling (preview)");
+    ImGui::TextDisabled(
+        "Score a reward objective against a sample; no autoscaler is wired yet, "
+        "so this previews ScalingPolicy::evaluate(); it doesn't change the job.");
+
+    // 1) Objective — "set the reward". The three reward models the autoscaler can
+    //    optimize, in declaration order (the combo index maps to ScalingObjective).
+    static constexpr std::array<zetta::compute::ScalingObjective, 3> kObjectives{
+        zetta::compute::ScalingObjective::MinimizeCost, zetta::compute::ScalingObjective::RuntimeTarget,
+        zetta::compute::ScalingObjective::DataShape};
+    if (scaling_objective_ < 0 ||
+        scaling_objective_ >= static_cast<int>(kObjectives.size())) {
+        scaling_objective_ = 0;
+    }
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo(
+            "Reward objective",
+            std::string(to_string(kObjectives[scaling_objective_])).c_str())) {
+        for (int index = 0; index < static_cast<int>(kObjectives.size());
+             ++index) {
+            const bool is_selected = index == scaling_objective_;
+            if (ImGui::Selectable(
+                    std::string(to_string(kObjectives[index])).c_str(),
+                    is_selected)) {
+                scaling_objective_ = index;
+            }
+            if (is_selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+
+    const zetta::compute::ScalingObjective objective = kObjectives[scaling_objective_];
+
+    // 2) Bounds — the hard envelope the autoscaler must stay inside (min/max node
+    //    count + a cost cap; 0 = unlimited). A runtime target only matters for the
+    //    RuntimeTarget objective, so it is shown only then.
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Min nodes", &scaling_min_nodes_);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Max nodes", &scaling_max_nodes_);
+    if (scaling_min_nodes_ < 1) scaling_min_nodes_ = 1;
+    if (scaling_max_nodes_ < scaling_min_nodes_) {
+        scaling_max_nodes_ = scaling_min_nodes_;
+    }
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputDouble("Cost cap (0 = unlimited)", &scaling_cost_cap_, 0.0, 0.0,
+                       "%.1f");
+    if (scaling_cost_cap_ < 0.0) scaling_cost_cap_ = 0.0;
+    if (objective == zetta::compute::ScalingObjective::RuntimeTarget) {
+        ImGui::SetNextItemWidth(160.0f);
+        ImGui::InputDouble("Target seconds", &scaling_target_seconds_, 0.0, 0.0,
+                           "%.1f");
+        if (scaling_target_seconds_ < 0.0) scaling_target_seconds_ = 0.0;
+    }
+
+    // 3) Sample — the live signals the autoscaler scores (progress, elapsed,
+    //    cost) plus the current allocation. "Add/remove nodes" are the +/- buttons
+    //    that move the sample's node count within the bounds.
+    ImGui::Spacing();
+    ImGui::TextDisabled("Allocated nodes");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("- node") && scaling_nodes_ > 0) --scaling_nodes_;
+    ImGui::SameLine();
+    ImGui::Text("%d", scaling_nodes_);
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ node")) ++scaling_nodes_;
+    if (scaling_nodes_ < 0) scaling_nodes_ = 0;
+
+    ImGui::SetNextItemWidth(220.0f);
+    float progress = static_cast<float>(scaling_progress_);
+    if (ImGui::SliderFloat("Progress", &progress, 0.0f, 1.0f, "%.2f")) {
+        scaling_progress_ = progress;
+    }
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputDouble("Elapsed seconds", &scaling_elapsed_, 0.0, 0.0, "%.1f");
+    if (scaling_elapsed_ < 0.0) scaling_elapsed_ = 0.0;
+    ImGui::SetNextItemWidth(160.0f);
+    ImGui::InputDouble("Accrued cost", &scaling_cost_, 0.0, 0.0, "%.1f");
+    if (scaling_cost_ < 0.0) scaling_cost_ = 0.0;
+
+    // 4) Score it — the real, pure decision. reward (higher is better),
+    //    recommended node count, the scale up/hold/down action relative to the
+    //    sample, whether the cost cap holds, and the human-readable reason.
+    zetta::compute::ScalingPolicy policy;
+    policy.objective = objective;
+    policy.bounds.min_nodes = static_cast<std::uint32_t>(scaling_min_nodes_);
+    policy.bounds.max_nodes = static_cast<std::uint32_t>(scaling_max_nodes_);
+    policy.bounds.cost_cap = scaling_cost_cap_;
+    policy.target_seconds = scaling_target_seconds_;
+    const zetta::compute::ScalingSample sample{scaling_progress_, scaling_elapsed_, scaling_cost_,
+                               static_cast<std::uint32_t>(scaling_nodes_)};
+    const zetta::compute::ScalingDecision decision = policy.evaluate(sample);
+
+    ImGui::SeparatorText("Decision");
+    ImGui::Text("recommended nodes: %u", decision.recommended_nodes);
+    ImGui::SameLine();
+    ImGui::TextColored(scaling_action_color(decision.action), "(%s)",
+                       std::string(to_string(decision.action)).c_str());
+    ImGui::Text("reward: %.4g", decision.reward);
+    if (!decision.within_cost_cap) {
+        ImGui::SameLine();
+        ImGui::TextColored(kErrorColor, "  cost cap breached");
+    }
+    ImGui::TextWrapped("%s", decision.reason.c_str());
+}
+
+void App::draw_jobs() {
+    ImGui::SeparatorText("Compute jobs");
+
+    // The GUI form of system.zetta_jobs: the live compute-job registry (one row
+    // per unit of native distributed accelerated compute — featurize / train /
+    // explain / score / a DDF op — with its lifecycle status). Read-only over the
+    // replicated, already-validated ComputeJob handles, like the Runs panel —
+    // creating/scheduling a job is a later slice. The detail pane adds the per-job
+    // objective/scaling preview (draw_job_scaling_controls).
+    const std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs = node_.jobs();
+    ImGui::TextDisabled("%zu job(s)", jobs.size());
+
+    const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
+    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 22.0f;
+
+    // Left: the job list. Jobs have no human name, so each row is a color-coded
+    // status badge plus the kind and the first UUID segment.
+    ImGui::BeginChild("##job_list", ImVec2(list_w, panel_h),
+                      ImGuiChildFlags_Borders);
+    if (jobs.empty()) ImGui::TextDisabled("(no jobs)");
+    for (const std::shared_ptr<zetta::compute::ComputeJob>& job : jobs) {
+        ImGui::PushID(job->id().c_str());
+        ImGui::TextColored(job_status_color(job->status()), "%-9s",
+                           std::string(to_string(job->status())).c_str());
+        ImGui::SameLine();
+        const std::string short_id = job->id().substr(0, job->id().find('-'));
+        const std::string label =
+            std::string(to_string(job->kind())) + " · " + short_id;
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        if (ImGui::Selectable(label.c_str(), selected_job_ == job->id())) {
+            selected_job_ = job->id();
+        }
+        if (mono_font_) ImGui::PopFont();
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // Right: the selected job's detail + the objective/scaling preview.
+    ImGui::SameLine();
+    ImGui::BeginChild("##job_detail", ImVec2(0, panel_h),
+                      ImGuiChildFlags_Borders);
+    if (const std::shared_ptr<zetta::compute::ComputeJob> job = node_.find_job(selected_job_)) {
+        // Reset the scaling controls whenever the selection changes, so they
+        // start from sensible defaults per job rather than leaking the previous
+        // job's edits.
+        if (scaling_loaded_job_ != job->id()) {
+            reset_scaling_controls();
+            scaling_loaded_job_ = job->id();
+        }
+
+        if (g_mono_font) ImGui::PushFont(g_mono_font);
+        ImGui::TextColored(kInkPrimary, "job %s", job->id().c_str());
+        if (g_mono_font) ImGui::PopFont();
+        ImGui::SameLine();
+        ImGui::TextColored(job_status_color(job->status()), "[%s]",
+                           std::string(to_string(job->status())).c_str());
+        mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
+        mono_line(kInkQuiet, "created:  ", job->created());
+        if (job->updated() != job->created()) {
+            mono_line(kInkQuiet, "updated:  ", job->updated());
+        }
+        if (!job->detail().empty()) {
+            ImGui::TextWrapped("detail: %s", job->detail().c_str());
+        }
+
+        // Id references — the job's place in the pipeline (project / graph / run /
+        // scaling-policy reward). Shown only when set.
+        const auto ref_line = [](const char* label, const std::string& value) {
+            if (!value.empty()) mono_line(kInkQuiet, label, value);
+        };
+        ref_line("project:  ", job->project());
+        ref_line("graph:    ", job->graph());
+        ref_line("run:      ", job->run());
+        ref_line("policy:   ", job->scaling_policy());
+
+        draw_job_scaling_controls();
+    } else {
+        ImGui::TextDisabled(
+            "Select a job to view its status, references, and scaling controls.");
+    }
+    ImGui::EndChild();
+}
+
+}  // namespace zetta::gui

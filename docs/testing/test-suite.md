@@ -15,7 +15,7 @@ include/zetta/testkit/harness.hpp      ScratchDir, LoopbackCluster, the in-code
 src/core/testkit/test_suite.cpp        the engine (options, result, runner, builtin)
 src/core/testkit/harness.cpp           the loopback cluster + dataset helpers
 src/core/testkit/cases_*.cpp           the canned cases, one file per category
-src/gui/app.cpp (draw_test_suite)      the headed renderer
+src/gui/app_test_suite.cpp (draw_test_suite)      the headed renderer
 tests/testkit/test_testkit.cpp                 runs every representative case headless
 ```
 

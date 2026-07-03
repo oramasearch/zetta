@@ -15,7 +15,7 @@ split:
 - **`zetta::data::add_dataset_file`** (`include/zetta/data/add_dataset.hpp`,
   `src/core/data/add_dataset.cpp`) — the reusable engine backend. No SDL, so it is
   headless-testable (`tests/data/test_add_dataset.cpp`).
-- The headed affordance (`src/gui/app.cpp` + `src/gui/app_operations.cpp`) — a
+- The headed affordance (`src/gui/app.cpp` + `src/gui/app_datasets.cpp`) — a
   button + drag-drop + a File-menu item that call `add_dataset_file` on the UI
   thread.
 

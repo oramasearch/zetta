@@ -66,7 +66,7 @@ is wired in, peers gossip their documents and status over the connection (see
 ### Spatial node-box view (the headed canvas)
 
 The headed Cluster panel renders membership **spatially** rather than as a table
-(`App::draw_cluster`, `src/gui/app_operations.cpp`, #582): **one selectable box per
+(`App::draw_cluster`, `src/gui/app_cluster.cpp`, #582): **one selectable box per
 node** laid out in a wrapping grid (the worktree-manager "boxes" feel), plus a
 **detail pane** below it. Each box shows a health dot (green = self / in-sync,
 amber = syncing, quiet = no status learned yet), the node's short id, its address,

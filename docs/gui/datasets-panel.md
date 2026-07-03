@@ -1,7 +1,7 @@
 # Dataset view panel
 
 The headed app's standalone **Datasets view** (`App::draw_datasets` +
-`App::draw_dataset_placement`, `src/gui/app_operations.cpp`) — a dedicated,
+`App::draw_dataset_placement`, `src/gui/app_datasets.cpp`) — a dedicated,
 top-level screen reached from **Data → Datasets**. It is the GUI form of
 [`system.datasets`](../data/system-datasets.md): one place to browse every dataset the
 cluster holds, inspect its schema / row count / on-disk size / storage format, and
@@ -112,7 +112,7 @@ box to filter the partition table to that node's slices, surfacing
 
 ## Pointers
 
-- `src/gui/app_operations.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
+- `src/gui/app_datasets.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
   reusing the file-local cluster node-box constants (`kClusterBox*`) and
   `cluster_node_short_id` the [Cluster view](../cluster/cluster.md) defines, plus the
   "Add dataset…" button.

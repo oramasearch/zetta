@@ -2,7 +2,7 @@
 
 The **graph-over-cluster plan view** (#591, part of [#575](https://github.com/oramasearch/zetta/issues/575)
 area 6) extends the headed **Graph Workspace**
-([`App::draw_graph_canvas`](../../src/gui/app_pipeline.cpp)) from a graph *editor*
+([`App::draw_graph_canvas`](../../src/gui/app_graph_workspace.cpp)) from a graph *editor*
 into a cluster-aware *plan view*: opening a graph shows a **projection of how that
 graph would run over the current cluster** — which steps run **near their data**,
 which **fan out** across the cluster, and which **nodes** each lands on.
@@ -64,7 +64,7 @@ owner of a source is gone the step degrades to its no-locality default.
 
 ### How the GUI feeds it
 
-`App::build_graph_plan` (`src/gui/app_pipeline.cpp`) resolves the inputs from the
+`App::build_graph_plan` (`src/gui/app_graph_workspace.cpp`) resolves the inputs from the
 live node each frame:
 
 - **members** — `Cluster::nodes()` (the same source as `system.zetta_nodes` and the

@@ -10,7 +10,7 @@ numbers. This is area 2 of the cluster observability epic
 
 ## What you see
 
-Each node box (in `App::draw_cluster`, `src/gui/app_operations.cpp`) carries, below
+Each node box (in `App::draw_cluster`, `src/gui/app_cluster.cpp`) carries, below
 its identity header (health dot + short id + address + sync state), a compact
 **gauge strip** of five rows — `CPU` / `MEM` / `GPU` / `DSK` / `NET`. Each row is a
 rounded meter with:

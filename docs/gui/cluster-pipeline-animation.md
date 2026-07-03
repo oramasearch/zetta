@@ -24,7 +24,7 @@ views project from:
 ## What you see
 
 While a distributed run is in flight, the canvas (`App::draw_cluster`,
-`src/gui/app_operations.cpp`) comes alive:
+`src/gui/app_cluster.cpp`) comes alive:
 
 - **Partition placement** — a new [partition catalog](../data/dataset-partitions.md) entry
   (e.g. from [Add dataset](../data/add-dataset.md) or the [partitioned write
@@ -79,7 +79,7 @@ per-node gauges:
   per-node "activity" level). `PipelineInputs` is the per-frame snapshot the
   animator diffs — a plain value type built from the `Node` accessors, so the header
   carries **no zetta-core dependency**.
-- **`src/gui/app_operations.cpp`** — `update_cluster_pipeline()` snapshots the three
+- **`src/gui/app_cluster.cpp`** — `update_cluster_pipeline()` snapshots the three
   read views **once per frame** in `draw_cluster`, **diffs** the snapshot against the
   baseline (a new partition id → placement; changed owners → a move; a new job id →
   a near-data read + wire flow; an advanced `rounds_completed` → a scatter/gather
@@ -122,7 +122,7 @@ introduces **no new format to validate** (see
   `PipelineInputs` (pure data).
 - `src/gui/app.hpp` — the `ClusterPipelineState cluster_pipeline_` member +
   `App::draw_pipeline_activity`.
-- `src/gui/app_operations.cpp` — `update_cluster_pipeline()` (the diff),
+- `src/gui/app_cluster.cpp` — `update_cluster_pipeline()` (the diff),
   `draw_pipeline_flow()` (one flow), the integration in `App::draw_cluster` (snapshot
   → update → box-centre capture + activity halo → flow overlay), and
   `App::draw_pipeline_activity()` (the live strip + legend).

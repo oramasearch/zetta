@@ -572,9 +572,16 @@ add_executable(zetta
   src/gui/app.cpp
   src/gui/app_home.cpp
   src/gui/app_explorer.cpp
-  src/gui/app_pipeline.cpp
-  src/gui/app_operations.cpp
+  src/gui/app_graph_workspace.cpp
+  src/gui/app_deploy.cpp
+  src/gui/app_runs.cpp
+  src/gui/app_models.cpp
+  src/gui/app_datasets.cpp
+  src/gui/app_jobs.cpp
+  src/gui/app_cluster.cpp
+  src/gui/app_cloud.cpp
   src/gui/app_governance.cpp
+  src/gui/app_test_suite.cpp
   src/gui/cloud_wiring.cpp
   src/gui/repl_console.cpp
 )

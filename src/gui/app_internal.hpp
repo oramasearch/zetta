@@ -2,10 +2,11 @@
 
 // Shared design-system tokens + small render helpers for the headed GUI, split
 // out of app.cpp so every per-panel translation unit (app_home.cpp,
-// app_explorer.cpp, app_pipeline.cpp, app_operations.cpp, app_governance.cpp,
-// and app.cpp itself) can use them. This is an INTERNAL header for the src/gui
-// TUs only — it is NOT part of the public include/zetta surface, which is why it
-// may freely include <imgui.h>.
+// app_explorer.cpp, app_pipeline.cpp, app_runs.cpp, app_models.cpp,
+// app_datasets.cpp, app_jobs.cpp, app_cluster.cpp, app_cloud.cpp,
+// app_governance.cpp, app_test_suite.cpp, and app.cpp itself) can use them.
+// This is an INTERNAL header for the src/gui TUs only — it is NOT part of the
+// public include/zetta surface, which is why it may freely include <imgui.h>.
 
 #include <imgui.h>
 

@@ -1,7 +1,7 @@
 # Models panel
 
 The headed app's standalone **Models view** (`App::draw_models`,
-`src/gui/app_operations.cpp`) — a dedicated, top-level screen for the
+`src/gui/app_models.cpp`) — a dedicated, top-level screen for the
 trained-[`Model`](../ml/models.md) registry, reached from **Operations → Models**. It is
 the GUI form of [`system.zetta_models`](../data/query.md): one place to browse every model
 the node holds, inspect its metrics / ranked drivers / weights fingerprint, and
@@ -98,7 +98,7 @@ yet: replacing weights / updating metrics on an existing model (`set_weights` /
 
 ## Pointers
 
-- `src/gui/app_operations.cpp` — `App::draw_models` + `App::draw_add_model_form` +
+- `src/gui/app_models.cpp` — `App::draw_models` + `App::draw_add_model_form` +
   `App::reset_add_model_form`, and the shared file-local `render_model_card` view
   helper (also used by `App::draw_runs`).
 - `src/gui/app.cpp` — the `Operations → Models` menu item, the `View::Models`

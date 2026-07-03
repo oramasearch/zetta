@@ -19,9 +19,12 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   what would be read/called before anything happens (the Cloud Inspector /
   Add-nodes consent grammar). This binds Claude while building, too.
 - **Heavy headers stay in `app.cpp`.** `app.hpp` forward-declares SDL/ImGui
-  types; only `app.cpp` includes them. Panels are `App` member TUs split by
-  area (`app_home` / `app_explorer` / `app_pipeline` / `app_operations` /
-  `app_governance`).
+  types; only `app.cpp` includes them. Panels are `App` member TUs split
+  per view (`app_home` / `app_explorer` / `app_graph_workspace` /
+  `app_deploy` / `app_runs` / `app_models` / `app_datasets` / `app_jobs` /
+  `app_cluster` / `app_cloud` / `app_governance` / `app_test_suite`);
+  operations-view helpers shared across TUs live in
+  `app_operations_internal.hpp`.
 - **Orama design system, always:** light surfaces, ink text, Geist + Geist
   Mono (`g_mono_font` for labels/counts/metrics), coral used surgically,
   semantic green/amber/red for status, **sentence case**, **no em-dashes** in
