@@ -21,6 +21,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [search-view.md](search-view.md) — the Search view: the GUI rendering of [`Node::search`](../indexing/node-search.md) — provenance strip + scatter-gather replay over node boxes, master-detail hits with source-row fields, per-node provenance; the same path as the `search` MCP tool (#641, #643).
 - [jobs-panel.md](jobs-panel.md) — the Compute Jobs panel: live `system.jobs` + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (FEAT-5).
 - [models-panel.md](models-panel.md) — the standalone Models view: the GUI form of `system.models` — metrics, ranked drivers, weights fingerprint + an inline Add model affordance (#575).
+- [explorer-system-tables.md](explorer-system-tables.md) — the explorer's `system` table list rendered from the engine catalog (`system_table_names()` / `system.tables`), never a GUI-side copy (#684).
 - [repl-console.md](repl-console.md) — the REPL console component (CMP-6 / #524): `repl::ConsoleModel` in zetta-core + the thin `gui::ReplConsole` renderer behind Data → Console.
 - [admin-panel.md](admin-panel.md) — the Admin & Settings panel (SCR-7 / CMP-5): read-only principals + keys, scope + capability grants, and the audit log.
 - [activity-feed.md](activity-feed.md) — the Activity view (#622): one chronological feed of everything the cluster was asked to do (audit trail + runs merged at render time; `system.activity` is its queryable twin), each entry with actor + surface (GUI · console · MCP) + outcome.

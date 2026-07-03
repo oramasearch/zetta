@@ -12,6 +12,7 @@
 #include "zetta/node.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/pipeline/project.hpp"
+#include "zetta/query/executor.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/repl/governed_console.hpp"
 #include "zetta/storage/engine.hpp"
@@ -28,6 +29,7 @@
 #include <cfloat>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -237,9 +239,13 @@ void App::draw_tables() {
     if (selected_db_ == "system") {
         ImGui::TextDisabled("in 'system' (read-only)");
         ImGui::Separator();
-        for (const char* table_name : {"nodes"}) {
-            if (ImGui::Selectable(table_name, selected_table_ == table_name)) {
-                selected_table_ = table_name;
+        // The catalog comes from zetta-core — the same list `system.tables`
+        // serves — so the GUI never owns a copy of it (#684, RULE-7).
+        for (const std::string_view table_name :
+             zetta::query::system_table_names()) {
+            const std::string name{table_name};
+            if (ImGui::Selectable(name.c_str(), selected_table_ == name)) {
+                selected_table_ = name;
             }
         }
         return;

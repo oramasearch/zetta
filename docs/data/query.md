@@ -98,6 +98,23 @@ query time* — not stored, not replicated (each node's view is its own). `syste
 can't be created, dropped, or written to, and no real database may be named
 `system`.
 
+**`system.tables`** is the catalog of the system tables themselves (#684): one
+row per table with its `table` name and one-line `description`, alphabetical,
+itself included. "Which system tables exist" is observable state, so it is a
+read view like everything else (RULE-7):
+
+```sql
+SELECT * FROM system.tables;
+SELECT description FROM system.tables WHERE table = 'nodes';
+```
+
+The list is the executor's own dispatch catalog (`kSystemTableCatalog` in
+`src/core/query/executor.cpp`, exposed as
+`zetta::query::system_table_names()`), so it can't drift from what actually
+serves: the headed explorer's `system` table list, the unknown-system-table
+error's suggestions, and this view all render from the one array. A test
+asserts every cataloged name dispatches.
+
 Its first table is **`nodes`** — cluster membership + [replication](../cluster/replication.md)
 status — available whenever the `QueryService` was given a `Cluster` (the headed
 UI wires this; without a cluster, selecting it returns a clear error):
@@ -120,8 +137,9 @@ Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
 `version`, `in_sync`, `last_sync_seconds`. `SELECT *`, projection, and a single
 `WHERE` equality all work, exactly as for a regular table — the executor just
 sources the rows from `Cluster::nodes()` instead of a storage engine. The headed
-explorer also lists `system` (marked *virtual*) so its tables are browsable, not
-just queryable.
+explorer also lists `system` (marked *virtual*) with every table from
+`system_table_names()`, so all of them are browsable, not just queryable
+([gui/explorer-system-tables.md](../gui/explorer-system-tables.md), #684).
 
 A second table is **`deployments`** — the recorded graph→target
 [placements](../pipeline/deployments.md) (no cluster needed; it is sourced from
