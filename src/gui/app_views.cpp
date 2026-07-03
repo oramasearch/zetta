@@ -67,6 +67,17 @@ std::optional<std::string> App::take_pending_selection(View view) {
     return entity_id;
 }
 
+bool App::set_initial_view(const std::string& view_name) {
+    const std::string wanted = to_upper(view_name);
+    for (const ViewInfo& info : view_registry()) {
+        if (to_upper(info.name) == wanted) {
+            navigate_to(info.id);
+            return true;
+        }
+    }
+    return false;
+}
+
 // Inline link text: ink that underlines under the cursor, navigating on click.
 // No coral (links are wayfinding, not the surface's focal action).
 void App::entity_link(const char* label, View view,

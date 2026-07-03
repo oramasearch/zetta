@@ -87,6 +87,7 @@ backend and its verification caveats.
 
 ```bash
 ./build/bin/zetta                       # headed (default)
+./build/bin/zetta --view "Cluster"      # headed, opened on a view (screenshots/demos)
 ./build/bin/zetta --headless            # no UI, Ctrl-C to stop
 ./build/bin/zetta --data-dir /path/db   # override the database directory
 ./build/bin/zetta --listen 127.0.0.1:7777 # restrict to loopback (default is 0.0.0.0:7777, all interfaces)

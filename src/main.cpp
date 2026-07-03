@@ -46,6 +46,7 @@ struct Options {
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string mcp_token;                      // --mcp-token (acting key id)
     std::string join_token;         // --join-token (join an existing cluster)
+    std::string initial_view;       // --view (headed: open on this view)
     bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
     bool show_help = false;
     bool bad_usage = false;
@@ -70,6 +71,8 @@ void print_usage(const char* argv0) {
         "Usage: %s [options]\n\n"
         "Options:\n"
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
+        "  --view NAME         Open the headed UI on this view, by its\n"
+        "                      sidebar name (e.g. \"Cluster\", \"SQL query\")\n"
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
         "  --mcp-token T       Require this bearer token (= acting key id)\n"
@@ -116,6 +119,10 @@ Options parse_args(int argc, char** argv) {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
             o.mode = Mode::Headed;
+        } else if (arg == "--view") {
+            const char* v = take_value(argc, argv, i, o, "--view");
+            if (!v) break;
+            o.initial_view = v;
         } else if (arg == "--data-dir") {
             const char* v = take_value(argc, argv, i, o, "--data-dir");
             if (!v) break;
@@ -397,6 +404,13 @@ int main(int argc, char** argv) {
         // registry the MCP server serves — one list, many renderings. With
         // --no-mcp the App builds its own from register_core_capabilities.
         if (api_server) app.set_capability_registry(&api_server->registry());
+        // --view NAME (screenshots / demos): open on the named view instead
+        // of Home. Resolved against the view registry's product names.
+        if (!opts.initial_view.empty() &&
+            !app.set_initial_view(opts.initial_view)) {
+            std::fprintf(stderr, "zetta: unknown view '%s' for --view\n",
+                         opts.initial_view.c_str());
+        }
         app.set_provisioner("local", local_provisioner);
 
         // Burst nodes auto-join this cluster by seeding from a reachable address.

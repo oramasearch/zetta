@@ -134,6 +134,11 @@ public:
     void notify_external_activity(const std::string& capability,
                                   const std::string& actor);
 
+    // --view NAME (screenshots / demos): open on the named registry view
+    // instead of Home. The name is the sidebar's product name, matched
+    // case-insensitively; returns false when no view matches.
+    bool set_initial_view(const std::string& view_name);
+
 private:
     // The single active view shown in the content area. The menu bar selects
     // which one is live, so the window shows one focused panel at a time instead
