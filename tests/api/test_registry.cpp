@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <fstream>
 #include <chrono>
 #include <thread>
 
@@ -48,9 +49,10 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 6u);
+    EXPECT_EQ(registry.size(), 7u);
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("sql"));
+    EXPECT_TRUE(registry.find("submit_feedback"));
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
 
@@ -264,4 +266,49 @@ TEST_F(RegistryFixture, JourneyRunToolThenReadTraceContent) {
                                      "system.spans;"}});
     ASSERT_TRUE(spans.ok) << spans.error.message;
     EXPECT_FALSE(spans.value.at("rows").empty());
+}
+
+// submit_feedback (#640): the bundle snapshots description + traces + recent
+// errors + versions as a large object in the 'feedback' database; the export
+// is explicit (a caller-chosen path) — nothing leaves on its own.
+TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
+    // Leave observable state behind: one good call, one failed call.
+    auto created = call("create_project",
+                        nlohmann::json{{"name", "feedback-subject"},
+                                       {"intent", "reproduce the bug"}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    auto failed = call("sql", nlohmann::json{{"statement", "SELCT nope;"}});
+    EXPECT_FALSE(failed.ok);
+
+    const std::string export_path =
+        (dir.path() / "bundle-export.json").string();
+    auto submitted = call(
+        "submit_feedback",
+        nlohmann::json{{"description", "the run did something odd"},
+                       {"trace_ids", {created.trace_id}},
+                       {"export_path", export_path}});
+    ASSERT_TRUE(submitted.ok) << submitted.error.message;
+    EXPECT_FALSE(submitted.value.at("feedback_id").get<std::string>().empty());
+    EXPECT_EQ(submitted.value.at("database"), "feedback");
+    EXPECT_EQ(submitted.value.at("traces_attached").get<int>(), 1);
+    EXPECT_GE(submitted.value.at("errors_attached").get<int>(), 1);
+    EXPECT_EQ(submitted.value.at("exported_to"), export_path);
+
+    // The exported file IS the bundle: valid against its schema, carrying the
+    // description verbatim, the attached trace, and the recent error span.
+    std::ifstream exported(export_path);
+    ASSERT_TRUE(exported.good());
+    const nlohmann::json bundle =
+        nlohmann::json::parse(exported, nullptr, /*allow_exceptions=*/false);
+    ASSERT_FALSE(bundle.is_discarded());
+    EXPECT_EQ(bundle.at("description"), "the run did something odd");
+    ASSERT_EQ(bundle.at("traces").size(), 1u);
+    EXPECT_EQ(bundle.at("traces")[0].at("trace_id"), created.trace_id);
+    EXPECT_GE(bundle.at("recent_errors").size(), 1u);
+    EXPECT_EQ(bundle.at("version"), zetta::kVersion);
+
+    // Malformed input is refused at the boundary.
+    auto rejected = call("submit_feedback", nlohmann::json{{"description", ""}});
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.code, "invalid_input");
 }

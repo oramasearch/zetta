@@ -373,6 +373,7 @@ add_library(zetta-core STATIC
   src/core/observability/activity.cpp
   src/core/observability/trace.cpp
   src/core/observability/crash.cpp
+  src/core/observability/feedback.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
   src/core/api/registry.cpp

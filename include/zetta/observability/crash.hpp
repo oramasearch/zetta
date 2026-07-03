@@ -36,6 +36,10 @@ struct CrashReport {
 
 nlohmann::json to_json(const CrashReport& report);
 
+// This build's platform tag ("macos-arm64", "linux-x86_64", …) — stamped into
+// crash reports and feedback bundles.
+std::string platform_string();
+
 // Schema-as-code for the report file (draft-07; generated mirror
 // schemas/crash_report.schema.json). Reports are validated when read back —
 // a malformed file surfaces its reason instead of corrupting the view.

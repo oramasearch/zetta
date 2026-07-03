@@ -113,7 +113,14 @@ functionality lands with its testkit case, and both land observable.
    job record trace separately until an orchestrated fan-out shares one job
    record (first-stamper-wins on the CRDT).
 5. GUI: trace pane + activity feed integration; feedback bundle affordance.
-6. `submit_feedback` capability + bundle export.
+6. **Shipped** — `submit_feedback` capability: the bundle (description +
+   attached traces with spans + recent error spans + crash reports +
+   version/platform/node id) is built by
+   `observability::build_feedback_bundle`, validated against its own schema
+   (`schemas/feedback_bundle.schema.json`), and stored as a large object in
+   the `feedback` database (replicated metadata, peer-transferred body). The
+   optional `export_path` input writes the bundle to a caller-chosen local
+   path — the explicit export; nothing leaves the cluster on its own.
 
 Related: [../api/registry-design.md](../api/registry-design.md) (trace
 threading through every call), [../testing/mcp-journeys.md](../testing/mcp-journeys.md)

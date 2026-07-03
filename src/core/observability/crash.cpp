@@ -54,24 +54,6 @@ std::string signal_name_of(int signal_number) {
     }
 }
 
-std::string platform_string() {
-#if defined(__APPLE__)
-    const char* operating_system = "macos";
-#elif defined(__linux__)
-    const char* operating_system = "linux";
-#else
-    const char* operating_system = "unknown";
-#endif
-#if defined(__aarch64__) || defined(__arm64__)
-    const char* architecture = "arm64";
-#elif defined(__x86_64__)
-    const char* architecture = "x86_64";
-#else
-    const char* architecture = "unknown";
-#endif
-    return std::string(operating_system) + "-" + architecture;
-}
-
 // The actual report write, called from the signal handler. Best-effort: the
 // JSON build allocates (not strictly async-signal-safe), but the disposition
 // has already been reset to SIG_DFL, so a fault inside THIS function kills
@@ -171,6 +153,24 @@ public:
 };
 
 }  // namespace
+
+std::string platform_string() {
+#if defined(__APPLE__)
+    const char* operating_system = "macos";
+#elif defined(__linux__)
+    const char* operating_system = "linux";
+#else
+    const char* operating_system = "unknown";
+#endif
+#if defined(__aarch64__) || defined(__arm64__)
+    const char* architecture = "arm64";
+#elif defined(__x86_64__)
+    const char* architecture = "x86_64";
+#else
+    const char* architecture = "unknown";
+#endif
+    return std::string(operating_system) + "-" + architecture;
+}
 
 nlohmann::json to_json(const CrashReport& report) {
     return nlohmann::json{{"id", report.id},

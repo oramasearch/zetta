@@ -4,7 +4,9 @@
 #include <utility>
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/node.hpp"
+#include "zetta/observability/feedback.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/version.hpp"
 
@@ -174,6 +176,98 @@ ApiResult handle_get_trace(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- submit_feedback -----------------------------------------------------------
+
+const nlohmann::json& submit_feedback_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"description"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"description",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "what happened / what you wish for, verbatim"}}},
+          {"trace_ids",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "traces to attach (optional; default = the most "
+                            "recent traces on this node)"}}},
+          {"export_path",
+           {{"type", "string"},
+            {"description",
+             "local file path to ALSO write the bundle to — the explicit "
+             "user export; nothing leaves the cluster on its own "
+             "(optional)"}}}}}};
+    return schema;
+}
+
+// The database that holds feedback bundles as large objects (replicated
+// metadata + peer-transferred body, like every large object).
+constexpr std::string_view kFeedbackDatabase = "feedback";
+
+ApiResult handle_submit_feedback(const nlohmann::json& input,
+                                 ApiContext& context) {
+    zetta::observability::FeedbackBundleOptions options;
+    options.description = input.at("description").get<std::string>();
+    if (const auto trace_ids = input.find("trace_ids");
+        trace_ids != input.end()) {
+        options.trace_ids = trace_ids->get<std::vector<std::string>>();
+    }
+    options.actor =
+        context.acting_key.empty() ? std::string("local") : context.acting_key;
+
+    std::string reason;
+    const auto bundle =
+        zetta::observability::build_feedback_bundle(context.node, options, &reason);
+    if (!bundle) {
+        return ApiResult::failure("engine_error", reason);
+    }
+
+    auto database = context.node.find_database(std::string(kFeedbackDatabase));
+    if (!database) {
+        database = context.node.create_database(std::string(kFeedbackDatabase));
+    }
+    if (!database) {
+        return ApiResult::failure(
+            "engine_error", "submit_feedback: could not open the '" +
+                                std::string(kFeedbackDatabase) + "' database");
+    }
+    const std::string name =
+        "feedback-" + bundle->at("submitted_at").get<std::string>() + ".json";
+    const auto stored =
+        database->large_objects().import_bytes(name, bundle->dump(2));
+    if (!stored) {
+        return ApiResult::failure(
+            "engine_error", "submit_feedback: could not store the bundle");
+    }
+
+    nlohmann::json output;
+    output["feedback_id"] = stored->id;
+    output["name"] = stored->name;
+    output["database"] = std::string(kFeedbackDatabase);
+    output["size"] = stored->size;
+    output["sha256"] = stored->sha256;
+    output["traces_attached"] = bundle->at("traces").size();
+    output["errors_attached"] = bundle->at("recent_errors").size();
+    output["crashes_attached"] = bundle->at("crashes").size();
+
+    // The explicit export (and the ONLY way bytes leave the store): the user
+    // asked for a copy at a path of their choosing.
+    if (const auto export_path = input.find("export_path");
+        export_path != input.end()) {
+        const std::string destination = export_path->get<std::string>();
+        if (!database->large_objects().export_file(stored->id, destination)) {
+            return ApiResult::failure(
+                "engine_error",
+                "submit_feedback: bundle stored as " + stored->id +
+                    " but the export to '" + destination + "' failed");
+        }
+        output["exported_to"] = destination;
+    }
+    return ApiResult::success(std::move(output));
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -235,6 +329,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_trace});
+
+    registry.add(Capability{
+        "submit_feedback",
+        "Submit feedback",
+        "Snapshot a feedback bundle — your description plus the relevant "
+        "traces, recent errors, crash reports, and versions — stored as a "
+        "large object you explicitly export; nothing leaves the cluster on "
+        "its own.",
+        submit_feedback_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_submit_feedback});
 
     registry.add(Capability{
         "create_project",
