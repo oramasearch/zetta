@@ -30,6 +30,8 @@ namespace zetta::pipeline { struct ValidationReport; }
 namespace zetta::pipeline { class Project; }
 namespace zetta::pipeline { class ProjectGraph; }
 namespace zetta::pipeline { struct ClusterPlan; }
+namespace zetta::pipeline { class Run; }
+namespace zetta::pipeline { struct RunProgress; }
 namespace zetta::ir { class ExecutionGraph; }
 namespace zetta::query { class QueryService; }
 namespace zetta::repl { class ConsoleModel; }
@@ -310,7 +312,31 @@ private:
     // When `plan` is non-null, each step is overlaid with its projected cluster
     // placement — a coloured left stripe + a mono badge (near-data / fan-out /
     // all nodes / coordinator) — turning the canvas into a graph-over-cluster view.
-    void draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan);
+    // When `run_progress` is non-null (#626), each step additionally wears its
+    // live run status — a tone_of-coloured dot, an amber pulse on the running
+    // step, a red border + reason on a failed one, and the short id of the
+    // output it materialized — so the canvas shows a run moving through the graph.
+    void draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
+                           const zetta::pipeline::RunProgress* run_progress);
+    // The newest run that references the open graph — by the stored graph id,
+    // the graph's saved name, or a deployment of that name (whose runs the
+    // deployment controller starts). Scanned from the live Node::runs() each
+    // frame (a thin renderer keeps no copy); null when none reference it.
+    std::shared_ptr<zetta::pipeline::Run> latest_run_for_open_graph() const;
+    // The live-run strip below the canvas (#626): the overlaid run's identity +
+    // status (linking into the Runs view), the pinned failing reason when it
+    // failed, and the selected step's run detail — status, reason, outputs, and
+    // a click-through entity_link to a produced model's panel.
+    void draw_graph_run_status(const zetta::pipeline::Run* run,
+                               const zetta::pipeline::RunProgress& progress);
+    // Execute the open graph's SAVED contents as a real Run on this node,
+    // labelled with the project + stored-graph id so the live-run overlay (and
+    // any other reader of run.graph) can tie the run back to the graph. A
+    // churn-shaped graph runs on the real churn engine over the node's live
+    // JobCoordinator (the console/deploy wiring); anything else runs through
+    // Node::run_graph's DefaultStepExecutor. Synchronous on the UI thread that
+    // owns the node — the same deliberate per-click pattern as run_churn_demo.
+    void run_open_graph(zetta::pipeline::Project& project);
     // The cluster-plan section below the canvas (#591): a legend, the current
     // cluster's node strip (the nodes the selected step lands on are highlighted),
     // and a per-step placement table. A thin, read-only projection of how the graph
@@ -616,6 +642,13 @@ private:
     // owner nodes). On by default so opening a graph shows the projection; a
     // checkbox above the canvas hides it for a plain edit view.
     bool show_cluster_plan_ = true;
+    // Live-run overlay (#626): when on, the newest run referencing the open
+    // graph is projected onto the canvas (per-step status / active-step pulse /
+    // pinned failure / materialized outputs) and a run strip renders below it.
+    // Re-derived from the live run record every frame (the #590 pattern — no
+    // GUI-owned copy of run state, bounded work); on by default so a run is
+    // visible the moment one exists.
+    bool show_run_overlay_ = true;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

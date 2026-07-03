@@ -3,15 +3,21 @@
 #include "gui/tones.hpp"
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/compute/cpu_device.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/deployment.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/graph_plan.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/project_graph.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/pipeline/run_progress.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 
 #include <imgui.h>
 #include <imgui_stdlib.h>
@@ -48,6 +54,16 @@ constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
 // status.
 ImVec4 placement_color(zetta::pipeline::StepPlacement placement) {
     return tone_color(tone_of(placement));
+}
+
+// The short display form of a run output's ref for the tight canvas box: the
+// segment after any "<tag>:" prefix, cut at the first '-' — so the default
+// executor's logical "model:<uuid>" and the churn engine's real model/index
+// ids both read as one short mono token.
+std::string short_output_ref(const std::string& ref) {
+    const std::size_t colon = ref.find(':');
+    const std::string tail = colon == std::string::npos ? ref : ref.substr(colon + 1);
+    return tail.substr(0, tail.find('-'));
 }
 
 }  // namespace
@@ -163,9 +179,104 @@ void App::draw_graph_workspace() {
     ImGui::TextDisabled("project this graph over the current cluster");
     const zetta::pipeline::ClusterPlan plan = show_cluster_plan_ ? build_graph_plan() : zetta::pipeline::ClusterPlan{};
 
-    draw_graph_canvas(show_cluster_plan_ ? &plan : nullptr);
+    // Live-run overlay (#626): project the newest run referencing this graph
+    // onto the canvas. Re-resolved + re-projected from the live run record
+    // every frame (the #590 pattern — the record is the only source; a run
+    // arriving over replication, or started from the console/MCP, animates
+    // identically to one started here). "Run graph" executes the saved graph
+    // on this node, labelled with the stored-graph id so the overlay (and any
+    // reader of run.graph) can tie the run back to it.
+    ImGui::Checkbox("Live run", &show_run_overlay_);
+    ImGui::SameLine();
+    ImGui::TextDisabled("overlay the latest run of this graph");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(graph_dirty_ || editing_graph_->empty());
+    if (ImGui::SmallButton("Run graph")) run_open_graph(*project);
+    ImGui::EndDisabled();
+    if (graph_dirty_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("Save the graph first · a run executes the saved graph");
+    }
+
+    const std::shared_ptr<zetta::pipeline::Run> live_run =
+        show_run_overlay_ ? latest_run_for_open_graph() : nullptr;
+    zetta::pipeline::RunProgress run_progress;
+    if (live_run) {
+        run_progress = zetta::pipeline::project_run_progress(*editing_graph_,
+                                                             live_run->value());
+    }
+
+    draw_graph_canvas(show_cluster_plan_ ? &plan : nullptr,
+                      live_run ? &run_progress : nullptr);
+    if (show_run_overlay_) draw_graph_run_status(live_run.get(), run_progress);
     if (show_cluster_plan_) draw_graph_plan(plan);
     draw_graph_editor(*project);
+}
+
+std::shared_ptr<zetta::pipeline::Run> App::latest_run_for_open_graph() const {
+    if (!editing_graph_ || graph_loaded_id_.empty()) return nullptr;
+
+    // Deployments of this graph (by its saved name) — the deployment
+    // controller's runs reference their deployment, not a graph id.
+    std::vector<std::string> deployment_ids;
+    if (!selected_graph_.empty()) {
+        for (const auto& deployment : node_.deployments()) {
+            if (deployment->graph_name() == selected_graph_) {
+                deployment_ids.push_back(deployment->id());
+            }
+        }
+    }
+
+    std::shared_ptr<zetta::pipeline::Run> latest;
+    for (const auto& run : node_.runs()) {
+        const bool references_graph =
+            run->graph() == graph_loaded_id_ ||
+            (!selected_graph_.empty() && run->graph() == selected_graph_) ||
+            (!run->deployment().empty() &&
+             std::find(deployment_ids.begin(), deployment_ids.end(),
+                       run->deployment()) != deployment_ids.end());
+        if (!references_graph) continue;
+        // Newest by the ISO-8601 stamps (lexicographic order == time order).
+        if (!latest || run->created() > latest->created() ||
+            (run->created() == latest->created() &&
+             run->updated() > latest->updated())) {
+            latest = run;
+        }
+    }
+    return latest;
+}
+
+void App::run_open_graph(zetta::pipeline::Project& project) {
+    // Execute the SAVED contents (the run must describe what is stored, not an
+    // unsaved working copy — the button is disabled while dirty as a belt; this
+    // re-resolve is the suspenders).
+    const auto stored = project.find_graph_by_id(graph_loaded_id_);
+    if (!stored) {
+        graph_error_ = "run failed: the open graph is no longer stored";
+        return;
+    }
+    graph_error_.clear();
+
+    // A churn-shaped graph runs on the REAL churn engine over the node's live
+    // JobCoordinator — the same routing the governed console applies (#580) —
+    // so the overlay shows real featurize/train/index statuses and the model
+    // step's output ref is a real, resolvable Model id. Anything else (or a
+    // node with no compute plane attached) runs through the structural
+    // DefaultStepExecutor.
+    if (node_.job_coordinator() != nullptr &&
+        zetta::usecases::churn::is_churn_graph(stored->graph())) {
+        compute::CpuDevice device;
+        zetta::usecases::churn::ChurnSolutionOptions options;
+        options.project = project.id();
+        options.graph = stored->id();
+        run_churn_solution_on_node(node_, device, stored->graph(),
+                                   zetta::usecases::churn::demo_churn_dataset(),
+                                   options);
+    } else {
+        node_.run_graph(stored->graph(), project.id(), stored->id());
+    }
+    // No status line here: the run record itself is the feedback — the live-run
+    // overlay + strip below the canvas pick it up on this same frame.
+    show_run_overlay_ = true;
 }
 
 zetta::pipeline::ClusterPlan App::build_graph_plan() const {
@@ -219,13 +330,24 @@ zetta::pipeline::ClusterPlan App::build_graph_plan() const {
     return zetta::pipeline::project_cluster_plan(*editing_graph_, members, direct_owners);
 }
 
-void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan) {
+void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
+                            const zetta::pipeline::RunProgress* run_progress) {
     ir::ExecutionGraph& graph = *editing_graph_;
 
     // Index the plan by step id so each node box can show its projected placement.
     std::unordered_map<std::string, const zetta::pipeline::StepPlan*> plan_of;
     if (plan != nullptr) {
         for (const zetta::pipeline::StepPlan& step : plan->steps) plan_of[step.node_id] = &step;
+    }
+
+    // Index the live-run projection by step id (#626) so each box can wear its
+    // run status. Rebuilt each frame from the projection the caller computed —
+    // presentation only, no run state is stored between frames.
+    std::unordered_map<std::string, const zetta::pipeline::StepRunProgress*> run_of;
+    if (run_progress != nullptr) {
+        for (const zetta::pipeline::StepRunProgress& step : run_progress->steps) {
+            run_of[step.step_id] = &step;
+        }
     }
 
     const float font = ImGui::GetFontSize();
@@ -339,13 +461,48 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan) {
                     rename_node_input_ = item.node->name;
                 }
                 const bool selected = item.node->id == selected_node_id_;
+
+                // Live-run overlay (#626): the step's projected run status.
+                const auto run_it = run_of.find(item.node->id);
+                const zetta::pipeline::StepRunProgress* step_run =
+                    run_it != run_of.end() ? run_it->second : nullptr;
+                const bool step_failed =
+                    step_run != nullptr &&
+                    step_run->status == zetta::pipeline::StepRunStatus::Failed;
+                const bool step_running =
+                    step_run != nullptr &&
+                    step_run->status == zetta::pipeline::StepRunStatus::Running;
+
+                // The running step wears a soft amber pulse just outside its
+                // border — time-based easing only, no stored animation state.
+                if (step_running) {
+                    const float pulse =
+                        0.35f +
+                        0.35f * static_cast<float>(
+                                    std::sin(ImGui::GetTime() * 5.0));
+                    ImVec4 glow = tone_color(Tone::Warn);
+                    glow.w = pulse;
+                    const float grow = font * 0.18f;
+                    draw->AddRect(
+                        ImVec2(item.top_left.x - grow, item.top_left.y - grow),
+                        ImVec2(item.bottom_right.x + grow,
+                               item.bottom_right.y + grow),
+                        ImGui::GetColorU32(glow), rounding, 0, font * 0.14f);
+                }
+
                 const ImU32 fill = selected ? kNodeFillSelected
                                             : (hovered ? kNodeFillHover : kNodeFill);
                 draw->AddRectFilled(item.top_left, item.bottom_right, fill,
                                     rounding);
-                draw->AddRect(item.top_left, item.bottom_right,
-                              selected ? kNodeBorderSelected : kNodeBorder,
-                              rounding, 0, selected ? 2.0f : 1.0f);
+                // A failed step is pinned red; the coral selection accent still
+                // wins ("you are here" stays coral — status never borrows it).
+                const ImU32 border =
+                    selected ? kNodeBorderSelected
+                             : (step_failed
+                                    ? ImGui::GetColorU32(tone_color(Tone::Error))
+                                    : kNodeBorder);
+                draw->AddRect(item.top_left, item.bottom_right, border,
+                              rounding, 0, selected || step_failed ? 2.0f : 1.0f);
                 draw->PushClipRect(item.top_left, item.bottom_right, true);
 
                 // Cluster-plan overlay (#591): a coloured left stripe in the step's
@@ -382,7 +539,68 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan) {
                 }
                 draw->AddText(ImVec2(name_x, name_y), kNodeTextColor,
                               item.node->name.c_str());
+
+                // Live-run overlay (#626): a status dot in the top-right corner
+                // (tone_of colours — pending reads as a hollow ring), and the
+                // short id of the first output the step materialized, bottom-
+                // right in mono (the placement badge keeps the bottom-left).
+                if (step_run != nullptr) {
+                    const ImU32 tone = ImGui::GetColorU32(
+                        tone_color(tone_of(step_run->status)));
+                    const float dot_radius = font * 0.18f;
+                    const ImVec2 dot_center(
+                        item.bottom_right.x - pad * 0.6f - dot_radius,
+                        item.top_left.y + pad * 0.6f + dot_radius);
+                    if (step_run->status ==
+                        zetta::pipeline::StepRunStatus::Pending) {
+                        draw->AddCircle(dot_center, dot_radius, tone, 0,
+                                        font * 0.08f);
+                    } else {
+                        draw->AddCircleFilled(dot_center, dot_radius, tone);
+                    }
+                    if (!step_run->outputs.empty()) {
+                        const std::string ref =
+                            short_output_ref(step_run->outputs.front().ref);
+                        const float small = font * 0.78f;
+                        const ImU32 ref_color =
+                            ImGui::GetColorU32(tone_color(Tone::Ok));
+                        if (mono_font_) {
+                            const ImVec2 size = mono_font_->CalcTextSizeA(
+                                small, FLT_MAX, 0.0f, ref.c_str());
+                            draw->AddText(
+                                mono_font_, small,
+                                ImVec2(item.bottom_right.x - pad * 0.5f - size.x,
+                                       item.top_left.y + node_h - font * 0.30f -
+                                           small),
+                                ref_color, ref.c_str());
+                        } else {
+                            const ImVec2 size = ImGui::CalcTextSize(ref.c_str());
+                            draw->AddText(
+                                ImVec2(item.bottom_right.x - pad * 0.5f - size.x,
+                                       item.top_left.y + node_h - font * 0.30f -
+                                           size.y),
+                                ref_color, ref.c_str());
+                        }
+                    }
+                }
                 draw->PopClipRect();
+
+                // Hovering a step with run progress explains it: status, the
+                // failing reason verbatim, and what it materialized.
+                if (hovered && step_run != nullptr) {
+                    std::string tip = item.node->name + " · " +
+                                      std::string{zetta::pipeline::to_string(
+                                          step_run->status)};
+                    if (!step_run->reason.empty()) {
+                        tip += "\n" + step_run->reason;
+                    }
+                    for (const zetta::pipeline::RunOutput& output :
+                         step_run->outputs) {
+                        tip += "\n" + output.kind + " · " + output.name +
+                               " · " + output.ref;
+                    }
+                    ImGui::SetTooltip("%s", tip.c_str());
+                }
             }
 
             // Reserve the laid-out area so the child scrolls to fit it.
@@ -392,6 +610,77 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan) {
         }
     }
     ImGui::EndChild();
+}
+
+void App::draw_graph_run_status(const zetta::pipeline::Run* run,
+                                const zetta::pipeline::RunProgress& progress) {
+    ImGui::Spacing();
+    eyebrow(mono_font_, "LIVE RUN");
+    if (run == nullptr) {
+        ImGui::TextDisabled(
+            "No runs reference this graph yet · Run graph above, or start one "
+            "from the console, deploy, or MCP.");
+        return;
+    }
+
+    // Identity strip: the overlaid run, its live status, the step tally, and
+    // the cross-entity link into the Runs view (logs / outputs / lineage).
+    std::size_t succeeded = 0;
+    std::size_t reached = 0;  // steps the run has started (any non-pending state)
+    for (const zetta::pipeline::StepRunProgress& step : progress.steps) {
+        if (step.status == zetta::pipeline::StepRunStatus::Succeeded) ++succeeded;
+        if (step.status != zetta::pipeline::StepRunStatus::Pending) ++reached;
+    }
+    const Tone run_tone = tone_of(run->status());
+    status_dot(tone_color(run_tone));
+    const std::string run_short_id = run->id().substr(0, run->id().find('-'));
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    ImGui::TextColored(kInkPrimary, "run %s", run_short_id.c_str());
+    if (mono_font_) ImGui::PopFont();
+    ImGui::SameLine();
+    ImGui::TextColored(tone_color(run_tone), "[%s]",
+                       std::string(to_string(run->status())).c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("%zu of %zu step(s) completed · %zu reached", succeeded,
+                        progress.steps.size(), reached);
+    ImGui::SameLine();
+    entity_link("open in runs", View::Runs, run->id());
+    ImGui::TextDisabled("created %s · updated %s", run->created().c_str(),
+                        run->updated().c_str());
+
+    // A failed run pins its failing step + reason (verbatim from the run log)
+    // under the canvas — visible without hovering anything.
+    if (!progress.failure_reason.empty()) {
+        std::string pinned = progress.failure_reason;
+        for (const zetta::pipeline::StepRunProgress& step : progress.steps) {
+            if (step.status != zetta::pipeline::StepRunStatus::Failed) continue;
+            const auto failed_node = editing_graph_->find_node(step.step_id);
+            pinned = "step '" +
+                     (failed_node ? failed_node->name : step.step_id) +
+                     "' failed: " + step.reason;
+            break;
+        }
+        banner(Tone::Error, pinned);
+    }
+
+    // The selected step's run detail: status + what it materialized, with a
+    // click-through to a produced model's panel when the ref is a real,
+    // resolvable Model id (the churn engine's model step). Refs that resolve
+    // to nothing (the default executor's logical handles) render as plain
+    // mono — the overlay never fakes a destination.
+    const zetta::pipeline::StepRunProgress* selected_step = nullptr;
+    for (const zetta::pipeline::StepRunProgress& step : progress.steps) {
+        if (step.step_id == selected_node_id_) selected_step = &step;
+    }
+    if (selected_step == nullptr || selected_step->outputs.empty()) return;
+    for (const zetta::pipeline::RunOutput& output : selected_step->outputs) {
+        mono_line(kInkQuiet, "output:   ",
+                  output.kind + " · " + output.name + " · " + output.ref);
+        if (output.kind == "model" && node_.find_model(output.ref)) {
+            ImGui::SameLine();
+            entity_link("open in models", View::Models, output.ref);
+        }
+    }
 }
 
 void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {

@@ -20,6 +20,7 @@
 #include "zetta/compute/scaling_policy.hpp"
 #include "zetta/pipeline/graph_plan.hpp"
 #include "zetta/pipeline/run.hpp"
+#include "zetta/pipeline/run_progress.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/testkit/test_suite.hpp"
 
@@ -33,6 +34,20 @@ constexpr Tone tone_of(zetta::pipeline::RunStatus status) {
         case zetta::pipeline::RunStatus::Running:   return Tone::Warn;
         case zetta::pipeline::RunStatus::Succeeded: return Tone::Ok;
         case zetta::pipeline::RunStatus::Failed:    return Tone::Error;
+    }
+    return Tone::Muted;
+}
+
+// One graph step inside a run (#626, the workspace live-run overlay) — the
+// run lifecycle, per step: pending muted, running amber, succeeded green,
+// failed red. Deliberately identical to tone_of(RunStatus) so a step reads
+// exactly like the run it belongs to.
+constexpr Tone tone_of(zetta::pipeline::StepRunStatus status) {
+    switch (status) {
+        case zetta::pipeline::StepRunStatus::Pending:   return Tone::Muted;
+        case zetta::pipeline::StepRunStatus::Running:   return Tone::Warn;
+        case zetta::pipeline::StepRunStatus::Succeeded: return Tone::Ok;
+        case zetta::pipeline::StepRunStatus::Failed:    return Tone::Error;
     }
     return Tone::Muted;
 }

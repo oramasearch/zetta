@@ -19,6 +19,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [admin-panel.md](admin-panel.md) — the Admin & Settings panel (SCR-7 / CMP-5): read-only principals + keys, scope + capability grants, and the audit log.
 - [cluster-node-gauges.md](cluster-node-gauges.md) — animated per-node resource gauges + sparklines on the cluster node boxes, fed by the signal-plane telemetry exchange (#584).
 - [cluster-pipeline-animation.md](cluster-pipeline-animation.md) — the distributed-algorithm-at-work animation over the cluster canvas: a thin renderer diffing the live instrumentation views (#590).
+- [graph-run-overlay.md](graph-run-overlay.md) — the Graph Workspace live-run overlay: per-step status on the canvas from the live Run record, pinned failures, output click-through (#626).
 - [add-nodes-control.md](add-nodes-control.md) — the Add nodes control in the Cluster view: Local runs on a click, every cloud target is consent-gated deny-by-default (#583).
 
 ## Load-bearing rendering notes
