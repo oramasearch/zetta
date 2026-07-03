@@ -40,7 +40,7 @@ per-row drivers + ranked list.
 ## The pipeline — three recorded jobs over the one local shard
 
 `run_near_data_train_job` loads the local shard **once** and runs three phases over
-it, each a `ComputeJob` (so they appear in `system.zetta_jobs`):
+it, each a `ComputeJob` (so they appear in `system.jobs`):
 
 1. **train + calibrate** — [`run_train_job`](../ml/gbdt.md) over the local shard
    (calibration opt-in via [`CalibrationConfig`](../ml/calibration.md)), driving the
@@ -120,9 +120,13 @@ their own boundaries. Nothing new is parsed.
   [partition catalog](../data/dataset-partitions.md) (#510).
 - The **featurize** half (#532, [featurize over partitions](../ddf/ddf-featurize.md)) is
   this runner's sibling: featurize produces the engineered feature table over the
-  partitions; this trains over it. Composing them — featurize → train end to end
-  over partitions — is [#530](https://github.com/oramasearch/zetta/issues/530); the
-  sim-Python UC-1-at-scale E2E (load → partition → add-nodes → train → explain) is
+  partitions; this trains over it. Their composition — featurize → train end to end
+  over partitions, the GBDT fed the feature table instead of the raw engineered
+  columns — is [`run_near_data_featurize_train_job`](uc1-featurize-train-over-partitions.md)
+  (#530), which shares this runner's train → explain → rank phases via the internal
+  `zetta::ml::detail::run_train_explain_rank_phases`
+  (`src/core/ml/near_data_train_pipeline.hpp`); the sim-Python UC-1-at-scale E2E
+  (load → partition → add-nodes → featurize → train → explain) is
   [#531](https://github.com/oramasearch/zetta/issues/531).
 - The single-cluster churn equivalent (over the synthetic churn fixture, not the
   partitioned saas table) is the [UC-1 end-to-end test](uc1-end-to-end.md) (#399)

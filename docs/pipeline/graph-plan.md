@@ -2,7 +2,7 @@
 
 The **graph-over-cluster plan view** (#591, part of [#575](https://github.com/oramasearch/zetta/issues/575)
 area 6) extends the headed **Graph Workspace**
-([`App::draw_graph_canvas`](../../src/gui/app_pipeline.cpp)) from a graph *editor*
+([`App::draw_graph_canvas`](../../src/gui/app_graph_workspace.cpp)) from a graph *editor*
 into a cluster-aware *plan view*: opening a graph shows a **projection of how that
 graph would run over the current cluster** — which steps run **near their data**,
 which **fan out** across the cluster, and which **nodes** each lands on.
@@ -64,10 +64,10 @@ owner of a source is gone the step degrades to its no-locality default.
 
 ### How the GUI feeds it
 
-`App::build_graph_plan` (`src/gui/app_pipeline.cpp`) resolves the inputs from the
+`App::build_graph_plan` (`src/gui/app_graph_workspace.cpp`) resolves the inputs from the
 live node each frame:
 
-- **members** — `Cluster::nodes()` (the same source as `system.zetta_nodes` and the
+- **members** — `Cluster::nodes()` (the same source as `system.nodes` and the
   Cluster view).
 - **owners** — `Node::dataset_partitions()` (the source of
   `system.dataset_partitions`), grouped by table id into the per-table owner-node
@@ -95,11 +95,12 @@ graph shows the projection; uncheck it for a plain edit canvas). When on:
 - **Per-step table** — `Step · Stage · Placement · Runs on`, one row per step.
   Clicking a row selects that step; hovering it shows the projection's rationale.
 
-Placement colours follow the Orama [design system](../gui/design-system.md) — semantic,
+Placement colours are the shared status tones (`tone_of(StepPlacement)` in
+`src/gui/tones.hpp`, [status-tones.md](../gui/status-tones.md), #636) — semantic,
 never coral (coral stays the "you are here" / "runs here" accent): **green** for
-near-data (compute where the data lives — the efficient case), **ink** for fan-out
-(SPMD, distributed), **quiet** for an all-nodes load, **amber** for the coordinator
-(a single-node funnel point).
+near-data (compute where the data lives — the efficient case), **quiet** for
+fan-out (SPMD, distributed) and an all-nodes load (neutral, nothing to flag),
+**amber** for the coordinator (a single-node funnel point).
 
 ## Scope
 

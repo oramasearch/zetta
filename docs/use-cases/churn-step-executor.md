@@ -29,7 +29,7 @@ to derive *logical* artifacts. `ChurnStepExecutor` interprets the same taxonomy 
 | Step kind | Real compute | Output (`kind`) |
 | --------- | ------------ | --------------- |
 | `connect` | **load to DDF** — `load_data_frame` reads this node's numeric shard into a typed, chunked, device-backed [`DataFrame`](../ddf/ddf.md) | `dataset` + a lineage source |
-| `clean`   | **featurize** — [`run_featurize_job`](../ddf/ddf-featurize.md) builds the leakage-free point-in-time feature table (a `featurize` job), materialized to a device feature frame | `dataset` |
+| `clean`   | **featurize** — [`run_featurize_job`](../ddf/ddf-featurize.md) builds the leakage-free point-in-time feature table (a `featurize` job); the broadcast **global** table is then **sliced to this node's accounts-shard entities** (the #530 near-data slice step — disjoint across nodes, union == global, so a coordinated multi-node run counts every entity once, #601) and materialized to a device feature frame | `dataset` |
 | `model`   | **train + calibrate** — [`run_train_job`](../ml/gbdt.md) trains a histogram GBDT (a `train` job) and **registers a real [`Model`](../ml/models.md)** on the node; opt-in held-out [calibration](../ml/calibration.md) | `model` (ref = the **real Model id**) |
 | `index`   | **build index + score / rank** — builds a real, queryable entity index over the accounts shard via the resolved [`IndexBackend`](../indexing/index-step-executor.md) (#528), then [`run_score_job`](../ml/gbdt-score.md) produces the global **at-risk list** (a `score` job), highest risk first | `index` (ref = the **real [`Index`](../indexing/index-backend.md) id**) |
 | `serve`   | **explain** — [`run_explain_job`](../ml/tree-shap.md) computes per-entity TreeSHAP + the population mean-\|φ\| **driver ranking** (an `explain` job) | `dataset` |
@@ -189,7 +189,7 @@ per-op suites (`test_ddf_featurize`, `test_gbdt`, `test_gbdt_score`, `test_tree_
 - **Real executors for the other use cases** behind the same seam, the way this one
   realizes churn.
 
-[`zetta::usecases::churn::run_churn_solution`](churn-solution.md) is the reusable bridge that drives
+[`zetta::usecases::churn::run_churn_solution_on_node`](churn-solution.md) is the reusable bridge that drives
 this executor from the catalog **churn-prediction** blueprint (and the headed Deploy
 panel's "Run over the cluster" action) — it builds the numeric shards + pipeline config
 this executor needs and injects it into a `GraphExecutor`.

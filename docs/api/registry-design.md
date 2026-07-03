@@ -73,20 +73,22 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   seams inherit those seams' own enforcement too (RULE-1 cannot be bypassed
   by construction, because handlers call the same engine entry points the GUI
   calls).
-- **Consent (design for #621):** a `requires_consent` capability NEVER
-  executes on first call — it returns a structured consent challenge naming
-  exactly what would be read/run (the Cloud Inspector grammar) plus a
-  one-time challenge id. Confirmation must come from a **different,
-  approval-capable principal** (an approver key, or a human in the headed
-  app's approval surface) — the calling key repeating the call can never
-  satisfy it. Per-action, never remembered, audited on both sides.
+- **Consent (shipped, #621 — [consent.md](consent.md)):** a `requires_consent`
+  capability NEVER executes on first call — it returns a structured consent
+  challenge naming exactly what would be read/run (the Cloud Inspector
+  grammar) plus a one-time challenge id. Confirmation must come from a
+  **different, approval-capable principal** (an approver key via
+  `approve_consent`, or a human in the headed app's approval surface) — the
+  calling key repeating the call can never satisfy it. Approval executes
+  exactly the named (frozen) action once. Per-action, never remembered,
+  audited on both sides; the ledger surfaces as `system.consent_requests`.
 
 ## Long-running work — reuse the durable handles
 
 **No new job infrastructure.** The engine already gives every long operation a
 durable, replicated, queryable handle: a `Run` (`run:<uuid>`) or a
-`ComputeJob` (`job:<uuid>`), visible in `system.zetta_runs` /
-`system.zetta_jobs`. A `kind: job` capability submits and returns
+`ComputeJob` (`job:<uuid>`), visible in `system.runs` /
+`system.jobs`. A `kind: job` capability submits and returns
 `{run_id | job_id}` immediately; progress/outcome is read back through the
 read surface. No request-scoped blocking, no bespoke async protocol, and MCP,
 REST, SQL, and the GUI all observe the same lifecycle rows.
@@ -131,9 +133,11 @@ builds into a **`zetta-api`** static library on top of zetta-core — the same
 isolation SDL/CUDA get — consumed by `main` (headless + headed) and
 `tests/api`. Its `io_context` runs on its own thread(s), separate from the
 cluster's, and TLS later rides beast2's `https_server` (#466). The headed app
-additionally passes an **activity hook**: any `mutates` call fires it, and the
-GUI marks panels dirty + records the action for the activity feed
-(#620/#622).
+additionally passes an **activity hook**: any successful `mutates` call fires
+it on the owning loop, and the GUI surfaces the action live with a
+click-through deep link (#620,
+[../gui/external-activity.md](../gui/external-activity.md)); the activity
+feed (#622) needs nothing extra — the call's audit event is its record.
 
 ## Protocol scope (v1)
 
@@ -156,6 +160,7 @@ bypass them entirely.
 Ships: registry + bridge + server + auth + audit + activity hook + first
 capabilities (`server_info`, `sql` — which alone exposes every `system.*`
 view, `list_projects`, `create_project` as the action template) + headless and
-headed embedding + real-HTTP tests. Defers: REST rendering (#618), the
-remaining parity tools (#616/#617), consent execution (#621), prompts,
-SSE, key-secret minting.
+headed embedding + real-HTTP tests. Defers: REST rendering (#618 — since
+shipped, [rest-openapi.md](rest-openapi.md)), the remaining parity tools
+(#616/#617 — since shipped), consent execution (#621), prompts, SSE,
+key-secret minting.

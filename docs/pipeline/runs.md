@@ -27,6 +27,7 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `status` | `RunStatus` | `Pending` → `Running` → `Succeeded` \| `Failed`. |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on every change. |
+| `trace_id` | `std::string` | The run's trace (32-hex W3C id, #640) — stamped by `GraphExecutor`; `system.spans WHERE trace_id = …` / `get_trace` answer "what happened". Optional. |
 | `logs` | `vector<RunLogEntry>` | Each `{ time, level, message }` — observability + diagnosis. |
 | `outputs` | `vector<RunOutput>` | Each `{ kind, name, ref }`; `kind` ∈ `dataset` / `model` / `index`. |
 | `lineage` | `RunLineage` | `{ sources[], steps[], freshness, confidence }`. |
@@ -140,23 +141,31 @@ holds (created via the API / tests, or replicated from a peer), so a fresh
 standalone node simply shows "(no runs)" until something creates one. It adds no
 mutators of its own — driving a run (StartRun) is a later slice.
 
-Layout is a list + detail, mirroring the explorer's "select on the left, inspect
-on the right" shape:
+Layout renders through the
+[master-detail scaffold](../gui/master-detail.md) (#634):
 
-- **Run list** (left) — one row per `node_.runs()` entry. Runs have no human
-  name, so each row is a **color-coded status badge** (pending neutral, running
-  amber, succeeded green, failed red — the same palette as the cluster panel)
-  plus the first segment of the run's UUID. Selecting a row sets the active run
+- **Run list** (left) — one row per `node_.runs()` entry, a standard
+  `MasterRow`. Runs have no human name, so the title is the first segment of
+  the run's UUID, with a **status-toned dot** (pending neutral, running amber,
+  succeeded green, failed red — `tone_of`) and the status text as the mono
+  meta. Selecting a row sets the active run
   (held by id and re-resolved each frame, like the rest of the UI, so a dropped
   run can't leave a dangling handle).
 - **Detail** (right) — for the selected run:
   - **identity + status** — full id, the color-coded status, optional
-    `project` / `graph` refs, and `created` / `updated` stamps;
+    `project` / `graph` / `deploy` refs, and `created` / `updated` stamps.
+    The refs are one-click [entity links](../gui/cross-entity-links.md)
+    (#633) when they resolve against the live node — project → Explorer,
+    graph → Graph workspace, deployment → Deploy;
+  - **Compute jobs** — the jobs this run spawned (resolved by the job's
+    `run` back-ref), each linking into the Jobs panel; shown only when any
+    exist;
   - **Logs** — each entry's time, a **severity-colored** level (error red, warn
     amber, else neutral), and the message (the failing step + reason of a failed
     run surface here);
   - **Outputs** — the produced datasets / models / indexes in a `Kind / Name /
-    Ref` table;
+    Ref` table (a model ref that resolves to a real Model links into the
+    Models panel);
   - **Trained models** — the model(s) this run produced, with their metrics and
     ranked drivers (see below); shown only when the run has produced a model;
   - **Lineage** — `sources` and `steps` as joined refs, `freshness`, and
@@ -181,12 +190,14 @@ produced and renders each (`render_model_card`):
 
 The run↔model link is the **durable reverse edge** — a model whose producing-run
 ref (`Model::run()`) is this run's id — not the executor's logical model `output.ref`
-(a placeholder handle in R1). `draw_runs` filters `node_.models()` by that ref and
-passes the matches to the detail renderer.
+(a placeholder handle in R1). `draw_run_detail` filters `node_.models()` by that
+ref; each card carries an "open in models" [entity link](../gui/cross-entity-links.md)
+into the standalone Models panel (#633), and the Models panel's `run:` ref links
+back — the edge is walkable in both directions.
 
 `render_model_card` is **shared** with the standalone
 [Models panel](../gui/models-panel.md) (`App::draw_models`, **Operations → Models**), the
-model-first view over the whole [`system.zetta_models`](../data/query.md) registry — so a
+model-first view over the whole [`system.models`](../data/query.md) registry — so a
 model reads identically whether seen alongside its run here or browsed on its own
 there.
 

@@ -84,6 +84,28 @@ void audit_call(Node& node, const Capability& capability,
     node.record_audit_event(std::move(event));
 }
 
+// The consent trail (#621): the challenge under the requester, the decision
+// under the approver — audited on both sides.
+void audit_consent(Node& node, zetta::governance::AuditAction action,
+                   const std::string& actor, const std::string& capability_name,
+                   bool allowed, const std::string& detail) {
+    zetta::governance::AuditEventValue event;
+    event.action = action;
+    event.actor = actor.empty() ? "local" : actor;
+    event.target = "api:" + capability_name;
+    event.allowed = allowed;
+    event.detail = detail;
+    node.record_audit_event(std::move(event));
+}
+
+// The principal behind an acting key, for the different-principal approval
+// rule. Empty for the unauthenticated local session or an unknown key.
+std::string principal_of(Node& node, const std::string& acting_key) {
+    if (acting_key.empty()) return {};
+    if (auto key = node.find_access_key(acting_key)) return key->principal_id();
+    return {};
+}
+
 }  // namespace
 
 ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
@@ -153,14 +175,43 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
     audit_call(context.node, *capability, context.acting_key, /*allowed=*/true,
                std::string(to_string(capability->kind)) + " call");
 
-    // Consent-gated capabilities never execute on a plain call: the challenge
-    // protocol (#621) lands with the cloud tools; until then the refusal is
-    // explicit rather than a silent gap.
+    // Consent-gated capabilities never execute on a plain call (#621, the
+    // cloud hard rule over the wire): when the input touches a cloud, issue a
+    // one-time challenge naming exactly what would be read/run and return it
+    // as a structured "consent_required" failure. Approval must come through
+    // decide_consent, from a distinctly-privileged principal — this same key
+    // repeating the call only ever mints another challenge.
     if (capability->requires_consent) {
-        return finish(ApiResult::failure(
-            "consent_required",
-            "'" + name + "' touches a cloud provider and requires an approved "
-            "consent challenge; the approval flow is not wired yet (#621)"));
+        std::optional<zetta::governance::ConsentAction> action;
+        if (capability->describe_consent) {
+            action = capability->describe_consent(effective_input, context);
+        } else {
+            action = zetta::governance::ConsentAction{capability->description,
+                                                      {}, {}};
+        }
+        if (action) {
+            auto challenge = context.node.consent_ledger().create(
+                name, effective_input, std::move(*action), context.acting_key,
+                principal_of(context.node, context.acting_key));
+            span.set_attribute("consent_challenge", challenge->id);
+            audit_consent(context.node,
+                          zetta::governance::AuditAction::ConsentRequested,
+                          context.acting_key, name, /*allowed=*/false,
+                          "challenge " + challenge->id + " issued: " +
+                              challenge->action.summary);
+            ApiResult refusal = ApiResult::failure(
+                "consent_required",
+                "'" + name + "' touches a cloud provider and did NOT execute; "
+                "consent challenge " + challenge->id + " was issued and must "
+                "be approved by a different, approval-capable principal (an "
+                "approver key via approve_consent, or a human in the headed "
+                "app's approval surface). Approvals are per-action and never "
+                "remembered.");
+            refusal.error.details = zetta::governance::to_json(*challenge);
+            return finish(std::move(refusal));
+        }
+        // The describer says this input touches no cloud (e.g. the `local`
+        // target) — it executes like any other call.
     }
 
     ApiResult result = capability->handler(effective_input, context);
@@ -171,6 +222,182 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
                                                            : context.acting_key});
     }
     return finish(std::move(result));
+}
+
+ApiResult Registry::decide_consent(const std::string& challenge_id,
+                                   bool approve, const std::string& reason,
+                                   ApiContext& context,
+                                   ConsentSurface surface) const {
+    // The decision is a trace event of its own (#621: the challenge and the
+    // approval are both spans), threaded back like every call.
+    zetta::observability::ScopedSpan span(context.recorder, context.trace,
+                                          "api:consent_decision");
+    span.set_attribute("consent_challenge", challenge_id);
+    span.set_attribute("decision", approve ? "approve" : "deny");
+    span.set_attribute("surface", surface == ConsentSurface::HeadedApp
+                                      ? "headed_app"
+                                      : "approver_key");
+    span.set_attribute("actor",
+                       context.acting_key.empty() ? "local" : context.acting_key);
+
+    auto finish = [&](ApiResult result) {
+        result.trace_id = context.trace.trace_id;
+        result.span_id = span.span_id();
+        result.duration_ms = span.elapsed_ms();
+        if (result.ok) {
+            span.finish(/*ok=*/true);
+        } else {
+            span.finish(/*ok=*/false,
+                        result.error.code + ": " + result.error.message);
+        }
+        return result;
+    };
+
+    auto& ledger = context.node.consent_ledger();
+    auto challenge = ledger.find(challenge_id);
+    if (!challenge) {
+        return finish(ApiResult::failure(
+            "not_found", "no consent challenge with id '" + challenge_id + "'"));
+    }
+    span.set_attribute("capability", challenge->capability);
+
+    // The distinctly-privileged-approval rule: over the wire the decider must
+    // be a NAMED key, and approval must come from a DIFFERENT principal than
+    // the requester — the calling key can never satisfy its own challenge.
+    // (The headed surface is the trusted human-in-front-of-the-machine path.)
+    // Denial is fail-safe, so the requesting key may withdraw its own
+    // challenge; approval never relaxes.
+    const std::string decided_by = surface == ConsentSurface::HeadedApp
+                                       ? "headed app"
+                                       : context.acting_key;
+    if (surface == ConsentSurface::ApproverKey) {
+        if (context.acting_key.empty()) {
+            return finish(ApiResult::failure(
+                "unauthorized",
+                "the unauthenticated local session cannot decide a consent "
+                "challenge; use a named approver key or the headed app's "
+                "approval surface"));
+        }
+        const bool self = context.acting_key == challenge->requested_by;
+        if (approve && self) {
+            return finish(ApiResult::failure(
+                "unauthorized",
+                "the calling key can never approve its own cloud action "
+                "(challenge '" + challenge_id + "' was requested by this key)"));
+        }
+        if (approve && !challenge->requested_principal.empty() &&
+            principal_of(context.node, context.acting_key) ==
+                challenge->requested_principal) {
+            return finish(ApiResult::failure(
+                "unauthorized",
+                "approval must come from a different principal than the "
+                "requester; this key belongs to the same principal"));
+        }
+    }
+
+    if (!approve) {
+        auto denied = ledger.deny(challenge_id, decided_by,
+                                  reason.empty() ? "denied" : reason);
+        if (!denied) {
+            return finish(ApiResult::failure("engine_error", denied.reason));
+        }
+        audit_consent(context.node,
+                      zetta::governance::AuditAction::ConsentDecided,
+                      decided_by, challenge->capability, /*allowed=*/false,
+                      "challenge " + challenge_id + " denied: " +
+                          (reason.empty() ? "denied" : reason));
+        return finish(ApiResult::success(
+            {{"challenge_id", challenge_id}, {"status", "denied"}}));
+    }
+
+    auto entry = find(challenge->capability);
+    if (!entry) {
+        return finish(ApiResult::failure(
+            "unknown_capability",
+            "challenge '" + challenge_id + "' names capability '" +
+                challenge->capability + "', which is not registered here"));
+    }
+
+    // Consume the challenge — the one-time-use guarantee. From here the named
+    // action runs at most once, whatever happens to this call.
+    auto consumed = ledger.consume_for_execution(challenge_id, decided_by);
+    if (!consumed) {
+        return finish(ApiResult::failure("engine_error", consumed.reason));
+    }
+    audit_consent(context.node, zetta::governance::AuditAction::ConsentDecided,
+                  decided_by, challenge->capability, /*allowed=*/true,
+                  "challenge " + challenge_id + " approved; executing the "
+                  "named action once");
+
+    // Re-authorize the requester at execution time (its key may have been
+    // dropped or its capability expired since the challenge was issued).
+    if (!challenge->requested_by.empty()) {
+        auto decision = context.node.authorize(challenge->requested_by,
+                                               entry->required_operation);
+        if (!decision) {
+            ledger.record_outcome(challenge_id, /*ok=*/false, {},
+                                  "requester no longer authorized: " +
+                                      decision.reason);
+            audit_call(context.node, *entry, challenge->requested_by,
+                       /*allowed=*/false, decision.reason);
+            return finish(ApiResult::failure(
+                "unauthorized",
+                "the requesting key is no longer authorized: " + decision.reason));
+        }
+    }
+
+    // Execute the FROZEN input under the requester's identity: the approver
+    // authorizes, the requester acts. The execution is its own span; the
+    // audit lands under the requester (both sides are now on the trail).
+    ApiContext execution = context;
+    execution.acting_key = challenge->requested_by;
+    execution.consent_challenge_id = challenge->id;
+    execution.consent_outcome_deferred = false;
+    zetta::observability::ScopedSpan action_span(
+        context.recorder, context.trace, "api:" + entry->name);
+    action_span.set_attribute("capability", entry->name);
+    action_span.set_attribute("actor", challenge->requested_by.empty()
+                                           ? "local"
+                                           : challenge->requested_by);
+    action_span.set_attribute("consent_challenge", challenge->id);
+    action_span.set_attribute("approved_by", decided_by);
+    audit_call(context.node, *entry, challenge->requested_by, /*allowed=*/true,
+               "consent-approved execution of challenge " + challenge_id);
+
+    ApiResult result = entry->handler(challenge->input, execution);
+    action_span.finish(result.ok, result.ok ? std::string{}
+                                            : result.error.code + ": " +
+                                                  result.error.message);
+
+    if (result.ok && entry->mutates && activity_) {
+        activity_(ActivityEvent{entry->name, challenge->requested_by.empty()
+                                                 ? "local"
+                                                 : challenge->requested_by});
+    }
+    if (!execution.consent_outcome_deferred) {
+        ledger.record_outcome(challenge_id, result.ok, result.value,
+                              result.ok ? std::string{}
+                                        : result.error.code + ": " +
+                                              result.error.message);
+    }
+
+    if (!result.ok) {
+        // The approval stood, but the named action failed — surface the
+        // engine's reason verbatim (the challenge records the same outcome).
+        ApiResult failure = ApiResult::failure(result.error.code,
+                                               result.error.message,
+                                               result.error.path);
+        failure.error.details = {{"challenge_id", challenge_id},
+                                 {"status", "failed"}};
+        return finish(std::move(failure));
+    }
+    nlohmann::json output;
+    output["challenge_id"] = challenge_id;
+    output["capability"] = entry->name;
+    output["status"] =
+        execution.consent_outcome_deferred ? "executing" : "executed";
+    output["result"] = result.value;
+    return finish(ApiResult::success(std::move(output)));
 }
 
 }  // namespace zetta::api

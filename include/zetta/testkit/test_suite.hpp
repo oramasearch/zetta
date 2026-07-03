@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "zetta/observability/trace.hpp"
+
 // The in-app test suite catalog (`zetta::testkit`) — issue #462, building on the
 // UC-1 end-to-end (#399). A headless-runnable library of **canned, parameterized
 // test cases** that exercise zetta's real primitives end to end: compute / device
@@ -153,11 +155,17 @@ struct TestResult {
 };
 
 // What a case is handed beyond its options: an optional user-supplied custom data
-// path (a churn dataset directory, "" = use the built-in synthetic dataset) and a
-// progress sink the case can stream log lines to as it runs (may be null).
+// path (a churn dataset directory, "" = use the built-in synthetic dataset), a
+// progress sink the case can stream log lines to as it runs (may be null), and
+// an optional span ring + parent trace (#640) — when wired, run_test_case
+// records every case as a span (per-case timing + result-shape history — the
+// iteration flywheel; docs/architecture/observability.md). Null recorder =
+// spans no-op (the ApiContext pattern).
 struct TestContext {
     std::string custom_data_path;
     std::function<void(std::string)> log;
+    zetta::observability::SpanRecorder* recorder = nullptr;
+    zetta::observability::TraceContext trace;
     void emit(std::string line) const {
         if (log) log(std::move(line));
     }

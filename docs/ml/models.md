@@ -15,7 +15,7 @@ size + SHA-256 recorded in the metadata.
 
 This page documents the **storage + data model**: the `Model` type, its
 lifecycle (create / attach weights / query / drop) on a `Node`, how it
-replicates, and the `system.zetta_models` registry table.
+replicates, and the `system.models` registry table.
 
 ## The type
 
@@ -35,6 +35,7 @@ value (`ModelValue`):
 | `metrics` | `nlohmann::json` | Free-form object: evaluation scores (name → **number**, e.g. `{"auc": 0.91}`). |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `weights` | `optional<ModelWeights>` | `{ size, sha256 }` — set once a weights body is attached. |
+| `exposed` | `bool` | Governed serving state ([#648](https://github.com/oramasearch/zetta/issues/648), [../api/serving.md](../api/serving.md)): true publishes `/v1/models/{name}/predict` on every node. Default false; emitted in JSON only when set, so legacy records are unchanged. `Model::set_exposed` flips it (captured into the CRDT — the whole cluster converges). |
 
 `ModelWeights` is *just the fingerprint* — `size` (bytes) + `sha256`
 (lowercase-hex). The bytes themselves are never in this value; they live on disk
@@ -166,21 +167,25 @@ arrived yet is **informational** (`model_weights_missing` — awaiting transfer)
 present body that no longer matches its digest is **corruption**
 (`corrupt_model_weights`, which fails `IntegrityReport::ok()`).
 
-## The registry — `system.zetta_models`
+## The registry — `system.models`
 
 The model registry is surfaced as a read-only [system table](../data/query.md) (like
-`system.zetta_deployments`), computed at query time from `Node::models()`:
+`system.deployments`), computed at query time from `Node::models()`:
 
 ```sql
-SELECT * FROM system.zetta_models;
-SELECT model_id, kind FROM system.zetta_models WHERE kind = 'classifier';
+SELECT * FROM system.models;
+SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 ```
 
 Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
 `metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
-`weights_present`. The serialized body itself is not in the registry (it's a
-large binary on the body seam); its fingerprint and local presence are, so the
-registry shows what is trained and whether its weights have landed on this node.
+`weights_present`, `exposed`, `endpoint`. The serialized body itself is not in
+the registry (it's a large binary on the body seam); its fingerprint and local
+presence are, so the registry shows what is trained and whether its weights
+have landed on this node. `exposed` / `endpoint` surface the governed serving
+state ([../api/serving.md](../api/serving.md), #648): whether the model's HTTP
+predict route is published, and at which path (`endpoint` is null while
+unexposed).
 
 ## What this slice is (and isn't)
 
@@ -203,4 +208,4 @@ bytes the caller already has.
 - [runs.md](../pipeline/runs.md) — the sibling top-level entity this is modeled on.
 - [large-objects.md](../data/large-objects.md) — the body-transfer seam the weights reuse.
 - [replication.md](../cluster/replication.md) — the CRDT data plane.
-- [query.md](../data/query.md) — the system-table mechanism behind `system.zetta_models`.
+- [query.md](../data/query.md) — the system-table mechanism behind `system.models`.

@@ -22,8 +22,12 @@ gotchas). The experience contract this work serves is
    nothing-yet case — one sentence + the single next action) · `banner`
    (mandatory for action outcomes — engine reason verbatim, never "failed") ·
    `entity_link` for EVERY cross-entity reference · status via `tone_of(...)`
-   only. Need a new visual? Add it to the grammar (design-system check) before
-   using it.
+   only, rendered with `status_label` (rows: dot + word) / `status_pill`
+   (detail headlines) / `status_dot(tone)` — see
+   [docs/gui/status-tones.md](../../../docs/gui/status-tones.md) · a
+   list+detail panel renders through `master_detail(...)` (rows + detail body
+   only — docs/gui/master-detail.md), never a hand-rolled split. Need a new
+   visual? Add it to the grammar (design-system check) before using it.
 3. **Live sources only**: render from `system.*` / `Node::…()` each frame; no
    panel-owned copies of engine state (selection/animation only). New
    observable state = a `system.<table>` read view in zetta-core first
@@ -31,13 +35,20 @@ gotchas). The experience contract this work serves is
 4. **Navigation**: change views only via `App::navigate_to(view, entity_id)`;
    consume the per-view pending selection in master-detail panels.
 5. **Never block the frame**: long work → worker thread or a recorded job
-   polled from its `system` view (#624 pattern). Cloud consent gates are
+   polled from its `system` view (the shipped #624 pattern —
+   [docs/gui/long-running-actions.md](../../../docs/gui/long-running-actions.md):
+   op handles + `App::poll_background_ops`, node writes via the owner gate).
+   Cloud consent gates are
    sacred (see the rule card's hard rule).
 
 ## Before shipping
 
-- Design-system self-check passes; sentence case; no em-dashes; coral only on
-  the active/you-are-here accent.
+- Design-system self-check passes; sentence case; no em-dashes (`·` is the
+  empty-cell placeholder); coral only on the active/you-are-here accent.
+- Product language (#635): enums/kinds render via `label_of(...)` /
+  `humanize_kind` in `labels.hpp`, never a raw wire name as primary text; raw
+  values only in labelled mono metadata lines; `term_hint` for unavoidable
+  technical terms — [docs/gui/copy-audit.md](../../../docs/gui/copy-audit.md).
 - No local colors/paddings/one-off buttons outside the grammar.
 - Screenshot before/after in the PR for visual changes.
 - Docs same commit: the view's page in `docs/gui/`, gui README index,

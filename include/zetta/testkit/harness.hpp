@@ -15,7 +15,6 @@
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/featurize.hpp"
 #include "zetta/ml/gbdt.hpp"
-#include "zetta/storage/json_store.hpp"
 
 // Shared harness for the testkit catalog (`zetta::testkit`) — the reusable pieces a
 // case body builds on: an auto-cleaned scratch directory, a **real multi-node
@@ -44,6 +43,17 @@ private:
     std::filesystem::path path_;
 };
 
+// How a LoopbackCluster wires its nodes.
+struct LoopbackOptions {
+    // When true, each node is wired the way `main()` wires a live process: a
+    // ReplicationManager (the CRDT document gossips over the cluster link) + a
+    // ReplicatedBlobStore (large-object bodies transfer peer-to-peer, partition
+    // bodies placed by ownership) behind the Node and the Cluster. The default
+    // (false) is the membership-only substrate: real TCP + collectives, no
+    // replicated catalog — the cheaper shape most distributed cases need.
+    bool replicated = false;
+};
+
 // A real, fully-connected loopback cluster of N nodes on the local host — each a
 // Node + a Cluster over TCP (127.0.0.1), brought up sequentially so every node
 // dials the actual bound addresses of the earlier ones (robust to busy ports), then
@@ -54,7 +64,7 @@ class LoopbackCluster {
 public:
     // Stand up `node_count` connected nodes. `connected()` reports whether
     // membership converged within the bring-up window.
-    explicit LoopbackCluster(std::size_t node_count);
+    explicit LoopbackCluster(std::size_t node_count, const LoopbackOptions& options = {});
     ~LoopbackCluster();
     LoopbackCluster(const LoopbackCluster&) = delete;
     LoopbackCluster& operator=(const LoopbackCluster&) = delete;
@@ -65,6 +75,13 @@ public:
     Node& node(std::size_t index);
     zetta::cluster::Cluster& cluster(std::size_t index);
     const std::string& node_id(std::size_t index) const;
+
+    // Announce node `index` as a **replicated cluster member**: set its
+    // `node:<id>` membership key (id + dial address) in its own document, exactly
+    // the way a live process announces itself on start. Replicated mode only (a
+    // no-op otherwise). A case that models a burst announces only its permanent
+    // members and lets `apply_added_nodes` announce the burst ones.
+    void announce_member(std::size_t index);
 
 private:
     struct Entry;
@@ -92,9 +109,6 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset();
 // no-argument default.
 ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
                                  double learning_rate);
-
-// Build an in-memory JsonStore from a set of numeric rows (the connect-step input).
-zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows);
 
 }  // namespace testkit
 }  // namespace zetta

@@ -120,6 +120,21 @@ JSONL files also import straight into a zetta table via
 `zetta::data::import_records(table, dir / "accounts.jsonl")` (so the data is *loadable
 into a zetta table*, the acceptance bar).
 
+### The writer (the loader's inverse, #623)
+
+`write_churn_dataset(dataset, dir)` writes any in-memory `ChurnDataset` back to
+`dir` in the canonical JSONL form (`dataset.json` + `accounts.jsonl` +
+`events.jsonl`) — exactly the files `load_churn_dataset` reads. It shares the
+loader's one boundary: every record is serialized to the schema shape and
+validated against the **same embedded schemas before anything is written**, so
+an invalid dataset fails fast with a path-qualified reason and no partial files
+land. Non-throwing (returns `""` on success, else the reason). The headed
+[first-run guided demo](../gui/onboarding.md) uses it to materialize
+`demo_churn_dataset()` on disk so the demo loads as a real partitioned dataset
+(`data::add_dataset_file`) with no file dialog; the round trip (write → load ==
+identity) is pinned by `tests/usecases/churn/test_churn_dataset.cpp`, which
+also keeps `demo_churn_dataset()` itself schema-valid.
+
 ### Boundary validation
 
 Three draft-07 JSON Schemas define and guard the formats:

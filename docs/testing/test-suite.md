@@ -15,7 +15,7 @@ include/zetta/testkit/harness.hpp      ScratchDir, LoopbackCluster, the in-code
 src/core/testkit/test_suite.cpp        the engine (options, result, runner, builtin)
 src/core/testkit/harness.cpp           the loopback cluster + dataset helpers
 src/core/testkit/cases_*.cpp           the canned cases, one file per category
-src/gui/app.cpp (draw_test_suite)      the headed renderer
+src/gui/app_test_suite.cpp (draw_test_suite)      the headed renderer
 tests/testkit/test_testkit.cpp                 runs every representative case headless
 ```
 
@@ -39,6 +39,27 @@ the elapsed time. A `TestContext` carries an optional **custom dataset path** (a
 dataset directory the data-driven cases load instead of the built-in synthetic one)
 and a progress-log sink.
 
+**Every case runs inside a trace (#640,
+[observability.md](../architecture/observability.md)).** Wire an
+`observability::SpanRecorder*` (+ optionally a parent `TraceContext`) on the
+`TestContext` and `run_test_case` records one `testkit:<case.id>` span per
+case — its duration, category, and the full result shape (outcome / summary /
+metrics) — readable back through `system.spans` / `get_trace`; reusing the
+same context threads a whole sweep into ONE trace. The GUI's Test-suite panel
+records into the live node's ring, so in-app runs surface like any other
+operation. Null recorder (the default) = spans no-op.
+
+**Running a case in the background with a durable handle (#617):**
+`testkit::AsyncCaseRun` (`include/zetta/testkit/async_case_run.hpp`) runs one
+case on a worker with a live **Run record** as the handle — created on the
+owner thread at `start()` (project label `testkit`, graph label = the case
+id) so the `run:<uuid>` id is known at submit; the case's log lines, metrics,
+and verdict flush to the Run with the terminal status (Pass/Skipped →
+Succeeded, Fail/Error → Failed). This is the engine entry point behind the
+MCP `testkit_run` capability
+([../api/governed-actions.md](../api/governed-actions.md)); the GUI panel
+keeps its own worker + live-streamed panel log.
+
 ## The cases
 
 | Category | Cases | What they check |
@@ -46,7 +67,7 @@ and a progress-log sink.
 | **Compute & device** | `compute.cpu.elementwise`, `compute.cpu.reduce_sort`, `compute.cuda.conformance` | CpuDevice operators (map / elementwise / reduce / sort_by_key) against the host; the CUDA build state (skipped on a CPU-only build) |
 | **DDF** | `ddf.scan_filter`, `ddf.group_by`, `ddf.parquet_reader_parity` | scan a table into a typed columnar frame, filter via the device gather op, and group-by aggregate — checked against a host computation; the native (no-Arrow) [Parquet reader](../data/parquet-reader.md) loads a projected subset of a pyarrow-produced file into a DataFrame and matches the embedded pyarrow golden on schema / row count / dtypes / values, dropping the `embedding_*` columns (TC-9 / #499) |
 | **Machine learning** | `ml.gbdt_train`, `ml.tree_shap`, `ml.calibration` | train a histogram GBDT (AUC); exact TreeSHAP (the efficiency identity `base + Σφ = raw` + the dominant driver); probability calibration (Platt / isotonic) |
-| **Distributed & cluster** | `cluster.membership`, `cluster.allreduce`, `cluster.group_by_consistency`, `cluster.compute_near_data`, `cluster.partition_rebalance`, `cluster.fulltext_index`, `cluster.uc1_at_scale` | a real N-node loopback cluster forms; an allreduce returns the identical global result on every node; a distributed group-by equals the single-node computation; a [compute-near-data](../compute/compute-near-data.md) group-by runs over each node's locally-owned partitions, moving only the partials over the wire (≪ the dataset read near data) while matching the single-node oracle (TC-11 / #501); a partitioned table rebalances on a node join — the rendezvous re-placement reflects in `system.dataset_partitions` on every node, `rf` preserved, every row still readable (TC-10 / [#500](https://github.com/oramasearch/zetta/issues/500)); a [per-partition full-text index](../indexing/distributed-fulltext.md) builds over each node's owned partitions and a scatter-gather query's ranking matches a consolidated-index oracle on every node — the `oramacore_fulltext` BM25F backend when compiled in, else a partition-independent reference scorer (TC-13 / [#503](https://github.com/oramasearch/zetta/issues/503)); and the **UC-1-at-scale capstone** — one sim-Python program loads the saas parquet partitioned, adds nodes, and trains a calibrated `outcome` model [compute-near-data](../use-cases/uc1-at-scale-e2e.md), explained + ranked, gated + governed, identical on every node (TC-12 / [#531](https://github.com/oramasearch/zetta/issues/531)) |
+| **Distributed & cluster** | `cluster.membership`, `cluster.allreduce`, `cluster.group_by_consistency`, `cluster.compute_near_data`, `cluster.partition_rebalance`, `cluster.fulltext_index`, `cluster.uc1_at_scale` | a real N-node loopback cluster forms; an allreduce returns the identical global result on every node; a distributed group-by equals the single-node computation; a [compute-near-data](../compute/compute-near-data.md) group-by runs over each node's locally-owned partitions, moving only the partials over the wire (≪ the dataset read near data) while matching the single-node oracle (TC-11 / #501); a partitioned table rebalances on a node join — the rendezvous re-placement reflects in `system.dataset_partitions` on every node, `rf` preserved, every row still readable (TC-10 / [#500](https://github.com/oramasearch/zetta/issues/500)); a [per-partition full-text index](../indexing/distributed-fulltext.md) builds over each node's owned partitions and a scatter-gather query's ranking matches a consolidated-index oracle on every node — the `oramacore_fulltext` BM25F backend when compiled in, else a partition-independent reference scorer (TC-13 / [#503](https://github.com/oramasearch/zetta/issues/503)); and the **UC-1-at-scale capstone** — one sim-Python program loads the saas parquet as one partitioned table across a replicated cluster's permanent members, bursts within its `cost_cap=` through the [BurstApprovalGate](../cloud/burst-approval-gate.md) (over-cap blocked + audited), rebalances partitions onto the burst nodes, trains a calibrated `outcome` model [compute-near-data](../use-cases/uc1-at-scale-e2e.md) across the grown cluster (explained + ranked), then tears the burst down with the model still serving — gated + governed, identical on every node (TC-12 / [#502](https://github.com/oramasearch/zetta/issues/502), [#531](https://github.com/oramasearch/zetta/issues/531)) |
 | **Governance** | `governance.access_control`, `governance.audit`, `governance.entity_resolution_gate`, `governance.burst_identity` | deny-by-default key-scoped access; the immutable audit trail; the entity-resolution gate (FullName passes, Brand conflates the FedEx siblings and is blocked — TC-4 / RULE-1); bursting N nodes through the real cloud-burst provisioner mints N distinct short-lived identities and teardown revokes them with no orphans (TC-6 / ADR-20 / RSK-9) |
 | **UC-1 pipeline** | `pipeline.uc1_end_to_end` | the whole gated + governed churn pipeline (the [#399 end-to-end](../use-cases/uc1-end-to-end.md)) as one runnable case |
 | **Example scripts** | `examples.churn_pipeline`, `examples.minimal_train`, `examples.method_chain`, `examples.unterminated_string`, `examples.no_pipeline_steps` | sim-Python example programs run end to end (parse → IR → gate → run) and asserted on — *the example programs ARE the integration tests* ([example-scripts.md](example-scripts.md), #523) |
@@ -72,7 +93,13 @@ other case. See [example-scripts.md](example-scripts.md).
 The distributed cases run on a `LoopbackCluster`: N real `Node` + `Cluster`
 instances on `127.0.0.1`, brought up sequentially (each dials the actually-bound
 addresses of the earlier ones, robust to busy ports) and waited until membership
-converges — the same substrate the distributed gtest suites use. A SPMD case spawns
+converges — the same substrate the distributed gtest suites use. An opt-in
+**replicated mode** (`LoopbackOptions{.replicated = true}`) wires each node the
+way `main()` wires a live process — `ReplicationManager` + `ReplicatedBlobStore`
+behind the Node and the Cluster — so the catalog gossips and partition bodies
+follow ownership; `announce_member(i)` publishes a node's `node:<id>` membership
+key (the TC-12 case announces only its permanent members and lets the burst path
+announce the rest). A SPMD case spawns
 a thread per node calling the collective / distributed op concurrently, then asserts
 every node agrees (and, for group-by, that the distributed result equals the
 single-node ground truth). Cases are **self-contained**: they stand up their own
@@ -168,7 +195,7 @@ needs a test fake exposed to the testkit.
 - `ddf.featurize` — `point_in_time_featurize` over the churn dataset vs a leakage-free ground truth (node)
 - `ddf.distributed_sort` — sample-sort across the cluster; globally range-ordered partitions (cluster)
 - `ddf.distributed_join` — repartition + local join; single-node == multi-node (cluster)
-- `ddf.group_by_job` / `ddf.featurize_job` — the recorded `ComputeJob` path (appears in `system.zetta_jobs`) (coordinator)
+- `ddf.group_by_job` / `ddf.featurize_job` — the recorded `ComputeJob` path (appears in `system.jobs`) (coordinator)
 - `query.group_by_sql` — `SELECT … GROUP BY` routed through the DDF engine (node)
 
 ### Machine learning
@@ -219,9 +246,9 @@ needs a test fake exposed to the testkit.
 
 ### Query layer & catalog
 - `query.ddl_dml` — CREATE / DROP DATABASE + TABLE, INSERT, SELECT with a `WHERE` comparison (node)
-- `query.system_tables` — `system.zetta_nodes` / `zetta_deployments` / `zetta_models` / `zetta_jobs` computed at query time (node / cluster)
+- `query.system_tables` — `system.nodes` / `deployments` / `models` / `jobs` computed at query time (node / cluster)
 - `solution.catalog` — the built-in AI Solution Library blueprints parse + schema-validate + id-uniqueness (pure)
-- `solution.churn` — `run_churn_solution`: the catalog churn blueprint on the real engine → a real `Model` + ranked list + drivers (coordinator)
+- `solution.churn` — `run_churn_solution_on_node`: the catalog churn blueprint on the real engine → a real `Model` + ranked list + drivers (coordinator)
 
 Most **(pure)** and **(node)** cases are drop-in (same shape as the existing ones).
 The **(fake seam)** provisioning cases need a small refactor to expose a fake control

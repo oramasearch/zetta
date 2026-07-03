@@ -28,7 +28,7 @@ parent, modeled like the other replicated entities — but, unlike them, it is
 | Field | Type | Notes |
 |---|---|---|
 | `id` | `std::string` | UUIDv4; also the on-disk file name. Never changes. |
-| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested`. |
+| `action` | `AuditAction` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access` / `job_created` / `job_finished` / `key_issued` / `key_revoked` / `provision_requested` / `cloud_inspected` / `dataset_added` (#624). |
 | `actor` | `std::string` | Who acted — the login key id / principal, when known (else empty). |
 | `target` | `std::string` | What was acted on — a graph name, a deploy graph name, or a `kind:name` resource. |
 | `allowed` | `bool` | The outcome. For `data_access` it is the decision; for state changes it is `true`. |
@@ -150,7 +150,7 @@ This is the audit half of FEAT-9, on top of the
 [key-scoped access model](access-control.md). The pieces still ahead: **approval
 gates** (block a risky action pending sign-off), threading the login key through
 the **request path** (so every query / mutation is authorized and audited, not
-just the `authorize` seam), and a **`system.zetta_audit`** SQL table (the trail is
+just the `authorize` seam), and a **`system.audit`** SQL table (the trail is
 queryable via the C++ API today). The trail is now surfaced in the **GUI**: the
 headed [Admin & Settings panel](../gui/admin-panel.md) (SCR-7 / CMP-5) renders it as a
 read-only table.

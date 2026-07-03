@@ -24,7 +24,7 @@ views project from:
 ## What you see
 
 While a distributed run is in flight, the canvas (`App::draw_cluster`,
-`src/gui/app_operations.cpp`) comes alive:
+`src/gui/app_cluster.cpp`) comes alive:
 
 - **Partition placement** — a new [partition catalog](../data/dataset-partitions.md) entry
   (e.g. from [Add dataset](../data/add-dataset.md) or the [partitioned write
@@ -51,11 +51,11 @@ While a distributed run is in flight, the canvas (`App::draw_cluster`,
   nodes light up.
 
 Below the canvas a **live activity strip** echoes the real numbers verbatim —
-`rounds`, `wire moved`, `near-data jobs`, `partitions`, and the
+`sync rounds`, `moved over network`, `near-data jobs`, `partitions`, and the
 placed / rebalanced tallies witnessed since the view opened — with a legend tying
-the flow colours to **near data** (green, stays home) vs **over the wire** (ink).
-When no compute plane is attached (a standalone node) the strip says so and the
-canvas stays quiet.
+the flow colours to **near data** (green, stays home) vs **across the network**
+(ink). When the node is not part of a compute cluster (running standalone) the
+strip says so and the canvas stays quiet.
 
 ### Colours (Orama design system)
 
@@ -79,12 +79,13 @@ per-node gauges:
   per-node "activity" level). `PipelineInputs` is the per-frame snapshot the
   animator diffs — a plain value type built from the `Node` accessors, so the header
   carries **no zetta-core dependency**.
-- **`src/gui/app_operations.cpp`** — `update_cluster_pipeline()` snapshots the three
+- **`src/gui/app_cluster.cpp`** — `update_cluster_pipeline()` snapshots the three
   read views **once per frame** in `draw_cluster`, **diffs** the snapshot against the
   baseline (a new partition id → placement; changed owners → a move; a new job id →
   a near-data read + wire flow; an advanced `rounds_completed` → a scatter/gather
-  set), and advances + culls the in-flight flows. `draw_pipeline_flow()` positions
-  each flow from the **live box centres** (rebuilt each frame, so the animation
+  set), and advances + culls the in-flight flows. `draw_pipeline_flow()` (in
+  `app_operations_internal.hpp`, shared with the Search view) positions each
+  flow from the **live box centres** (rebuilt each frame, so the animation
   tracks a window resize / reflow) and glides it over the boxes.
 
 ### Staying within the render cadence
@@ -122,10 +123,15 @@ introduces **no new format to validate** (see
   `PipelineInputs` (pure data).
 - `src/gui/app.hpp` — the `ClusterPipelineState cluster_pipeline_` member +
   `App::draw_pipeline_activity`.
-- `src/gui/app_operations.cpp` — `update_cluster_pipeline()` (the diff),
-  `draw_pipeline_flow()` (one flow), the integration in `App::draw_cluster` (snapshot
-  → update → box-centre capture + activity halo → flow overlay), and
-  `App::draw_pipeline_activity()` (the live strip + legend).
+- `src/gui/app_operations_internal.hpp` — the flow palette (`kFlow*`),
+  `with_alpha`, `flow_color`, and `draw_pipeline_flow()` (one flow) — shared by
+  the Cluster view's overlay and the Search view's cluster strip
+  ([search-view.md](search-view.md), #643), which replays a completed search's
+  scatter-gather from its per-node provenance through the same grammar.
+- `src/gui/app_cluster.cpp` — `update_cluster_pipeline()` (the diff), the
+  integration in `App::draw_cluster` (snapshot → update → box-centre capture +
+  activity halo → flow overlay), and `App::draw_pipeline_activity()` (the live
+  strip + legend).
 
 ## See also
 

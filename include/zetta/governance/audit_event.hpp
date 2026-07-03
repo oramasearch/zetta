@@ -22,6 +22,10 @@ enum class AuditAction {
     KeyIssued,      // an access key was issued (e.g. a burst node's identity, ARC-13)
     KeyRevoked,     // an access key was revoked (e.g. on burst teardown)
     ProvisionRequested,  // a provision burst hit the cost-cap approval gate (APR-3)
+    CloudInspected,  // a consent-approved cloud inspect ran (provider CLI, #624)
+    DatasetAdded,    // a dataset file was added as a partitioned table (#624)
+    ConsentRequested,  // a remote consent challenge was issued (#621)
+    ConsentDecided,    // a consent challenge was approved/denied (#621)
 };
 
 // The canonical lowercase wire name of an action, and the inverse. These are the

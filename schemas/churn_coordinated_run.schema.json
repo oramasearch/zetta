@@ -1,0 +1,139 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "The churn-solution run.launch payload (#601): the graph, the full encoded numeric shards (each participant slices its own disjoint entity shard), the as_of cutoff, and the run options.",
+  "properties": {
+    "accounts": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "churned": {
+            "maximum": 1,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "entity": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mrr": {
+            "type": "number"
+          },
+          "seats": {
+            "type": "integer"
+          },
+          "tenure_days": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entity",
+          "mrr",
+          "seats",
+          "tenure_days",
+          "churned"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "as_of": {
+      "type": "number"
+    },
+    "events": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ts": {
+            "type": "integer"
+          },
+          "type": {
+            "type": "integer"
+          },
+          "value": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "entity",
+          "ts",
+          "value",
+          "type"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "graph": {
+      "type": "object"
+    },
+    "options": {
+      "additionalProperties": false,
+      "properties": {
+        "calibration": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "holdout_fraction": {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            "method": {
+              "enum": [
+                "platt",
+                "isotonic"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "enabled",
+            "method",
+            "holdout_fraction"
+          ],
+          "type": "object"
+        },
+        "graph_label": {
+          "type": "string"
+        },
+        "model_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "project": {
+          "type": "string"
+        },
+        "top_k": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "params",
+        "calibration",
+        "top_k",
+        "model_name"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "graph",
+    "as_of",
+    "events",
+    "accounts",
+    "options"
+  ],
+  "title": "zetta.ChurnCoordinatedRun",
+  "type": "object"
+}

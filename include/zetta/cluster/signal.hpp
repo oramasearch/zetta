@@ -4,6 +4,8 @@
 #include <string>
 #include <string_view>
 
+#include <nlohmann/json.hpp>
+
 // The **signal plane**: a typed, ephemeral message layer carried over the
 // equal-peer cluster transport (alongside replication gossip + large-object
 // transfer). A signal is one of:
@@ -44,6 +46,10 @@ struct Signal {
     std::string from;     // sender node id (set on receive)
     bool ok = false;          // Response: did the remote handler succeed?
     std::string error;        // Response: failure reason when !ok
+    // Optional W3C trace context (docs/architecture/observability.md, #640):
+    // set on send so the receiving node's handler spans join the SENDER's
+    // trace — one trace per distributed run, across the whole cluster.
+    std::string traceparent;
 };
 
 // The result of an RPC: `ok` with a `payload`, or a failure `reason`. A failure
@@ -92,5 +98,10 @@ std::string encode_signal(const Signal& signal);
 // nullopt on any failure. Non-throwing, mirroring `ir::from_json`.
 std::optional<Signal> decode_signal(std::string_view envelope,
                                     std::string* error = nullptr);
+
+// The signal-envelope JSON Schema (draft-07) — the code-owned source of truth
+// decode_signal enforces; schemas/signal_envelope.schema.json is generated
+// from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& signal_envelope_schema();
 
 }  // namespace zetta::cluster

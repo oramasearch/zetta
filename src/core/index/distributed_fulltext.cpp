@@ -47,68 +47,19 @@ void set_error(std::string* out, std::string message) {
     if (out) *out = std::move(message);
 }
 
-// The fulltext.query REQUEST schema (draft-07). Mirrored at
-// schemas/fulltext_query.schema.json; this embedded copy is the one enforced at
-// runtime (the signal-envelope / collective-message pattern). A closed object: the
-// index it names (table/kind/fields) + the query (term) are required; backend /
-// field / tag / top_k are optional.
-const nlohmann::json& query_schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.FulltextQueryRequest",
-      "type": "object",
-      "properties": {
-        "tag":     { "type": "string" },
-        "table":   { "type": "string", "minLength": 1 },
-        "kind":    { "type": "string", "enum": ["search", "vector", "feature"] },
-        "backend": { "type": "string" },
-        "fields":  { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "field":   { "type": "string" },
-        "term":    { "type": ["string", "number", "boolean", "null"] },
-        "top_k":   { "type": "integer", "minimum": 0 }
-      },
-      "required": ["table", "kind", "fields", "term"],
-      "additionalProperties": false
-    })JSONSCHEMA");
-    return schema;
-}
-
-// The fulltext.query RESPONSE schema (draft-07). Mirrored at
-// schemas/fulltext_hits.schema.json. One node's ranked hits: a list of
-// { id, score } objects.
-const nlohmann::json& hits_schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.FulltextQueryResponse",
-      "type": "object",
-      "properties": {
-        "from": { "type": "string" },
-        "hits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id":    { "type": "string" },
-              "score": { "type": "number" }
-            },
-            "required": ["id", "score"],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": ["hits"],
-      "additionalProperties": false
-    })JSONSCHEMA");
-    return schema;
-}
-
+// Process-wide validators, compiled once from the schemas (the expensive
+// step). The schemas themselves are the public fulltext_query_schema() /
+// fulltext_hits_schema() accessors below — the code-owned source of truth
+// (#646).
 nlohmann::json_schema::json_validator& query_validator() {
-    static nlohmann::json_schema::json_validator validator(query_schema_document());
+    static nlohmann::json_schema::json_validator validator(
+        fulltext_query_schema());
     return validator;
 }
 
 nlohmann::json_schema::json_validator& hits_validator() {
-    static nlohmann::json_schema::json_validator validator(hits_schema_document());
+    static nlohmann::json_schema::json_validator validator(
+        fulltext_hits_schema());
     return validator;
 }
 
@@ -187,6 +138,71 @@ bool parse_body_documents(const std::string& body, const std::string& partition_
 }
 
 }  // namespace
+
+// --- the schema accessors (schema-as-code, #646) ------------------------------
+
+// The fulltext.query REQUEST schema (draft-07) — the code-owned source of
+// truth enforced at the decode_fulltext_query boundary (the signal-envelope /
+// collective-message pattern); schemas/fulltext_query.schema.json is generated
+// from it and drift-checked by tests/test_schemas.cpp. A closed object: the
+// index it names (table/kind/fields) + the query (term) are required; backend /
+// field / tag / top_k are optional.
+const nlohmann::json& fulltext_query_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.FulltextQueryRequest",
+  "type": "object",
+  "properties": {
+    "tag": { "type": "string" },
+    "table": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "enum": ["search", "vector", "feature"] },
+    "backend": { "type": "string" },
+    "fields": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "field": { "type": "string" },
+    "term": { "type": ["string", "number", "boolean", "null"] },
+    "top_k": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["table", "kind", "fields", "term"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+    return schema;
+}
+
+// The fulltext.query RESPONSE schema (draft-07) — the code-owned source of
+// truth enforced at the decode_fulltext_hits boundary;
+// schemas/fulltext_hits.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp. One node's ranked hits: a list of { id, score }
+// objects.
+const nlohmann::json& fulltext_hits_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.FulltextQueryResponse",
+  "type": "object",
+  "properties": {
+    "from": { "type": "string" },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "score": { "type": "number" }
+        },
+        "required": ["id", "score"],
+        "additionalProperties": false
+      }
+    },
+    "sub_indexes": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["hits"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+    return schema;
+}
 
 // --- the pure merge ----------------------------------------------------------
 
@@ -288,6 +304,7 @@ std::string encode_fulltext_hits(const FulltextQueryResponse& response) {
         hits.push_back({{"id", hit.row_id}, {"score", hit.score}});
     }
     document["hits"] = std::move(hits);
+    document["sub_indexes"] = response.sub_indexes;
     return document.dump();
 }
 
@@ -309,6 +326,8 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(std::string_view paylo
 
     FulltextQueryResponse response;
     response.from = document.value("from", std::string{});
+    response.sub_indexes =
+        static_cast<std::size_t>(document.value("sub_indexes", std::uint64_t{0}));
     for (const nlohmann::json& hit : document.at("hits")) {
         response.hits.push_back(
             FulltextHit{hit.at("id").get<std::string>(), hit.at("score").get<double>()});
@@ -416,15 +435,18 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
 }
 
 std::vector<FulltextHit> DistributedFulltextIndex::query_local(
-    const IndexSpec& spec, const IndexQuery& query, IndexStatus* status) const {
+    const IndexSpec& spec, const IndexQuery& query, IndexStatus* status,
+    std::size_t* sub_indexes) const {
     const std::lock_guard<std::mutex> lock(mutex_);
 
+    if (sub_indexes) *sub_indexes = 0;
     const auto found = sub_specs_.find(spec.key());
     if (found == sub_specs_.end() || found->second.empty()) {
         // This node holds no partitions of the index — it contributes nothing (Ok).
         if (status) *status = IndexStatus::success();
         return {};
     }
+    if (sub_indexes) *sub_indexes = found->second.size();
 
     std::vector<std::vector<FulltextHit>> per_partition;
     per_partition.reserve(found->second.size());
@@ -449,16 +471,38 @@ std::vector<FulltextHit> DistributedFulltextIndex::query_local(
 
 DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const IndexSpec& spec, const IndexQuery& query,
-    std::chrono::milliseconds timeout) const {
+    std::chrono::milliseconds timeout,
+    zetta::observability::SpanRecorder* recorder,
+    const zetta::observability::TraceContext* parent) const {
     QueryResult out;
 
+    // Tracing needs both halves; with either missing, spans become no-ops.
+    if (!parent || !parent->valid()) recorder = nullptr;
+    const zetta::observability::TraceContext trace =
+        parent ? *parent : zetta::observability::TraceContext{};
+
     // (1) This node's local contribution (across its own partitions).
+    zetta::observability::ScopedSpan local_span(recorder, trace, "search:local");
+    local_span.set_attribute("node_id", cluster_.node_id());
     IndexStatus local_status;
-    std::vector<FulltextHit> local = query_local(spec, query, &local_status);
+    std::size_t local_sub_indexes = 0;
+    std::vector<FulltextHit> local =
+        query_local(spec, query, &local_status, &local_sub_indexes);
     if (!local_status.ok()) {
+        local_span.finish(/*ok=*/false, local_status.message);
         out.status = local_status;
         return out;
     }
+    local_span.set_attribute("hits", local.size());
+    local_span.set_attribute("sub_indexes", local_sub_indexes);
+    NodeContribution local_contribution;
+    local_contribution.node_id = cluster_.node_id();
+    local_contribution.local = true;
+    local_contribution.hits = local.size();
+    local_contribution.sub_indexes = local_sub_indexes;
+    local_contribution.latency_ms = local_span.elapsed_ms();
+    local_span.finish(/*ok=*/true);
+    out.contributions.push_back(std::move(local_contribution));
 
     std::vector<std::vector<FulltextHit>> sources;
     sources.push_back(std::move(local));
@@ -477,6 +521,8 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const std::string payload = encode_fulltext_query(request);
 
     for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) {
+        zetta::observability::ScopedSpan peer_span(recorder, trace, "search:peer");
+        peer_span.set_attribute("node_id", peer.node_id);
         const zetta::cluster::SignalResponse response = cluster_.request(
             peer.node_id, std::string(kQueryMethod), payload, timeout);
         wire += payload.size();
@@ -484,6 +530,8 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
             out.status = IndexStatus::backend_error(
                 "fulltext.query to peer '" + peer.node_id + "' failed: " +
                 response.error);
+            peer_span.finish(/*ok=*/false, out.status.message);
+            out.contributions.clear();
             return out;
         }
         wire += response.payload.size();
@@ -494,8 +542,21 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
             out.status = IndexStatus::backend_error(
                 "fulltext hits from peer '" + peer.node_id +
                 "' are malformed: " + decode_error);
+            peer_span.finish(/*ok=*/false, out.status.message);
+            out.contributions.clear();
             return out;
         }
+        NodeContribution peer_contribution;
+        peer_contribution.node_id = peer.node_id;
+        peer_contribution.hits = hits->hits.size();
+        peer_contribution.sub_indexes = hits->sub_indexes;
+        peer_contribution.latency_ms = peer_span.elapsed_ms();
+        peer_contribution.wire_bytes = payload.size() + response.payload.size();
+        peer_span.set_attribute("hits", hits->hits.size());
+        peer_span.set_attribute("sub_indexes", hits->sub_indexes);
+        peer_span.set_attribute("wire_bytes", peer_contribution.wire_bytes);
+        peer_span.finish(/*ok=*/true);
+        out.contributions.push_back(std::move(peer_contribution));
         sources.push_back(std::move(hits->hits));
         ++answered;
     }
@@ -525,8 +586,9 @@ zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta:
                                   .error = "fulltext.query: " + decode_error};
         }
         IndexStatus status;
+        std::size_t sub_indexes = 0;
         std::vector<FulltextHit> hits =
-            query_local(message->spec(), message->query(), &status);
+            query_local(message->spec(), message->query(), &status, &sub_indexes);
         if (!status.ok()) {
             return zetta::cluster::SignalResponse{.ok = false,
                                   .error = "fulltext.query local: " + status.message};
@@ -534,6 +596,7 @@ zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta:
         FulltextQueryResponse response;
         response.from = cluster_.node_id();
         response.hits = std::move(hits);
+        response.sub_indexes = sub_indexes;
         return zetta::cluster::SignalResponse{.ok = true, .payload = encode_fulltext_hits(response)};
     }
     if (delegate_) return delegate_->on_request(request);

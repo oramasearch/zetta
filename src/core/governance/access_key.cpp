@@ -32,6 +32,98 @@ void AccessKey::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
+const nlohmann::json& access_key_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/access_key.schema.json",
+  "title": "AccessKey",
+  "description": "An access key (ENT-21): the login credential whose scope is the V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6) and whose capabilities are the deny-by-default rights model (ENT-22). The on-disk key.json projection of the replicated `key:<uuid>` CRDT value, owned by a principal. Mirrored by zetta::AccessKey in include/zetta/access_key.hpp, zetta::Scope in include/zetta/scope.hpp, and zetta::CapabilitySet in include/zetta/capability.hpp; enforced by scope_from_json()/capability_set_from_json() and Principal::load() in src/core/principal.cpp — keep them in sync. A malformed scope or capability is rejected at the boundary so access never silently widens or narrows.",
+  "type": "object",
+  "required": ["principal", "scope"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "The key's UUID — its CRDT key and on-disk folder name. Present in key.json (where the folder name is the source of truth) and omitted from the CRDT value (the key carries it).",
+      "type": "string"
+    },
+    "principal": {
+      "description": "The id of the Principal this key authenticates as.",
+      "type": "string"
+    },
+    "scope": { "$ref": "#/$defs/scope" },
+    "capabilities": {
+      "description": "The deny-by-default rights this key may exercise (ENT-22) — the verb/right axis, orthogonal to scope's resource axis. Optional; absent means no rights granted. An operation is permitted only by a matching, unexpired capability.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/capability" }
+    },
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    }
+  },
+  "$defs": {
+    "capability": {
+      "description": "A deny-by-default grant of a specific API/data/orchestration right (ENT-22), optionally TTL'd. An operation is covered iff its (domain, action) match exactly and the capability has not expired.",
+      "type": "object",
+      "required": ["domain", "action"],
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "The governance domain of the right.",
+          "type": "string",
+          "enum": ["api", "data", "orchestration"]
+        },
+        "action": {
+          "description": "The specific right within the domain (e.g. 'query', 'read', 'deploy', 'start_run'). The action taxonomy is open in V1.",
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Optional TTL: the ISO-8601 UTC instant (same fixed-width format as `created`) at/after which the capability is expired. Omitted means it never expires.",
+          "type": "string"
+        }
+      }
+    },
+    "scope": {
+      "description": "What the key permits — deny-by-default. A resource is in scope iff `unrestricted` is true or it appears in `grants`.",
+      "type": "object",
+      "required": ["unrestricted", "grants"],
+      "additionalProperties": false,
+      "properties": {
+        "unrestricted": {
+          "description": "The '*' grant: when true the key reaches every resource (an admin key) and `grants` need not enumerate them.",
+          "type": "boolean"
+        },
+        "grants": {
+          "description": "The explicit in-scope resources. Order is preserved.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/resource" }
+        }
+      }
+    },
+    "resource": {
+      "description": "A single node-owned resource a grant names. V1 scopes to coarse, top-level resources (databases, projects); finer tiers extend the kind enum.",
+      "type": "object",
+      "required": ["kind", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "The kind of resource.",
+          "type": "string",
+          "enum": ["database", "project"]
+        },
+        "name": {
+          "description": "The resource's name (its human-facing handle).",
+          "type": "string"
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 AccessDecision authorize(const AccessKey& key, const Resource& resource) {
     const std::string label =
         std::string(to_string(resource.kind)) + " '" + resource.name + "'";

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -23,11 +25,17 @@ struct QueryResult {
     bool ok() const { return error.empty(); }
 };
 
+// Every table the virtual `system` database serves, alphabetical (#684). The
+// single source for "which system tables exist": the `system.tables` read view
+// returns one row per entry and the headed explorer renders this list — the
+// GUI never keeps its own copy (RULE-7). See docs/data/query.md.
+std::span<const std::string_view> system_table_names();
+
 // Runs generic statements against a Node. `current_database` is the default for
 // unqualified table references (the UI's selected database). Dialect-neutral:
 // it only ever sees the generic AST.
 //
-// An optional Cluster lets SELECT read the `zetta_nodes` system table (all nodes
+// An optional Cluster lets SELECT read the `nodes` system table (all nodes
 // + replication status); without one, querying it returns a clear error.
 class Executor {
 public:

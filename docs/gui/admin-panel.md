@@ -15,24 +15,44 @@ SQL:
 
 Like the [Runs panel](../pipeline/runs.md#gui-panel), it is a **read-only viewer**. It renders
 whatever governance state the node holds (created via the API / tests, or
-replicated from a peer), so a fresh standalone node simply shows "(no principals)"
-and "(no audit events)" until something creates them. **Mutation** — issuing a
+replicated from a peer), so a fresh standalone node shows the designed empty
+states of [empty-states.md](empty-states.md) until something creates them
+(#631). **Mutation** — issuing a
 key, granting a capability as a first-class command/event (ENT-22 →
 `GrantCapability` / `CapabilityGranted`), or approval gates — is a **later FEAT-9
 slice**; this slice is the "view principals/keys, grants, and audit events"
-acceptance only.
+acceptance only — with one exception: the panel now also carries the **#621
+consent approval surface** (below), the headed half of remote consent, which
+IS a mutating affordance (approving executes the named action once).
 
 ## Layout
 
-The panel is one collapsing header, **Admin & Settings**, with two sections.
+The panel is one collapsing header, **Admin & Settings**, with three sections.
+
+### Consent requests (#621)
+
+`App::draw_consent_requests` — the **headed approval surface** for remote
+consent challenges ([../api/consent.md](../api/consent.md)). Each pending
+challenge on `node_.consent_ledger()` renders as an amber, deny-by-default
+callout (the Cloud Inspector / Add-nodes gate grammar): the summary (what +
+cost), the requester, the expiry, and **exactly** what would be read
+(`THE CLI MAY READ`) and run (`WOULD RUN`) in mono. **Approve and run once**
+drives `Registry::decide_consent` as the trusted `HeadedApp` surface —
+executing the frozen action exactly once under the requester's identity (the
+async cloud workers land in `palette_background_`, pruned by
+`poll_background_ops()`); **Deny** refuses it. Outcomes render as the
+section's banner with the engine's reason verbatim (#632). Consent is
+per-action and never remembered; an empty section states where challenges
+come from.
 
 ### Principals & access keys
 
-A list + detail, mirroring the explorer's "select on the left, inspect on the
-right" shape (and the Runs panel):
+Rendered through the [master-detail scaffold](master-detail.md) (#634), at a
+fixed height so the audit log keeps its place below:
 
 - **Principal list** (left) — one row per `node_.principal_names()` entry: a
-  **kind badge** (`user` / `service` / `node`) plus the principal's name.
+  standard `MasterRow` with a muted dot, the principal's name as the title,
+  and the kind (`user` / `service` / `node`) as the mono meta.
   Selecting a row sets the active principal (held by name and re-resolved each
   frame via `node_.find_principal`, like the rest of the UI, so a dropped
   principal can't leave a dangling handle).
@@ -54,7 +74,8 @@ the detail pane renders.
 
 ### Audit log
 
-A scrolling, header-pinned table over `node_.audit_events()` (`render_audit_log`),
+A scrolling, header-pinned table over `node_.audit_events()`
+(`App::draw_audit_log`, an App member so targets can render as entity links),
 in chronological order (matching the API's contract), with one row per event:
 
 | Column | Source | Notes |
@@ -62,7 +83,7 @@ in chronological order (matching the API's contract), with one row per event:
 | Time | `event.time()` | ISO-8601 UTC stamp. |
 | Action | `event.action()` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access`. |
 | Actor | `event.actor()` | The login key id / principal, or `—`. |
-| Target | `event.target()` | The graph name / deployment id / resource, or `—`. |
+| Target | `event.target()` | The graph name / deployed graph / job id / resource, or `—`. Job / graph / deploy targets render as [entity links](cross-entity-links.md) into their owning panel (#633); key + data-access targets stay plain text. |
 | Outcome | `event.allowed()` | `allow` (green) or `deny` (red). |
 | Detail | `event.detail()` | Human-readable reason / summary, or `—`. |
 
@@ -82,12 +103,12 @@ panels (Cluster, Runs) and depends on three shipped subsystems:
 [key-scoped access](../governance/access-control.md), the [capability model](../governance/access-control.md#the-capability-decision-ent-22),
 and the [audit trail](../governance/audit-trail.md). The natural next slices are the **mutating**
 admin actions (issue a key, grant/revoke a capability, approval gates) and a
-queryable **`system.zetta_audit`** SQL table.
+queryable **`system.audit`** SQL table.
 
 ## Pointers
 
-- `src/gui/app.cpp` — `App::draw_admin` + the file-local `render_access_key` /
-  `render_principal_detail` / `render_audit_log` view helpers.
+- `src/gui/app_governance.cpp` — `App::draw_admin` + `App::draw_audit_log` +
+  the file-local `render_access_key` / `render_principal_detail` view helpers.
 - [access-control.md](../governance/access-control.md) — the `Principal` + `AccessKey` + `Scope`
   + `Capability` model the principals/keys/grants section renders.
 - [audit-trail.md](../governance/audit-trail.md) — the immutable `AuditEvent` trail the audit-log

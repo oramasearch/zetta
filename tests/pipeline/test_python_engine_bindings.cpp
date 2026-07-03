@@ -8,9 +8,10 @@
 
 #include "temp_dir.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/cloud/burst_approval_gate.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
-#include "zetta/compute/job_coordinator.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/input/cluster_bindings.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -29,8 +30,8 @@
 //   cluster.add_nodes(n, provider=…)  -> act step    -> zetta::cloud::add_nodes (permanent-add)
 //
 // The three ML verbs need no new execution code: lowering them to model/index/serve
-// makes the existing ChurnStepExecutor (via run_churn_solution) run them. The cluster
-// control verb runs through the dedicated binding run_add_nodes_step.
+// makes the existing ChurnStepExecutor (via run_churn_solution_on_node) run them. The
+// cluster control verb runs through the dedicated binding run_add_nodes_step.
 namespace {
 
 using zetta::cloud::AddNodesResult;
@@ -46,23 +47,22 @@ using zetta::cloud::ProvisionResult;
 using zetta::cloud::Provisioner;
 using zetta::pipeline::RunStatus;
 using zetta::compute::CpuDevice;
-using zetta::compute::JobCoordinator;
 using zetta::input::PythonFrontend;
 using zetta::input::run_add_nodes_step;
 using zetta::ir::StepKind;
 
-// A single-node loopback compute node (the harness the per-op job + churn-solution
-// suites use): Node + a one-node Cluster + a started JobCoordinator over it.
+// A single-node loopback node with its OWN long-lived coordinator over its cluster
+// (node.attach_cluster, the #579 spine) — so the churn run goes through the one
+// public runner, run_churn_solution_on_node (#637).
 struct ComputeNode {
     explicit ComputeNode(std::uint16_t port)
         : node(node_config(temp_dir)),
-          cluster("python-bindings-node", cluster_config(port)),
-          coordinator(cluster, /*worker_count=*/2) {
+          cluster("python-bindings-node", cluster_config(port)) {
         node.start();
         cluster.start();
-        coordinator.start();
+        node.attach_cluster(cluster, /*worker_count=*/2);
     }
-    ~ComputeNode() { coordinator.stop(); }
+    ~ComputeNode() { node.stop(); }  // tears the coordinator down while cluster alive
     static NodeConfig node_config(const zetta::test::TempDir& dir) {
         NodeConfig cfg;
         cfg.data_dir = dir.path().string();
@@ -78,7 +78,6 @@ struct ComputeNode {
     zetta::test::TempDir temp_dir;  // declared first so it outlives `node`
     Node node;
     Cluster cluster;
-    JobCoordinator coordinator;
 };
 
 // A fake burst-pool Provisioner at the seam (the add_nodes control action programs
@@ -118,9 +117,10 @@ public:
 // =====================================================================
 
 // A churn pipeline written as a sim-Python script lowers to a connect x2 -> clean ->
-// model -> index -> serve -> act graph and runs through run_churn_solution exactly
-// like the catalog blueprint — producing a real Model, the ranked at-risk list, and
-// the churn drivers. This is the train/rank/explain half of the #522 acceptance.
+// model -> index -> serve -> act graph and runs through run_churn_solution_on_node
+// exactly like the catalog blueprint — producing a real Model, the ranked at-risk
+// list, and the churn drivers. This is the train/rank/explain half of the #522
+// acceptance.
 TEST(PythonEngineBindings, ChurnScriptTrainsRanksAndExplainsEndToEnd) {
     const auto lowered = PythonFrontend{}.compile(
         "events   = read_csv('events.csv')\n"
@@ -142,8 +142,8 @@ TEST(PythonEngineBindings, ChurnScriptTrainsRanksAndExplainsEndToEnd) {
     const zetta::usecases::churn::ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
     ASSERT_FALSE(demo.accounts.empty());
 
-    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
-        host.node, host.coordinator, device, lowered.graph, demo);
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, lowered.graph, demo);
 
     // The lowered graph executed end to end on the real engine.
     ASSERT_TRUE(result.ok()) << result.execution.error;
@@ -209,4 +209,66 @@ TEST(PythonEngineBindings, AddNodesCountFromKeywordAndNoOpWhenAbsent) {
         run_add_nodes_step(*no_count.graph.find_node("add_nodes"), provider);
     EXPECT_TRUE(none.satisfied);
     EXPECT_TRUE(none.members.empty());
+}
+
+// The burst cost cap is read from the cost_cap= keyword (#502 / TC-12). A script
+// with no cap — or a zero cap, which BurstCap treats as "unlimited" — reads as
+// "no cap named" so the ungated path runs.
+TEST(PythonEngineBindings, AddNodesCostCapReadFromKeyword) {
+    const auto capped = PythonFrontend{}.compile(
+        "cluster.add_nodes(10, provider='azure', cost_cap=12)\n");
+    ASSERT_TRUE(capped.ok()) << capped.error;
+    const auto cap = zetta::input::add_nodes_cost_cap(*capped.graph.find_node("add_nodes"));
+    ASSERT_TRUE(cap.has_value());
+    EXPECT_DOUBLE_EQ(*cap, 12.0);
+
+    const auto uncapped = PythonFrontend{}.compile("cluster.add_nodes(10)\n");
+    ASSERT_TRUE(uncapped.ok()) << uncapped.error;
+    EXPECT_FALSE(zetta::input::add_nodes_cost_cap(*uncapped.graph.find_node("add_nodes")));
+
+    const auto zero = PythonFrontend{}.compile("cluster.add_nodes(10, cost_cap=0)\n");
+    ASSERT_TRUE(zero.ok()) << zero.error;
+    EXPECT_FALSE(zetta::input::add_nodes_cost_cap(*zero.graph.find_node("add_nodes")));
+}
+
+// The Node-aware execution composes the burst approval gate when the script names
+// a cost_cap=: an over-cap request is blocked deny-by-default — the inner backend
+// is never touched — and the decision lands in the node's audit trail; a
+// within-cap request provisions through the gate and the members join.
+TEST(PythonEngineBindings, GatedAddNodesEnforcesTheScriptCostCap) {
+    ComputeNode host(24572);
+    // A transparent unit-cost estimator: one relative compute unit per node, so a
+    // request's cost is simply its count.
+    const zetta::cloud::CostEstimator unit_cost = [](const ProvisionRequest& request) {
+        return static_cast<double>(request.count);
+    };
+
+    // Over cap: 4 nodes at 1 unit each against a cap of 2 — blocked, audited.
+    const auto over = PythonFrontend{}.compile(
+        "cluster.add_nodes(4, provider='azure', cost_cap=2)\n");
+    ASSERT_TRUE(over.ok()) << over.error;
+    FakeProvisioner blocked_provider;
+    const AddNodesResult blocked = run_add_nodes_step(
+        *over.graph.find_node("add_nodes"), host.node, blocked_provider, {}, unit_cost);
+    EXPECT_FALSE(blocked.satisfied);
+    EXPECT_TRUE(blocked.members.empty());
+    EXPECT_TRUE(blocked_provider.provisioned().empty())
+        << "a blocked burst must never reach the inner backend";
+    int provision_requested = 0;
+    for (const auto& event : host.node.audit_events()) {
+        if (event->action() == zetta::governance::AuditAction::ProvisionRequested) {
+            ++provision_requested;
+        }
+    }
+    EXPECT_EQ(provision_requested, 1) << "the over-cap decision was not audited";
+
+    // Within cap: 3 nodes against a cap of 8 — the gate passes it through.
+    const auto within = PythonFrontend{}.compile(
+        "cluster.add_nodes(3, provider='azure', cost_cap=8)\n");
+    ASSERT_TRUE(within.ok()) << within.error;
+    FakeProvisioner provider;
+    const AddNodesResult added = run_add_nodes_step(
+        *within.graph.find_node("add_nodes"), host.node, provider, {}, unit_cost);
+    EXPECT_TRUE(added.satisfied);
+    EXPECT_EQ(added.members.size(), 3u);
 }

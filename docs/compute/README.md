@@ -13,6 +13,7 @@ autoscaling, or near-data execution; the ops themselves live in [../ddf/](../ddf
 - [device-registry.md](device-registry.md) — per-node device enumeration + capability report + backend selection (accelerator-first, CPU fallback) (`DeviceRegistry`, #362).
 - [work-stealing-scheduler.md](work-stealing-scheduler.md) — the task pool: idle/faster workers and nodes steal pending work, elastic mid-job membership (`WorkStealingScheduler` / `DistributedScheduler`, #366/#367).
 - [job-coordinator.md](job-coordinator.md) — the single entry compute algorithms submit work through: tasks on the scheduler, collectives at round boundaries, job lifecycle (`JobCoordinator`, #372/#579).
+- [coordinated-launch.md](coordinated-launch.md) — the cross-process SPMD co-launch: a `run.launch` signal fans an interactive run out so every member co-runs its own shard (`CoordinatedLaunchListener`, #601).
 - [compute-jobs.md](compute-jobs.md) — the `ComputeJob` record: one unit of distributed compute (featurize/train/explain/score/ddf), lifecycle + audit + JSON boundary (ARC-11 / ENT-31).
 - [compute-near-data.md](compute-near-data.md) — a distributed op runs over a node's OWNED partitions; bytes-moved ≈ partials, not ≈ dataset (`load_local_partitions`, #516, TC-11).
 - [scaling-policy.md](scaling-policy.md) — the per-job reward objective an autoscaler optimizes: cost / runtime target / data shape, inside hard bounds (`ScalingPolicy`, ADR-29 / #370).

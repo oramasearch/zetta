@@ -46,3 +46,16 @@ git submodule add -b <branch> <url> modules/<name>
 
 CMake builds `capy` via `add_subdirectory(modules/capy EXCLUDE_FROM_ALL)` with
 its tests/examples/bench disabled; only the `Boost::capy` library is consumed.
+
+## http + beast2 — the API surface's HTTP stack
+
+- **`modules/http`** — cppalliance/http (sans-I/O HTTP/1 + router + json_sink),
+  pinned to the **oramasearch/http** fork's `zetta-patches` branch (a portable
+  file-time conversion; libc++ lacks `std::chrono::clock_cast`).
+- **`modules/beast2`** — cppalliance/beast2, the coroutine-native HTTP/1
+  server on the same capy/corosio runtime as the cluster.
+
+Both are consumed ONLY by the `zetta-api` adapter TU
+(`src/core/api/http_server.cpp`). Their remaining Boost deps come from the
+official boost-cmake release via FetchContent (see the root CMakeLists block
+and docs/research/beast2-http.md).

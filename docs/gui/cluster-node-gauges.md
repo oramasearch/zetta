@@ -10,7 +10,7 @@ numbers. This is area 2 of the cluster observability epic
 
 ## What you see
 
-Each node box (in `App::draw_cluster`, `src/gui/app_operations.cpp`) carries, below
+Each node box (in `App::draw_cluster`, `src/gui/app_cluster.cpp`) carries, below
 its identity header (health dot + short id + address + sync state), a compact
 **gauge strip** of five rows — `CPU` / `MEM` / `GPU` / `DSK` / `NET`. Each row is a
 rounded meter with:
@@ -32,7 +32,10 @@ totals, and in/out rates (e.g. `16 cores · 9%`, `38.5 GB / 64.0 GB · 60%`,
 
 The load gauges (CPU / memory / GPU / storage) use the **semantic status palette**
 — green under moderate load, **amber** as it climbs (≥ 60%), **red** when saturated
-(≥ 85%) — never coral (coral stays the surgical "you are here" accent). Network
+(≥ 85%) — never coral (coral stays the surgical "you are here" accent). The
+breakpoints are the shared `tone_of_utilization` thresholds in `src/gui/tones.hpp`
+([status-tones.md](status-tones.md), #636) — the gauges keep their richer treatment
+(eased bars, sparklines) but speak the same colour language as every panel. Network
 throughput is a *flow*, not a good/bad status, so it uses a neutral ink fill and a
 relative bar normalized against a decaying rolling peak (no reliable link-capacity
 reference exists cross-platform).
@@ -76,7 +79,7 @@ the GUI, every frame:
   signal is a message, not durable state): telemetry goes stale in seconds, so the
   cache **drops a peer whose last sample aged past the TTL** (default 8s) and
   nothing is gossiped through the CRDT. It is the same *ephemeral, observed*
-  altitude as [`system.zetta_cloud_status`](../cloud/cloud-inspector.md) /
+  altitude as [`system.cloud_status`](../cloud/cloud-inspector.md) /
   [`system.checkpoints`](../compute/job-checkpoint.md).
 - The GUI is a **thin renderer over `telemetry_snapshot()`**: it holds only the
   animation state (`zetta::gui::NodeGaugeState` in `src/gui/cluster_telemetry.hpp`

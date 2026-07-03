@@ -179,7 +179,11 @@ The same acceptance is also a runnable **in-app test-suite case** —
 `cluster.partition_rebalance` ("Partition rebalance on node join (TC-10)") under
 **Operations → Test suite** ([docs/testing/test-suite.md](../testing/test-suite.md)) — so it can be
 exercised headless (`tests/testkit/test_testkit.cpp`) and from the GUI with tunable members
-/ replication-factor / rows.
+/ replication-factor / rows. The rebalance also runs **inside the TC-12 end-to-end**
+(`cluster.uc1_at_scale`, [uc1-at-scale-e2e.md](../use-cases/uc1-at-scale-e2e.md)):
+partitions move onto cost-cap-gated burst nodes (bodies following over the blob
+seam, on a live loopback cluster) before the distributed train, and drain back at
+the burst teardown.
 
 ## Where it lives
 

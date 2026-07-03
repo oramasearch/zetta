@@ -8,6 +8,7 @@
 #include <sstream>
 #include <utility>
 
+#include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
 #include "zetta/util/timestamp.hpp"
@@ -233,6 +234,69 @@ std::optional<PlaybookPolicy> PlaybookPolicy::from_json(const nlohmann::json& va
         policy.drivers.emplace(feature, std::move(*play));
     }
     return policy;
+}
+
+// The PlaybookPolicy JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/playbook_policy.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& playbook_policy_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/playbook_policy.schema.json",
+  "title": "PlaybookPolicy",
+  "description": "The editable churn retention driver dictionary (FEAT-6, #397; part of the native distributed accelerated compute pass for UC-1 churn — #264). Maps each churn driver (a feature name, the dominant TreeSHAP driver of an at-risk account) to a deterministic recommended play, an owning role, and a save-rate prior P(save | this driver) used in the expected-retained-value priority risk x ARR x save_rate. This is the use-case skin a team customizes per their retention motions; the featurize -> train -> explain -> rank core is reused unchanged. Mirrored by zetta::ml::PlaybookPolicy in include/zetta/ml/playbook.hpp and enforced by PlaybookPolicy::from_json() in src/core/ml/playbook.cpp (the hand-written non-throwing boundary, like FeaturizeSpec / ScalingPolicy) — keep them in sync. The narrator's JSON output contract is the separate playbook_entry.schema.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["default_play", "drivers"],
+  "properties": {
+    "drivers": {
+      "description": "The driver dictionary: feature name -> the play for an account whose dominant churn driver is that feature.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/play" }
+    },
+    "default_play": {
+      "description": "The fallback play for a dominant driver not present in `drivers` (the SQL COALESCE of the driver dictionary; save_rate defaults to ~0.35).",
+      "$ref": "#/$defs/play"
+    }
+  },
+  "$defs": {
+    "play": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal", "play", "owner", "save_rate"],
+      "properties": {
+        "signal": {
+          "description": "The human-readable churn signal this driver represents (e.g. 'Repeated payment failures').",
+          "type": "string",
+          "minLength": 1
+        },
+        "play": {
+          "description": "The canonical recommended retention play (e.g. 'Billing recovery / card update outreach').",
+          "type": "string",
+          "minLength": 1
+        },
+        "owner": {
+          "description": "The owning role for the play.",
+          "type": "string",
+          "enum": ["csm", "account_manager", "billing", "support", "marketing"]
+        },
+        "save_rate": {
+          "description": "The save-rate prior P(save | this is the dominant driver), in [0, 1] — a billing/involuntary issue is cheap and high-save (~0.75); a competitive/contraction issue is hard to save (~0.30). Replaced by learned uplift once the outcome log has data.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "involuntary": {
+          "description": "Whether this is an involuntary/billing churn driver (cheap to fix, prioritized first when drivers conflict). Optional; defaults to false.",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 // --- SHAP -> driver reason codes ---------------------------------------------

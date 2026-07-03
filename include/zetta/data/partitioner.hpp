@@ -210,4 +210,9 @@ private:
 std::shared_ptr<Partitioner> partitioner_from_json(const nlohmann::json& value,
                                                    std::string* error = nullptr);
 
+// The Partitioner config JSON Schema (draft 2020-12) — the code-owned source of
+// truth; schemas/partitioner.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& partitioner_schema();
+
 }  // namespace zetta::data

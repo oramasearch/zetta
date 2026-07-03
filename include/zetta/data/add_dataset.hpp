@@ -1,11 +1,14 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 namespace zetta { class Node; }
 
@@ -104,5 +107,85 @@ struct AddDatasetResult {
 // silent.
 AddDatasetResult add_dataset_file(Node& node, const std::filesystem::path& path,
                                   const AddDatasetOptions& options = {});
+
+// --- Add a dataset WITHOUT blocking the caller's thread (#624) ---------------
+//
+// AsyncDatasetAdd splits add_dataset_file into its two natural phases and runs
+// each where it belongs:
+//
+//   1. **Decode** (the slow, pure part — read + parse the file into rows) runs
+//      on a runtime worker via runtime::spawn, reporting live row counts and
+//      honoring a cooperative cancel, with NO node access at all.
+//   2. **Materialize** (the node writes — create the table, add the rows,
+//      write the partitions, record the audit event) runs on the node's owner
+//      thread in bounded slices: the owner loop calls pump() once per
+//      frame/tick, and each pump adds at most a chunk of rows, so the UI stays
+//      interactive for a large file. The partition write is a single pump
+//      today (chunking inside write_partitioned is a later slice).
+//
+// Progress: rows_decoded() is live during decode (jsonl/csv count as they
+// parse; json/parquet decode whole-file and report at the end); rows_total() /
+// rows_added() drive a real fraction during materialize. Cancel: during decode
+// nothing has touched the node; during materialize the partially-added table is
+// dropped — either way the result's error is "cancelled by user". A successful
+// add records a `dataset_added` audit event, so it surfaces in the activity
+// feed (system.activity) like every other completed action.
+//
+// Threading: construct via start() and call everything else — pump(), done(),
+// result() — from the node's owner thread only. rows_decoded() is safe any
+// time (atomic). Dropping the handle mid-decode is safe: the decode worker
+// owns its state via shared_ptr and finishes (or cancels) on its own.
+class AsyncDatasetAdd {
+public:
+    // Where the add currently is. Decoding -> Materializing -> Partitioning ->
+    // Done; failures and cancels jump straight to Done with result().error set.
+    enum class Phase { Decoding, Materializing, Partitioning, Done };
+
+    // Launch the decode worker. `options.members` is snapshotted here (call on
+    // the owner thread with the live membership, like the synchronous path).
+    static std::shared_ptr<AsyncDatasetAdd> start(Node& node,
+                                                  std::filesystem::path path,
+                                                  AddDatasetOptions options);
+
+    // Advance the owner-thread phases within a bounded slice; call once per
+    // frame/tick until done(). A no-op while the decode worker is still busy.
+    void pump();
+
+    bool done() const { return phase_ == Phase::Done; }
+    Phase phase() const { return phase_; }
+
+    // Live progress. rows_total() is 0 until the decode finishes.
+    std::size_t rows_decoded() const;
+    std::size_t rows_total() const { return rows_total_; }
+    std::size_t rows_added() const { return next_row_; }
+
+    // Ask the add to stop: mid-decode nothing touched the node; mid-materialize
+    // the next pump() drops the partial table. Idempotent.
+    void request_cancel();
+    bool cancel_requested() const;
+
+    // The file being added (for progress affordances).
+    const std::filesystem::path& source_path() const;
+
+    // The outcome (same shape as the synchronous add). Valid once done().
+    const AddDatasetResult& result() const { return result_; }
+
+    // The state shared with the spawned decode worker (public so the worker
+    // coroutine — a free function in the implementation — can take it by
+    // value; opaque outside the implementation).
+    struct DecodeState;
+
+private:
+    AsyncDatasetAdd(Node& node, std::filesystem::path path,
+                    AddDatasetOptions options);
+
+    Node& node_;
+    AddDatasetOptions options_;
+    std::shared_ptr<DecodeState> decode_;
+    Phase phase_ = Phase::Decoding;
+    std::size_t rows_total_ = 0;
+    std::size_t next_row_ = 0;  // rows materialized so far
+    AddDatasetResult result_;
+};
 
 }  // namespace zetta::data

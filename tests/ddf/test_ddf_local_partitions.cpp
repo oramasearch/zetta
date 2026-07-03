@@ -405,7 +405,7 @@ TEST(DdfLocalPartitions, NearDataGroupByMatchesOracleAndMovesOnlyPartials) {
         // The op moved far fewer bytes over the wire than it read near data — the
         // partials, not the dataset.
         EXPECT_LT(result.wire_bytes_moved, result.local_bytes_read) << "node " << index;
-        // The job is durably recorded (system.zetta_jobs).
+        // The job is durably recorded (system.jobs).
         EXPECT_TRUE(nodes[index]->node.find_job(jobs[index]->id())) << "node " << index;
 
         total_local_bytes += result.local_bytes_read;

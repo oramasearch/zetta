@@ -1,0 +1,93 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "One remote consent challenge for a cloud-touching capability (#621): the frozen request, exactly what would be read/run, and the decision trail. Ephemeral and per-node — never replicated, never remembered.",
+  "properties": {
+    "action": {
+      "additionalProperties": false,
+      "properties": {
+        "reads": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "runs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary",
+        "reads",
+        "runs"
+      ],
+      "type": "object"
+    },
+    "capability": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "created_at": {
+      "type": "string"
+    },
+    "decided_at": {
+      "type": "string"
+    },
+    "decided_by": {
+      "type": "string"
+    },
+    "detail": {
+      "type": "string"
+    },
+    "expires_at": {
+      "type": "string"
+    },
+    "id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "input": {
+      "description": "The frozen, schema-validated input approval would execute"
+    },
+    "requested_by": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "requested_principal": {
+      "type": "string"
+    },
+    "result": {
+      "description": "The executed action's output"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "denied",
+        "approved",
+        "executed",
+        "failed",
+        "expired"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "capability",
+    "input",
+    "action",
+    "requested_by",
+    "created_at",
+    "expires_at",
+    "status"
+  ],
+  "title": "ConsentChallenge",
+  "type": "object"
+}

@@ -27,7 +27,7 @@
 // monoid, and the op-spec JSON boundary — is covered by test_group_by.cpp (#383);
 // this test covers the slice #387 adds on top: a distributed groupby that runs as
 // a ComputeJob (kind ddf) across a multi-node loopback cluster, is driven through
-// its lifecycle on every node, and shows up in system.zetta_jobs.
+// its lifecycle on every node, and shows up in system.jobs.
 namespace {
 
 using namespace std::chrono_literals;
@@ -233,10 +233,10 @@ TEST(DdfGroupByJob, DistributedSumRecordsJobAndShowsInSystemTable) {
         EXPECT_DOUBLE_EQ(value_for(global, 3.0, "count"), 2.0) << "node " << index;
     }
 
-    // The acceptance: the recorded job shows up in system.zetta_jobs.
+    // The acceptance: the recorded job shows up in system.jobs.
     QueryService svc{nodes[0]->node};
     auto rows = svc.run(
-        "SELECT job_id, kind, status FROM system.zetta_jobs WHERE kind = 'ddf';", "");
+        "SELECT job_id, kind, status FROM system.jobs WHERE kind = 'ddf';", "");
     ASSERT_TRUE(rows.ok()) << rows.error;
     ASSERT_EQ(rows.rows.size(), 1u);
     EXPECT_EQ(rows.rows[0]["job_id"], jobs[0]->id());

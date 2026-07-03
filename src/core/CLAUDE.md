@@ -38,7 +38,8 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   (Run, Model, ComputeJob, AuditEvent, Index, DatasetPartition, …) use the
   embedded draft-07 schema + the pboettch validator (the `parse_run_value`
   pattern). Value-type DTOs (configs, specs, policies) use the hand-written
-  non-throwing `from_json` mirroring their `schemas/*.json`. Binary formats
+  non-throwing `from_json` mirroring their type's `*_schema()` accessor
+  (registered in `zetta::schemas::boundary_schemas()`). Binary formats
   (Parquet, Snappy, checkpoints) are bounds-checked, never trusted.
 - **Schema as code:** the C++ embedded schema (a `*_schema()` accessor) is the
   source of truth; `schemas/*.json` is generated + drift-checked. See
@@ -54,9 +55,12 @@ New capability = a new implementation of an existing seam: `StorageEngine`,
 (`FleetSource`, `IdentityHooks`, `NarratorCompletion`, `DatasetResolver`) keeps
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
-- Only `src/core/cluster.cpp` names Corosio (via `zetta::runtime::net`); only
-  `src/core/replication.cpp` names automerge-cpp. Everything else goes through
-  `zetta::runtime` / the public seams — never `boost::capy`/`boost::corosio`.
+- Only `src/core/cluster/cluster.cpp` names Corosio (via `zetta::runtime::net`
+  — including the TLS surface, #466); only `src/core/cluster/security.cpp`
+  names OpenSSL libcrypto (join-token/CA/cert minting); only
+  `src/core/cluster/replication.cpp` names automerge-cpp. Everything else goes
+  through `zetta::runtime` / the public seams — never
+  `boost::capy`/`boost::corosio`/`openssl/*`.
 - Observable state defaults to a virtual read-only `system.<table>` computed at
   query time from the live source (RULE-7); plain names, no `zetta_` prefix for
   new tables. Ephemeral/observed state (telemetry, cloud inspects, checkpoints)

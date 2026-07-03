@@ -2,12 +2,14 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "zetta/governance/capability.hpp"
+#include "zetta/governance/consent.hpp"
 #include "zetta/observability/trace.hpp"
 
 namespace zetta {
@@ -15,6 +17,9 @@ class Node;
 }
 namespace zetta::cluster {
 class Cluster;
+}
+namespace zetta::cloud {
+class Provisioner;
 }
 
 // The capability registry — the single declaration point for the programmatic
@@ -36,9 +41,14 @@ namespace zetta::api {
 // (an agent) can read the reason and adapt.
 struct ApiError {
     std::string code;     // "invalid_input" | "unauthorized" | "not_found" |
-                          // "engine_error" | "unknown_capability" | "busy"
+                          // "engine_error" | "unknown_capability" | "busy" |
+                          // "consent_required"
     std::string message;  // the engine's reason, verbatim where one exists
     std::string path;     // JSON pointer / field path when the input is at fault
+    // Structured payload riding with the failure — the consent challenge for
+    // "consent_required" (#621): the call stays an error (nothing executed),
+    // but the caller gets the full named request, not a laundered string.
+    nlohmann::json details;
 };
 
 struct ApiResult {
@@ -75,6 +85,17 @@ enum class CapabilityKind { Read, Action, Job };
 
 std::string_view to_string(CapabilityKind kind);
 
+class BackgroundActions;
+
+// Resolves a provision target id ("local", "azure", …) to the configured
+// Provisioner the embedding wired for it — the consent-gated `add_nodes`
+// capability's backend seam. Null function or null result = that target has
+// no provisioner wired here (the handler fails with a clear reason; nothing
+// is provisioned). The returned pointer is non-owning and must outlive the
+// server (the same contract as App::set_provisioner).
+using ProvisionerResolver =
+    std::function<zetta::cloud::Provisioner*(const std::string& target_id)>;
+
 // What a handler sees. `acting_key` is the AccessKey id the bearer token
 // mapped to (empty = the audited "unauthenticated local" session — the
 // governed-console precedent). The context is only ever constructed on the
@@ -82,7 +103,7 @@ std::string_view to_string(CapabilityKind kind);
 // quick (they run inside a tick).
 struct ApiContext {
     Node& node;
-    const zetta::cluster::Cluster* cluster = nullptr;  // for system.zetta_nodes
+    const zetta::cluster::Cluster* cluster = nullptr;  // for system.nodes
     std::string acting_key;                             // AccessKey id or empty
 
     // The trace this call belongs to (an inbound traceparent, or a fresh root
@@ -90,25 +111,60 @@ struct ApiContext {
     // spans become no-ops (bare library use).
     zetta::observability::TraceContext trace;
     zetta::observability::SpanRecorder* recorder = nullptr;
+
+    // Owner for the worker handles `kind: job` capabilities launch (#617,
+    // background.hpp). Null = job capabilities fail with a clear reason (an
+    // embedding that offers them must prune this each tick, beside the bridge
+    // drain).
+    BackgroundActions* background = nullptr;
+
+    // The provisioner backends this embedding wired (#621) — consulted by the
+    // consent-gated `add_nodes` capability. Empty = no targets wired here.
+    ProvisionerResolver provisioners;
+
+    // Set by Registry::decide_consent while executing an approved challenge:
+    // the challenge whose outcome the execution must land on. Handlers that
+    // finish their work asynchronously (the cloud workers) read it so the
+    // worker can record the outcome on the ledger at completion, and set
+    // `consent_outcome_deferred` so decide_consent leaves the challenge in
+    // its executing state instead of recording the immediate return value.
+    std::string consent_challenge_id;
+    bool consent_outcome_deferred = false;
 };
 
 using CapabilityHandler =
     std::function<ApiResult(const nlohmann::json& input, ApiContext& context)>;
 
+// Names exactly what a consent-gated capability WOULD read/run for this
+// (already schema-validated) input — the Cloud Inspector grammar the returned
+// challenge carries (#621). Returning std::nullopt means THIS input touches no
+// cloud (e.g. `add_nodes` on the `local` target) and the call may execute
+// without a challenge — the same input-aware gate the headed GUI applies.
+using ConsentDescriber = std::function<std::optional<governance::ConsentAction>(
+    const nlohmann::json& input, ApiContext& context)>;
+
 // One entry on the control surface. `input_schema` is draft-07 JSON Schema
 // (schema-as-code — declared next to the handler, validated at the boundary
-// with the same validator discipline as the Run record). `description` must
-// be one agent-actionable sentence that states side effects.
+// with the same validator discipline as the Run record). `output_schema`
+// documents the success value's shape (draft-07 too): it renders as the MCP
+// tool's outputSchema and as the REST/OpenAPI 200 response (#618) — asserted
+// in journeys/tests, not enforced at runtime. `description` must be one
+// agent-actionable sentence that states side effects.
 struct Capability {
     std::string name;         // snake_case: verb-first actions, noun reads
     std::string title;
     std::string description;
     nlohmann::json input_schema;
+    nlohmann::json output_schema;
     CapabilityKind kind = CapabilityKind::Read;
     zetta::governance::Operation required_operation;  // api:query / orchestration:<name>
     bool mutates = false;           // fires the activity hook on success
     bool requires_consent = false;  // cloud-touching: consent challenge (#621)
     CapabilityHandler handler;
+    // Consulted only when requires_consent: names what this input would
+    // read/run (the challenge body). Missing describer = a generic challenge
+    // built from `description`. See ConsentDescriber above.
+    ConsentDescriber describe_consent;
 };
 
 // Fired after any successful `mutates` call so an embedding GUI can refresh
@@ -137,8 +193,35 @@ public:
     // against the entry's schema -> authorize (capability check; every call is
     // audited as a data_access event with the decision) -> invoke the handler
     // -> fire the activity hook when a mutating call succeeds. Non-throwing.
+    //
+    // A `requires_consent` capability NEVER executes here (#621): when its
+    // describer says the input touches a cloud, the call issues a one-time
+    // consent challenge on the node's ledger (audited, span'd) and fails with
+    // code "consent_required" carrying the challenge as structured details.
+    // Approval goes through decide_consent below.
     ApiResult call(const std::string& name, const nlohmann::json& input,
                    ApiContext& context) const;
+
+    // Where a consent decision came from. The headed app's approval surface is
+    // the trusted human-in-front-of-the-machine path (the GUI consent-gate
+    // precedent); everything arriving over the wire is ApproverKey and must be
+    // a NAMED key of a DIFFERENT principal than the requester — the calling
+    // key (or the unauthenticated local session) can never approve its own
+    // cloud action. This parameter is set by trusted in-process callers, never
+    // from request input.
+    enum class ConsentSurface { ApproverKey, HeadedApp };
+
+    // Decide one pending challenge (#621). Approval consumes the challenge
+    // (exactly once), re-authorizes the original requester, executes the
+    // FROZEN capability input under the requester's identity, fires the
+    // activity hook, and lands the outcome on the ledger — audited on both
+    // sides (the decision under the approver, the action under the
+    // requester). Denial records the refusal; the action never runs. Both
+    // are spans. `context` is the DECIDER's context (its acting_key is the
+    // approver when surface == ApproverKey).
+    ApiResult decide_consent(const std::string& challenge_id, bool approve,
+                             const std::string& reason, ApiContext& context,
+                             ConsentSurface surface) const;
 
 private:
     std::vector<std::shared_ptr<const Capability>> entries_;

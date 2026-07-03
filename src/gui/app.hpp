@@ -4,6 +4,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <functional>
+#include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -21,13 +24,18 @@ struct ImFont;
 
 namespace zetta { class Node; }
 namespace zetta::cluster { class Cluster; }
+namespace zetta::governance { class AuditEvent; }
 namespace zetta::cluster { struct NodeStatus; }
 namespace zetta::data { struct DatasetSummary; }
 namespace zetta::pipeline { struct ValidationReport; }
 namespace zetta::pipeline { class Project; }
 namespace zetta::pipeline { class ProjectGraph; }
 namespace zetta::pipeline { struct ClusterPlan; }
+namespace zetta::pipeline { class Run; }
+namespace zetta::pipeline { struct RunProgress; }
+namespace zetta::index { struct SearchResult; }
 namespace zetta::ir { class ExecutionGraph; }
+namespace zetta::observability { class SpanRecorder; }
 namespace zetta::query { class QueryService; }
 namespace zetta::repl { class ConsoleModel; }
 namespace zetta::repl { class GovernedConsole; }
@@ -36,6 +44,11 @@ namespace zetta::testkit { struct TestResult; }
 namespace zetta::testkit { struct TestCase; }
 namespace zetta::gui { struct AddNodesOp; }
 namespace zetta::gui { struct VmSizesOp; }
+namespace zetta::api { class Registry; }
+namespace zetta::api { class BackgroundActions; }
+namespace zetta::gui { struct CloudInspectOp; }
+namespace zetta::usecases::churn { class AsyncChurnRun; }
+namespace zetta::data { class AsyncDatasetAdd; }
 
 namespace zetta::cloud { class Provisioner; }
 namespace zetta::cloud { struct CloudProvider; }
@@ -86,7 +99,40 @@ public:
     // cluster fleet); a configured deployment can inject cloud provisioners for
     // their targets, which stay consent-gated in the control. `provisioner` must
     // outlive the App. Targets with no injected provisioner render but can't act.
+    // Runs each frame right after Node::tick() — the owning-loop hook the
+    // embedded API server's bridge drains through (docs/api/registry-design.md).
+    void set_tick_hook(std::function<void()> hook) { tick_hook_ = std::move(hook); }
+
+    // The node's span ring (the API server's recorder today) — lets GUI-driven
+    // searches record their trace into the same ring MCP calls do, so
+    // list_traces / the trace pane show one history. Null (the default) = GUI
+    // searches record no spans. Non-owning; must outlive the App.
+    void set_span_recorder(zetta::observability::SpanRecorder* recorder) {
+        span_recorder_ = recorder;
+    }
+
     void set_provisioner(const std::string& target_id, zetta::cloud::Provisioner& provisioner);
+
+    // The capability registry the command palette (#625) renders and executes —
+    // the SAME list the MCP server serves (docs/api/registry-design.md: one
+    // registry, many renderings). main wires the API server's registry; when
+    // none is wired (--no-mcp) the palette builds its own from
+    // register_core_capabilities, so the human surface never loses actions.
+    // Non-owning; must outlive the App.
+    void set_capability_registry(zetta::api::Registry* registry) {
+        capability_registry_ = registry;
+    }
+
+    // The GUI half of live external-action surfacing (#620,
+    // docs/gui/external-activity.md): main wires the API server's activity
+    // hook here, so every successful mutating capability call an agent (MCP)
+    // or integration makes lands in the headed app. Thread-safe by design —
+    // it only appends to a mutex-guarded queue the frame loop drains
+    // (poll_background_ops) — though today the hook fires on this (owning)
+    // thread, inside the bridge drain. Palette-launched calls are suppressed
+    // (palette_call_in_flight_): the strip reports external actors only.
+    void notify_external_activity(const std::string& capability,
+                                  const std::string& actor);
 
 private:
     // The single active view shown in the content area. The menu bar selects
@@ -94,22 +140,84 @@ private:
     // of every panel stacked in one long scroll. Ordered along the product flow:
     // your data → architect the pipeline → operate it → govern it.
     enum class View {
-        Home,      // project-first landing (the default)
+        Home,      // the dashboard landing (SCR-1, the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
         Datasets,  // datasets (system.datasets): schema/size/format + placement
+        Search,    // fulltext search over registered indexes (Node::search, #641)
         Query,     // the SQL console
         Console,   // the SQL / simulated-Python REPL console (CMP-6)
         Graph,     // the execution-graph workspace
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
+        Activity,  // the chronological activity feed (#622): audit + runs merged
+        Traces,    // the trace pane (#640): every operation's spans, from the ring
         Runs,      // runs / outputs / lineage
-        Models,    // trained models (system.zetta_models) + register/import
+        Models,    // trained models (system.models) + register/import
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
         Admin,     // principals / keys / audit
         Tests,     // the in-app test suite (zetta::testkit catalog)
     };
+
+    // One row of the view registry (docs/gui/architecture.md): each view is
+    // declared exactly once here and consumed by the sidebar, navigation, and
+    // the command palette (#625). Adding a view = adding one row + its draw
+    // method — nothing else knows the view list.
+    struct ViewInfo {
+        View id;
+        const char* section;  // sidebar group: "" (Home) · "Data" · "Pipeline"
+                              // · "Operations" · "Governance"
+        const char* name;     // sentence case, product language
+        void (App::*draw)();  // the panel body
+        // Optional cheap live count rendered as the row's badge — reads the
+        // same live sources as the panel each frame, stores nothing.
+        // nullptr = no badge; an empty string renders none this frame.
+        std::string (App::*badge)() const;
+    };
+    // The registry — a static table in app_views.cpp, in sidebar order.
+    static std::span<const ViewInfo> view_registry();
+
+    // The ONLY way any code changes the active view. When an entity id is
+    // given it is stored as that view's pending selection; the panel consumes
+    // it on its next draw (take_pending_selection) and selects the entity —
+    // the whole foundation cross-entity links (#633) and external deep links
+    // (the API activity hook, #620) need.
+    void navigate_to(View view, const std::string& entity_id = {});
+    std::optional<std::string> take_pending_selection(View view);
+    // Render `label` as an inline link that navigates to `view` selecting
+    // `entity_id` — the grammar's cross-entity reference (#633).
+    void entity_link(const char* label, View view, const std::string& entity_id);
+    // A detail-pane reference line — a quiet mono `label` followed by
+    // `display` as an entity_link. The standard way a detail pane renders
+    // "project: <name>" / "run: <id>" when the referenced entity is
+    // reachable; unreachable refs stay plain mono_line (a link never fakes a
+    // destination).
+    void link_line(const char* label, const std::string& display, View view,
+                   const std::string& entity_id);
+    // The sectioned left navigation rail (#628), grammar-rendered from the
+    // registry; coral marks the active row (the design system's "you are here").
+    void draw_sidebar();
+    // The Cmd+K command palette (#625, app_palette.cpp): fuzzy view
+    // navigation + entity jump + the capability registry's actions rendered
+    // for humans. Issued every frame from render_frame (a popup, like the
+    // New Project modal).
+    void draw_command_palette();
+    // The palette's list step: query input + the fuzzy-ranked entries (views,
+    // entities, registry actions), grouped under mono eyebrows.
+    void draw_palette_list_step();
+    // The palette's argument step: a schema-driven form for the selected
+    // capability's input (one field per property; the schema is the form).
+    void draw_palette_argument_step();
+    // Execute a registry capability from the palette: assemble the staged
+    // argument fields per the entry's input schema, call Registry::call on
+    // this (owning) thread — schema validation, authorization, audit, spans,
+    // and the consent gate all live in that one path — and record the outcome
+    // for the palette to render (the engine's reason verbatim on failure).
+    void run_palette_capability(const std::string& capability_name);
+    // Sidebar badges: cheap per-frame reads of live engine state.
+    std::string jobs_badge() const;     // running compute jobs ("" when none)
+    std::string cluster_badge() const;  // cluster member count
 
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
@@ -148,7 +256,16 @@ private:
     void draw_menu_bar();     // selects the view; Quit toggles running_
     void draw_active_view();  // render whichever View is selected (the menu switcher)
     void draw_about_modal();  // the Help → About Orama Zetta dialog
-    void draw_home();         // project-first landing (hero + New project + projects)
+    void draw_home();         // the dashboard landing (SCR-1, #629): health strip,
+                              // needs-attention, recent runs, projects, activity
+    // First-run onboarding (#623, app_onboarding.cpp): the guided UC-1 churn
+    // demo grown out of Home's guided-start card — load the built-in demo
+    // dataset, create the churn project (pre-filled intent), watch the gate
+    // pass (and deploy), run over the live cluster, land on the ranked at-risk
+    // accounts + drivers. Step progress is derived from live engine state each
+    // frame; each step names + links the panel it exercised; Help · Guided demo
+    // replays it. Drawn by draw_home while the demo applies.
+    void draw_guided_demo_card();
     void draw_dashboard();
     void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
     void draw_projects();    // top-level AI projects (create/select/rename/delete)
@@ -162,15 +279,22 @@ private:
     // which nodes own a partition of the selected dataset.
     void draw_dataset_placement(const zetta::data::DatasetSummary& dataset);
     void draw_query();       // the SQL text area + results
+    void draw_search();      // fulltext search over registered indexes (#641/#643)
+    // The Search view's cluster strip: node boxes for the last search's
+    // answering nodes with the scatter-gather replayed as #590 flows (#643).
+    void draw_search_cluster_strip(const zetta::index::SearchResult& result);
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
-    // Run the churn solution on the REAL engine (featurize → train → explain →
-    // rank → playbook) over a built-in demo dataset, registering a real Model +
-    // jobs on the node (#398). Synchronous on the UI thread (like run_cloud_inspect):
-    // spins up an isolated single-node loopback JobCoordinator so the SPMD
-    // collectives never block on this node's real peers, runs, then tears it down.
-    // Called only from the Deploy panel's explicit "Run on real engine" action.
+    // Launch the churn solution on the REAL engine (featurize → train → explain →
+    // rank → playbook) over a built-in demo dataset, on the node's live
+    // JobCoordinator (#637). OFF the UI thread (#624): starts an
+    // AsyncChurnRun (a core worker whose node writes gate through
+    // Node::run_on_owner), so the panel stays interactive and renders live
+    // progress from the run's own records (the Run + its jobs — the same
+    // system.runs / system.jobs rows an MCP caller polls). Completion is
+    // applied by poll_background_ops(); a no-op while a churn run is already
+    // in flight. Called only from the Deploy panel's explicit action.
     void run_churn_demo();
     void draw_cluster();     // spatial selectable node-box canvas + per-node detail
     // The detail pane below the cluster canvas: full id, role, address,
@@ -211,17 +335,51 @@ private:
     // none is wired for that target.
     zetta::cloud::Provisioner* provisioner_for(const std::string& target_id) const;
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
-    // Run a provider's read-only inspect (CloudInspector) and cache the result on
-    // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
-    // never on a passive render — this is the one place the GUI touches a cloud,
-    // and only after explicit consent. Synchronous (briefly blocks the UI thread,
-    // which owns the node, so no races); a deliberate per-click action.
+    // Launch a provider's read-only inspect (CloudInspector). Called ONLY from
+    // the consent gate's Allow / Re-inspect actions, never on a passive render —
+    // this is the one place the GUI touches a cloud, and only after explicit
+    // consent. The CLI shell-out runs OFF the UI thread (#624, the AddNodesOp
+    // spawn/poll pattern); poll_background_ops() applies the report on the UI
+    // thread (record_cloud_inspection, which also audits it). A no-op while an
+    // inspect is already in flight.
     void run_cloud_inspect(const zetta::cloud::CloudProvider& provider);
+    // Apply a finished async inspect on the UI thread (defined in
+    // app_cloud.cpp, where CloudInspectOp is complete); called by
+    // poll_background_ops(). Cheap no-op while idle or still running.
+    void poll_cloud_inspect();
+    // Poll every in-flight background action each frame (#624): apply a
+    // finished cloud inspect to the node, surface a finished churn run's
+    // outcome on the Deploy panel, and pump the dataset add's owner-thread
+    // phases (a bounded slice per frame). Cheap no-ops when idle; runs
+    // regardless of the active view so background work completes even if the
+    // user navigated away.
+    void poll_background_ops();
+    // The Deploy panel's live progress block for the in-flight churn run
+    // (#624): headline + elapsed, the run's latest log line, an entity link to
+    // the live Run, and the cooperative cancel. Call only while churn_run_ is
+    // set. Defined in app_deploy.cpp.
+    void draw_churn_run_progress();
     // Render the cached inspect result for `provider` (from the node). Read-only;
     // triggers no cloud call. Shown inside the granted consent gate.
     void draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider);
+    // The Activity view (#622, docs/gui/activity-feed.md): ONE chronological
+    // feed of everything the cluster was asked to do, rendered each frame from
+    // zetta::observability::activity_entries (the audit trail + runs merged —
+    // the same source system.activity serves; no GUI copy). Filters below are
+    // presentation state only.
+    void draw_activity();
+    // The Traces view (#640, app_traces.cpp): the trace pane over the node's
+    // span ring (the same source system.traces / system.spans / get_trace
+    // read — RULE-7) — recent traces (intent · duration · status) with a
+    // per-span drill-down (plan, result shape, error verbatim).
+    void draw_traces();
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
-    void draw_models();      // standalone models (system.zetta_models): list + detail + add
+    // The selected run's detail pane body: identity + status, its cross-entity
+    // links (project / graph / deployment / jobs, #633), logs, outputs, the
+    // trained model(s) it produced, and lineage. An App member (not a
+    // file-local render_*) because the links go through entity_link.
+    void draw_run_detail(const zetta::pipeline::Run& run);
+    void draw_models();      // standalone models (system.models): list + detail + add
     // The inline "Add model" affordance inside draw_models: register/import a model
     // via Node::create_model (+ optional Model::set_weights). The assembled value is
     // re-validated against the Model JSON Schema at this boundary, so malformed
@@ -230,8 +388,33 @@ private:
     void draw_add_model_form();
     // Clear the Add-model form fields (name/kind/metrics/features/staged weights/error).
     void reset_add_model_form();
-    void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
+    void draw_jobs();        // compute jobs (system.jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
+    // The headed approval surface for remote consent challenges (#621, inside
+    // draw_admin): pending challenges from node_.consent_ledger(), each naming
+    // exactly what would be read/run, with Approve / Deny driving
+    // Registry::decide_consent as the trusted headed surface. Approval
+    // executes exactly the named action once; the async cloud workers land in
+    // palette_background_ and are pruned each frame.
+    void draw_consent_requests();
+    // The capability registry the palette + approval surface execute against —
+    // the API server's when main wired one, else a lazily-built local registry
+    // from the SAME core registration (one registry, many renderings).
+    zetta::api::Registry& ensure_capability_registry();
+    // The audit-log table inside draw_admin. An App member so each event's
+    // target can render as an entity_link routed by its action (#633): job
+    // events → Jobs, graph events → Graph, deploys → Deploy; key / data-access
+    // targets stay plain text (they already live on this panel).
+    void draw_audit_log(
+        const std::vector<std::shared_ptr<zetta::governance::AuditEvent>>& events);
+    // Resolve a project reference (uuid or name — runs/models carry the uuid,
+    // the explorer selects by name) to the project's name; empty when the
+    // project no longer exists, so callers fall back to a plain line.
+    std::string project_name_for(const std::string& project_ref) const;
+    // Whether some project stores a graph matching `graph_ref` (a stored-graph
+    // id or saved name) — the reachability check behind a "graph:" link; the
+    // workspace's deep-link consumer resolves the same two forms.
+    bool graph_is_stored(const std::string& graph_ref) const;
     void draw_test_suite();  // the in-app test suite: canned cases + options + run
     // Start the selected case on a worker thread (so distributed cases, which stand
     // up a real loopback cluster, don't block the UI). Snapshots the current options
@@ -268,7 +451,31 @@ private:
     // When `plan` is non-null, each step is overlaid with its projected cluster
     // placement — a coloured left stripe + a mono badge (near-data / fan-out /
     // all nodes / coordinator) — turning the canvas into a graph-over-cluster view.
-    void draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan);
+    // When `run_progress` is non-null (#626), each step additionally wears its
+    // live run status — a tone_of-coloured dot, an amber pulse on the running
+    // step, a red border + reason on a failed one, and the short id of the
+    // output it materialized — so the canvas shows a run moving through the graph.
+    void draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
+                           const zetta::pipeline::RunProgress* run_progress);
+    // The newest run that references the open graph — by the stored graph id,
+    // the graph's saved name, or a deployment of that name (whose runs the
+    // deployment controller starts). Scanned from the live Node::runs() each
+    // frame (a thin renderer keeps no copy); null when none reference it.
+    std::shared_ptr<zetta::pipeline::Run> latest_run_for_open_graph() const;
+    // The live-run strip below the canvas (#626): the overlaid run's identity +
+    // status (linking into the Runs view), the pinned failing reason when it
+    // failed, and the selected step's run detail — status, reason, outputs, and
+    // a click-through entity_link to a produced model's panel.
+    void draw_graph_run_status(const zetta::pipeline::Run* run,
+                               const zetta::pipeline::RunProgress& progress);
+    // Execute the open graph's SAVED contents as a real Run on this node,
+    // labelled with the project + stored-graph id so the live-run overlay (and
+    // any other reader of run.graph) can tie the run back to the graph. A
+    // churn-shaped graph runs on the real churn engine over the node's live
+    // JobCoordinator (the console/deploy wiring); anything else runs through
+    // Node::run_graph's DefaultStepExecutor. Synchronous on the UI thread that
+    // owns the node — the same deliberate per-click pattern as run_churn_demo.
+    void run_open_graph(zetta::pipeline::Project& project);
     // The cluster-plan section below the canvas (#591): a legend, the current
     // cluster's node strip (the nodes the selected step lands on are highlighted),
     // and a per-step placement table. A thin, read-only projection of how the graph
@@ -293,6 +500,7 @@ private:
                                       int filter);
 
     Node& node_;
+    std::function<void()> tick_hook_;
     zetta::cluster::Cluster& cluster_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
@@ -300,15 +508,48 @@ private:
     // mono role). Non-owning — the ImGui font atlas owns it; re-captured whenever
     // the atlas is rebuilt in apply_display_scale().
     ImFont* mono_font_ = nullptr;
+    // Geist heading face for page_header titles — same atlas/ownership rules.
+    ImFont* heading_font_ = nullptr;
     bool initialized_ = false;
     bool show_demo_ = false;
 
-    // Which panel the content area is showing (set from the menu bar). Defaults
-    // to the project-first Home landing.
+    // Which panel the content area is showing (set ONLY via navigate_to).
+    // Defaults to the project-first Home landing.
     View active_view_ = View::Home;
+    // Entity ids handed to navigate_to, waiting for their view's next draw to
+    // consume (take_pending_selection). Presentation state only.
+    std::map<View, std::string> pending_selection_;
     // Asks draw_about_modal() to open the About popup on the next frame (set from
     // the Help menu), mirroring the New Project modal's request flag.
     bool about_requested_ = false;
+
+    // Command palette (#625, app_palette.cpp). `capability_registry_` is the
+    // action source (set_capability_registry; the palette lazily builds
+    // `owned_capability_registry_` with the core capabilities when main wired
+    // none). Everything else is presentation state: the query, the selected
+    // row, the capability awaiting arguments (with its staged text fields),
+    // and the last call's outcome (status line + pretty result JSON) — the
+    // entry list itself is rebuilt from live sources every frame.
+    zetta::api::Registry* capability_registry_ = nullptr;
+    std::unique_ptr<zetta::api::Registry> owned_capability_registry_;
+    // Owner for the worker handles the kind:job capabilities launch when
+    // executed from the palette (run / testkit_run, #617); pruned each frame
+    // in poll_background_ops() — the owner thread, like churn_run_.
+    std::unique_ptr<zetta::api::BackgroundActions> palette_background_;
+    bool palette_requested_ = false;  // Cmd+K / menu asks to open next frame
+    std::string palette_query_;
+    int palette_selected_ = 0;
+    std::string palette_capability_;  // argument step's entry ("" = list step)
+    std::map<std::string, std::string> palette_args_;  // field -> staged text
+    bool palette_refocus_ = false;  // refocus the step's first input next frame
+    std::string palette_status_;    // last call's outcome line ("" = none)
+    bool palette_failed_ = false;   // tones palette_status_
+    std::string palette_trace_;     // last call's trace id ("" = none)
+    std::string palette_result_;    // last call's pretty result JSON ("" = none)
+    // The approval surface's last decision outcome (#621), rendered as the
+    // Admin panel's banner (feedback grammar #632).
+    std::string consent_decision_status_;
+    bool consent_decision_failed_ = false;
 
     // Main-loop run flag (a member so render_frame() / the menu's Quit can set it
     // without threading a reference through every call).
@@ -334,6 +575,8 @@ private:
     std::string selected_dataset_;  // dataset table id; re-resolved each frame
     std::string selected_model_;  // model id; re-resolved each frame
     std::string selected_job_;  // compute-job id; re-resolved each frame
+    std::string selected_trace_;  // trace id (Traces view); re-resolved each frame
+    std::string selected_span_;   // span id within the selected trace ("" = none)
     std::string selected_principal_;  // principal name; re-resolved each frame
     // Cluster panel: the node id of the box selected in the spatial canvas
     // ("" = none). Re-resolved against the live Cluster::nodes() each frame, so a
@@ -379,7 +622,7 @@ private:
     // Editable placement for a cloud add: region + VM size, applied to the injected
     // provisioner via Provisioner::set_placement before the add so the operator can
     // steer where a burst lands (complementing the backend's own SKU fallback).
-    // Pre-filled from the detected system.zetta_provisioners config when the target
+    // Pre-filled from the detected system.provisioners config when the target
     // changes (tracked by add_nodes_placement_target_).
     std::string add_nodes_region_;
     std::string add_nodes_vm_size_;
@@ -399,9 +642,34 @@ private:
     // reset whenever the selection changes, so consent is never carried over to a
     // different provider or remembered across selections (CLAUDE.md hard rule).
     // Only after consent does run_cloud_inspect() run the provider's read-only
-    // commands; the result is cached on the node (system.zetta_cloud_status).
+    // commands; the result is cached on the node (system.cloud_status).
     std::string selected_cloud_provider_;
     std::string cloud_consent_provider_;
+
+    // --- In-flight background actions (#624) --------------------------------
+    // Long actions never block the frame: each holds an op/handle the frame
+    // loop polls via poll_background_ops(), with a progress affordance in the
+    // owning panel and cancel where the engine supports it.
+    //
+    // The async cloud inspect (null = idle): the provider CLI runs off the UI
+    // thread via runtime::spawn (the AddNodesOp pattern, defined in
+    // app_cloud.cpp); the poll applies record_cloud_inspection on this thread.
+    std::shared_ptr<CloudInspectOp> cloud_inspect_op_;
+    // The async churn run (null = idle) — ONE at a time, shared by the Deploy
+    // panel and the Graph Workspace's churn-shaped run. The core handle's node
+    // writes gate through Node::run_on_owner, so the live Run + jobs records
+    // are the progress source. `churn_run_from_deploy_` remembers which panel
+    // launched it (the Deploy panel owns the status line; the workspace's
+    // feedback is the live-run overlay itself). Rendered while in flight by
+    // draw_churn_run_progress() (app_deploy.cpp).
+    std::shared_ptr<zetta::usecases::churn::AsyncChurnRun> churn_run_;
+    bool churn_run_from_deploy_ = false;
+    // The guided demo (#623) launched churn_run_ — poll_background_ops applies
+    // the outcome to the onboarding summary below instead of the Deploy line.
+    bool churn_run_from_onboarding_ = false;
+    // The async dataset add (null = idle): decode runs on a runtime worker;
+    // poll_background_ops() pumps the owner-thread materialize slices.
+    std::shared_ptr<zetta::data::AsyncDatasetAdd> dataset_add_;
 
     // Test suite panel (zetta::testkit). `selected_test_` is the case id selected in
     // the catalog list; `test_options_` holds its editable option values (rebuilt
@@ -429,11 +697,16 @@ private:
     std::string rename_project_input_;
     std::string rename_db_input_;
     std::string doc_input_{R"({"name": "example", "value": 1})"};
-    // Per-column inline error messages.
+    // Per-column action feedback (#632): each Explorer column surfaces its last
+    // action's outcome as a banner where the action was taken. `*_error_` carry
+    // the failure reason; `project_status_` carries the create-project success
+    // summary (set by the New Project modal, shown in the Projects column).
     std::string project_error_;
+    std::string project_status_;
     std::string db_error_;
     std::string table_error_;
     std::string row_error_;
+    std::string large_object_error_;
 
     // New Project modal (SCR-2 / FEAT-1): the full "name + paste intent + import
     // n8n artifact" front door, opened from the Projects column or File menu.
@@ -469,6 +742,23 @@ private:
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
 
+    // Search panel (#641/#643): the query being composed and the last search's
+    // outcome, held verbatim (an action-outcome snapshot, like the query
+    // panel's last result — presentation state, not a synced engine copy). The
+    // engine result is behind a unique_ptr so this header stays light.
+    std::string search_target_;   // index id or table name (combo-selected)
+    std::string search_query_;    // the free-text query being composed
+    int search_top_k_ = 10;       // result cap the panel requests
+    std::unique_ptr<zetta::index::SearchResult> search_result_;
+    std::string search_error_;    // the engine's reason when the last search failed
+    std::string search_selected_hit_;  // ranked-hit master-detail selection (row id)
+    // The Search view's cluster strip: a completed search's scatter-gather
+    // replayed as #590 flows over the answering nodes' boxes (#643). Only the
+    // flows / node_activity members are used — pure animation state, anchored
+    // to the last result's real per-node provenance.
+    ClusterPipelineState search_flows_;
+    zetta::observability::SpanRecorder* span_recorder_ = nullptr;  // may be null
+
     // Console panel — the governed Console/REPL screen (SCR-8 / #525), hosting the
     // reusable CMP-6 component (#524). The model (zetta-core, no ImGui) holds the
     // session state — selected frontend, input buffer, scrollback transcript — so a
@@ -496,14 +786,41 @@ private:
 
     // Deploy panel: the selected AI Solution Library blueprint (by id), the
     // chosen placement on the dial (R1: only Local is functional), and the last
-    // deploy action's result line.
+    // deploy action's result line. `selected_deployment_` highlights a row in
+    // the deployments table — set by a navigate_to deep link (a run's
+    // "deployment:" link, #633); presentation state only.
     std::string selected_solution_;  // catalog solution id, empty = none
+    std::string selected_deployment_;  // highlighted deployment id ("" = none)
     int deploy_placement_ = 0;       // DeploymentKind index; 0 = Local
     std::string deploy_status_;      // last deploy result (success or error)
     bool deploy_failed_ = false;     // colour deploy_status_ red vs. green
     // "Run on real engine" (churn) result line + its colour. Set by run_churn_demo().
     std::string churn_run_status_;
     bool churn_run_failed_ = false;
+
+    // First-run guided demo (#623, app_onboarding.cpp) — presentation state
+    // only. Step progress is DERIVED from live engine state each frame (the
+    // demo tables in system.datasets, a project with a captured intent, a
+    // deployment of the compiled graph, a succeeded run), never stored.
+    // `onboarding_active_` keeps the card on Home while the demo is mid-flight
+    // this session (its own steps create the state that would otherwise flip
+    // Home to the dashboard) and is how Help · Guided demo replays it;
+    // `onboarding_dismissed_` hides it (session-only — a node with any project
+    // never auto-shows the card, the issue's "never again" rule, so nothing
+    // needs persisting). The run summary below is the finished guided run's
+    // outcome (an action result, like deploy_status_): the ranked at-risk
+    // accounts + each one's dominant driver, applied by poll_background_ops.
+    bool onboarding_active_ = false;
+    bool onboarding_dismissed_ = false;
+    std::string onboarding_status_;   // last step action's outcome line (#632)
+    bool onboarding_failed_ = false;  // tones onboarding_status_
+    std::string onboarding_run_id_;   // the guided run ("" until it finishes)
+    struct OnboardingAtRisk {
+        std::string account;  // demo account name
+        double risk = 0.0;    // calibrated churn risk [0, 1]
+        std::string driver;   // its dominant churn driver
+    };
+    std::vector<OnboardingAtRisk> onboarding_at_risk_;  // top of the ranked list
 
     // Jobs panel — per-job objective/scaling controls (a live preview over the
     // built ScalingPolicy::evaluate(); see draw_job_scaling_controls). These hold
@@ -536,11 +853,45 @@ private:
     std::string add_model_weights_path_;     // staged weights file ("" = none)
     std::string add_model_weights_name_;     // its display filename
     std::string add_model_error_;            // inline register error
+    std::string add_model_status_;           // last register's success summary
 
-    // File ingestion (drag-and-drop + native dialog) and its last status line.
+    // Activity panel (#622) — presentation-only filters over the feed computed
+    // fresh each frame (zetta::observability::activity_entries; no stored copy).
+    int activity_window_ = 0;   // 0 = last hour, 1 = last 24 hours, 2 = all time
+    int activity_surface_ = 0;  // 0 = all surfaces, 1 = GUI, 2 = console, 3 = MCP
+
+    // External activity surfacing (#620) — the strip's presentation state.
+    // notify_external_activity appends to `pending_external_activity_` under
+    // the mutex; poll_background_ops drains it into
+    // `recent_external_activity_` (stamped with the ImGui clock, capped,
+    // pruned after a short linger) which draw_dashboard renders as a
+    // click-through line. No engine state lives here: the durable record is
+    // the call's audit event, already in the activity feed — this is only the
+    // "it just happened" affordance.
+    struct ExternalActivity {
+        std::string capability;   // the registry entry's name
+        std::string actor;        // acting key id, or "local"
+        double seen_seconds = 0.0;  // ImGui clock at drain time
+    };
+    // The owning panel an external capability call deep-links to (the strip's
+    // navigate_to target). Defined beside draw_dashboard in app_home.cpp.
+    View view_for_external_capability(const std::string& capability) const;
+    std::mutex external_activity_mutex_;
+    std::vector<ExternalActivity> pending_external_activity_;
+    std::vector<ExternalActivity> recent_external_activity_;  // newest last
+    // True while run_palette_capability is inside Registry::call — the
+    // palette shares the registry (one list, many renderings), so its own
+    // synchronous calls must not surface as "external". Atomic only as a
+    // belt against a future transport firing the hook off the owning loop.
+    std::atomic<bool> palette_call_in_flight_{false};
+
+    // File ingestion (drag-and-drop + native dialog) and its last status line,
+    // rendered as a banner on Home and Datasets; `io_status_error_` picks the
+    // banner's tone so a failed add/import/store reads as a failure (#632).
     std::mutex incoming_mutex_;
     std::vector<IncomingFile> incoming_files_;
     std::string io_status_;
+    bool io_status_error_ = false;
 
     // Graph Workspace state. The panel edits a *working copy* of the open graph
     // (editing_graph_) and only writes it back to the IR on Save, so an edit is
@@ -555,6 +906,7 @@ private:
     bool graph_dirty_ = false;         // working copy has structural edits to save
     std::string selected_node_id_;     // node selected in the canvas ("" = none)
     std::string graph_error_;          // inline error for graph/list operations
+    std::string graph_status_;         // last save's success summary (#632)
     std::string new_graph_input_;      // name field for "New graph"
     std::string rename_graph_input_;   // name field for the open graph (rename)
     std::string add_node_name_input_;  // name field for a new node
@@ -568,6 +920,13 @@ private:
     // owner nodes). On by default so opening a graph shows the projection; a
     // checkbox above the canvas hides it for a plain edit view.
     bool show_cluster_plan_ = true;
+    // Live-run overlay (#626): when on, the newest run referencing the open
+    // graph is projected onto the canvas (per-step status / active-step pulse /
+    // pinned failure / materialized outputs) and a run strip renders below it.
+    // Re-derived from the live run record every frame (the #590 pattern — no
+    // GUI-owned copy of run state, bounded work); on by default so a run is
+    // visible the moment one exists.
+    bool show_run_overlay_ = true;
 
     // Display-scale tracking — the last values we rasterized/scaled for, so a
     // no-change display event is a cheap no-op.

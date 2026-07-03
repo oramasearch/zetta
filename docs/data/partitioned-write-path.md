@@ -132,7 +132,7 @@ new schema:
 
 This slice is the **write path + recorded placement**. Out of scope (later
 slices): a top-level command/DDL that triggers it on load (it is a reusable
-library function today, like `import_records` and `run_churn_solution`), driving a
+library function today, like `import_records` and `run_churn_solution_on_node`), driving a
 table's [`ReplicationStrategy`](replication-strategy.md) replication factor into
 the placement (the write path uses the partitioner's own `place_partition`), and
 locality-aware **reads** that route a scan to a partition's owner and read the blob

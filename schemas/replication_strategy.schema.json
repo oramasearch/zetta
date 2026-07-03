@@ -1,21 +1,27 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/replication_strategy.schema.json",
-  "title": "ReplicationStrategy",
-  "description": "The per-table / per-database replication strategy (ENT-35) — how a given table or database's replicated state is laid out across the cluster. The per-entity counterpart to ReplicationManager's node-wide ReplicationPolicy. ReplicateToAll keeps a full copy on every node (the default, written nowhere so the projection is byte-identical to before); Partitioned shards a single copy per shard; PartitionedWithReplicas shards with replication_factor total copies per shard (default 3). Mirrored by zetta::ReplicationStrategy in include/zetta/replication_strategy.hpp and enforced by ReplicationStrategy::from_json() in src/core/replication_strategy.cpp — keep them in sync. This slice records/persists/replicates the choice; the partitioned-placement engine that acts on a non-default strategy is a later slice. A malformed strategy is rejected at the boundary. (The conditional 'replication_factor is required-with-default for partitioned_with_replicas, ignored otherwise' is enforced in from_json, beyond what this schema expresses.)",
-  "type": "object",
-  "required": ["kind"],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "The per-table / per-database replication strategy (ENT-35) — how a given table or database's replicated state is laid out across the cluster. The per-entity counterpart to ReplicationManager's node-wide ReplicationPolicy. ReplicateToAll keeps a full copy on every node (the default, written nowhere so the projection is byte-identical to before); Partitioned shards a single copy per shard; PartitionedWithReplicas shards with replication_factor total copies per shard (default 3). Mirrored by zetta::ReplicationStrategy in include/zetta/replication_strategy.hpp and enforced by ReplicationStrategy::from_json() in src/core/replication_strategy.cpp — keep them in sync. This slice records/persists/replicates the choice; the partitioned-placement engine that acts on a non-default strategy is a later slice. A malformed strategy is rejected at the boundary. (The conditional 'replication_factor is required-with-default for partitioned_with_replicas, ignored otherwise' is enforced in from_json, beyond what this schema expresses.)",
   "properties": {
     "kind": {
       "description": "The strategy family. Append-only enum (the snake_case name is the stored identifier). 'replicate_to_all' = a full copy on every node (the default); 'partitioned' = sharded, one copy per shard; 'partitioned_with_replicas' = sharded, replication_factor copies per shard.",
-      "type": "string",
-      "enum": ["replicate_to_all", "partitioned", "partitioned_with_replicas"]
+      "enum": [
+        "replicate_to_all",
+        "partitioned",
+        "partitioned_with_replicas"
+      ],
+      "type": "string"
     },
     "replication_factor": {
       "description": "Total copies of each shard. Present only for kind 'partitioned_with_replicas' (a positive integer; defaults to 3 when omitted). Ignored for the other kinds.",
-      "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "type": "integer"
     }
-  }
+  },
+  "required": [
+    "kind"
+  ],
+  "title": "ReplicationStrategy",
+  "type": "object"
 }

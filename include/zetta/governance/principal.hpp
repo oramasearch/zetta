@@ -31,6 +31,12 @@ std::string_view to_string(PrincipalKind kind);
 // unknown spelling — the boundary check for the enum domain.
 std::optional<PrincipalKind> principal_kind_from(std::string_view name);
 
+// The Principal JSON Schema (draft 2020-12) — the code-owned source of truth
+// for the principal.json / replicated `principal:<uuid>` value shape;
+// schemas/principal.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& principal_schema();
+
 // A Principal (ENT-20): an authenticated actor — user, service, or node — the
 // subject of access grants and (later) the audit trail. This realizes the V1
 // governance model with AccessKey + Scope: a principal owns its **access keys**,

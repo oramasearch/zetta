@@ -61,7 +61,8 @@ void print_nodes(const std::vector<zetta::cluster::NodeStatus>& nodes) {
 
 }  // namespace
 
-int run_headless(Node& node, const zetta::cluster::Cluster& cluster) {
+int run_headless(Node& node, const zetta::cluster::Cluster& cluster,
+                 const std::function<void()>& on_tick) {
     install_signal_handlers();
 
     // The cluster banner (node id, listen addresses, join command) is printed
@@ -77,6 +78,7 @@ int run_headless(Node& node, const zetta::cluster::Cluster& cluster) {
     std::string last_signature;
     while (!stop_requested()) {
         node.tick();
+        if (on_tick) on_tick();
         if (++since_log >= kTicksPerLog) {
             since_log = 0;
             const std::vector<zetta::cluster::NodeStatus> nodes = cluster.nodes();

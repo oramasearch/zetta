@@ -139,6 +139,13 @@ zetta's no-exceptions-across-the-core-seam convention.
 `include/zetta/cluster/signal.hpp`) are the serialization seam; the
 [cluster](cluster.md) transport only adds/strips the `ZETTA/1 SIGNAL ` framing.
 
+Every kind may additionally carry an optional **`traceparent`** (W3C trace
+context, [observability.md](../architecture/observability.md), #640): set it on
+a `Signal` before sending and the receiving node's handling can record spans
+that join the SENDER's trace — one trace per distributed operation. Omitted
+entirely when the sender is not in a trace; the steal offers ride it through
+the work-stealing protocol (`schemas/steal_offer.schema.json`).
+
 ## Where it sits
 
 ```
@@ -177,10 +184,13 @@ verbs over the same envelope: `collective.contribute` / `collective.result`
 ([collectives](collectives.md)), `steal` / `steal_result`
 ([work-stealing scheduler](../compute/work-stealing-scheduler.md)), `ddf.shuffle`
 ([distributed sort](../ddf/ddf-distributed-sort.md)), `fulltext.query`
-([distributed full-text](../indexing/distributed-fulltext.md)), and the fire-and-forget
+([distributed full-text](../indexing/distributed-fulltext.md)), the fire-and-forget
 **`node.metrics`** event the [per-node telemetry exchange](../gui/cluster-node-gauges.md)
 broadcasts (#584) so the headed cluster view can animate every node's resource
-gauges. Each rides a schema-validated payload (the
+gauges, and the **`run.launch`** Task — the first consumer of the Task kind —
+that the [coordinated cross-process SPMD launch](../compute/coordinated-launch.md)
+fans out so every member co-runs an interactive run against its own shard
+(#601). Each rides a schema-validated payload (the
 [collective message](collectives.md) / telemetry boundary pattern); none adds a new
 wire verb beyond `ZETTA/1 SIGNAL`.
 

@@ -1,24 +1,44 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.StealOffer",
-  "description": "The reply to a \"steal\" request: the pending tasks the owner hands over (possibly empty). Each task carries its owning job id, its index within that job, the application method to run it with, and the base64-encoded raw input payload. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
-  "type": "object",
+  "additionalProperties": false,
+  "description": "The reply to a \"steal\" request: the pending tasks the owner hands over (possibly empty). Each task carries its owning job id, its index within that job, the application method to run it with, and the base64-encoded raw input payload; an optional traceparent (W3C trace context, #640) lets the helper's execution spans join the owner's trace. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
   "properties": {
     "tasks": {
-      "type": "array",
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "job": { "type": "string", "minLength": 1 },
-          "index": { "type": "integer", "minimum": 0 },
-          "method": { "type": "string" },
-          "payload": { "type": "string" }
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "job": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "payload": {
+            "type": "string"
+          },
+          "traceparent": {
+            "type": "string"
+          }
         },
-        "required": ["job", "index", "method", "payload"],
-        "additionalProperties": false
-      }
+        "required": [
+          "job",
+          "index",
+          "method",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     }
   },
-  "required": ["tasks"],
-  "additionalProperties": false
+  "required": [
+    "tasks"
+  ],
+  "title": "zetta.StealOffer",
+  "type": "object"
 }

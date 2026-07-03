@@ -1,9 +1,12 @@
 #include "zetta/node.hpp"
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/compute/job_coordinator.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
 #ifdef ZETTA_WITH_ORAMACORE
 #include "zetta/index/oramacore_fulltext_index.hpp"
@@ -13,6 +16,7 @@
 #include "zetta/data/partition_rebalance.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/runtime.hpp"
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -61,6 +65,13 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
+    // The owner thread is adopted LAZILY, at the first tick() (#624) — never
+    // here. A constructed-but-never-ticked node has no owner loop to drain
+    // the gate, so run_on_owner treats it as ungated (inline); adopting the
+    // constructing thread here would instead deadlock any cross-thread caller
+    // against an owner that never drains (a harness that builds nodes and
+    // drives them from its own threads without ticking — the testkit's
+    // per-node SPMD threads).
     // Register the always-available index backends so an `index` step resolves
     // out of the box (the per-node container the run path builds + queries
     // through, #528). InMemoryIndexBackend ("memory_search") is the pure-host
@@ -242,6 +253,12 @@ bool Node::start() {
 }
 
 void Node::tick() {
+    // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
+    //    adopt this thread, then execute any node-tree work queued by
+    //    background-action workers (run_on_owner). Runs even before start()
+    //    so a gated worker never waits on a loop that is ticking.
+    owner_thread_.store(std::this_thread::get_id(), std::memory_order_release);
+    drain_owner_work();
     if (!running_) return;
     ++ticks_;
     // 1. Pull: the CRDT is the source of truth; when it has advanced (a local
@@ -259,6 +276,12 @@ void Node::tick() {
     // 2. Control plane: drive each local deployment desired → actual, starting
     //    or self-healing its run. May capture new runs into the document.
     controller_.reconcile();
+    // 2b. Search plane (#641): keep this node's per-partition search sub-indexes
+    //     current with the (replicated) Search index entities + the placed
+    //     partitions this node owns — so any node can answer a peer's
+    //     `fulltext.query` scatter. Fingerprint-guarded (cheap when unchanged);
+    //     local machinery only, nothing is captured.
+    reconcile_search_indexes();
     // 3. Persist if the document moved (a peer merge in step 1 or a run started
     //    in step 2), and remember the version we have now reflected on disk.
     if (replication_) {
@@ -287,6 +310,64 @@ void Node::tick() {
                 std::string(zetta::cluster::NodeTelemetryExchange::kMethod),
                 encode_node_metrics(metrics, node_id()));
         }
+    }
+    // 5. Coordinated co-launch (#601): execute any `run.launch` requests peers
+    //    fanned out, HERE on the owner thread — the launched SPMD body blocks on
+    //    collective rounds, which must never run on the network thread that
+    //    delivered the signal (it services those very rounds). This is the
+    //    same "synchronous on the thread that owns the Node" pattern every
+    //    interactive submitter uses; the tick resumes when the co-run finishes.
+    if (launch_listener_) launch_listener_->drain();
+}
+
+void Node::run_on_owner(const std::function<void()>& work) {
+    if (on_owner_thread()) {
+        work();
+        return;
+    }
+    // A node NO loop has ever ticked has no owner to drain the queue — run
+    // inline, the pre-gate contract: a harness driving nodes from its own
+    // threads (the testkit's per-node SPMD threads, the acceptance tests)
+    // arranges exclusive access itself, and queueing here would deadlock
+    // against an owner that will never exist. Both apps tick from their first
+    // loop iteration, so a real owner is always adopted before any background
+    // action can launch.
+    if (owner_thread_.load(std::memory_order_acquire) == std::thread::id{}) {
+        work();
+        return;
+    }
+    auto completed = std::make_shared<zetta::runtime::async_event>();
+    {
+        std::lock_guard<std::mutex> lock(owner_work_mutex_);
+        owner_work_queue_.push_back(
+            OwnerWork{work, [completed] { completed->set(); }});
+    }
+    // Block this worker until the owner loop has executed the work. The wait
+    // rides the runtime seam (the queued async_event awaited to completion) —
+    // the same completion signaling as the API MainThreadBridge, entered
+    // synchronously because a background-action worker is not a coroutine.
+    zetta::runtime::block_on(
+        [](std::shared_ptr<zetta::runtime::async_event> event)
+            -> zetta::runtime::task<> { co_await event->wait(); }(completed));
+}
+
+bool Node::on_owner_thread() const {
+    return owner_thread_.load(std::memory_order_acquire) ==
+           std::this_thread::get_id();
+}
+
+void Node::drain_owner_work() {
+    std::vector<OwnerWork> batch;
+    {
+        std::lock_guard<std::mutex> lock(owner_work_mutex_);
+        if (owner_work_queue_.empty()) return;
+        batch.assign(std::make_move_iterator(owner_work_queue_.begin()),
+                     std::make_move_iterator(owner_work_queue_.end()));
+        owner_work_queue_.clear();
+    }
+    for (OwnerWork& pending : batch) {
+        pending.work();
+        pending.signal_completed();
     }
 }
 
@@ -329,17 +410,135 @@ void Node::start_coordinator() {
     // the compute plane. Created once (the cache persists across a stop()/start()
     // cycle) and reused on each attach.
     if (!telemetry_) telemetry_ = std::make_unique<zetta::cluster::NodeTelemetryExchange>();
+    // The coordinated cross-process launch listener (#601) sits between the
+    // compute plane and the telemetry exchange in the signal-handler chain:
+    // the coordinator forwards every non-steal / non-collective signal to it,
+    // it consumes `run.launch` tasks (validate + queue — tick() drains and
+    // executes on this owner thread), and everything else flows on to the
+    // telemetry fallback. The built-in launch kinds are registered here, on
+    // EVERY clustered node — that is what lets any member co-run a peer's
+    // interactive SPMD run.
+    launch_listener_ = std::make_unique<compute::CoordinatedLaunchListener>(
+        *cluster_, telemetry_.get());
+    launch_listener_->set_span_recorder(&span_recorder_);
+    zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
-                                                             telemetry_.get());
+                                                             launch_listener_.get());
+    // Every job this coordinator runs (and every stolen task it executes for a
+    // peer) records spans into this node's ring (#640).
+    coordinator_->set_span_recorder(&span_recorder_);
+    // Job entity writes route through the owner-thread gate (#624), so a run
+    // driven from a background-action worker mutates node-owned records safely.
+    coordinator_->set_owner_gate(
+        [this](const std::function<void()>& work) { run_on_owner(work); });
     // Register on the cluster's signal plane + start the cross-node steal loop, so
     // a job submitted through job_coordinator() runs SPMD across live membership.
     coordinator_->start();
+
+    // The distributed search plane (#641) chains over the compute plane's
+    // handler: `fulltext.query` is served here; every other signal routes on to
+    // the scheduler (steals / collectives) and its telemetry fallback. Wired on
+    // EVERY clustered node — that is what lets any node answer a coordinator's
+    // scatter — with the sub-indexes built by reconcile_search_indexes() (tick).
+    std::shared_ptr<zetta::index::IndexBackend> search_backend = search_backend_;
+    if (!search_backend) {
+#ifdef ZETTA_WITH_ORAMACORE
+        search_backend = std::make_shared<zetta::index::OramaCoreFulltextIndex>();
+#else
+        // Degraded default without the private BM25F engine: exact-match only,
+        // no ranking signal (docs/indexing/node-search.md); inject a ranked
+        // backend with set_search_backend to override.
+        search_backend = std::make_shared<zetta::index::InMemoryIndexBackend>();
+#endif
+    }
+    distributed_fulltext_ = std::make_unique<zetta::index::DistributedFulltextIndex>(
+        *cluster_, std::move(search_backend), cluster_->signal_handler());
+    search_build_fingerprints_.clear();  // a fresh plane holds no sub-indexes yet
 }
 
 void Node::stop_coordinator() {
+    // Unwind in reverse wiring order: the search plane restores the compute
+    // plane's handler first, then the coordinator restores its own fallback.
+    distributed_fulltext_.reset();
+    search_build_fingerprints_.clear();
     if (!coordinator_) return;
     coordinator_->stop();   // join the steal loop, restore the cluster's handler
     coordinator_.reset();
+    // After the coordinator (which held it as the handler fallback): drop the
+    // launch listener — pending, undrained launches are ephemeral signal-plane
+    // messages and die with the attachment (the initiator's collective rounds
+    // surface the absence with their bounded timeout).
+    launch_listener_.reset();
+}
+
+zetta::index::SearchResult Node::search(
+    const zetta::index::SearchRequest& request,
+    zetta::observability::SpanRecorder* recorder,
+    const zetta::observability::TraceContext* parent) {
+    return zetta::index::search(*this, request, recorder, parent);
+}
+
+void Node::reconcile_search_indexes() {
+    if (!distributed_fulltext_) return;
+    const std::string& self = node_id();
+
+    // The desired local builds: one per distinct Search-kind spec key, each with
+    // a fingerprint of THIS node's build inputs — the backend + the placed
+    // partitions this node owns. A build is (re)run only when its fingerprint
+    // changed, so the steady-state tick cost is string compares.
+    std::map<std::string, std::pair<zetta::index::IndexSpec, std::string>> desired;
+    for (const std::shared_ptr<zetta::index::Index>& index : indexes_) {
+        if (!index || index->kind() != zetta::index::IndexKind::Search) continue;
+        zetta::index::IndexSpec spec = index->spec();
+        const std::string key = spec.key();
+        if (desired.contains(key)) continue;
+
+        // Partitions record the table's ID; the spec names it by NAME.
+        std::string table_id = spec.table;
+        for (const std::shared_ptr<zetta::data::Database>& database : databases_) {
+            if (const std::shared_ptr<zetta::data::Table> found =
+                    database->find_table(spec.table)) {
+                table_id = found->id();
+                break;
+            }
+        }
+        std::string fingerprint = spec.backend + '\n' + table_id + '\n';
+        for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :
+             dataset_partitions()) {
+            if (!partition || partition->table() != table_id) continue;
+            if (partition->blob_ref().empty()) continue;  // unplaced
+            const std::vector<std::string>& owners = partition->owner_nodes();
+            if (std::find(owners.begin(), owners.end(), self) == owners.end()) {
+                continue;
+            }
+            fingerprint += partition->id() + '=' + partition->blob_ref() + '\n';
+        }
+        desired.emplace(key, std::pair{std::move(spec), std::move(fingerprint)});
+    }
+
+    for (auto& [key, spec_and_fingerprint] : desired) {
+        auto& [spec, fingerprint] = spec_and_fingerprint;
+        const auto last = search_build_fingerprints_.find(key);
+        if (last != search_build_fingerprints_.end() &&
+            last->second == fingerprint) {
+            continue;  // already built over exactly these inputs
+        }
+        const zetta::index::DistributedFulltextIndex::BuildResult build =
+            distributed_fulltext_->build_local(*this, spec);
+        if (!build.ok()) {
+            std::printf("zetta: search sub-index build over '%s' failed: %s\n",
+                        spec.table.c_str(), build.status.message.c_str());
+        }
+        // Record the fingerprint either way: the build is deterministic in its
+        // inputs, so a failure would otherwise re-fail on every tick. A future
+        // partition / index change moves the fingerprint and retries.
+        search_build_fingerprints_[key] = std::move(fingerprint);
+    }
+
+    // Forget builds whose index entity is gone (a re-created index rebuilds).
+    std::erase_if(search_build_fingerprints_, [&desired](const auto& entry) {
+        return !desired.contains(entry.first);
+    });
 }
 
 double Node::uptime_seconds() const {
@@ -541,7 +740,7 @@ std::shared_ptr<zetta::governance::Principal> Node::find_principal_by_id(
 std::shared_ptr<zetta::data::Database> Node::create_database(
     std::string name, zetta::data::ReplicationStrategy replication_strategy) {
     // "system" is reserved for the virtual system database (computed system
-    // tables like system.zetta_nodes); never a real on-disk database.
+    // tables like system.nodes); never a real on-disk database.
     if (name.empty() || name == "system" || find_database(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     if (replication_) {
@@ -1302,8 +1501,25 @@ bool Node::materialize_drop_dataset_partition(const std::string& id) {
 // ----- cloud inspections (ephemeral; not replicated, not persisted) ----------
 
 void Node::record_cloud_inspection(zetta::cloud::CloudInspectReport report) {
+    // A consent-approved cloud read is a governed action: record it on the
+    // audit trail (#624), so it surfaces in the activity feed like every other
+    // completed action. `allowed` carries whether the inspect actually reached
+    // the provider; `detail` is the inspector's overall note verbatim.
+    {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::CloudInspected;
+        event.target = report.provider_id;
+        event.allowed = report.ran && report.reachable;
+        event.detail = !report.detail.empty()
+                           ? report.detail
+                           : (report.authenticated
+                                  ? "authenticated as " + report.identity
+                                  : "not authenticated");
+        record_audit_event(std::move(event));
+    }
+
     // Latest report per provider wins, so the cache holds one current row per
-    // provider for system.zetta_cloud_status. No CRDT capture, no disk write —
+    // provider for system.cloud_status. No CRDT capture, no disk write —
     // this is session-local observed state (RULE-7).
     const auto it = std::find_if(
         cloud_inspections_.begin(), cloud_inspections_.end(),
@@ -1321,7 +1537,7 @@ void Node::record_cloud_inspection(zetta::cloud::CloudInspectReport report) {
 
 void Node::record_provisioner_config(zetta::cloud::ProvisionerConfig config) {
     // Latest config per target wins, so the cache holds one current row per target
-    // for system.zetta_provisioners — like record_cloud_inspection, this is
+    // for system.provisioners — like record_cloud_inspection, this is
     // session-local observed state from the local CLI (RULE-7): no CRDT capture,
     // no disk write, no credentials.
     const auto it = std::find_if(

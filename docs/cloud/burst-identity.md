@@ -193,6 +193,11 @@ provisioner ↔ manager wiring and assert N distinct identities minted + revoked
 no orphans, both headless (`tests/testkit/test_testkit.cpp`) and from the headed
 **Operations → Test suite** panel.
 
+The `cluster.uc1_at_scale` case (TC-12 / #502,
+[uc1-at-scale-e2e.md](../use-cases/uc1-at-scale-e2e.md)) exercises the manager
+inside the full burst lifecycle: identities minted for the gated burst's members
+before the distributed train, revoked at teardown, both ends audited.
+
 ## Pointers
 
 - `include/zetta/cloud/burst_identity.hpp` — `zetta::cloud::BurstIdentity` /

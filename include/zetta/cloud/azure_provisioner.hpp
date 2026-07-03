@@ -48,6 +48,11 @@ struct AzureConfig {
     static std::optional<AzureConfig> from_json(const nlohmann::json& value);
 };
 
+// The AzureConfig JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/azure_config.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& azure_config_schema();
+
 // The cloud control-plane operations the Azure backend needs, abstracted behind
 // a small **injectable seam** so AzureProvisioner stays in zetta-core with no
 // Azure SDK and is unit-testable against a fake. The reference binding is

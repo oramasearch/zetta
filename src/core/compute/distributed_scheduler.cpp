@@ -19,76 +19,98 @@ namespace {
 constexpr std::string_view kStealMethod = "steal";
 constexpr std::string_view kStealResultMethod = "steal_result";
 
-// The three message schemas (draft-07). Mirrored at schemas/steal_*.schema.json
-// for documentation; these embedded copies are the ones enforced at runtime, the
-// same pattern as the signal envelope (src/core/signal.cpp). Every payload that
-// enters the scheduler from a peer is validated against its schema before it is
+}  // namespace
+
+// The three steal-message JSON Schemas (draft-07) — the code-owned source of
+// truth; schemas/steal_request.schema.json, schemas/steal_offer.schema.json,
+// and schemas/steal_result.schema.json are generated from them and
+// drift-checked by tests/test_schemas.cpp (#646). Every payload that enters
+// the scheduler from a peer is validated against its schema before it is
 // trusted, so a malformed or hostile message fails fast with a path-qualified
-// reason instead of corrupting a job's state.
+// reason instead of corrupting a job's state (the same pattern as the signal
+// envelope, src/core/signal.cpp).
 const nlohmann::json& steal_request_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.StealRequest",
-      "type": "object",
-      "properties": { "count": { "type": "integer", "minimum": 1 } },
-      "required": ["count"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealRequest",
+  "description": "A work-stealing request sent by an idle node to a peer over the signal plane (method \"steal\"): give me up to `count` pending tasks. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many pending tasks the requester is willing to take."
+    }
+  },
+  "required": ["count"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
 
 const nlohmann::json& steal_offer_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.StealOffer",
-      "type": "object",
-      "properties": {
-        "tasks": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "job":     { "type": "string", "minLength": 1 },
-              "index":   { "type": "integer", "minimum": 0 },
-              "method":  { "type": "string" },
-              "payload": { "type": "string" }
-            },
-            "required": ["job", "index", "method", "payload"],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": ["tasks"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealOffer",
+  "description": "The reply to a \"steal\" request: the pending tasks the owner hands over (possibly empty). Each task carries its owning job id, its index within that job, the application method to run it with, and the base64-encoded raw input payload; an optional traceparent (W3C trace context, #640) lets the helper's execution spans join the owner's trace. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "job": { "type": "string", "minLength": 1 },
+          "index": { "type": "integer", "minimum": 0 },
+          "method": { "type": "string" },
+          "payload": { "type": "string" },
+          "traceparent": { "type": "string" }
+        },
+        "required": ["job", "index", "method", "payload"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["tasks"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
 
 const nlohmann::json& steal_result_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.StealResult",
-      "type": "object",
-      "properties": {
-        "job": { "type": "string", "minLength": 1 },
-        "results": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "index":   { "type": "integer", "minimum": 0 },
-              "payload": { "type": "string" }
-            },
-            "required": ["index", "payload"],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": ["job", "results"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealResult",
+  "description": "The results a stealer returns to the owner (method \"steal_result\") after running tasks it stole from a \"steal\" offer: per-index, the base64-encoded raw output payload, all for one owning job. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "job": { "type": "string", "minLength": 1 },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "payload": { "type": "string" }
+        },
+        "required": ["index", "payload"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["job", "results"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
+
+namespace {
 
 nlohmann::json_schema::json_validator& steal_request_validator() {
     static nlohmann::json_schema::json_validator validator(steal_request_schema());
@@ -179,12 +201,14 @@ void DistributedScheduler::stop() {
 }
 
 std::vector<std::string> DistributedScheduler::map(
-    const std::string& method, const std::vector<std::string>& inputs) {
+    const std::string& method, const std::vector<std::string>& inputs,
+    std::string traceparent) {
     const std::size_t count = inputs.size();
     if (count == 0) return {};
 
     auto job = std::make_shared<Job>();
     job->method = method;
+    job->traceparent = std::move(traceparent);
     job->inputs = inputs;
     job->results.resize(count);
     job->done.assign(count, 0);
@@ -316,6 +340,7 @@ bool DistributedScheduler::try_steal_once() {
         };
         std::vector<Stolen> stolen;
         stolen.reserve(tasks.size());
+        std::string offer_traceparent;
         for (const nlohmann::json& task : tasks) {
             stolen.push_back(
                 Stolen{.job = task.at("job").get<std::string>(),
@@ -323,6 +348,24 @@ bool DistributedScheduler::try_steal_once() {
                        .method = task.at("method").get<std::string>(),
                        .payload = detail::base64_decode_to_string(
                            task.at("payload").get<std::string>())});
+            if (offer_traceparent.empty()) {
+                offer_traceparent = task.value("traceparent", std::string{});
+            }
+        }
+
+        // Executing a peer's traced work joins THAT peer's trace (#640): the
+        // helper's span lands in its own ring with the owner's trace id, so
+        // reading the trace across nodes shows where the work actually ran.
+        std::optional<zetta::observability::ScopedSpan> steal_span;
+        const auto stolen_trace =
+            zetta::observability::parse_traceparent(offer_traceparent);
+        if (auto* recorder = span_recorder_.load(std::memory_order_relaxed);
+            recorder && stolen_trace) {
+            steal_span.emplace(recorder, *stolen_trace,
+                               "steal:" + stolen.front().method);
+            steal_span->set_attribute("tasks", stolen.size());
+            steal_span->set_attribute("owner", peer.node_id);
+            steal_span->set_attribute("node", cluster_.node_id());
         }
 
         const std::vector<std::string> results = local_.parallel_map(
@@ -330,6 +373,7 @@ bool DistributedScheduler::try_steal_once() {
                 return executor_(task.method, task.payload);
             });
         stolen_executed_.fetch_add(stolen.size(), std::memory_order_relaxed);
+        if (steal_span) steal_span->finish(true);
 
         // Group results by owning job (the offer can span several of the peer's
         // jobs) and ship each group back to the peer we stole from.
@@ -423,11 +467,17 @@ zetta::cluster::SignalResponse DistributedScheduler::handle_steal(const zetta::c
             job->pending.pop_front();
             job->assigned[index] = Job::Assignment{.peer = request.from,
                                                    .deadline = deadline};
-            offer["tasks"].push_back(
-                {{"job", id},
-                 {"index", index},
-                 {"method", job->method},
-                 {"payload", detail::base64_encode_bytes(job->inputs[index])}});
+            nlohmann::json task{
+                {"job", id},
+                {"index", index},
+                {"method", job->method},
+                {"payload", detail::base64_encode_bytes(job->inputs[index])}};
+            // The owning trace rides the offer (#640), so the helper's
+            // execution spans join the owner's trace.
+            if (!job->traceparent.empty()) {
+                task["traceparent"] = job->traceparent;
+            }
+            offer["tasks"].push_back(std::move(task));
             --remaining;
             handed_out_.fetch_add(1, std::memory_order_relaxed);
         }

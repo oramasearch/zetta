@@ -102,7 +102,7 @@ NearDataGroupByResult run_near_data_group_by_job(
 It loads this node's shard with `load_local_partitions`, then drives the *exact
 same* distributed group-by + [`ComputeJob`](compute-jobs.md) lifecycle as
 [`run_group_by_job`](../ddf/ddf-groupby.md) (#387) over that local frame — so the work is
-recorded, audited, and appears in `system.zetta_jobs`. Call it **concurrently on
+recorded, audited, and appears in `system.jobs`. Call it **concurrently on
 every participating node** (the collectives need all participants);
 `coordinator.start()` must have run.
 
@@ -166,6 +166,12 @@ broadcast feature table matches a single-node oracle on every node.
 cluster (no leakage; matches the oracle); the in-app **Distributed →
 Featurize over partitions == single-node** test-suite case
 (`cluster.featurize_partitions`) runs it interactively.
+
+Downstream, [`zetta::ml::run_near_data_featurize_train_job`](../use-cases/uc1-featurize-train-over-partitions.md)
+(#530) composes this featurize with the [near-data GBDT train](../use-cases/uc1-train-over-partitions.md)
+(#533): one shard load, featurize, then train → explain → rank **over the broadcast
+feature table** (each node training on its own slice of it) — the UC-1
+featurize → train pipeline.
 
 ## Scope / later slices
 

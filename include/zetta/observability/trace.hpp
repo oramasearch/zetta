@@ -71,8 +71,18 @@ public:
     // Most recent spans, newest first, capped at `limit`.
     std::vector<Span> recent(std::size_t limit = 100) const;
 
+    // Best-effort variant for the crash path (crash.hpp): returns empty
+    // rather than block when the ring mutex is already held — a fatal-signal
+    // handler must never wait on a lock the crashing thread may own.
+    std::vector<Span> try_recent(std::size_t limit = 100) const;
+
     // Every recorded span of one trace, oldest first.
     std::vector<Span> trace(const std::string& trace_id) const;
+
+    // Every span currently in the ring, oldest first (a snapshot copy, safe
+    // to read off the node's threads). The source for the system.spans /
+    // system.traces read views.
+    std::vector<Span> snapshot() const;
 
     std::size_t size() const;
 

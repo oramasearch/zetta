@@ -12,6 +12,7 @@
 #include "zetta/node.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/pipeline/project.hpp"
+#include "zetta/query/executor.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/repl/governed_console.hpp"
 #include "zetta/storage/engine.hpp"
@@ -28,12 +29,17 @@
 #include <cfloat>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 namespace zetta::gui {
 
 void App::draw_explorer() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Explorer)) {
+        selected_project_ = *pending_entity;
+    }
     ImGui::SeparatorText("Explorer");
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =
@@ -73,17 +79,31 @@ void App::draw_projects() {
     if (ImGui::Button("New project…")) {
         new_project_modal_requested_ = true;
     }
-    if (!project_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", project_error_.c_str());
-    }
+    // The column's action outcome (#632): the last failure's reason, or the
+    // New Project modal's create summary, as a banner where the action landed.
+    banner(Tone::Error, project_error_);
+    if (project_error_.empty()) banner(Tone::Ok, project_status_);
 
     ImGui::Separator();
 
-    for (const std::string& name : node_.project_names()) {
+    const std::vector<std::string> project_names = node_.project_names();
+    if (project_names.empty()) {
+        // The next action is the New project… button directly above (#631).
+        empty_state("No projects yet",
+                    "A project holds intents, artifacts, and execution "
+                    "graphs.",
+                    "");
+    }
+    for (const std::string& name : project_names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            node_.drop_project(name);
-            if (selected_project_ == name) selected_project_.clear();
+            project_status_.clear();
+            if (node_.drop_project(name)) {
+                project_error_.clear();
+                if (selected_project_ == name) selected_project_.clear();
+            } else {
+                project_error_ = "could not delete project '" + name + "'";
+            }
         }
         ImGui::SameLine();
         if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
@@ -117,6 +137,7 @@ void App::draw_projects() {
         "##renproject", "new name", &rename_project_input_,
         ImGuiInputTextFlags_EnterReturnsTrue);
     if (ImGui::Button("Rename") || rename) {
+        project_status_.clear();
         if (rename_project_input_.empty()) {
             project_error_ = "name required";
         } else if (!node_.rename_project(selected_project_,
@@ -149,19 +170,28 @@ void App::draw_databases() {
             db_error_.clear();
         }
     }
-    if (!db_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", db_error_.c_str());
-    }
+    banner(Tone::Error, db_error_);
 
     ImGui::Separator();
 
-    for (const std::string& name : node_.database_names()) {
+    const std::vector<std::string> database_names = node_.database_names();
+    if (database_names.empty()) {
+        // The next action is the create field directly above (#631).
+        empty_state("No databases yet",
+                    "Create one above to hold tables and large objects.",
+                    "");
+    }
+    for (const std::string& name : database_names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            node_.drop_database(name);
-            if (selected_db_ == name) {
-                selected_db_.clear();
-                selected_table_.clear();
+            if (node_.drop_database(name)) {
+                db_error_.clear();
+                if (selected_db_ == name) {
+                    selected_db_.clear();
+                    selected_table_.clear();
+                }
+            } else {
+                db_error_ = "could not drop database '" + name + "'";
             }
         }
         ImGui::SameLine();
@@ -173,7 +203,7 @@ void App::draw_databases() {
     }
 
     // The virtual, read-only `system` database (computed system tables like
-    // system.zetta_nodes). It isn't a real on-disk database, so it's listed
+    // system.nodes). It isn't a real on-disk database, so it's listed
     // apart and can't be renamed/dropped.
     ImGui::Separator();
     if (ImGui::Selectable("system  (virtual)", selected_db_ == "system")) {
@@ -209,9 +239,13 @@ void App::draw_tables() {
     if (selected_db_ == "system") {
         ImGui::TextDisabled("in 'system' (read-only)");
         ImGui::Separator();
-        for (const char* table_name : {"zetta_nodes"}) {
-            if (ImGui::Selectable(table_name, selected_table_ == table_name)) {
-                selected_table_ = table_name;
+        // The catalog comes from zetta-core — the same list `system.tables`
+        // serves — so the GUI never owns a copy of it (#684, RULE-7).
+        for (const std::string_view table_name :
+             zetta::query::system_table_names()) {
+            const std::string name{table_name};
+            if (ImGui::Selectable(name.c_str(), selected_table_ == name)) {
+                selected_table_ = name;
             }
         }
         return;
@@ -240,17 +274,27 @@ void App::draw_tables() {
             table_error_.clear();
         }
     }
-    if (!table_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", table_error_.c_str());
-    }
+    banner(Tone::Error, table_error_);
 
     ImGui::Separator();
 
-    for (const std::string& name : db->table_names()) {
+    const std::vector<std::string> table_names = db->table_names();
+    if (table_names.empty()) {
+        // The next action is the create field directly above (#631).
+        empty_state("No tables yet",
+                    "Create one above, or add a dataset and it arrives as a "
+                    "partitioned table.",
+                    "");
+    }
+    for (const std::string& name : table_names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            db->drop_table(name);
-            if (selected_table_ == name) selected_table_.clear();
+            if (db->drop_table(name)) {
+                table_error_.clear();
+                if (selected_table_ == name) selected_table_.clear();
+            } else {
+                table_error_ = "could not drop table '" + name + "'";
+            }
         }
         ImGui::SameLine();
         const auto table = db->find_table(name);
@@ -275,7 +319,7 @@ void App::draw_rows() {
         const query::QueryService::Outcome outcome = query_->run(
             "SELECT * FROM system." + selected_table_ + ";", selected_db_);
         if (!outcome.ok()) {
-            ImGui::TextColored(kErrorColor, "%s", outcome.error.c_str());
+            banner(Tone::Error, outcome.error);
             return;
         }
         ImGui::TextDisabled("system.%s  (%zu rows)", selected_table_.c_str(),
@@ -324,15 +368,15 @@ void App::draw_rows() {
             row_error_.clear();
         }
     }
-    if (!row_error_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(kErrorColor, "%s", row_error_.c_str());
-    }
+    banner(Tone::Error, row_error_);
 
     ImGui::Spacing();
     const zetta::storage::StorageEngine& store = table->store();
     if (store.size() == 0) {
-        ImGui::TextDisabled("(empty)");
+        // The next actions are the add/import affordances directly above (#631).
+        empty_state("No rows yet",
+                    "Add a JSON object above, or import a JSON/JSONL file.",
+                    "");
     }
     // Cap how many rows we render — a persisted table can hold far more than is
     // useful to draw every frame.
@@ -349,7 +393,7 @@ void App::draw_rows() {
 }
 
 void App::draw_query() {
-    ImGui::SeparatorText("SQL query (postgres)");
+    ImGui::SeparatorText("SQL query (Postgres)");
     ImGui::TextDisabled(
         "Unqualified names use the selected database (%s); use db.table to "
         "target another.",
@@ -383,18 +427,27 @@ void App::draw_query() {
         }
     }
 
+    // The run's outcome as a banner (#632): the dialect's error verbatim, or
+    // the engine's per-statement messages, with the elapsed time folded in.
+    const std::string query_suffix =
+        query_time_.empty() ? std::string{} : " (" + query_time_ + ")";
     if (!query_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", query_error_.c_str());
+        banner(Tone::Error, query_error_ + query_suffix);
     } else if (!query_status_.empty()) {
-        ImGui::TextDisabled("%s", query_status_.c_str());
-    }
-    if (!query_time_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%s)", query_time_.c_str());
+        banner(Tone::Ok, query_status_ + query_suffix);
     }
 
     if (ImGui::BeginChild("##query_results", ImVec2(0, 160),
                           ImGuiChildFlags_Borders)) {
+        // Nothing run yet this session: say what belongs here (#631). The next
+        // action is the Run button directly above.
+        if (query_result_columns_.empty() && query_result_rows_.empty() &&
+            query_status_.empty() && query_error_.empty()) {
+            empty_state("No results yet",
+                        "Write a statement above and run it; rows, columns, "
+                        "and timing land here.",
+                        "");
+        }
         // Results are data: mono.
         if (mono_font_) ImGui::PushFont(mono_font_);
         if (!query_result_columns_.empty()) {
@@ -432,7 +485,7 @@ void App::draw_console() {
     ImGui::TextDisabled(
         "Run SQL or simulated-Python against this node, governed: every statement "
         "is capability-scoped against the acting key and recorded in the audit "
-        "trail; simulated-Python lowers to the execution-graph IR and must pass the "
+        "trail; simulated-Python lowers to an execution graph and must pass the "
         "correctness gate before it runs. Unqualified SQL names use the selected "
         "database (%s).",
         selected_db_.empty() ? "none" : selected_db_.c_str());
@@ -491,7 +544,7 @@ void App::draw_console() {
 }
 
 void App::draw_large_objects() {
-    ImGui::SeparatorText("Large objects");
+    ImGui::SeparatorText("Files");
     const auto db = node_.find_database(selected_db_);
     if (!db) {
         ImGui::TextDisabled("Select a database.");
@@ -502,13 +555,26 @@ void App::draw_large_objects() {
                                nullptr, 0, nullptr, false);
     }
     ImGui::TextDisabled("or drop any file on the window");
+    banner(Tone::Error, large_object_error_);
     ImGui::Separator();
 
     const std::vector<zetta::data::LargeObject> objects = db->large_objects().list();
-    if (objects.empty()) ImGui::TextDisabled("(none)");
+    if (objects.empty()) {
+        // The next action is the Store file… button directly above (#631).
+        empty_state("No files yet",
+                    "Store a file above, or drop one on the window; it syncs "
+                    "to the other nodes in the background.",
+                    "");
+    }
     for (const zetta::data::LargeObject& lo : objects) {
         ImGui::PushID(lo.id.c_str());
-        if (ImGui::SmallButton("x")) db->large_objects().unlink(lo.id);
+        if (ImGui::SmallButton("x")) {
+            if (db->large_objects().unlink(lo.id)) {
+                large_object_error_.clear();
+            } else {
+                large_object_error_ = "could not remove '" + lo.name + "'";
+            }
+        }
         ImGui::SameLine();
         ImGui::TextWrapped("%s  (%s)", lo.name.c_str(),
                            zetta::util::format_bytes(lo.size).c_str());
@@ -516,7 +582,7 @@ void App::draw_large_objects() {
         // so a freshly-replicated object may not have its bytes here yet.
         if (!lo.body_present) {
             ImGui::SameLine();
-            ImGui::TextColored(kWarnColor, "(syncing body)");
+            ImGui::TextColored(tone_color(Tone::Warn), "(syncing)");
         }
         ImGui::PopID();
     }
@@ -593,19 +659,18 @@ void App::draw_new_project_modal() {
             new_project_artifact_status_.clear();
             new_project_artifact_valid_ = false;
         }
-        if (!new_project_artifact_status_.empty()) {
-            ImGui::TextColored(
-                new_project_artifact_valid_ ? kSuccessColor : kErrorColor, "%s",
-                new_project_artifact_status_.c_str());
-        }
     }
     ImGui::EndChild();
+    // The staging/validation result for the dropped file — the n8n schema's
+    // reason verbatim when it fails validation.
+    if (!new_project_artifact_path_.empty()) {
+        banner(new_project_artifact_valid_ ? Tone::Ok : Tone::Error,
+               new_project_artifact_status_);
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (!new_project_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", new_project_error_.c_str());
-    }
+    banner(Tone::Error, new_project_error_);
 
     // Create runs the whole flow atomically. A staged-but-invalid artifact
     // blocks the create so the project is never built with a broken artifact.
@@ -632,7 +697,12 @@ void App::draw_new_project_modal() {
                                      ")";
             }
             selected_project_ = project->name();
-            io_status_ = summary;
+            // Surface the outcome where it landed (#632): banner in the
+            // Projects column and jump there (the Added-dataset precedent),
+            // so a create started from Home/File menu is still visible.
+            project_error_.clear();
+            project_status_ = summary;
+            navigate_to(View::Explorer, project->name());
             reset_new_project_form();
             ImGui::CloseCurrentPopup();
         } else {

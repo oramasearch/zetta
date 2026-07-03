@@ -172,7 +172,7 @@ per-node partials combined across the cluster via gather / merge / broadcast ove
 [collectives](../cluster/collectives.md); #383) rounds out the built aggregation ops — and
 **runs as a recorded `ddf` [`ComputeJob`](../compute/compute-jobs.md)** through the
 [job coordinator](../compute/job-coordinator.md) via `run_group_by_job`, so it appears in
-`system.zetta_jobs` (#387). A featurization op closes the set: the
+`system.jobs` (#387). A featurization op closes the set: the
 **[window / as-of (point-in-time) aggregation](ddf-as-of.md)**
 (`zetta::ddf::as_of_aggregate` — for each entity, reduce only the rows whose timestamp
 is at or before an `as_of` cutoff, optionally also at or after a `window_start` lower

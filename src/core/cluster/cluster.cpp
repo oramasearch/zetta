@@ -68,6 +68,12 @@ struct Cluster::State {
     std::optional<net::tcp_acceptor> acceptor;
     std::thread network_thread;
     std::uint16_t bound_port = 0;
+    // Mutual-TLS context (CTL-2, #466), engaged when ClusterConfig::security is
+    // enabled: this node's token-derived identity + the cluster CA as the only
+    // trust anchor, require_peer both ways, TLS 1.3 minimum. Shared by every
+    // link (client and server handshakes use the same context); configured
+    // before start() spawns any coroutine, never modified after.
+    std::optional<net::tls_context> tls;
     ReplicationManager* replication = nullptr;  // gossip target (optional)
     zetta::data::BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
     std::chrono::steady_clock::duration idle_timeout{};
@@ -237,7 +243,7 @@ constexpr std::size_t kMaxLineBytes = 64 * 1024 * 1024;
 // coalesced (Nagle, MTU batching on a real link), and dropping the remainder
 // would silently lose every line after the first — exactly the framing bug that
 // stalled cross-machine gossip. Empty optional on EOF/error or overflow.
-capy::task<std::optional<std::string>> read_line(net::tcp_socket& socket,
+capy::task<std::optional<std::string>> read_line(net::any_stream& stream,
                                                  std::string& pending) {
     for (;;) {
         if (const auto newline = pending.find('\n');
@@ -248,18 +254,18 @@ capy::task<std::optional<std::string>> read_line(net::tcp_socket& socket,
         }
         if (pending.size() > kMaxLineBytes) co_return std::nullopt;
         char buffer[4096];
-        auto [ec, n] = co_await socket.read_some(
-            net::mutable_buffer(buffer, sizeof buffer));
+        net::mutable_buffer chunk(buffer, sizeof buffer);
+        auto [ec, n] = co_await stream.read_some(std::span(&chunk, 1));
         if (ec || n == 0) co_return std::nullopt;
         pending.append(buffer, n);
     }
 }
 
-// Returns whether the whole line was written (false on a closed/broken socket).
-capy::task<bool> write_line(net::tcp_socket& socket, std::string line) {
+// Returns whether the whole line was written (false on a closed/broken stream).
+capy::task<bool> write_line(net::any_stream& stream, std::string line) {
     line.push_back('\n');
     auto [ec, written] =
-        co_await net::write(socket, net::const_buffer(line.data(), line.size()));
+        co_await net::write(stream, net::const_buffer(line.data(), line.size()));
     co_return !ec && written == line.size();
 }
 
@@ -327,8 +333,17 @@ std::string signal_line(const Signal& signal) {
 // single io_context thread (cooperative, never truly concurrent). Cross-thread
 // outbound goes through Cluster::State::outbox (keyed by peer node id), not this
 // struct, so callers on other threads never touch a link directly.
+//
+// The line protocol runs over `stream` — the raw socket when the cluster is
+// plaintext, or the TLS layer when security is on (`tls` then owns the session
+// and wraps `socket` in reference mode). `socket` stays directly reachable so
+// the keepalive can force-close the connection under either transport; the
+// TLS session supports one in-flight read + one in-flight write, which is
+// exactly the read-pump + link-writer pattern.
 struct GossipLink {
     std::shared_ptr<net::tcp_socket> socket;
+    std::unique_ptr<net::openssl_stream> tls;  // engaged when security is on
+    net::any_stream stream;                    // the protocol's transport
     bool alive = true;
     std::chrono::steady_clock::time_point last_activity{};  // last line received
 };
@@ -472,7 +487,7 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         // large-object bodies a peer asked us for — promptly, every tick.
         bool flushed = true;
         for (std::string& line : self->take_outbound(peer_node_id)) {
-            if (!co_await write_line(*link->socket, std::move(line))) {
+            if (!co_await write_line(link->stream, std::move(line))) {
                 flushed = false;
                 break;
             }
@@ -482,13 +497,13 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
         if (Clock::now() - last_gossip >= kGossipInterval) {
             last_gossip = Clock::now();
             if (self->replication) {
-                if (!co_await write_line(*link->socket,
+                if (!co_await write_line(link->stream,
                                          sync_line(*self->replication)) ||
-                    !co_await write_line(*link->socket,
+                    !co_await write_line(link->stream,
                                          status_line(*self->replication))) {
                     break;
                 }
-            } else if (!co_await write_line(*link->socket, ping_line())) {
+            } else if (!co_await write_line(link->stream, ping_line())) {
                 // No gossip to send — a PING keeps the link alive.
                 break;
             }
@@ -502,7 +517,7 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
                     if (it != requested.end() && now - it->second < 2s) continue;
                     requested[id] = now;
                     log_event(self, "-> LOREQ " + short_id(id));
-                    if (!co_await write_line(*link->socket, loreq_line(id))) {
+                    if (!co_await write_line(link->stream, loreq_line(id))) {
                         requested_ok = false;
                         break;
                     }
@@ -518,28 +533,55 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
 // Run the symmetric handshake over an established connection and stay joined
 // until the connection drops. `initiate` controls who speaks first (the dialer
 // sends HELLO first; the acceptor replies) — the recorded result is identical
-// either way.
+// either way. With security on, the mutual-TLS handshake runs FIRST: no
+// protocol byte crosses the wire before both sides have proven a certificate
+// chained to the token-derived cluster CA, so an unenrolled dialer (or a
+// plaintext one) is dropped here and never reaches HELLO.
 capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                                 std::string my_node_id,
                                 std::string my_listen_address, bool initiate) {
+    // The connection's transport, built before any line is exchanged: the raw
+    // socket, or the TLS layer over it. Lives in the link so the writer pump
+    // shares it (and so the keepalive can still close the raw socket).
+    auto link = std::make_shared<GossipLink>();
+    link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
+    if (self->tls) {
+        link->tls = std::make_unique<net::openssl_stream>(link->socket.get(),
+                                                          *self->tls);
+        auto [handshake_error] = co_await link->tls->handshake(
+            initiate ? net::tls_stream::client : net::tls_stream::server);
+        if (handshake_error) {
+            log_event(self, std::string("TLS handshake failed (") +
+                                (initiate ? "dialed" : "accepted") +
+                                "): " + handshake_error.message());
+            link->socket->close();
+            co_return;
+        }
+        link->stream = net::any_stream(link->tls.get());
+    } else {
+        link->stream = net::any_stream(link->socket.get());
+    }
+
     // One read buffer for the whole connection — the handshake read and the
     // read pump must share it, or bytes the peer sent right after HELLO are lost.
     std::string pending;
     std::optional<std::string> their_hello;
     if (initiate) {
-        co_await write_line(socket, hello_line(my_node_id, my_listen_address));
-        their_hello = co_await read_line(socket, pending);
+        co_await write_line(link->stream,
+                            hello_line(my_node_id, my_listen_address));
+        their_hello = co_await read_line(link->stream, pending);
     } else {
-        their_hello = co_await read_line(socket, pending);
-        co_await write_line(socket, hello_line(my_node_id, my_listen_address));
+        their_hello = co_await read_line(link->stream, pending);
+        co_await write_line(link->stream,
+                            hello_line(my_node_id, my_listen_address));
     }
     if (!their_hello) {
-        socket.close();
+        link->socket->close();
         co_return;
     }
     const ClusterPeer peer = parse_hello(*their_hello);
     if (peer.node_id.empty() || peer.node_id == my_node_id) {
-        socket.close();  // malformed, or we dialed ourselves
+        link->socket->close();  // malformed, or we dialed ourselves
         co_return;
     }
     self->add_peer(peer.node_id, peer.address);
@@ -550,8 +592,6 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // pump (both on the io thread). The writer flushes queued signals + periodic
     // gossip + body requests and enforces the keepalive timeout. Always spawned
     // — the signal plane needs the output pump even with no replication/blobs.
-    auto link = std::make_shared<GossipLink>();
-    link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
     link->last_activity = std::chrono::steady_clock::now();
     capy::run_async(self->io_context.get_executor())(
         link_writer(self, link, peer.node_id));
@@ -561,7 +601,7 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // keepalive closes the socket, which surfaces here as a read error).
     for (;;) {
         std::optional<std::string> line =
-            co_await read_line(*link->socket, pending);
+            co_await read_line(link->stream, pending);
         if (!line) break;  // peer disconnected / link timed out
         link->last_activity = std::chrono::steady_clock::now();
         apply_gossip(self, *line, peer.node_id);
@@ -700,6 +740,33 @@ void Cluster::start() {
     net::ipv4_address host;
     if (net::parse_ipv4_address(config_.listen_host, host)) return;  // bad host
 
+    // Mutual TLS (CTL-2, #466): one context for every link, dialed or
+    // accepted — this node's identity + the cluster CA as the ONLY trust
+    // anchor, the peer's certificate required and verified both ways, TLS 1.3
+    // minimum. No hostname is set, so verification is chain-only (cluster
+    // membership is proven by the CA, not by an address). Fail CLOSED: if any
+    // credential doesn't load, the node runs no networking at all rather than
+    // falling back to plaintext.
+    if (config_.security.enabled()) {
+        net::tls_context tls;
+        const bool credentials_ok =
+            !tls.use_certificate(config_.security.certificate_pem,
+                                 net::tls_file_format::pem) &&
+            !tls.use_private_key(config_.security.private_key_pem,
+                                 net::tls_file_format::pem) &&
+            !tls.add_certificate_authority(
+                config_.security.ca_certificate_pem) &&
+            !tls.set_verify_mode(net::tls_verify_mode::require_peer) &&
+            !tls.set_min_protocol_version(net::tls_version::tls_1_3);
+        if (!credentials_ok) {
+            std::fprintf(stderr,
+                         "zetta: cluster security credentials failed to load; "
+                         "refusing to start networking\n");
+            return;
+        }
+        state_->tls = std::move(tls);
+    }
+
     // Bind the first free port in the range, synchronously, so listen_address()
     // is accurate before the network thread starts. Use the error-code bind/
     // listen (not the throwing ctor) — "port in use" is expected while probing.
@@ -776,9 +843,15 @@ std::vector<std::string> Cluster::listen_addresses() const {
 
 std::string Cluster::peer_command() const {
     // Prefer the first reachable address — local_ipv4_addresses() already puts
-    // non-loopback (LAN) addresses ahead of 127.0.0.1.
+    // non-loopback (LAN) addresses ahead of 127.0.0.1. With security on, the
+    // join token rides along: it is exactly what the next node needs to derive
+    // the cluster CA and mint an identity this cluster will trust.
     const std::vector<std::string> addresses = listen_addresses();
-    return "zetta --peer " + addresses.front();
+    std::string command = "zetta --peer " + addresses.front();
+    if (config_.security.enabled()) {
+        command += " --join-token " + config_.security.join_token;
+    }
+    return command;
 }
 
 std::vector<ClusterPeer> Cluster::peers() const {
@@ -875,6 +948,10 @@ bool is_connected(const Cluster::State& state, const std::string& node_id) {
 
 void Cluster::set_signal_handler(SignalHandler* handler) {
     state_->signal_handler.store(handler, std::memory_order_release);
+}
+
+SignalHandler* Cluster::signal_handler() const {
+    return state_->signal_handler.load(std::memory_order_acquire);
 }
 
 SignalResponse Cluster::request(const std::string& node_id,

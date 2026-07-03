@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -13,12 +15,14 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
+#include "term_frequency_backend.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index_backend.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/index/oramacore_fulltext_index.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/partitioner.hpp"
@@ -57,113 +61,10 @@ using zetta::data::RoundRobinPartitioner;
 using zetta::data::Table;
 using zetta::test::TempDir;
 
-// ----- a deterministic, partition-INDEPENDENT reference scorer ----------------
-//
-// A doc's score for a query is its term frequency — the count of query tokens
-// occurring in the doc's indexed text — which depends ONLY on the doc + the query,
-// never on corpus statistics. That is what makes "build per-partition then merge"
-// equal to "build one consolidated index" exactly, so it is a clean oracle for the
-// distributed merge without the private BM25F engine. (Real BM25F is NOT
-// partition-independent — its IDF depends on the corpus — which is why the
-// real-engine acceptance below uses an unambiguous, tf-dominated corpus.)
-std::vector<std::string> tokenize(const std::string& text) {
-    std::vector<std::string> tokens;
-    std::string current;
-    for (const char ch : text) {
-        if (std::isalnum(static_cast<unsigned char>(ch))) {
-            current.push_back(static_cast<char>(
-                std::tolower(static_cast<unsigned char>(ch))));
-        } else if (!current.empty()) {
-            tokens.push_back(std::move(current));
-            current.clear();
-        }
-    }
-    if (!current.empty()) tokens.push_back(std::move(current));
-    return tokens;
-}
-
-class TermFrequencyBackend final : public IndexBackend {
-public:
-    std::string name() const override { return "tf_reference"; }
-    IndexKind kind() const override { return IndexKind::Search; }
-
-    IndexStatus build(const IndexSpec& spec,
-                      std::span<const IndexPartition> partitions) override {
-        if (spec.kind != IndexKind::Search) {
-            return IndexStatus::unsupported("tf_reference is search-only");
-        }
-        if (spec.fields.empty()) {
-            return IndexStatus::invalid_argument("no fields");
-        }
-        Built built;
-        for (const IndexPartition& partition : partitions) {
-            for (const IndexDocument& document : partition.documents) {
-                if (!document.doc.is_object()) continue;
-                std::map<std::string, int> counts;
-                for (const std::string& field : spec.fields) {
-                    const auto value = document.doc.find(field);
-                    if (value == document.doc.end() || !value->is_string()) continue;
-                    for (const std::string& token :
-                         tokenize(value->get<std::string>())) {
-                        ++counts[token];
-                    }
-                }
-                built.docs.push_back({document.id, std::move(counts)});
-            }
-        }
-        indexes_[spec.key()] = std::move(built);
-        return IndexStatus::success();
-    }
-
-    IndexQueryResult query(const IndexSpec& spec,
-                           const IndexQuery& query) const override {
-        IndexQueryResult result;
-        const auto found = indexes_.find(spec.key());
-        if (found == indexes_.end()) {
-            result.status = IndexStatus::not_found("no index for " + spec.key());
-            return result;
-        }
-        const std::vector<std::string> query_tokens =
-            tokenize(query.term.is_string() ? query.term.get<std::string>()
-                                            : query.term.dump());
-        std::vector<FulltextHit> hits;
-        for (const Doc& doc : found->second.docs) {
-            double score = 0.0;
-            for (const std::string& token : query_tokens) {
-                const auto count = doc.counts.find(token);
-                if (count != doc.counts.end()) score += count->second;
-            }
-            if (score > 0.0) hits.push_back({doc.id, score});
-        }
-        std::stable_sort(hits.begin(), hits.end(),
-                         [](const FulltextHit& a, const FulltextHit& b) {
-                             if (a.score != b.score) return a.score > b.score;
-                             return a.row_id < b.row_id;
-                         });
-        if (query.top_k > 0 && hits.size() > query.top_k) hits.resize(query.top_k);
-        for (const FulltextHit& hit : hits) {
-            result.row_ids.push_back(hit.row_id);
-            result.scores.push_back(hit.score);
-        }
-        result.status = IndexStatus::success();
-        return result;
-    }
-
-    IndexStatus drop(const IndexSpec& spec) override {
-        indexes_.erase(spec.key());
-        return IndexStatus::success();
-    }
-
-private:
-    struct Doc {
-        std::string id;
-        std::map<std::string, int> counts;  // token -> frequency in the doc
-    };
-    struct Built {
-        std::vector<Doc> docs;
-    };
-    std::map<std::string, Built> indexes_;
-};
+// The deterministic, partition-independent reference scorer (see the header's
+// comment for why it is a clean oracle for the distributed merge).
+using zetta::test::TermFrequencyBackend;
+using zetta::test::tokenize;
 
 // The consolidated-index ORACLE: one index over EVERY row of every table, queried
 // once — the single source of truth the per-partition distributed query must match.
@@ -227,21 +128,55 @@ bool wait_for(Predicate predicate) {
     return false;
 }
 
-// A corpus where "postgres" matches several rows across partitions with clearly
-// separated term frequencies, so the global ranking is unambiguous (tf-dominated) —
-// robust both for the tf reference AND for real BM25F's per-shard IDF variation.
+// A corpus engineered so the distributed (per-shard local-IDF) ranking equals the
+// consolidated oracle BY CONSTRUCTION, not by luck (#611). Local-IDF query-then-fetch
+// is exact only when every shard scores with the same corpus statistics for the query
+// term; "clearly separated term frequencies" alone is NOT enough — BM25F's k1
+// saturation compresses any tf separation into a bounded score ratio (~2.2x at
+// k1 = 1.2), while pairing a matching row with a non-matching one boosts a shard's
+// IDF ~3.8x over a shard whose rows all match. So this corpus pins the statistics
+// themselves:
+//
+//   - 8 rows over RoundRobinPartitioner(4) (partition = row ordinal % 4): rows 0-3
+//     match "postgres" (total tf 4/3/2/1), rows 4-7 do not, so EVERY partition holds
+//     exactly one matching + one non-matching row -> per-partition df/N == 1/2 ==
+//     the consolidated df/N (4/8), and IDF is identical everywhere (ln 2).
+//   - Every title is 2 tokens and every body 5 tokens after the engine's
+//     tokenization (no stop words: "and"/"the"/... would change field lengths), so
+//     every average field length — per partition and consolidated — is identical
+//     and the BM25F length normalization cancels.
+//
+// With IDF and length norms equal everywhere, a row's score depends only on its own
+// term frequencies — partition-independent, so distributed scores EQUAL the oracle's
+// and the ranking follows the distinct tf totals 4 > 3 > 2 > 1 (no ties). The tf
+// reference scorer sees the same distinct totals, so the corpus is unambiguous for
+// it too.
 std::vector<nlohmann::json> postgres_corpus() {
     return {
-        article("Postgres deep dive",
-                "postgres postgres postgres postgres tuning and scaling"),  // 5
-        article("Database indexes", "btree gin brin and postgres indexes"),  // 1
-        article("Postgres replication",
-                "postgres postgres replication and postgres failover"),  // 3
-        article("Cooking pasta", "boil water then add salt and pasta"),  // 0
-        article("Scaling Postgres", "postgres postgres horizontal scaling"),  // 2
-        article("Widget catalog", "a guide about widgets and gadgets"),  // 0
-        article("Postgres backups", "postgres nightly backups explained"),  // 1
+        // Rows 0-3: the matching rows, one per partition ("postgres" total tf 4/3/2/1).
+        article("Postgres tuning", "postgres postgres postgres vacuum analyze"),
+        article("Postgres replication", "postgres postgres failover replica streaming"),
+        article("Postgres scaling", "postgres shard cluster horizontal capacity"),
+        article("Postgres backups", "nightly backup snapshot restore archive"),
+        // Rows 4-7: the non-matching rows, one per partition (same field lengths).
+        article("Cooking pasta", "boil water pasta salt basil"),
+        article("Widget catalog", "widgets gadgets sprockets pulleys levers"),
+        article("Garden tips", "prune roses mulch beds weekly"),
+        article("Travel notes", "pack light book early trains"),
     };
+}
+
+// True when a row of the corpus above matches the "postgres" query (used to assert
+// the engineered one-matching-row-per-partition invariant explicitly).
+bool matches_postgres(const nlohmann::json& doc) {
+    for (const char* field : {"title", "body"}) {
+        const auto value = doc.find(field);
+        if (value == doc.end() || !value->is_string()) continue;
+        for (const std::string& token : tokenize(value->get<std::string>())) {
+            if (token == "postgres") return true;
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -326,6 +261,7 @@ TEST(DistributedFulltextWire, HitsResponseRoundTrips) {
     FulltextQueryResponse response;
     response.from = "node-a";
     response.hits = {{"r1", 12.5}, {"r3", 2.0}};
+    response.sub_indexes = 3;
     std::string error;
     const auto decoded =
         zetta::index::decode_fulltext_hits(zetta::index::encode_fulltext_hits(response), &error);
@@ -334,6 +270,13 @@ TEST(DistributedFulltextWire, HitsResponseRoundTrips) {
     ASSERT_EQ(decoded->hits.size(), 2u);
     EXPECT_EQ(decoded->hits[0].row_id, "r1");
     EXPECT_DOUBLE_EQ(decoded->hits[0].score, 12.5);
+    EXPECT_EQ(decoded->sub_indexes, 3u);
+
+    // A payload without the optional sub_indexes (an older peer) decodes to 0.
+    const auto legacy = zetta::index::decode_fulltext_hits(
+        R"({"from":"node-b","hits":[{"id":"r1","score":1.0}]})", &error);
+    ASSERT_TRUE(legacy) << error;
+    EXPECT_EQ(legacy->sub_indexes, 0u);
 }
 
 // ----- single node, many local partitions: merge == consolidated oracle -------
@@ -505,6 +448,34 @@ TEST(DistributedFulltext, BuildsRealFulltextSubIndexesAndRanksLikeOracle) {
         zetta::data::write_partitioned(node, *database, *table);
     ASSERT_TRUE(written.ok()) << written.error;
 
+    // Assert the engineered fixture invariant the exact-ranking acceptance rests on
+    // (see postgres_corpus): every partition holds exactly one matching and one
+    // non-matching row, so per-partition BM25F statistics equal the consolidated
+    // ones. If placement ever changes shape, fail HERE with the reason rather than
+    // as a mysterious ranking flip below (#611).
+    ASSERT_EQ(written.partitions.size(), 4u);
+    for (const auto& partition : written.partitions) {
+        const std::optional<std::string> body =
+            database->large_objects().read(partition->blob_ref());
+        ASSERT_TRUE(body) << "partition body missing: " << partition->blob_ref();
+        std::size_t rows = 0;
+        std::size_t matching = 0;
+        std::istringstream lines(*body);
+        std::string line;
+        while (std::getline(lines, line)) {
+            if (line.empty()) continue;
+            const nlohmann::json parsed =
+                nlohmann::json::parse(line, /*cb=*/nullptr, /*allow_exceptions=*/false);
+            ASSERT_TRUE(parsed.is_object() && parsed.contains("doc"));
+            ++rows;
+            if (matches_postgres(parsed.at("doc"))) ++matching;
+        }
+        EXPECT_EQ(rows, 2u) << "partition '" << partition->id()
+                            << "' lost the engineered one-match-one-miss shape";
+        EXPECT_EQ(matching, 1u) << "partition '" << partition->id()
+                                << "' lost the engineered one-match-one-miss shape";
+    }
+
     Cluster cluster(node.node_id(), cluster_config(47090, {}));
     // Default backend = the real OramaCoreFulltextIndex (BM25F).
     DistributedFulltextIndex distributed(cluster);
@@ -523,8 +494,14 @@ TEST(DistributedFulltext, BuildsRealFulltextSubIndexesAndRanksLikeOracle) {
     const auto oracle_result = oracle_backend.query(spec, query);
     ASSERT_TRUE(oracle_result.status.ok());
 
-    // The tf-dominated corpus ranks unambiguously, so the per-partition scatter-gather
-    // ranking equals the consolidated-index ranking (and the same set of rows match).
+    // Per-partition statistics equal the consolidated ones by construction (the
+    // fixture invariant asserted above), so the distributed scatter-gather ranking —
+    // and each row's BM25F score — EQUALS the consolidated index's exactly.
     EXPECT_EQ(distributed_result.row_ids, oracle_result.row_ids);
-    EXPECT_FALSE(distributed_result.row_ids.empty());
+    ASSERT_EQ(distributed_result.row_ids.size(), 4u);  // the 4 matching rows
+    ASSERT_EQ(oracle_result.scores.size(), distributed_result.scores.size());
+    for (std::size_t i = 0; i < distributed_result.scores.size(); ++i) {
+        EXPECT_NEAR(distributed_result.scores[i], oracle_result.scores[i], 1e-9)
+            << "score diverged at rank " << i;
+    }
 }

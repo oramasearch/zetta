@@ -1,51 +1,55 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/aws_config.schema.json",
-  "title": "AwsConfig",
-  "description": "Configuration for the AWS cloud-burst Provisioner backend (ARC-13 / ADR-20, #377), the AWS sibling of the reference AzureConfig: where on AWS to burst ephemeral compute nodes, how to size and price them, and how each node joins the cluster. Mirrored by zetta::AwsConfig in include/zetta/aws_provisioner.hpp and enforced by AwsConfig::from_json() in src/core/aws_provisioner.cpp — keep them in sync. No cloud SDK lives behind the provisioner; this config is interpreted by an AwsControlPlane (the reference AwsCliControlPlane shells out to the `aws` CLI, driving an EC2 Auto Scaling Group). A malformed config is rejected at the boundary so a misconfigured burst fails fast instead of bringing up the wrong (or unbounded) fleet.",
-  "type": "object",
-  "required": ["region", "launch_template", "subnets"],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "Configuration for the AWS cloud-burst Provisioner backend (ARC-13 / ADR-20, #377), the AWS sibling of the reference AzureConfig: where on AWS to burst ephemeral compute nodes, how to size and price them, and how each node joins the cluster. Mirrored by zetta::AwsConfig in include/zetta/aws_provisioner.hpp and enforced by AwsConfig::from_json() in src/core/aws_provisioner.cpp — keep them in sync. No cloud SDK lives behind the provisioner; this config is interpreted by an AwsControlPlane (the reference AwsCliControlPlane shells out to the `aws` CLI, driving an EC2 Auto Scaling Group). A malformed config is rejected at the boundary so a misconfigured burst fails fast instead of bringing up the wrong (or unbounded) fleet.",
   "properties": {
-    "region": {
-      "description": "The AWS region the burst nodes launch into (e.g. 'us-west-2', 'eu-west-1').",
-      "type": "string",
-      "minLength": 1
+    "instance_type": {
+      "description": "An EC2 instance type override (e.g. 'g5.xlarge', 'p4d.24xlarge') applied via the ASG's mixed-instances policy. Empty uses the launch template's instance type.",
+      "type": "string"
     },
     "launch_template": {
       "description": "The EC2 launch template name the Auto Scaling Group launches instances from — it defines the AMI, the default instance type, the IAM instance profile (the per-node AWS identity), and the user-data (the cluster-join bootstrap).",
-      "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "type": "string"
     },
-    "subnets": {
-      "description": "Comma-separated VPC subnet ids the burst nodes launch into (the ASG's --vpc-zone-identifier).",
-      "type": "string",
-      "minLength": 1
+    "max_price": {
+      "description": "Spot max price per node-hour (USD). AWS convention: 0 (or omitted) places no explicit cap, so Spot is capped at the On-Demand price. Applies only when spot is true.",
+      "minimum": 0,
+      "type": "number"
     },
     "pool_name": {
       "description": "Name of the burst pool (the EC2 Auto Scaling Group). Stable so create + scale + delete are idempotent. Defaults to 'zetta-burst' when omitted.",
       "type": "string"
     },
-    "instance_type": {
-      "description": "An EC2 instance type override (e.g. 'g5.xlarge', 'p4d.24xlarge') applied via the ASG's mixed-instances policy. Empty uses the launch template's instance type.",
+    "profile": {
+      "description": "Optional AWS CLI named profile (which credentials/config the `aws` commands run under). Empty uses the default profile / ambient credentials.",
+      "type": "string"
+    },
+    "region": {
+      "description": "The AWS region the burst nodes launch into (e.g. 'us-west-2', 'eu-west-1').",
+      "minLength": 1,
+      "type": "string"
+    },
+    "seed_peer": {
+      "description": "The cluster seed address (host:port) handed to each node's bootstrap so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way (e.g. baked into the launch template's user-data).",
       "type": "string"
     },
     "spot": {
       "description": "Burst Spot capacity (cheaper, interruptible) rather than On-Demand, via the ASG's mixed-instances policy.",
       "type": "boolean"
     },
-    "max_price": {
-      "description": "Spot max price per node-hour (USD). AWS convention: 0 (or omitted) places no explicit cap, so Spot is capped at the On-Demand price. Applies only when spot is true.",
-      "type": "number",
-      "minimum": 0
-    },
-    "seed_peer": {
-      "description": "The cluster seed address (host:port) handed to each node's bootstrap so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way (e.g. baked into the launch template's user-data).",
-      "type": "string"
-    },
-    "profile": {
-      "description": "Optional AWS CLI named profile (which credentials/config the `aws` commands run under). Empty uses the default profile / ambient credentials.",
+    "subnets": {
+      "description": "Comma-separated VPC subnet ids the burst nodes launch into (the ASG's --vpc-zone-identifier).",
+      "minLength": 1,
       "type": "string"
     }
-  }
+  },
+  "required": [
+    "region",
+    "launch_template",
+    "subnets"
+  ],
+  "title": "AwsConfig",
+  "type": "object"
 }

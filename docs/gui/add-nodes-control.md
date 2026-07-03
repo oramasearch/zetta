@@ -1,7 +1,7 @@
 # Add nodes control (the headed Cluster view)
 
 The headed **Cluster** panel's **Add nodes** control (`App::draw_add_nodes_control`,
-`src/gui/app_operations.cpp`, **#583** — epic [#575](https://github.com/oramasearch/zetta/issues/575)
+`src/gui/app_cluster.cpp`, **#583** — epic [#575](https://github.com/oramasearch/zetta/issues/575)
 area 1) is the GUI front door for **[`zetta::cloud::add_nodes`](../cloud/add-nodes.md)** — the
 "add N nodes to this cluster" action — driven over an **injected
 [`Provisioner`](../cloud/provisioner.md)**. It sits right above the
@@ -29,7 +29,7 @@ are real. The cloud targets are wired from
 **[local-CLI detection](../cloud/provisioner-detection.md)**: at startup zetta asks each
 installed, logged-in CLI (`az`, …) for its deployment context (subscription /
 region / resource group — **no credentials**; the CLI keeps its own and the
-control plane uses it to act), records it as `system.zetta_provisioners`, and
+control plane uses it to act), records it as `system.provisioners`, and
 injects a CLI-backed provisioner per detected target — lighting that target's
 **Allow** button up with no UI change. A target whose CLI isn't installed / logged
 in stays unwired.

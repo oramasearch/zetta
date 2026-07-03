@@ -11,7 +11,7 @@ animation; the GUI consumer is a separate slice.
 Both views live entirely in **`zetta-core`** (no SDL, headless-testable) and are
 **ephemeral, observed** — **no CRDT backing, never replicated** — exactly like
 [`system.node_metrics`](../cluster/node-metrics.md), [`system.checkpoints`](job-checkpoint.md),
-and [`system.zetta_cloud_status`](../cloud/cloud-inspector.md). They are a *measurement* of
+and [`system.cloud_status`](../cloud/cloud-inspector.md). They are a *measurement* of
 what this node did / is doing, not durable agreement, so they live only in memory
 on the node the query hits. This is the deliberate exception to "EVERYTHING is
 replicated state".
@@ -24,7 +24,7 @@ replicated state".
   `local_bytes_read` vs `wire_bytes_moved` per job — but returned them by value, so
   nothing held onto them and they weren't queryable.
 - The [partition catalog](../data/dataset-partitions.md) (`system.dataset_partitions`) and
-  the [`ComputeJob`](compute-jobs.md) lifecycle (`system.zetta_jobs`) were already
+  the [`ComputeJob`](compute-jobs.md) lifecycle (`system.jobs`) were already
   queryable; the [collectives](../cluster/collectives.md) had a cumulative `wire_bytes()`
   meter but no exposed round count.
 - This slice **records** the per-job near-data counters into a small ephemeral
@@ -69,6 +69,13 @@ completes. The ring keeps the most-recent `Node::kMaxPipelineJobs` (512) records
 (oldest dropped) so a long-lived node can't grow it without limit. It is guarded by
 its own mutex — a background interactive run records while the GUI / query thread
 reads.
+
+The composed [featurize → train runner](../use-cases/uc1-featurize-train-over-partitions.md)
+(#530) records **two rows per run**: a `featurize` row carrying its one shard read
+(`partitions_read` / `rows_read` / `local_bytes_read`) + the featurization partials,
+and a `train` row carrying the feature rows this node trained on + the
+train/explain/score partials — so summing the view never double-counts the shared
+read.
 
 ## `system.collective_rounds` — live collective-plane progress
 

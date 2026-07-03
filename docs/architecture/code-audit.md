@@ -14,8 +14,9 @@ blueprint rules here when they change so the codebase has one place that says
 
 > **Decisions taken** (recorded inline below): schema source-of-truth moves into
 > the C++ types (a `schema()` method generates the JSON; a build step keeps
-> `schemas/*.json` in sync); add the four missing `system.zetta_*` tables; collapse
-> the churn-pipeline duplication onto one shared encoding header + `run_churn_solution`;
+> `schemas/*.json` in sync); add the four missing `system.*` tables; collapse
+> the churn-pipeline duplication onto one shared encoding header + the churn runner
+> (now `run_churn_solution_on_node`, #637);
 > keep `testkit/` in `zetta-core` for now.
 
 ---
@@ -35,17 +36,18 @@ compliance verdict: ✅ built · 🟡 partial / enforced in only one place · �
 | **RULE-3 / PERM-1 / ADR-6** | Key-scoped access (V1): a principal operates over exactly what its login key permits. | ✅ Built (`Principal`/`AccessKey`/`Scope`/`Capability`, deny-by-default). 🟡 **but** `Principal`/`AccessKey` records (replicated `principal:`/`key:` keys — auth credentials) enter via ad-hoc `contains()` checks, **not** the formal schema boundary their siblings Run/Model/Job/Audit use. See §2.1. |
 | **RULE-5 / RSK-9** | Burst jobs must be eviction-tolerant (checkpoint/restart to survive Spot eviction). | 🟡 The **checkpoint/restart capability is built** ([job-checkpoint.md](../compute/job-checkpoint.md), #468): a durable, sha256-fingerprinted `JobCheckpoint` (validated boundary) + a `CheckpointStore` seam (`FileCheckpointStore`, atomic + crash-safe) + `run_resumable_rounds` (resume from the last checkpoint with no recompute, graceful spot-drain), wired into per-round [GBDT](../ml/gbdt.md) model checkpointing + a `system.checkpoints` view. Remaining: a **shared/replicated** store so a *replacement* burst node resumes a distributed job, and **auto-restart** from the autoscaler on a *detected* eviction. |
 | **RULE-6 / CTL-3 / ENT-17** | Secrets stored as vault references, never inline in project/run records or logs. | ✅ No inline secrets found — cloud configs reference profiles / managed identities / a credentials-ref, not embedded credentials. (No vault integration yet, but nothing violates the rule.) |
-| **RULE-7** | Observable state defaults to a virtual, read-only `system.zetta_*` table computed at query time — not a GUI-only panel or hand-synced copy. | 🟡 **Drift.** `system.zetta_nodes/_deployments/_models/_jobs/_cloud_providers/_cloud_status` comply, but **Runs, Principals, Keys, and the Audit trail are GUI-only with no table** — though Model and Job (Run's siblings) both have one. The rule itself warns this is exactly how "SQL and the GUI drift." **Decision: add all four.** See §2.2. |
+| **RULE-7** | Observable state defaults to a virtual, read-only `system.*` table computed at query time — not a GUI-only panel or hand-synced copy. | 🟡 **Drift.** `system.nodes/_deployments/_models/_jobs/_cloud_providers/_cloud_status` comply, but **Runs, Principals, Keys, and the Audit trail are GUI-only with no table** — though Model and Job (Run's siblings) both have one. The rule itself warns this is exactly how "SQL and the GUI drift." **Decision: add all four.** See §2.2. |
 | **PERM-2 / CTL-6** | Only principals holding the orchestration capability may provision infra / deploy nodes. | 🟡 The capability model exists (`CapabilityDomain::Orchestration`); whether `deploy_graph` / the provisioners actually *check* it is not yet wired (they're not behind an `authorize(operation)` call). |
 | **CTL-1 / TB-2** | Capability-scoped deny-by-default sandbox: no ambient authority, no fs/network by default, all calls audited (the extension/runner sandbox). | 🔭 Planned — no extension/runner sandbox yet (RSK-7). |
-| **CTL-2 / TB-3** | mTLS on all inter-node traffic + cryptographic per-node identity + token-gated join. | ⛔ The cluster is plaintext TCP today; no mTLS, no enrollment token. The inter-node trust boundary is unprotected. |
+| **CTL-2 / TB-3** | mTLS on all inter-node traffic + cryptographic per-node identity + token-gated join. | 🟡 **Built** ([cluster/security.md](../cluster/security.md), #466): mutual TLS 1.3 on every link (handshake before any protocol line, fail-closed), per-node Ed25519 identity certs, and a token-gated join (the token derives the cluster CA) — on by default in the binary, `--cluster-plaintext` the explicit opt-out. Remaining: member-vs-member node-id impersonation (needs CSR enrollment + a Corosio peer-cert accessor), token rotation/revocation UX, and join-token plumbing for burst provisioners. |
 | **CTL-5** | Immutable audit trail + approval gates for risky/shared actions. | ✅ Audit trail built (append-only `AuditEvent`); `BurstApprovalGate` gates over-cap bursts. Extension-publish approval (RULE-4/APR-1) is 🔭. |
 | **ADR-17** | No foreign runtime — native reimplementations, no Python/XGBoost/warehouse in the engine/build/CI (RSK-8). | ✅ Followed rigorously; the [native correctness oracle](../ml/native-oracle.md) mitigates the RSK-8 correctness/maintenance burden. |
 
 **Net:** the *data-plane and governance primitives* are largely built and faithful
 to the blueprint; the gaps cluster in (a) **enforcement wiring** (RULE-1 not at the
 `deploy_graph` seam, PERM-2 not checked), (b) **the security hardening track**
-(CTL-2 mTLS, CTL-1 sandbox; RULE-5 eviction tolerance now has its
+(CTL-2 mTLS now built with follow-ups above; CTL-1 sandbox; RULE-5 eviction
+tolerance now has its
 [checkpoint/restart primitive](../compute/job-checkpoint.md), with a shared store + auto-restart
 trigger remaining), and (c) **one concrete RULE-7 drift** (missing system tables).
 (a) and (c) are cheap to close now; (b) is a planned epic.
@@ -64,9 +66,9 @@ only by a doc, no validator), and `schemas/access_key.schema.json` is enforced o
 hand-mirrored comments. CLAUDE.md never flags this as known debt. **Fix:** route
 principal/key loads through the same boundary as their siblings (see §5 schema plan).
 
-### 2.2 RULE-7 — missing `system.zetta_*` tables
+### 2.2 RULE-7 — missing `system.*` tables
 `Runs`, `Principals`, `AccessKeys`, and the `Audit` trail are observable only through
-GUI panels (`draw_runs`, `draw_admin`) — no `system.zetta_runs` / `_principals` /
+GUI panels (`draw_runs`, `draw_admin`) — no `system.runs` / `_principals` /
 `_keys` / `_audit`, while Model and Job have tables. **Decision: add all four**,
 computed at query time from `Node::runs()` / `principals()` / `audit_events()` (the
 keys row redacts nothing secret — scope + capabilities only, same as the Admin panel).
@@ -118,7 +120,9 @@ projections of CRDT state) but inconsistent and undocumented.
 **Decision on R1:** promote one `churn_numeric_encoding.hpp` (encode + schemas + spec
 + `make_store`) into the churn fixture; have `churn_solution`, the testkit harness, and
 every test include it — and standardize on the general `days_from_civil` encoding so
-the two variants converge.
+the two variants converge. (Partially done by #637: the testkit harness now reuses the
+canonical `churn_solution.hpp` encoding and no longer carries its own `make_store`;
+the remaining copies are in `tests/`.)
 
 ---
 
@@ -132,13 +136,12 @@ the two variants converge.
   repeats an identical `scan → drop-locals-absent-from-doc → materialize-new` block ~11
   times, once per entity type. Extract one `reconcile_<entity>(snapshot)` helper per
   type; the body becomes ~11 calls.
-- **Three inline re-wirings of the churn pipeline.** The orchestration itself lives in
-  one place (`ChurnStepExecutor`, good), and the GUI's `run_churn_demo` correctly
-  delegates to `run_churn_solution` — but the **testkit UC-1 case** and **two tests**
-  re-assemble the `config → ChurnStepExecutor → GraphExecutor → execute → pull results`
-  shape inline instead of calling `run_churn_solution`. **Decision:** route them through
-  a shared `run_churn_pipeline(config)` core (or `run_churn_solution`), wrapping it with
-  their own gate/governance/assert layers.
+- ~~**Three inline re-wirings of the churn pipeline.**~~ **Resolved (#637):** every
+  in-process churn submitter — the GUI's `run_churn_demo`, the governed console's
+  churn-shaped path, the testkit UC-1 cases, and the acceptance tests — now routes
+  through the one public runner, `run_churn_solution_on_node`, over the node-owned
+  `JobCoordinator`; the isolated-coordinator wiring survives only as a file-local
+  detail of `churn_solution.cpp`.
 - **`testkit/` + `churn_solution.cpp` are compiled into production `zetta-core`** (the
   GUI panel links them). **Decision: keep in `zetta-core` for now** (a CPU-only build
   carries little cost) — revisit if core bloat becomes a concern; the clean exit is a
@@ -177,8 +180,8 @@ hand-written `from_json` value types onto the same `schema()` convention so ther
 boundary pattern, and bring `Principal`/`AccessKey` (§2.1) onto it.
 
 ### 5.2 RULE-7 tables — add all four
-`system.zetta_runs`, `system.zetta_principals`, `system.zetta_keys`,
-`system.zetta_audit`, computed at query time from the live `Node` accessors, alongside
+`system.runs`, `system.principals`, `system.keys`,
+`system.audit`, computed at query time from the live `Node` accessors, alongside
 a panel that renders each (so SQL and the GUI share one source).
 
 ### 5.3 Churn consolidation
@@ -201,10 +204,12 @@ tests through a shared `run_churn_pipeline(config)` core.
 
 The blueprint's own risk register frames the priority: **RSK-1** (Orama Zetta maturity)
 and **RSK-3** (control-plane on a CRDT without transactions/leadership) are the gating
-risks, and they map directly to the §1 security/enforcement gaps (CTL-2 mTLS, leader
-election, RULE-1 wiring) — those matter more than the §3 redundancies. The redundancies
+risks, and they map directly to the §1 security/enforcement gaps (leader
+election, RULE-1 wiring; CTL-2 mTLS is now built, #466) — those matter more than the
+§3 redundancies. The redundancies
 (R1–R5) and smells (§4) are **cheap, low-risk paydown** that should happen
 opportunistically; the **enforcement wiring** (RULE-1 at `deploy_graph`, PERM-2 checks)
-and the **security track** (CTL-1/CTL-2) are the load-bearing follow-ups.
+and the **security track** (CTL-1, and CTL-2's enrollment follow-ups) are the
+load-bearing follow-ups.
 
 See the recommendations issue for the prioritized, actionable breakdown.

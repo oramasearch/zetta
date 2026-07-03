@@ -10,7 +10,7 @@ realizes **ARC-11** and the entity spec **ENT-31**.
 This page documents the **storage + data model** only: the `ComputeJob` type and
 its lifecycle (create / update / query) on a `Node`, its persistence +
 replication, the audit events it emits, its JSON-Schema boundary, and the
-read-only `system.zetta_jobs` SQL registry that exposes it (below). The
+read-only `system.jobs` SQL registry that exposes it (below). The
 [work-stealing scheduler](work-stealing-scheduler.md) that *runs* a job's tasks
 across cores + nodes is built ([#366](https://github.com/oramasearch/zetta/issues/366)),
 as is the [`ScalingPolicy`](scaling-policy.md) reward model the autoscaler reads
@@ -46,6 +46,7 @@ parent. Its value:
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on every change. |
 | `detail` | `std::string` | Human-readable note / failure reason. Optional. |
+| `trace_id` | `std::string` | The job's trace (32-hex W3C id, #640) — stamped by the first coordinator to run it; replicated, so every node's spans join ONE trace. Optional. |
 
 `status` is grounded in the job events: a job starts `Queued`, moves to `Running`
 when it is scheduled onto compute, and ends `Succeeded` or `Failed` (`detail`
@@ -86,17 +87,17 @@ job->set_status(zetta::compute::JobStatus::Running);
 job->set_status(zetta::compute::JobStatus::Succeeded, "12 nodes, 4.2s");
 ```
 
-## Queryable via SQL (`system.zetta_jobs`)
+## Queryable via SQL (`system.jobs`)
 
 The compute-job registry is exposed as a virtual, read-only system table —
-**`system.zetta_jobs`** — the same pattern as `system.zetta_nodes` /
-`system.zetta_deployments` / `system.zetta_models` ([query.md](../data/query.md)). It is
+**`system.jobs`** — the same pattern as `system.nodes` /
+`system.deployments` / `system.models` ([query.md](../data/query.md)). It is
 **computed at query time** from `Node::jobs()` (nothing extra is stored or
 replicated), so a `SELECT` always reflects the live set:
 
 ```sql
-SELECT * FROM system.zetta_jobs;
-SELECT job_id, kind, status FROM system.zetta_jobs WHERE status = 'running';
+SELECT * FROM system.jobs;
+SELECT job_id, kind, status FROM system.jobs WHERE status = 'running';
 ```
 
 | Column | Source |
@@ -111,7 +112,7 @@ SELECT job_id, kind, status FROM system.zetta_jobs WHERE status = 'running';
 
 `SELECT *`, projection, and a single `WHERE` equality work exactly as for a
 regular table. Qualified name only (no bare alias), like
-`system.zetta_deployments`. The `node` column is the node whose replicated view
+`system.deployments`. The `node` column is the node whose replicated view
 the rows are read from — jobs replicate, so every node lists the same set;
 recording which node actually *runs* a job is a later slice (the scheduler), so
 until then `node` answers "which node's registry you queried", not a placement

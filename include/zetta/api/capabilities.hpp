@@ -3,18 +3,48 @@
 #include "zetta/api/registry.hpp"
 
 // The core capability set — the first entries on the control surface
-// (docs/api/registry-design.md → "What the skeleton ships"):
+// (docs/api/registry-design.md → "What the skeleton ships"; the live table is
+// docs/api/README.md → "Capabilities (v1)"):
 //
-//   server_info     read    node identity, version, entity counts, membership
-//   sql             read    one governed SQL statement via QueryService —
-//                           this alone exposes every system.* view
-//   list_projects   read    project names
-//   create_project  action  the action template: mutates, audited, replicated
+//   server_info      read    node identity, version, entity counts, membership
+//   sql              read    one governed SQL statement via QueryService —
+//                            this alone exposes every system.* view
+//   search           read    ranked fulltext via THE entry point Node::search
+//                            (#641/#642): distributed scatter-gather when the
+//                            table is partitioned; per-node provenance; one trace
+//   list_indexes     read    the index registry (Node::indexes()) — discover
+//                            what `search` can target (#642)
+//   list_projects    read    project names
+//   list_traces      read    recent observability spans (#640)
+//   get_trace        read    every span of one trace id (#640)
+//   submit_feedback  action  snapshot a feedback bundle as a large object (#640)
+//   create_project   action  the action template: mutates, audited, replicated
+//   list_specs       read    the spec index (#646): OpenAPI + every capability
+//                            and boundary schema as names, kinds, links
+//   get_spec         read    one spec document by its list_specs name
 //
-// Each is a thin caller of an existing engine entry point; the wider parity
-// sets land with #616/#617 following docs/api/adding-a-capability.md.
+// The #616 slice adds the typed detail reads + list_* siblings; the #617 slice
+// adds governed action parity — the rest of the product loop as thin callers
+// of the same engine entry points the GUI drives (capture_intent · import_n8n
+// · compile_intent/n8n/python · gate · deploy · run · add_dataset ·
+// testkit_run; run/testkit_run are `kind: job` and return the engine's durable
+// Run id immediately). See docs/api/governed-actions.md +
+// docs/api/adding-a-capability.md.
 namespace zetta::api {
 
 void register_core_capabilities(Registry& registry);
+
+// The cloud-touching tools + the consent protocol (#621; called by
+// register_core_capabilities; docs/api/consent.md):
+//
+//   cloud_inspect          action  consent-gated read-only provider inspect
+//   detect_provisioners    action  consent-gated local-CLI context re-detect
+//   add_nodes              action  permanent add; cloud targets consent-gated,
+//                                  `local` executes directly (no cloud)
+//   list_consent_requests  read    the node's consent ledger, results included
+//   approve_consent        action  distinctly-privileged approval: executes
+//                                  exactly the named action once
+//   deny_consent           action  refuse (or withdraw) a pending challenge
+void register_cloud_capabilities(Registry& registry);
 
 }  // namespace zetta::api

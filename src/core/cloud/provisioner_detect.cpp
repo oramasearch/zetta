@@ -86,7 +86,7 @@ std::optional<ProvisionerConfig> detect_azure_provisioner(
     }
     // Resource group + region: the operator's configured `az` defaults when set,
     // else a stable burst group + a default region. Both are non-secret targeting,
-    // visible in system.zetta_provisioners; an operator who wants different ones
+    // visible in system.provisioners; an operator who wants different ones
     // sets `az configure --defaults group=… location=…`.
     config.resource_group = az_default(run, "defaults.group").value_or("zetta-burst");
     config.location = az_default(run, "defaults.location").value_or("eastus");

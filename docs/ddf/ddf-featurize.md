@@ -171,7 +171,7 @@ engineered columns + label, one row per entity, ascending.
 `run_featurize_job` runs the *same* featurization across the cluster through the
 [job coordinator](../compute/job-coordinator.md) as a recorded
 [`ComputeJob`](../compute/compute-jobs.md) of kind **`featurize`**, so it is durable, audited,
-and appears in `system.zetta_jobs`. It is the literal `churn_features.sql` shape
+and appears in `system.jobs`. It is the literal `churn_features.sql` shape
 (`accounts ⋈ events … GROUP BY account`) realized with the distributed ops:
 
 1. **[distributed_join](ddf-join.md)** the events shard with the accounts shard on
@@ -189,7 +189,7 @@ auto job = node.create_job(zetta::compute::JobKind::Featurize);
 auto out = zetta::ddf::run_featurize_job(coordinator, *job, events_shard,
                                          accounts_shard, spec);
 // out.table is the GLOBAL feature table, identical on every participating node;
-// out.status == JobStatus::Succeeded; the job is recorded in system.zetta_jobs.
+// out.status == JobStatus::Succeeded; the job is recorded in system.jobs.
 ```
 
 Call it **concurrently on every participating node** (the collectives need all
@@ -302,12 +302,13 @@ from the frame's device and composes the leaf ops in host code (correctness over
 throughput, the way [`CpuDevice`](../compute/cpu-device.md) is the numerical reference for
 [`CudaDevice`](../compute/compute-device.md)); the distributed op runs it as a recorded
 `featurize` ComputeJob; and `run_near_data_featurize_job` runs it compute-near-data
-over a partitioned table. The next slices build on the feature table: **training** a
-model from it over the partitioned dataset
-([#530](https://github.com/oramasearch/zetta/issues/530) /
-[#533](https://github.com/oramasearch/zetta/issues/533)) and the
-[UC-1-at-scale E2E](https://github.com/oramasearch/zetta/issues/531), plus the
-left-join distributed path once `distributed_join` gains outer-join support.
+over a partitioned table. The slices built on the feature table have shipped:
+**training** a model from it over the partitioned dataset — the standalone
+[train over partitions](../use-cases/uc1-train-over-partitions.md) (#533) and the
+[featurize → train composition](../use-cases/uc1-featurize-train-over-partitions.md)
+(#530, the GBDT fed this feature table) — and the
+[UC-1-at-scale E2E](../use-cases/uc1-at-scale-e2e.md) (#531). Still a later slice:
+the left-join distributed path once `distributed_join` gains outer-join support.
 
 See also [ddf.md](ddf.md) (the DataFrame substrate), [ddf-as-of.md](ddf-as-of.md)
 (the windowing primitive), [ddf-groupby.md](ddf-groupby.md) (the aggregate op),

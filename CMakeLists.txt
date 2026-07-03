@@ -42,11 +42,18 @@ project(zetta
   LANGUAGES C CXX
 )
 
-# When built by Homebrew clang, run against its newer libc++ (its headers are
-# ahead of the system dylib); link + rpath the matching runtime.
-if(APPLE AND CMAKE_CXX_COMPILER MATCHES "/opt/homebrew/opt/llvm/")
-  add_link_options(-L/opt/homebrew/opt/llvm/lib/c++
-                   -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++)
+# When built by Homebrew clang (the default `llvm` keg or a versioned
+# `llvm@NN`), run against its newer libc++ (its headers are ahead of the
+# system dylib); link + rpath the matching runtime. Because we run against
+# Homebrew's own libc++, its headers' availability annotations — which gate
+# symbols on the macOS *system* dylib, e.g. floating-point std::from_chars
+# ("introduced in macOS 26.0" since LLVM 21.1.8) — are false alarms here:
+# disable them.
+if(APPLE AND CMAKE_CXX_COMPILER MATCHES "^(/opt/homebrew/opt/llvm[^/]*)/")
+  set(ZETTA_HOMEBREW_LLVM_PREFIX "${CMAKE_MATCH_1}")
+  add_link_options(-L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
+                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++)
+  add_compile_definitions(_LIBCPP_DISABLE_AVAILABILITY)
 endif()
 
 # We don't use C++20 modules; skip the clang-scan-deps pass.
@@ -184,15 +191,47 @@ set(BOOST_CAPY_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_CAPY_BUILD_BENCH    OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/capy EXCLUDE_FROM_ALL)
 
-# Corosio — coroutine-native networking (needs Capy above). Its optional TLS
-# provider wants OpenSSL, which is keg-only on Homebrew.
+# Corosio — coroutine-native networking (needs Capy above). Its OpenSSL TLS
+# provider backs the cluster's inter-node mutual TLS (CTL-2, #466), so OpenSSL
+# is REQUIRED (scripts/install-deps.sh installs it; keg-only on Homebrew).
+# Found here at the top level so both Corosio's provider and zetta-core's
+# certificate minting (src/core/cluster/security.cpp) see the same targets.
 if(APPLE)
   list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/openssl@3)
 endif()
+find_package(OpenSSL REQUIRED)
 set(BOOST_COROSIO_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/corosio EXCLUDE_FROM_ALL)
+
+# --- The API surface's HTTP stack (docs/api/registry-design.md, #615) --------
+# beast2 (coroutine-native HTTP/1 server) + http (sans-I/O HTTP + router) ride
+# the SAME capy/corosio stack vendored above — one async model in the binary
+# (docs/research/beast2-http.md). Both are pinned C++ Alliance submodules like
+# capy/corosio. Their remaining Boost deps (json, url + header-only
+# transitives) come from the official boost-cmake release via FetchContent
+# (the SDL3/GoogleTest precedent): as SUBDIRECTORIES the two libraries do NOT
+# self-resolve Boost — they expect the Boost:: targets to exist, so this block
+# MUST come before them (capy/corosio already provide Boost::capy/corosio).
+set(BOOST_INCLUDE_LIBRARIES json url assert config core describe endian mp11 static_assert system throw_exception type_traits variant2 winapi)
+set(BOOST_ENABLE_CMAKE ON)
+FetchContent_Declare(
+  boost_core_libs
+  URL https://github.com/boostorg/boost/releases/download/boost-1.91.0-1/boost-1.91.0-1-cmake.tar.xz
+  URL_HASH ""
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(boost_core_libs)
+
+set(BOOST_HTTP_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_HTTP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/http EXCLUDE_FROM_ALL)
+
+set(BOOST_BEAST2_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_BEAST2_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/beast2 EXCLUDE_FROM_ALL)
 
 # automerge-cpp — a CRDT (conflict-free replicated data type) for the replicated
 # DDL/metadata/rows. From-scratch C++23, no Rust. It vendors nlohmann/json under
@@ -338,11 +377,22 @@ endif()
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
+  src/core/observability/activity.cpp
   src/core/observability/trace.cpp
+  src/core/observability/crash.cpp
+  src/core/observability/feedback.cpp
+  src/core/api/background.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
+  src/core/api/cloud_capabilities.cpp
+  src/core/api/llms.cpp
   src/core/api/registry.cpp
+  src/core/api/rest.cpp
+  src/core/api/serving.cpp
+  src/core/api/specs.cpp
+  src/core/schemas/registry.cpp
   src/core/cluster/cluster.cpp
+  src/core/cluster/security.cpp
   src/core/cluster/signal.cpp
   src/core/cluster/collectives.cpp
   src/core/cluster/replication.cpp
@@ -362,6 +412,7 @@ add_library(zetta-core STATIC
   src/core/cloud/provisioner_detect.cpp
   src/core/cloud/add_nodes.cpp
   src/core/cloud/local_provisioner.cpp
+  src/core/cloud/provisioner_fleet.cpp
   src/core/cloud/command_runner.cpp
   src/core/cloud/azure_provisioner.cpp
   src/core/cloud/azure_cli_control_plane.cpp
@@ -390,6 +441,7 @@ add_library(zetta-core STATIC
   src/core/index/in_memory_index_backend.cpp
   src/core/index/oramacore_fulltext_index.cpp
   src/core/index/distributed_fulltext.cpp
+  src/core/index/search.cpp
   src/core/compute/compute_job.cpp
   src/core/data/dataset_partition.cpp
   src/core/data/rendezvous_placement.cpp
@@ -400,6 +452,7 @@ add_library(zetta-core STATIC
   src/core/governance/scope.cpp
   src/core/governance/capability.cpp
   src/core/governance/audit_event.cpp
+  src/core/governance/consent.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/storage/jsonl_store.cpp
@@ -412,6 +465,7 @@ add_library(zetta-core STATIC
   src/core/usecases/churn/entity_resolution_check.cpp
   src/core/usecases/churn/entity_resolution.cpp
   src/core/pipeline/executor.cpp
+  src/core/pipeline/run_progress.cpp
   src/core/usecases/churn/churn_step_executor.cpp
   src/core/usecases/churn/churn_solution.cpp
   src/core/pipeline/intent_compiler.cpp
@@ -456,6 +510,7 @@ add_library(zetta-core STATIC
   src/core/ml/gbdt_score.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
+  src/core/ml/local_featurize_train_job.cpp
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
   src/core/compute/cpu_device.cpp
@@ -463,6 +518,7 @@ add_library(zetta-core STATIC
   src/core/compute/work_stealing_scheduler.cpp
   src/core/compute/distributed_scheduler.cpp
   src/core/compute/job_coordinator.cpp
+  src/core/compute/coordinated_launch.cpp
   src/core/compute/checkpoint.cpp
   src/core/testkit/test_suite.cpp
   src/core/testkit/harness.cpp
@@ -477,6 +533,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_uc1_scale.cpp
   src/core/testkit/cases_examples.cpp
   src/core/testkit/example_script.cpp
+  src/core/testkit/async_case_run.cpp
   src/core/runtime.cpp
   src/core/repl/console_model.cpp
   src/core/repl/governed_console.cpp
@@ -502,11 +559,15 @@ target_include_directories(zetta-core PUBLIC
 # ZETTA_WITH_CUDA define, while CUDA headers stay confined to that library.
 target_link_libraries(zetta-core PUBLIC
   nlohmann_json::nlohmann_json Boost::capy zetta-compute)
-# Corosio (networking), automerge-cpp (the replication CRDT), and the JSON-Schema
-# validator (boundary validation in src/core/pipeline/run.cpp) are used only by zetta-core's
+# Corosio (networking) + its OpenSSL TLS provider (inter-node mTLS, CTL-2),
+# OpenSSL libcrypto (certificate minting in src/core/cluster/security.cpp),
+# automerge-cpp (the replication CRDT), and the JSON-Schema validator (boundary
+# validation in src/core/pipeline/run.cpp) are used only by zetta-core's
 # adapters — PRIVATE so they stay out of zetta-core's public surface and the GUI.
 target_link_libraries(zetta-core PRIVATE
   Boost::corosio
+  Boost::corosio_openssl
+  OpenSSL::Crypto
   automerge-cpp::automerge-cpp
   nlohmann_json_schema_validator)
 
@@ -521,6 +582,21 @@ if(ZETTA_WITH_ORAMACORE)
 endif()
 
 # -----------------------------------------------------------------------------
+# zetta-api — the embedded MCP server (docs/api/registry-design.md, #615).
+# The registry/bridge/observability core lives in zetta-core (HTTP-free); this
+# library holds the ONE Beast2 adapter TU. beast2/http/Boost.JSON link PRIVATE
+# so no HTTP type reaches consumers — the same isolation SDL/CUDA get.
+# -----------------------------------------------------------------------------
+add_library(zetta-api STATIC
+  src/core/api/http_server.cpp)
+target_compile_features(zetta-api PUBLIC cxx_std_26)
+target_link_libraries(zetta-api PUBLIC zetta-core)
+target_link_libraries(zetta-api PRIVATE
+  Boost::beast2
+  Boost::http
+  Boost::json)
+
+# -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)
 # -----------------------------------------------------------------------------
 
@@ -528,11 +604,23 @@ add_executable(zetta
   src/main.cpp
   src/gui/app.cpp
   src/gui/app_home.cpp
+  src/gui/app_onboarding.cpp
+  src/gui/app_views.cpp
+  src/gui/app_palette.cpp
+  src/gui/app_activity.cpp
   src/gui/app_explorer.cpp
-  src/gui/app_pipeline.cpp
-  src/gui/app_operations.cpp
+  src/gui/app_graph_workspace.cpp
+  src/gui/app_deploy.cpp
+  src/gui/app_traces.cpp
+  src/gui/app_runs.cpp
+  src/gui/app_models.cpp
+  src/gui/app_datasets.cpp
+  src/gui/app_search.cpp
+  src/gui/app_jobs.cpp
+  src/gui/app_cluster.cpp
+  src/gui/app_cloud.cpp
   src/gui/app_governance.cpp
-  src/gui/cloud_wiring.cpp
+  src/gui/app_test_suite.cpp
   src/gui/repl_console.cpp
 )
 
@@ -544,6 +632,7 @@ target_include_directories(zetta PRIVATE
 
 target_link_libraries(zetta PRIVATE
   zetta-core
+  zetta-api
   imgui
   SDL3::SDL3-static
 )

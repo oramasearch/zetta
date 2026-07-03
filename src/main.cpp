@@ -7,24 +7,27 @@
 // only picks how to drive them.
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/api/server.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/cloud/provisioner_detect.hpp"
+#include "zetta/cloud/provisioner_fleet.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/observability/crash.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 #include "gui/app.hpp"
-#include "gui/cloud_wiring.hpp"
 
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -39,6 +42,11 @@ struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
     zetta::cluster::ClusterConfig cluster;
+    bool mcp_enabled = true;                    // --no-mcp disables
+    std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
+    std::string mcp_token;                      // --mcp-token (acting key id)
+    std::string join_token;         // --join-token (join an existing cluster)
+    bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -63,11 +71,18 @@ void print_usage(const char* argv0) {
         "Options:\n"
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
+        "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
+        "  --mcp-token T       Require this bearer token (= acting key id)\n"
+        "  --no-mcp            Disable the embedded MCP server\n"
         "  --data-dir PATH     Database directory (default: %s)\n"
         "  --listen HOST:PORT  Cluster listen address (default: %s:%u)\n"
         "  --port-range N      Ports to try from --listen, for several nodes\n"
         "                      per host (default: %u)\n"
         "  --peer HOST:PORT    A node to connect to (repeatable; all equal)\n"
+        "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
+        "                      persisted in data-dir on first use\n"
+        "  --cluster-plaintext Disable inter-node mTLS (debugging only —\n"
+        "                      anyone who can reach the port can join)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  -h, --help          Show this help\n",
@@ -89,7 +104,15 @@ Options parse_args(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--headless") {
+        if (arg == "--no-mcp") {
+            o.mcp_enabled = false;
+        } else if (arg == "--mcp-listen") {
+            const char* v = take_value(argc, argv, i, o, "--mcp-listen");
+            if (v) o.mcp_listen = v;
+        } else if (arg == "--mcp-token") {
+            const char* v = take_value(argc, argv, i, o, "--mcp-token");
+            if (v) o.mcp_token = v;
+        } else if (arg == "--headless") {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
             o.mode = Mode::Headed;
@@ -123,6 +146,12 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--peer");
             if (!v) break;
             o.cluster.seeds.emplace_back(v);
+        } else if (arg == "--join-token") {
+            const char* v = take_value(argc, argv, i, o, "--join-token");
+            if (!v) break;
+            o.join_token = v;
+        } else if (arg == "--cluster-plaintext") {
+            o.cluster_plaintext = true;
         } else if (arg == "--log-cluster") {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
@@ -164,7 +193,7 @@ std::string load_or_create_node_id(const std::string& data_dir) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Options opts = parse_args(argc, argv);
+    Options opts = parse_args(argc, argv);
     if (opts.bad_usage) {
         print_usage(argv[0]);
         return 2;
@@ -172,6 +201,11 @@ int main(int argc, char** argv) {
     if (opts.show_help) {
         print_usage(argv[0]);
         return 0;
+    }
+    if (opts.cluster_plaintext && !opts.join_token.empty()) {
+        std::fprintf(stderr,
+                     "zetta: --cluster-plaintext and --join-token conflict\n");
+        return 2;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a
@@ -181,9 +215,56 @@ int main(int argc, char** argv) {
     // source of truth for data; it must outlive the Node (which captures into and
     // reconciles from it) and the Cluster (whose thread gossips it).
     const std::string node_id = load_or_create_node_id(opts.node.data_dir);
+
+    // Inter-node transport security (CTL-2, #466): secure by default. The
+    // first start generates a join token into data_dir/security/ (or adopts
+    // --join-token) and mints this node's identity; the Cluster then refuses
+    // any connection that can't prove that token's CA. Plaintext is an
+    // explicit opt-out, for debugging only.
+    if (!opts.cluster_plaintext) {
+        std::string reason;
+        std::optional<zetta::cluster::ClusterSecurity> security =
+            zetta::cluster::load_or_create_cluster_security(
+                opts.node.data_dir, node_id, opts.join_token, &reason);
+        if (!security) {
+            std::fprintf(stderr, "zetta: cluster security setup failed: %s\n",
+                         reason.c_str());
+            return 1;
+        }
+        opts.cluster.security = std::move(*security);
+    } else {
+        std::fprintf(stderr,
+                     "zetta: WARNING inter-node TLS disabled "
+                     "(--cluster-plaintext): any host that can reach the "
+                     "listen port can join this cluster\n");
+    }
+
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
+
+    // Crash reports (#640, docs/architecture/observability.md): from here on a
+    // fatal signal writes <data_dir>/crashes/<uuid>.json — stacktrace, recent
+    // spans, version/platform — before the process dies. Reports from previous
+    // runs are surfaced now (and queryable as system.crashes) — in BOTH modes.
+    zetta::observability::CrashHandlerOptions crash_options;
+    crash_options.crashes_dir =
+        (std::filesystem::path(opts.node.data_dir) / "crashes").string();
+    crash_options.recorder = &node.span_recorder();
+    std::string crash_error;
+    if (!zetta::observability::install_crash_handler(crash_options,
+                                                     &crash_error)) {
+        std::fprintf(stderr, "zetta: crash reports disabled: %s\n",
+                     crash_error.c_str());
+    }
+    const auto previous_crashes =
+        zetta::observability::load_crash_reports(crash_options.crashes_dir);
+    if (!previous_crashes.empty()) {
+        std::printf("zetta: %zu crash report(s) from previous runs — "
+                    "SELECT * FROM system.crashes;\n",
+                    previous_crashes.size());
+    }
+
     if (!node.start()) {
         std::fprintf(stderr, "zetta: failed to start node\n");
         return 1;
@@ -213,12 +294,18 @@ int main(int argc, char** argv) {
     for (const std::string& address : cluster.listen_addresses()) {
         std::printf("zetta: listening on %s\n", address.c_str());
     }
+    if (opts.cluster.security.enabled()) {
+        std::printf("zetta: inter-node mTLS on (join token in %s)\n",
+                    (std::filesystem::path(opts.node.data_dir) / "security" /
+                     "cluster-secret.json")
+                        .c_str());
+    }
     std::printf("zetta: add another node with: %s\n",
                 cluster.peer_command().c_str());
 
     // Detect which cloud-burst targets this node can drive from the operator's own
     // local CLIs (`az` logged in, …) and record each on the node so it surfaces as
-    // system.zetta_provisioners — in BOTH modes, since the table is useful headless
+    // system.provisioners — in BOTH modes, since the table is useful headless
     // too. No credentials are stored: the CLI keeps its own auth, and the control
     // plane uses that same CLI to act. The headed App then wires a Provisioner per
     // detected target into its consent-gated Add-nodes control (below).
@@ -228,44 +315,122 @@ int main(int argc, char** argv) {
         node.record_provisioner_config(std::move(detected));
     }
 
+    // The provisioners the "Add nodes" controls drive — the headed Cluster
+    // view AND the MCP surface's consent-gated add_nodes capability (#621), in
+    // BOTH modes. Declared before the ApiServer / App so they outlive every
+    // consumer holding references into them.
+    //
+    // Given-hardware target: a LocalProvisioner that reports the nodes already
+    // in the cluster (best-effort — it brings up no new machines and touches no
+    // cloud), reading the live fleet from Cluster::nodes() on each call so it
+    // tracks self-healing membership.
+    zetta::cloud::LocalProvisioner local_provisioner([&cluster] {
+        std::vector<zetta::cloud::ProvisionedNode> fleet;
+        for (const zetta::cluster::NodeStatus& peer : cluster.nodes()) {
+            fleet.push_back({peer.node_id, peer.address, {}});
+        }
+        return fleet;
+    });
+
+    // Cloud-burst targets: a CLI-backed Provisioner per context detected
+    // above. A target with no detected context stays unwired (the consent
+    // gates then read "no provisioner wired"), unchanged.
+    zetta::cloud::ProvisionerFleet provisioner_fleet;
+    const std::string default_seed_peer = cluster.listen_addresses().empty()
+                                              ? std::string{}
+                                              : cluster.listen_addresses().front();
+    for (const zetta::cloud::ProvisionerFleet::Wiring& wiring :
+         provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer)) {
+        if (wiring.wired) {
+            std::printf("zetta: cloud provisioner wired for %s (local CLI)\n",
+                        wiring.id.c_str());
+        }
+    }
+    const auto provisioner_for =
+        [&local_provisioner,
+         &provisioner_fleet](const std::string& target_id) -> zetta::cloud::Provisioner* {
+        if (target_id == "local") return &local_provisioner;
+        return provisioner_fleet.provisioner_for(target_id);
+    };
+
+    // The embedded MCP server (docs/api/registry-design.md, #615): the
+    // programmatic control surface, in BOTH modes. Handlers marshal onto this
+    // (owning) loop via the bridge the tick hooks drain below.
+    std::unique_ptr<zetta::api::ApiServer> api_server;
+    if (opts.mcp_enabled) {
+        zetta::api::ServerOptions api_options;
+        const auto colon = opts.mcp_listen.rfind(':');
+        std::uint16_t api_port = 0;
+        if (colon == std::string::npos ||
+            !parse_uint16(opts.mcp_listen.substr(colon + 1), api_port)) {
+            std::fprintf(stderr,
+                         "zetta: bad --mcp-listen '%s' (want HOST:PORT)\n",
+                         opts.mcp_listen.c_str());
+            return 2;
+        }
+        api_options.listen_address = opts.mcp_listen.substr(0, colon);
+        api_options.port = api_port;
+        api_options.bearer_token = opts.mcp_token;
+        api_server = std::make_unique<zetta::api::ApiServer>(node, &cluster,
+                                                             api_options);
+        if (api_server->start()) {
+            std::printf("zetta: MCP endpoint http://%s:%u/mcp%s\n",
+                        api_options.listen_address.c_str(),
+                        static_cast<unsigned>(api_server->port()),
+                        opts.mcp_token.empty() ? " (unauthenticated local)"
+                                               : " (bearer token required)");
+        } else {
+            std::fprintf(stderr, "zetta: MCP server failed to start: %s\n",
+                         api_server->reason().c_str());
+            api_server.reset();
+        }
+    }
+    if (api_server) {
+        // The consent-gated add_nodes capability drives the same wired
+        // provisioners the headed control does (#621). The fleet + local
+        // provisioner outlive the server (declared above).
+        api_server->set_provisioner_resolver(provisioner_for);
+    }
+    const auto drain_api = [&api_server] {
+        if (api_server) api_server->drain();
+    };
+
     int rc = 0;
     if (opts.mode == Mode::Headless) {
-        rc = zetta::run_headless(node, cluster);
+        rc = zetta::run_headless(node, cluster, drain_api);
     } else {
-        // The provisioners the Cluster view's "Add nodes" control drives. Both
-        // holders are declared BEFORE the App so they outlive it: App keeps raw
-        // references to them (set_provisioner), so it must be destroyed first.
-
-        // Given-hardware target: a LocalProvisioner that reports the nodes already
-        // in the cluster (best-effort — it brings up no new machines and touches no
-        // cloud), reading the live fleet from Cluster::nodes() on each call so it
-        // tracks self-healing membership.
-        zetta::cloud::LocalProvisioner local_provisioner([&cluster] {
-            std::vector<zetta::cloud::ProvisionedNode> fleet;
-            for (const zetta::cluster::NodeStatus& peer : cluster.nodes()) {
-                fleet.push_back({peer.node_id, peer.address, {}});
-            }
-            return fleet;
-        });
-
-        // Cloud-burst targets: a CLI-backed Provisioner per context detected above.
-        // A target with no detected context stays unwired (the Add-nodes consent
-        // gate then shows "no provisioner wired"), unchanged.
-        zetta::gui::CloudProvisioners cloud_provisioners;
-
         zetta::gui::App app(node, cluster);
-        app.set_provisioner("local", local_provisioner);
+        app.set_tick_hook(drain_api);
+        // Live surfacing of externally-initiated actions (#620): every
+        // successful mutating capability call (an MCP agent, a future REST
+        // integration) lands in the headed app, which surfaces it above every
+        // view with a click-through into the owning panel. The hook fires on
+        // this (owning) loop inside drain_api; App buffers it thread-safely
+        // regardless. Cleared below before the App is destroyed.
+        if (api_server) {
+            api_server->set_activity_hook(
+                [&app](const zetta::api::ActivityEvent& event) {
+                    app.notify_external_activity(event.capability, event.actor);
+                });
+        }
+        // GUI-driven searches record their trace into the same span ring MCP
+        // calls use, so list_traces shows one history (no ring = no spans).
+        if (api_server) app.set_span_recorder(&api_server->recorder());
+        // The command palette (#625) renders + executes the same capability
+        // registry the MCP server serves — one list, many renderings. With
+        // --no-mcp the App builds its own from register_core_capabilities.
+        if (api_server) app.set_capability_registry(&api_server->registry());
 
-        // Burst nodes auto-join this cluster by seeding from a reachable address.
-        const std::string seed_peer = cluster.listen_addresses().empty()
-                                          ? std::string{}
-                                          : cluster.listen_addresses().front();
-        for (const zetta::gui::CloudProvisioners::Wiring& wiring :
-             cloud_provisioners.wire(app, node.provisioner_configs(), seed_peer)) {
-            if (wiring.wired) {
-                std::printf(
-                    "zetta: cloud provisioner wired for %s (local CLI)\n",
-                    wiring.id.c_str());
+        // The Cluster view's "Add nodes" control drives the same fleet the
+        // MCP surface resolves (declared above, so it outlives the App).
+        app.set_provisioner("local", local_provisioner);
+        for (const std::string& target :
+             {std::string{"azure"}, std::string{"aws"}, std::string{"gcp"},
+              std::string{"oci"}, std::string{"kubernetes"},
+              std::string{"bare-metal"}}) {
+            if (zetta::cloud::Provisioner* wired =
+                    provisioner_fleet.provisioner_for(target)) {
+                app.set_provisioner(target, *wired);
             }
         }
 
@@ -274,6 +439,10 @@ int main(int argc, char** argv) {
         } else {
             rc = 1;
         }
+        // The App is about to be destroyed while the API server lives on a
+        // little longer — drop the hook so nothing can reach the dead App
+        // (no further drain runs, so no call should fire it; this is a belt).
+        if (api_server) api_server->set_activity_hook({});
     }
 
     cluster.stop();

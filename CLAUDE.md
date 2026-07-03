@@ -66,7 +66,7 @@ level can be trusted — a stale card is worse than none.
 | Anything a user, developer, or agent experiences | [`docs/product/experience/`](docs/product/experience/README.md) → ux.md · dx.md · ax.md · serving.md — update the affected page in the same commit |
 | Node, run modes, module layout, schemas-as-code | [`docs/architecture/`](docs/architecture/README.md) |
 | Storage, large objects, partitioning, Parquet, SQL | [`docs/data/`](docs/data/README.md) |
-| Cluster, replication/CRDT, signal plane, collectives | [`docs/cluster/`](docs/cluster/README.md) |
+| Cluster, replication/CRDT, signal plane, collectives, transport security (mTLS/join token) | [`docs/cluster/`](docs/cluster/README.md) |
 | Devices, schedulers, jobs, autoscaler, near-data | [`docs/compute/`](docs/compute/README.md) |
 | DataFrames + distributed ops | [`docs/ddf/`](docs/ddf/README.md) |
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
@@ -170,18 +170,20 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   Untrusted input is **validated at the boundary**: top-level replicated
   entities use the embedded draft-07 schema + pboettch validator (the Run
   pattern); value-type DTOs use the hand-written non-throwing `from_json`
-  mirroring their `schemas/*.json`. **Schema as code:** the C++ embedded schema
-  is the source of truth; `schemas/*.json` is generated and drift-checked
-  (`ZETTA_WRITE_SCHEMAS=1` regenerates). See
+  mirroring their type's `*_schema()` accessor. **Schema as code:** the C++
+  embedded schema is the source of truth for EVERY boundary schema
+  (`zetta::schemas::boundary_schemas()` is the table); `schemas/*.json` is
+  generated and drift-checked (`ZETTA_WRITE_SCHEMAS=1` regenerates). See
   [`docs/architecture/schemas.md`](docs/architecture/schemas.md).
 
 - **Surface observable state as a `system.<table>` by default (RULE-7).** State
   exposed for inspection — nodes, deployments, models, jobs, datasets, cloud
   state — is a virtual, read-only `system` table computed at query time from the
   live source, never a stored or hand-synced copy, and the GUI renders the same
-  source. Name new system tables **plainly** (`system.datasets`), no `zetta_`
-  prefix (legacy `system.zetta_*` tables await the
-  [`#538`](https://github.com/oramasearch/zetta/issues/538) rename). Durable
+  source. Name system tables **plainly** (`system.nodes`, `system.datasets`),
+  no `zetta_` prefix — the legacy `system.zetta_*` spellings were renamed in
+  [`#538`](https://github.com/oramasearch/zetta/issues/538) and remain only as
+  back-compat query aliases. Durable
   state's CRDT is the read view's source; ephemeral/observed state (telemetry,
   cloud inspects) is a read view with no CRDT backing. Cloud-derived tables stay
   permission-gated.

@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "entities": {
+      "description": "optional entity key per row (defaults to the row index); must match rows in length",
+      "items": {
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "rows": {
+      "description": "the batch to score: one object per entity mapping feature name to its numeric value; every feature the model was trained on must be present (extra features are ignored)",
+      "items": {
+        "additionalProperties": {
+          "type": "number"
+        },
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "top_k": {
+      "description": "cap the ranked at-risk list to the k highest-risk entities (absent = all rows)",
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "rows"
+  ],
+  "title": "zetta.PredictRequest",
+  "type": "object"
+}

@@ -92,6 +92,19 @@ std::vector<Span> SpanRecorder::recent(std::size_t limit) const {
     return result;
 }
 
+std::vector<Span> SpanRecorder::try_recent(std::size_t limit) const {
+    std::unique_lock<std::mutex> lock(ring_mutex_, std::try_to_lock);
+    if (!lock.owns_lock()) return {};
+    std::vector<Span> result;
+    const std::size_t count = std::min(limit, ring_.size());
+    result.reserve(count);
+    for (auto iterator = ring_.rbegin();
+         iterator != ring_.rend() && result.size() < count; ++iterator) {
+        result.push_back(*iterator);
+    }
+    return result;
+}
+
 std::vector<Span> SpanRecorder::trace(const std::string& trace_id) const {
     std::lock_guard<std::mutex> lock(ring_mutex_);
     std::vector<Span> result;
@@ -99,6 +112,11 @@ std::vector<Span> SpanRecorder::trace(const std::string& trace_id) const {
         if (span.trace_id == trace_id) result.push_back(span);
     }
     return result;
+}
+
+std::vector<Span> SpanRecorder::snapshot() const {
+    std::lock_guard<std::mutex> lock(ring_mutex_);
+    return {ring_.begin(), ring_.end()};
 }
 
 std::size_t SpanRecorder::size() const {

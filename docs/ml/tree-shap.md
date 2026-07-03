@@ -82,7 +82,7 @@ data.
 
 `run_explain_job` (gbdt_explain_job.hpp) drives explanation through the
 [job coordinator](../compute/job-coordinator.md) as a recorded, audited `explain`
-[ComputeJob](../compute/compute-jobs.md) (so it appears in `system.zetta_jobs`), distributed for
+[ComputeJob](../compute/compute-jobs.md) (so it appears in `system.jobs`), distributed for
 **batch explanation** of a whole entity universe:
 
 - Each participating node holds a shard of the feature table (one row per entity) and

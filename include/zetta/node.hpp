@@ -1,16 +1,22 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/consent.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
@@ -22,10 +28,12 @@
 #include "zetta/pipeline/deployment_controller.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_registry.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
+#include "zetta/observability/trace.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -35,6 +43,7 @@ namespace zetta::cluster { class Cluster; }
 namespace zetta::pipeline { struct ExecutionResult; }
 namespace zetta::ir { class ExecutionGraph; }
 namespace zetta::compute { class JobCoordinator; }
+namespace zetta::compute { class CoordinatedLaunchListener; }
 
 namespace zetta::cluster { class ReplicationManager; }
 
@@ -120,6 +129,45 @@ public:
     // the replicated document when it has changed. Cheap and non-blocking.
     void tick();
 
+    // --- The owner-thread gate (#624) -------------------------------------
+    //
+    // The Node tree is owned by ONE thread: the thread that constructed the
+    // node and drives tick() (the headed frame loop, or the headless tick
+    // loop). run_on_owner is how work running on ANOTHER thread — a
+    // background-action worker driving a long engine run off the UI thread —
+    // touches the tree safely: called on the owner thread it runs `work`
+    // inline (zero cost for every existing synchronous caller); called
+    // anywhere else it queues `work` and blocks the calling thread until the
+    // owner loop has executed it (tick() drains the queue right where
+    // reconcile already runs). The same decision as the API surface's
+    // MainThreadBridge (docs/api/registry-design.md), moved down to the Node
+    // so engine runners can be driven from a worker.
+    //
+    // `work` must be quick (it executes inside a tick) and must not throw.
+    // Calling from a non-owner thread requires a live owner loop — and the
+    // owner is adopted LAZILY, at the first tick(), never at construction. A
+    // node no loop has ever ticked is UNGATED: the work runs inline on the
+    // caller (the pre-gate contract — a harness driving nodes from its own
+    // threads without ticking them arranges exclusive access itself; both
+    // apps tick from their first loop pass, before any background action
+    // exists, so interactive runs always gate). Once a loop HAS adopted the
+    // node it must keep ticking (or drain) while gated workers run. The wait
+    // rides the runtime seam (async_event + block_on) — no caller-facing
+    // condition variables.
+    void run_on_owner(const std::function<void()>& work);
+
+    // True when the calling thread is the node's owner thread (adopted at
+    // the first tick(), refreshed every tick so a node handed to another
+    // loop follows its ticker; false on a never-ticked node).
+    bool on_owner_thread() const;
+
+    // The owner loop's drain point: execute every queued run_on_owner work
+    // item on the calling thread. tick() calls it every pass; call it directly
+    // ONLY from the owner thread, and only where a loop must pump the gate
+    // without a full tick (e.g. a teardown path joining a gated background
+    // worker — see AsyncChurnRun's destructor).
+    void drain_owner_work();
+
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
     void stop();
 
@@ -154,7 +202,7 @@ public:
 
     // The cluster membership this node currently observes: the sorted, unique set
     // of node ids from the replicated node:<id> keys (the source of
-    // system.zetta_nodes and the #517 rebalance baseline). A standalone node (no
+    // system.nodes and the #517 rebalance baseline). A standalone node (no
     // replication) reports just itself; before start() it is empty. Used by the
     // add_nodes(Node&, …) overload to feed the previous membership into the
     // between-jobs rebalance (#519).
@@ -187,11 +235,21 @@ public:
         return coordinator_.get();
     }
 
+    // This node's `run.launch` listener (#601) — the coordinated cross-process
+    // SPMD launch seam, wired by attach_cluster as the coordinator's signal
+    // fallback and drained from tick(). An initiator fans a launch out through
+    // it; each peer's copy co-runs the registered kind on its owner thread.
+    // nullptr when no cluster is attached (like job_coordinator()). See
+    // compute/coordinated_launch.hpp / docs/compute/coordinated-launch.md.
+    compute::CoordinatedLaunchListener* coordinated_launch() {
+        return launch_listener_.get();
+    }
+
     // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
     // target and record it. R1 supports a **Local** target only; deploy_graph
     // returns an empty handle for a non-local target or an empty graph. The
     // recorded deployment is replicated + on disk and queryable via
-    // deployments() / find_deployment() (and the system.zetta_deployments SQL
+    // deployments() / find_deployment() (and the system.deployments SQL
     // table). The graph is recorded as a summary (name + node/edge counts) since
     // the IR has no serialized form yet. Reconcile/self-heal is a later slice.
     std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(const ir::ExecutionGraph& graph,
@@ -222,7 +280,7 @@ public:
     // CRUD for models (a trained model registered on the node — see model.hpp /
     // docs/ml/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
     // find / drop take the id; the registry is models() + the
-    // system.zetta_models SQL table. create stamps `created` and requires a
+    // system.models SQL table. create stamps `created` and requires a
     // non-empty `kind` (empty handle otherwise); the caller fills the rest of the
     // ModelValue (name / feature_schema / metrics / project / run). Weights are
     // attached separately via the returned Model handle's set_weights (the body
@@ -237,7 +295,7 @@ public:
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
     // models, indexes are keyed by id (no human name), so find / drop take the id;
-    // the registry is indexes() + the system.zetta_indexes SQL table. create stamps
+    // the registry is indexes() + the system.indexes SQL table. create stamps
     // `created` and requires a non-empty `table` / `backend` and at least one field
     // (empty handle otherwise — the IndexValue is validated at the schema boundary
     // on persist/reconcile). An index is metadata only: this records its
@@ -262,6 +320,46 @@ public:
     // `index_registry().resolve(spec)->query(spec, q)`. See docs/indexing/index-step-executor.md.
     zetta::index::IndexRegistry& index_registry() { return index_registry_; }
     const zetta::index::IndexRegistry& index_registry() const { return index_registry_; }
+
+    // THE canonical search entry point (#641) — what every surface (GUI, MCP,
+    // tests) calls; there is no second query path. Resolves `request.target` to a
+    // registered Search index (by id, else the newest over that table), routes it
+    // through the per-partition distributed path when the table has placed
+    // partitions on a clustered node (the distributed-first default; consolidated
+    // registry backend otherwise — the degraded path), and returns the global
+    // ranking with per-node provenance. With a recorder, the whole search is ONE
+    // trace (a root `search` span + per-node children). Main-thread only. See
+    // index/search.hpp / docs/indexing/node-search.md.
+    zetta::index::SearchResult search(
+        const zetta::index::SearchRequest& request,
+        zetta::observability::SpanRecorder* recorder = nullptr,
+        const zetta::observability::TraceContext* parent = nullptr);
+
+    // The per-partition distributed full-text machinery over the attached
+    // cluster (#529/#641), or nullptr when no cluster is attached (standalone /
+    // before attach_cluster) — like job_coordinator(). Owned by the node: wired
+    // in start_coordinator() chained over the compute plane's signal handler,
+    // torn down in stop_coordinator(). Search goes through search(), not this.
+    zetta::index::DistributedFulltextIndex* distributed_fulltext() {
+        return distributed_fulltext_.get();
+    }
+
+    // The IndexBackend the distributed fulltext machinery builds its
+    // per-partition sub-indexes into. Set BEFORE attach_cluster to override the
+    // default (OramaCoreFulltextIndex when compiled in, else the exact-match
+    // InMemoryIndexBackend) — the seam tests inject a reference scorer through.
+    void set_search_backend(std::shared_ptr<zetta::index::IndexBackend> backend) {
+        search_backend_ = std::move(backend);
+    }
+
+    // Keep this node's per-partition search sub-indexes current: for every
+    // Search-kind Index entity, (re)build the local sub-indexes over the
+    // partitions this node OWNS whenever that input set changed (a fingerprint
+    // guards rebuilds, so the steady-state tick cost is a cheap comparison).
+    // Runs from tick() on every node — which is what lets ANY node answer a
+    // peer's scatter — and from search() before it queries. Main-thread only.
+    // No-op until a cluster is attached.
+    void reconcile_search_indexes();
 
     // CRUD for compute jobs (one unit of native distributed accelerated compute —
     // ARC-11 / ENT-31; see compute_job.hpp / docs/compute/compute-jobs.md). Like runs,
@@ -339,7 +437,7 @@ public:
     // docs/cloud/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
     // see RULE-7 in CLAUDE.md). The Cloud Inspector records a report here only
-    // AFTER the user consents to that one inspection; `system.zetta_cloud_status`
+    // AFTER the user consents to that one inspection; `system.cloud_status`
     // reads this cache and never triggers a cloud call. The latest report per
     // provider id replaces the previous one; cloud_inspections() is in provider
     // insertion order.
@@ -348,12 +446,23 @@ public:
         return cloud_inspections_;
     }
 
+    // The remote consent ledger (#621; docs/api/consent.md): the challenges
+    // consent-gated capabilities issue over the control surface, awaiting a
+    // distinctly-privileged approval. **Ephemeral, owner-thread-only, with NO
+    // CRDT backing** — consent is per-action and never remembered (the cloud
+    // hard rule), so challenges neither persist nor replicate. Source for the
+    // read-only `system.consent_requests` view and the headed approval surface.
+    zetta::governance::ConsentLedger& consent_ledger() { return consent_ledger_; }
+    const zetta::governance::ConsentLedger& consent_ledger() const {
+        return consent_ledger_;
+    }
+
     // Cloud-burst provisioner deployment contexts detected from this node's own
     // local CLIs (detect_provisioner_configs; docs/cloud/provisioner-detection.md). **Ephemeral,
     // observed state with NO CRDT backing** — like cloud_inspections(), node-local
     // and never replicated/persisted, because it reflects *this* node's CLI auth +
     // defaults. It carries no credentials (the CLI keeps its own); it is the source
-    // for the read-only `system.zetta_provisioners` view and for wiring the headed
+    // for the read-only `system.provisioners` view and for wiring the headed
     // Add-nodes control. The latest config per target id replaces the previous one;
     // provisioner_configs() is in target insertion order.
     void record_provisioner_config(zetta::cloud::ProvisionerConfig config);
@@ -403,6 +512,17 @@ public:
     // read off the node's threads). The source for `system.pipeline_jobs`.
     std::vector<zetta::compute::PipelineJobInstrumentation> pipeline_jobs() const;
 
+    // The node's span ring (docs/architecture/observability.md, #640): every
+    // traced operation — API calls, distributed runs, testkit cases — records
+    // its spans here. **Ephemeral / observed — NOT replicated**, bounded, and
+    // internally mutex-guarded (append from any thread, like record_pipeline_job).
+    // The single source for the `system.traces` / `system.spans` read views,
+    // the `list_traces` / `get_trace` capabilities, and the GUI trace pane.
+    zetta::observability::SpanRecorder& span_recorder() { return span_recorder_; }
+    const zetta::observability::SpanRecorder& span_recorder() const {
+        return span_recorder_;
+    }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/governance/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -417,7 +537,7 @@ public:
     std::vector<std::string> principal_names() const;
     std::size_t principal_count() const { return principals_.size(); }
     // The principals in insertion order — the live source for the
-    // system.zetta_principals / system.zetta_keys read views (each principal owns
+    // system.principals / system.keys read views (each principal owns
     // its keys via Principal::keys()).
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals() const {
         return principals_;
@@ -636,6 +756,7 @@ private:
         dataset_partitions_;                                // sorted (created, id)
     std::vector<zetta::cloud::CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
+    zetta::governance::ConsentLedger consent_ledger_;                     // ephemeral; not replicated (#621)
     zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
     // the most-recent recorded jobs' local-vs-wire counters, the source for the
@@ -644,6 +765,21 @@ private:
     // background run records while a query thread reads.
     mutable std::mutex pipeline_jobs_mutex_;
     std::vector<zetta::compute::PipelineJobInstrumentation> pipeline_jobs_;
+    // The node's span ring (#640): bounded, internally mutex-guarded, ephemeral /
+    // observed; NOT replicated. See span_recorder() above.
+    zetta::observability::SpanRecorder span_recorder_;
+    // The owner-thread gate (#624, see run_on_owner above). The mutex is the
+    // contained cross-thread handoff of the queue itself (the cluster-outbox
+    // pattern the coroutines-first convention sanctions) — never exposed.
+    // `signal_completed` type-erases the waiter's runtime::async_event so this
+    // header stays free of the runtime seam's backend headers.
+    struct OwnerWork {
+        std::function<void()> work;
+        std::function<void()> signal_completed;
+    };
+    std::atomic<std::thread::id> owner_thread_;
+    mutable std::mutex owner_work_mutex_;
+    std::deque<OwnerWork> owner_work_queue_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
@@ -667,7 +803,28 @@ private:
     // replicated.
     std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
+    // The coordinated cross-process launch listener (#601): the `run.launch`
+    // seam, wired as the coordinator's signal-handler fallback (delegating
+    // everything else to telemetry_, which is why it is declared between the
+    // two: it must outlive the coordinator that points at it and die before
+    // the telemetry it points at). Created in start_coordinator() with the
+    // built-in runners registered (churn first); drained from tick() so the
+    // co-run's blocking collectives execute on this owner thread, never the
+    // network thread that delivered the signal.
+    std::unique_ptr<compute::CoordinatedLaunchListener> launch_listener_;
     std::unique_ptr<compute::JobCoordinator> coordinator_;
+    // The distributed search plane (#641): the per-partition fulltext machinery
+    // over the attached cluster, chained over the coordinator's signal handler —
+    // so EVERY clustered node serves `fulltext.query` scatters. Declared after
+    // coordinator_ (destroyed first: its handler unwind restores the compute
+    // plane's handler); created in start_coordinator(), reset in
+    // stop_coordinator(). `search_backend_` optionally overrides the sub-index
+    // backend (set_search_backend, before attach); `search_build_fingerprints_`
+    // guards reconcile_search_indexes() rebuilds (spec key -> the input
+    // fingerprint last built).
+    std::shared_ptr<zetta::index::IndexBackend> search_backend_;
+    std::unique_ptr<zetta::index::DistributedFulltextIndex> distributed_fulltext_;
+    std::map<std::string, std::string> search_build_fingerprints_;
 };
 
 }  // namespace zetta

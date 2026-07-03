@@ -124,10 +124,13 @@ zetta::compute::JobCoordinator* coordinator = node.job_coordinator();  // or nul
   the scheduler's steal loop, a cheap ~25 ms poll (a no-op until a `map` executor
   is registered) that fits inside the node's tick cadence.
 
-The GUI's churn demo (`App::run_churn_demo`) still spins up its **own** isolated
-single-node loopback coordinator on purpose, so its SPMD collectives never block on
-this node's real peers; routing that (and other in-process job submitters) through
-the node-owned coordinator is follow-up work this spine enables.
+All in-process churn submitters route through this node-owned coordinator (#637):
+the GUI's churn demo (`App::run_churn_demo`), the governed console's churn-shaped
+path, the testkit UC-1 cases (`pipeline.uc1_end_to_end` attaches its loopback
+cluster to the node; `cluster.uc1_at_scale` attaches per member), and the churn
+acceptance tests — all via the one public runner,
+[`run_churn_solution_on_node`](../use-cases/churn-solution.md). No in-process
+submitter spins up its own isolated coordinator anymore.
 
 ### The job body (`Algorithm`) and `Outcome`
 
@@ -222,6 +225,22 @@ records its job `Succeeded` — plus the lifecycle edges (a single-node cluster,
 `stop()` releases the coordinator and a restart re-attaches it, and that an
 unattached standalone node has no coordinator).
 
+## Tracing (#640)
+
+Every job the coordinator runs is a trace
+([observability.md](../architecture/observability.md)): `run()` stamps the
+replicated `ComputeJob.trace_id` when empty (the trace's anchor is the
+replicated record), records a `job:<kind>` root span on this node, and the
+`JobRound` records each collective round (`collective:allreduce` / `broadcast`
+/ `barrier` / `gather`) and each cross-node `map:<method>` as child spans.
+Steal offers carry the owner's `traceparent`, so a helper executing stolen
+tasks records a `steal:<method>` span **in its own ring joined to the owner's
+trace** — reading `system.spans WHERE trace_id = …` on each node shows where
+the work actually ran. Wire the ring with
+`coordinator.set_span_recorder(&node.span_recorder())`
+(`Node::attach_cluster` does this for the attached coordinator); null = spans
+no-op.
+
 ## Limits / future
 
 - **One round shape, driven by the body.** The coordinator drives whatever rounds
@@ -237,6 +256,14 @@ unattached standalone node has no coordinator).
   its `tick()` into the coordinator for a live, end-to-end autoscaled job is the
   remaining, later slice; today the coordinator runs against whatever cluster is
   present.
+
+- **Job entity writes gate through the node's owner thread (#624).**
+  `set_owner_gate` (wired by `Node::start_coordinator` over `Node::run_on_owner`)
+  routes `run()`'s trace stamp + Running/terminal `set_status` onto the node's
+  owner loop, so a job driven from a background-action worker mutates the
+  node-owned record safely; unset (per-op suites, no node behind the
+  coordinator) the writes run inline. See
+  [../architecture/owner-gate.md](../architecture/owner-gate.md).
 
 ## See also
 

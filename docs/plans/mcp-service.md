@@ -93,7 +93,8 @@ Out of scope here: FEAT-13 personalization (layers on top), the CLI rendering
   likely: the tool returns a consent challenge that must be confirmed by a
   distinctly-privileged key (or in the GUI), never by repeating the call.
 - **Long-running actions**: runs/bursts need job-handle semantics (submit →
-  poll `system.zetta_jobs` / subscribe) rather than request-scoped blocking.
-- **Multi-node**: a tool call lands on one node; SPMD co-launch across peers
-  is the same open slice the interactive GUI run has (#601) — the MCP surface
-  should not invent a second answer.
+  poll `system.jobs` / subscribe) rather than request-scoped blocking.
+- **Multi-node**: a tool call lands on one node; the SPMD co-launch across
+  peers is the coordinated launch seam the interactive run uses (#601,
+  [docs/compute/coordinated-launch.md](../compute/coordinated-launch.md)) —
+  the MCP surface should not invent a second answer.

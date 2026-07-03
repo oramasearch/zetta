@@ -30,7 +30,9 @@ const nlohmann::json& schema_document() {
                               "graph_deployed", "data_access",
                               "job_created", "job_finished",
                               "key_issued", "key_revoked",
-                              "provision_requested"] },
+                              "provision_requested",
+                              "cloud_inspected", "dataset_added",
+                              "consent_requested", "consent_decided"] },
         "actor":   { "type": "string" },
         "target":  { "type": "string" },
         "allowed": { "type": "boolean" },
@@ -81,6 +83,10 @@ std::string_view to_string(AuditAction action) {
         case AuditAction::KeyIssued:     return "key_issued";
         case AuditAction::KeyRevoked:    return "key_revoked";
         case AuditAction::ProvisionRequested: return "provision_requested";
+        case AuditAction::CloudInspected: return "cloud_inspected";
+        case AuditAction::DatasetAdded:   return "dataset_added";
+        case AuditAction::ConsentRequested: return "consent_requested";
+        case AuditAction::ConsentDecided:   return "consent_decided";
     }
     return "data_access";
 }
@@ -95,6 +101,10 @@ std::optional<AuditAction> audit_action_from(std::string_view name) {
     if (name == "key_issued")     return AuditAction::KeyIssued;
     if (name == "key_revoked")    return AuditAction::KeyRevoked;
     if (name == "provision_requested") return AuditAction::ProvisionRequested;
+    if (name == "cloud_inspected") return AuditAction::CloudInspected;
+    if (name == "dataset_added")   return AuditAction::DatasetAdded;
+    if (name == "consent_requested") return AuditAction::ConsentRequested;
+    if (name == "consent_decided")   return AuditAction::ConsentDecided;
     return std::nullopt;
 }
 

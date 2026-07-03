@@ -58,7 +58,7 @@ double standing in for a CUDA device.
 
 This slice adds **no `Node` wiring and no SQL table** — it is a standalone library
 seam, the same altitude `ComputeDevice` and `Provisioner` shipped at. The
-coordinator that owns a registry per node, and any `system.zetta_devices` view,
+coordinator that owns a registry per node, and any `system.devices` view,
 are later slices.
 
 ## Enumeration
@@ -148,7 +148,8 @@ coordinator, that is where a JSON Schema will be added, at that boundary."*
 boundary** (non-throwing, returning `std::optional`) so a malformed report fails
 fast instead of silently mis-stating a node's hardware — a not-an-object document,
 an unknown `kind`, a wrong-typed or negative field, all reject. The validation is
-hand-written, mirroring [`schemas/device_registry.schema.json`](../../schemas/device_registry.schema.json)
+hand-written, mirroring `device_registry_schema()` (generated into
+[`schemas/device_registry.schema.json`](../../schemas/device_registry.schema.json))
 — the same pattern as its sibling [`NodeCapability`](../cloud/provisioner.md) (keep the code
 and the schema in sync). The `DeviceInfo` JSON form lives in the **registry**
 module, not `compute_device.hpp`, so the pure `ComputeDevice` seam header stays

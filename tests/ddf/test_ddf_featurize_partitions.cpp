@@ -274,7 +274,7 @@ TEST(DdfFeaturizePartitions, NearDataFeaturizeMatchesOracleNoLeakage) {
         EXPECT_GT(result.partitions_read, 0u) << "node " << index;
         EXPECT_GT(result.local_bytes_read, 0u) << "node " << index;
         EXPECT_GT(result.wire_bytes_moved, 0u) << "node " << index;
-        // The job is durably recorded (system.zetta_jobs).
+        // The job is durably recorded (system.jobs).
         EXPECT_TRUE(nodes[index]->node.find_job(jobs[index]->id())) << "node " << index;
         EXPECT_EQ(jobs[index]->kind(), JobKind::Featurize) << "node " << index;
         total_rows_read += result.rows_read;

@@ -43,10 +43,11 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
    persisted [Run](../pipeline/runs.md) (so an ad-hoc Python statement shows up in the Runs
    panel). The graph runner is an **injectable seam** (`set_graph_runner`): by default
    `Node::run_graph` (the structural `DefaultStepExecutor`), but a host may inject one
-   that routes a **churn-shaped** graph through the **real** churn engine on the node's
-   live `JobCoordinator` (#580 — the headed app does this, so an interactive churn
+   that routes a **churn-shaped** graph through the **real** churn engine — the one
+   public runner `run_churn_solution_on_node` (#637) on the node's live
+   `JobCoordinator` (#580 — the headed app does this, so an interactive churn
    program trains a real `Model` over the live cluster; see
-   [run over the live cluster](../use-cases/churn-solution.md#run-over-the-live-cluster-580)). The
+   [one runner, over the live cluster](../use-cases/churn-solution.md#one-runner-over-the-live-cluster-580-637)). The
    runner runs **after** the capability check + gate and **before** the audit record,
    so governance is identical whichever executor runs.
 4. **Audit.** Exactly one **`data_access`** [audit event](audit-trail.md) is
@@ -59,7 +60,7 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
 
 A governed run reuses the existing **`data_access`** audit action — the same seam
 `Node::authorize` records on — rather than a new action, so the audit schema is
-unchanged. It is queryable through `system.zetta_audit` and the
+unchanged. It is queryable through `system.audit` and the
 [Admin panel](../gui/admin-panel.md)'s audit log alongside every other governed event.
 
 ## Tabular results
@@ -113,10 +114,11 @@ it, the **real churn engine over the live cluster** for a churn-shaped graph (#5
 A churn-shaped interactive program currently trains over a built-in demo churn dataset
 (the program selects the pipeline shape, not yet the data); driving the run from data
 named in the program (`load_dataset` → near-data partitions) is the
-[UC-1-at-scale](../use-cases/uc1-at-scale-e2e.md) path. A **coordinated cross-process SPMD launch**
-(every peer co-running the same graph over the live cluster) is a later slice — the
-[collectives](../cluster/collectives.md) already combine partials; the co-launch over the
-[signal plane](../cluster/signal-plane.md) is what is missing. Scope-axis (resource) checks and a
+[UC-1-at-scale](../use-cases/uc1-at-scale-e2e.md) path. On a multi-node cluster the
+runner **co-launches** (#601): a `run.launch` task over the
+[coordinated launch seam](../compute/coordinated-launch.md) has every member co-run
+the same graph over its own shard, and each peer re-runs the correctness gate before
+co-running — RULE-1 holds on every member. Scope-axis (resource) checks and a
 first-class console capability vocabulary can layer on later behind the same
 `required_operation` seam.
 

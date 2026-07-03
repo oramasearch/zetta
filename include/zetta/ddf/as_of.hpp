@@ -76,6 +76,11 @@ struct AsOfAggregate {
     bool operator==(const AsOfAggregate&) const = default;
 };
 
+// The AsOfAggregate JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/as_of_aggregate.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& as_of_aggregate_schema();
+
 // The result of an as-of aggregation: one entry per distinct entity present in the
 // frame, in ascending entity-key order (deterministic). For entity `entities[i]`:
 //   - `values[i]`  = the reduction (op) over that entity's qualifying rows, or the

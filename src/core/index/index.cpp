@@ -1,5 +1,9 @@
 #include "zetta/index/index.hpp"
 
+#include "zetta/cluster/replication.hpp"
+
+#include "../catalog.hpp"
+
 #include <fstream>
 #include <utility>
 
@@ -35,7 +39,8 @@ const nlohmann::json& schema_document() {
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
-        "created": { "type": "string" }
+        "created": { "type": "string" },
+        "exposed": { "type": "boolean" }
       },
       "required": ["table", "kind", "backend", "fields"],
       "additionalProperties": false
@@ -71,13 +76,17 @@ public:
 }  // namespace
 
 nlohmann::json to_json(const IndexValue& value) {
-    return nlohmann::json{
+    nlohmann::json document{
         {"table", value.table},
         {"kind", to_string(value.kind)},
         {"backend", value.backend},
         {"fields", value.fields},
         {"created", value.created},
     };
+    // Emitted only when set, so records written before serving existed (#648)
+    // and never-exposed indexes keep byte-identical metadata.
+    if (value.exposed) document["exposed"] = true;
+    return document;
 }
 
 const nlohmann::json& index_value_schema() { return schema_document(); }
@@ -106,6 +115,7 @@ std::optional<IndexValue> parse_index_value(const nlohmann::json& value,
     parsed.backend = value.value("backend", std::string{});
     parsed.fields = value.value("fields", std::vector<std::string>{});
     parsed.created = value.value("created", std::string{});
+    parsed.exposed = value.value("exposed", false);
     return parsed;
 }
 
@@ -121,6 +131,15 @@ Index::Index(std::string id, IndexValue value, fs::path dir,
 void Index::apply_value(IndexValue value) {
     value_ = std::move(value);
     persist_meta();  // projection only — no capture
+}
+
+void Index::set_exposed(bool exposed) {
+    if (value_.exposed == exposed) return;  // idempotent: no capture, no churn
+    value_.exposed = exposed;
+    // CRDT first (the source of truth), then the on-disk projection — the
+    // Model::capture_and_persist pattern; an index has no body to touch.
+    if (replication_) replication_->set(catalog::index_key(id_), metadata());
+    persist_meta();
 }
 
 nlohmann::json Index::metadata() const { return to_json(value_); }

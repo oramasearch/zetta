@@ -163,6 +163,40 @@ bool Principal::drop_key(const std::string& id) {
     return materialize_drop_key(id);
 }
 
+const nlohmann::json& principal_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/principal.schema.json",
+  "title": "Principal",
+  "description": "An authenticated actor (ENT-20) — user, service, or node — the subject of access grants and audit. The on-disk principal.json projection of the replicated `principal:<uuid>` CRDT value. Mirrored by zetta::Principal in include/zetta/principal.hpp and enforced by Node::load_principals() in src/core/node.cpp — keep the three in sync.",
+  "type": "object",
+  "required": ["kind", "name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "description": "The principal's UUID — its CRDT key and on-disk folder name. Present in principal.json (where the folder name is the source of truth) and omitted from the CRDT value (the key carries it).",
+      "type": "string"
+    },
+    "kind": {
+      "description": "What sort of actor this is.",
+      "type": "string",
+      "enum": ["user", "service", "node"]
+    },
+    "name": {
+      "description": "The principal's display name.",
+      "type": "string"
+    },
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 bool Principal::materialize_drop_key(const std::string& id) {
     const auto it = std::find_if(
         keys_.begin(), keys_.end(),

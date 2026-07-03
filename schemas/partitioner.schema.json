@@ -1,46 +1,73 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/partitioner.schema.json",
-  "title": "Partitioner",
-  "description": "The serialized configuration of a table's partitioner — the per-table policy that maps a record to one of P fixed partitions (ADR-31 / ENT-37; #512, #513). The 'strategy' selects the record→partition implementation: 'single' (the trivial baseline — one partition holding every row), 'hash' (hash of key columns % P, deterministic shard-by-key), or 'round_robin' (a monotonic surrogate % P, for even balance regardless of key skew). Mirrored by zetta::Partitioner::to_json() / partitioner_from_json() in include/zetta/partitioner.hpp + src/core/partitioner.cpp — keep them in sync. A malformed config is rejected at the boundary so a table is never configured with a partitioner that would mis-place rows. The partition→node placement half (RendezvousPlacement, #514) and persisting this config in the partition catalog (#510) / write path (#511) are dependent slices.",
-  "type": "object",
-  "required": ["strategy"],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "strategy": {
+            "const": "hash"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "partition_count",
+          "key_columns"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "strategy": {
+            "const": "round_robin"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "partition_count"
+        ]
+      }
+    }
+  ],
+  "description": "The serialized configuration of a table's partitioner — the per-table policy that maps a record to one of P fixed partitions (ADR-31 / ENT-37; #512, #513). The 'strategy' selects the record→partition implementation: 'single' (the trivial baseline — one partition holding every row), 'hash' (hash of key columns % P, deterministic shard-by-key), or 'round_robin' (a monotonic surrogate % P, for even balance regardless of key skew). Mirrored by zetta::Partitioner::to_json() / partitioner_from_json() in include/zetta/partitioner.hpp + src/core/partitioner.cpp — keep them in sync. A malformed config is rejected at the boundary so a table is never configured with a partitioner that would mis-place rows. The partition→node placement half (RendezvousPlacement, #514) and persisting this config in the partition catalog (#510) / write path (#511) are dependent slices.",
   "properties": {
-    "strategy": {
-      "description": "Which record→partition implementation. The lowercase name is the stored identifier (matches Partitioner::name()).",
-      "type": "string",
-      "enum": ["single", "hash", "round_robin"]
+    "key_columns": {
+      "description": "The record field(s) to hash, in order — required and non-empty for the 'hash' strategy, absent otherwise. Each entry is a non-empty field name and the entries are unique.",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array",
+      "uniqueItems": true
     },
     "partition_count": {
       "description": "The fixed partition count P (chosen P >> nodes), constant for the life of the partitioner. Required (>= 1) for 'hash' and 'round_robin'; for 'single' it is always 1 (omitted or 1).",
-      "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "type": "integer"
     },
-    "key_columns": {
-      "description": "The record field(s) to hash, in order — required and non-empty for the 'hash' strategy, absent otherwise. Each entry is a non-empty field name and the entries are unique.",
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+    "strategy": {
+      "description": "Which record→partition implementation. The lowercase name is the stored identifier (matches Partitioner::name()).",
+      "enum": [
+        "single",
+        "hash",
+        "round_robin"
+      ],
+      "type": "string"
     },
     "surrogate_field": {
       "description": "The record field holding the monotonic integer surrogate the 'round_robin' strategy takes modulo P — defaults to '_seq' when omitted, absent for other strategies. Non-empty when present.",
-      "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "type": "string"
     }
   },
-  "allOf": [
-    {
-      "if": { "properties": { "strategy": { "const": "hash" } } },
-      "then": { "required": ["partition_count", "key_columns"] }
-    },
-    {
-      "if": { "properties": { "strategy": { "const": "round_robin" } } },
-      "then": { "required": ["partition_count"] }
-    }
-  ]
+  "required": [
+    "strategy"
+  ],
+  "title": "Partitioner",
+  "type": "object"
 }

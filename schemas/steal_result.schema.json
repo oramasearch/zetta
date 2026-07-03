@@ -1,23 +1,37 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.StealResult",
+  "additionalProperties": false,
   "description": "The results a stealer returns to the owner (method \"steal_result\") after running tasks it stole from a \"steal\" offer: per-index, the base64-encoded raw output payload, all for one owning job. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
-  "type": "object",
   "properties": {
-    "job": { "type": "string", "minLength": 1 },
+    "job": {
+      "minLength": 1,
+      "type": "string"
+    },
     "results": {
-      "type": "array",
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "index": { "type": "integer", "minimum": 0 },
-          "payload": { "type": "string" }
+          "index": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload": {
+            "type": "string"
+          }
         },
-        "required": ["index", "payload"],
-        "additionalProperties": false
-      }
+        "required": [
+          "index",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     }
   },
-  "required": ["job", "results"],
-  "additionalProperties": false
+  "required": [
+    "job",
+    "results"
+  ],
+  "title": "zetta.StealResult",
+  "type": "object"
 }

@@ -131,46 +131,109 @@ GraphExecutor::GraphExecutor(std::shared_ptr<StepExecutor> step_executor)
 ExecutionResult GraphExecutor::execute(Node& node,
                                        const ir::ExecutionGraph& graph,
                                        std::string project,
-                                       std::string graph_id) const {
+                                       std::string graph_id,
+                                       const std::atomic<bool>* cancel) const {
+    // Every node-tree write below (the Run creation + the Run's mutators) is
+    // gated onto the node's owner thread (#624): inline for the synchronous
+    // owner-thread callers, a queued handoff when a background-action worker
+    // drives the run. Span recording stays ungated — the recorder is
+    // internally mutex-guarded. Run fields read on this thread are captured
+    // inside the gated blocks (the tick reconcile may touch the entity on the
+    // owner thread while a step computes here).
     ExecutionResult result;
-    result.run = node.create_run(std::move(project), std::move(graph_id));
+    node.run_on_owner([&] {
+        result.run = node.create_run(std::move(project), std::move(graph_id));
+    });
     if (!result.run) return result;  // node could not create the run
     Run& run = *result.run;
 
-    run.add_log({zetta::util::now_iso8601(), "info",
-                 "run created: " + std::to_string(graph.node_count()) +
-                     " step(s)"});
+    // One trace per run (#640): the id lives on the replicated run record, so
+    // spans recorded anywhere for this run join it. The run root span + the
+    // per-step child spans below land in this node's ring (system.spans).
+    std::string trace_id;
+    std::string run_id;
+    std::string run_project;
+    std::string run_graph_label;
+    node.run_on_owner([&] {
+        run.set_trace_id(zetta::observability::make_root_trace().trace_id);
+        trace_id = run.value().trace_id;
+        run_id = run.id();
+        run_project = run.project();
+        run_graph_label = run.graph();
+        run.add_log({zetta::util::now_iso8601(), "info",
+                     "run created: " + std::to_string(graph.node_count()) +
+                         " step(s)"});
+    });
+    const zetta::observability::TraceContext run_trace{
+        trace_id, zetta::observability::make_span_id()};
+    zetta::observability::ScopedSpan run_span(&node.span_recorder(), run_trace,
+                                              "run:" + run_graph_label);
+    run_span.set_attribute("run_id", run_id);
+    run_span.set_attribute("project", run_project);
+    run_span.set_attribute(
+        "plan", nlohmann::json{{"steps", graph.node_count()}});
+    const zetta::observability::TraceContext step_parent{
+        run_trace.trace_id, run_span.span_id()};
 
     // Guard the basics the orchestrator needs to run at all. Full semantic
     // validation (legal stage transitions, required inputs) is the correctness
     // gate's job (a separate slice); here we reject only what makes the graph
     // unrunnable, and record the rejection on the run.
     if (graph.empty()) {
-        run.add_log({zetta::util::now_iso8601(), "error",
-                     "execution graph has no steps; nothing to run"});
-        run.set_status(RunStatus::Failed);
+        node.run_on_owner([&] {
+            run.add_log({zetta::util::now_iso8601(), "error",
+                         "execution graph has no steps; nothing to run"});
+            run.set_status(RunStatus::Failed);
+        });
         result.error = "execution graph has no steps";
+        run_span.finish(false, result.error);
         return result;
     }
     const auto order = topological_order(graph);
     if (!order) {
-        run.add_log({zetta::util::now_iso8601(), "error",
-                     "execution graph has a cycle; cannot order steps"});
-        run.set_status(RunStatus::Failed);
+        node.run_on_owner([&] {
+            run.add_log({zetta::util::now_iso8601(), "error",
+                         "execution graph has a cycle; cannot order steps"});
+            run.set_status(RunStatus::Failed);
+        });
         result.error = "execution graph has a cycle";
+        run_span.finish(false, result.error);
         return result;
     }
 
-    run.set_status(RunStatus::Running);
-    run.add_log({zetta::util::now_iso8601(), "info", "run started"});
+    node.run_on_owner([&] {
+        run.set_status(RunStatus::Running);
+        run.add_log({zetta::util::now_iso8601(), "info", "run started"});
+    });
 
+    bool cancelled = false;
     std::vector<RunOutput> outputs;
     RunLineage lineage;
     for (const std::shared_ptr<ir::Node>& step : *order) {
-        run.add_log({zetta::util::now_iso8601(), "info",
-                     std::string(to_string(step->kind)) + ": " +
-                         step_label(*step)});
+        // Cooperative cancel (#624), checked BETWEEN steps: the in-flight step
+        // completes; the remaining steps do not run.
+        if (cancel != nullptr && cancel->load(std::memory_order_acquire)) {
+            cancelled = true;
+            result.error = "run cancelled by user";
+            node.run_on_owner([&] {
+                run.add_log({zetta::util::now_iso8601(), "warn",
+                             "run cancelled by user: remaining steps skipped"});
+            });
+            break;
+        }
+        node.run_on_owner([&] {
+            run.add_log({zetta::util::now_iso8601(), "info",
+                         std::string(to_string(step->kind)) + ": " +
+                             step_label(*step)});
+        });
+        zetta::observability::ScopedSpan step_span(
+            &node.span_recorder(), step_parent,
+            "step:" + std::string(to_string(step->kind)));
+        step_span.set_attribute("label", step_label(*step));
         StepOutcome outcome = step_executor_->run_step(*step);
+        step_span.set_attribute(
+            "result_shape", nlohmann::json{{"outputs", outcome.outputs.size()}});
+        step_span.finish(outcome.ok, outcome.error);
         lineage.steps.push_back(step_label(*step));
         for (std::string& source : outcome.sources) {
             lineage.sources.push_back(std::move(source));
@@ -179,9 +242,12 @@ ExecutionResult GraphExecutor::execute(Node& node,
             result.ok = false;
             result.failed_step = step->id;
             result.error = outcome.error;
-            run.add_log({zetta::util::now_iso8601(), "error",
-                         std::string(to_string(step->kind)) + " step '" +
-                             step_label(*step) + "' failed: " + outcome.error});
+            node.run_on_owner([&] {
+                run.add_log({zetta::util::now_iso8601(), "error",
+                             std::string(to_string(step->kind)) + " step '" +
+                                 step_label(*step) +
+                                 "' failed: " + outcome.error});
+            });
             break;  // fail-fast: downstream steps do not run
         }
         for (const RunOutput& output : outcome.outputs) outputs.push_back(output);
@@ -189,21 +255,32 @@ ExecutionResult GraphExecutor::execute(Node& node,
 
     lineage.freshness = zetta::util::now_iso8601();
     // A deterministic local orchestration that completed is fully trusted; a
-    // partial (failed) run carries no confidence. Real model-derived confidence
-    // is later work — see docs/pipeline/execution.md.
-    result.ok = result.failed_step.empty();
+    // partial (failed / cancelled) run carries no confidence. Real
+    // model-derived confidence is later work — see docs/pipeline/execution.md.
+    result.ok = result.failed_step.empty() && !cancelled;
     lineage.confidence = result.ok ? 1.0 : 0.0;
 
-    run.set_outputs(std::move(outputs));
-    run.set_lineage(std::move(lineage));
-    if (result.ok) {
-        run.add_log({zetta::util::now_iso8601(), "info",
-                     "run succeeded: " +
-                         std::to_string(run.outputs().size()) + " output(s)"});
-        run.set_status(RunStatus::Succeeded);
-    } else {
-        run.set_status(RunStatus::Failed);
-    }
+    const std::size_t output_count = outputs.size();
+    node.run_on_owner([&] {
+        run.set_outputs(std::move(outputs));
+        run.set_lineage(std::move(lineage));
+        if (result.ok) {
+            run.add_log({zetta::util::now_iso8601(), "info",
+                         "run succeeded: " + std::to_string(output_count) +
+                             " output(s)"});
+            run.set_status(RunStatus::Succeeded);
+        } else {
+            run.set_status(RunStatus::Failed);
+        }
+    });
+    run_span.set_attribute(
+        "result_shape",
+        nlohmann::json{{"status",
+                        to_string(result.ok ? RunStatus::Succeeded
+                                            : RunStatus::Failed)},
+                       {"outputs", output_count},
+                       {"failed_step", result.failed_step}});
+    run_span.finish(result.ok, result.error);
     return result;
 }
 

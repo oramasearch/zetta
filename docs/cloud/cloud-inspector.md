@@ -77,7 +77,8 @@ in the gate only so you see what the CLI itself may touch.
 `src/gui/app.cpp`, reached from **Operations → Cloud inspector**. Built in the
 [design-system](../gui/design-system.md) grammar.
 
-A list + detail layout (like the Runs / Admin panels):
+Rendered through the [master-detail scaffold](../gui/master-detail.md)
+(#634), like the Runs / Admin panels:
 
 - **Left** — providers grouped under mono category eyebrows (`LOCAL` / `ON-PREM`
   / `KUBERNETES` / `MANAGED CLOUD`), each row led by a status dot: **green** =
@@ -98,9 +99,13 @@ A list + detail layout (like the Runs / Admin panels):
       missing CLI) — plus **"Re-inspect"** and **"Revoke permission"** buttons.
       The inspect runs only on Allow / Re-inspect, never on a passive render.
 
-`App::run_cloud_inspect()` is the single place the GUI touches a cloud. It runs
-synchronously on the UI thread (which owns the node, so caching the result races
-with nothing) and records the report via `Node::record_cloud_inspection`.
+`App::run_cloud_inspect()` is the single place the GUI touches a cloud. The CLI
+shell-out runs OFF the UI thread (#624, a `runtime::spawn` coroutine — see
+[../gui/long-running-actions.md](../gui/long-running-actions.md)): the consent
+gate shows a live "Inspecting · Ns" affordance with the launch buttons disabled,
+and `App::poll_background_ops()` applies the report on the UI thread via
+`Node::record_cloud_inspection` — which also records a `cloud_inspected` audit
+event, so the inspect surfaces in the activity feed.
 
 ## The inspector (`zetta::cloud::CloudInspector`)
 
@@ -139,15 +144,15 @@ cached on the node and surfaced as SQL.
 
 ## SQL surface (`system` tables)
 
-Per the [house rule](../../CLAUDE.md) *surface observable state as a `system.zetta_*`
+Per the [house rule](../../CLAUDE.md) *surface observable state as a `system.*`
 table by default*, the inspector is queryable through the
 [query layer](../data/query.md):
 
-- **`system.zetta_cloud_providers`** — the provider catalog as a table
+- **`system.cloud_providers`** — the provider catalog as a table
   (`provider` / `name` / `category` / `cli` / `requires_consent` / `runnable` /
   `config_paths` / `inspect_commands`). **Pure metadata — reads nothing from any
   cloud.**
-- **`system.zetta_cloud_status`** — the cached results of consent-gated inspects
+- **`system.cloud_status`** — the cached results of consent-gated inspects
   (`Node::cloud_inspections()`: `provider` / `name` / `reachable` /
   `authenticated` / `identity` / `regions` / `resources` / `commands_ok` /
   `commands_total` / `checked_at` / `detail`). **Querying it never triggers a
@@ -160,8 +165,8 @@ table by default*, the inspector is queryable through the
 The inspector now does the **real read-only inspect** behind the consent gate (the
 follow-up to the original scaffold). Out of scope, by design: **writes** (provision
 / deploy / teardown) stay out of the inspector entirely; bare-metal/on-prem is
-described but **not runnable** until a host is configured; and the inspect runs on
-the UI thread (a brief block on a user-initiated click) rather than off-thread.
+described but **not runnable** until a host is configured. The inspect runs
+off-thread since #624; cancelling an in-flight CLI subprocess is a later slice.
 
 ## Tests
 
@@ -177,8 +182,8 @@ the UI thread (a brief block on a user-initiated click) rather than off-thread.
   JSON degrades gracefully; bare-metal runs nothing (`ran = false`); and the
   report round-trips through its JSON boundary (a malformed report fails
   validation).
-- `tests/data/test_query.cpp` — `system.zetta_cloud_providers` covers every backend
-  with WHERE/projection; `system.zetta_cloud_status` is empty until an inspect is
+- `tests/data/test_query.cpp` — `system.cloud_providers` covers every backend
+  with WHERE/projection; `system.cloud_status` is empty until an inspect is
   recorded, then returns it.
 
 ## Related

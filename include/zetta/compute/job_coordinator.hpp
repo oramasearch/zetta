@@ -12,6 +12,7 @@
 #include "zetta/compute/distributed_scheduler.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/observability/trace.hpp"
 
 // The **job coordinator** (ARC-11, #372) — the single entry the native
 // distributed accelerated-compute algorithms (DDF / GBDT / SHAP) submit work
@@ -69,10 +70,22 @@ public:
     // this node's local pool *and* idle peers (dynamic work stealing), returning
     // the results in input order. For work that is not pre-sharded per node.
     // Requires the coordinator to have been start()ed (the steal loop) and the
-    // shared executor registered on every node.
+    // shared executor registered on every node. Recorded as a child span of the
+    // job's trace; the trace rides the steal offers, so a helper's execution
+    // spans join it too (#640).
     std::vector<std::string> map(const std::string& method,
                                  const std::vector<std::string>& inputs) {
-        return scheduler_.map(method, inputs);
+        zetta::observability::ScopedSpan span(recorder_, trace_,
+                                              "map:" + method);
+        span.set_attribute("job_id", job_id_);
+        span.set_attribute("inputs", inputs.size());
+        auto results = scheduler_.map(
+            method, inputs,
+            recorder_ ? zetta::observability::format_traceparent(trace_)
+                      : std::string{});
+        span.set_attribute("result_shape",
+                           nlohmann::json{{"results", results.size()}});
+        return results;
     }
 
     // **Intra-node** data-parallel scheduling: run `function` over `inputs`
@@ -87,29 +100,63 @@ public:
     }
 
     // --- Round-boundary collectives (combine per-node partials) --------------
+    // Each round is recorded as a child span of the job's trace on THIS node
+    // (every SPMD participant runs the same body, so every node contributes
+    // its own round spans to the ONE job trace — #640). A round that returns
+    // nothing closes its span as failed with the timeout reason.
 
     std::optional<std::vector<double>> allreduce(
         const std::string& tag, const std::vector<double>& local,
         zetta::cluster::CollectiveOp op = zetta::cluster::CollectiveOp::Sum,
         std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
-        return collectives_.allreduce(tag, local, op, timeout);
+        zetta::observability::ScopedSpan span(recorder_, trace_,
+                                              "collective:allreduce");
+        span.set_attribute("tag", tag);
+        span.set_attribute("values", local.size());
+        auto result = collectives_.allreduce(tag, local, op, timeout);
+        span.finish(result.has_value(),
+                    result ? std::string{} : "allreduce '" + tag +
+                                                 "' timed out or failed");
+        return result;
     }
 
     std::optional<std::vector<double>> broadcast(
         const std::string& tag, const std::vector<double>& value,
         std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
-        return collectives_.broadcast(tag, value, timeout);
+        zetta::observability::ScopedSpan span(recorder_, trace_,
+                                              "collective:broadcast");
+        span.set_attribute("tag", tag);
+        auto result = collectives_.broadcast(tag, value, timeout);
+        span.finish(result.has_value(),
+                    result ? std::string{} : "broadcast '" + tag +
+                                                 "' timed out or failed");
+        return result;
     }
 
     bool barrier(const std::string& tag,
                  std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
-        return collectives_.barrier(tag, timeout);
+        zetta::observability::ScopedSpan span(recorder_, trace_,
+                                              "collective:barrier");
+        span.set_attribute("tag", tag);
+        const bool reached = collectives_.barrier(tag, timeout);
+        span.finish(reached, reached ? std::string{}
+                                     : "barrier '" + tag +
+                                           "' timed out or failed");
+        return reached;
     }
 
     std::optional<std::vector<std::vector<double>>> gather(
         const std::string& tag, const std::vector<double>& local,
         std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
-        return collectives_.gather(tag, local, timeout);
+        zetta::observability::ScopedSpan span(recorder_, trace_,
+                                              "collective:gather");
+        span.set_attribute("tag", tag);
+        span.set_attribute("values", local.size());
+        auto result = collectives_.gather(tag, local, timeout);
+        span.finish(result.has_value(),
+                    result ? std::string{} : "gather '" + tag +
+                                                 "' timed out or failed");
+        return result;
     }
 
     // --- Topology -----------------------------------------------------------
@@ -133,19 +180,30 @@ public:
     // The id of the ComputeJob being run (for the algorithm's own logging/tags).
     const std::string& job_id() const { return job_id_; }
 
+    // The job's trace on this node (#640) — the parent of the round/map spans
+    // above; an algorithm may open its own child spans against it.
+    const zetta::observability::TraceContext& trace() const { return trace_; }
+    zetta::observability::SpanRecorder* recorder() const { return recorder_; }
+
 private:
     friend class JobCoordinator;
     JobRound(DistributedScheduler& scheduler, zetta::cluster::Collectives& collectives,
-             std::string node_id, std::string job_id)
+             std::string node_id, std::string job_id,
+             zetta::observability::SpanRecorder* recorder,
+             zetta::observability::TraceContext trace)
         : scheduler_(scheduler),
           collectives_(collectives),
           node_id_(std::move(node_id)),
-          job_id_(std::move(job_id)) {}
+          job_id_(std::move(job_id)),
+          recorder_(recorder),
+          trace_(std::move(trace)) {}
 
     DistributedScheduler& scheduler_;
     zetta::cluster::Collectives& collectives_;
     std::string node_id_;
     std::string job_id_;
+    zetta::observability::SpanRecorder* recorder_ = nullptr;  // null = no-op spans
+    zetta::observability::TraceContext trace_;
 };
 
 // The per-node job coordinator. Construct one over a started (or startable)
@@ -193,6 +251,24 @@ public:
         scheduler_.set_executor(std::move(executor));
     }
 
+    // Wire the node's span ring (#640): run() then records the job root span +
+    // the JobRound's round/map child spans, and stolen tasks executed FOR a
+    // peer record steal spans joining the owner's trace. Null = spans no-op.
+    void set_span_recorder(zetta::observability::SpanRecorder* recorder) {
+        recorder_ = recorder;
+        scheduler_.set_span_recorder(recorder);
+    }
+
+    // Wire the node's owner-thread gate (#624): run() then routes its ComputeJob
+    // entity writes (the Running / terminal status transitions) through it, so a
+    // job driven from a background-action worker mutates the node-owned record
+    // on the owner thread. Unset = writes run inline (the synchronous callers,
+    // and the per-op job suites that drive a coordinator with no node behind
+    // it). Wired by Node::start_coordinator over Node::run_on_owner.
+    void set_owner_gate(std::function<void(const std::function<void()>&)> gate) {
+        owner_gate_ = std::move(gate);
+    }
+
     // Register as the cluster's signal handler and start the cross-node steal
     // loop. Required before running jobs that use map(); harmless (recommended
     // for uniformity) for SPMD jobs, whose collectives route through the chain.
@@ -221,6 +297,9 @@ private:
     // scheduler has restored it as the handler. Do not reorder.
     zetta::cluster::Collectives collectives_;
     DistributedScheduler scheduler_;
+    zetta::observability::SpanRecorder* recorder_ = nullptr;  // null = no-op spans
+    // The owner-thread gate for job entity writes (#624); empty = inline.
+    std::function<void(const std::function<void()>&)> owner_gate_;
 };
 
 }  // namespace zetta::compute

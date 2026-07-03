@@ -1,7 +1,7 @@
 # Dataset view panel
 
 The headed app's standalone **Datasets view** (`App::draw_datasets` +
-`App::draw_dataset_placement`, `src/gui/app_operations.cpp`) — a dedicated,
+`App::draw_dataset_placement`, `src/gui/app_datasets.cpp`) — a dedicated,
 top-level screen reached from **Data → Datasets**. It is the GUI form of
 [`system.datasets`](../data/system-datasets.md): one place to browse every dataset the
 cluster holds, inspect its schema / row count / on-disk size / storage format, and
@@ -35,21 +35,25 @@ button at the top opens the native file picker filtered to
 `parquet`/`jsonl`/`json`/`csv`, and a file **dropped onto this view** does the same
 — both load the file as a **partitioned table** that joins the list with its
 partitions placed across the cluster. The same action is reachable from
-**File → Add dataset…**. The engine work is `zetta::data::add_dataset_file`; the add's
-status line ("Added dataset … (N rows, M partitions)") shows in place. See
-[add-dataset.md](../data/add-dataset.md).
+**File → Add dataset…**. The engine work is `zetta::data::AsyncDatasetAdd` (#624 —
+decode on a worker, materialize in owner-thread slices): the panel shows live
+progress (marquee + row count while decoding, a real fraction while adding
+rows) with a **Cancel**, and the completion status line ("Added dataset … (N
+rows, M partitions)") shows in place. See
+[add-dataset.md](../data/add-dataset.md) and
+[long-running-actions.md](long-running-actions.md).
 
 ## Layout
 
-A list + detail in the same "select on the left, inspect on the right" shape the
+Rendered through the [master-detail scaffold](master-detail.md) (#634), like the
 [Runs](../pipeline/runs.md#gui-panel), [Models](models-panel.md), and [Jobs](jobs-panel.md)
-panels use.
+panels.
 
 ### Dataset list (left)
 
-One row per `node_.datasets()` entry. Each row is the on-disk **format** tag
-(`jsonl` today) plus the dataset **name** (= the table name), with the owning
-**database** as a muted sub-line so same-named tables across databases stay
+One row per `node_.datasets()` entry — a standard `MasterRow`: a muted dot (no
+lifecycle), the dataset **name** (= the table name) as the title, and
+`format · database` as the mono meta so same-named tables across databases stay
 distinguishable. Selecting a row sets the active dataset (held by its table id).
 A fresh node with no user tables shows "(no datasets)".
 
@@ -88,7 +92,9 @@ owns which partition* two ways:
 
 Below the overlay, a **per-partition table** lists the literal catalog rows behind
 it — each partition's short id, its `[start, end)` row range, and its owner nodes —
-in row-range order. An unplaced partition (empty `owner_nodes`) reads `(unplaced)`.
+in row-range order. Each owner is an [entity link](cross-entity-links.md) (#633):
+one click opens the Cluster view with that node's box selected. An unplaced
+partition (empty `owner_nodes`) reads `(unplaced)`.
 
 ## Boundary validation
 
@@ -112,9 +118,9 @@ box to filter the partition table to that node's slices, surfacing
 
 ## Pointers
 
-- `src/gui/app_operations.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
-  reusing the file-local cluster node-box constants (`kClusterBox*`) and
-  `cluster_node_short_id` the [Cluster view](../cluster/cluster.md) defines, plus the
+- `src/gui/app_datasets.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
+  reusing the shared canvas node-box palette (`kCanvasBox*`, `app_internal.hpp`)
+  and `entity_short_id` from `app_operations_internal.hpp`, plus the
   "Add dataset…" button.
 - `src/gui/app.cpp` — the `Data → Datasets` menu item and the `View::Datasets`
   switch arm; the `File → Add dataset…` item, the `FileIntent::Dataset` ingestion
@@ -128,3 +134,4 @@ box to filter the partition table to that node's slices, surfacing
 - [dataset-partitions.md](../data/dataset-partitions.md) — the `system.dataset_partitions`
   catalog the placement overlay joins.
 - [cluster.md](../cluster/cluster.md) — the sibling spatial node-box view this overlay borrows.
+- [cross-entity-links.md](cross-entity-links.md) — the partition owners are one-click entity links into the Cluster view (#633).

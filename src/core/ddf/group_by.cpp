@@ -9,6 +9,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::ddf {
 
 using compute::ComputeStatus;
@@ -132,6 +134,57 @@ nlohmann::json GroupBySpec::to_json() const {
     }
     return nlohmann::json{{"key", key},
                           {"aggregates", std::move(aggregates_json)}};
+}
+
+// The GroupBySpec JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/group_by_spec.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& group_by_spec_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/group_by_spec.schema.json",
+  "title": "GroupBySpec",
+  "description": "The specification of a DDF groupby-aggregate (ARC-12): the numeric key column to group by, and the set of aggregates (count/sum/min/max/mean) to compute over each group's columns.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["key", "aggregates"],
+  "properties": {
+    "key": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The frame column whose distinct values define the groups."
+    },
+    "aggregates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["op"],
+        "properties": {
+          "op": {
+            "type": "string",
+            "enum": ["count", "sum", "min", "max", "mean"],
+            "description": "The aggregate to compute over each group."
+          },
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The frame column aggregated; required for sum/min/max/mean, ignored for count."
+          },
+          "output": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The result column's name; defaults to \"<op>_<column>\" (or \"count\") when omitted."
+          }
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 std::optional<GroupBySpec> GroupBySpec::from_json(const nlohmann::json& value) {

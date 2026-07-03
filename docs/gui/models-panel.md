@@ -1,9 +1,9 @@
 # Models panel
 
 The headed app's standalone **Models view** (`App::draw_models`,
-`src/gui/app_operations.cpp`) — a dedicated, top-level screen for the
+`src/gui/app_models.cpp`) — a dedicated, top-level screen for the
 trained-[`Model`](../ml/models.md) registry, reached from **Operations → Models**. It is
-the GUI form of [`system.zetta_models`](../data/query.md): one place to browse every model
+the GUI form of [`system.models`](../data/query.md): one place to browse every model
 the node holds, inspect its metrics / ranked drivers / weights fingerprint, and
 **register or import** a new one.
 
@@ -18,15 +18,16 @@ identical wherever a model appears.
 
 ## Layout
 
-A list + detail in the same "select on the left, inspect on the right" shape the
-[Runs](../pipeline/runs.md#gui-panel) and [Jobs](jobs-panel.md) panels use, with an inline
+Rendered through the [master-detail scaffold](master-detail.md) (#634), like the
+[Runs](../pipeline/runs.md#gui-panel) and [Jobs](jobs-panel.md) panels, with an inline
 **Add a model** affordance above it.
 
 ### Model list (left)
 
-One row per `node_.models()` entry. Models have **no lifecycle status** (unlike a
-run or job), so each row is the model **kind** tag (`classifier` / `regressor` / …)
-plus its **name** — or the first segment of its UUID when unnamed. Selecting a row
+One row per `node_.models()` entry — a standard `MasterRow`: a muted dot
+(models have **no lifecycle status**, unlike a run or job), the model's **name**
+— or the first segment of its UUID when unnamed — as the title, and the **kind**
+(`classifier` / `regressor` / …) as the mono meta. Selecting a row
 sets the active model (held by id and re-resolved each frame via `node_.find_model`,
 like the rest of the UI, so a dropped/replaced model can't leave a dangling
 handle). A fresh standalone node shows "(no models)" until something registers one.
@@ -71,7 +72,7 @@ GUI to [`Node::create_model`](../ml/models.md#lifecycle-on-a-node) (+ optional
    [large-object body seam](../data/large-objects.md). The bytes are opaque — no validation.
 
 **Register model** runs the create atomically: it appears in the list immediately
-(and in `system.zetta_models`), with `selected_model_` set to it. **Clear** resets
+(and in `system.models`), with `selected_model_` set to it. **Clear** resets
 the form.
 
 ## Boundary validation
@@ -98,15 +99,17 @@ yet: replacing weights / updating metrics on an existing model (`set_weights` /
 
 ## Pointers
 
-- `src/gui/app_operations.cpp` — `App::draw_models` + `App::draw_add_model_form` +
+- `src/gui/app_models.cpp` — `App::draw_models` + `App::draw_add_model_form` +
   `App::reset_add_model_form`, and the shared file-local `render_model_card` view
   helper (also used by `App::draw_runs`).
 - `src/gui/app.cpp` — the `Operations → Models` menu item, the `View::Models`
   switch arm, the `on_open_model_weights` file-dialog callback, and the
   `FileIntent::ModelWeights` staging branch in `handle_incoming_files`.
 - [models.md](../ml/models.md) — the `Model` entity (lifecycle, schema, weights body,
-  `system.zetta_models` registry) the view renders.
+  `system.models` registry) the view renders.
 - [runs.md](../pipeline/runs.md#trained-models--metrics--ranked-drivers) — the sibling surface:
   the same `render_model_card` inside a run's detail pane.
 - [jobs-panel.md](jobs-panel.md) — the sibling read-only Operations panel this
   mirrors in shape.
+- [cross-entity-links.md](cross-entity-links.md) — the detail pane's `run:` /
+  `project:` refs are one-click entity links (#633).

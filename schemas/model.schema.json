@@ -5,6 +5,9 @@
     "created": {
       "type": "string"
     },
+    "exposed": {
+      "type": "boolean"
+    },
     "feature_schema": {
       "type": "object"
     },

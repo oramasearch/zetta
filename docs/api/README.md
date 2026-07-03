@@ -1,7 +1,7 @@
 # API docs
 
 The programmatic control surface: the capability registry rendered as **MCP
-tools** and (later) **REST routes** — drive the cluster without the GUI, with
+tools** and **REST routes** — drive the cluster without the GUI, with
 the same governance as every other surface. Product framing:
 [../product/control-surfaces.md](../product/control-surfaces.md); execution
 plan: [../plans/mcp-service.md](../plans/mcp-service.md) (epic
@@ -14,5 +14,122 @@ MCP/HTTP work.
   the error mapping, the consent challenge.
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
+- [governed-actions.md](governed-actions.md) — action parity (#617): the
+  product loop's mutating tools, the kind:job handle semantics
+  (BackgroundActions, run-id-at-submit), gate parity, boundaries.
+- [consent.md](consent.md) — remote consent for cloud-touching tools (#621):
+  the challenge protocol (never executes on first call), the
+  distinctly-privileged approval rule (approver key / headed surface), the
+  consent ledger + `system.consent_requests`, audit + spans on both sides.
+- [rest-openapi.md](rest-openapi.md) — the REST rendering (#618): reads →
+  GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
+  drift-checked OpenAPI document generated from the registry.
+- [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
+  pages (#645): plain-GET agent docs generated live from the registry + node
+  state, no second prose source.
+- [specs-index.md](specs-index.md) — the spec index (#646): `/v1/specs` +
+  `list_specs`/`get_spec` serving the OpenAPI document + every capability and
+  boundary schema from their C++ accessors, drift-checked through one shared
+  table.
+- [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
+  expose_index publish per-entity /v1/models/{name}/predict and
+  /v1/indexes/{name}/search routes on every node (replicated exposure state,
+  data:predict / data:search key scoping, every request a span + audited).
 
-Tool table, endpoints, and per-tool schemas land here with #615/#616/#617.
+## The endpoints (shipped with #615, REST with #618)
+
+`POST /mcp` — JSON-RPC 2.0 (`initialize`, `notifications/initialized`, `ping`,
+`tools/list`, `tools/call`), served by Beast2 on the vendored capy/corosio
+stack, embedded in BOTH run modes. Defaults: `127.0.0.1:4800`, the audited
+unauthenticated-local session; flags: `--mcp-listen HOST:PORT`,
+`--mcp-token T` (the bearer token doubles as the acting AccessKey id),
+`--no-mcp`. Every `tools/call` result carries `structuredContent` with
+`ok/value|error`, `trace_id`, `span_id`, `duration_ms` (`value` follows the
+tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal
+onto the owning loop (headless tick / headed frame) via the bridge — the loops
+drain it beside `Node::tick()`.
+
+The same server serves the registry as **plain REST** (#618,
+[rest-openapi.md](rest-openapi.md)): reads are `GET /v1/<name>` (query-string
+input), actions/jobs are `POST /v1/<name>` (JSON body), same bearer → same
+audit, responses are the same envelope with error codes mapped onto HTTP
+statuses; `GET /v1/openapi.json` is the OpenAPI document generated from the
+registered schemas (drift-checked into `schemas/openapi.json`).
+
+The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
+`/llms-full.txt` — agent-readable pages generated live from the registry +
+node state, so a no-MCP agent orients with one GET
+([llms-endpoints.md](llms-endpoints.md), #645) — and `GET /v1/specs` /
+`/v1/specs/<name>`, the spec index over every schema in the system
+([specs-index.md](specs-index.md), #646).
+
+The same server serves the **exposed-entity endpoints** ([serving.md](serving.md),
+#648): `POST /v1/models/{name}/predict` and `GET /v1/indexes/{name}/search`
+answer only while the entity's replicated `exposed` flag is set
+(expose_model / expose_index below); access requires a key holding
+`data:predict` / `data:search`.
+
+## Capabilities (v1)
+
+| Name | Kind | Requires | Does |
+|---|---|---|---|
+| `server_info` | read | api:query | node identity, version, entity counts, membership |
+| `sql` | read | api:query | one governed SQL statement — every `system.*` view |
+| `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
+| `list_projects` | read | api:query | project names |
+| `get_project` | read | api:query | one project's full detail (metadata + inputs + graphs) by name or uuid |
+| `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
+| `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
+| `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
+| `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
+| `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |
+| `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
+| `list_models` | read | api:query | compact model listing (ids feed `get_model`) |
+| `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
+| `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
+| `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
+| `list_traces` | read | api:query | recent observability spans |
+| `get_trace` | read | api:query | every span of one trace id |
+| `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
+| `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
+| `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
+| `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
+| `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |
+| `expose_index` | action | orchestration:expose_index | publish an index's /v1/indexes/{name}/search endpoint (distributed scatter-gather underneath); endpoint access needs data:search |
+| `unexpose_index` | action | orchestration:unexpose_index | withdraw the index's search endpoint everywhere in one action |
+| `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
+| `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
+| `compile_intent` | action | orchestration:compile_intent | compile a captured intent into a stored, editable graph (audited graph change) |
+| `compile_n8n` | action | orchestration:compile_n8n | compile a stored n8n workflow into a stored, editable graph |
+| `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
+| `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
+| `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
+| `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
+| `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
+| `testkit_run` | job | orchestration:testkit_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
+| `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
+| `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated** re-detect of the local CLIs' deployment contexts → `system.provisioners` |
+| `add_nodes` | action | orchestration:add_nodes | add permanent cluster nodes via a wired provisioner; cloud targets **consent-gated** (billable), `local` executes directly |
+| `list_consent_requests` | read | api:query | the node's consent ledger — pending challenges, decisions, and executed results |
+| `approve_consent` | action | orchestration:approve_consent | approve one challenge and execute exactly the named action once — must be a **different principal** than the requester |
+| `deny_consent` | action | orchestration:deny_consent | refuse (or withdraw) a pending challenge; the action never runs |
+
+All accept the reserved optional `intent` field (recorded to the span,
+stripped before schema validation).
+
+**Read parity (#616).** The typed `get_*` reads return the entity's
+**already-validated value JSON** — exactly the `metadata()` shape the boundary
+schema validated (the CRDT value / on-disk projection) — with the `id` added;
+`get_dataset` / `list_datasets` return the computed `DatasetSummary` with the
+schema and partition placement kept structured (the SQL view flattens them for
+tabular reading). Every handler is a thin caller of the same live engine
+source its `system.*` view computes from (`Node::…()`), so MCP, SQL, and the
+GUI cannot drift (RULE-7). Arbitrary reads beyond these go through `sql`.
+
+**Action parity (#617).** The mutating half of the loop — each a thin caller
+of the same engine entry point the GUI drives, `orchestration:<name>`-scoped,
+audited under the acting key, `mutates` firing the activity hook; `run` and
+`testkit_run` are `kind: job` and return the engine's durable Run id
+immediately (poll `get_run` / `system.runs`). Details + handle-ownership
+design: [governed-actions.md](governed-actions.md).

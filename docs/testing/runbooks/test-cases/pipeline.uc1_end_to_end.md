@@ -26,8 +26,11 @@ real [`ChurnStepExecutor`](../../../use-cases/churn-step-executor.md), with the
    capabilities. The case authorizes against it (in-scope allowed, out-of-scope
    denied, deny-by-default), then `deploy_graph` places the graph (a governed,
    audited deploy).
-4. **Runs the real pipeline.** A [`ChurnStepExecutor`](../../../use-cases/churn-step-executor.md)
-   over a started single-node [`JobCoordinator`](../../../compute/job-coordinator.md) runs
+4. **Runs the real pipeline** through the one public churn runner
+   ([`run_churn_solution_on_node`](../../../use-cases/churn-solution.md), #637) over the
+   node-owned [`JobCoordinator`](../../../compute/job-coordinator.md) (the node
+   `attach_cluster`s its loopback cluster): a
+   [`ChurnStepExecutor`](../../../use-cases/churn-step-executor.md) runs
    featurize → train (+ optional calibration) → score/rank → explain (TreeSHAP) →
    playbook, each heavy step a recorded [`ComputeJob`](../../../compute/compute-jobs.md),
    registering a real [`Model`](../../../ml/models.md).
@@ -58,7 +61,7 @@ ctest --test-dir build -R 'Testkit.Uc1PipelineGatedAndGoverned' --output-on-fail
 | `calibrate` | false | bool | fit held-out Platt calibration on the model |
 | `top_k` | 0 | 0–1000 | at-risk list cap (0 = all accounts) |
 
-This case is single-node (one loopback `Node` + `Cluster` + `JobCoordinator`); the
+This case is single-node (one loopback `Node` + `Cluster`, the node owning its `JobCoordinator`); the
 single-node == multi-node equivalence is proven in the Distributed cases (see
 [`cluster.uc1_at_scale`](cluster.uc1_at_scale.md)).
 

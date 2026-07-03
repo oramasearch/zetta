@@ -4,7 +4,7 @@
 
 Build a full-text index over a table's partitions via the index seam (ADR-34) on a
 real multi-node cluster: each node builds one sub-index per partition it owns
-(compute-near-data), then a scatter-gather query is asserted to match a single
+(compute-near-data), then a scatter-gather query is asserted against a single
 consolidated-index oracle on every node. The cluster-runnable acceptance of TC-13
 (#503). It uses the `oramacore_fulltext` BM25F backend when compiled in, else a
 partition-independent reference scorer.
@@ -15,8 +15,8 @@ partition-independent reference scorer.
    [`OramaCoreFulltextIndex`](../../../indexing/oramacore-fulltext-index.md) when
    `ZETTA_WITH_ORAMACORE` is compiled in, else a deterministic,
    partition-independent term-frequency reference scorer, so a CPU-only checkout
-   that lacks the private submodule stays green. The corpus is tf-dominated, so the
-   global ranking is unambiguous (exact for the global top-k) either way.
+   that lacks the private submodule stays green. The backend determines what "match
+   the oracle" means (see the pass criteria; #611).
 2. **Shards a corpus into owned partitions.** It brings up the loopback cluster;
    each node holds a disjoint round-robin shard of a "postgres" article corpus as
    its **own** partitions (`RoundRobinPartitioner` plus
@@ -64,9 +64,16 @@ ctest --test-dir build -R 'Testkit.DistributedCasesRunOnARealCluster' --output-o
   all rows were indexed near data exactly once, and partition bodies were read near
   data (local bytes > 0).
 - The consolidated oracle matched at least one row.
-- Every node's scatter-gather ranking is **identical and equal to the consolidated
-  oracle**; scores align with row ids and rank descending; every node heard from all
-  N nodes.
+- **Every coordinator produced the identical global ranking** (row ids and scores);
+  scores align with row ids and rank descending; every node heard from all N nodes.
+- **Backend-specific oracle comparison** (#611): with the partition-independent
+  reference scorer the ranking is **exactly equal** to the consolidated oracle for
+  any knob combination. With real BM25F, per-shard local IDF makes rank order the
+  standard local-IDF query-then-fetch approximation under knob-driven placement, so
+  the case asserts the **exact hit set**: a full query returns exactly the oracle's
+  matches; a `top_k` query returns the right count, every hit a genuine match. (The
+  gtest half of #529 pins exact rank equality on a statistics-engineered fixture —
+  see [distributed-fulltext.md](../../../indexing/distributed-fulltext.md).)
 - A multi-node query genuinely **moved hits over the wire** (scatter + gather); a
   single-node cluster answers locally and moves nothing.
 

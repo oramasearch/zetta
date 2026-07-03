@@ -250,6 +250,20 @@ TestResult run_test_case(const TestCase& test_case, const TestOptions& options,
                          TestContext& context) {
     using Clock = std::chrono::steady_clock;
     const auto started = Clock::now();
+
+    // Every case runs inside a trace (#640): a fresh trace per case unless
+    // the context supplies one (a suite sweep threading all its cases into one
+    // trace). Null recorder = the span is a no-op.
+    zetta::observability::TraceContext parent = context.trace;
+    if (!parent.valid()) {
+        parent = zetta::observability::make_root_trace();
+        context.trace = parent;
+    }
+    zetta::observability::ScopedSpan case_span(context.recorder, parent,
+                                               "testkit:" + test_case.id);
+    case_span.set_attribute("category",
+                            std::string(to_string(test_case.category)));
+
     TestResult result;
     if (!test_case.run) {
         result = TestResult::err("test case has no run body");
@@ -267,6 +281,22 @@ TestResult run_test_case(const TestCase& test_case, const TestOptions& options,
     const auto finished = Clock::now();
     result.elapsed_seconds =
         std::chrono::duration<double>(finished - started).count();
+
+    // The result shape IS the span's result shape — per-case timing + outcome
+    // + metrics history, readable back through system.spans / get_trace.
+    nlohmann::json metrics = nlohmann::json::object();
+    for (const TestMetric& metric : result.metrics) {
+        metrics[metric.label] = metric.value;
+    }
+    case_span.set_attribute(
+        "result_shape",
+        nlohmann::json{{"outcome", std::string(to_string(result.outcome))},
+                       {"summary", result.summary},
+                       {"metrics", std::move(metrics)},
+                       {"log_lines", result.log.size()}});
+    case_span.finish(result.outcome == TestOutcome::Pass ||
+                         result.outcome == TestOutcome::Skipped,
+                     result.error);
     return result;
 }
 

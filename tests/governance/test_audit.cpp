@@ -322,3 +322,19 @@ TEST(AuditTrail, InvalidAuditJsonOnDiskIsSkipped) {
     EXPECT_EQ(node.audit_event_count(), 0u);
     node.stop();
 }
+
+TEST(AuditTrail, BackgroundActionSpellingsRoundTrip) {
+    // #624's two new auditable actions: wire spellings + schema acceptance.
+    using zetta::governance::AuditAction;
+    using zetta::governance::audit_action_from;
+    EXPECT_EQ(to_string(AuditAction::CloudInspected), "cloud_inspected");
+    EXPECT_EQ(to_string(AuditAction::DatasetAdded), "dataset_added");
+    EXPECT_EQ(audit_action_from("cloud_inspected"), AuditAction::CloudInspected);
+    EXPECT_EQ(audit_action_from("dataset_added"), AuditAction::DatasetAdded);
+
+    zetta::governance::AuditEventValue value;
+    value.action = AuditAction::DatasetAdded;
+    value.time = "2026-07-03T00:00:00Z";
+    EXPECT_TRUE(zetta::governance::validate_audit_event_value(
+        zetta::governance::to_json(value)));
+}

@@ -39,7 +39,7 @@ void ReplConsole::draw(repl::ConsoleModel& model, const repl::RunHandler& run,
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("frontend");
+    ImGui::TextDisabled("Language");
 
     // ── Multiline editor ───────────────────────────────────────────────────
     // The source is code: render it in Geist Mono, bound straight to the model's
@@ -82,8 +82,11 @@ void ReplConsole::draw_transcript(const repl::ConsoleModel& model,
     if (ImGui::BeginChild("##repl_transcript", ImVec2(0, 0),
                           ImGuiChildFlags_Borders)) {
         if (model.empty()) {
-            ImGui::TextDisabled(
-                "No statements yet. Pick a frontend, write a statement, and Run.");
+            // The next action is the editor + Run directly above (#631).
+            empty_state("No statements yet",
+                        "Pick a frontend, write a statement, and run it; the "
+                        "transcript keeps every statement and its result.",
+                        "");
         }
         int index = 0;
         for (const repl::Entry& entry : model.transcript()) {
@@ -113,7 +116,7 @@ void ReplConsole::draw_result(const repl::Result& result, ImFont* mono_font) {
     // Errors display inline (red) and replace the grid — a failed statement
     // produced no rows.
     if (!result.error.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", result.error.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", result.error.c_str());
         return;
     }
     bool any_message = false;
@@ -160,7 +163,7 @@ void ReplConsole::draw_result_grid(const repl::Result& result,
                 if (column < cells.size()) {
                     ImGui::TextUnformatted(cells[column].c_str());
                 } else {
-                    ImGui::TextDisabled("—");
+                    ImGui::TextDisabled("·");
                 }
             }
         }

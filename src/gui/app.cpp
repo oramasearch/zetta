@@ -3,6 +3,8 @@
 #include "gui/repl_console.hpp"
 
 #include "zetta/governance/access_key.hpp"
+#include "zetta/api/background.hpp"  // complete api::BackgroundActions for ~App's unique_ptr + prune
+#include "zetta/api/registry.hpp"  // complete api::Registry for ~App's unique_ptr
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/util/bytes.hpp"
@@ -81,6 +83,8 @@ namespace {
 // (kMonoScale) for the design system's label / count / metric role.
 constexpr float kBaseFontPixels = 17.0f;
 constexpr float kMonoScale = 0.86f;
+// Larger Geist cut for page_header titles (the heading role).
+constexpr float kHeadingScale = 1.35f;
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -164,6 +168,7 @@ void apply_orama_theme(ImGuiStyle& style) {
 // extern in app_internal.hpp, defined here (and assigned once per frame at the
 // top of render_frame()). Null until the first font-atlas build.
 ImFont* g_mono_font = nullptr;
+ImFont* g_heading_font = nullptr;
 
 App::App(Node& node, zetta::cluster::Cluster& cluster)
     : node_(node),
@@ -216,6 +221,17 @@ App::App(Node& node, zetta::cluster::Cluster& cluster)
 }
 
 App::~App() {
+    // Wind down in-flight background actions (#624) before anything else is
+    // torn down. The churn handle's destructor requests cancel and joins its
+    // worker, pumping the node's owner gate so a blocked node write completes
+    // (the node outlives the App). The dataset add + cloud inspect workers own
+    // their state by shared_ptr, so dropping the handles is enough.
+    if (churn_run_) churn_run_.reset();
+    if (dataset_add_) {
+        dataset_add_->request_cancel();
+        dataset_add_.reset();
+    }
+    cloud_inspect_op_.reset();
     // Wait out any in-flight test run (the worker borrows `this`).
     if (test_worker_ && test_worker_->joinable()) test_worker_->join();
     if (initialized_) {
@@ -344,6 +360,8 @@ void App::apply_display_scale() {
     add_font(kGeistSans, kGeistSans_len, kBaseFontPixels * scale);
     mono_font_ = add_font(kGeistMono, kGeistMono_len,
                           kBaseFontPixels * kMonoScale * scale);
+    heading_font_ = add_font(kGeistSans, kGeistSans_len,
+                             kBaseFontPixels * kHeadingScale * scale);
 
     io.Fonts->Build();
     ImGui_ImplSDLRenderer3_DestroyFontsTexture();
@@ -354,19 +372,12 @@ void App::apply_display_scale() {
     style.ScaleAllSizes(scale);
 }
 
+// File · View · Help only — navigation lives in the sidebar (#628), so the
+// menus carry commands, not wayfinding.
 void App::draw_menu_bar() {
     if (!ImGui::BeginMenuBar()) return;
 
-    // A menu entry that selects a view: a checkmark marks the live one, and
-    // choosing it makes that view the content area's sole panel.
-    const auto view_item = [&](const char* label, View view) {
-        if (ImGui::MenuItem(label, nullptr, active_view_ == view)) {
-            active_view_ = view;
-        }
-    };
-
     if (ImGui::BeginMenu("File")) {
-        view_item("Home", View::Home);
         if (ImGui::MenuItem("New project…")) {
             new_project_modal_requested_ = true;
         }
@@ -374,7 +385,7 @@ void App::draw_menu_bar() {
         // picker and switch to the Datasets view, where the loaded dataset (and the
         // add status) surfaces; the dialog callback enqueues a FileIntent::Dataset.
         if (ImGui::MenuItem("Add dataset…")) {
-            active_view_ = View::Datasets;
+            navigate_to(View::Datasets);
             static const SDL_DialogFileFilter filters[] = {
                 {"Datasets (parquet, jsonl, json, csv)",
                  "parquet;pq;jsonl;ndjson;json;csv"},
@@ -386,35 +397,13 @@ void App::draw_menu_bar() {
         if (ImGui::MenuItem("Quit", "Cmd+Q")) running_ = false;
         ImGui::EndMenu();
     }
-    // The views, grouped along the product flow: your data → architect the
-    // pipeline → operate it → govern it.
-    if (ImGui::BeginMenu("Data")) {
-        view_item("Explorer", View::Explorer);
-        view_item("Datasets", View::Datasets);
-        view_item("SQL query", View::Query);
-        view_item("Console", View::Console);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Pipeline")) {
-        view_item("Graph workspace", View::Graph);
-        view_item("Correctness gate", View::Gate);
-        view_item("Deploy", View::Deploy);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Operations")) {
-        view_item("Runs", View::Runs);
-        view_item("Models", View::Models);
-        view_item("Compute jobs", View::Jobs);
-        view_item("Cluster", View::Cluster);
-        view_item("Cloud inspector", View::Cloud);
-        view_item("Test suite", View::Tests);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Governance")) {
-        view_item("Admin & audit", View::Admin);
-        ImGui::EndMenu();
-    }
     if (ImGui::BeginMenu("View")) {
+        // Discoverability for the keyboard-first path (#625): the palette
+        // itself opens on Cmd+K from anywhere.
+        if (ImGui::MenuItem("Command palette", "Cmd+K")) {
+            palette_requested_ = true;
+        }
+        ImGui::Separator();
         if (ImGui::BeginMenu("Text size")) {
             // Each option is a UI scale on top of the OS content scale; a change
             // requests a font-atlas rebuild before the next frame.
@@ -439,6 +428,29 @@ void App::draw_menu_bar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
+        // The guided demo replay (#623): every step reachable later. Each item
+        // reopens the guided card on Home — step progress is derived from live
+        // engine state, so the named step is exactly where the card resumes
+        // (a completed step keeps its links; the run step can run again).
+        if (ImGui::BeginMenu("Guided demo")) {
+            static constexpr const char* kGuidedSteps[] = {
+                "1 · Load the demo dataset", "2 · Create the churn project",
+                "3 · Watch the gate pass", "4 · Run over the cluster",
+                "5 · See who is at risk and why"};
+            for (const char* step : kGuidedSteps) {
+                if (ImGui::MenuItem(step)) {
+                    onboarding_dismissed_ = false;
+                    onboarding_active_ = true;
+                    navigate_to(View::Home);
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Hide the guided demo")) {
+                onboarding_active_ = false;
+                onboarding_dismissed_ = true;
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("About Orama Zetta")) about_requested_ = true;
         ImGui::EndMenu();
     }
@@ -446,26 +458,21 @@ void App::draw_menu_bar() {
     ImGui::EndMenuBar();
 }
 
-// The content-area switcher: render whichever view the menu bar selected. Each
-// draw_* leads with a SeparatorText title, so the active panel is self-labelled.
+// The layout shell: the sidebar rail on the left, then the active view's panel
+// in a padded content child. Dispatch walks the view registry (app_views.cpp),
+// so this function never learns about individual views.
 void App::draw_active_view() {
-    switch (active_view_) {
-        case View::Home:     draw_home();            break;
-        case View::Explorer: draw_explorer();        break;
-        case View::Datasets: draw_datasets();        break;
-        case View::Query:    draw_query();           break;
-        case View::Console:  draw_console();          break;
-        case View::Graph:    draw_graph_workspace(); break;
-        case View::Gate:     draw_gate();            break;
-        case View::Deploy:   draw_deploy();          break;
-        case View::Runs:     draw_runs();            break;
-        case View::Models:   draw_models();          break;
-        case View::Jobs:     draw_jobs();            break;
-        case View::Cluster:  draw_cluster();         break;
-        case View::Cloud:    draw_cloud();           break;
-        case View::Admin:    draw_admin();           break;
-        case View::Tests:    draw_test_suite();      break;
+    draw_sidebar();
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_AlwaysUseWindowPadding);
+    for (const ViewInfo& view : view_registry()) {
+        if (view.id == active_view_) {
+            (this->*view.draw)();
+            break;
+        }
     }
+    ImGui::EndChild();
 }
 
 void App::enqueue_file(std::string path, FileIntent intent) {
@@ -530,27 +537,30 @@ void App::handle_incoming_files() {
             add_model_weights_path_ = f.path;
             add_model_weights_name_ = path.filename().string();
             io_status_ = "Staged weights: " + add_model_weights_name_;
+            io_status_error_ = false;
             continue;
         }
         // A dataset file (parquet/jsonl/json/csv) is loaded as a *partitioned*
         // table (#587) so it appears in the Datasets view with its partitions
-        // placed across the cluster. The add runs on this (main) thread, which
-        // owns the node, like the other ingestion paths.
+        // placed across the cluster. OFF the UI thread (#624): the decode runs
+        // on a runtime worker and poll_background_ops() pumps the owner-thread
+        // materialize in bounded slices, so a large file no longer freezes the
+        // window. The Datasets view shows the live progress (+ cancel); one
+        // add at a time — a second drop waits in the queue until it finishes.
         if (intent == FileIntent::Dataset) {
+            if (dataset_add_) {
+                const std::lock_guard<std::mutex> lock(incoming_mutex_);
+                incoming_files_.push_back(f);  // retry once the current add ends
+                continue;
+            }
             zetta::data::AddDatasetOptions options;
             options.members = node_.cluster_members();
-            const zetta::data::AddDatasetResult loaded = add_dataset_file(node_, path, options);
-            if (loaded.ok()) {
-                io_status_ = "Added dataset " + loaded.table->name() + " (" +
-                             std::to_string(loaded.rows) + " row(s), " +
-                             std::to_string(loaded.partitions.size()) +
-                             " partition(s))";
-                // Surface it: switch to the Datasets view and select it.
-                if (loaded.table) selected_dataset_ = loaded.table->id();
-                active_view_ = View::Datasets;
-            } else {
-                io_status_ = "Add dataset failed: " + loaded.error;
-            }
+            dataset_add_ =
+                zetta::data::AsyncDatasetAdd::start(node_, path, options);
+            io_status_ =
+                "Adding dataset from " + path.filename().string() + "…";
+            // Surface the progress where it lives: the Datasets view.
+            navigate_to(View::Datasets);
             continue;
         }
         if (intent == FileIntent::Auto) {
@@ -567,23 +577,177 @@ void App::handle_incoming_files() {
             if (!table) {
                 io_status_ = "Import: select a table first (" +
                              path.filename().string() + ")";
+                io_status_error_ = true;
                 continue;
             }
             const zetta::data::ImportResult r = import_records(*table, path);
             io_status_ = r.ok() ? "Imported " + std::to_string(r.added) +
                                       " record(s) into " + table->name()
                                 : "Import failed: " + r.error;
+            io_status_error_ = !r.ok();
         } else {
             auto db = node_.find_database(selected_db_);
             if (!db) {
                 io_status_ = "Store: select a database first (" +
                              path.filename().string() + ")";
+                io_status_error_ = true;
                 continue;
             }
             const auto lo = db->large_objects().import_file(path);
             io_status_ = lo ? "Stored " + lo->name + " (" +
-                                  zetta::util::format_bytes(lo->size) + ") as a large object"
+                                  zetta::util::format_bytes(lo->size) + ")"
                             : "Store failed: " + path.string();
+            io_status_error_ = !lo.has_value();
+        }
+    }
+}
+
+void App::notify_external_activity(const std::string& capability,
+                                   const std::string& actor) {
+    // The palette's own Registry::call fires the hook synchronously on this
+    // thread — a self-initiated action is not "external", so don't surface it.
+    if (palette_call_in_flight_) return;
+    std::lock_guard<std::mutex> lock(external_activity_mutex_);
+    pending_external_activity_.push_back({capability, actor, 0.0});
+}
+
+void App::poll_background_ops() {
+    // Runs once per frame on the UI thread (the node's owner). Each block is a
+    // cheap no-op when its action is idle.
+    poll_cloud_inspect();
+
+    // External activity (#620): drain the hook's queue into the strip's
+    // presentation state. The engine state an external call mutated is
+    // already visible — every panel reads live sources each frame — so this
+    // only powers the "an agent just did X" affordance draw_dashboard renders.
+    {
+        std::vector<ExternalActivity> arrived;
+        {
+            std::lock_guard<std::mutex> lock(external_activity_mutex_);
+            arrived.swap(pending_external_activity_);
+        }
+        const double now = ImGui::GetTime();
+        for (ExternalActivity& event : arrived) {
+            event.seen_seconds = now;
+            recent_external_activity_.push_back(std::move(event));
+        }
+        // Linger long enough to be noticed, short enough to stay quiet; the
+        // durable record is the activity feed. Cap the list so a chatty agent
+        // can't grow it — the strip shows the newest entry + a count anyway.
+        constexpr double kLingerSeconds = 15.0;
+        constexpr std::size_t kMaxRecent = 6;
+        std::erase_if(recent_external_activity_,
+                      [now](const ExternalActivity& event) {
+                          return now - event.seen_seconds > kLingerSeconds;
+                      });
+        if (recent_external_activity_.size() > kMaxRecent) {
+            recent_external_activity_.erase(
+                recent_external_activity_.begin(),
+                recent_external_activity_.end() - kMaxRecent);
+        }
+    }
+
+    // Palette-launched job capabilities (run / testkit_run, #617): drop the
+    // worker handles once done — their runs stay observable through the same
+    // live Run records every surface reads.
+    if (palette_background_) palette_background_->prune();
+
+    // Churn run (#624): while in flight the Deploy panel / run overlay render
+    // live from the Run + jobs records; here we only apply the outcome once
+    // the worker has finished. The status line belongs to the launching panel —
+    // Deploy's result line, the guided demo's summary (#623), or (for a
+    // workspace-launched run) the live-run overlay itself.
+    if (churn_run_ && churn_run_->done()) {
+        const zetta::usecases::churn::ChurnSolutionResult& result =
+            churn_run_->result();
+        if (churn_run_from_deploy_) {
+            if (!result.ok()) {
+                churn_run_failed_ = true;
+                churn_run_status_ =
+                    "Run failed: " +
+                    (result.execution.error.empty()
+                         ? std::string("the churn pipeline did not complete")
+                         : result.execution.error);
+            } else {
+                churn_run_failed_ = false;
+                std::string line = "Trained model " +
+                                   result.model_id.substr(0, 8) + " · " +
+                                   std::to_string(result.ranked.size()) +
+                                   " accounts ranked";
+                if (!result.top_driver.empty()) {
+                    line += " · top driver: " + result.top_driver;
+                }
+                churn_run_status_ = line;
+            }
+        } else if (churn_run_from_onboarding_) {
+            // The guided demo's step 5: the ranked at-risk accounts + their
+            // dominant drivers, as the finished action's outcome summary. The
+            // demo dataset is deterministic, so its entity keys (dense ints by
+            // file order) map back to account names for the card's table.
+            if (!result.ok()) {
+                onboarding_failed_ = true;
+                onboarding_status_ =
+                    "Run failed: " +
+                    (result.execution.error.empty()
+                         ? std::string("the churn pipeline did not complete")
+                         : result.execution.error);
+            } else {
+                onboarding_failed_ = false;
+                onboarding_run_id_ =
+                    result.execution.run ? result.execution.run->id()
+                                         : std::string();
+                onboarding_at_risk_.clear();
+                const zetta::usecases::churn::ChurnDataset demo =
+                    zetta::usecases::churn::demo_churn_dataset();
+                for (const zetta::usecases::churn::RetentionAction& action :
+                     result.playbook) {
+                    if (onboarding_at_risk_.size() >= 5) break;
+                    std::string account =
+                        "entity " + std::to_string(action.entity);
+                    if (action.entity >= 0 &&
+                        static_cast<std::size_t>(action.entity) <
+                            demo.accounts.size()) {
+                        account = demo.accounts[static_cast<std::size_t>(
+                                                    action.entity)]
+                                      .name;
+                    }
+                    onboarding_at_risk_.push_back(
+                        {account, action.risk, action.dominant_driver});
+                }
+                std::string line = "Trained model " +
+                                   result.model_id.substr(0, 8) + " · " +
+                                   std::to_string(result.ranked.size()) +
+                                   " accounts ranked";
+                if (!result.top_driver.empty()) {
+                    line += " · top driver: " + result.top_driver;
+                }
+                onboarding_status_ = line;
+            }
+            churn_run_from_onboarding_ = false;
+        }
+        churn_run_.reset();  // the worker already finished: the join is immediate
+    }
+
+    // Dataset add (#624): pump one bounded owner-thread slice per frame (the
+    // decode runs on its own worker), then apply the outcome when it lands.
+    if (dataset_add_) {
+        dataset_add_->pump();
+        if (dataset_add_->done()) {
+            const zetta::data::AddDatasetResult& loaded = dataset_add_->result();
+            if (loaded.ok() && loaded.table) {
+                io_status_ = "Added dataset " + loaded.table->name() + " (" +
+                             std::to_string(loaded.rows) + " row(s), " +
+                             std::to_string(loaded.partitions.size()) +
+                             " partition(s))";
+                // Select the new table if the user is still on Datasets; never
+                // yank the view for a background completion.
+                if (active_view_ == View::Datasets) {
+                    navigate_to(View::Datasets, loaded.table->id());
+                }
+            } else {
+                io_status_ = "Add dataset failed: " + loaded.error;
+            }
+            dataset_add_.reset();
         }
     }
 }
@@ -639,7 +803,8 @@ void App::render_frame() {
     // rendering (it runs synchronously inside SDL's pump). One frame at a time.
     if (rendering_) return;
     rendering_ = true;
-    g_mono_font = mono_font_;  // ambient mono for the file-local render_* helpers
+    g_mono_font = mono_font_;  // ambient fonts for the shared render helpers
+    g_heading_font = heading_font_;
 
     ImGuiIO& io = ImGui::GetIO();
     ImGui_ImplSDLRenderer3_NewFrame();
@@ -663,11 +828,12 @@ void App::render_frame() {
     ImGui::Separator();
     draw_active_view();
 
-    // The New Project dialog (SCR-2) and the About dialog are modals over the
-    // root window; they must be issued every frame so ImGui keeps them alive
-    // while open.
+    // The New Project dialog (SCR-2), the About dialog, and the command
+    // palette (#625) are popups over the root window; they must be issued
+    // every frame so ImGui keeps them alive while open.
     draw_new_project_modal();
     draw_about_modal();
+    draw_command_palette();
 
     ImGui::End();
 
@@ -713,11 +879,16 @@ void App::run() {
     while (running_) {
         if (stop_requested()) break;
         node_.tick();
+        if (tick_hook_) tick_hook_();
         // Apply any finished async "Add nodes" op on the UI thread (the thread that
         // owns the node). Cheap no-op when nothing is in flight; runs regardless of
         // the active view so a background provision completes even if the user
         // navigated away from the Cluster panel.
         poll_add_nodes();
+        // Same for the other background actions (#624): apply a finished cloud
+        // inspect, surface a finished churn run, pump the dataset add's
+        // owner-thread slices.
+        poll_background_ops();
 
         // A user text-size change (View → Text size) rebuilds the font atlas
         // here, between frames — never mid-frame, while the atlas is in use.

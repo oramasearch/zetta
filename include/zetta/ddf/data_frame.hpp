@@ -68,6 +68,11 @@ struct DataFrameSchema {
     static std::optional<DataFrameSchema> from_json(const nlohmann::json& value);
 };
 
+// The DataFrameSchema JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/data_frame_schema.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& data_frame_schema_schema();
+
 // A typed column: a sequence of row-aligned chunks, each a DeviceBuffer of the
 // column's dtype on the frame's device. Move-only (DeviceBuffer is move-only).
 //

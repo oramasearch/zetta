@@ -8,17 +8,24 @@ stay in sync** (#464).
 
 ## The C++ type is the source of truth
 
-For a schema-validated record, the **embedded draft-07 schema in the C++ is the
-single source of truth**. Each such type exposes it through a `*_schema()` accessor
-(the "serialize method") returning the schema as `nlohmann::json`:
+For **every** boundary schema, the **embedded schema in the C++ is the single
+source of truth** (draft-07 for most; a few newer shapes declare 2020-12).
+Each type exposes it through a `*_schema()` accessor (the "serialize method")
+returning the schema as `nlohmann::json`:
 
 ```cpp
 const nlohmann::json& zetta::pipeline::run_value_schema();          // src/core/pipeline/run.cpp
 const nlohmann::json& zetta::compute::compute_job_value_schema();  // src/core/compute/compute_job.cpp
 const nlohmann::json& zetta::ml::gbdt_model_schema();     // src/core/ml/gbdt.cpp
-// … audit_event, model, cloud_inspect_report, solution_catalog, calibration,
-//    golden_oracle, playbook_entry
+// … all 62: the full table is zetta::schemas::boundary_schemas()
 ```
+
+The one aggregation point is **`zetta::schemas::boundary_schemas()`**
+(`include/zetta/schemas/registry.hpp`, #646): name → accessor → generated
+file, consumed by the drift check below AND by the spec index
+(`/v1/specs` + `list_specs`/`get_spec`,
+[../api/specs-index.md](../api/specs-index.md)) — so the set an agent can
+discover over the wire is exactly the set the build keeps honest.
 
 The runtime validator enforces **this** schema — nothing loads a `schemas/*.json`
 file at runtime.
@@ -47,18 +54,26 @@ engine). They are produced and kept honest by `tests/test_schemas.cpp`:
 
 ## Adding / changing a schema
 
-1. Edit the embedded draft-07 schema in the type's `.cpp` (the source of truth).
+1. Edit the embedded schema in the type's `.cpp` (the source of truth).
    Put any `description` / `$id` annotations **here** so they flow into the generated
    file.
-2. Register the type's accessor in the `schema_registry()` table in
-   `tests/test_schemas.cpp` (if it is new).
+2. Register the type's accessor in `zetta::schemas::boundary_schemas()`
+   (`src/core/schemas/registry.cpp`) if it is new — that one entry makes it
+   drift-checked AND discoverable on the spec index.
 3. Run the write mode (above) to regenerate `schemas/*.json` and commit them.
 
 ## Scope
 
-This covers the entities whose schema is defined in C++ (the pboettch-validated
-records). The **hand-written `from_json` value types** (`NodeCapability`,
-`ScalingPolicy`, the cloud configs, the DDF specs, …) still mirror their
-`schemas/*.json` by hand; folding them into the same generator — by giving each a
-C++ schema builder — is a tracked follow-on (#469). Until then their schema file is
-the reference their `from_json` mirrors.
+**Every** boundary schema is code-owned (the #469 fold, completed with #646):
+the pboettch-validated records AND the hand-written `from_json` value types
+(`NodeCapability`, `ScalingPolicy`, the cloud configs, the DDF specs, …) all
+expose accessors and are drift-checked. For the `from_json` types the parser
+is still hand-written — the accessor documents the shape it must mirror, and
+the drift check keeps the published schema honest.
+
+The same discipline covers **`schemas/openapi.json`** (#618): the generator is
+`zetta::api::openapi_document` over the core capability registry, the drift
+check lives in `tests/api/test_openapi.cpp` (same `ZETTA_WRITE_SCHEMAS=1`
+write mode, filter `-R OpenApi`), and the served `GET /v1/openapi.json` comes
+from the same generator — see
+[../api/rest-openapi.md](../api/rest-openapi.md).

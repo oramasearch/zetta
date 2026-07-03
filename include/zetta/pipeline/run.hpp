@@ -62,6 +62,9 @@ struct RunValue {
     RunStatus status = RunStatus::Pending;
     std::string created;                 // ISO-8601 UTC stamp at creation
     std::string updated;                 // ISO-8601 UTC stamp; bumped on change
+    std::string trace_id;                // the run's trace (32-hex W3C id,
+                                         // optional) — every node's spans for
+                                         // this run join it (#640)
     std::vector<RunLogEntry> logs;
     std::vector<RunOutput> outputs;
     RunLineage lineage;
@@ -125,6 +128,7 @@ public:
     void add_log(RunLogEntry entry);
     void set_outputs(std::vector<RunOutput> outputs);
     void set_lineage(RunLineage lineage);
+    void set_trace_id(std::string trace_id);  // the run's trace (#640)
 
     // Replace the mutable value to match a (replicated) document value, then
     // rewrite run.json — with NO capture (used by reconciliation).

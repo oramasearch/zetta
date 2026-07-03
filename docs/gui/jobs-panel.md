@@ -6,7 +6,7 @@ SCR). It surfaces two things an operator wants while a job runs, neither of whic
 had a GUI before:
 
 - **live compute jobs** — the GUI form of the
-  [`system.zetta_jobs`](../data/query.md) registry: every
+  [`system.jobs`](../data/query.md) registry: every
   [`ComputeJob`](../compute/compute-jobs.md) the node holds, with its lifecycle status
   (queued → running → succeeded | failed);
 - **per-job objective/scaling controls** — set the reward objective + bounds and
@@ -29,16 +29,18 @@ later slice.
 
 ## Layout
 
-One collapsing header, **Compute Jobs**, in the list + detail shape the Runs panel
-uses ("select on the left, inspect on the right").
+Rendered through the [master-detail scaffold](master-detail.md) (#634), like the
+Runs panel.
 
 ### Job list (left)
 
-One row per `node_.jobs()` entry. Jobs have **no human name**, so each row is a
-**color-coded status badge** (queued neutral, running amber, succeeded green,
-failed red — the same palette as the cluster + runs panels) plus the job **kind**
-(`featurize` / `train` / `explain` / `score` / `ddf`) and the first segment of the
-job's UUID. Selecting a row sets the active job (held by id and re-resolved each
+One row per `node_.jobs()` entry — a standard `MasterRow`: a **status-toned
+dot** (queued neutral, running amber, succeeded green, failed red — `tone_of`,
+the shared tones, [status-tones.md](status-tones.md)), the first segment of
+the job's UUID as the title, and `kind · status`
+(`featurize` / `train` / `explain` / `score` / `ddf`; the status word rides
+along so meaning never sits on colour alone) as the mono meta.
+Selecting a row sets the active job (held by id and re-resolved each
 frame via `node_.find_job`, like the rest of the UI, so a dropped job can't leave a
 dangling handle).
 
@@ -46,7 +48,7 @@ dangling handle).
 
 For the selected job:
 
-- **identity + status** — the full id, the color-coded status, the `kind`,
+- **identity + status** — the full id, the status pill (`status_pill`), the `kind`,
   `created` / `updated` stamps, and the `detail` note (a failure reason surfaces
   here);
 - **references** — the job's place in the pipeline as id refs, each shown only when
@@ -103,7 +105,7 @@ panels reuse their entities' schemas.
 
 This is the **compute view** slice of FEAT-5's GUI. It sits alongside the existing
 read-only panels (Cluster, Runs, Admin) and depends on two shipped subsystems: the
-[ComputeJob registry](../compute/compute-jobs.md) (`system.zetta_jobs`) and the
+[ComputeJob registry](../compute/compute-jobs.md) (`system.jobs`) and the
 [ScalingPolicy reward model](../compute/scaling-policy.md). The natural next slices are the
 **mutating** compute actions — creating + scheduling a job (the coordinator), and
 persisting a `ScalingPolicy` so the controls drive the live
@@ -112,12 +114,14 @@ previewing its evaluation.
 
 ## Pointers
 
-- `src/gui/app.cpp` — `App::draw_jobs` + `App::draw_job_scaling_controls` +
-  `App::reset_scaling_controls`, and the file-local `job_status_color` /
-  `scaling_action_color` view helpers.
-- [compute-jobs.md](../compute/compute-jobs.md) — the `ComputeJob` entity + `system.zetta_jobs`
+- `src/gui/app_jobs.cpp` — `App::draw_jobs` + `App::draw_job_scaling_controls` +
+  `App::reset_scaling_controls`; status/action colours come from
+  `tone_of(...)` in `src/gui/tones.hpp` (#636).
+- [compute-jobs.md](../compute/compute-jobs.md) — the `ComputeJob` entity + `system.jobs`
   registry the job list renders.
 - [scaling-policy.md](../compute/scaling-policy.md) — the `ScalingPolicy` reward model + the
   `evaluate()` the controls preview.
 - [runs.md](../pipeline/runs.md#trained-models--metrics--ranked-drivers) — the sibling FEAT-5
   slice: the trained Model + metrics + ranked drivers in the Runs panel.
+- [cross-entity-links.md](cross-entity-links.md) — the detail pane's `run:` /
+  `graph:` / `project:` refs are one-click entity links (#633).

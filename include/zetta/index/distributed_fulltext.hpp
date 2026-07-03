@@ -16,6 +16,7 @@
 
 #include "zetta/index/index_backend.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/observability/trace.hpp"
 
 // Per-partition distributed full-text search (ENT-39 / ENT-40, ADR-34, #529 — the
 // engine half of TC-13 #503). Where the [index step executor](index_step_executor.hpp)
@@ -25,11 +26,16 @@
 // zetta::ddf::load_local_partitions), and a query is answered by **scatter-gather +
 // merge/rank** across those sub-indexes — never one big index.
 //
-// The acceptance is that the distributed query's ranked results **match a single
-// consolidated-index oracle**. This is the standard sharded-search shape (per-shard
-// local scoring, then a coordinator merges the ranked hits by score): exact for the
-// global top-k when per-shard ranking is unambiguous, the way production search
-// engines default to local-IDF query-then-fetch.
+// This is the standard sharded-search shape (per-shard local scoring, then a
+// coordinator merges the ranked hits by score) — the local-IDF *query-then-fetch*
+// production search engines default to. Its contract (#611): the hit SET is exact
+// (matching is per-row), and every coordinator produces one identical global
+// ranking; the rank ORDER equals a single consolidated index's only when every
+// shard's corpus statistics for the query terms (df/N, average field lengths)
+// agree with the consolidated ones — per-shard IDF variation can otherwise
+// reorder hits regardless of how separated their term frequencies are. The exact
+// general fix is a global-statistics pass (the dfs_query_then_fetch analogue), a
+// later slice behind this same API. See docs/indexing/distributed-fulltext.md.
 //
 //   build_local(node, spec)  — enumerate this node's owned partitions of the table,
 //                              read each body from local disk (no LOREQ, no
@@ -62,6 +68,23 @@ struct FulltextHit {
     double score = 0.0;
 
     bool operator==(const FulltextHit&) const = default;
+};
+
+// One node's part in a scatter-gather query — the per-node provenance the
+// observability foundation wants visible (#641): which node answered, how many
+// ranked hits it contributed (pre-merge, capped to the request's top_k), how long
+// its answer took from the coordinator's side, and how many payload bytes its
+// round trip moved (0 for the coordinator's own local contribution).
+struct NodeContribution {
+    std::string node_id;
+    bool local = false;           // true for the coordinating node itself
+    std::size_t hits = 0;         // ranked hits this node contributed (pre-merge)
+    std::size_t sub_indexes = 0;  // per-partition sub-indexes the node queried
+                                  //   (1 on the consolidated path; 0 = none owned)
+    double latency_ms = 0.0;      // coordinator-observed time to answer
+    std::uint64_t wire_bytes = 0; // request + response payload bytes (0 = local)
+
+    bool operator==(const NodeContribution&) const = default;
 };
 
 // Merge per-source ranked hit lists into one globally-ranked list. Flattens every
@@ -108,11 +131,18 @@ std::string encode_fulltext_query(const FulltextQueryRequest& request);
 std::optional<FulltextQueryRequest> decode_fulltext_query(
     std::string_view payload, std::string* error = nullptr);
 
+// The FulltextQueryRequest JSON Schema (draft-07) — the code-owned source of
+// truth decode_fulltext_query enforces; schemas/fulltext_query.schema.json is
+// generated from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& fulltext_query_schema();
+
 // The gather response: this node's ranked hits for the request (already merged
 // across its own partitions, capped to top_k).
 struct FulltextQueryResponse {
     std::string from;               // the responding node id
     std::vector<FulltextHit> hits;  // ranked, capped to the request's top_k
+    std::size_t sub_indexes = 0;    // per-partition sub-indexes the node queried
+                                    //   (provenance for #643's "sub-indexes queried")
 };
 
 // Serialize a gather response to its compact JSON form.
@@ -123,6 +153,11 @@ std::string encode_fulltext_hits(const FulltextQueryResponse& response);
 // path-qualified reason in `error` (when non-null) on any failure.
 std::optional<FulltextQueryResponse> decode_fulltext_hits(
     std::string_view payload, std::string* error = nullptr);
+
+// The FulltextQueryResponse JSON Schema (draft-07) — the code-owned source of
+// truth decode_fulltext_hits enforces; schemas/fulltext_hits.schema.json is
+// generated from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& fulltext_hits_schema();
 
 // --- the per-node distributed full-text index --------------------------------
 
@@ -155,6 +190,9 @@ public:
         std::size_t nodes_answered = 0;    // self + peers that contributed
         std::uint64_t wire_bytes_moved = 0;  // scatter+gather payload bytes this query
                                              //   moved (the hits, not the rows)
+        // Per-node provenance: the coordinator's own contribution first, then one
+        // entry per peer in scatter order (#641). Empty on a failing status.
+        std::vector<NodeContribution> contributions;
         bool ok() const noexcept { return status.ok(); }
     };
 
@@ -191,17 +229,27 @@ public:
     // fails the query (a missing partition would skew the ranking). Call from the
     // application thread (never the network thread). A single-node cluster returns
     // its local ranking.
+    //
+    // When `recorder` AND `parent` are given, the scatter-gather is traced: one
+    // child span per contribution ("search:local" for this node's own sub-indexes,
+    // "search:peer" per scattered peer) under `parent`, carrying node id, hit count,
+    // and wire bytes — so a surface can show where the query's time went (#641).
+    // Both null (the default) = no spans, unchanged behavior.
     QueryResult query(const IndexSpec& spec, const IndexQuery& query,
-                      std::chrono::milliseconds timeout = kDefaultTimeout) const;
+                      std::chrono::milliseconds timeout = kDefaultTimeout,
+                      zetta::observability::SpanRecorder* recorder = nullptr,
+                      const zetta::observability::TraceContext* parent = nullptr) const;
 
     // Query only this node's local sub-indexes (no scatter) → its merged, ranked
     // hits, capped to `query.top_k`. Used by query() for the local contribution and
     // by on_request to answer a peer. `status`, when non-null, receives the first
     // failing sub-query status (Ok when this node holds no partitions of the index —
-    // it simply contributes nothing).
+    // it simply contributes nothing). `sub_indexes`, when non-null, receives how
+    // many per-partition sub-indexes were consulted (the provenance surfaces show).
     std::vector<FulltextHit> query_local(const IndexSpec& spec,
                                          const IndexQuery& query,
-                                         IndexStatus* status = nullptr) const;
+                                         IndexStatus* status = nullptr,
+                                         std::size_t* sub_indexes = nullptr) const;
 
     // The participants of a scatter: this node + every connected peer, sorted by
     // node id (so the set is the same on every node).

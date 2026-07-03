@@ -25,40 +25,45 @@ namespace {
 // The RPC method an all-to-all shuffle partition is shipped under.
 constexpr std::string_view kShuffleMethod = "ddf.shuffle";
 
-// The partition-message JSON Schema (draft-07). Mirrored at
-// schemas/ddf_partition.schema.json; this embedded copy is the one enforced at
-// runtime (the same pattern as the collective message — see collectives.cpp). A
-// closed object: `tag` / `rows` / `columns` required; each column is name + dtype
-// (one of the seven DataType names) + a `values` number array.
+// The partition-message JSON Schema (draft-07) — the code-owned source of
+// truth, exposed as ddf_partition_schema(); schemas/ddf_partition.schema.json
+// is generated from it and drift-checked by tests/test_schemas.cpp (#646).
+// Enforced at runtime (the same pattern as the collective message — see
+// collectives.cpp). A closed object: `tag` / `rows` / `columns` required; each
+// column is name + dtype (one of the seven DataType names) + a `values`
+// number array.
 const nlohmann::json& schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.ddf.PartitionMessage",
-      "type": "object",
-      "properties": {
-        "tag":  { "type": "string" },
-        "from": { "type": "string" },
-        "rows": { "type": "integer", "minimum": 0 },
-        "columns": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name":  { "type": "string", "minLength": 1 },
-              "dtype": {
-                "type": "string",
-                "enum": ["float32","float64","int32","int64","uint32","uint64","uint8"]
-              },
-              "values": { "type": "array", "items": { "type": "number" } }
-            },
-            "required": ["name", "dtype", "values"],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": ["tag", "rows", "columns"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.ddf.PartitionMessage",
+  "description": "A DDF DataFrame partition shipped over the signal plane during a distributed sort's all-to-all shuffle (method ddf.shuffle), carried as the opaque payload of a signal. `tag` names the shuffle round; `from` is the sender's node id; `rows` is the partition's row count; `columns` carries the partition column-major (one entry per frame column, each with its name, dtype, and `rows` values). Validated at the boundary, exactly like the collective message.",
+  "type": "object",
+  "properties": {
+    "tag":  { "type": "string" },
+    "from": { "type": "string" },
+    "rows": { "type": "integer", "minimum": 0 },
+    "columns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name":  { "type": "string", "minLength": 1 },
+          "dtype": {
+            "type": "string",
+            "enum": ["float32", "float64", "int32", "int64", "uint32", "uint64", "uint8"]
+          },
+          "values": { "type": "array", "items": { "type": "number" } }
+        },
+        "required": ["name", "dtype", "values"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["tag", "rows", "columns"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
 
@@ -247,6 +252,10 @@ std::vector<HostFrame> partition_by_splitters(const HostFrame& sorted,
 }  // namespace
 
 // --- PartitionMessage JSON boundary -----------------------------------------
+
+// The code-owned schema (the anonymous-namespace schema_document() above),
+// exposed for generation + the drift check (#646).
+const nlohmann::json& ddf_partition_schema() { return schema_document(); }
 
 std::string encode_partition_message(const PartitionMessage& message) {
     nlohmann::json document{{"tag", message.tag}, {"rows", message.rows}};

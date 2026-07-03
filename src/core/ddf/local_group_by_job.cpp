@@ -16,8 +16,23 @@ NearDataGroupByResult run_near_data_group_by_job(
     const std::string& round_tag, std::chrono::milliseconds timeout) {
     NearDataGroupByResult out;
 
+    // One trace per distributed job (#640): stamp the replicated job record up
+    // front so THIS node's near-data span, the coordinator's job span, and
+    // every peer's spans all join the same trace.
+    if (job.value().trace_id.empty()) {
+        job.set_trace_id(zetta::observability::make_root_trace().trace_id);
+    }
+    zetta::observability::ScopedSpan near_data_span(
+        &node.span_recorder(),
+        zetta::observability::TraceContext{
+            job.value().trace_id, zetta::observability::make_span_id()},
+        "near-data:group_by");
+    near_data_span.set_attribute("job_id", job.id());
+    near_data_span.set_attribute("node", node.node_id());
+
     // Record this job's near-data instrumentation into the node before returning,
     // so the counters survive the call and surface in system.pipeline_jobs (#589).
+    // The same counters close the near-data span as its result shape.
     auto record_instrumentation = [&] {
         node.record_pipeline_job({.job_id = job.id(),
                                   .kind = zetta::compute::NearDataJobKind::GroupBy,
@@ -28,6 +43,14 @@ NearDataGroupByResult run_near_data_group_by_job(
                                   .wire_bytes_moved = out.wire_bytes_moved,
                                   .status = out.status,
                                   .recorded_at = zetta::util::now_iso8601()});
+        near_data_span.set_attribute(
+            "result_shape",
+            nlohmann::json{{"partitions_read", out.partitions_read},
+                           {"rows_read", out.rows_read},
+                           {"local_bytes_read", out.local_bytes_read},
+                           {"wire_bytes_moved", out.wire_bytes_moved},
+                           {"status", to_string(out.status)}});
+        near_data_span.finish(out.status == compute::JobStatus::Succeeded);
     };
 
     // (1) Compute near data: materialize this node's shard from its OWNED
