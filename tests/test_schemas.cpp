@@ -20,6 +20,7 @@
 #include "zetta/ddf/parquet_reader.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
+#include "zetta/cluster/security.hpp"
 #include "zetta/parquet/column_decoder.hpp"
 #include "zetta/parquet/metadata.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -71,6 +72,7 @@ const std::vector<SchemaEntry>& schema_registry() {
         {"parquet_columns.schema.json", &zetta::parquet::parquet_columns_schema},
         {"parquet_data_frame.schema.json", &zetta::ddf::parquet_data_frame_schema},
         {"node_metrics.schema.json", &zetta::cluster::node_metrics_wire_schema},
+        {"cluster_secret.schema.json", &zetta::cluster::cluster_secret_schema},
     };
     return registry;
 }

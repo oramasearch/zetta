@@ -19,6 +19,11 @@ What it installs (or install manually):
   macOS; the newest installed `clang++-NN` (≥17) on Linux. Override with
   `-DCMAKE_CXX_COMPILER=...` (e.g. `clang++-19` or `g++-14`) or
   `-DZETTA_USE_SYSTEM_COMPILER=ON`. `install-deps.sh` installs a suitable clang.
+- **OpenSSL 3** (`openssl@3` on Homebrew, `libssl-dev` on apt) — **required**:
+  it backs the cluster's inter-node mutual TLS (Corosio's TLS provider) and the
+  node-identity certificate minting (CTL-2, #466;
+  [docs/cluster/security.md](cluster/security.md)). CMake fails the configure
+  with a clear message when it's missing.
 - macOS for the headed UI (SDL3 uses a Metal-backed renderer); the headless core
   is portable.
 
