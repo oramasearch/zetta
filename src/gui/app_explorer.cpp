@@ -34,6 +34,10 @@
 namespace zetta::gui {
 
 void App::draw_explorer() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Explorer)) {
+        selected_project_ = *pending_entity;
+    }
     ImGui::SeparatorText("Explorer");
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =

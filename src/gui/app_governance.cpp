@@ -149,6 +149,10 @@ void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::Audit
 }  // namespace
 
 void App::draw_admin() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Admin)) {
+        selected_principal_ = *pending_entity;
+    }
     ImGui::SeparatorText("Admin & audit");
 
     // The governance surface (SCR-7 / CMP-5, the GUI slice of FEAT-9): a

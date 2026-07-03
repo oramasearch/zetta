@@ -124,6 +124,10 @@ void render_run_detail(const zetta::pipeline::Run& run,
 }  // namespace
 
 void App::draw_runs() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Runs)) {
+        selected_run_ = *pending_entity;
+    }
     ImGui::SeparatorText("Runs / outputs / lineage");
 
     // A run is the record of one execution of a deployed graph (status / logs /

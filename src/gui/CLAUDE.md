@@ -24,7 +24,14 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   `app_deploy` / `app_runs` / `app_models` / `app_datasets` / `app_jobs` /
   `app_cluster` / `app_cloud` / `app_governance` / `app_test_suite`);
   operations-view helpers shared across TUs live in
-  `app_operations_internal.hpp`.
+  `app_operations_internal.hpp`; the view registry + sidebar + navigation
+  live in `app_views.cpp`.
+- **Navigation goes through the registry.** A view exists as one `ViewInfo`
+  row in `App::view_registry()` (app_views.cpp); `navigate_to(view, entity)`
+  is the ONLY way code changes the active view (never assign `active_view_`),
+  and a panel consumes its deep link via `take_pending_selection(View::…)` at
+  the top of its draw. Cross-entity references render with `entity_link`.
+  The recipe: docs/gui/architecture.md → "Adding a view".
 - **Orama design system, always:** light surfaces, ink text, Geist + Geist
   Mono (`g_mono_font` for labels/counts/metrics; `g_heading_font` only via
   `page_header`), coral used surgically, semantic green/amber/red for status,

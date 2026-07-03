@@ -5,6 +5,8 @@
 #include <memory>
 #include <mutex>
 #include <functional>
+#include <optional>
+#include <span>
 #include <string>
 #include <thread>
 #include <vector>
@@ -115,6 +117,41 @@ private:
         Admin,     // principals / keys / audit
         Tests,     // the in-app test suite (zetta::testkit catalog)
     };
+
+    // One row of the view registry (docs/gui/architecture.md): each view is
+    // declared exactly once here and consumed by the sidebar, navigation, and
+    // (later) the command palette. Adding a view = adding one row + its draw
+    // method — nothing else knows the view list.
+    struct ViewInfo {
+        View id;
+        const char* section;  // sidebar group: "" (Home) · "Data" · "Pipeline"
+                              // · "Operations" · "Governance"
+        const char* name;     // sentence case, product language
+        void (App::*draw)();  // the panel body
+        // Optional cheap live count rendered as the row's badge — reads the
+        // same live sources as the panel each frame, stores nothing.
+        // nullptr = no badge; an empty string renders none this frame.
+        std::string (App::*badge)() const;
+    };
+    // The registry — a static table in app_views.cpp, in sidebar order.
+    static std::span<const ViewInfo> view_registry();
+
+    // The ONLY way any code changes the active view. When an entity id is
+    // given it is stored as that view's pending selection; the panel consumes
+    // it on its next draw (take_pending_selection) and selects the entity —
+    // the whole foundation cross-entity links (#633) and external deep links
+    // (the API activity hook, #620) need.
+    void navigate_to(View view, const std::string& entity_id = {});
+    std::optional<std::string> take_pending_selection(View view);
+    // Render `label` as an inline link that navigates to `view` selecting
+    // `entity_id` — the grammar's cross-entity reference (#633).
+    void entity_link(const char* label, View view, const std::string& entity_id);
+    // The sectioned left navigation rail (#628), grammar-rendered from the
+    // registry; coral marks the active row (the design system's "you are here").
+    void draw_sidebar();
+    // Sidebar badges: cheap per-frame reads of live engine state.
+    std::string jobs_badge() const;     // running compute jobs ("" when none)
+    std::string cluster_badge() const;  // cluster member count
 
     // A file to ingest, queued from a drop event or the native file dialog
     // (whose callback may fire on another thread — hence the mutex). Auto
@@ -311,9 +348,12 @@ private:
     bool initialized_ = false;
     bool show_demo_ = false;
 
-    // Which panel the content area is showing (set from the menu bar). Defaults
-    // to the project-first Home landing.
+    // Which panel the content area is showing (set ONLY via navigate_to).
+    // Defaults to the project-first Home landing.
     View active_view_ = View::Home;
+    // Entity ids handed to navigate_to, waiting for their view's next draw to
+    // consume (take_pending_selection). Presentation state only.
+    std::map<View, std::string> pending_selection_;
     // Asks draw_about_modal() to open the About popup on the next frame (set from
     // the Help menu), mirroring the New Project modal's request flag.
     bool about_requested_ = false;

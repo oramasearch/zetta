@@ -279,6 +279,10 @@ void App::draw_add_model_form() {
 }
 
 void App::draw_models() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Models)) {
+        selected_model_ = *pending_entity;
+    }
     ImGui::SeparatorText("Models");
 
     // The GUI form of system.zetta_models: the trained-model registry (ENT-14 /
