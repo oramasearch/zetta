@@ -12,7 +12,9 @@ The docs are organized for **progressive disclosure**, by domain:
 3. **The page** — one page per shipped slice, with symbols, issue refs, and
    boundaries.
 
-Orientation shortcuts: [product/orama-zetta.md](product/orama-zetta.md) is the
+Orientation shortcuts: [full-context.md](full-context.md) is the **reload
+map** (the whole project's where-to-look, kept current);
+[product/orama-zetta.md](product/orama-zetta.md) is the
 **read-first** product framing; [architecture/architecture.md](architecture/architecture.md)
 is the system narrative; [architecture/code-map.md](architecture/code-map.md) is
 the annotated file-by-file map of the codebase; [build.md](build.md) is build /
@@ -22,7 +24,7 @@ run / test.
 
 | Domain | Covers |
 |---|---|
-| [product/](product/README.md) | What Orama Zetta is: naming, value-first messaging, AI projects as the central item, the use-case-driven build, the wtm `ORAMA-ZETTA` blueprint as source of truth. |
+| [product/](product/README.md) | What Orama Zetta is: the read-first framing + vision (Intelligence Velocity), personas, positioning, the use-case catalog, control surfaces, and the per-audience experience contracts (UX · DX · AX · serving). |
 | [architecture/](architecture/README.md) | The node, run modes, module map, the code map, schema-as-code, the async runtime seam, true hybrid, the living codebase health audit. |
 | [data/](data/README.md) | Storage engines and the on-disk format, large objects, datasets, partitioning (seam, write path, rebalance, sharded placement), the native Parquet reader, the query layer. |
 | [cluster/](cluster/README.md) | Equal-peer clustering, CRDT replication, the signal plane, collectives, per-node telemetry. |
@@ -31,6 +33,7 @@ run / test.
 | [ml/](ml/README.md) | Native ML: histogram GBDT training, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, the native correctness oracle. |
 | [pipeline/](pipeline/README.md) | AI projects and their inputs, the ExecutionGraph IR, the compilers (intent / n8n / sim-Python), the correctness gate, deploy + the reconcile control plane, runs, the solution catalog. |
 | [indexing/](indexing/README.md) | The pluggable `IndexBackend` seam, the oramacore-cpp full-text backend, the index step executor, distributed full-text. |
+| [api/](api/README.md) | The programmatic control surface: the capability registry, the MCP server + REST rendering, auth/consent, the main-thread bridge. |
 | [cloud/](cloud/README.md) | The `Provisioner` seam, the seven provisioner backends (local / Azure / AWS / GCP / OCI / k8s / bare-metal), the CLI control-plane pattern, burst identity, cost-cap approval, the cloud inspector. |
 | [governance/](governance/README.md) | Key-scoped access control, the audit trail, the governed console. |
 | [gui/](gui/README.md) | The headed app: the Orama design system (read before GUI work), every panel, and the load-bearing rendering notes. |

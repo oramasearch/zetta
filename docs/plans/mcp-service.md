@@ -22,8 +22,11 @@ hook).
   (`repl::GovernedConsole`) is the template for a governed remote statement.
 - **Schema-as-code** everywhere — tool input/output schemas can be generated
   from the same embedded schemas the boundaries already validate.
-- **No HTTP server in the node yet** (the cluster speaks its own TCP protocol);
-  cpp-httplib via FetchContent is the natural fit (the wtm pattern).
+- **No HTTP server in the node yet** (the cluster speaks its own TCP protocol).
+  **Beast2** (C++ Alliance, coroutine-native, on the capy/corosio stack we
+  already vendor) is the chosen HTTP layer — see
+  [../research/beast2-http.md](../research/beast2-http.md); settled design in
+  [../api/registry-design.md](../api/registry-design.md).
 
 ## Architecture (mirrors zetta's existing seams)
 
@@ -54,10 +57,10 @@ hook).
 
 ## Slices
 
-1. **HTTP server + MCP skeleton** — cpp-httplib FetchContent; `POST /mcp`
-   JSON-RPC (initialize/list/call), loopback + bearer token, CORS; embedded in
-   headed + headless. Acceptance: `tools/list` from Claude Code against a
-   running node.
+1. **HTTP server + MCP skeleton** — Beast2 (vendored, one adapter TU behind
+   the seam); `POST /mcp` JSON-RPC (initialize/list/call), loopback + bearer
+   token, CORS; embedded in headed + headless. Acceptance: `tools/list` from
+   Claude Code against a running node.
 2. **Read parity** — tools/routes over every `system.*` view + entity detail
    reads (project/graph/run/model/job/dataset/index/audit). Read-only, cheap,
    safe. Acceptance: an agent answers "what is this cluster doing?" without the

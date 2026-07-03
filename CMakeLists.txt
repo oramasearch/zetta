@@ -338,6 +338,10 @@ endif()
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
+  src/core/observability/trace.cpp
+  src/core/api/bridge.cpp
+  src/core/api/capabilities.cpp
+  src/core/api/registry.cpp
   src/core/cluster/cluster.cpp
   src/core/cluster/signal.cpp
   src/core/cluster/collectives.cpp

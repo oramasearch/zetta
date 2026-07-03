@@ -8,8 +8,11 @@
 > types; manage projects to success — most AI projects fail), the first use case
 > (**churn / UC-1**), and **growing the use-case catalog**. Source of truth is
 > the wtm `ORAMA-ZETTA` blueprint (epic
-> [`#279`](https://github.com/oramasearch/zetta/issues/279)). This file is the
-> engineering rules for the codebase.
+> [`#279`](https://github.com/oramasearch/zetta/issues/279)). The full product
+> set is [`docs/product/`](docs/product/README.md) — vision · personas ·
+> positioning · catalog · control surfaces · the
+> [experience contracts](docs/product/experience/README.md) (UX · DX · AX ·
+> serving). This file is the engineering rules for the codebase.
 
 **Technically, a zetta node is a database.** A *zetta node* is one running
 instance. It runs in two modes:
@@ -39,6 +42,12 @@ conventions**. Everything else is disclosed progressively, in four layers:
 4. **`docs/<domain>/<page>.md`** — one page per shipped slice (symbols, issue
    refs, boundaries, scope notes).
 
+**"Let's reload the full project context"** → read
+[`docs/full-context.md`](docs/full-context.md) — the kept-current map of
+repos, systems of record, shipped state, the active wave, and working
+agreements. Update it whenever project state shifts (PR merges, plan
+changes, new foundations).
+
 For navigating the source tree, read
 **[`docs/architecture/code-map.md`](docs/architecture/code-map.md)** — the
 annotated file-by-file map (kept in sync by the docs discipline below).
@@ -54,6 +63,7 @@ level can be trusted — a stale card is worse than none.
 | When touching… | Read first |
 |---|---|
 | Product framing, naming, use cases | [`docs/product/`](docs/product/README.md), [`docs/use-cases/`](docs/use-cases/README.md) |
+| Anything a user, developer, or agent experiences | [`docs/product/experience/`](docs/product/experience/README.md) → ux.md · dx.md · ax.md · serving.md — update the affected page in the same commit |
 | Node, run modes, module layout, schemas-as-code | [`docs/architecture/`](docs/architecture/README.md) |
 | Storage, large objects, partitioning, Parquet, SQL | [`docs/data/`](docs/data/README.md) |
 | Cluster, replication/CRDT, signal plane, collectives | [`docs/cluster/`](docs/cluster/README.md) |
@@ -62,6 +72,7 @@ level can be trusted — a stale card is worse than none.
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
+| MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
 | Provisioners, cloud burst, cloud inspector | [`docs/cloud/`](docs/cloud/README.md) |
 | Access control, audit, governed console | [`docs/governance/`](docs/governance/README.md) |
 | Any GUI change | [`docs/gui/`](docs/gui/README.md) — design system + rendering notes are mandatory reads |
@@ -133,6 +144,26 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,
   included **only** by the adapter `src/core/cluster/cluster.cpp`. **Never name
   `boost::capy` / `boost::corosio` directly** outside those seams.
+
+- **Coroutines first.** zetta is a coroutine-native codebase: async APIs are
+  expressed as awaitables through the `zetta::runtime` seam (`task<T>`,
+  `spawn`, `parallel_for`, `async_event`), never as blocking
+  mutex/condition-variable surfaces. A raw `std::mutex` is permitted ONLY as
+  the lowest-level cross-thread handoff inside a seam adapter (the cluster's
+  per-peer outbox, a bounded telemetry ring) — contained, commented, and never
+  visible in a public API. If the runtime seam lacks a primitive you need,
+  extend the seam (one alias/adapter in `runtime.hpp`), don't work around it.
+
+- **Observability first (RULE: every operation is observable).** Every
+  operation captures its **intent** (what the caller asked for, verbatim),
+  its **plan** (what the engine decided to do), its **performance** (spans
+  with timings), and its **result shape** — as OpenTelemetry-style spans
+  threaded by trace id across surfaces and nodes, surfaced as `system.*`
+  read views and returned to API callers (an MCP agent sees the trace id +
+  timing of every call and can read the full trace back). Errors carry the
+  engine's reason; crashes carry stacktraces. See
+  [`docs/architecture/observability.md`](docs/architecture/observability.md)
+  — new operations MUST open a span; new failures MUST be observable.
 
 - **No exceptions across zetta-core seams.** Boundary functions are
   non-throwing (`std::optional` / status types + a path-qualified reason).
@@ -227,15 +258,29 @@ ever.** This binds both the **product** and **Claude when building it**.
   cloud, ask the developer first. When in doubt, surface what *would* be
   read/called and ask — never touch the cloud to "just check."
 
-### AI compute — GPU-native, CPU fallback, distributed (DIRECTION)
+### Distributed-first — every algorithm scales at both levels (FOUNDATION)
 
-Every heavy AI op (featurize / train / score / explain) targets: runs on the
-accelerator when present, falls back to CPU, scales across the cluster — via
-the `ComputeDevice` seam + the job coordinator's collectives (SPMD). Current
-reality: the ML numerics are host-side references over device-backed data, with
-device-native kernels the documented optimization behind the same API. Move
-things *toward* this rule (push numerics onto device kernels), never away
-(never add an AI op that bypasses the seam).
+**Any algorithm zetta adopts is re-implemented native (no foreign runtime,
+ADR-17) and structured to exploit ALL available hardware at BOTH levels:**
+
+- **Cluster level**: SPMD over owned partitions (compute-near-data), partials
+  combined via the collectives, single-node == multi-node by construction —
+  and the cluster itself is elastic (the `Provisioner` seam can add local or
+  cloud nodes, consent- and cost-gated), so "available hardware" includes
+  hardware zetta can provision.
+- **Machine level**: heavy numerics target the `ComputeDevice` seam
+  (accelerator when present, CPU backend always) and data-parallel work fans
+  across cores via `runtime::parallel_for` / the work-stealing scheduler.
+
+A correct-but-single-threaded, single-node implementation is a *reference*,
+not a destination — acceptable as the first slice (the GBDT/TreeSHAP
+host-side-reference pattern) only with the distributed/accelerated path
+designed behind the same API. Never add an algorithm that structurally can't
+distribute (hidden global state, order-dependent single streams) without
+recording why. Precedents to copy: distributed sort/join/group-by,
+histogram-allreduce GBDT, per-partition scatter-gather fulltext.
+Applies to AI ops (featurize / train / score / explain) and everything else —
+search, aggregation, resolution, import.
 
 ### Design system — follow it for all GUI work
 
@@ -337,6 +382,13 @@ git-tracked files: this `CLAUDE.md` (rules), `docs/**` (system behavior),
 Project skills live in `.claude/skills/` (committed, shared):
 - **zetta-dev** — these conventions as a working checklist + `reference.md`
   (recipes, gotchas).
+- **gui-dev** — headed-GUI work: the view registry + widget grammar +
+  navigation architecture, design-system discipline.
+- **api-dev** — control-surface work: the capability registry, MCP/REST,
+  auth/consent, the Beast2 adapter boundary.
+- **mcp-journeys** — author/run simulated user tests; the promotion rule.
+- **add-use-case** — build a UC-N in the engine (compose-don't-invent, the
+  FedEx-test rule, the nine-step recipe).
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
 - **github-ops** — issues/PRs/CI via `gh` (priority `p1`–`p4` + area labels).

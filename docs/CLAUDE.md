@@ -21,5 +21,8 @@ change they describe — never as a follow-up.
 - Pages state their **boundaries** (which JSON/wire formats they add — ideally
   "no new JSON format"), their issue refs (`#NNN`), and what is deliberately a
   **later slice**.
+- **[full-context.md](full-context.md) is the reload map** — when your
+  change shifts project state (a PR lands, a plan reshapes, a foundation or
+  wave ships), refresh the map's Current state section in the same commit.
 - Before committing, **grep this tree for stale terms** — renamed symbols,
   removed flags, moved files. No doc may mention the old name.

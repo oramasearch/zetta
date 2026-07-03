@@ -126,6 +126,10 @@ loops **patient** (poll seconds, not a fixed tiny count) — they're timing-boun
   `docs/architecture/code-map.md` (on file adds/moves/renames), CLAUDE.md
   (rules/layout only), README.md, `modules/README.md`, and the affected skill.
   Grep for stale terms before committing. Not just `docs/`.
+- **`docs/full-context.md` is the reload map** ("let's reload the full
+  project context") — refresh its Current state section in the same commit
+  when project state shifts (PR merges, plan changes, waves/foundations
+  shipping).
 - **Do NOT use the agent memory store.** It's outside git and not reproducible.
   Durable knowledge goes in git-tracked files (CLAUDE.md, docs, README, skills).
 

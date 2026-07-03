@@ -14,9 +14,13 @@ intelligence** from quarters to hours — **Intelligence Velocity for Big Thinke
 
 **Full vision + blueprint:** the [Orama Zetta docs site](https://github.com/oramasearch/zetta-docs)
 — strategy, architecture, domain model, roadmap. **This repo's docs:**
-[docs/README.md](docs/README.md) (domain-organized;
-[docs/product/orama-zetta.md](docs/product/orama-zetta.md) is the read-first
-product framing).
+[docs/README.md](docs/README.md) (domain-organized). The product set lives in
+[docs/product/](docs/product/README.md) — [orama-zetta.md](docs/product/orama-zetta.md)
+(read-first framing), [vision](docs/product/vision.md) ·
+[personas](docs/product/personas.md) · [positioning](docs/product/positioning.md) ·
+[catalog](docs/product/catalog.md) · [control surfaces](docs/product/control-surfaces.md),
+and the per-audience [experience contracts](docs/product/experience/README.md)
+(UX · DX · AX · serving).
 
 ## Under the hood
 
