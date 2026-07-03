@@ -156,10 +156,32 @@ TEST_F(RegistryFixture, JourneySearchReturnsRankedHitsWithProvenance) {
                                       table->store()))
                     .ok());
 
+    // Discovery first (#642): list_indexes reads the same live registry
+    // (Node::indexes()) the system.indexes view computes from, so an agent
+    // can find what `search` can target before searching.
+    auto listed = call("list_indexes", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("indexes").size(), 1u);
+    const nlohmann::json& discovered = listed.value.at("indexes")[0];
+    EXPECT_EQ(discovered.at("id"), index->id());
+    EXPECT_EQ(discovered.at("table"), "articles");
+    EXPECT_EQ(discovered.at("kind"), "search");
+    EXPECT_EQ(discovered.at("backend"), "tf_reference");
+    EXPECT_EQ(discovered.at("fields"),
+              (nlohmann::json::array({"title", "body"})));
+
     // Schema boundary: a missing required field fails as invalid_input.
     auto missing = call("search", nlohmann::json{{"target", "articles"}});
     EXPECT_FALSE(missing.ok);
     EXPECT_EQ(missing.error.code, "invalid_input");
+
+    // An empty query is rejected at the schema boundary with the
+    // path-qualified reason (the /query pointer).
+    auto empty_query = call("search", nlohmann::json{{"target", "articles"},
+                                                     {"query", ""}});
+    EXPECT_FALSE(empty_query.ok);
+    EXPECT_EQ(empty_query.error.code, "invalid_input");
+    EXPECT_NE(empty_query.error.message.find("/query"), std::string::npos);
 
     auto result = call("search", nlohmann::json{{"target", "articles"},
                                                 {"query", "postgres"}});

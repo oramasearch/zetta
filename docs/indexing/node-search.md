@@ -87,7 +87,10 @@ machinery:
   input schema `{target, query, field?, top_k?}` validated at the boundary;
   output = ranked hits + per-node provenance (each node's `hits`,
   `sub_indexes`, `latency_ms`, `wire_bytes`) + path + trace ids on the
-  `ApiResult`. See [docs/api/README.md](../api/README.md).
+  `ApiResult`. `list_indexes` (#642) is the discovery step: the index registry
+  (`Node::indexes()`, the `system.indexes` source) as a tool, so an agent
+  finds what `search` can target first. See
+  [docs/api/README.md](../api/README.md).
 - **GUI:** the **Search** view (`src/gui/app_search.cpp`,
   [docs/gui/search-view.md](../gui/search-view.md)) — target picker over the
   registered Search indexes, the provenance strip + scatter-gather replay,
@@ -109,8 +112,13 @@ self-only provenance, root + local spans); and the acceptance — a real 3-node
 loopback cluster where **every node's `Node::search` ranking equals the
 consolidated oracle**, provenance lists all three nodes (one local, peers with
 wire bytes), and the trace holds exactly one `search` root, one `search:local`,
-and a `search:peer` per peer. The `search` capability journey lives in
-[`tests/api/test_registry.cpp`](../../tests/api/test_registry.cpp).
+and a `search:peer` per peer. The single-node `list_indexes → search`
+capability journey lives in
+[`tests/api/test_registry.cpp`](../../tests/api/test_registry.cpp); the
+distributed journey — a 3-node loopback cluster driven purely through the
+registry (`list_indexes` → `search` → `get_trace` with its per-peer spans,
+#642) — in
+[`tests/api/test_search_journey.cpp`](../../tests/api/test_search_journey.cpp).
 
 Known platform issue: the **real-BM25F** ranking-oracle assertions
 ([#611](https://github.com/oramasearch/zetta/issues/611)) fail deterministically

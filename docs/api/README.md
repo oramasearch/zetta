@@ -52,7 +52,7 @@ node state, so a no-MCP agent orients with one GET
 | `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
 | `list_models` | read | api:query | compact model listing (ids feed `get_model`) |
 | `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
-| `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) |
+| `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) — discover what `search` can target |
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
