@@ -15,8 +15,9 @@ SQL:
 
 Like the [Runs panel](../pipeline/runs.md#gui-panel), it is a **read-only viewer**. It renders
 whatever governance state the node holds (created via the API / tests, or
-replicated from a peer), so a fresh standalone node simply shows "(no principals)"
-and "(no audit events)" until something creates them. **Mutation** — issuing a
+replicated from a peer), so a fresh standalone node shows the designed empty
+states of [empty-states.md](empty-states.md) until something creates them
+(#631). **Mutation** — issuing a
 key, granting a capability as a first-class command/event (ENT-22 →
 `GrantCapability` / `CapabilityGranted`), or approval gates — is a **later FEAT-9
 slice**; this slice is the "view principals/keys, grants, and audit events"

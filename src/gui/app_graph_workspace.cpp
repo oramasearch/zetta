@@ -117,7 +117,22 @@ void App::draw_graph_workspace() {
         editing_graph_.reset();
         graph_panel_project_.clear();
         selected_graph_.clear();
-        ImGui::TextDisabled("Select a project to view its execution graphs.");
+        // Two nothing-yet cases (#631): a fresh node with no projects at all
+        // (create one, right here), and projects that merely need selecting
+        // (Home lists them; clicking one lands back in this workspace).
+        if (node_.project_names().empty()) {
+            if (empty_state("No projects yet",
+                            "A project holds your execution graphs and turns "
+                            "an intent into a deployed pipeline.",
+                            "New project…")) {
+                new_project_modal_requested_ = true;
+            }
+        } else if (empty_state("No project selected",
+                               "Pick a project and its execution graphs open "
+                               "here.",
+                               "Open home")) {
+            navigate_to(View::Home);
+        }
         return;
     }
 
@@ -157,7 +172,11 @@ void App::draw_graph_workspace() {
 
     const std::vector<std::string> names = project->graph_names();
     if (names.empty()) {
-        ImGui::TextDisabled("(this project has no graphs yet)");
+        // The next action is the New graph field directly above (#631).
+        empty_state("No graphs yet",
+                    "Name a graph above and it opens here as an empty canvas "
+                    "to build step by step.",
+                    "");
     }
     for (const std::string& name : names) {
         ImGui::PushID(name.c_str());

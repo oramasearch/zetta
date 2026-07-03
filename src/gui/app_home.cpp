@@ -124,9 +124,10 @@ void App::draw_home() {
     ImGui::Spacing();
     const std::vector<std::string> names = node_.project_names();
     if (names.empty()) {
-        ImGui::TextColored(kInkMuted,
-            "No projects yet. Create one to turn an intent into a deployed "
-            "pipeline.");
+        // The next action is the New project… button directly above (#631).
+        empty_state("No projects yet",
+                    "Create one to turn an intent into a deployed pipeline.",
+                    "");
     }
     for (const std::string& name : names) {
         const auto project = node_.find_project(name);
@@ -159,9 +160,12 @@ void App::draw_home() {
     const std::vector<zetta::observability::ActivityEntry> recent =
         zetta::observability::activity_entries(node_);
     if (recent.empty()) {
-        ImGui::TextColored(kInkMuted,
-            "Nothing yet. Runs, deploys, compute jobs, and MCP calls land "
-            "here as they happen.");
+        // A quiet strip, not a call to action: the hero button above is the
+        // fresh node's one next step, so this empty state carries no action.
+        empty_state("Nothing has happened yet",
+                    "Runs, deploys, compute jobs, and MCP calls land here as "
+                    "they happen.",
+                    "");
         return;
     }
     const std::size_t shown = recent.size() < 5 ? recent.size() : 5;

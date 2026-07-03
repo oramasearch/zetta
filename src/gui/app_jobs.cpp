@@ -12,7 +12,9 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace zetta::gui {
@@ -160,6 +162,16 @@ void App::draw_jobs() {
     // creating/scheduling a job is a later slice. The detail pane adds the per-job
     // objective/scaling preview (draw_job_scaling_controls).
     const std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs = node_.jobs();
+    std::optional<std::string> pending = take_pending_selection(View::Jobs);
+    if (jobs.empty()) {
+        if (empty_state("No compute jobs yet",
+                        "Featurize, train, explain, and score work lands here "
+                        "when a solution runs over the cluster.",
+                        "Open deploy")) {
+            navigate_to(View::Deploy);
+        }
+        return;
+    }
     ImGui::TextDisabled("%zu job(s)", jobs.size());
 
     // Jobs have no human name, so each row's title is the UUID's first segment
@@ -177,8 +189,7 @@ void App::draw_jobs() {
     }
 
     master_detail(
-        "jobs", rows, selected_job_, take_pending_selection(View::Jobs),
-        "(no jobs)",
+        "jobs", rows, selected_job_, std::move(pending), "(no jobs)",
         "Select a job to view its status, references, and scaling controls.",
         [&](const MasterRow& row) {
             const std::shared_ptr<zetta::compute::ComputeJob> job = node_.find_job(row.id);

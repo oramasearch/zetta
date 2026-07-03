@@ -12,7 +12,9 @@
 #include <imgui.h>
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace zetta::gui {
@@ -111,10 +113,6 @@ void render_principal_detail(const zetta::governance::Principal& principal) {
 void App::draw_audit_log(
     const std::vector<std::shared_ptr<zetta::governance::AuditEvent>>& events) {
     ImGui::TextDisabled("%zu event(s)", events.size());
-    if (events.empty()) {
-        ImGui::TextDisabled("(no audit events)");
-        return;
-    }
     const ImGuiTableFlags table_flags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY;
@@ -198,38 +196,65 @@ void App::draw_admin() {
     // --- Principals & access keys (the master-detail scaffold) --------------
     ImGui::SeparatorText("Principals & access keys");
     const std::vector<std::string> principal_names = node_.principal_names();
-    ImGui::TextDisabled("%zu principal(s)", principal_names.size());
+    std::optional<std::string> pending = take_pending_selection(View::Admin);
+    if (principal_names.empty()) {
+        // No in-GUI create flow yet (mutation is a later slice), so the empty
+        // state explains where principals come from and carries no action.
+        empty_state("No principals yet",
+                    "Principals hold access keys with scoped, TTL'd "
+                    "capabilities; they arrive through the API or by "
+                    "replication from a peer.",
+                    "");
+    } else {
+        ImGui::TextDisabled("%zu principal(s)", principal_names.size());
 
-    // Each row's title is the principal's name (held by name, re-resolved each
-    // frame) with its kind as meta; principals have no lifecycle (muted dot).
-    std::vector<MasterRow> rows;
-    rows.reserve(principal_names.size());
-    for (const std::string& name : principal_names) {
-        const std::shared_ptr<zetta::governance::Principal> principal = node_.find_principal(name);
-        if (!principal) continue;
-        rows.push_back({.id = name,
-                        .title = name,
-                        .meta = std::string(to_string(principal->kind()))});
-    }
-
-    // A fixed height (rather than the fill-remaining default) leaves room for
-    // the audit log below.
-    master_detail(
-        "principals", rows, selected_principal_,
-        take_pending_selection(View::Admin), "(no principals)",
-        "Select a principal to view its keys, scope, and capability grants.",
-        [&](const MasterRow& row) {
+        // Each row's title is the principal's name (held by name, re-resolved
+        // each frame) with its kind as meta; principals have no lifecycle
+        // (muted dot).
+        std::vector<MasterRow> rows;
+        rows.reserve(principal_names.size());
+        for (const std::string& name : principal_names) {
             const std::shared_ptr<zetta::governance::Principal> principal =
-                node_.find_principal(row.id);
-            if (!principal) return;
-            render_principal_detail(*principal);
-        },
-        ImGui::GetTextLineHeightWithSpacing() * 12.0f);
+                node_.find_principal(name);
+            if (!principal) continue;
+            rows.push_back({.id = name,
+                            .title = name,
+                            .meta = std::string(to_string(principal->kind()))});
+        }
+
+        // A fixed height (rather than the fill-remaining default) leaves room
+        // for the audit log below.
+        master_detail(
+            "principals", rows, selected_principal_, std::move(pending),
+            "(no principals)",
+            "Select a principal to view its keys, scope, and capability "
+            "grants.",
+            [&](const MasterRow& row) {
+                const std::shared_ptr<zetta::governance::Principal> principal =
+                    node_.find_principal(row.id);
+                if (!principal) return;
+                render_principal_detail(*principal);
+            },
+            ImGui::GetTextLineHeightWithSpacing() * 12.0f);
+    }
 
     // --- Audit log (the immutable, append-only trail) -----------------------
     ImGui::SeparatorText("Audit log");
+    const std::vector<std::shared_ptr<zetta::governance::AuditEvent>> events =
+        node_.audit_events();
+    if (events.empty()) {
+        // A console statement is the nearest governed action: it runs
+        // capability-scoped and lands in this trail.
+        if (empty_state("No audit events yet",
+                        "Every governed action is recorded here: console "
+                        "statements, deploys, key changes, data access.",
+                        "Open console")) {
+            navigate_to(View::Console);
+        }
+        return;
+    }
     if (mono_font_) ImGui::PushFont(mono_font_);
-    draw_audit_log(node_.audit_events());
+    draw_audit_log(events);
     if (mono_font_) ImGui::PopFont();
 }
 
