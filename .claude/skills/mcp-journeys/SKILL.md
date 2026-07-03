@@ -10,8 +10,15 @@ Distillation:
 
 ## Authoring a journey (layers 1–2)
 
-- A journey is **data**: `JourneyStep{tool, input, expect}` tables run by the
-  shared driver in `tests/api/` — the journeys ARE the integration tests.
+- A journey is **data**: `Journey{JourneyStep{tool, input, expect}}` tables
+  run by the shared driver **`tests/api/journey.hpp`** — the journeys ARE the
+  integration tests. Canonical tables: `tests/api/journeys_canonical.hpp`;
+  layer-1 runner: `tests/api/test_action_journeys.cpp`; layer-2 replay of the
+  same tables: `tests/api/test_mcp_server.cpp`. Values flow via `save` (JSON
+  pointer, or the `trace_id`/`span_id` specials) + `"$name"` placeholders;
+  `kind: job` steps poll with `Poll{pointer, until_any_of, deadline}` (a
+  deadline, never a fixed count). Failures name the offending step + check
+  (`JourneyReport::summary()`).
 - **Every mutating step gets a read-back assertion** (a follow-up read tool or
   `sql` over the relevant `system.*` view). Return-code-only journeys are not
   done.

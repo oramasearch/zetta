@@ -1,6 +1,8 @@
 // Protocol-layer (loopback HTTP) coverage of the embedded MCP server (#615) —
 // the layer-2 journeys of docs/testing/mcp-journeys.md: real JSON-RPC over a
 // real socket, with the test thread playing the owning loop (drain()).
+// The canonical journey TABLES (journeys_canonical.hpp, #619) replay here
+// unchanged over the wire — same data, different transport.
 #include <gtest/gtest.h>
 
 #include <arpa/inet.h>
@@ -10,12 +12,19 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <thread>
 
+#include "journey.hpp"
+#include "journeys_canonical.hpp"
 #include "temp_dir.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/project_graph.hpp"
 #include "zetta/version.hpp"
 
 namespace {
@@ -94,6 +103,45 @@ struct McpServerFixture : ::testing::Test {
         client.join();
         return nlohmann::json::parse(body, nullptr, /*allow_exceptions=*/false);
     }
+
+    // The layer-2 transport for the shared journey driver: each step becomes
+    // a real tools/call over the wire, and the response's structuredContent
+    // maps back to the ApiResult shape the driver asserts on — so the SAME
+    // journey tables replay here unchanged.
+    zetta::test::journey::Caller journey_caller() {
+        return [this](const std::string& tool, const nlohmann::json& input) {
+            static std::atomic<int> next_id{100};
+            const nlohmann::json request = {
+                {"jsonrpc", "2.0"},
+                {"id", next_id++},
+                {"method", "tools/call"},
+                {"params", {{"name", tool}, {"arguments", input}}}};
+            const nlohmann::json response = rpc(request.dump());
+            zetta::api::ApiResult result;
+            if (!response.is_object() || !response.contains("result")) {
+                result.error = {"protocol_error",
+                                response.is_discarded() ? "unparseable response"
+                                                        : response.dump(),
+                                ""};
+                return result;
+            }
+            const nlohmann::json& structured =
+                response.at("result").at("structuredContent");
+            result.ok = structured.value("ok", false);
+            if (result.ok) {
+                result.value = structured.value("value", nlohmann::json::object());
+            } else {
+                const nlohmann::json error =
+                    structured.value("error", nlohmann::json::object());
+                result.error = {error.value("code", std::string{}),
+                                error.value("message", std::string{}),
+                                error.value("path", std::string{})};
+            }
+            result.trace_id = structured.value("trace_id", std::string{});
+            result.span_id = structured.value("span_id", std::string{});
+            return result;
+        };
+    }
 };
 
 TEST_F(McpServerFixture, InitializeAndListTools) {
@@ -129,6 +177,40 @@ TEST_F(McpServerFixture, SqlOverTheWireReadsSystemViews) {
     const auto& structured = called["result"]["structuredContent"];
     ASSERT_TRUE(structured["ok"].get<bool>()) << called.dump();
     EXPECT_TRUE(structured["value"].contains("rows"));
+}
+
+// The canonical dataset-ingest journey (#619) replayed over real JSON-RPC:
+// the same table layer 1 runs in-process, here over the wire.
+TEST_F(McpServerFixture, JourneyDatasetIngestReplaysOverTheWire) {
+    namespace fs = std::filesystem;
+    const fs::path file = fs::path(dir.path()) / "accounts.jsonl";
+    {
+        std::ofstream out(file);
+        for (int i = 0; i < 24; ++i) {
+            out << R"({"account":")" << i << R"(","mrr":)" << (100 + i) << "}\n";
+        }
+    }
+    const zetta::test::journey::JourneyReport report =
+        zetta::test::journey::run_journey(
+            zetta::test::journey::canonical::dataset_ingest(
+                file.string(), (fs::path(dir.path()) / "nope.xlsx").string()),
+            journey_caller());
+    EXPECT_TRUE(report.ok) << report.summary();
+}
+
+// The canonical gate-blocked journey (#619) over the wire: the refusal and
+// its reason ride the JSON-RPC error mapping intact.
+TEST_F(McpServerFixture, JourneyGateBlockedReplaysOverTheWire) {
+    ASSERT_TRUE(node.create_project("leaky"));
+    auto project = node.find_project("leaky");
+    ASSERT_TRUE(project);
+    ASSERT_TRUE(project->create_graph(
+        "leaky graph", zetta::test::journey::canonical::leakage_graph()));
+
+    const zetta::test::journey::JourneyReport report =
+        zetta::test::journey::run_journey(
+            zetta::test::journey::canonical::gate_blocked(), journey_caller());
+    EXPECT_TRUE(report.ok) << report.summary();
 }
 
 TEST_F(McpServerFixture, MalformedAndUnknownRequestsFailCleanly) {
