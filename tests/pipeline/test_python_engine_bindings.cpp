@@ -8,8 +8,10 @@
 
 #include "temp_dir.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/cloud/burst_approval_gate.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
+#include "zetta/governance/audit_event.hpp"
 #include "zetta/input/cluster_bindings.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -207,4 +209,66 @@ TEST(PythonEngineBindings, AddNodesCountFromKeywordAndNoOpWhenAbsent) {
         run_add_nodes_step(*no_count.graph.find_node("add_nodes"), provider);
     EXPECT_TRUE(none.satisfied);
     EXPECT_TRUE(none.members.empty());
+}
+
+// The burst cost cap is read from the cost_cap= keyword (#502 / TC-12). A script
+// with no cap — or a zero cap, which BurstCap treats as "unlimited" — reads as
+// "no cap named" so the ungated path runs.
+TEST(PythonEngineBindings, AddNodesCostCapReadFromKeyword) {
+    const auto capped = PythonFrontend{}.compile(
+        "cluster.add_nodes(10, provider='azure', cost_cap=12)\n");
+    ASSERT_TRUE(capped.ok()) << capped.error;
+    const auto cap = zetta::input::add_nodes_cost_cap(*capped.graph.find_node("add_nodes"));
+    ASSERT_TRUE(cap.has_value());
+    EXPECT_DOUBLE_EQ(*cap, 12.0);
+
+    const auto uncapped = PythonFrontend{}.compile("cluster.add_nodes(10)\n");
+    ASSERT_TRUE(uncapped.ok()) << uncapped.error;
+    EXPECT_FALSE(zetta::input::add_nodes_cost_cap(*uncapped.graph.find_node("add_nodes")));
+
+    const auto zero = PythonFrontend{}.compile("cluster.add_nodes(10, cost_cap=0)\n");
+    ASSERT_TRUE(zero.ok()) << zero.error;
+    EXPECT_FALSE(zetta::input::add_nodes_cost_cap(*zero.graph.find_node("add_nodes")));
+}
+
+// The Node-aware execution composes the burst approval gate when the script names
+// a cost_cap=: an over-cap request is blocked deny-by-default — the inner backend
+// is never touched — and the decision lands in the node's audit trail; a
+// within-cap request provisions through the gate and the members join.
+TEST(PythonEngineBindings, GatedAddNodesEnforcesTheScriptCostCap) {
+    ComputeNode host(24572);
+    // A transparent unit-cost estimator: one relative compute unit per node, so a
+    // request's cost is simply its count.
+    const zetta::cloud::CostEstimator unit_cost = [](const ProvisionRequest& request) {
+        return static_cast<double>(request.count);
+    };
+
+    // Over cap: 4 nodes at 1 unit each against a cap of 2 — blocked, audited.
+    const auto over = PythonFrontend{}.compile(
+        "cluster.add_nodes(4, provider='azure', cost_cap=2)\n");
+    ASSERT_TRUE(over.ok()) << over.error;
+    FakeProvisioner blocked_provider;
+    const AddNodesResult blocked = run_add_nodes_step(
+        *over.graph.find_node("add_nodes"), host.node, blocked_provider, {}, unit_cost);
+    EXPECT_FALSE(blocked.satisfied);
+    EXPECT_TRUE(blocked.members.empty());
+    EXPECT_TRUE(blocked_provider.provisioned().empty())
+        << "a blocked burst must never reach the inner backend";
+    int provision_requested = 0;
+    for (const auto& event : host.node.audit_events()) {
+        if (event->action() == zetta::governance::AuditAction::ProvisionRequested) {
+            ++provision_requested;
+        }
+    }
+    EXPECT_EQ(provision_requested, 1) << "the over-cap decision was not audited";
+
+    // Within cap: 3 nodes against a cap of 8 — the gate passes it through.
+    const auto within = PythonFrontend{}.compile(
+        "cluster.add_nodes(3, provider='azure', cost_cap=8)\n");
+    ASSERT_TRUE(within.ok()) << within.error;
+    FakeProvisioner provider;
+    const AddNodesResult added = run_add_nodes_step(
+        *within.graph.find_node("add_nodes"), host.node, provider, {}, unit_cost);
+    EXPECT_TRUE(added.satisfied);
+    EXPECT_EQ(added.members.size(), 3u);
 }

@@ -171,9 +171,10 @@ producing a real trained `Model`, the ranked at-risk list, and the churn drivers
 
 `cluster.add_nodes` is the one verb that is **not** a data-pipeline step — it is a
 cluster control action. The frontend lowers it to an `act`-stage node (recording
-`n` + `provider=` in the `python` provenance bag), and the matching execution
-binding `zetta::input::run_add_nodes_step` (`include/zetta/input/cluster_bindings.hpp`)
-reads the count from that node and drives `zetta::cloud::add_nodes`:
+`n` + `provider=` + `cost_cap=` in the `python` provenance bag), and the matching
+execution binding `zetta::input::run_add_nodes_step`
+(`include/zetta/input/cluster_bindings.hpp`) reads the count from that node and
+drives `zetta::cloud::add_nodes`:
 
 ```cpp
 zetta::input::FrontendResult lowered =
@@ -182,6 +183,14 @@ const auto* step = lowered.graph.find_node("add_nodes").get();
 zetta::cloud::AddNodesResult added = zetta::input::run_add_nodes_step(*step, provisioner);
 // added.members.size() == 3 (best-effort)
 ```
+
+A **`cost_cap=`** keyword (`cluster.add_nodes(10, provider='azure', cost_cap=12)`)
+names the burst's spend ceiling in relative compute units: the **Node-aware**
+`run_add_nodes_step(step, node, provisioner, …)` overload then wraps the injected
+provisioner in the [`BurstApprovalGate`](../cloud/burst-approval-gate.md) for the
+call (over-cap blocked deny-by-default + audited) and drives the Node-aware
+`add_nodes` — the provisioned members join the replicated membership and
+partitions [rebalance onto them](../cloud/add-nodes.md) (#502 / TC-12).
 
 `load_dataset` is the **`datasets` library shim** (#521): the frontend already
 lowers it to a `connect` node carrying the parquet path + a `columns=` projection,

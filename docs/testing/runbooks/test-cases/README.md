@@ -58,7 +58,7 @@ case is headless-runnable.
 - [`cluster.partition_rebalance`](cluster.partition_rebalance.md) — partitions rebalance on a node join (TC-10)
 - [`cluster.featurize_partitions`](cluster.featurize_partitions.md) — near-data featurize over a partitioned table
 - [`cluster.fulltext_index`](cluster.fulltext_index.md) — per-partition full-text index, scatter-gather ranking (TC-13)
-- [`cluster.uc1_at_scale`](cluster.uc1_at_scale.md) — the UC-1-at-scale capstone (TC-12)
+- [`cluster.uc1_at_scale`](cluster.uc1_at_scale.md) — the UC-1-at-scale capstone: the cost-capped burst lifecycle around the distributed pipeline (TC-12)
 
 ### Governance — `GovernanceCasesPass`
 - [`governance.access_control`](governance.access_control.md) — key-scoped access decisions (deny-by-default)

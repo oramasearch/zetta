@@ -17,13 +17,17 @@ through parse → IR → gate → run (see [uc1-at-scale-e2e.md](../../../use-ca
    the [ExecutionGraph IR](../../../pipeline/execution-graph.md):
 
    ```python
-   nodes = cluster.add_nodes(10, provider='azure')
+   nodes = cluster.add_nodes(10, provider='azure', cost_cap=12)
    conversations = load_dataset('saas-sales-conversations', columns=['messages',
        'avg_response_seconds', 'sentiment', 'questions_asked', 'outcome'])
    model = train(conversations, target='outcome')
    drivers = explain(model)
    at_risk = rank(model)
    ```
+
+   The `cost_cap=` keyword rides as provenance here (the example runs
+   single-node); the real cluster case reads it back and gates the burst behind
+   the [BurstApprovalGate](../../../cloud/burst-approval-gate.md).
 
    It lowers across the `connect → … → act` taxonomy: `cluster.add_nodes` → an `Act`
    control step, `load_dataset` → `Connect`, `train` → `Model`, `explain` → `Serve`,
@@ -55,8 +59,9 @@ ctest --test-dir build -R 'Testkit.ExampleScriptCasesRunGreen|ExampleScripts' --
 
 ### Options
 
-This case takes no options. (The real, heavy run is sized by the `nodes`/`rows`
-options on [`cluster.uc1_at_scale`](cluster.uc1_at_scale.md).)
+This case takes no options. (The real, heavy run is sized by the
+`nodes`/`burst`/`rows` options on
+[`cluster.uc1_at_scale`](cluster.uc1_at_scale.md).)
 
 ## What it asserts (pass criteria)
 

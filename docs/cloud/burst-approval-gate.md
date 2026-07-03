@@ -147,5 +147,19 @@ types:
 - **default cost model** — `default_burst_cost` weights GPU throughput heavily
   and is zero for a zero-count burst.
 
+## Composed in the engine (TC-12, #502)
+
+The gate's first end-to-end consumer is the **cost-cap-gated add-nodes binding**:
+when a lowered sim-Python `cluster.add_nodes(…, cost_cap=…)` step runs through
+the Node-aware [`run_add_nodes_step`](add-nodes.md), the binding wraps the
+injected provisioner in a `BurstApprovalGate` (`max_cost` = the script's cap, the
+Node as the `AuditSink`, deny-by-default) for that call — so the cap holds
+identically for a cloud backend and the hermetic `LocalProvisioner`. The
+`cluster.uc1_at_scale` testkit case
+([uc1-at-scale-e2e.md](../use-cases/uc1-at-scale-e2e.md)) drives it end to end:
+the canonical program's within-cap burst passes, an over-cap probe is blocked +
+audited, and the whole burst lifecycle (rebalance on, train, drain back, revoke)
+runs behind it.
+
 See also [provisioner.md](provisioner.md) (the seam this gate wraps) and
 [audit-trail.md](../governance/audit-trail.md) (where its decisions are recorded).

@@ -6,7 +6,11 @@
 #include <thread>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/node.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -49,21 +53,35 @@ ScratchDir::~ScratchDir() {
 
 struct LoopbackCluster::Entry {
     ScratchDir dir;
+    std::string id;  // the replication actor id doubles as the cluster node id
+    std::unique_ptr<zetta::cluster::ReplicationManager> replication;  // replicated mode only
     std::unique_ptr<Node> node;
+    std::unique_ptr<zetta::data::ReplicatedBlobStore> blobs;  // replicated mode only
     std::unique_ptr<zetta::cluster::Cluster> cluster;
 };
 
-LoopbackCluster::LoopbackCluster(std::size_t node_count) {
+LoopbackCluster::LoopbackCluster(std::size_t node_count, const LoopbackOptions& options) {
     const std::uint16_t base = reserve_cluster_base();
     std::vector<std::string> seeds;  // actual bound addresses of earlier nodes
 
     for (std::size_t index = 0; index < node_count; ++index) {
         auto entry = std::make_unique<Entry>();
+        entry->id = zetta::util::new_uuid();
 
         NodeConfig node_config;
         node_config.data_dir = entry->dir.path().string();
         node_config.preflight = false;  // fresh scratch dir; nothing to check
-        entry->node = std::make_unique<Node>(node_config);
+        if (options.replicated) {
+            // The live-process wiring: the CRDT document behind the Node, the
+            // blob store behind the cluster link (bodies transfer peer-to-peer).
+            entry->replication =
+                std::make_unique<zetta::cluster::ReplicationManager>(entry->id);
+            entry->node = std::make_unique<Node>(node_config, entry->replication.get());
+            entry->blobs = std::make_unique<zetta::data::ReplicatedBlobStore>(
+                entry->dir.path(), *entry->replication);
+        } else {
+            entry->node = std::make_unique<Node>(node_config);
+        }
         entry->node->start();
 
         zetta::cluster::ClusterConfig cluster_config;
@@ -72,8 +90,9 @@ LoopbackCluster::LoopbackCluster(std::size_t node_count) {
             static_cast<std::uint16_t>(base + index * kNodeWindow);
         cluster_config.port_range = kNodeWindow;
         cluster_config.seeds = seeds;
-        entry->cluster =
-            std::make_unique<zetta::cluster::Cluster>(zetta::util::new_uuid(), std::move(cluster_config));
+        entry->cluster = std::make_unique<zetta::cluster::Cluster>(
+            entry->id, std::move(cluster_config), entry->replication.get(),
+            entry->blobs.get());
         entry->cluster->start();
 
         // Dial the actually-bound address (port_range may have stepped over a busy
@@ -121,6 +140,14 @@ zetta::cluster::Cluster& LoopbackCluster::cluster(std::size_t index) {
 }
 const std::string& LoopbackCluster::node_id(std::size_t index) const {
     return entries_.at(index)->cluster->node_id();
+}
+
+void LoopbackCluster::announce_member(std::size_t index) {
+    Entry& entry = *entries_.at(index);
+    if (!entry.replication) return;  // membership keys are replicated state
+    entry.replication->set(
+        "node:" + entry.id,
+        nlohmann::json{{"address", entry.cluster->listen_address()}});
 }
 
 // ----- synthetic churn dataset (in code, no on-disk fixture) -----------------

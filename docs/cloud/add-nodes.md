@@ -111,6 +111,37 @@ already placed (and correcting it should a reported member never actually join).
 Provisioner-only overloads above are unchanged (no `Node`, no rebalance) for callers
 that only want to bring nodes up.
 
+## The sim-Python binding — cost-cap gated (#502 / TC-12)
+
+A lowered sim-Python `cluster.add_nodes(…)` step executes through
+`zetta::input::run_add_nodes_step` (`include/zetta/input/cluster_bindings.hpp`).
+Two forms:
+
+```cpp
+// Provisioner-only: read the count, provision, report (no Node, no rebalance).
+AddNodesResult run_add_nodes_step(const ir::Node& step, Provisioner& provider);
+
+// Node-aware + cost-cap gated: the composed TC-12 burst path.
+AddNodesResult run_add_nodes_step(const ir::Node& step, Node& node,
+                                  Provisioner& provider,
+                                  BurstApprover approver = {},
+                                  CostEstimator cost_estimator = {});
+```
+
+The Node-aware form drives the Node-aware `add_nodes` above (join + rebalance) —
+and when the script names a **`cost_cap=`** keyword
+(`cluster.add_nodes(10, provider='azure', cost_cap=12)`, read back by
+`add_nodes_cost_cap`), it wraps the injected provisioner in the
+[`BurstApprovalGate`](burst-approval-gate.md) for the call: a within-cap request
+passes through; an over-cap request consults the approver (**deny-by-default** —
+no approver means blocked before the backend is touched) and the decision is
+recorded in the node's audit trail (`Node` is the `AuditSink`). The cap is
+`BurstCap{max_cost = cost_cap}` in relative compute units; `cost_estimator`
+defaults to `default_burst_cost`. A `cost_cap=0` reads as "no cap named" (0 means
+unlimited to `BurstCap`), so the step runs ungated. The binding never constructs
+a cloud provisioner — the `provider=` kwarg stays provenance, and the host
+injects whatever provisioner it already holds (the cloud stays consent-gated).
+
 ## Behaviour
 
 | | |
@@ -143,9 +174,11 @@ new permanent members plus whether the full count came up.
 
 ## What this slice does **not** do
 
-- **No elastic / autoscaler / cost-cap burst.** Explicitly deferred (issue #518) —
-  that is the [`JobAutoscaler`](../compute/job-autoscaler.md) +
-  [`BurstApprovalGate`](burst-approval-gate.md), which act through the same seam.
+- **No per-tick elastic autoscaling.** That is the
+  [`JobAutoscaler`](../compute/job-autoscaler.md), which acts through the same seam.
+  The **cost-cap gate** is no longer deferred here: the sim-Python binding above
+  composes the [`BurstApprovalGate`](burst-approval-gate.md) over this entry point
+  when the script names a `cost_cap=` (#502).
 - **No node removal.** `add_nodes` only grows the cluster; a permanent
   `remove_nodes` control action (and the leadership it needs for cross-node
   decommission) is a later slice.
