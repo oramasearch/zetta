@@ -51,7 +51,8 @@ const nlohmann::json& steal_offer_schema() {
               "job":     { "type": "string", "minLength": 1 },
               "index":   { "type": "integer", "minimum": 0 },
               "method":  { "type": "string" },
-              "payload": { "type": "string" }
+              "payload": { "type": "string" },
+              "traceparent": { "type": "string" }
             },
             "required": ["job", "index", "method", "payload"],
             "additionalProperties": false
@@ -179,12 +180,14 @@ void DistributedScheduler::stop() {
 }
 
 std::vector<std::string> DistributedScheduler::map(
-    const std::string& method, const std::vector<std::string>& inputs) {
+    const std::string& method, const std::vector<std::string>& inputs,
+    std::string traceparent) {
     const std::size_t count = inputs.size();
     if (count == 0) return {};
 
     auto job = std::make_shared<Job>();
     job->method = method;
+    job->traceparent = std::move(traceparent);
     job->inputs = inputs;
     job->results.resize(count);
     job->done.assign(count, 0);
@@ -316,6 +319,7 @@ bool DistributedScheduler::try_steal_once() {
         };
         std::vector<Stolen> stolen;
         stolen.reserve(tasks.size());
+        std::string offer_traceparent;
         for (const nlohmann::json& task : tasks) {
             stolen.push_back(
                 Stolen{.job = task.at("job").get<std::string>(),
@@ -323,6 +327,24 @@ bool DistributedScheduler::try_steal_once() {
                        .method = task.at("method").get<std::string>(),
                        .payload = detail::base64_decode_to_string(
                            task.at("payload").get<std::string>())});
+            if (offer_traceparent.empty()) {
+                offer_traceparent = task.value("traceparent", std::string{});
+            }
+        }
+
+        // Executing a peer's traced work joins THAT peer's trace (#640): the
+        // helper's span lands in its own ring with the owner's trace id, so
+        // reading the trace across nodes shows where the work actually ran.
+        std::optional<zetta::observability::ScopedSpan> steal_span;
+        const auto stolen_trace =
+            zetta::observability::parse_traceparent(offer_traceparent);
+        if (auto* recorder = span_recorder_.load(std::memory_order_relaxed);
+            recorder && stolen_trace) {
+            steal_span.emplace(recorder, *stolen_trace,
+                               "steal:" + stolen.front().method);
+            steal_span->set_attribute("tasks", stolen.size());
+            steal_span->set_attribute("owner", peer.node_id);
+            steal_span->set_attribute("node", cluster_.node_id());
         }
 
         const std::vector<std::string> results = local_.parallel_map(
@@ -330,6 +352,7 @@ bool DistributedScheduler::try_steal_once() {
                 return executor_(task.method, task.payload);
             });
         stolen_executed_.fetch_add(stolen.size(), std::memory_order_relaxed);
+        if (steal_span) steal_span->finish(true);
 
         // Group results by owning job (the offer can span several of the peer's
         // jobs) and ship each group back to the peer we stole from.
@@ -423,11 +446,17 @@ zetta::cluster::SignalResponse DistributedScheduler::handle_steal(const zetta::c
             job->pending.pop_front();
             job->assigned[index] = Job::Assignment{.peer = request.from,
                                                    .deadline = deadline};
-            offer["tasks"].push_back(
-                {{"job", id},
-                 {"index", index},
-                 {"method", job->method},
-                 {"payload", detail::base64_encode_bytes(job->inputs[index])}});
+            nlohmann::json task{
+                {"job", id},
+                {"index", index},
+                {"method", job->method},
+                {"payload", detail::base64_encode_bytes(job->inputs[index])}};
+            // The owning trace rides the offer (#640), so the helper's
+            // execution spans join the owner's trace.
+            if (!job->traceparent.empty()) {
+                task["traceparent"] = job->traceparent;
+            }
+            offer["tasks"].push_back(std::move(task));
             --remaining;
             handed_out_.fetch_add(1, std::memory_order_relaxed);
         }

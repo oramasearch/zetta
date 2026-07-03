@@ -139,6 +139,13 @@ zetta's no-exceptions-across-the-core-seam convention.
 `include/zetta/cluster/signal.hpp`) are the serialization seam; the
 [cluster](cluster.md) transport only adds/strips the `ZETTA/1 SIGNAL ` framing.
 
+Every kind may additionally carry an optional **`traceparent`** (W3C trace
+context, [observability.md](../architecture/observability.md), #640): set it on
+a `Signal` before sending and the receiving node's handling can record spans
+that join the SENDER's trace — one trace per distributed operation. Omitted
+entirely when the sender is not in a trace; the steal offers ride it through
+the work-stealing protocol (`schemas/steal_offer.schema.json`).
+
 ## Where it sits
 
 ```

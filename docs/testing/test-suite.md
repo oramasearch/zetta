@@ -39,6 +39,16 @@ the elapsed time. A `TestContext` carries an optional **custom dataset path** (a
 dataset directory the data-driven cases load instead of the built-in synthetic one)
 and a progress-log sink.
 
+**Every case runs inside a trace (#640,
+[observability.md](../architecture/observability.md)).** Wire an
+`observability::SpanRecorder*` (+ optionally a parent `TraceContext`) on the
+`TestContext` and `run_test_case` records one `testkit:<case.id>` span per
+case — its duration, category, and the full result shape (outcome / summary /
+metrics) — readable back through `system.spans` / `get_trace`; reusing the
+same context threads a whole sweep into ONE trace. The GUI's Test-suite panel
+records into the live node's ring, so in-app runs surface like any other
+operation. Null recorder (the default) = spans no-op.
+
 ## The cases
 
 | Category | Cases | What they check |

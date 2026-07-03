@@ -137,6 +137,21 @@ ExecutionResult GraphExecutor::execute(Node& node,
     if (!result.run) return result;  // node could not create the run
     Run& run = *result.run;
 
+    // One trace per run (#640): the id lives on the replicated run record, so
+    // spans recorded anywhere for this run join it. The run root span + the
+    // per-step child spans below land in this node's ring (system.spans).
+    run.set_trace_id(zetta::observability::make_root_trace().trace_id);
+    const zetta::observability::TraceContext run_trace{
+        run.value().trace_id, zetta::observability::make_span_id()};
+    zetta::observability::ScopedSpan run_span(&node.span_recorder(), run_trace,
+                                              "run:" + run.graph());
+    run_span.set_attribute("run_id", run.id());
+    run_span.set_attribute("project", run.project());
+    run_span.set_attribute(
+        "plan", nlohmann::json{{"steps", graph.node_count()}});
+    const zetta::observability::TraceContext step_parent{
+        run_trace.trace_id, run_span.span_id()};
+
     run.add_log({zetta::util::now_iso8601(), "info",
                  "run created: " + std::to_string(graph.node_count()) +
                      " step(s)"});
@@ -150,6 +165,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
                      "execution graph has no steps; nothing to run"});
         run.set_status(RunStatus::Failed);
         result.error = "execution graph has no steps";
+        run_span.finish(false, result.error);
         return result;
     }
     const auto order = topological_order(graph);
@@ -158,6 +174,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
                      "execution graph has a cycle; cannot order steps"});
         run.set_status(RunStatus::Failed);
         result.error = "execution graph has a cycle";
+        run_span.finish(false, result.error);
         return result;
     }
 
@@ -170,7 +187,14 @@ ExecutionResult GraphExecutor::execute(Node& node,
         run.add_log({zetta::util::now_iso8601(), "info",
                      std::string(to_string(step->kind)) + ": " +
                          step_label(*step)});
+        zetta::observability::ScopedSpan step_span(
+            &node.span_recorder(), step_parent,
+            "step:" + std::string(to_string(step->kind)));
+        step_span.set_attribute("label", step_label(*step));
         StepOutcome outcome = step_executor_->run_step(*step);
+        step_span.set_attribute(
+            "result_shape", nlohmann::json{{"outputs", outcome.outputs.size()}});
+        step_span.finish(outcome.ok, outcome.error);
         lineage.steps.push_back(step_label(*step));
         for (std::string& source : outcome.sources) {
             lineage.sources.push_back(std::move(source));
@@ -204,6 +228,12 @@ ExecutionResult GraphExecutor::execute(Node& node,
     } else {
         run.set_status(RunStatus::Failed);
     }
+    run_span.set_attribute(
+        "result_shape",
+        nlohmann::json{{"status", to_string(run.status())},
+                       {"outputs", run.outputs().size()},
+                       {"failed_step", result.failed_step}});
+    run_span.finish(result.ok, result.error);
     return result;
 }
 

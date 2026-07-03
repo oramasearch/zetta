@@ -112,6 +112,7 @@ private:
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
         Activity,  // the chronological activity feed (#622): audit + runs merged
+        Traces,    // the trace pane (#640): every operation's spans, from the ring
         Runs,      // runs / outputs / lineage
         Models,    // trained models (system.models) + register/import
         Jobs,      // compute jobs + scaling preview
@@ -271,6 +272,11 @@ private:
     // the same source system.activity serves; no GUI copy). Filters below are
     // presentation state only.
     void draw_activity();
+    // The Traces view (#640, app_traces.cpp): the trace pane over the node's
+    // span ring (the same source system.traces / system.spans / get_trace
+    // read — RULE-7) — recent traces (intent · duration · status) with a
+    // per-span drill-down (plan, result shape, error verbatim).
+    void draw_traces();
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_models();      // standalone models (system.models): list + detail + add
     // The inline "Add model" affordance inside draw_models: register/import a model
@@ -415,6 +421,8 @@ private:
     std::string selected_dataset_;  // dataset table id; re-resolved each frame
     std::string selected_model_;  // model id; re-resolved each frame
     std::string selected_job_;  // compute-job id; re-resolved each frame
+    std::string selected_trace_;  // trace id (Traces view); re-resolved each frame
+    std::string selected_span_;   // span id within the selected trace ("" = none)
     std::string selected_principal_;  // principal name; re-resolved each frame
     // Cluster panel: the node id of the box selected in the spatial canvas
     // ("" = none). Re-resolved against the live Cluster::nodes() each frame, so a

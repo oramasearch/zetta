@@ -331,6 +331,9 @@ void Node::start_coordinator() {
     if (!telemetry_) telemetry_ = std::make_unique<zetta::cluster::NodeTelemetryExchange>();
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
                                                              telemetry_.get());
+    // Every job this coordinator runs (and every stolen task it executes for a
+    // peer) records spans into this node's ring (#640).
+    coordinator_->set_span_recorder(&span_recorder_);
     // Register on the cluster's signal plane + start the cross-node steal loop, so
     // a job submitted through job_coordinator() runs SPMD across live membership.
     coordinator_->start();

@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <fstream>
 #include <chrono>
 #include <thread>
 
@@ -31,7 +32,6 @@ struct RegistryFixture : ::testing::Test {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     Registry registry;
-    zetta::observability::SpanRecorder recorder;
     zetta::observability::TraceContext trace = zetta::observability::make_root_trace();
 
     void SetUp() override {
@@ -40,16 +40,19 @@ struct RegistryFixture : ::testing::Test {
     }
     void TearDown() override { node.stop(); }
 
+    // Spans land in the node's own ring (#640) — the same source the
+    // system.traces / system.spans views and the GUI read (RULE-7).
     ApiResult call(const std::string& name, nlohmann::json input) {
-        ApiContext context{node, nullptr, "", trace, &recorder};
+        ApiContext context{node, nullptr, "", trace, &node.span_recorder()};
         return registry.call(name, input, context);
     }
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 6u);
+    EXPECT_EQ(registry.size(), 7u);
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("sql"));
+    EXPECT_TRUE(registry.find("submit_feedback"));
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
 
@@ -219,3 +222,93 @@ TEST(MainThreadBridge, AwaitingCoroutineResumesAfterDrain) {
 }
 
 }  // namespace
+
+// Journey (#640 acceptance): an agent runs a tool, then reads the trace back
+// through BOTH surfaces — get_trace and the system.traces/system.spans SQL
+// views — and sees intent, plan-level naming, duration, and result shape.
+TEST_F(RegistryFixture, JourneyRunToolThenReadTraceContent) {
+    auto created = call("create_project",
+                        nlohmann::json{{"name", "trace-journey"},
+                                       {"intent", "verify the trace loop"}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    ASSERT_FALSE(created.trace_id.empty());
+
+    // Read-back 1: the capability surface.
+    auto fetched = call("get_trace", nlohmann::json{{"trace_id", created.trace_id}});
+    ASSERT_TRUE(fetched.ok) << fetched.error.message;
+    bool saw_call_span = false;
+    for (const auto& span : fetched.value.at("spans")) {
+        if (span.at("name") != "api:create_project") continue;
+        saw_call_span = true;
+        EXPECT_EQ(span.at("attributes").at("intent"), "verify the trace loop");
+        EXPECT_GE(span.at("duration_ms").get<double>(), 0.0);
+        EXPECT_TRUE(span.at("attributes").contains("result_shape"));
+    }
+    EXPECT_TRUE(saw_call_span);
+
+    // Read-back 2: the SQL views over the SAME ring (RULE-7 — one source).
+    auto traces = call(
+        "sql", nlohmann::json{{"statement", "SELECT * FROM system.traces;"}});
+    ASSERT_TRUE(traces.ok) << traces.error.message;
+    bool saw_trace_row = false;
+    for (const auto& row : traces.value.at("rows")) {
+        if (row.at("trace_id") != created.trace_id) continue;
+        saw_trace_row = true;
+        EXPECT_EQ(row.at("intent"), "verify the trace loop");
+        EXPECT_TRUE(row.at("ok").get<bool>());
+        EXPECT_GE(row.at("span_count").get<int>(), 1);
+    }
+    EXPECT_TRUE(saw_trace_row);
+
+    auto spans = call(
+        "sql",
+        nlohmann::json{{"statement", "SELECT name, intent, duration_ms FROM "
+                                     "system.spans;"}});
+    ASSERT_TRUE(spans.ok) << spans.error.message;
+    EXPECT_FALSE(spans.value.at("rows").empty());
+}
+
+// submit_feedback (#640): the bundle snapshots description + traces + recent
+// errors + versions as a large object in the 'feedback' database; the export
+// is explicit (a caller-chosen path) — nothing leaves on its own.
+TEST_F(RegistryFixture, SubmitFeedbackSnapshotsABundle) {
+    // Leave observable state behind: one good call, one failed call.
+    auto created = call("create_project",
+                        nlohmann::json{{"name", "feedback-subject"},
+                                       {"intent", "reproduce the bug"}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    auto failed = call("sql", nlohmann::json{{"statement", "SELCT nope;"}});
+    EXPECT_FALSE(failed.ok);
+
+    const std::string export_path =
+        (dir.path() / "bundle-export.json").string();
+    auto submitted = call(
+        "submit_feedback",
+        nlohmann::json{{"description", "the run did something odd"},
+                       {"trace_ids", {created.trace_id}},
+                       {"export_path", export_path}});
+    ASSERT_TRUE(submitted.ok) << submitted.error.message;
+    EXPECT_FALSE(submitted.value.at("feedback_id").get<std::string>().empty());
+    EXPECT_EQ(submitted.value.at("database"), "feedback");
+    EXPECT_EQ(submitted.value.at("traces_attached").get<int>(), 1);
+    EXPECT_GE(submitted.value.at("errors_attached").get<int>(), 1);
+    EXPECT_EQ(submitted.value.at("exported_to"), export_path);
+
+    // The exported file IS the bundle: valid against its schema, carrying the
+    // description verbatim, the attached trace, and the recent error span.
+    std::ifstream exported(export_path);
+    ASSERT_TRUE(exported.good());
+    const nlohmann::json bundle =
+        nlohmann::json::parse(exported, nullptr, /*allow_exceptions=*/false);
+    ASSERT_FALSE(bundle.is_discarded());
+    EXPECT_EQ(bundle.at("description"), "the run did something odd");
+    ASSERT_EQ(bundle.at("traces").size(), 1u);
+    EXPECT_EQ(bundle.at("traces")[0].at("trace_id"), created.trace_id);
+    EXPECT_GE(bundle.at("recent_errors").size(), 1u);
+    EXPECT_EQ(bundle.at("version"), zetta::kVersion);
+
+    // Malformed input is refused at the boundary.
+    auto rejected = call("submit_feedback", nlohmann::json{{"description", ""}});
+    EXPECT_FALSE(rejected.ok);
+    EXPECT_EQ(rejected.error.code, "invalid_input");
+}

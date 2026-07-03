@@ -32,7 +32,8 @@ const nlohmann::json& schema_document() {
         "method":  { "type": "string" },
         "payload": { "type": "string" },
         "ok":      { "type": "boolean" },
-        "error":   { "type": "string" }
+        "error":   { "type": "string" },
+        "traceparent": { "type": "string" }
       },
       "required": ["kind"],
       "additionalProperties": false
@@ -110,6 +111,11 @@ std::string encode_signal(const Signal& signal) {
             envelope["payload"] = detail::base64_encode_bytes(signal.payload);
             break;
     }
+    // The trace context rides every kind (a Response's spans belong to the
+    // requester's trace too); omitted entirely when the sender has none.
+    if (!signal.traceparent.empty()) {
+        envelope["traceparent"] = signal.traceparent;
+    }
     // Compact dump: no spaces, no raw newlines (newlines in any string value are
     // escaped), so the envelope is exactly one line on the transport.
     return envelope.dump();
@@ -181,6 +187,7 @@ std::optional<Signal> decode_signal(std::string_view envelope,
                 detail::base64_decode_to_string(document.value("payload", std::string{}));
             break;
     }
+    signal.traceparent = document.value("traceparent", std::string{});
     return signal;
 }
 

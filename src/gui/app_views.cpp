@@ -34,6 +34,9 @@ std::span<const App::ViewInfo> App::view_registry() {
         // looks at ("what has been happening on this cluster", #622).
         {View::Activity, "Operations", "Activity", &App::draw_activity,
          nullptr},
+        // Traces sits beside it: the same "what happened", per operation —
+        // every span's intent · plan · duration · result shape (#640).
+        {View::Traces, "Operations", "Traces", &App::draw_traces, nullptr},
         {View::Runs, "Operations", "Runs", &App::draw_runs, nullptr},
         {View::Models, "Operations", "Models", &App::draw_models, nullptr},
         {View::Jobs, "Operations", "Compute jobs", &App::draw_jobs,

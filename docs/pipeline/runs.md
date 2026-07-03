@@ -27,6 +27,7 @@ exactly like [`zetta::pipeline::Project`](projects.md). Its value:
 | `status` | `RunStatus` | `Pending` → `Running` → `Succeeded` \| `Failed`. |
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on every change. |
+| `trace_id` | `std::string` | The run's trace (32-hex W3C id, #640) — stamped by `GraphExecutor`; `system.spans WHERE trace_id = …` / `get_trace` answer "what happened". Optional. |
 | `logs` | `vector<RunLogEntry>` | Each `{ time, level, message }` — observability + diagnosis. |
 | `outputs` | `vector<RunOutput>` | Each `{ kind, name, ref }`; `kind` ∈ `dataset` / `model` / `index`. |
 | `lineage` | `RunLineage` | `{ sources[], steps[], freshness, confidence }`. |

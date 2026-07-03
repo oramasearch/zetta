@@ -26,6 +26,7 @@
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
+#include "zetta/observability/trace.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -403,6 +404,17 @@ public:
     // read off the node's threads). The source for `system.pipeline_jobs`.
     std::vector<zetta::compute::PipelineJobInstrumentation> pipeline_jobs() const;
 
+    // The node's span ring (docs/architecture/observability.md, #640): every
+    // traced operation — API calls, distributed runs, testkit cases — records
+    // its spans here. **Ephemeral / observed — NOT replicated**, bounded, and
+    // internally mutex-guarded (append from any thread, like record_pipeline_job).
+    // The single source for the `system.traces` / `system.spans` read views,
+    // the `list_traces` / `get_trace` capabilities, and the GUI trace pane.
+    zetta::observability::SpanRecorder& span_recorder() { return span_recorder_; }
+    const zetta::observability::SpanRecorder& span_recorder() const {
+        return span_recorder_;
+    }
+
     // CRUD for principals (authenticated actors — see principal.hpp /
     // docs/governance/access-control.md), mirroring the project CRUD shape. create stamps
     // `created` and takes an optional kind (default User); create/rename yield
@@ -644,6 +656,9 @@ private:
     // background run records while a query thread reads.
     mutable std::mutex pipeline_jobs_mutex_;
     std::vector<zetta::compute::PipelineJobInstrumentation> pipeline_jobs_;
+    // The node's span ring (#640): bounded, internally mutex-guarded, ephemeral /
+    // observed; NOT replicated. See span_recorder() above.
+    zetta::observability::SpanRecorder span_recorder_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)

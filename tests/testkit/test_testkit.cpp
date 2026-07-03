@@ -190,3 +190,45 @@ TEST(Testkit, Uc1PipelineGatedAndGoverned) {
     });
     EXPECT_EQ(blocked.outcome, TestOutcome::Pass) << blocked.error;
 }
+
+// --- Traced testkit (#640) ------------------------------------------------------
+
+// Every case runs inside a trace: with a recorder wired on the context,
+// run_test_case records one span per case — timing, category, and the result
+// shape (outcome / summary / metrics) — the per-case history the iteration
+// flywheel reads back through system.spans / get_trace.
+TEST(Testkit, EveryCaseRunsInsideATrace) {
+    const TestSuite& suite = TestSuite::builtin();
+    const auto* test_case = suite.find("compute.cpu.elementwise");
+    ASSERT_NE(test_case, nullptr);
+    TestOptions options = test_case->defaults();
+    options.set_int("count", 64);
+
+    zetta::observability::SpanRecorder recorder;
+    TestContext context;
+    context.recorder = &recorder;
+    const TestResult result = run_test_case(*test_case, options, context);
+    ASSERT_EQ(result.outcome, TestOutcome::Pass) << result.error;
+
+    // The runner minted a trace and reported it back on the context.
+    ASSERT_TRUE(context.trace.valid());
+    const auto spans = recorder.trace(context.trace.trace_id);
+    ASSERT_EQ(spans.size(), 1u);
+    const auto& span = spans[0];
+    EXPECT_EQ(span.name, "testkit:compute.cpu.elementwise");
+    EXPECT_TRUE(span.ok);
+    EXPECT_GT(span.duration_ms, 0.0);
+    EXPECT_EQ(span.attributes.at("result_shape").at("outcome"), "pass");
+    EXPECT_FALSE(span.attributes.at("result_shape")
+                     .at("summary")
+                     .get<std::string>()
+                     .empty());
+
+    // A second case with the same context joins the same trace — a suite
+    // sweep reads back as ONE trace with a span per case.
+    const auto* second = suite.find("compute.cpu.reduce_sort");
+    ASSERT_NE(second, nullptr);
+    TestOptions second_options = second->defaults();
+    run_test_case(*second, second_options, context);
+    EXPECT_EQ(recorder.trace(context.trace.trace_id).size(), 2u);
+}

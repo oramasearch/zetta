@@ -62,6 +62,9 @@ struct ComputeJobValue {
     std::string created;         // ISO-8601 UTC stamp at creation
     std::string updated;         // ISO-8601 UTC stamp; bumped on change
     std::string detail;          // human-readable note / failure reason (optional)
+    std::string trace_id;        // the job's trace (32-hex W3C id, optional) —
+                                 // replicated, so every node's spans for this
+                                 // job join ONE trace (#640)
 };
 
 // Serialize a compute-job value to its JSON shape (no id). The inverse of
@@ -129,6 +132,10 @@ public:
     // terminal state (Succeeded / Failed), emits a `job_finished` audit event
     // through the AuditSink (when one is attached) — once and only once.
     void set_status(JobStatus status, std::string detail = {});
+
+    // Record the job's trace id (#640) — set once by the first coordinator to
+    // run the job (when the creator did not); replicated like every field.
+    void set_trace_id(std::string trace_id);
 
     // Replace the mutable value to match a (replicated) document value, then
     // rewrite job.json — with NO capture and NO audit (used by reconciliation).

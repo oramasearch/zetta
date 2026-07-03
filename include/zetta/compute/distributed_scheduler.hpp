@@ -17,6 +17,7 @@
 
 #include "zetta/compute/work_stealing_scheduler.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/observability/trace.hpp"
 
 // The **cross-node** half of the work-stealing scheduler (ARC-10, #366): idle /
 // faster *nodes* steal pending tasks from busy peers over the
@@ -114,8 +115,18 @@ public:
     // Run `method` over every input across the local pool and idle peers; returns
     // results in input order, blocking until all complete. Needs either local
     // workers or reachable helpers (with a registered executor) to make progress.
+    // An optional `traceparent` (#640) rides the steal offers, so a helper's
+    // execution of stolen tasks records spans joining the owner's trace.
     std::vector<std::string> map(const std::string& method,
-                                 const std::vector<std::string>& inputs);
+                                 const std::vector<std::string>& inputs,
+                                 std::string traceparent = {});
+
+    // Wire the node's span ring (#640): stolen tasks executed on this node for
+    // a peer's traced job record a "steal:<method>" span joining that job's
+    // trace. Null (the default) = no spans.
+    void set_span_recorder(zetta::observability::SpanRecorder* recorder) {
+        span_recorder_.store(recorder, std::memory_order_relaxed);
+    }
 
     // A snapshot of this node's cross-node activity.
     struct Stats {
@@ -149,6 +160,7 @@ private:
     // the peer id so a departed peer's tasks can be re-queued on sight).
     struct Job {
         std::string method;
+        std::string traceparent;  // the owning trace, handed out with steals (#640)
         std::vector<std::string> inputs;
         std::vector<std::string> results;
         std::vector<char> done;             // per-index completion (idempotency)
@@ -182,6 +194,9 @@ private:
     WorkStealingScheduler local_;
     TaskExecutor executor_;
     std::atomic<SignalHandler*> fallback_{nullptr};
+    // The node's span ring (may be null). Atomic: set at wiring time, read by
+    // the steal thread when it executes stolen work.
+    std::atomic<zetta::observability::SpanRecorder*> span_recorder_{nullptr};
 
     std::mutex jobs_mutex_;
     std::unordered_map<std::string, std::shared_ptr<Job>> jobs_;

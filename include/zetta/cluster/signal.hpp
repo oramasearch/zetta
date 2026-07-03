@@ -44,6 +44,10 @@ struct Signal {
     std::string from;     // sender node id (set on receive)
     bool ok = false;          // Response: did the remote handler succeed?
     std::string error;        // Response: failure reason when !ok
+    // Optional W3C trace context (docs/architecture/observability.md, #640):
+    // set on send so the receiving node's handler spans join the SENDER's
+    // trace — one trace per distributed run, across the whole cluster.
+    std::string traceparent;
 };
 
 // The result of an RPC: `ok` with a `payload`, or a failure `reason`. A failure

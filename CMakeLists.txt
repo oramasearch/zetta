@@ -372,6 +372,8 @@ endif()
 add_library(zetta-core STATIC
   src/core/observability/activity.cpp
   src/core/observability/trace.cpp
+  src/core/observability/crash.cpp
+  src/core/observability/feedback.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
   src/core/api/registry.cpp
@@ -583,10 +585,11 @@ add_executable(zetta
   src/gui/app.cpp
   src/gui/app_home.cpp
   src/gui/app_views.cpp
+  src/gui/app_activity.cpp
   src/gui/app_explorer.cpp
   src/gui/app_graph_workspace.cpp
   src/gui/app_deploy.cpp
-  src/gui/app_activity.cpp
+  src/gui/app_traces.cpp
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
   src/gui/app_datasets.cpp

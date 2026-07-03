@@ -303,3 +303,110 @@ TEST(JobCoordinator, FailedAlgorithmMarksJobFailed) {
     solo.coordinator.stop();
     solo.cluster.stop();
 }
+
+// --- Cross-node trace propagation (#640) --------------------------------------
+
+// One trace per distributed job: the coordinator stamps the job's trace id,
+// records the job root span + the collective-round child spans on this node,
+// and a helper that steals tasks records its execution span joining the
+// OWNER's trace — so reading the trace shows where the work actually ran.
+TEST(JobCoordinator, DistributedJobSpansJoinOneTraceAcrossNodes) {
+    ComputeNode owner{"trace-owner", 46240, {}, /*workers=*/0};
+    ComputeNode helper{"trace-helper", 46241, {"127.0.0.1:46240"}, /*workers=*/2};
+    owner.coordinator.set_executor(square_executor);
+    helper.coordinator.set_executor(square_executor);
+    owner.coordinator.set_span_recorder(&owner.node.span_recorder());
+    helper.coordinator.set_span_recorder(&helper.node.span_recorder());
+
+    owner.cluster.start();
+    sleep_ms(100);
+    helper.cluster.start();
+    ASSERT_TRUE(wait_for([&] {
+        return owner.cluster.peer_count() == 1 && helper.cluster.peer_count() == 1;
+    }));
+    owner.coordinator.start();
+    helper.coordinator.start();
+
+    std::vector<std::string> inputs;
+    for (int value = 0; value < 8; ++value) {
+        inputs.push_back(std::to_string(value));
+    }
+    auto job = owner.node.create_job(JobKind::Score);
+    EXPECT_TRUE(job->value().trace_id.empty());  // stamped by run() below
+    const JobStatus status = owner.coordinator.run(
+        *job, [&](JobRound& round) -> JobCoordinator::Outcome {
+            const std::vector<std::string> results = round.map("square", inputs);
+            return {.ok = results.size() == inputs.size(),
+                    .detail = "mapped"};
+        });
+    ASSERT_EQ(status, JobStatus::Succeeded);
+
+    // The job record carries the trace id (replicated state).
+    const std::string trace_id = job->value().trace_id;
+    ASSERT_EQ(trace_id.size(), 32u);
+
+    // Owner: the job root span + the map child span, all in ONE trace.
+    bool owner_has_job_span = false;
+    bool owner_has_map_span = false;
+    for (const auto& span : owner.node.span_recorder().trace(trace_id)) {
+        if (span.name == "job:score") owner_has_job_span = true;
+        if (span.name == "map:square") owner_has_map_span = true;
+    }
+    EXPECT_TRUE(owner_has_job_span);
+    EXPECT_TRUE(owner_has_map_span);
+
+    // Helper: executed the stolen tasks under the OWNER's trace — the
+    // cross-node acceptance of #640 (spans from other nodes of one run).
+    ASSERT_TRUE(wait_for([&] {
+        return !helper.node.span_recorder().trace(trace_id).empty();
+    }));
+    const auto helper_spans = helper.node.span_recorder().trace(trace_id);
+    bool helper_ran_stolen_work = false;
+    for (const auto& span : helper_spans) {
+        if (span.name == "steal:square") helper_ran_stolen_work = true;
+    }
+    EXPECT_TRUE(helper_ran_stolen_work);
+
+    owner.coordinator.stop();
+    helper.coordinator.stop();
+    helper.cluster.stop();
+    owner.cluster.stop();
+}
+
+// The SPMD path records the collective rounds as spans of the job's trace.
+TEST(JobCoordinator, CollectiveRoundsBecomeSpansOfTheJobTrace) {
+    ComputeNode solo{zetta::util::new_uuid(), 46250, {}, /*workers=*/2};
+    solo.coordinator.set_span_recorder(&solo.node.span_recorder());
+    solo.cluster.start();
+    solo.coordinator.start();
+
+    auto job = solo.node.create_job(JobKind::Ddf);
+    const JobStatus status = solo.coordinator.run(
+        *job, [&](JobRound& round) -> JobCoordinator::Outcome {
+            const auto total =
+                round.allreduce("trace-round", {21.0}, CollectiveOp::Sum,
+                                std::chrono::seconds(5));
+            return {.ok = total.has_value(), .detail = "reduced"};
+        });
+    ASSERT_EQ(status, JobStatus::Succeeded);
+
+    const auto spans = solo.node.span_recorder().trace(job->value().trace_id);
+    bool has_round_span = false;
+    bool round_parents_on_job_span = false;
+    std::string job_span_id;
+    for (const auto& span : spans) {
+        if (span.name == "job:ddf") job_span_id = span.span_id;
+    }
+    for (const auto& span : spans) {
+        if (span.name == "collective:allreduce") {
+            has_round_span = true;
+            round_parents_on_job_span = span.parent_span_id == job_span_id;
+            EXPECT_EQ(span.attributes.at("tag"), "trace-round");
+        }
+    }
+    EXPECT_TRUE(has_round_span);
+    EXPECT_TRUE(round_parents_on_job_span);
+
+    solo.coordinator.stop();
+    solo.cluster.stop();
+}

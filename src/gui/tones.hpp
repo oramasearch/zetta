@@ -143,6 +143,11 @@ inline Tone tone_of_log_level(std::string_view level) {
     return Tone::Muted;
 }
 
+// A span / trace outcome (#640): a recorded span either succeeded or carries
+// the engine's error — there is no in-flight state in the ring (spans record
+// on finish), so the mapping is binary.
+inline Tone tone_of_span(bool ok) { return ok ? Tone::Ok : Tone::Error; }
+
 // A load/utilization percentage (0..100) on the shared gauge thresholds: green
 // under moderate load, amber as it climbs, red when saturated. The Cluster
 // view's gauges keep their richer rendering (eased bars, sparklines) but take

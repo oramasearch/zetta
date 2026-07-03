@@ -36,6 +36,7 @@ frame) via the bridge — the loops drain it beside `Node::tick()`.
 | `list_projects` | read | api:query | project names |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
+| `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
 
 All accept the reserved optional `intent` field (recorded to the span,

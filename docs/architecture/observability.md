@@ -66,25 +66,71 @@ no-egress posture is untouched.)
 ## The test suite is the flywheel
 
 The testkit remains the catalog of ALL cluster functionality — and every
-testkit case runs inside a trace. That gives iteration a memory: per-case
-timing and result-shape history, spans for every phase, and failures that
-arrive pre-annotated with intent + plan. MCP journeys assert on traces too
-(did the run actually go near-data? one trace answers it). New functionality
-lands with its testkit case, and both land observable.
+testkit case runs inside a trace (**shipped**, #640: `run_test_case` records a
+`testkit:<case.id>` span per case with the result shape; the GUI panel records
+into the live node's ring — see
+[../testing/test-suite.md](../testing/test-suite.md)). That gives iteration a
+memory: per-case timing and result-shape history, spans for every phase, and
+failures that arrive pre-annotated with intent + plan. MCP journeys assert on
+traces too (`JourneyRunToolThenReadTraceContent` in tests/api/test_registry.cpp
+reads a call's trace back through get_trace AND the SQL views). New
+functionality lands with its testkit case, and both land observable.
 
-## Build-out (tracked in the product wave)
+## Build-out (tracked in the product wave; #640)
 
-1. `zetta::observability` core: trace/span types, `traceparent` codec, the bounded
-   recorder, scoped-span helper — wired first into `api::Registry::call` (every
-   MCP call = a span with all four captures; trace id returned in every
-   result).
-2. `system.traces` / `system.spans` read views + `list_traces` / `get_trace`
-   capabilities.
-3. Crash reports (fatal-signal handler + stacktrace + `system.crashes`).
-4. Cross-node propagation (signal-plane envelope carries traceparent; runs +
-   compute jobs record their trace id) — one trace per distributed run.
-5. GUI: trace pane + activity feed integration; feedback bundle affordance.
-6. `submit_feedback` capability + bundle export.
+1. **Shipped** — `zetta::observability` core: trace/span types, `traceparent`
+   codec, the bounded recorder, scoped-span helper — wired first into
+   `api::Registry::call` (every MCP call = a span with all four captures;
+   trace id returned in every result).
+2. **Shipped** — `system.traces` / `system.spans` read views + `list_traces` /
+   `get_trace` capabilities. The ring lives on the Node
+   (`Node::span_recorder()`, the pipeline-jobs precedent), so the SQL views,
+   the capabilities, and the GUI all read one source. Columns + examples:
+   [../data/query.md](../data/query.md).
+3. **Shipped** — crash reports: `install_crash_handler`
+   (`observability/crash.hpp`, installed in main for both run modes) writes
+   stacktrace (execinfo backtrace) + recent spans (try-lock, never a wait) +
+   version/platform to `<data_dir>/crashes/<uuid>.json` on SIGSEGV / SIGABRT /
+   SIGBUS / SIGILL / SIGFPE — disposition reset to SIG_DFL first, so the write
+   is best-effort and a second fault kills for real. Reports are
+   schema-validated on read-back (`schemas/crash_report.schema.json`);
+   `system.crashes` surfaces valid AND malformed files (valid=false + reason);
+   start-up prints a pointer when prior reports exist. Capturing truly
+   in-flight ("active") spans at crash time is a deliberate later slice
+   ([#673](https://github.com/oramasearch/zetta/issues/673)) — the report
+   carries the ring's most recent finished spans.
+4. **Shipped** — cross-node propagation: the signal envelope carries an
+   optional `traceparent` (validated, all kinds); `Run` and `ComputeJob`
+   records carry a replicated `trace_id` — the trace's anchor is the
+   replicated record, so every node that runs the job joins ONE trace. The
+   coordinator records the job root span (`job:<kind>`), each collective
+   round and cross-node `map` a child span; steal offers carry the owner's
+   traceparent, so a helper's execution of stolen tasks records a
+   `steal:<method>` span in ITS ring joined to the OWNER's trace; the
+   near-data runners record `near-data:<kind>` spans whose result shape is
+   the pipeline counters (train's derived explain/score jobs inherit the
+   trace); `GraphExecutor` stamps every run's trace and records `run:` +
+   per-`step:` spans. Scope note: SPMD siblings that each create their OWN
+   job record trace separately until an orchestrated fan-out shares one job
+   record (first-stamper-wins on the CRDT) —
+   [#672](https://github.com/oramasearch/zetta/issues/672).
+5. **Shipped (core)** — GUI: the Traces view
+   ([../gui/traces.md](../gui/traces.md)) renders the trace pane (recent
+   traces → per-span four-capture detail) over the same ring; the sibling
+   Activity view ([../gui/activity-feed.md](../gui/activity-feed.md), #622)
+   is the chronological who-asked feed over the audit trail + runs, so agent
+   capability calls surface there (one source, no GUI-kept feed). The in-GUI
+   feedback affordance, crash surfacing, and per-entity "what happened" links
+   from Runs/Jobs are later slices
+   ([#674](https://github.com/oramasearch/zetta/issues/674)).
+6. **Shipped** — `submit_feedback` capability: the bundle (description +
+   attached traces with spans + recent error spans + crash reports +
+   version/platform/node id) is built by
+   `observability::build_feedback_bundle`, validated against its own schema
+   (`schemas/feedback_bundle.schema.json`), and stored as a large object in
+   the `feedback` database (replicated metadata, peer-transferred body). The
+   optional `export_path` input writes the bundle to a caller-chosen local
+   path — the explicit export; nothing leaves the cluster on its own.
 
 Related: [../api/registry-design.md](../api/registry-design.md) (trace
 threading through every call), [../testing/mcp-journeys.md](../testing/mcp-journeys.md)

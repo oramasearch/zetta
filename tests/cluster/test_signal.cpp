@@ -341,3 +341,30 @@ TEST(SignalPlane, BroadcastEventReachesEveryPeer) {
     b.stop();
     hub.stop();
 }
+
+// --- Trace propagation on the envelope (#640) ---------------------------------
+
+// The optional traceparent (W3C trace context) survives the encode/decode
+// round trip on every kind, and its absence stays absent — the envelope only
+// carries a trace when the sender is in one.
+TEST(Signal, TraceparentRidesTheEnvelope) {
+    const std::string traceparent =
+        "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01";
+
+    Signal request;
+    request.kind = SignalKind::Request;
+    request.id = "corr-9";
+    request.method = "steal";
+    request.traceparent = traceparent;
+    const std::optional<Signal> decoded = decode_signal(encode_signal(request));
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded->traceparent, traceparent);
+
+    Signal event;
+    event.kind = SignalKind::Event;
+    event.method = "announce";
+    const std::optional<Signal> plain = decode_signal(encode_signal(event));
+    ASSERT_TRUE(plain);
+    EXPECT_TRUE(plain->traceparent.empty());
+    EXPECT_EQ(encode_signal(event).find("traceparent"), std::string::npos);
+}

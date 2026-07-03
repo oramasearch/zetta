@@ -43,6 +43,7 @@ const nlohmann::json& schema_document() {
                      "enum": ["pending", "running", "succeeded", "failed"] },
         "created": { "type": "string" },
         "updated": { "type": "string" },
+        "trace_id": { "type": "string" },
         "logs": {
           "type": "array",
           "items": {
@@ -152,6 +153,7 @@ nlohmann::json to_json(const RunValue& value) {
         {"status", to_string(value.status)},
         {"created", value.created},
         {"updated", value.updated},
+        {"trace_id", value.trace_id},
         {"logs", std::move(logs)},
         {"outputs", std::move(outputs)},
         {"lineage",
@@ -188,6 +190,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
             .value_or(RunStatus::Pending);
     parsed.created = value.value("created", std::string{});
     parsed.updated = value.value("updated", std::string{});
+    parsed.trace_id = value.value("trace_id", std::string{});
 
     if (const auto logs = value.find("logs"); logs != value.end()) {
         for (const auto& entry : *logs) {
@@ -244,6 +247,11 @@ void Run::set_outputs(std::vector<RunOutput> outputs) {
 void Run::set_lineage(RunLineage lineage) {
     lineage.confidence = clamp_confidence(lineage.confidence);
     value_.lineage = std::move(lineage);
+    capture_and_persist();
+}
+
+void Run::set_trace_id(std::string trace_id) {
+    value_.trace_id = std::move(trace_id);
     capture_and_persist();
 }
 

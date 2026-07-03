@@ -95,7 +95,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   navigate_to + sidebar, #628 closed). Plan 19 reconciled 2026-07-03: grammar
   edges inverted (it shipped, so #634 master-detail leads the panel sweeps,
   #631/#632/#633 follow it, #630 audit + #635 terminology close); layer-0 now
-  #637 · #611 · #466 · #538 · #530 · #641 · #634 · #622 · #626 · #640;
+  #637 · #611 · #466 · #538 · #530 · #641 · #634 · #626;
   #616/#625/#645 also unblocked. **#636 adoption swept**: every panel status
   renders via tone_of + status_label/status_pill
   ([status-tones.md](gui/status-tones.md)). **#622 activity feed shipped**
@@ -119,6 +119,16 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   testkit UC-1 cases, and the acceptance tests all route through it. Unblocks
   the MCP `run` tool (#617) and the SPMD co-launch (#601); harness-dedup tail
   filed as [#681](https://github.com/oramasearch/zetta/issues/681).
+- **Observability build-out (#640, closed) — PR #665 in flight**: all six
+  slices on one branch — system.traces/spans/crashes read views over the
+  Node-owned span ring (`Node::span_recorder()`, RULE-7 one source), crash
+  reports (`observability/crash.hpp`, fatal-signal handler →
+  `<data_dir>/crashes/<uuid>.json`, surfaced on start), cross-node trace
+  propagation (replicated `trace_id` on Run/ComputeJob; traceparent on the
+  signal envelope + steal offers; job/round/map/steal/near-data/run/step
+  spans), traced testkit (`testkit:<case.id>` spans), the GUI Traces view
+  (the per-operation trace pane beside #668's Activity feed), and the
+  `submit_feedback` capability (bundle as a large object, explicit export).
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next

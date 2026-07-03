@@ -21,6 +21,8 @@
 #include "zetta/ml/model.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/cluster/security.hpp"
+#include "zetta/observability/crash.hpp"
+#include "zetta/observability/feedback.hpp"
 #include "zetta/parquet/column_decoder.hpp"
 #include "zetta/parquet/metadata.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -73,6 +75,9 @@ const std::vector<SchemaEntry>& schema_registry() {
         {"parquet_data_frame.schema.json", &zetta::ddf::parquet_data_frame_schema},
         {"node_metrics.schema.json", &zetta::cluster::node_metrics_wire_schema},
         {"cluster_secret.schema.json", &zetta::cluster::cluster_secret_schema},
+        {"crash_report.schema.json", &zetta::observability::crash_report_schema},
+        {"feedback_bundle.schema.json",
+         &zetta::observability::feedback_bundle_schema},
     };
     return registry;
 }

@@ -38,9 +38,10 @@ struct ServerOptions {
 
 class ApiServer {
 public:
-    // The server owns its Registry (populated with the core capabilities), a
-    // MainThreadBridge, and a SpanRecorder; `cluster` (optional) enables the
-    // system.nodes view through the sql capability.
+    // The server owns its Registry (populated with the core capabilities) and
+    // a MainThreadBridge; spans land in the Node's own SpanRecorder (the one
+    // ring behind system.traces / system.spans, #640). `cluster` (optional)
+    // enables the system.nodes view through the sql capability.
     ApiServer(Node& node, const zetta::cluster::Cluster* cluster,
               ServerOptions options);
     ~ApiServer();
@@ -61,6 +62,7 @@ public:
     void drain();
 
     Registry& registry();
+    // The node's span ring (convenience passthrough to Node::span_recorder()).
     observability::SpanRecorder& recorder();
     void set_activity_hook(ActivityHook hook);
 
