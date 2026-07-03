@@ -109,24 +109,29 @@ void App::draw_gate() {
     }
 
     if (!gate_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", gate_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", gate_error_.c_str());
     }
 
     if (!gate_report_) return;
     const zetta::pipeline::ValidationReport& report = *gate_report_;
 
-    // The block-on-fail banner is the headline state this panel exists to show.
+    // The block-on-fail verdict is the headline state this panel exists to
+    // show: the status pill (the header form, #636) plus the reason.
     ImGui::Spacing();
     if (report.block_deploy) {
         std::size_t failures = 0;
         for (const zetta::pipeline::CheckResult& check : report.checks) {
             if (check.status == zetta::pipeline::CheckStatus::Fail) ++failures;
         }
-        ImGui::TextColored(kFailColor,
+        status_pill(Tone::Error, "blocked");
+        ImGui::SameLine();
+        ImGui::TextColored(tone_color(Tone::Error),
                            "Deploy blocked: %zu check(s) failed (verdict: %s)",
                            failures, to_string(report.verdict()).c_str());
     } else {
-        ImGui::TextColored(kPassColor,
+        status_pill(Tone::Ok, "allowed");
+        ImGui::SameLine();
+        ImGui::TextColored(tone_color(Tone::Ok),
                            "Deploy allowed: gate passed (verdict: %s)",
                            to_string(report.verdict()).c_str());
     }
@@ -148,8 +153,8 @@ void App::draw_gate() {
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(check.name.c_str());
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(tone_color(tone_of(check.status)), "%s",
-                               status_badge(check.status).c_str());
+            status_label(tone_of(check.status),
+                         status_badge(check.status).c_str());
             ImGui::TableSetColumnIndex(2);
             ImGui::TextWrapped("%s", check.reason.c_str());
         }
@@ -267,8 +272,8 @@ void App::draw_deploy() {
     ImGui::EndDisabled();
     if (!deploy_status_.empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(deploy_failed_ ? kErrorColor : kSuccessColor, "%s",
-                           deploy_status_.c_str());
+        ImGui::TextColored(tone_color(deploy_failed_ ? Tone::Error : Tone::Ok),
+                           "%s", deploy_status_.c_str());
     }
 
     // 3b) Run over the cluster — the churn solution actually trains a Model, ranks
@@ -286,8 +291,9 @@ void App::draw_deploy() {
         ImGui::TextDisabled(
             "trains a real model on a built-in demo dataset, over the live cluster");
         if (!churn_run_status_.empty()) {
-            ImGui::TextColored(churn_run_failed_ ? kErrorColor : kSuccessColor,
-                               "%s", churn_run_status_.c_str());
+            ImGui::TextColored(
+                tone_color(churn_run_failed_ ? Tone::Error : Tone::Ok), "%s",
+                churn_run_status_.c_str());
         }
     }
 

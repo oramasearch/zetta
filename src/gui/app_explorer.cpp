@@ -78,7 +78,7 @@ void App::draw_projects() {
         new_project_modal_requested_ = true;
     }
     if (!project_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", project_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", project_error_.c_str());
     }
 
     ImGui::Separator();
@@ -154,7 +154,7 @@ void App::draw_databases() {
         }
     }
     if (!db_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", db_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", db_error_.c_str());
     }
 
     ImGui::Separator();
@@ -245,7 +245,7 @@ void App::draw_tables() {
         }
     }
     if (!table_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", table_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", table_error_.c_str());
     }
 
     ImGui::Separator();
@@ -279,7 +279,7 @@ void App::draw_rows() {
         const query::QueryService::Outcome outcome = query_->run(
             "SELECT * FROM system." + selected_table_ + ";", selected_db_);
         if (!outcome.ok()) {
-            ImGui::TextColored(kErrorColor, "%s", outcome.error.c_str());
+            ImGui::TextColored(tone_color(Tone::Error), "%s", outcome.error.c_str());
             return;
         }
         ImGui::TextDisabled("system.%s  (%zu rows)", selected_table_.c_str(),
@@ -330,7 +330,7 @@ void App::draw_rows() {
     }
     if (!row_error_.empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(kErrorColor, "%s", row_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", row_error_.c_str());
     }
 
     ImGui::Spacing();
@@ -388,7 +388,7 @@ void App::draw_query() {
     }
 
     if (!query_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", query_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", query_error_.c_str());
     } else if (!query_status_.empty()) {
         ImGui::TextDisabled("%s", query_status_.c_str());
     }
@@ -520,7 +520,7 @@ void App::draw_large_objects() {
         // so a freshly-replicated object may not have its bytes here yet.
         if (!lo.body_present) {
             ImGui::SameLine();
-            ImGui::TextColored(kWarnColor, "(syncing body)");
+            ImGui::TextColored(tone_color(Tone::Warn), "(syncing body)");
         }
         ImGui::PopID();
     }
@@ -599,8 +599,8 @@ void App::draw_new_project_modal() {
         }
         if (!new_project_artifact_status_.empty()) {
             ImGui::TextColored(
-                new_project_artifact_valid_ ? kSuccessColor : kErrorColor, "%s",
-                new_project_artifact_status_.c_str());
+                tone_color(new_project_artifact_valid_ ? Tone::Ok : Tone::Error),
+                "%s", new_project_artifact_status_.c_str());
         }
     }
     ImGui::EndChild();
@@ -608,7 +608,7 @@ void App::draw_new_project_modal() {
     ImGui::Spacing();
     ImGui::Separator();
     if (!new_project_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", new_project_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", new_project_error_.c_str());
     }
 
     // Create runs the whole flow atomically. A staged-but-invalid artifact

@@ -15,8 +15,10 @@
 #include <string_view>
 
 #include "gui/app_internal.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/compute/scaling_policy.hpp"
+#include "zetta/pipeline/graph_plan.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/validation.hpp"
 #include "zetta/testkit/test_suite.hpp"
@@ -80,6 +82,30 @@ constexpr Tone tone_of(zetta::testkit::TestOutcome outcome) {
     return Tone::Muted;
 }
 
+// A cluster node's sync state (the "node sync" status the Cluster view's node
+// boxes, its detail pane, and the graph workspace's placement canvas all
+// share): self is the live local replica (active green), a peer with no
+// learned status yet is neutral, in sync is green, behind is amber.
+constexpr Tone tone_of(const zetta::cluster::NodeStatus& node) {
+    if (node.is_self) return Tone::Active;
+    if (!node.replication.known) return Tone::Muted;
+    return node.replication.in_sync ? Tone::Ok : Tone::Warn;
+}
+
+// A step's projected cluster placement (#591): near-data green (compute runs
+// where the data lives — the efficient case), coordinator amber (a single-node
+// funnel point — attention, not distributed), fan-out and all-nodes neutral
+// (distributed compute / replicated loads, nothing to flag).
+constexpr Tone tone_of(zetta::pipeline::StepPlacement placement) {
+    switch (placement) {
+        case zetta::pipeline::StepPlacement::NearData:    return Tone::Active;
+        case zetta::pipeline::StepPlacement::FanOut:      return Tone::Muted;
+        case zetta::pipeline::StepPlacement::AllNodes:    return Tone::Muted;
+        case zetta::pipeline::StepPlacement::Coordinator: return Tone::Warn;
+    }
+    return Tone::Muted;
+}
+
 // A log line's severity (the run-log wire strings): error red, warn amber,
 // anything else neutral.
 inline Tone tone_of_log_level(std::string_view level) {
@@ -87,5 +113,33 @@ inline Tone tone_of_log_level(std::string_view level) {
     if (level == "warn")  return Tone::Warn;
     return Tone::Muted;
 }
+
+// A load/utilization percentage (0..100) on the shared gauge thresholds: green
+// under moderate load, amber as it climbs, red when saturated. The Cluster
+// view's gauges keep their richer rendering (eased bars, sparklines) but take
+// their fill colour from here, so a "hot" node and a "hot" gauge agree.
+constexpr Tone tone_of_utilization(float percent) {
+    if (percent >= 85.0f) return Tone::Error;
+    if (percent >= 60.0f) return Tone::Warn;
+    return Tone::Active;
+}
+
+// Compile-time locks on the acceptance rule "the same state always looks the
+// same": the terminal states of every lifecycle land on the same tones.
+static_assert(tone_of(zetta::pipeline::RunStatus::Succeeded) == Tone::Ok);
+static_assert(tone_of(zetta::compute::JobStatus::Succeeded) == Tone::Ok);
+static_assert(tone_of(zetta::pipeline::CheckStatus::Pass) == Tone::Ok);
+static_assert(tone_of(zetta::testkit::TestOutcome::Pass) == Tone::Ok);
+static_assert(tone_of(zetta::pipeline::RunStatus::Failed) == Tone::Error);
+static_assert(tone_of(zetta::compute::JobStatus::Failed) == Tone::Error);
+static_assert(tone_of(zetta::pipeline::CheckStatus::Fail) == Tone::Error);
+static_assert(tone_of(zetta::testkit::TestOutcome::Fail) == Tone::Error);
+static_assert(tone_of(zetta::pipeline::RunStatus::Running) == Tone::Warn);
+static_assert(tone_of(zetta::compute::JobStatus::Running) == Tone::Warn);
+static_assert(tone_of(zetta::pipeline::RunStatus::Pending) == Tone::Muted);
+static_assert(tone_of(zetta::compute::JobStatus::Queued) == Tone::Muted);
+static_assert(tone_of_utilization(90.0f) == Tone::Error);
+static_assert(tone_of_utilization(70.0f) == Tone::Warn);
+static_assert(tone_of_utilization(30.0f) == Tone::Active);
 
 }  // namespace zetta::gui

@@ -76,9 +76,7 @@ void App::draw_cloud() {
                 ImGui::Spacing();
                 eyebrow(mono_font_, "THIS NODE");
                 ImGui::Spacing();
-                status_dot(kDotActive);
-                ImGui::TextColored(kSuccessColor,
-                                   "No external access. Nothing to authorize.");
+                status_label(Tone::Ok, "No external access. Nothing to authorize.");
                 if (mono_font_) ImGui::PushFont(mono_font_);
                 ImGui::TextColored(kInkSecondary, "id        %s",
                                    cluster_.node_id().c_str());
@@ -121,14 +119,12 @@ void App::draw_cloud() {
             const bool consented = cloud_consent_provider_ == provider->id;
             // Amber (caution) wash while locked; green (success) once granted.
             ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                                  consented ? ImVec4(0.882f, 0.961f, 0.933f, 1.0f)
-                                            : ImVec4(0.980f, 0.933f, 0.855f, 1.0f));
+                                  tone_background(consented ? Tone::Ok : Tone::Warn));
             ImGui::BeginChild("##consent", ImVec2(0, 0),
                               ImGuiChildFlags_Borders |
                                   ImGuiChildFlags_AutoResizeY);
             if (!consented) {
-                status_dot(kWarnColor);
-                ImGui::TextColored(kWarnColor, "Permission required");
+                status_label(Tone::Warn, "Permission required");
                 ImGui::TextColored(kInkSecondary,
                     "zetta will not run the commands above until you allow it. "
                     "Consent applies to this one inspection and is not "
@@ -141,9 +137,7 @@ void App::draw_cloud() {
                     run_cloud_inspect(*provider);  // the one cloud call, behind consent
                 }
             } else {
-                status_dot(kDotActive);
-                ImGui::TextColored(kSuccessColor,
-                                   "Permission granted for this inspection");
+                status_label(Tone::Ok, "Permission granted for this inspection");
                 draw_cloud_inspect_result(*provider);
                 ImGui::Spacing();
                 if (ImGui::Button("Re-inspect")) {
@@ -177,21 +171,21 @@ void App::draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider)
 
     // A provider described but not yet runnable (bare-metal needs a host).
     if (!report->ran) {
-        status_dot(kWarnColor);
+        status_dot(Tone::Warn);
         ImGui::TextColored(kInkSecondary, "%s", report->detail.c_str());
         return;
     }
 
     // Headline reachability / identity.
-    status_dot(report->reachable ? kDotActive : kErrorColor);
+    status_dot(report->reachable ? Tone::Active : Tone::Error);
     if (report->authenticated && !report->identity.empty()) {
-        ImGui::TextColored(kSuccessColor, "Connected");
+        ImGui::TextColored(tone_color(Tone::Ok), "Connected");
         ImGui::SameLine();
         ImGui::TextColored(kInkSecondary, "· %s", report->identity.c_str());
     } else if (report->reachable) {
         ImGui::TextColored(kInkSecondary, "Reachable");
     } else {
-        ImGui::TextColored(kErrorColor, "Not reachable");
+        ImGui::TextColored(tone_color(Tone::Error), "Not reachable");
     }
     if (!report->detail.empty()) {
         ImGui::TextColored(kInkSecondary, "%s", report->detail.c_str());
@@ -220,12 +214,12 @@ void App::draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider)
     ImGui::Spacing();
     eyebrow(mono_font_, "COMMANDS");
     for (const zetta::cloud::CloudInspectCommand& command : report->commands) {
-        status_dot(command.ok ? kDotActive : kErrorColor);
+        status_dot(command.ok ? Tone::Ok : Tone::Error);
         if (mono_font_) ImGui::PushFont(mono_font_);
         ImGui::TextColored(kInkSecondary, "%s", command.display.c_str());
         if (mono_font_) ImGui::PopFont();
         if (!command.ok && !command.error.empty()) {
-            ImGui::TextColored(kErrorColor, "    %s", command.error.c_str());
+            ImGui::TextColored(tone_color(Tone::Error), "    %s", command.error.c_str());
         }
     }
     if (!report->checked_at.empty()) {

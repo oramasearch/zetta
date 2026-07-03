@@ -32,7 +32,10 @@ totals, and in/out rates (e.g. `16 cores · 9%`, `38.5 GB / 64.0 GB · 60%`,
 
 The load gauges (CPU / memory / GPU / storage) use the **semantic status palette**
 — green under moderate load, **amber** as it climbs (≥ 60%), **red** when saturated
-(≥ 85%) — never coral (coral stays the surgical "you are here" accent). Network
+(≥ 85%) — never coral (coral stays the surgical "you are here" accent). The
+breakpoints are the shared `tone_of_utilization` thresholds in `src/gui/tones.hpp`
+([status-tones.md](status-tones.md), #636) — the gauges keep their richer treatment
+(eased bars, sparklines) but speak the same colour language as every panel. Network
 throughput is a *flow*, not a good/bad status, so it uses a neutral ink fill and a
 relative bar normalized against a decaying rolling peak (no reliable link-capacity
 reference exists cross-platform).

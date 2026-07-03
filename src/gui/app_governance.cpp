@@ -30,7 +30,7 @@ void render_access_key(const zetta::governance::AccessKey& key, const std::strin
     // Scope — which resources this key may touch (the resource axis, RULE-3).
     const zetta::governance::Scope& scope = key.scope();
     if (scope.unrestricted) {
-        ImGui::TextColored(kWarnColor, "scope: unrestricted (admin)");
+        ImGui::TextColored(tone_color(Tone::Warn), "scope: unrestricted (admin)");
     } else if (scope.grants.empty()) {
         ImGui::TextDisabled("scope: (no resources, denies every resource)");
     } else {
@@ -60,7 +60,8 @@ void render_access_key(const zetta::governance::AccessKey& key, const std::strin
             } else if (capability.expired(now)) {
                 ImGui::Bullet();
                 ImGui::SameLine();
-                ImGui::TextColored(kFailColor, "%s (expired %s)", right.c_str(),
+                ImGui::TextColored(tone_color(Tone::Error), "%s (expired %s)",
+                                   right.c_str(),
                                    capability.expires_at.c_str());
             } else {
                 ImGui::BulletText("%s (expires %s)", right.c_str(),
@@ -134,9 +135,9 @@ void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::Audit
                 event->target().empty() ? "—" : event->target().c_str());
             ImGui::TableSetColumnIndex(4);
             if (event->allowed()) {
-                ImGui::TextColored(kSuccessColor, "allow");
+                status_label(Tone::Ok, "allow");
             } else {
-                ImGui::TextColored(kErrorColor, "deny");
+                status_label(Tone::Error, "deny");
             }
             ImGui::TableSetColumnIndex(5);
             ImGui::TextWrapped(
