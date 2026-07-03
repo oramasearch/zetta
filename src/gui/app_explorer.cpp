@@ -483,13 +483,13 @@ void App::draw_query() {
 // "Run as" selector. Held state lives in console_model_, so a future CLI renders
 // the same session against the same GovernedConsole.
 void App::draw_console() {
-    ImGui::SeparatorText("Console (REPL) · governed");
+    page_header("Console",
+                "Run SQL or simulated-Python, governed: every statement is "
+                "capability-scoped against the acting key, gated, and audited.");
     ImGui::TextDisabled(
-        "Run SQL or simulated-Python against this node, governed: every statement "
-        "is capability-scoped against the acting key and recorded in the audit "
-        "trail; simulated-Python lowers to the execution-graph IR and must pass the "
-        "correctness gate before it runs. Unqualified SQL names use the selected "
-        "database (%s).",
+        "Simulated-Python lowers to the execution-graph IR and must pass the "
+        "correctness gate before it runs. Unqualified SQL names use the "
+        "selected database (%s).",
         selected_db_.empty() ? "none" : selected_db_.c_str());
 
     // "Run as" — the acting key the session is capability-scoped against. The
