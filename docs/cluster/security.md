@@ -96,7 +96,8 @@ traffic (TLS 1.3), uninvited joins (no token → no CA-signed cert → handshake
 fails), silent plaintext downgrade (fail-closed credential loading, no
 fallback path).
 
-**Open, by design of this slice** (follow-up issue filed):
+**Open, by design of this slice** (follow-ups: #669 enrollment/pinning/revocation,
+#670 burst-provisioner token plumbing):
 
 - **Member-vs-member node-id impersonation.** Corosio exposes no
   peer-certificate accessor, so the `HELLO` node id cannot be checked against
@@ -104,9 +105,9 @@ fallback path).
   any member can mint a certificate for any CN anyway. Fixing both means a
   CSR-based enrollment (nodes keep private keys the CA never sees; an existing
   member signs) + certificate pinning — the natural V2 on top of this wire
-  format, requiring an upstream peer-cert accessor.
+  format, requiring an upstream peer-cert accessor (#669).
 - **No revocation.** Removing a node's trust today means rotating the token
   (re-key every node). Token rotation is manual (`--join-token` on each node).
 - **Burst nodes** (cloud provisioners) receive only `ZETTA_SEED_PEER` today —
   the join token isn't plumbed through the provisioner seam yet, so a burst
-  node comes up unable to join a TLS cluster until that follow-up lands.
+  node comes up unable to join a TLS cluster until that follow-up lands (#670).

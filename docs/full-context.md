@@ -96,8 +96,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
   cluster link, per-node Ed25519 identities, token-gated join (the token
   derives the cluster CA), secure by default with `--cluster-plaintext` the
-  opt-out. Follow-ups filed: CSR enrollment vs member impersonation,
-  provisioner join-token plumbing.
+  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-ups
+  filed: [#669](https://github.com/oramasearch/zetta/issues/669) CSR enrollment
+  / peer-cert pinning / revocation,
+  [#670](https://github.com/oramasearch/zetta/issues/670) provisioner
+  join-token plumbing.
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next
