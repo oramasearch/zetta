@@ -97,7 +97,9 @@ void App::draw_graph_workspace() {
         }
     }
 
-    ImGui::SeparatorText("Graph workspace");
+    page_header("Graph workspace",
+                "Edit the selected project's execution graphs, plan them over "
+                "the cluster, and watch live runs on the canvas.");
 
     // The workspace edits the *currently selected* project's graphs (the same
     // selection the explorer's Projects column drives). Re-resolved by name each
@@ -306,7 +308,7 @@ void App::run_open_graph(zetta::pipeline::Project& project) {
     if (node_.job_coordinator() != nullptr &&
         zetta::usecases::churn::is_churn_graph(stored->graph())) {
         if (churn_run_) {
-            graph_error_ = "a churn run is already in flight — wait for it to "
+            graph_error_ = "a churn run is already in flight: wait for it to "
                            "finish (or cancel it in the Deploy panel)";
             return;
         }
@@ -866,10 +868,7 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
         return "—";
     };
 
-    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
-                                        ImGuiTableFlags_RowBg |
-                                        ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("graph_plan_steps", 4, table_flags)) {
+    if (ImGui::BeginTable("graph_plan_steps", 4, kDataTableFlags)) {
         ImGui::TableSetupColumn("Step", ImGuiTableColumnFlags_WidthStretch, 0.30f);
         ImGui::TableSetupColumn("Stage", ImGuiTableColumnFlags_WidthStretch, 0.12f);
         ImGui::TableSetupColumn("Placement", ImGuiTableColumnFlags_WidthStretch,
