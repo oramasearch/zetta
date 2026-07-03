@@ -30,6 +30,10 @@ std::span<const App::ViewInfo> App::view_registry() {
          nullptr},
         {View::Gate, "Pipeline", "Correctness gate", &App::draw_gate, nullptr},
         {View::Deploy, "Pipeline", "Deploy", &App::draw_deploy, nullptr},
+        // Activity leads Operations: the feed is the first thing an operator
+        // looks at ("what has been happening on this cluster", #622).
+        {View::Activity, "Operations", "Activity", &App::draw_activity,
+         nullptr},
         {View::Runs, "Operations", "Runs", &App::draw_runs, nullptr},
         {View::Models, "Operations", "Models", &App::draw_models, nullptr},
         {View::Jobs, "Operations", "Compute jobs", &App::draw_jobs,

@@ -45,8 +45,12 @@ W3C/OTel where it fits, extended where DX/UX demands more:
   — SQL-queryable, GUI-renderable, MCP-readable, one source.
 - API capabilities `list_traces` / `get_trace` read the same ring — an agent
   that just ran a tool can immediately pull the full trace of what happened
-  (the "MCP agent understands the cluster" loop). The GUI activity feed
-  (#622) and a per-entity "what happened" pane render the same rows.
+  (the "MCP agent understands the cluster" loop). A per-entity "what
+  happened" pane renders the same rows. The activity feed (#622,
+  [../gui/activity-feed.md](../gui/activity-feed.md)) is the durable
+  complement: `system.activity` merges the audit trail + runs
+  chronologically, so "what was the cluster asked to do, and by whom" reads
+  from one view on every surface.
 
 ## Feedback bundles — a cluster feature
 

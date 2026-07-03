@@ -26,6 +26,7 @@
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
+#include "zetta/observability/activity.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
@@ -64,6 +65,11 @@ namespace {
 //    scope (resources) + capabilities (rights), no secret material.
 //  - `audit` — the immutable, append-only audit trail (Node::audit_events();
 //    ENT-23 / FEAT-9).
+//  - `activity` — the merged, newest-first activity feed (#622): the audit trail
+//    + runs composed chronologically at query time
+//    (zetta::observability::activity_entries), each row with its actor, surface
+//    (local / console / api), action, target, and outcome. The engine source the
+//    headed Activity view renders too (RULE-7).
 //  - `dataset_partitions` — the partition catalog (Node::dataset_partitions()):
 //    one row per recorded dataset partition (where a slice of a table's data lives
 //    — its table / blob / row range / stats / owner nodes). Replicate-to-all, so
@@ -106,6 +112,7 @@ constexpr std::string_view kRunsTable = "runs";
 constexpr std::string_view kPrincipalsTable = "principals";
 constexpr std::string_view kKeysTable = "keys";
 constexpr std::string_view kAuditTable = "audit";
+constexpr std::string_view kActivityTable = "activity";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
@@ -528,6 +535,29 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
         row["allowed"] = event->allowed();
         row["detail"] = event->detail();
         row["time"] = event->time();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per activity entry for the system.activity table — the merged,
+// newest-first "what happened on this cluster" feed (#622): the audit trail +
+// runs, composed at query time by zetta::observability::activity_entries
+// (RULE-7 — no stored copy; the GUI's Activity view renders the same source).
+std::vector<nlohmann::json> activity_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::observability::ActivityEntry& entry :
+         zetta::observability::activity_entries(node)) {
+        nlohmann::json row;
+        row["time"] = entry.time;
+        row["surface"] = std::string(to_string(entry.surface));
+        row["actor"] = entry.actor;
+        row["action"] = entry.action;
+        row["target"] = entry.target;
+        row["outcome"] = std::string(to_string(entry.outcome));
+        row["detail"] = entry.detail;
+        row["ref_kind"] = entry.ref_kind;
+        row["ref_id"] = entry.ref_id;
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1128,6 +1158,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kAuditTable) {
                         return select_over_rows(s, audit_rows(node_));
                     }
+                    if (sys == kActivityTable) {
+                        return select_over_rows(s, activity_rows(node_));
+                    }
                     if (sys == kPartitionsTable) {
                         return select_over_rows(s, partition_rows(node_));
                     }
@@ -1154,6 +1187,7 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.jobs, "
                                      "system.runs, system.principals, "
                                      "system.keys, system.audit, "
+                                     "system.activity, "
                                      "system.dataset_partitions, "
                                      "system.datasets, "
                                      "system.checkpoints, "

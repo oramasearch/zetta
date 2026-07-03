@@ -21,8 +21,9 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
 - **Heavy headers stay in `app.cpp`.** `app.hpp` forward-declares SDL/ImGui
   types; only `app.cpp` includes them. Panels are `App` member TUs split
   per view (`app_home` / `app_explorer` / `app_graph_workspace` /
-  `app_deploy` / `app_runs` / `app_models` / `app_datasets` / `app_jobs` /
-  `app_cluster` / `app_cloud` / `app_governance` / `app_test_suite`);
+  `app_deploy` / `app_activity` / `app_runs` / `app_models` /
+  `app_datasets` / `app_jobs` / `app_cluster` / `app_cloud` /
+  `app_governance` / `app_test_suite`);
   operations-view helpers shared across TUs live in
   `app_operations_internal.hpp`; the view registry + sidebar + navigation
   live in `app_views.cpp`.

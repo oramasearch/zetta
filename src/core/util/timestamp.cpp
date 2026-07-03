@@ -5,12 +5,13 @@
 
 namespace zetta::util {
 
-std::string now_iso8601() {
+namespace {
+
+std::string format_iso8601(std::chrono::system_clock::time_point when) {
     using namespace std::chrono;
-    const auto now = system_clock::now();
-    const auto midnight = floor<days>(now);
+    const auto midnight = floor<days>(when);
     const year_month_day date{midnight};
-    const auto since_midnight = now - midnight;
+    const auto since_midnight = when - midnight;
     const auto hour = duration_cast<hours>(since_midnight);
     const auto minute = duration_cast<minutes>(since_midnight - hour);
     const auto second = duration_cast<seconds>(since_midnight - hour - minute);
@@ -21,6 +22,17 @@ std::string now_iso8601() {
                        static_cast<unsigned>(date.month()),
                        static_cast<unsigned>(date.day()), hour.count(),
                        minute.count(), second.count(), millisecond.count());
+}
+
+}  // namespace
+
+std::string now_iso8601() {
+    return format_iso8601(std::chrono::system_clock::now());
+}
+
+std::string iso8601_seconds_ago(long long seconds_ago) {
+    return format_iso8601(std::chrono::system_clock::now() -
+                          std::chrono::seconds(seconds_ago));
 }
 
 }  // namespace zetta::util

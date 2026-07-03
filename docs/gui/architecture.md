@@ -75,7 +75,8 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
   in `app_internal.hpp`, and the per-enum mapping overloads in
   **`src/gui/tones.hpp`** — the ONE mapping site: `tone_of(RunStatus)`,
   `tone_of(JobStatus)`, `tone_of(ScalingAction)`, `tone_of(CheckStatus)`,
-  `tone_of(TestOutcome)`, `tone_of(cluster::NodeStatus)` (node sync),
+  `tone_of(TestOutcome)`, `tone_of(ActivityOutcome)`,
+  `tone_of(cluster::NodeStatus)` (node sync),
   `tone_of(StepPlacement)`, `tone_of_log_level(level)`, and
   `tone_of_utilization(percent)` (the shared gauge thresholds). A status
   renders through the two widget forms — `status_label(tone, text)` (dot +

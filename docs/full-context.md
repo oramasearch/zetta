@@ -98,7 +98,9 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   #637 · #611 · #466 · #538 · #530 · #641 · #634 · #622 · #626 · #640;
   #616/#625/#645 also unblocked. **#636 adoption swept**: every panel status
   renders via tone_of + status_label/status_pill
-  ([status-tones.md](gui/status-tones.md)).
+  ([status-tones.md](gui/status-tones.md)). **#622 activity feed shipped**
+  from layer-0: `system.activity` + the Operations → Activity view + the Home
+  recent-activity strip ([docs/gui/activity-feed.md](gui/activity-feed.md)).
 - **Security**: CTL-2/TB-3 inter-node transport security is **built**
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
