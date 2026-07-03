@@ -43,8 +43,13 @@ project(zetta
 )
 
 # When built by Homebrew clang, run against its newer libc++ (its headers are
-# ahead of the system dylib); link + rpath the matching runtime.
+# ahead of the system dylib); link + rpath the matching runtime. Since the
+# runtime IS Homebrew's own libc++, Apple's OS-version availability gating in
+# the headers is meaningless here — without disabling it, LLVM 22+ marks
+# features like floating-point std::from_chars "introduced in macOS 26" and
+# the build breaks on older hosts.
 if(APPLE AND CMAKE_CXX_COMPILER MATCHES "/opt/homebrew/opt/llvm/")
+  add_compile_definitions(_LIBCPP_DISABLE_AVAILABILITY)
   add_link_options(-L/opt/homebrew/opt/llvm/lib/c++
                    -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++)
 endif()
