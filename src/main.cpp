@@ -378,6 +378,9 @@ int main(int argc, char** argv) {
 
         zetta::gui::App app(node, cluster);
         app.set_tick_hook(drain_api);
+        // GUI-driven searches record their trace into the same span ring MCP
+        // calls use, so list_traces shows one history (no ring = no spans).
+        if (api_server) app.set_span_recorder(&api_server->recorder());
         app.set_provisioner("local", local_provisioner);
 
         // Burst nodes auto-join this cluster by seeding from a reachable address.

@@ -449,16 +449,34 @@ std::vector<FulltextHit> DistributedFulltextIndex::query_local(
 
 DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const IndexSpec& spec, const IndexQuery& query,
-    std::chrono::milliseconds timeout) const {
+    std::chrono::milliseconds timeout,
+    zetta::observability::SpanRecorder* recorder,
+    const zetta::observability::TraceContext* parent) const {
     QueryResult out;
 
+    // Tracing needs both halves; with either missing, spans become no-ops.
+    if (!parent || !parent->valid()) recorder = nullptr;
+    const zetta::observability::TraceContext trace =
+        parent ? *parent : zetta::observability::TraceContext{};
+
     // (1) This node's local contribution (across its own partitions).
+    zetta::observability::ScopedSpan local_span(recorder, trace, "search:local");
+    local_span.set_attribute("node_id", cluster_.node_id());
     IndexStatus local_status;
     std::vector<FulltextHit> local = query_local(spec, query, &local_status);
     if (!local_status.ok()) {
+        local_span.finish(/*ok=*/false, local_status.message);
         out.status = local_status;
         return out;
     }
+    local_span.set_attribute("hits", local.size());
+    NodeContribution local_contribution;
+    local_contribution.node_id = cluster_.node_id();
+    local_contribution.local = true;
+    local_contribution.hits = local.size();
+    local_contribution.latency_ms = local_span.elapsed_ms();
+    local_span.finish(/*ok=*/true);
+    out.contributions.push_back(std::move(local_contribution));
 
     std::vector<std::vector<FulltextHit>> sources;
     sources.push_back(std::move(local));
@@ -477,6 +495,8 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     const std::string payload = encode_fulltext_query(request);
 
     for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) {
+        zetta::observability::ScopedSpan peer_span(recorder, trace, "search:peer");
+        peer_span.set_attribute("node_id", peer.node_id);
         const zetta::cluster::SignalResponse response = cluster_.request(
             peer.node_id, std::string(kQueryMethod), payload, timeout);
         wire += payload.size();
@@ -484,6 +504,8 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
             out.status = IndexStatus::backend_error(
                 "fulltext.query to peer '" + peer.node_id + "' failed: " +
                 response.error);
+            peer_span.finish(/*ok=*/false, out.status.message);
+            out.contributions.clear();
             return out;
         }
         wire += response.payload.size();
@@ -494,8 +516,19 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
             out.status = IndexStatus::backend_error(
                 "fulltext hits from peer '" + peer.node_id +
                 "' are malformed: " + decode_error);
+            peer_span.finish(/*ok=*/false, out.status.message);
+            out.contributions.clear();
             return out;
         }
+        NodeContribution peer_contribution;
+        peer_contribution.node_id = peer.node_id;
+        peer_contribution.hits = hits->hits.size();
+        peer_contribution.latency_ms = peer_span.elapsed_ms();
+        peer_contribution.wire_bytes = payload.size() + response.payload.size();
+        peer_span.set_attribute("hits", hits->hits.size());
+        peer_span.set_attribute("wire_bytes", peer_contribution.wire_bytes);
+        peer_span.finish(/*ok=*/true);
+        out.contributions.push_back(std::move(peer_contribution));
         sources.push_back(std::move(hits->hits));
         ++answered;
     }

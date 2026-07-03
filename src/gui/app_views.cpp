@@ -24,6 +24,7 @@ std::span<const App::ViewInfo> App::view_registry() {
         {View::Home, "", "Home", &App::draw_home, nullptr},
         {View::Explorer, "Data", "Explorer", &App::draw_explorer, nullptr},
         {View::Datasets, "Data", "Datasets", &App::draw_datasets, nullptr},
+        {View::Search, "Data", "Search", &App::draw_search, nullptr},
         {View::Query, "Data", "SQL query", &App::draw_query, nullptr},
         {View::Console, "Data", "Console", &App::draw_console, nullptr},
         {View::Graph, "Pipeline", "Graph workspace", &App::draw_graph_workspace,

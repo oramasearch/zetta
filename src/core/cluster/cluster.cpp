@@ -950,6 +950,10 @@ void Cluster::set_signal_handler(SignalHandler* handler) {
     state_->signal_handler.store(handler, std::memory_order_release);
 }
 
+SignalHandler* Cluster::signal_handler() const {
+    return state_->signal_handler.load(std::memory_order_acquire);
+}
+
 SignalResponse Cluster::request(const std::string& node_id,
                                 const std::string& method,
                                 const std::string& payload,

@@ -16,6 +16,7 @@
 
 #include "zetta/index/index_backend.hpp"
 #include "zetta/cluster/signal.hpp"
+#include "zetta/observability/trace.hpp"
 
 // Per-partition distributed full-text search (ENT-39 / ENT-40, ADR-34, #529 — the
 // engine half of TC-13 #503). Where the [index step executor](index_step_executor.hpp)
@@ -67,6 +68,21 @@ struct FulltextHit {
     double score = 0.0;
 
     bool operator==(const FulltextHit&) const = default;
+};
+
+// One node's part in a scatter-gather query — the per-node provenance the
+// observability foundation wants visible (#641): which node answered, how many
+// ranked hits it contributed (pre-merge, capped to the request's top_k), how long
+// its answer took from the coordinator's side, and how many payload bytes its
+// round trip moved (0 for the coordinator's own local contribution).
+struct NodeContribution {
+    std::string node_id;
+    bool local = false;           // true for the coordinating node itself
+    std::size_t hits = 0;         // ranked hits this node contributed (pre-merge)
+    double latency_ms = 0.0;      // coordinator-observed time to answer
+    std::uint64_t wire_bytes = 0; // request + response payload bytes (0 = local)
+
+    bool operator==(const NodeContribution&) const = default;
 };
 
 // Merge per-source ranked hit lists into one globally-ranked list. Flattens every
@@ -160,6 +176,9 @@ public:
         std::size_t nodes_answered = 0;    // self + peers that contributed
         std::uint64_t wire_bytes_moved = 0;  // scatter+gather payload bytes this query
                                              //   moved (the hits, not the rows)
+        // Per-node provenance: the coordinator's own contribution first, then one
+        // entry per peer in scatter order (#641). Empty on a failing status.
+        std::vector<NodeContribution> contributions;
         bool ok() const noexcept { return status.ok(); }
     };
 
@@ -196,8 +215,16 @@ public:
     // fails the query (a missing partition would skew the ranking). Call from the
     // application thread (never the network thread). A single-node cluster returns
     // its local ranking.
+    //
+    // When `recorder` AND `parent` are given, the scatter-gather is traced: one
+    // child span per contribution ("search:local" for this node's own sub-indexes,
+    // "search:peer" per scattered peer) under `parent`, carrying node id, hit count,
+    // and wire bytes — so a surface can show where the query's time went (#641).
+    // Both null (the default) = no spans, unchanged behavior.
     QueryResult query(const IndexSpec& spec, const IndexQuery& query,
-                      std::chrono::milliseconds timeout = kDefaultTimeout) const;
+                      std::chrono::milliseconds timeout = kDefaultTimeout,
+                      zetta::observability::SpanRecorder* recorder = nullptr,
+                      const zetta::observability::TraceContext* parent = nullptr) const;
 
     // Query only this node's local sub-indexes (no scatter) → its merged, ranked
     // hits, capped to `query.top_k`. Used by query() for the local contribution and

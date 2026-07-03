@@ -156,6 +156,12 @@ public:
     // (or be cleared first).
     void set_signal_handler(SignalHandler* handler);
 
+    // The currently registered signal handler (nullptr when none) — what a
+    // component chains itself over when it registers as the new handler with a
+    // delegate (the DistributedSorter / DistributedFulltextIndex pattern).
+    // Thread-safe.
+    SignalHandler* signal_handler() const;
+
     // Send an RPC request to a peer (by node id) and block the calling thread
     // until the peer's response arrives, the timeout elapses, or the peer is
     // found unreachable. Returns ok=false with a reason on an unknown / dropped

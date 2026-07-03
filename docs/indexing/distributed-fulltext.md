@@ -190,11 +190,19 @@ and in the **Operations → Test suite** panel.
 It is the **per-partition distributed full-text topology**: build a sub-index per
 owned partition (compute-near-data), answer a query by scatter-gather + merge/rank,
 matching the consolidated oracle. It is a usable building block alongside (not a
-replacement for) the consolidated [index step executor](index-step-executor.md) —
-wiring it into the deploy/run path as the default `index`-step behaviour, exact
-global-statistics scoring ([#657](https://github.com/oramasearch/zetta/issues/657)), a
-true point-to-point gather (vs. one RPC per peer), and the other index kinds (vector /
-semantic / feature) remain additive behind the same seam.
+replacement for) the consolidated [index step executor](index-step-executor.md).
+**As of [#641](https://github.com/oramasearch/zetta/issues/641) it IS the default
+query path**: the Node owns one (wired in `attach_cluster`, chained over the compute
+plane's signal handler via `Cluster::signal_handler()`), keeps its sub-indexes
+current from `tick()` (`Node::reconcile_search_indexes()`), and routes every
+[`Node::search`](node-search.md) over a placed-partition table through it —
+`QueryResult` now also carries per-node `contributions` (node id / hits / latency /
+wire bytes), and `query()` optionally records `search:local` / `search:peer` child
+spans under a caller trace. Wiring it into the deploy/run path as the default
+`index`-step behaviour, exact global-statistics scoring
+([#657](https://github.com/oramasearch/zetta/issues/657)), a true point-to-point
+gather (vs. one RPC per peer), and the other index kinds (vector / semantic /
+feature) remain additive behind the same seam.
 
 ## Pointers
 
