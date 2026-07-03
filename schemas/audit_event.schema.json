@@ -14,7 +14,9 @@
         "key_revoked",
         "provision_requested",
         "cloud_inspected",
-        "dataset_added"
+        "dataset_added",
+        "consent_requested",
+        "consent_decided"
       ],
       "type": "string"
     },

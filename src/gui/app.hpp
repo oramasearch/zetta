@@ -382,6 +382,17 @@ private:
     void reset_add_model_form();
     void draw_jobs();        // compute jobs (system.jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
+    // The headed approval surface for remote consent challenges (#621, inside
+    // draw_admin): pending challenges from node_.consent_ledger(), each naming
+    // exactly what would be read/run, with Approve / Deny driving
+    // Registry::decide_consent as the trusted headed surface. Approval
+    // executes exactly the named action once; the async cloud workers land in
+    // palette_background_ and are pruned each frame.
+    void draw_consent_requests();
+    // The capability registry the palette + approval surface execute against —
+    // the API server's when main wired one, else a lazily-built local registry
+    // from the SAME core registration (one registry, many renderings).
+    zetta::api::Registry& ensure_capability_registry();
     // The audit-log table inside draw_admin. An App member so each event's
     // target can render as an entity_link routed by its action (#633): job
     // events → Jobs, graph events → Graph, deploys → Deploy; key / data-access
@@ -527,6 +538,10 @@ private:
     bool palette_failed_ = false;   // tones palette_status_
     std::string palette_trace_;     // last call's trace id ("" = none)
     std::string palette_result_;    // last call's pretty result JSON ("" = none)
+    // The approval surface's last decision outcome (#621), rendered as the
+    // Admin panel's banner (feedback grammar #632).
+    std::string consent_decision_status_;
+    bool consent_decision_failed_ = false;
 
     // Main-loop run flag (a member so render_frame() / the menu's Quit can set it
     // without threading a reference through every call).

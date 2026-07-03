@@ -13,6 +13,7 @@
 #include "zetta/node.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/cloud/provisioner_detect.hpp"
+#include "zetta/cloud/provisioner_fleet.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
@@ -20,7 +21,6 @@
 #include "zetta/version.hpp"
 
 #include "gui/app.hpp"
-#include "gui/cloud_wiring.hpp"
 
 #include <charconv>
 #include <cstdint>
@@ -315,6 +315,44 @@ int main(int argc, char** argv) {
         node.record_provisioner_config(std::move(detected));
     }
 
+    // The provisioners the "Add nodes" controls drive — the headed Cluster
+    // view AND the MCP surface's consent-gated add_nodes capability (#621), in
+    // BOTH modes. Declared before the ApiServer / App so they outlive every
+    // consumer holding references into them.
+    //
+    // Given-hardware target: a LocalProvisioner that reports the nodes already
+    // in the cluster (best-effort — it brings up no new machines and touches no
+    // cloud), reading the live fleet from Cluster::nodes() on each call so it
+    // tracks self-healing membership.
+    zetta::cloud::LocalProvisioner local_provisioner([&cluster] {
+        std::vector<zetta::cloud::ProvisionedNode> fleet;
+        for (const zetta::cluster::NodeStatus& peer : cluster.nodes()) {
+            fleet.push_back({peer.node_id, peer.address, {}});
+        }
+        return fleet;
+    });
+
+    // Cloud-burst targets: a CLI-backed Provisioner per context detected
+    // above. A target with no detected context stays unwired (the consent
+    // gates then read "no provisioner wired"), unchanged.
+    zetta::cloud::ProvisionerFleet provisioner_fleet;
+    const std::string default_seed_peer = cluster.listen_addresses().empty()
+                                              ? std::string{}
+                                              : cluster.listen_addresses().front();
+    for (const zetta::cloud::ProvisionerFleet::Wiring& wiring :
+         provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer)) {
+        if (wiring.wired) {
+            std::printf("zetta: cloud provisioner wired for %s (local CLI)\n",
+                        wiring.id.c_str());
+        }
+    }
+    const auto provisioner_for =
+        [&local_provisioner,
+         &provisioner_fleet](const std::string& target_id) -> zetta::cloud::Provisioner* {
+        if (target_id == "local") return &local_provisioner;
+        return provisioner_fleet.provisioner_for(target_id);
+    };
+
     // The embedded MCP server (docs/api/registry-design.md, #615): the
     // programmatic control surface, in BOTH modes. Handlers marshal onto this
     // (owning) loop via the bridge the tick hooks drain below.
@@ -347,6 +385,12 @@ int main(int argc, char** argv) {
             api_server.reset();
         }
     }
+    if (api_server) {
+        // The consent-gated add_nodes capability drives the same wired
+        // provisioners the headed control does (#621). The fleet + local
+        // provisioner outlive the server (declared above).
+        api_server->set_provisioner_resolver(provisioner_for);
+    }
     const auto drain_api = [&api_server] {
         if (api_server) api_server->drain();
     };
@@ -355,27 +399,6 @@ int main(int argc, char** argv) {
     if (opts.mode == Mode::Headless) {
         rc = zetta::run_headless(node, cluster, drain_api);
     } else {
-        // The provisioners the Cluster view's "Add nodes" control drives. Both
-        // holders are declared BEFORE the App so they outlive it: App keeps raw
-        // references to them (set_provisioner), so it must be destroyed first.
-
-        // Given-hardware target: a LocalProvisioner that reports the nodes already
-        // in the cluster (best-effort — it brings up no new machines and touches no
-        // cloud), reading the live fleet from Cluster::nodes() on each call so it
-        // tracks self-healing membership.
-        zetta::cloud::LocalProvisioner local_provisioner([&cluster] {
-            std::vector<zetta::cloud::ProvisionedNode> fleet;
-            for (const zetta::cluster::NodeStatus& peer : cluster.nodes()) {
-                fleet.push_back({peer.node_id, peer.address, {}});
-            }
-            return fleet;
-        });
-
-        // Cloud-burst targets: a CLI-backed Provisioner per context detected above.
-        // A target with no detected context stays unwired (the Add-nodes consent
-        // gate then shows "no provisioner wired"), unchanged.
-        zetta::gui::CloudProvisioners cloud_provisioners;
-
         zetta::gui::App app(node, cluster);
         app.set_tick_hook(drain_api);
         // Live surfacing of externally-initiated actions (#620): every
@@ -397,18 +420,17 @@ int main(int argc, char** argv) {
         // registry the MCP server serves — one list, many renderings. With
         // --no-mcp the App builds its own from register_core_capabilities.
         if (api_server) app.set_capability_registry(&api_server->registry());
-        app.set_provisioner("local", local_provisioner);
 
-        // Burst nodes auto-join this cluster by seeding from a reachable address.
-        const std::string seed_peer = cluster.listen_addresses().empty()
-                                          ? std::string{}
-                                          : cluster.listen_addresses().front();
-        for (const zetta::gui::CloudProvisioners::Wiring& wiring :
-             cloud_provisioners.wire(app, node.provisioner_configs(), seed_peer)) {
-            if (wiring.wired) {
-                std::printf(
-                    "zetta: cloud provisioner wired for %s (local CLI)\n",
-                    wiring.id.c_str());
+        // The Cluster view's "Add nodes" control drives the same fleet the
+        // MCP surface resolves (declared above, so it outlives the App).
+        app.set_provisioner("local", local_provisioner);
+        for (const std::string& target :
+             {std::string{"azure"}, std::string{"aws"}, std::string{"gcp"},
+              std::string{"oci"}, std::string{"kubernetes"},
+              std::string{"bare-metal"}}) {
+            if (zetta::cloud::Provisioner* wired =
+                    provisioner_fleet.provisioner_for(target)) {
+                app.set_provisioner(target, *wired);
             }
         }
 

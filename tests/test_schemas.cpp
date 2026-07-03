@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/consent.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/compute_job.hpp"
@@ -66,6 +67,8 @@ const std::vector<SchemaEntry>& schema_registry() {
         {"dataset_partition.schema.json",
          &zetta::data::dataset_partition_value_schema},
         {"audit_event.schema.json", &zetta::governance::audit_event_value_schema},
+        {"consent_challenge.schema.json",
+         &zetta::governance::consent_challenge_schema},
         {"cloud_inspect_report.schema.json", &zetta::cloud::cloud_inspect_report_schema},
         {"solution_catalog.schema.json", &zetta::pipeline::solution_catalog_schema},
         {"calibration.schema.json", &zetta::ml::calibration_schema},

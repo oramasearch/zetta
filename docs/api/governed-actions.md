@@ -105,7 +105,8 @@ fixture, sim-Python compile, `add_dataset` with placement read-back,
 `testkit_run` submit-then-poll, and the denied-key negative.
 `tests/api/test_mcp_server.cpp` replays the dataset-ingest and gate-blocked
 tables unchanged over real JSON-RPC (layer 2). Deliberately later slices:
-the L2 protocol journey for job polling over real HTTP, consent-gated
-cluster ops (#621), streamed (rather than completion-flushed) testkit logs,
-and an async `add_dataset` for very large files (the GUI's `AsyncDatasetAdd`
-pumped from the drain).
+the L2 protocol journey for job polling over real HTTP, the #621 L2 consent
+journey over real HTTP with two bearer tokens (the challenge protocol itself
+shipped — [consent.md](consent.md)), streamed (rather than
+completion-flushed) testkit logs, and an async `add_dataset` for very large
+files (the GUI's `AsyncDatasetAdd` pumped from the drain).

@@ -57,7 +57,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 29u);
+    EXPECT_EQ(registry.size(), 35u);
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("sql"));
     EXPECT_TRUE(registry.find("submit_feedback"));

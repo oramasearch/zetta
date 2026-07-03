@@ -384,6 +384,7 @@ add_library(zetta-core STATIC
   src/core/api/background.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
+  src/core/api/cloud_capabilities.cpp
   src/core/api/llms.cpp
   src/core/api/registry.cpp
   src/core/cluster/cluster.cpp
@@ -407,6 +408,7 @@ add_library(zetta-core STATIC
   src/core/cloud/provisioner_detect.cpp
   src/core/cloud/add_nodes.cpp
   src/core/cloud/local_provisioner.cpp
+  src/core/cloud/provisioner_fleet.cpp
   src/core/cloud/command_runner.cpp
   src/core/cloud/azure_provisioner.cpp
   src/core/cloud/azure_cli_control_plane.cpp
@@ -446,6 +448,7 @@ add_library(zetta-core STATIC
   src/core/governance/scope.cpp
   src/core/governance/capability.cpp
   src/core/governance/audit_event.cpp
+  src/core/governance/consent.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/storage/jsonl_store.cpp
@@ -613,7 +616,6 @@ add_executable(zetta
   src/gui/app_cloud.cpp
   src/gui/app_governance.cpp
   src/gui/app_test_suite.cpp
-  src/gui/cloud_wiring.cpp
   src/gui/repl_console.cpp
 )
 

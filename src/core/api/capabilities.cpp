@@ -1838,6 +1838,10 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_testkit_run});
+
+    // The cloud-touching tools + the consent protocol tools (#621) — the
+    // consent-gated slice, in its own TU (cloud_capabilities.cpp).
+    register_cloud_capabilities(registry);
 }
 
 }  // namespace zetta::api

@@ -1,9 +1,12 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 
+#include "zetta/api/background.hpp"
+#include "zetta/api/registry.hpp"
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
+#include "zetta/governance/consent.hpp"
 #include "zetta/node.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -181,9 +184,114 @@ void App::draw_audit_log(
     }
 }
 
+// The headed approval surface for remote consent challenges (#621; the GUI
+// half of docs/api/consent.md). A consent-gated capability called over MCP
+// never executes on first call — it parks a challenge on the node's consent
+// ledger, and this surface is where a human decides it: each pending card
+// names EXACTLY what would be read/run (the Cloud Inspector grammar), and
+// Approve / Deny drives Registry::decide_consent as the trusted headed
+// surface. Approval executes the frozen action once, on this thread (the
+// owner); the cloud workers it launches land in palette_background_ and are
+// pruned by poll_background_ops(). Per-action, never remembered.
+void App::draw_consent_requests() {
+    zetta::governance::ConsentLedger& ledger = node_.consent_ledger();
+    const auto pending = ledger.pending();
+    ImGui::SeparatorText("Consent requests");
+    if (!consent_decision_status_.empty()) {
+        banner(consent_decision_failed_ ? Tone::Error : Tone::Ok,
+               consent_decision_status_);
+    }
+    if (pending.empty()) {
+        ImGui::TextDisabled(
+            "No pending consent requests. Cloud-touching MCP calls park a "
+            "challenge here for approval; approvals are per-action and never "
+            "remembered.");
+        return;
+    }
+
+    const auto decide = [&](const std::string& challenge_id, bool approve) {
+        zetta::api::Registry& registry = ensure_capability_registry();
+        if (!palette_background_) {
+            palette_background_ = std::make_unique<api::BackgroundActions>();
+        }
+        api::ApiContext context{.node = node_,
+                                .cluster = &cluster_,
+                                .acting_key = {},
+                                .trace = zetta::observability::make_root_trace(),
+                                .recorder = &node_.span_recorder(),
+                                .background = palette_background_.get(),
+                                .provisioners =
+                                    [this](const std::string& target) {
+                                        return provisioner_for(target);
+                                    }};
+        const api::ApiResult result = registry.decide_consent(
+            challenge_id, approve, approve ? std::string{} : "denied in the headed app",
+            context, api::Registry::ConsentSurface::HeadedApp);
+        consent_decision_failed_ = !result.ok;
+        if (result.ok) {
+            consent_decision_status_ =
+                (approve ? "Approved: " : "Denied: ") +
+                result.value.value("capability", std::string{}) + " · " +
+                result.value.value("status", std::string{"denied"});
+        } else {
+            // The engine's reason verbatim (banner rule #632).
+            consent_decision_status_ =
+                result.error.code + ": " + result.error.message;
+        }
+    };
+
+    for (const auto& challenge : pending) {
+        ImGui::PushID(challenge->id.c_str());
+        // A tinted (amber) callout per challenge — the same deliberate,
+        // deny-by-default stop the Cloud Inspector / Add-nodes gates render.
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, tone_background(Tone::Warn));
+        ImGui::BeginChild("##consent_request", ImVec2(0, 0),
+                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+        status_label(Tone::Warn, "Approval required");
+        ImGui::SameLine();
+        ImGui::TextDisabled("· %s", challenge->capability.c_str());
+        ImGui::TextWrapped("%s", challenge->action.summary.c_str());
+        mono_line(kInkQuiet, "requested by:  ",
+                  challenge->requested_by.empty() ? "local"
+                                                  : challenge->requested_by);
+        mono_line(kInkQuiet, "expires:       ", challenge->expires_at);
+        if (!challenge->action.reads.empty()) {
+            eyebrow(mono_font_, "THE CLI MAY READ");
+            if (mono_font_) ImGui::PushFont(mono_font_);
+            for (const std::string& path : challenge->action.reads) {
+                ImGui::BulletText("%s", path.c_str());
+            }
+            if (mono_font_) ImGui::PopFont();
+        }
+        if (!challenge->action.runs.empty()) {
+            eyebrow(mono_font_, "WOULD RUN");
+            if (mono_font_) ImGui::PushFont(mono_font_);
+            for (const std::string& command : challenge->action.runs) {
+                ImGui::BulletText("%s", command.c_str());
+            }
+            if (mono_font_) ImGui::PopFont();
+        }
+        ImGui::Spacing();
+        if (primary_button("Approve and run once")) {
+            decide(challenge->id, /*approve=*/true);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Deny")) {
+            decide(challenge->id, /*approve=*/false);
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::PopID();
+        ImGui::Spacing();
+    }
+}
+
 void App::draw_admin() {
     page_header("Admin & audit",
                 "Principals, access keys, and the immutable audit trail");
+
+    // --- Consent requests (#621, the headed approval surface) ---------------
+    draw_consent_requests();
 
     // The governance surface (SCR-7 / CMP-5, the GUI slice of FEAT-9): a
     // **read-only** viewer over the node's already-validated governance state —

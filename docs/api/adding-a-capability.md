@@ -21,7 +21,9 @@ one PR-sized unit.
    `orchestration:<name>`. The handler receives an already-authorized context;
    anything reaching gate/deploy/run seams inherits their enforcement too.
    Cloud-touching? Set `requires_consent` — the challenge flow is mandatory
-   (see registry-design → Consent); no silent execution, ever.
+   ([consent.md](consent.md)); add a `describe_consent` naming exactly what
+   the input would read/run (return nullopt only for inputs that touch no
+   cloud, like the `local` target); no silent execution, ever.
 5. **Threading.** The handler body runs on the main loop via the bridge — it
    may touch the `Node` freely but must be **quick** (it's inside a tick).
    Heavy work = `kind: job` + the existing Run/ComputeJob lifecycle.

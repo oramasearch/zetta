@@ -63,6 +63,17 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **In flight 2026-07-03 (remote consent)**: [#621](https://github.com/oramasearch/zetta/issues/621)
+  — the consent challenge protocol for cloud-touching MCP tools: a
+  `requires_consent` capability never executes on first call (structured
+  challenge naming exactly what would be read/run), approval only by a
+  distinctly-privileged principal (approver key of a different principal, or
+  the Admin panel's headed approval surface), executed exactly once, audited
+  + span'd on both sides; `ConsentLedger` on the Node,
+  `system.consent_requests`, the consent-gated `cloud_inspect` /
+  `detect_provisioners` / `add_nodes` tools, and `ProvisionerFleet` moved to
+  core so headless MCP adds drive the same wired provisioners
+  ([docs/api/consent.md](api/consent.md)).
 - **Merged to `dev` 2026-07-02**: the full restructure + foundations chain —
   [#610](https://github.com/oramasearch/zetta/pull/610) docs domain
   restructure, [#649](https://github.com/oramasearch/zetta/pull/649)

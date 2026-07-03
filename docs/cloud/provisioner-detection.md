@@ -23,8 +23,9 @@ main() ── detect_provisioner_configs()         # run the local CLIs (read-on
    │         → [ProvisionerConfig{target, cli, summary, config}]
    ├── node.record_provisioner_config(...)      # node-local state (no CRDT, no disk)
    │         → system.provisioners         # the SQL read view (both modes)
-   └── (headed) CloudProvisioners::wire(app, node.provisioner_configs(), seed)
-             → App::set_provisioner("azure", …)  # the Allow button lights up
+   └── ProvisionerFleet::wire(node.provisioner_configs(), seed)  # both modes
+             → App::set_provisioner("azure", …)    # headed: the Allow button lights up
+             → ApiServer::set_provisioner_resolver # MCP: consent-gated add_nodes (#621)
 ```
 
 - **`detect_provisioner_configs(CommandRunner = {})`**
@@ -46,16 +47,21 @@ main() ── detect_provisioner_configs()         # run the local CLIs (read-on
   one row per detected target — `target`, `cli`, `subscription` / `project` /
   `region` / `resource_group` / `pool` / `spot`, `summary`. Populated in **both**
   headed and headless modes.
-- **`CloudProvisioners::wire`** (`src/gui/cloud_wiring.hpp/.cpp`) rebuilds a real
-  CLI-backed provisioner from each detected config — owning the control plane +
-  provisioner for the App's lifetime — and `set_provisioner`s it. A target with no
-  detected config stays unwired (the gate then reads "no provisioner wired",
-  unchanged). The cluster's reachable address is injected as the burst seed so new
-  nodes auto-join.
+- **`ProvisionerFleet::wire`** (`include/zetta/cloud/provisioner_fleet.hpp`,
+  `src/core/cloud/provisioner_fleet.cpp` — moved from the GUI's `cloud_wiring`
+  for #621) rebuilds a real CLI-backed provisioner from each detected config —
+  owning the control plane + provisioner for every consumer's lifetime. One
+  fleet, built in `main` in **both** modes, feeds the headed Add-nodes control
+  (`App::set_provisioner`) and the MCP surface's consent-gated `add_nodes`
+  (`ApiServer::set_provisioner_resolver` — [../api/consent.md](../api/consent.md)).
+  A target with no detected config stays unwired (the gates then read "no
+  provisioner wired", unchanged). The cluster's reachable address is injected
+  as the burst seed so new nodes auto-join.
 
-The actual add stays **per-action consent-gated** in the GUI and is never
-remembered — detection only makes the Allow button *available*; clicking it is
-still the one explicit, billable write.
+The actual add stays **per-action consent-gated** and is never remembered —
+detection only makes the target *available*; the GUI's Allow click, or a
+#621-approved consent challenge over MCP, is still the one explicit, billable
+write.
 
 ## Azure (the reference detector)
 
@@ -75,7 +81,7 @@ still the one explicit, billable write.
 AWS / GCP / OCI / Kubernetes / bare-metal follow the same shape — their CLI's
 `whoami` / `config` → their validated `XConfig` — and slot into
 `detect_provisioner_configs` independently; one CLI being absent never blocks the
-others. `CloudProvisioners` already owns all six provisioner slots, so adding a
+others. `ProvisionerFleet` already owns all six provisioner slots, so adding a
 detector lights up its target with no other change.
 
 ## Tests
