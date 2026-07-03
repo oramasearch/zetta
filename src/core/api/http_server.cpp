@@ -62,7 +62,6 @@ struct ApiServer::Impl {
 
     Registry capability_registry;
     MainThreadBridge bridge;
-    zetta::observability::SpanRecorder span_recorder;
 
     boost::corosio::io_context io_context;
     std::unique_ptr<boost::beast2::http_server> server;
@@ -128,7 +127,7 @@ struct ApiServer::Impl {
             // io coroutine is suspended on the bridge until it completes.
             auto work = [&] {
                 ApiContext context{node, cluster, acting_key, trace,
-                                   &span_recorder};
+                                   &node.span_recorder()};
                 call_result =
                     capability_registry.call(tool_name, arguments, context);
             };
@@ -281,7 +280,7 @@ const std::string& ApiServer::reason() const { return impl_->failure_reason; }
 void ApiServer::drain() { impl_->bridge.drain(); }
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
-    return impl_->span_recorder;
+    return impl_->node.span_recorder();
 }
 void ApiServer::set_activity_hook(ActivityHook hook) {
     impl_->capability_registry.set_activity_hook(std::move(hook));

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -27,6 +28,7 @@
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
 #include "zetta/observability/activity.hpp"
+#include "zetta/observability/crash.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
@@ -90,6 +92,21 @@ namespace {
 //    (#575 area 2). A node measures only its own host, so this returns one row —
 //    the node the query hits; counters a host can't report are null (the GPU
 //    group is absent in a CPU-only core build).
+//  - `spans` — one row per span in this node's span ring (Node::span_recorder();
+//    docs/architecture/observability.md, #640): every traced operation's
+//    intent / plan / performance / result shape, oldest first. Ephemeral,
+//    observed, NOT replicated — the same ring the list_traces / get_trace
+//    capabilities and the GUI trace pane read (RULE-7: one source).
+//  - `traces` — one row per trace aggregated from the same ring: the root
+//    span's name + intent, earliest start, duration, span count, and whether
+//    every span succeeded. The "what happened" summary the GUI activity feed
+//    renders (#622).
+//  - `crashes` — one row per crash report under <data_dir>/crashes/ (#640):
+//    the fatal signal, stacktrace, recent spans, version + platform a dying
+//    node wrote on its way down. Read from the local files at query time
+//    (the checkpoints precedent) — ephemeral, local, NOT replicated. A
+//    malformed report file surfaces as a row with valid=false + the reason,
+//    never silently skipped.
 // Together with the GUI Runs / Admin panels these satisfy RULE-7 (observable
 // state defaults to a system.<table> read view, never a GUI-only surface).
 // Future: system.leadership, etc.
@@ -119,6 +136,9 @@ constexpr std::string_view kCheckpointsTable = "checkpoints";
 constexpr std::string_view kNodeMetricsTable = "node_metrics";
 constexpr std::string_view kPipelineJobsTable = "pipeline_jobs";
 constexpr std::string_view kCollectiveRoundsTable = "collective_rounds";
+constexpr std::string_view kSpansTable = "spans";
+constexpr std::string_view kTracesTable = "traces";
+constexpr std::string_view kCrashesTable = "crashes";
 
 // The pre-#538 table names: `system.zetta_<table>` still resolves to
 // `system.<table>` for the tables that shipped under the legacy prefix.
@@ -772,6 +792,136 @@ std::vector<nlohmann::json> collective_round_rows(Node& node) {
     return {std::move(row)};
 }
 
+// One JSON row per span in the node's span ring for the system.spans table
+// (docs/architecture/observability.md, #640). Sourced from
+// Node::span_recorder().snapshot() (the bounded, mutex-guarded ring every
+// traced operation records into — API calls, distributed runs, testkit cases).
+// **Ephemeral, observed, NOT replicated** (like pipeline_jobs / node_metrics):
+// the rows reflect what THIS node recorded and have no CRDT backing. The four
+// captures ride in `attributes`, with `intent` / `plan` / `result_shape`
+// surfaced as first-class columns so a query can filter on them directly.
+std::vector<nlohmann::json> span_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::observability::Span& span :
+         node.span_recorder().snapshot()) {
+        nlohmann::json row;
+        row["trace_id"] = span.trace_id;
+        row["span_id"] = span.span_id;
+        row["parent_span_id"] = span.parent_span_id;
+        row["name"] = span.name;
+        row["started_at"] = span.started_at;
+        row["duration_ms"] = span.duration_ms;
+        row["ok"] = span.ok;
+        row["error"] = span.error;
+        row["intent"] = span.attributes.value("intent", nlohmann::json());
+        row["plan"] = span.attributes.value("plan", nlohmann::json());
+        row["result_shape"] =
+            span.attributes.value("result_shape", nlohmann::json());
+        row["attributes"] = span.attributes;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per trace for the system.traces table — the "what happened"
+// summary aggregated from the same span ring (#640): the trace's root span
+// (the recorded span whose parent is not itself recorded — the inbound
+// context's span id is synthetic and never recorded), its name + intent, the
+// earliest start, the root's duration, the span count, and whether every span
+// succeeded (`error` carries the first failing span's reason). Traces appear
+// oldest first. **Ephemeral, observed, NOT replicated** — same source, so the
+// GUI activity feed (#622), the SQL surface, and MCP agents all read one ring.
+std::vector<nlohmann::json> trace_rows(const Node& node) {
+    const std::vector<zetta::observability::Span> spans =
+        node.span_recorder().snapshot();
+
+    std::unordered_set<std::string> recorded_span_ids;
+    for (const zetta::observability::Span& span : spans) {
+        recorded_span_ids.insert(span.span_id);
+    }
+
+    // Group by trace id, preserving first-recorded order.
+    std::vector<std::string> trace_order;
+    std::unordered_map<std::string,
+                       std::vector<const zetta::observability::Span*>>
+        traces;
+    for (const zetta::observability::Span& span : spans) {
+        auto [entry, inserted] = traces.try_emplace(span.trace_id);
+        if (inserted) trace_order.push_back(span.trace_id);
+        entry->second.push_back(&span);
+    }
+
+    std::vector<nlohmann::json> rows;
+    rows.reserve(trace_order.size());
+    for (const std::string& trace_id : trace_order) {
+        const auto& trace_spans = traces.at(trace_id);
+        const zetta::observability::Span* root = nullptr;
+        std::string started_at;
+        bool all_ok = true;
+        std::string first_error;
+        for (const zetta::observability::Span* span : trace_spans) {
+            const bool is_root_candidate =
+                span->parent_span_id.empty() ||
+                !recorded_span_ids.contains(span->parent_span_id);
+            if (is_root_candidate && !root) root = span;
+            if (started_at.empty() || span->started_at < started_at) {
+                started_at = span->started_at;  // ISO-8601 sorts lexically
+            }
+            if (!span->ok) {
+                all_ok = false;
+                if (first_error.empty()) first_error = span->error;
+            }
+        }
+        if (!root) root = trace_spans.front();
+
+        nlohmann::json row;
+        row["trace_id"] = trace_id;
+        row["root_span_id"] = root->span_id;
+        row["name"] = root->name;
+        row["intent"] = root->attributes.value("intent", nlohmann::json());
+        row["started_at"] = started_at;
+        row["duration_ms"] = root->duration_ms;
+        row["span_count"] = static_cast<int>(trace_spans.size());
+        row["ok"] = all_ok;
+        row["error"] = first_error;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per crash-report file for the system.crashes table (#640) —
+// what a dying node wrote on its way down (crash.hpp: fatal signal, stack,
+// recent spans, version/platform). Read from <data_dir>/crashes/ at query
+// time (the checkpoints precedent): ephemeral, LOCAL, NOT replicated. A file
+// that fails schema validation still gets a row (valid=false + the reason) —
+// a corrupt crash report is itself something to observe.
+std::vector<nlohmann::json> crash_rows(const Node& node) {
+    const std::string crashes_dir =
+        (std::filesystem::path(node.config().data_dir) / "crashes").string();
+    std::vector<nlohmann::json> rows;
+    for (const zetta::observability::LoadedCrashReport& loaded :
+         zetta::observability::load_crash_reports(crashes_dir)) {
+        nlohmann::json row;
+        row["path"] = loaded.path;
+        row["valid"] = loaded.report.has_value();
+        row["error"] = loaded.error;
+        if (loaded.report) {
+            const zetta::observability::CrashReport& report = *loaded.report;
+            row["id"] = report.id;
+            row["signal_number"] = report.signal_number;
+            row["signal_name"] = report.signal_name;
+            row["crashed_at"] = report.crashed_at;
+            row["version"] = report.version;
+            row["platform"] = report.platform;
+            row["frame_count"] = static_cast<int>(report.stacktrace.size());
+            row["stacktrace"] = report.stacktrace;
+            row["recent_spans"] = report.recent_spans;
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 // Apply a SELECT's WHERE + projection to in-memory rows (used by the system
 // table; regular tables stream straight from the storage engine).
 QueryResult select_over_rows(const SelectStmt& statement,
@@ -1179,6 +1329,15 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kCollectiveRoundsTable) {
                         return select_over_rows(s, collective_round_rows(node_));
                     }
+                    if (sys == kSpansTable) {
+                        return select_over_rows(s, span_rows(node_));
+                    }
+                    if (sys == kTracesTable) {
+                        return select_over_rows(s, trace_rows(node_));
+                    }
+                    if (sys == kCrashesTable) {
+                        return select_over_rows(s, crash_rows(node_));
+                    }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
                                      "\" (try system.nodes, "
@@ -1194,6 +1353,8 @@ QueryResult Executor::execute(const Statement& stmt,
                                      "system.node_metrics, "
                                      "system.pipeline_jobs, "
                                      "system.collective_rounds, "
+                                     "system.spans, system.traces, "
+                                     "system.crashes, "
                                      "system.cloud_providers, "
                                      "system.cloud_status, or "
                                      "system.provisioners)");

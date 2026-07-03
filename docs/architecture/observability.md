@@ -72,15 +72,28 @@ arrive pre-annotated with intent + plan. MCP journeys assert on traces too
 (did the run actually go near-data? one trace answers it). New functionality
 lands with its testkit case, and both land observable.
 
-## Build-out (tracked in the product wave)
+## Build-out (tracked in the product wave; #640)
 
-1. `zetta::observability` core: trace/span types, `traceparent` codec, the bounded
-   recorder, scoped-span helper — wired first into `api::Registry::call` (every
-   MCP call = a span with all four captures; trace id returned in every
-   result).
-2. `system.traces` / `system.spans` read views + `list_traces` / `get_trace`
-   capabilities.
-3. Crash reports (fatal-signal handler + stacktrace + `system.crashes`).
+1. **Shipped** — `zetta::observability` core: trace/span types, `traceparent`
+   codec, the bounded recorder, scoped-span helper — wired first into
+   `api::Registry::call` (every MCP call = a span with all four captures;
+   trace id returned in every result).
+2. **Shipped** — `system.traces` / `system.spans` read views + `list_traces` /
+   `get_trace` capabilities. The ring lives on the Node
+   (`Node::span_recorder()`, the pipeline-jobs precedent), so the SQL views,
+   the capabilities, and the GUI all read one source. Columns + examples:
+   [../data/query.md](../data/query.md).
+3. **Shipped** — crash reports: `install_crash_handler`
+   (`observability/crash.hpp`, installed in main for both run modes) writes
+   stacktrace (execinfo backtrace) + recent spans (try-lock, never a wait) +
+   version/platform to `<data_dir>/crashes/<uuid>.json` on SIGSEGV / SIGABRT /
+   SIGBUS / SIGILL / SIGFPE — disposition reset to SIG_DFL first, so the write
+   is best-effort and a second fault kills for real. Reports are
+   schema-validated on read-back (`schemas/crash_report.schema.json`);
+   `system.crashes` surfaces valid AND malformed files (valid=false + reason);
+   start-up prints a pointer when prior reports exist. Capturing truly
+   in-flight ("active") spans at crash time is a deliberate later slice — the
+   report carries the ring's most recent finished spans.
 4. Cross-node propagation (signal-plane envelope carries traceparent; runs +
    compute jobs record their trace id) — one trace per distributed run.
 5. GUI: trace pane + activity feed integration; feedback bundle affordance.

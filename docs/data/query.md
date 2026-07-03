@@ -318,6 +318,35 @@ SELECT job_id, kind, local_bytes_read, wire_bytes_moved FROM system.pipeline_job
 SELECT rounds_completed, wire_bytes_moved FROM system.collective_rounds;
 ```
 
+There are also three **observability** views
+([observability.md](../architecture/observability.md), #640), all
+**ephemeral, observed, NOT replicated** and qualified-name only:
+
+- **`system.spans`** — one row per span in this node's span ring
+  (`Node::span_recorder()`), oldest first: every traced operation's four
+  captures. Columns: `trace_id`, `span_id`, `parent_span_id`, `name`,
+  `started_at`, `duration_ms`, `ok`, `error`, plus `intent` / `plan` /
+  `result_shape` surfaced as first-class columns and the full `attributes`
+  object. The same ring the `list_traces` / `get_trace` capabilities read.
+- **`system.traces`** — one row per trace aggregated from the same ring: the
+  root span's `name` + `intent`, `root_span_id`, earliest `started_at`, the
+  root's `duration_ms`, `span_count`, `ok` (every span succeeded), `error`
+  (the first failing span's reason). The "what happened" summary the GUI
+  renders.
+- **`system.crashes`** — one row per crash report under `<data_dir>/crashes/`
+  ([crash reports](../architecture/observability.md), #640): what a dying node
+  wrote on a fatal signal. Columns: `id`, `signal_number`, `signal_name`,
+  `crashed_at`, `version`, `platform`, `frame_count`, `stacktrace`,
+  `recent_spans`, plus `path` / `valid` / `error` — a report file that fails
+  schema validation still gets a row (`valid=false` + the reason), never a
+  silent skip. Local files read at query time (the checkpoints precedent).
+
+```sql
+SELECT name, intent, duration_ms FROM system.traces WHERE ok = false;
+SELECT name, duration_ms FROM system.spans WHERE trace_id = '<id>';
+SELECT signal_name, crashed_at, version FROM system.crashes;
+```
+
 > **Naming.** System tables are named **plainly, without a `zetta_` prefix**: the
 > `system` database is reserved + zetta-controlled, so the prefix is redundant.
 > The legacy tables that originally shipped as `system.zetta_<table>` were renamed

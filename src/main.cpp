@@ -15,6 +15,7 @@
 #include "zetta/cloud/provisioner_detect.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/observability/crash.hpp"
 #include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
@@ -241,6 +242,29 @@ int main(int argc, char** argv) {
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
+
+    // Crash reports (#640, docs/architecture/observability.md): from here on a
+    // fatal signal writes <data_dir>/crashes/<uuid>.json — stacktrace, recent
+    // spans, version/platform — before the process dies. Reports from previous
+    // runs are surfaced now (and queryable as system.crashes) — in BOTH modes.
+    zetta::observability::CrashHandlerOptions crash_options;
+    crash_options.crashes_dir =
+        (std::filesystem::path(opts.node.data_dir) / "crashes").string();
+    crash_options.recorder = &node.span_recorder();
+    std::string crash_error;
+    if (!zetta::observability::install_crash_handler(crash_options,
+                                                     &crash_error)) {
+        std::fprintf(stderr, "zetta: crash reports disabled: %s\n",
+                     crash_error.c_str());
+    }
+    const auto previous_crashes =
+        zetta::observability::load_crash_reports(crash_options.crashes_dir);
+    if (!previous_crashes.empty()) {
+        std::printf("zetta: %zu crash report(s) from previous runs — "
+                    "SELECT * FROM system.crashes;\n",
+                    previous_crashes.size());
+    }
+
     if (!node.start()) {
         std::fprintf(stderr, "zetta: failed to start node\n");
         return 1;

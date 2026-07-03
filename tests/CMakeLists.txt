@@ -78,6 +78,8 @@ add_executable(zetta-tests
   cluster/test_node_metrics.cpp
   cluster/test_node_telemetry.cpp
   compute/test_pipeline_instrumentation.cpp
+  observability/test_trace_views.cpp
+  observability/test_crash_reports.cpp
   data/test_query.cpp
   repl/test_repl_console.cpp
   repl/test_governed_console.cpp
