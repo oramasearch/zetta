@@ -7,6 +7,7 @@
 // only picks how to drive them.
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/api/server.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/node.hpp"
@@ -39,6 +40,9 @@ struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
     zetta::cluster::ClusterConfig cluster;
+    bool mcp_enabled = true;                    // --no-mcp disables
+    std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
+    std::string mcp_token;                      // --mcp-token (acting key id)
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -63,6 +67,9 @@ void print_usage(const char* argv0) {
         "Options:\n"
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
+        "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
+        "  --mcp-token T       Require this bearer token (= acting key id)\n"
+        "  --no-mcp            Disable the embedded MCP server\n"
         "  --data-dir PATH     Database directory (default: %s)\n"
         "  --listen HOST:PORT  Cluster listen address (default: %s:%u)\n"
         "  --port-range N      Ports to try from --listen, for several nodes\n"
@@ -89,7 +96,15 @@ Options parse_args(int argc, char** argv) {
     Options o;
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
-        if (arg == "--headless") {
+        if (arg == "--no-mcp") {
+            o.mcp_enabled = false;
+        } else if (arg == "--mcp-listen") {
+            const char* v = take_value(argc, argv, i, o, "--mcp-listen");
+            if (v) o.mcp_listen = v;
+        } else if (arg == "--mcp-token") {
+            const char* v = take_value(argc, argv, i, o, "--mcp-token");
+            if (v) o.mcp_token = v;
+        } else if (arg == "--headless") {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
             o.mode = Mode::Headed;
@@ -228,9 +243,45 @@ int main(int argc, char** argv) {
         node.record_provisioner_config(std::move(detected));
     }
 
+    // The embedded MCP server (docs/api/registry-design.md, #615): the
+    // programmatic control surface, in BOTH modes. Handlers marshal onto this
+    // (owning) loop via the bridge the tick hooks drain below.
+    std::unique_ptr<zetta::api::ApiServer> api_server;
+    if (opts.mcp_enabled) {
+        zetta::api::ServerOptions api_options;
+        const auto colon = opts.mcp_listen.rfind(':');
+        std::uint16_t api_port = 0;
+        if (colon == std::string::npos ||
+            !parse_uint16(opts.mcp_listen.substr(colon + 1), api_port)) {
+            std::fprintf(stderr,
+                         "zetta: bad --mcp-listen '%s' (want HOST:PORT)\n",
+                         opts.mcp_listen.c_str());
+            return 2;
+        }
+        api_options.listen_address = opts.mcp_listen.substr(0, colon);
+        api_options.port = api_port;
+        api_options.bearer_token = opts.mcp_token;
+        api_server = std::make_unique<zetta::api::ApiServer>(node, &cluster,
+                                                             api_options);
+        if (api_server->start()) {
+            std::printf("zetta: MCP endpoint http://%s:%u/mcp%s\n",
+                        api_options.listen_address.c_str(),
+                        static_cast<unsigned>(api_server->port()),
+                        opts.mcp_token.empty() ? " (unauthenticated local)"
+                                               : " (bearer token required)");
+        } else {
+            std::fprintf(stderr, "zetta: MCP server failed to start: %s\n",
+                         api_server->reason().c_str());
+            api_server.reset();
+        }
+    }
+    const auto drain_api = [&api_server] {
+        if (api_server) api_server->drain();
+    };
+
     int rc = 0;
     if (opts.mode == Mode::Headless) {
-        rc = zetta::run_headless(node, cluster);
+        rc = zetta::run_headless(node, cluster, drain_api);
     } else {
         // The provisioners the Cluster view's "Add nodes" control drives. Both
         // holders are declared BEFORE the App so they outlive it: App keeps raw
@@ -254,6 +305,7 @@ int main(int argc, char** argv) {
         zetta::gui::CloudProvisioners cloud_provisioners;
 
         zetta::gui::App app(node, cluster);
+        app.set_tick_hook(drain_api);
         app.set_provisioner("local", local_provisioner);
 
         // Burst nodes auto-join this cluster by seeding from a reachable address.

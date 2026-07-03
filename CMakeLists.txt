@@ -194,6 +194,34 @@ set(BOOST_COROSIO_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BOOST_COROSIO_BUILD_PERF     OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/corosio EXCLUDE_FROM_ALL)
 
+# --- The API surface's HTTP stack (docs/api/registry-design.md, #615) --------
+# beast2 (coroutine-native HTTP/1 server) + http (sans-I/O HTTP + router) ride
+# the SAME capy/corosio stack vendored above — one async model in the binary
+# (docs/research/beast2-http.md). Both are pinned C++ Alliance submodules like
+# capy/corosio. Their remaining Boost deps (json, url + header-only
+# transitives) come from the official boost-cmake release via FetchContent
+# (the SDL3/GoogleTest precedent): as SUBDIRECTORIES the two libraries do NOT
+# self-resolve Boost — they expect the Boost:: targets to exist, so this block
+# MUST come before them (capy/corosio already provide Boost::capy/corosio).
+set(BOOST_INCLUDE_LIBRARIES json url assert config core describe endian mp11 static_assert system throw_exception type_traits variant2 winapi)
+set(BOOST_ENABLE_CMAKE ON)
+FetchContent_Declare(
+  boost_core_libs
+  URL https://github.com/boostorg/boost/releases/download/boost-1.91.0-1/boost-1.91.0-1-cmake.tar.xz
+  URL_HASH ""
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(boost_core_libs)
+
+set(BOOST_HTTP_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_HTTP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/http EXCLUDE_FROM_ALL)
+
+set(BOOST_BEAST2_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(BOOST_BEAST2_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+add_subdirectory(modules/beast2 EXCLUDE_FROM_ALL)
+
 # automerge-cpp — a CRDT (conflict-free replicated data type) for the replicated
 # DDL/metadata/rows. From-scratch C++23, no Rust. It vendors nlohmann/json under
 # upstream/json and adds the `nlohmann_json` target, which the rest of zetta-core
@@ -521,6 +549,21 @@ if(ZETTA_WITH_ORAMACORE)
 endif()
 
 # -----------------------------------------------------------------------------
+# zetta-api — the embedded MCP server (docs/api/registry-design.md, #615).
+# The registry/bridge/observability core lives in zetta-core (HTTP-free); this
+# library holds the ONE Beast2 adapter TU. beast2/http/Boost.JSON link PRIVATE
+# so no HTTP type reaches consumers — the same isolation SDL/CUDA get.
+# -----------------------------------------------------------------------------
+add_library(zetta-api STATIC
+  src/core/api/http_server.cpp)
+target_compile_features(zetta-api PUBLIC cxx_std_26)
+target_link_libraries(zetta-api PUBLIC zetta-core)
+target_link_libraries(zetta-api PRIVATE
+  Boost::beast2
+  Boost::http
+  Boost::json)
+
+# -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)
 # -----------------------------------------------------------------------------
 
@@ -544,6 +587,7 @@ target_include_directories(zetta PRIVATE
 
 target_link_libraries(zetta PRIVATE
   zetta-core
+  zetta-api
   imgui
   SDL3::SDL3-static
 )

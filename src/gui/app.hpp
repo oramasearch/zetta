@@ -4,6 +4,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -86,6 +87,10 @@ public:
     // cluster fleet); a configured deployment can inject cloud provisioners for
     // their targets, which stay consent-gated in the control. `provisioner` must
     // outlive the App. Targets with no injected provisioner render but can't act.
+    // Runs each frame right after Node::tick() — the owning-loop hook the
+    // embedded API server's bridge drains through (docs/api/registry-design.md).
+    void set_tick_hook(std::function<void()> hook) { tick_hook_ = std::move(hook); }
+
     void set_provisioner(const std::string& target_id, zetta::cloud::Provisioner& provisioner);
 
 private:
@@ -293,6 +298,7 @@ private:
                                       int filter);
 
     Node& node_;
+    std::function<void()> tick_hook_;
     zetta::cluster::Cluster& cluster_;
     SDL_Window* window_ = nullptr;
     SDL_Renderer* renderer_ = nullptr;
