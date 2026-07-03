@@ -105,17 +105,23 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   run · add_dataset · testkit_run), each `orchestration:<name>`-scoped +
   audited under the acting key; `run`/`testkit_run` are kind:job over the
   engine's durable Run handles (`api::BackgroundActions` owns the workers,
-  `testkit::AsyncCaseRun` is the new testkit entry point); UC-1 +
-  gate-blocked + denied-key journeys in
-  `tests/api/test_action_journeys.cpp`
+  `testkit::AsyncCaseRun` is the new testkit entry point)
   ([docs/api/governed-actions.md](api/governed-actions.md)).
-- **In flight (this branch)**: [#620](https://github.com/oramasearch/zetta/issues/620)
+- **Merged to `dev` 2026-07-03 (PR #709)**: [#620](https://github.com/oramasearch/zetta/issues/620)
   — GUI live surfacing of externally-initiated actions: the registry's
   activity hook wired into the headed app (thread-safe queue drained in the
   frame loop), surfaced as a click-through "MCP · action · actor" strip line
   deep-linking via `navigate_to`; palette self-calls suppressed; refresh +
   animations needed zero wiring (live reads each frame)
   ([docs/gui/external-activity.md](gui/external-activity.md)).
+- **In flight (this branch)**: [#619](https://github.com/oramasearch/zetta/issues/619)
+  — journeys as DATA: the shared `JourneyStep{tool, input, expect}` driver
+  (`tests/api/journey.hpp`) + the three canonical journey tables
+  (`tests/api/journeys_canonical.hpp` — UC-1 happy path with the near-data
+  trace read-back, gate-blocked deploy, dataset ingest + placement), run at
+  layer 1 (`test_action_journeys.cpp`) and replayed unchanged over real
+  JSON-RPC at layer 2 (`test_mcp_server.cpp`); failures name the offending
+  step + assertion ([testing/mcp-journeys.md](testing/mcp-journeys.md)).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.

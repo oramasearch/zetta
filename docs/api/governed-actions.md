@@ -90,15 +90,22 @@ the case's own declared `TestOption`s.
 
 ## Journeys
 
-`tests/api/test_action_journeys.cpp` (layer 1,
-[../testing/mcp-journeys.md](../testing/mcp-journeys.md)): the UC-1 happy
+The journeys are DATA (#619): `Journey{JourneyStep{tool, input, expect}}`
+tables run by the shared driver `tests/api/journey.hpp`, with the canonical
+three in `tests/api/journeys_canonical.hpp`
+([../testing/mcp-journeys.md](../testing/mcp-journeys.md)).
+`tests/api/test_action_journeys.cpp` runs them at layer 1: the UC-1 happy
 path end to end under a capability-scoped acting key (create → intent →
 compile → gate → deploy → run on the real churn engine → model/at-risk
-index/drivers read back, every action audited under the key), the
-gate-blocked negative (deploy AND run refused with the failing check's
-reason), import/compile n8n from the committed fixture, sim-Python compile,
-`add_dataset` with placement read-back, `testkit_run` submit-then-poll, and
-the denied-key negative. Deliberately later slices: the L2 protocol journey
-for job polling over real HTTP, consent-gated cluster ops (#621), streamed
-(rather than completion-flushed) testkit logs, and an async `add_dataset`
-for very large files (the GUI's `AsyncDatasetAdd` pumped from the drain).
+index/drivers read back, the near-data trace read-back via the train job's
+`get_trace`, every action audited under the key), the gate-blocked negative
+(deploy AND run refused with the failing check's reason; read-backs prove
+nothing placed, nothing executed), import/compile n8n from the committed
+fixture, sim-Python compile, `add_dataset` with placement read-back,
+`testkit_run` submit-then-poll, and the denied-key negative.
+`tests/api/test_mcp_server.cpp` replays the dataset-ingest and gate-blocked
+tables unchanged over real JSON-RPC (layer 2). Deliberately later slices:
+the L2 protocol journey for job polling over real HTTP, consent-gated
+cluster ops (#621), streamed (rather than completion-flushed) testkit logs,
+and an async `add_dataset` for very large files (the GUI's `AsyncDatasetAdd`
+pumped from the drain).
