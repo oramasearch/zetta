@@ -107,6 +107,10 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ([status-tones.md](gui/status-tones.md)). **#622 activity feed shipped**
   from layer-0: `system.activity` + the Operations → Activity view + the Home
   recent-activity strip ([docs/gui/activity-feed.md](gui/activity-feed.md)).
+  **#625 command palette shipped**: Cmd+K fuzzy view navigation + entity jump
+  + the capability registry's actions rendered for humans, executed through
+  the one `Registry::call` path
+  ([docs/gui/command-palette.md](gui/command-palette.md)).
 - **Security**: CTL-2/TB-3 inter-node transport security is **built**
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every

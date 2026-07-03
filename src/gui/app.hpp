@@ -43,6 +43,7 @@ namespace zetta::testkit { struct TestResult; }
 namespace zetta::testkit { struct TestCase; }
 namespace zetta::gui { struct AddNodesOp; }
 namespace zetta::gui { struct VmSizesOp; }
+namespace zetta::api { class Registry; }
 
 namespace zetta::cloud { class Provisioner; }
 namespace zetta::cloud { struct CloudProvider; }
@@ -107,6 +108,16 @@ public:
 
     void set_provisioner(const std::string& target_id, zetta::cloud::Provisioner& provisioner);
 
+    // The capability registry the command palette (#625) renders and executes —
+    // the SAME list the MCP server serves (docs/api/registry-design.md: one
+    // registry, many renderings). main wires the API server's registry; when
+    // none is wired (--no-mcp) the palette builds its own from
+    // register_core_capabilities, so the human surface never loses actions.
+    // Non-owning; must outlive the App.
+    void set_capability_registry(zetta::api::Registry* registry) {
+        capability_registry_ = registry;
+    }
+
 private:
     // The single active view shown in the content area. The menu bar selects
     // which one is live, so the window shows one focused panel at a time instead
@@ -135,7 +146,7 @@ private:
 
     // One row of the view registry (docs/gui/architecture.md): each view is
     // declared exactly once here and consumed by the sidebar, navigation, and
-    // (later) the command palette. Adding a view = adding one row + its draw
+    // the command palette (#625). Adding a view = adding one row + its draw
     // method — nothing else knows the view list.
     struct ViewInfo {
         View id;
@@ -164,6 +175,23 @@ private:
     // The sectioned left navigation rail (#628), grammar-rendered from the
     // registry; coral marks the active row (the design system's "you are here").
     void draw_sidebar();
+    // The Cmd+K command palette (#625, app_palette.cpp): fuzzy view
+    // navigation + entity jump + the capability registry's actions rendered
+    // for humans. Issued every frame from render_frame (a popup, like the
+    // New Project modal).
+    void draw_command_palette();
+    // The palette's list step: query input + the fuzzy-ranked entries (views,
+    // entities, registry actions), grouped under mono eyebrows.
+    void draw_palette_list_step();
+    // The palette's argument step: a schema-driven form for the selected
+    // capability's input (one field per property; the schema is the form).
+    void draw_palette_argument_step();
+    // Execute a registry capability from the palette: assemble the staged
+    // argument fields per the entry's input schema, call Registry::call on
+    // this (owning) thread — schema validation, authorization, audit, spans,
+    // and the consent gate all live in that one path — and record the outcome
+    // for the palette to render (the engine's reason verbatim on failure).
+    void run_palette_capability(const std::string& capability_name);
     // Sidebar badges: cheap per-frame reads of live engine state.
     std::string jobs_badge() const;     // running compute jobs ("" when none)
     std::string cluster_badge() const;  // cluster member count
@@ -408,6 +436,26 @@ private:
     // Asks draw_about_modal() to open the About popup on the next frame (set from
     // the Help menu), mirroring the New Project modal's request flag.
     bool about_requested_ = false;
+
+    // Command palette (#625, app_palette.cpp). `capability_registry_` is the
+    // action source (set_capability_registry; the palette lazily builds
+    // `owned_capability_registry_` with the core capabilities when main wired
+    // none). Everything else is presentation state: the query, the selected
+    // row, the capability awaiting arguments (with its staged text fields),
+    // and the last call's outcome (status line + pretty result JSON) — the
+    // entry list itself is rebuilt from live sources every frame.
+    zetta::api::Registry* capability_registry_ = nullptr;
+    std::unique_ptr<zetta::api::Registry> owned_capability_registry_;
+    bool palette_requested_ = false;  // Cmd+K / menu asks to open next frame
+    std::string palette_query_;
+    int palette_selected_ = 0;
+    std::string palette_capability_;  // argument step's entry ("" = list step)
+    std::map<std::string, std::string> palette_args_;  // field -> staged text
+    bool palette_refocus_ = false;  // refocus the step's first input next frame
+    std::string palette_status_;    // last call's outcome line ("" = none)
+    bool palette_failed_ = false;   // tones palette_status_
+    std::string palette_trace_;     // last call's trace id ("" = none)
+    std::string palette_result_;    // last call's pretty result JSON ("" = none)
 
     // Main-loop run flag (a member so render_frame() / the menu's Quit can set it
     // without threading a reference through every call).

@@ -18,6 +18,7 @@ add_executable(zetta-tests
   api/test_mcp_server.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
+  util/test_fuzzy.cpp
   pipeline/test_validation.cpp
   pipeline/test_gate.cpp
   pipeline/test_graph_checks.cpp

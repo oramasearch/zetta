@@ -3,6 +3,7 @@
 #include "gui/repl_console.hpp"
 
 #include "zetta/governance/access_key.hpp"
+#include "zetta/api/registry.hpp"  // complete api::Registry for ~App's unique_ptr
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/util/bytes.hpp"
@@ -385,6 +386,12 @@ void App::draw_menu_bar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
+        // Discoverability for the keyboard-first path (#625): the palette
+        // itself opens on Cmd+K from anywhere.
+        if (ImGui::MenuItem("Command palette", "Cmd+K")) {
+            palette_requested_ = true;
+        }
+        ImGui::Separator();
         if (ImGui::BeginMenu("Text size")) {
             // Each option is a UI scale on top of the OS content scale; a change
             // requests a font-atlas rebuild before the next frame.
@@ -629,11 +636,12 @@ void App::render_frame() {
     ImGui::Separator();
     draw_active_view();
 
-    // The New Project dialog (SCR-2) and the About dialog are modals over the
-    // root window; they must be issued every frame so ImGui keeps them alive
-    // while open.
+    // The New Project dialog (SCR-2), the About dialog, and the command
+    // palette (#625) are popups over the root window; they must be issued
+    // every frame so ImGui keeps them alive while open.
     draw_new_project_modal();
     draw_about_modal();
+    draw_command_palette();
 
     ImGui::End();
 
