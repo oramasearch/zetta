@@ -4,10 +4,16 @@
 #include <utility>
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset.hpp"
+#include "zetta/index/index.hpp"
 #include "zetta/index/search.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
+#include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/version.hpp"
 
@@ -154,6 +160,311 @@ const nlohmann::json& list_projects_schema() {
 ApiResult handle_list_projects(const nlohmann::json&, ApiContext& context) {
     nlohmann::json output;
     output["projects"] = context.node.project_names();
+    return ApiResult::success(std::move(output));
+}
+
+// --- typed detail reads (#616 read parity) -----------------------------------
+//
+// Each get_* returns the entity's already-validated value JSON — the exact
+// shape `metadata()` serializes (= the CRDT value the boundary schema
+// validated) — with the id added, so MCP, the on-disk projection, and the
+// system.* SQL views can never drift (RULE-7: same live engine source).
+
+nlohmann::json id_input_schema(std::string_view field,
+                               std::string_view description) {
+    return nlohmann::json{
+        {"type", "object"},
+        {"required", {field}},
+        {"additionalProperties", false},
+        {"properties",
+         {{field, {{"type", "string"},
+                   {"minLength", 1},
+                   {"description", description}}}}}};
+}
+
+const nlohmann::json& get_project_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("name", "the project's name, or its uuid");
+    return schema;
+}
+
+ApiResult handle_get_project(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    auto project = context.node.find_project(name);
+    if (!project) {
+        // Entity refs elsewhere (runs, jobs, models) carry the project *uuid*,
+        // so accept it as the handle too.
+        for (const std::string& candidate : context.node.project_names()) {
+            auto by_name = context.node.find_project(candidate);
+            if (by_name && by_name->id() == name) {
+                project = std::move(by_name);
+                break;
+            }
+        }
+    }
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + name + "' (or with that id)");
+    }
+    nlohmann::json output = project->metadata();
+    output["id"] = project->id();
+    nlohmann::json inputs = nlohmann::json::array();
+    for (const auto& project_input : project->inputs()) {
+        nlohmann::json entry = project_input->metadata();
+        entry["id"] = project_input->id();
+        inputs.push_back(std::move(entry));
+    }
+    output["inputs"] = std::move(inputs);
+    nlohmann::json graphs = nlohmann::json::array();
+    for (const auto& graph : project->graphs()) {
+        graphs.push_back({{"id", graph->id()}, {"name", graph->name()}});
+    }
+    output["graphs"] = std::move(graphs);
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& get_run_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("run_id", "the run's uuid (system.runs.run_id)");
+    return schema;
+}
+
+ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("run_id").get<std::string>();
+    const auto run = context.node.find_run(id);
+    if (!run) {
+        return ApiResult::failure("not_found", "no run with id '" + id + "'");
+    }
+    nlohmann::json output = run->metadata();
+    output["id"] = run->id();
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& get_model_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("model_id", "the model's uuid (system.models.model_id)");
+    return schema;
+}
+
+ApiResult handle_get_model(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("model_id").get<std::string>();
+    const auto model = context.node.find_model(id);
+    if (!model) {
+        return ApiResult::failure("not_found", "no model with id '" + id + "'");
+    }
+    nlohmann::json output = model->metadata();
+    output["id"] = model->id();
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& get_job_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("job_id", "the compute job's uuid (system.jobs.job_id)");
+    return schema;
+}
+
+ApiResult handle_get_job(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("job_id").get<std::string>();
+    const auto job = context.node.find_job(id);
+    if (!job) {
+        return ApiResult::failure("not_found", "no job with id '" + id + "'");
+    }
+    nlohmann::json output = job->metadata();
+    output["id"] = job->id();
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& get_index_schema() {
+    static const nlohmann::json schema =
+        id_input_schema("index_id", "the index's uuid (system.indexes.index_id)");
+    return schema;
+}
+
+ApiResult handle_get_index(const nlohmann::json& input, ApiContext& context) {
+    const std::string id = input.at("index_id").get<std::string>();
+    const auto index = context.node.find_index(id);
+    if (!index) {
+        return ApiResult::failure("not_found", "no index with id '" + id + "'");
+    }
+    nlohmann::json output = index->metadata();
+    output["id"] = index->id();
+    return ApiResult::success(std::move(output));
+}
+
+// --- get_dataset / list_datasets ----------------------------------------------
+
+// A DatasetSummary as JSON — the full computed shape, with the per-partition
+// placement kept structured (the SQL view flattens it to strings for tabular
+// reading; the tool keeps the arrays an agent can walk).
+nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) {
+    nlohmann::json partitions = nlohmann::json::array();
+    for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
+        partitions.push_back({{"partition_id", placement.partition_id},
+                              {"blob_ref", placement.blob_ref},
+                              {"row_start", placement.row_start},
+                              {"row_end", placement.row_end},
+                              {"owner_nodes", placement.owner_nodes}});
+    }
+    return nlohmann::json{{"name", dataset.name},
+                          {"database", dataset.database},
+                          {"table_id", dataset.table_id},
+                          {"format", dataset.format},
+                          {"replication", dataset.replication},
+                          {"rows", dataset.rows},
+                          {"size_bytes", dataset.size_bytes},
+                          {"columns", dataset.columns},
+                          {"partitions", std::move(partitions)}};
+}
+
+const nlohmann::json& get_dataset_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"dataset"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"dataset",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the dataset name (= the table name)"}}},
+          {"database",
+           {{"type", "string"},
+            {"description", "the owning database — required only when the "
+                            "same dataset name exists in several databases"}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_dataset(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("dataset").get<std::string>();
+    const std::string database = input.value("database", "");
+    std::vector<zetta::data::DatasetSummary> matches;
+    for (zetta::data::DatasetSummary& dataset : context.node.datasets()) {
+        if (dataset.name != name) continue;
+        if (!database.empty() && dataset.database != database) continue;
+        matches.push_back(std::move(dataset));
+    }
+    if (matches.empty()) {
+        return ApiResult::failure(
+            "not_found", "no dataset named '" + name + "'" +
+                             (database.empty() ? "" : " in database '" + database + "'"));
+    }
+    if (matches.size() > 1) {
+        std::string databases;
+        for (const zetta::data::DatasetSummary& match : matches) {
+            if (!databases.empty()) databases += ", ";
+            databases += match.database;
+        }
+        return ApiResult::failure(
+            "engine_error", "dataset '" + name + "' exists in several databases (" +
+                                databases + ") — pass \"database\" to pick one");
+    }
+    return ApiResult::success(dataset_summary_json(matches.front()));
+}
+
+// --- list_* siblings (#616) ----------------------------------------------------
+//
+// Compact structured listings over the same live Node registries the system.*
+// SQL views compute from — for the places sql's flattened tabular rows aren't
+// ergonomic for an agent (structured arrays, stable ids to feed the get_* reads).
+
+const nlohmann::json& list_runs_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+ApiResult handle_list_runs(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json runs = nlohmann::json::array();
+    for (const auto& run : context.node.runs()) {
+        runs.push_back({{"id", run->id()},
+                        {"project", run->project()},
+                        {"graph", run->graph()},
+                        {"deployment", run->deployment()},
+                        {"status", std::string(to_string(run->status()))},
+                        {"created", run->created()},
+                        {"updated", run->updated()},
+                        {"log_count", run->logs().size()},
+                        {"output_count", run->outputs().size()}});
+    }
+    nlohmann::json output;
+    output["runs"] = std::move(runs);
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& list_models_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json models = nlohmann::json::array();
+    for (const auto& model : context.node.models()) {
+        models.push_back({{"id", model->id()},
+                          {"name", model->name()},
+                          {"kind", model->kind()},
+                          {"project", model->project()},
+                          {"run", model->run()},
+                          {"created", model->created()},
+                          {"has_weights", model->has_weights()}});
+    }
+    nlohmann::json output;
+    output["models"] = std::move(models);
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& list_jobs_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+ApiResult handle_list_jobs(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json jobs = nlohmann::json::array();
+    for (const auto& job : context.node.jobs()) {
+        jobs.push_back({{"id", job->id()},
+                        {"kind", std::string(to_string(job->kind()))},
+                        {"status", std::string(to_string(job->status()))},
+                        {"project", job->project()},
+                        {"graph", job->graph()},
+                        {"run", job->run()},
+                        {"created", job->created()},
+                        {"updated", job->updated()},
+                        {"detail", job->detail()}});
+    }
+    nlohmann::json output;
+    output["jobs"] = std::move(jobs);
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& list_indexes_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+ApiResult handle_list_indexes(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json indexes = nlohmann::json::array();
+    for (const auto& index : context.node.indexes()) {
+        indexes.push_back({{"id", index->id()},
+                           {"table", index->table()},
+                           {"kind", std::string(index->kind_name())},
+                           {"backend", index->backend()},
+                           {"fields", index->fields()},
+                           {"created", index->created()}});
+    }
+    nlohmann::json output;
+    output["indexes"] = std::move(indexes);
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& list_datasets_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+ApiResult handle_list_datasets(const nlohmann::json&, ApiContext& context) {
+    nlohmann::json datasets = nlohmann::json::array();
+    for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
+        datasets.push_back(dataset_summary_json(dataset));
+    }
+    nlohmann::json output;
+    output["datasets"] = std::move(datasets);
     return ApiResult::success(std::move(output));
 }
 
@@ -411,6 +722,139 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_trace});
+
+    registry.add(Capability{
+        "get_project",
+        "Get one project",
+        "Read one AI project's full detail — metadata plus its inputs and "
+        "graphs — by name or uuid. No side effects.",
+        get_project_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_project});
+
+    registry.add(Capability{
+        "get_run",
+        "Get one run",
+        "Read one run's full validated record — status, logs, outputs, "
+        "lineage — by its uuid. No side effects.",
+        get_run_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_run});
+
+    registry.add(Capability{
+        "get_model",
+        "Get one model",
+        "Read one model's full validated record — kind, lineage, feature "
+        "schema, metrics, weights fingerprint — by its uuid. No side effects.",
+        get_model_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_model});
+
+    registry.add(Capability{
+        "get_job",
+        "Get one job",
+        "Read one compute job's full validated record — kind, status, "
+        "lineage refs, detail — by its uuid. No side effects.",
+        get_job_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_job});
+
+    registry.add(Capability{
+        "get_index",
+        "Get one index",
+        "Read one registered index's full validated record — table, kind, "
+        "backend, fields — by its uuid. No side effects.",
+        get_index_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_index});
+
+    registry.add(Capability{
+        "get_dataset",
+        "Get one dataset",
+        "Read one dataset's computed summary — schema, row count, size, "
+        "format, replication, partition placement — by name (plus database "
+        "when ambiguous). No side effects.",
+        get_dataset_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_dataset});
+
+    registry.add(Capability{
+        "list_runs",
+        "List runs",
+        "Read a compact listing of every run — id, lineage refs, status, "
+        "stamps, log/output counts. No side effects.",
+        list_runs_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_runs});
+
+    registry.add(Capability{
+        "list_models",
+        "List models",
+        "Read a compact listing of every registered model — id, name, kind, "
+        "lineage refs, weights presence. No side effects.",
+        list_models_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_models});
+
+    registry.add(Capability{
+        "list_jobs",
+        "List jobs",
+        "Read a compact listing of every compute job — id, kind, status, "
+        "lineage refs, stamps, detail. No side effects.",
+        list_jobs_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_jobs});
+
+    registry.add(Capability{
+        "list_indexes",
+        "List indexes",
+        "Read a compact listing of every registered index — id, table, kind, "
+        "backend, fields. No side effects.",
+        list_indexes_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_indexes});
+
+    registry.add(Capability{
+        "list_datasets",
+        "List datasets",
+        "Read the computed summary of every dataset — schema, row count, "
+        "size, format, replication, partition placement. No side effects.",
+        list_datasets_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_datasets});
 
     registry.add(Capability{
         "submit_feedback",

@@ -35,10 +35,31 @@ frame) via the bridge — the loops drain it beside `Node::tick()`.
 | `sql` | read | api:query | one governed SQL statement — every `system.*` view |
 | `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
+| `get_project` | read | api:query | one project's full detail (metadata + inputs + graphs) by name or uuid |
+| `get_run` | read | api:query | one run's validated record (status / logs / outputs / lineage) by uuid |
+| `get_model` | read | api:query | one model's validated record (kind / lineage / feature schema / metrics / weights fingerprint) by uuid |
+| `get_job` | read | api:query | one compute job's validated record (kind / status / lineage refs / detail) by uuid |
+| `get_index` | read | api:query | one index's validated record (table / kind / backend / fields) by uuid |
+| `get_dataset` | read | api:query | one dataset's computed summary (schema / rows / size / replication / placement) by name (+ database when ambiguous) |
+| `list_runs` | read | api:query | compact run listing (ids feed `get_run`) |
+| `list_models` | read | api:query | compact model listing (ids feed `get_model`) |
+| `list_jobs` | read | api:query | compact compute-job listing (ids feed `get_job`) |
+| `list_indexes` | read | api:query | compact index listing (ids feed `get_index`) |
+| `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
 
 All accept the reserved optional `intent` field (recorded to the span,
-stripped before schema validation). Wider parity: #616/#617.
+stripped before schema validation).
+
+**Read parity (#616).** The typed `get_*` reads return the entity's
+**already-validated value JSON** — exactly the `metadata()` shape the boundary
+schema validated (the CRDT value / on-disk projection) — with the `id` added;
+`get_dataset` / `list_datasets` return the computed `DatasetSummary` with the
+schema and partition placement kept structured (the SQL view flattens them for
+tabular reading). Every handler is a thin caller of the same live engine
+source its `system.*` view computes from (`Node::…()`), so MCP, SQL, and the
+GUI cannot drift (RULE-7). Arbitrary reads beyond these go through `sql`.
+Action parity: #617.
