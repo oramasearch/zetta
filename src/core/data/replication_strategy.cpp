@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::data {
 
 std::string_view to_string(ReplicationStrategyKind kind) {
@@ -69,6 +71,36 @@ std::optional<ReplicationStrategy> ReplicationStrategy::from_json(
     if (parsed < 1) return std::nullopt;
     return ReplicationStrategy::partitioned_with_replicas(
         static_cast<int>(parsed));
+}
+
+// The ReplicationStrategy JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/replication_strategy.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& replication_strategy_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/replication_strategy.schema.json",
+  "title": "ReplicationStrategy",
+  "description": "The per-table / per-database replication strategy (ENT-35) — how a given table or database's replicated state is laid out across the cluster. The per-entity counterpart to ReplicationManager's node-wide ReplicationPolicy. ReplicateToAll keeps a full copy on every node (the default, written nowhere so the projection is byte-identical to before); Partitioned shards a single copy per shard; PartitionedWithReplicas shards with replication_factor total copies per shard (default 3). Mirrored by zetta::ReplicationStrategy in include/zetta/replication_strategy.hpp and enforced by ReplicationStrategy::from_json() in src/core/replication_strategy.cpp — keep them in sync. This slice records/persists/replicates the choice; the partitioned-placement engine that acts on a non-default strategy is a later slice. A malformed strategy is rejected at the boundary. (The conditional 'replication_factor is required-with-default for partitioned_with_replicas, ignored otherwise' is enforced in from_json, beyond what this schema expresses.)",
+  "type": "object",
+  "required": ["kind"],
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "description": "The strategy family. Append-only enum (the snake_case name is the stored identifier). 'replicate_to_all' = a full copy on every node (the default); 'partitioned' = sharded, one copy per shard; 'partitioned_with_replicas' = sharded, replication_factor copies per shard.",
+      "type": "string",
+      "enum": ["replicate_to_all", "partitioned", "partitioned_with_replicas"]
+    },
+    "replication_factor": {
+      "description": "Total copies of each shard. Present only for kind 'partitioned_with_replicas' (a positive integer; defaults to 3 when omitted). Ignored for the other kinds.",
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 ReplicationStrategy replication_strategy_from_meta(const nlohmann::json& meta) {

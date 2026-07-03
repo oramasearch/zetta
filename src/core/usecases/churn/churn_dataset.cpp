@@ -17,98 +17,248 @@
 namespace zetta::usecases::churn {
 namespace fs = std::filesystem;
 
+// ---- the draft-07 schemas (code-owned) --------------------------------------
+// The code-owned source of truth for the churn dataset shapes (declared in
+// zetta/usecases/churn/churn_dataset.hpp): the committed
+// schemas/churn_{dataset,account,event}.schema.json files are generated from
+// these and drift-checked by tests/test_schemas.cpp (#646). They are what runs
+// at the boundary (the validator stays PRIVATE to zetta-core).
+
+const nlohmann::json& churn_dataset_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/churn_dataset.schema.json",
+  "title": "zetta.ChurnDatasetManifest",
+  "description": "The manifest (dataset.json) of a synthetic UC-1 churn dataset, declaring the churn 'contract' — the entity to score, the time column, the label, the as-of decision time (t0), and the label horizon. Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
+  "type": "object",
+  "required": [
+    "name",
+    "entity_field",
+    "time_field",
+    "label_field",
+    "as_of_date",
+    "churn_horizon_days",
+    "label_definition"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "description": "Human name of the dataset.",
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "description": "Free-text description of the dataset's provenance and intent.",
+      "type": "string"
+    },
+    "entity_field": {
+      "description": "The account/event field identifying the unit to score (e.g. \"account_id\").",
+      "type": "string",
+      "minLength": 1
+    },
+    "time_field": {
+      "description": "The event field carrying the event timestamp used for point-in-time featurization (e.g. \"event_ts\").",
+      "type": "string",
+      "minLength": 1
+    },
+    "label_field": {
+      "description": "The account field carrying the churn label (e.g. \"churned\").",
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of_date": {
+      "description": "The decision time t0 (ISO-8601 date). Features may use only events with event_ts <= as_of_date.",
+      "type": "string",
+      "minLength": 1
+    },
+    "churn_horizon_days": {
+      "description": "The forward label horizon in days: an account churns iff it cancels within this many days after as_of_date.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "label_definition": {
+      "description": "Human description of exactly how the churn label is defined.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
+const nlohmann::json& churn_account_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/churn_account.schema.json",
+  "title": "zetta.ChurnAccount",
+  "description": "One account row of a synthetic UC-1 churn dataset (one JSONL line / one CSV record). Carries the entity to score, its commercial + tenure attributes, the churn label, and — for the TC-4 entity-resolution case — the ground-truth canonical `entity` and `brand` (FedEx siblings share a brand but are distinct entities/accounts). Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
+  "type": "object",
+  "required": [
+    "account_id",
+    "name",
+    "brand",
+    "entity",
+    "plan_tier",
+    "industry",
+    "region",
+    "mrr",
+    "seats",
+    "tenure_days",
+    "renewal_date",
+    "churned",
+    "churn_date"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "account_id": {
+      "description": "Stable id of the account — the correct resolution target for the TC-4 check.",
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "description": "Display name of the account (e.g. \"FedEx Freight\").",
+      "type": "string",
+      "minLength": 1
+    },
+    "brand": {
+      "description": "Parent brand grouping sibling accounts (e.g. \"FedEx\"). May be empty for a standalone account; siblings sharing a brand must NOT be conflated into one account.",
+      "type": "string"
+    },
+    "entity": {
+      "description": "Ground-truth canonical entity/division the account is (e.g. \"fedex_freight\") — the TC-4 fixture label.",
+      "type": "string",
+      "minLength": 1
+    },
+    "plan_tier": {
+      "description": "Subscription tier.",
+      "type": "string",
+      "enum": ["starter", "business", "enterprise"]
+    },
+    "industry": {
+      "description": "Account industry (a categorical feature).",
+      "type": "string",
+      "minLength": 1
+    },
+    "region": {
+      "description": "Account region (a categorical feature).",
+      "type": "string",
+      "minLength": 1
+    },
+    "mrr": {
+      "description": "Monthly recurring revenue in dollars.",
+      "type": "number",
+      "minimum": 0
+    },
+    "seats": {
+      "description": "Provisioned seats.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "tenure_days": {
+      "description": "Days since the account started, as of as_of_date.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "renewal_date": {
+      "description": "Next renewal date (ISO-8601).",
+      "type": "string",
+      "minLength": 1
+    },
+    "churned": {
+      "description": "The label: true iff the account churned within the horizon after as_of_date.",
+      "type": "boolean"
+    },
+    "churn_date": {
+      "description": "Date the account churned (ISO-8601), or empty when it did not churn. Post-cutoff by construction — a label, never a feature.",
+      "type": "string"
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
+const nlohmann::json& churn_event_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/churn_event.schema.json",
+  "title": "zetta.ChurnEvent",
+  "description": "One comms/usage event row of a synthetic UC-1 churn dataset (one JSONL line / one CSV record). Every event carries an `event_ts` so featurization can window to event_ts <= as_of_date (point-in-time). `comms` rows additionally carry a `mention` — the raw account-name string a resolver must map to the right account (the TC-4 entity-resolution case). Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "account_id",
+    "event_ts",
+    "event_type",
+    "channel",
+    "mention",
+    "value"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {
+      "description": "Stable id of the event.",
+      "type": "string",
+      "minLength": 1
+    },
+    "account_id": {
+      "description": "The account this event belongs to (joins to a ChurnAccount.account_id).",
+      "type": "string",
+      "minLength": 1
+    },
+    "event_ts": {
+      "description": "Event timestamp (ISO-8601). Featurization uses only events with event_ts <= as_of_date.",
+      "type": "string",
+      "minLength": 1
+    },
+    "event_type": {
+      "description": "Kind of event.",
+      "type": "string",
+      "enum": [
+        "login",
+        "feature_use",
+        "payment_failed",
+        "support_ticket",
+        "csm_contact",
+        "comms"
+      ]
+    },
+    "channel": {
+      "description": "Channel the event came through (app, email, phone, web, crm, billing, …).",
+      "type": "string",
+      "minLength": 1
+    },
+    "mention": {
+      "description": "The raw account-name string a resolver saw (non-empty only on `comms` rows; the TC-4 case). Empty otherwise.",
+      "type": "string"
+    },
+    "value": {
+      "description": "Generic numeric payload (a count, an amount in dollars, or a severity), 0 when not applicable.",
+      "type": "number"
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 namespace {
-
-// ---- the draft-07 schemas, embedded ----------------------------------------
-// Functional mirrors of schemas/churn_{dataset,account,event}.schema.json — keep
-// the two in sync. The committed files are the documented source of truth; these
-// are what runs at the boundary (the validator is PRIVATE to zetta-core).
-
-const nlohmann::json& manifest_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.ChurnDatasetManifest",
-      "type": "object",
-      "required": ["name", "entity_field", "time_field", "label_field",
-                   "as_of_date", "churn_horizon_days", "label_definition"],
-      "additionalProperties": false,
-      "properties": {
-        "name":               { "type": "string", "minLength": 1 },
-        "description":        { "type": "string" },
-        "entity_field":       { "type": "string", "minLength": 1 },
-        "time_field":         { "type": "string", "minLength": 1 },
-        "label_field":        { "type": "string", "minLength": 1 },
-        "as_of_date":         { "type": "string", "minLength": 1 },
-        "churn_horizon_days": { "type": "integer", "minimum": 1 },
-        "label_definition":   { "type": "string", "minLength": 1 }
-      }
-    })JSONSCHEMA");
-    return schema;
-}
-
-const nlohmann::json& account_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.ChurnAccount",
-      "type": "object",
-      "required": ["account_id", "name", "brand", "entity", "plan_tier",
-                   "industry", "region", "mrr", "seats", "tenure_days",
-                   "renewal_date", "churned", "churn_date"],
-      "additionalProperties": false,
-      "properties": {
-        "account_id":   { "type": "string", "minLength": 1 },
-        "name":         { "type": "string", "minLength": 1 },
-        "brand":        { "type": "string" },
-        "entity":       { "type": "string", "minLength": 1 },
-        "plan_tier":    { "type": "string",
-                          "enum": ["starter", "business", "enterprise"] },
-        "industry":     { "type": "string", "minLength": 1 },
-        "region":       { "type": "string", "minLength": 1 },
-        "mrr":          { "type": "number", "minimum": 0 },
-        "seats":        { "type": "integer", "minimum": 0 },
-        "tenure_days":  { "type": "integer", "minimum": 0 },
-        "renewal_date": { "type": "string", "minLength": 1 },
-        "churned":      { "type": "boolean" },
-        "churn_date":   { "type": "string" }
-      }
-    })JSONSCHEMA");
-    return schema;
-}
-
-const nlohmann::json& event_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.ChurnEvent",
-      "type": "object",
-      "required": ["event_id", "account_id", "event_ts", "event_type",
-                   "channel", "mention", "value"],
-      "additionalProperties": false,
-      "properties": {
-        "event_id":   { "type": "string", "minLength": 1 },
-        "account_id": { "type": "string", "minLength": 1 },
-        "event_ts":   { "type": "string", "minLength": 1 },
-        "event_type": { "type": "string",
-                        "enum": ["login", "feature_use", "payment_failed",
-                                 "support_ticket", "csm_contact", "comms"] },
-        "channel":    { "type": "string", "minLength": 1 },
-        "mention":    { "type": "string" },
-        "value":      { "type": "number" }
-      }
-    })JSONSCHEMA");
-    return schema;
-}
 
 // One validator per schema, compiled once (the expensive step), then cheap to run.
 nlohmann::json_schema::json_validator& manifest_validator() {
-    static nlohmann::json_schema::json_validator validator(manifest_schema());
+    static nlohmann::json_schema::json_validator validator(churn_dataset_schema());
     return validator;
 }
 nlohmann::json_schema::json_validator& account_validator() {
-    static nlohmann::json_schema::json_validator validator(account_schema());
+    static nlohmann::json_schema::json_validator validator(churn_account_schema());
     return validator;
 }
 nlohmann::json_schema::json_validator& event_validator() {
-    static nlohmann::json_schema::json_validator validator(event_schema());
+    static nlohmann::json_schema::json_validator validator(churn_event_schema());
     return validator;
 }
 

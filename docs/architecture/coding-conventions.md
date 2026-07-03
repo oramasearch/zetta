@@ -113,7 +113,8 @@ crashes carry stacktraces. An unobservable operation is incomplete.
   (Run, Model, ComputeJob, AuditEvent, Index, DatasetPartition, …) validate
   against the embedded draft-07 schema via the pboettch validator (the
   `parse_run_value` pattern). Value-type DTOs (configs, specs, policies) use a
-  hand-written non-throwing `from_json` that mirrors their `schemas/*.json`.
+  hand-written non-throwing `from_json` that mirrors their type's
+  `*_schema()` accessor (the generated `schemas/*.json` reflects it).
   Binary formats (Parquet, Snappy, checkpoints) are bounds-checked and never
   trusted.
 - **Schema as code:** the C++ embedded schema (a `*_schema()` accessor) is the

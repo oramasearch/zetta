@@ -1,9 +1,76 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/churn_account.schema.json",
-  "title": "zetta.ChurnAccount",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "description": "One account row of a synthetic UC-1 churn dataset (one JSONL line / one CSV record). Carries the entity to score, its commercial + tenure attributes, the churn label, and — for the TC-4 entity-resolution case — the ground-truth canonical `entity` and `brand` (FedEx siblings share a brand but are distinct entities/accounts). Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
-  "type": "object",
+  "properties": {
+    "account_id": {
+      "description": "Stable id of the account — the correct resolution target for the TC-4 check.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "brand": {
+      "description": "Parent brand grouping sibling accounts (e.g. \"FedEx\"). May be empty for a standalone account; siblings sharing a brand must NOT be conflated into one account.",
+      "type": "string"
+    },
+    "churn_date": {
+      "description": "Date the account churned (ISO-8601), or empty when it did not churn. Post-cutoff by construction — a label, never a feature.",
+      "type": "string"
+    },
+    "churned": {
+      "description": "The label: true iff the account churned within the horizon after as_of_date.",
+      "type": "boolean"
+    },
+    "entity": {
+      "description": "Ground-truth canonical entity/division the account is (e.g. \"fedex_freight\") — the TC-4 fixture label.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "industry": {
+      "description": "Account industry (a categorical feature).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "mrr": {
+      "description": "Monthly recurring revenue in dollars.",
+      "minimum": 0,
+      "type": "number"
+    },
+    "name": {
+      "description": "Display name of the account (e.g. \"FedEx Freight\").",
+      "minLength": 1,
+      "type": "string"
+    },
+    "plan_tier": {
+      "description": "Subscription tier.",
+      "enum": [
+        "starter",
+        "business",
+        "enterprise"
+      ],
+      "type": "string"
+    },
+    "region": {
+      "description": "Account region (a categorical feature).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "renewal_date": {
+      "description": "Next renewal date (ISO-8601).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "seats": {
+      "description": "Provisioned seats.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tenure_days": {
+      "description": "Days since the account started, as of as_of_date.",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
   "required": [
     "account_id",
     "name",
@@ -19,69 +86,6 @@
     "churned",
     "churn_date"
   ],
-  "additionalProperties": false,
-  "properties": {
-    "account_id": {
-      "description": "Stable id of the account — the correct resolution target for the TC-4 check.",
-      "type": "string",
-      "minLength": 1
-    },
-    "name": {
-      "description": "Display name of the account (e.g. \"FedEx Freight\").",
-      "type": "string",
-      "minLength": 1
-    },
-    "brand": {
-      "description": "Parent brand grouping sibling accounts (e.g. \"FedEx\"). May be empty for a standalone account; siblings sharing a brand must NOT be conflated into one account.",
-      "type": "string"
-    },
-    "entity": {
-      "description": "Ground-truth canonical entity/division the account is (e.g. \"fedex_freight\") — the TC-4 fixture label.",
-      "type": "string",
-      "minLength": 1
-    },
-    "plan_tier": {
-      "description": "Subscription tier.",
-      "type": "string",
-      "enum": ["starter", "business", "enterprise"]
-    },
-    "industry": {
-      "description": "Account industry (a categorical feature).",
-      "type": "string",
-      "minLength": 1
-    },
-    "region": {
-      "description": "Account region (a categorical feature).",
-      "type": "string",
-      "minLength": 1
-    },
-    "mrr": {
-      "description": "Monthly recurring revenue in dollars.",
-      "type": "number",
-      "minimum": 0
-    },
-    "seats": {
-      "description": "Provisioned seats.",
-      "type": "integer",
-      "minimum": 0
-    },
-    "tenure_days": {
-      "description": "Days since the account started, as of as_of_date.",
-      "type": "integer",
-      "minimum": 0
-    },
-    "renewal_date": {
-      "description": "Next renewal date (ISO-8601).",
-      "type": "string",
-      "minLength": 1
-    },
-    "churned": {
-      "description": "The label: true iff the account churned within the horizon after as_of_date.",
-      "type": "boolean"
-    },
-    "churn_date": {
-      "description": "Date the account churned (ISO-8601), or empty when it did not churn. Post-cutoff by construction — a label, never a feature.",
-      "type": "string"
-    }
-  }
+  "title": "zetta.ChurnAccount",
+  "type": "object"
 }

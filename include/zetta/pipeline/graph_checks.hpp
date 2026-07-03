@@ -2,6 +2,8 @@
 
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/pipeline/validation.hpp"
@@ -14,7 +16,7 @@
 // gate failure (RULE-1 — no deploy without a passing gate).
 //
 // Both validate the annotations they read against the JSON Schema at the boundary
-// (src/core/graph_checks.cpp holds the runtime copy), so malformed annotations
+// (`graph_step_annotations_schema()` below), so malformed annotations
 // fail fast with a precise reason rather than being silently misread. A step that
 // carries none of the relevant annotations is simply skipped (it passes), so
 // these checks are opt-in per step and never penalise a graph that doesn't use
@@ -43,5 +45,10 @@ public:
     std::string name() const override { return "data_leakage"; }
     CheckResult evaluate(const ir::ExecutionGraph& graph) const override;
 };
+
+// The step-annotation JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/graph_step_annotations.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& graph_step_annotations_schema();
 
 }  // namespace zetta::pipeline

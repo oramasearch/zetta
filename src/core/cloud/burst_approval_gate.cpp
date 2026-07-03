@@ -89,6 +89,32 @@ std::optional<BurstCap> BurstCap::from_json(const nlohmann::json& value) {
     return cap;
 }
 
+const nlohmann::json& burst_cap_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/burst_cap.schema.json",
+  "title": "BurstCap",
+  "description": "A configured ceiling on a single provision burst (APR-3 / RSK-9), the cap the large-burst cost-cap approval gate enforces. Two independent, optional dimensions — node count and estimated cost — each with 0 meaning 'unlimited on this axis'. A request trips the cap when it exceeds either active axis; an over-cap burst requires approval and is recorded in the audit trail before it may proceed. Mirrored by zetta::BurstCap in include/zetta/burst_approval_gate.hpp and enforced by BurstCap::from_json() in src/core/burst_approval_gate.cpp — keep them in sync.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "max_nodes": {
+      "description": "How many nodes one provision call may bring up. 0 = unlimited on this axis.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "max_cost": {
+      "description": "Ceiling on the burst's estimated cost (in the CostEstimator's units; the default estimator reports coarse relative compute units, not dollars). 0 = unlimited on this axis.",
+      "type": "number",
+      "minimum": 0
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 BurstApprovalGate::BurstApprovalGate(Provisioner& inner, BurstCap cap,
                                      zetta::governance::AuditSink* audit, BurstApprover approver,
                                      CostEstimator cost)

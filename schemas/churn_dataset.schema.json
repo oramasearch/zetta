@@ -1,9 +1,49 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/churn_dataset.schema.json",
-  "title": "zetta.ChurnDatasetManifest",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "description": "The manifest (dataset.json) of a synthetic UC-1 churn dataset, declaring the churn 'contract' — the entity to score, the time column, the label, the as-of decision time (t0), and the label horizon. Loaded + validated at the boundary by zetta::load_churn_dataset (src/core/churn_dataset.cpp), where an embedded copy of this schema must be kept in sync.",
-  "type": "object",
+  "properties": {
+    "as_of_date": {
+      "description": "The decision time t0 (ISO-8601 date). Features may use only events with event_ts <= as_of_date.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "churn_horizon_days": {
+      "description": "The forward label horizon in days: an account churns iff it cancels within this many days after as_of_date.",
+      "minimum": 1,
+      "type": "integer"
+    },
+    "description": {
+      "description": "Free-text description of the dataset's provenance and intent.",
+      "type": "string"
+    },
+    "entity_field": {
+      "description": "The account/event field identifying the unit to score (e.g. \"account_id\").",
+      "minLength": 1,
+      "type": "string"
+    },
+    "label_definition": {
+      "description": "Human description of exactly how the churn label is defined.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "label_field": {
+      "description": "The account field carrying the churn label (e.g. \"churned\").",
+      "minLength": 1,
+      "type": "string"
+    },
+    "name": {
+      "description": "Human name of the dataset.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "time_field": {
+      "description": "The event field carrying the event timestamp used for point-in-time featurization (e.g. \"event_ts\").",
+      "minLength": 1,
+      "type": "string"
+    }
+  },
   "required": [
     "name",
     "entity_field",
@@ -13,46 +53,6 @@
     "churn_horizon_days",
     "label_definition"
   ],
-  "additionalProperties": false,
-  "properties": {
-    "name": {
-      "description": "Human name of the dataset.",
-      "type": "string",
-      "minLength": 1
-    },
-    "description": {
-      "description": "Free-text description of the dataset's provenance and intent.",
-      "type": "string"
-    },
-    "entity_field": {
-      "description": "The account/event field identifying the unit to score (e.g. \"account_id\").",
-      "type": "string",
-      "minLength": 1
-    },
-    "time_field": {
-      "description": "The event field carrying the event timestamp used for point-in-time featurization (e.g. \"event_ts\").",
-      "type": "string",
-      "minLength": 1
-    },
-    "label_field": {
-      "description": "The account field carrying the churn label (e.g. \"churned\").",
-      "type": "string",
-      "minLength": 1
-    },
-    "as_of_date": {
-      "description": "The decision time t0 (ISO-8601 date). Features may use only events with event_ts <= as_of_date.",
-      "type": "string",
-      "minLength": 1
-    },
-    "churn_horizon_days": {
-      "description": "The forward label horizon in days: an account churns iff it cancels within this many days after as_of_date.",
-      "type": "integer",
-      "minimum": 1
-    },
-    "label_definition": {
-      "description": "Human description of exactly how the churn label is defined.",
-      "type": "string",
-      "minLength": 1
-    }
-  }
+  "title": "zetta.ChurnDatasetManifest",
+  "type": "object"
 }

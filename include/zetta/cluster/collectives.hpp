@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/cluster/signal.hpp"
 
 // Collective communication over the **signal plane** (ADR-28 / ARC-10) — the
@@ -83,6 +85,12 @@ std::string encode_collective_message(const CollectiveMessage& message);
 // with a path-qualified reason in `error` (when non-null) on any failure.
 std::optional<CollectiveMessage> decode_collective_message(
     std::string_view payload, std::string* error = nullptr);
+
+// The CollectiveMessage JSON Schema (draft-07) — the code-owned source of
+// truth decode_collective_message enforces;
+// schemas/collective_message.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& collective_message_schema();
 
 // The collectives runtime for one node. Construct it over a started (or
 // startable) Cluster; it registers itself as the cluster's SignalHandler so it

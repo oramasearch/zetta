@@ -1,24 +1,11 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/gcp_config.schema.json",
-  "title": "GcpConfig",
-  "description": "Configuration for the GCP cloud-burst Provisioner backend (ARC-13 / ADR-20, #378): where on Google Cloud to burst ephemeral compute nodes, how to size and price them, and how each node joins the cluster. Mirrors the Azure reference (azure_config.schema.json) via the CLI pattern. Mirrored by zetta::GcpConfig in include/zetta/gcp_provisioner.hpp and enforced by GcpConfig::from_json() in src/core/gcp_provisioner.cpp — keep them in sync. No cloud SDK lives behind the provisioner; this config is interpreted by a GcpControlPlane (the reference GcpCliControlPlane shells out to the `gcloud` CLI, the Managed Instance Group + Spot shape). A malformed config is rejected at the boundary so a misconfigured burst fails fast instead of bringing up the wrong (or no) fleet.",
-  "type": "object",
-  "required": ["project_id", "zone"],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "Configuration for the GCP cloud-burst Provisioner backend (ARC-13 / ADR-20, #378): where on Google Cloud to burst ephemeral compute nodes, how to size and price them, and how each node joins the cluster. Mirrors the Azure reference (azure_config.schema.json) via the CLI pattern. Mirrored by zetta::GcpConfig in include/zetta/gcp_provisioner.hpp and enforced by GcpConfig::from_json() in src/core/gcp_provisioner.cpp — keep them in sync. No cloud SDK lives behind the provisioner; this config is interpreted by a GcpControlPlane (the reference GcpCliControlPlane shells out to the `gcloud` CLI, the Managed Instance Group + Spot shape). A malformed config is rejected at the boundary so a misconfigured burst fails fast instead of bringing up the wrong (or no) fleet.",
   "properties": {
-    "project_id": {
-      "description": "The GCP project the burst pool is created in.",
-      "type": "string",
-      "minLength": 1
-    },
-    "zone": {
-      "description": "The Compute Engine zone the Managed Instance Group runs in (e.g. 'us-central1-a').",
-      "type": "string",
-      "minLength": 1
-    },
-    "pool_name": {
-      "description": "Name of the burst pool (the Managed Instance Group). Stable so create + delete are idempotent. Defaults to 'zetta-burst' when omitted.",
+    "image": {
+      "description": "The image family burst nodes boot from (e.g. 'debian-12'). Empty uses the control plane's default image.",
       "type": "string"
     },
     "instance_template": {
@@ -29,16 +16,21 @@
       "description": "The Compute Engine machine type each node uses (e.g. 'a2-highgpu-1g', 'e2-standard-4'). Empty lets the control plane map the requested NodeCapability spec to a machine type.",
       "type": "string"
     },
-    "image": {
-      "description": "The image family burst nodes boot from (e.g. 'debian-12'). Empty uses the control plane's default image.",
-      "type": "string"
-    },
     "network": {
       "description": "The VPC network burst nodes attach to (e.g. 'default'). Empty uses the project default.",
       "type": "string"
     },
-    "subnetwork": {
-      "description": "The subnetwork within the region burst nodes attach to. Empty uses the auto subnet for the network.",
+    "pool_name": {
+      "description": "Name of the burst pool (the Managed Instance Group). Stable so create + delete are idempotent. Defaults to 'zetta-burst' when omitted.",
+      "type": "string"
+    },
+    "project_id": {
+      "description": "The GCP project the burst pool is created in.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "seed_peer": {
+      "description": "The cluster seed address (host:port) injected into each node's startup-script metadata so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way.",
       "type": "string"
     },
     "service_account": {
@@ -49,9 +41,20 @@
       "description": "Burst Spot (preemptible) capacity — cheaper, interruptible — rather than standard on-demand nodes (gcloud --provisioning-model=SPOT).",
       "type": "boolean"
     },
-    "seed_peer": {
-      "description": "The cluster seed address (host:port) injected into each node's startup-script metadata so it auto-joins the existing peer cluster at boot. Empty when the join address is supplied another way.",
+    "subnetwork": {
+      "description": "The subnetwork within the region burst nodes attach to. Empty uses the auto subnet for the network.",
+      "type": "string"
+    },
+    "zone": {
+      "description": "The Compute Engine zone the Managed Instance Group runs in (e.g. 'us-central1-a').",
+      "minLength": 1,
       "type": "string"
     }
-  }
+  },
+  "required": [
+    "project_id",
+    "zone"
+  ],
+  "title": "GcpConfig",
+  "type": "object"
 }

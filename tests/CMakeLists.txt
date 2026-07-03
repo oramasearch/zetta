@@ -20,6 +20,7 @@ add_executable(zetta-tests
   api/test_rest_server.cpp
   api/test_openapi.cpp
   api/test_llms.cpp
+  api/test_specs.cpp
   api/test_search_journey.cpp
   api/test_action_journeys.cpp
   util/test_uuid.cpp

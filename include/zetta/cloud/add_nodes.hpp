@@ -41,6 +41,11 @@ struct AddNodesRequest {
     static std::optional<AddNodesRequest> from_json(const nlohmann::json& value);
 };
 
+// The AddNodesRequest JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/add_nodes_request.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& add_nodes_request_schema();
+
 // AddNodesResult — the outcome of an add. The `members` are the new permanent
 // cluster members that came up (best-effort: a backend may return fewer than the
 // requested `count`). `satisfied` says whether the full count was added; `detail`

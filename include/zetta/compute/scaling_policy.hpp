@@ -132,4 +132,9 @@ struct ScalingPolicy {
     bool operator==(const ScalingPolicy&) const = default;
 };
 
+// The ScalingPolicy JSON Schema (draft 2020-12) — the code-owned source of
+// truth; schemas/scaling_policy.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& scaling_policy_schema();
+
 }  // namespace zetta::compute

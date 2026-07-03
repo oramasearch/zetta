@@ -44,6 +44,11 @@ struct BurstCap {
     static std::optional<BurstCap> from_json(const nlohmann::json& value);
 };
 
+// The BurstCap JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/burst_cap.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& burst_cap_schema();
+
 // What the gate computed about a request relative to the cap. Handed to the
 // approver so a human / policy can see *why* a burst tripped the cap before
 // deciding, and recorded in the audit detail.

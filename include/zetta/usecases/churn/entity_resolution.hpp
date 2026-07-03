@@ -121,6 +121,13 @@ nlohmann::json entity_resolution_annotation(
     const std::vector<LabeledMention>& mentions,
     ResolutionStrategy strategy = ResolutionStrategy::FullName);
 
+// The EntityResolution JSON Schema (draft-07) — the **code-owned source of
+// truth** for the `entity_resolution` payload shape; `schemas/entity_resolution.schema.json`
+// is generated from it and drift-checked by `tests/test_schemas.cpp` (#646).
+// `zetta::usecases::churn::EntityResolutionCheck` validates every payload
+// against it at the gate boundary.
+const nlohmann::json& entity_resolution_schema();
+
 // Normalize a name/mention for matching: ASCII-lowercase, fold every run of
 // non-alphanumeric characters to a single space, trim the ends. "FedEx Freight" and
 // "Fedex  Freight," both normalize to "fedex freight". Exposed for tests + reuse.

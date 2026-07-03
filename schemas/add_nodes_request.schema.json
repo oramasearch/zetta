@@ -1,62 +1,74 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://oramasearch.github.io/zetta/schemas/add_nodes_request.schema.json",
-  "title": "AddNodesRequest",
-  "description": "The control-command payload for 'add N permanent nodes to this cluster' (#518) — the permanent counterpart to a burst provision request. add_nodes() drives a Provisioner to bring up `count` nodes meeting the per-node capability floor `spec`; each auto-joins via the seed-peer handshake and persists as an ordinary cluster member. Unlike the autoscaler, the add never tears a node down or revokes its identity. Mirrored by zetta::AddNodesRequest in include/zetta/add_nodes.hpp and enforced by AddNodesRequest::from_json() in src/core/add_nodes.cpp — keep them in sync. A malformed command is rejected at the boundary so a misconfigured add fails fast instead of bringing up the wrong (or an unbounded) fleet.",
-  "type": "object",
-  "required": ["count"],
-  "additionalProperties": false,
-  "properties": {
-    "count": {
-      "description": "How many permanent nodes to add. 0 is a satisfied no-op.",
-      "type": "integer",
-      "minimum": 0
-    },
-    "spec": {
-      "description": "The per-node capability floor each added node must meet. Optional; absent means the no-floor capability (every node satisfies it). See node_capability.schema.json.",
-      "$ref": "#/$defs/node_capability"
-    }
-  },
   "$defs": {
     "node_capability": {
-      "description": "What an added node must provide — CPU cores, memory, and an optional GPU (type + throughput). Mirrors node_capability.schema.json.",
-      "type": "object",
-      "required": ["cores", "memory_bytes"],
       "additionalProperties": false,
+      "description": "What an added node must provide — CPU cores, memory, and an optional GPU (type + throughput). Mirrors node_capability.schema.json.",
       "properties": {
         "cores": {
           "description": "Logical CPU cores the node provides.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "memory_bytes": {
-          "description": "Total memory in bytes.",
-          "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "type": "integer"
         },
         "gpu": {
-          "description": "The node's accelerator. Optional; absent means CPU-only (equivalent to kind 'none').",
-          "type": "object",
-          "required": ["kind"],
           "additionalProperties": false,
+          "description": "The node's accelerator. Optional; absent means CPU-only (equivalent to kind 'none').",
           "properties": {
             "kind": {
               "description": "The accelerator family. Append-only enum (the lowercase name is the stored identifier).",
-              "type": "string",
-              "enum": ["none", "cuda", "rocm", "metal"]
-            },
-            "throughput_tflops": {
-              "description": "Coarse throughput in teraFLOPS. 0 when there is no GPU.",
-              "type": "number",
-              "minimum": 0
+              "enum": [
+                "none",
+                "cuda",
+                "rocm",
+                "metal"
+              ],
+              "type": "string"
             },
             "model": {
               "description": "Optional free-form accelerator model name (e.g. 'A100', 'H100', 'MI300X').",
               "type": "string"
+            },
+            "throughput_tflops": {
+              "description": "Coarse throughput in teraFLOPS. 0 when there is no GPU.",
+              "minimum": 0,
+              "type": "number"
             }
-          }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        "memory_bytes": {
+          "description": "Total memory in bytes.",
+          "minimum": 0,
+          "type": "integer"
         }
-      }
+      },
+      "required": [
+        "cores",
+        "memory_bytes"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$id": "https://oramasearch.github.io/zetta/schemas/add_nodes_request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The control-command payload for 'add N permanent nodes to this cluster' (#518) — the permanent counterpart to a burst provision request. add_nodes() drives a Provisioner to bring up `count` nodes meeting the per-node capability floor `spec`; each auto-joins via the seed-peer handshake and persists as an ordinary cluster member. Unlike the autoscaler, the add never tears a node down or revokes its identity. Mirrored by zetta::AddNodesRequest in include/zetta/add_nodes.hpp and enforced by AddNodesRequest::from_json() in src/core/add_nodes.cpp — keep them in sync. A malformed command is rejected at the boundary so a misconfigured add fails fast instead of bringing up the wrong (or an unbounded) fleet.",
+  "properties": {
+    "count": {
+      "description": "How many permanent nodes to add. 0 is a satisfied no-op.",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "spec": {
+      "$ref": "#/$defs/node_capability",
+      "description": "The per-node capability floor each added node must meet. Optional; absent means the no-floor capability (every node satisfies it). See node_capability.schema.json."
+    }
+  },
+  "required": [
+    "count"
+  ],
+  "title": "AddNodesRequest",
+  "type": "object"
 }

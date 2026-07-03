@@ -24,6 +24,7 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
 #include "zetta/api/rest.hpp"
+#include "zetta/api/specs.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/version.hpp"
@@ -370,6 +371,72 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // GET /v1/specs and /v1/specs/<name> (#646, docs/api/specs-index.md): the
+    // spec index and each raw document — the OpenAPI document, capability
+    // input/output schemas, boundary schemas — served from the C++ accessors,
+    // never from disk. Same bearer policy as /mcp; rendering only reads the
+    // (start-frozen) registry and static accessors, but is marshaled onto the
+    // owning loop so the span lands in the node's ring (every operation is
+    // observable). `name` empty = the index.
+    boost::http::route_task serve_specs(boost::http::route_params& route,
+                                        std::string name) {
+        namespace http = boost::http;
+
+        const std::string bearer = bearer_of(route);
+        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
+            route.status(http::status::unauthorized);
+            const std::string body = transport_error_body(
+                "unauthorized", "missing or invalid bearer token");
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            (void)send_error;
+            co_return http::route_done;
+        }
+
+        std::string traceparent;
+        if (route.req.count("traceparent") != 0) {
+            traceparent = std::string(route.req.at("traceparent"));
+        }
+        const auto trace =
+            zetta::observability::parse_traceparent(traceparent)
+                .value_or(zetta::observability::make_root_trace());
+
+        std::string body;
+        bool found = true;
+        co_await bridge.run_on_owner([&] {
+            zetta::observability::ScopedSpan span(
+                &node.span_recorder(), trace,
+                name.empty() ? "specs:index" : "specs:" + name);
+            span.set_attribute("spec", name.empty() ? "index" : name);
+            if (name.empty()) {
+                body = spec_index(capability_registry).dump(2);
+            } else {
+                const auto spec = find_spec(capability_registry, name);
+                found = spec.has_value();
+                // The raw document itself — GET-able by codegen as-is; the
+                // wrapped { name, kind, schema } shape is get_spec's.
+                if (found) body = spec->at("schema").dump(2);
+            }
+            span.finish(found,
+                        found ? std::string() : "unknown spec '" + name + "'");
+        });
+
+        if (!found) {
+            body = transport_error_body(
+                "not_found",
+                "unknown spec '" + name + "' — GET /v1/specs for the index");
+            route.status(http::status::not_found);
+        } else {
+            route.status(http::status::ok);
+        }
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // GET /v1/openapi.json — the OpenAPI rendering, same bearer policy.
     boost::http::route_task serve_openapi(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -512,6 +579,23 @@ bool ApiServer::start() {
     router.add(http::method::get, "/v1/openapi.json",
                [&impl](http::route_params& route) -> http::route_task {
                    return impl.serve_openapi(route);
+               });
+    // The spec index (#646, docs/api/specs-index.md): GET /v1/specs (the
+    // index) and GET /v1/specs/<name> (each raw document) — the OpenAPI
+    // document + every capability and boundary schema, one navigable set.
+    // Registered before the capability loop so no future capability name can
+    // shadow the /v1/specs prefix.
+    router.add(http::method::get, "/v1/specs",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_specs(route, "");
+               });
+    router.add(http::method::get, "/v1/specs/:name",
+               [&impl](http::route_params& route) -> http::route_task {
+                   std::string name;
+                   for (const auto& [parameter, value] : route.params) {
+                       if (parameter == "name") name = value;
+                   }
+                   return impl.serve_specs(route, name);
                });
     for (const auto& capability : impl.capability_registry.list()) {
         const auto method = rest_method(*capability) == "GET"

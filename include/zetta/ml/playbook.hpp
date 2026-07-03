@@ -122,6 +122,11 @@ struct PlaybookPolicy {
     bool operator==(const PlaybookPolicy&) const = default;
 };
 
+// The PlaybookPolicy JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/playbook_policy.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& playbook_policy_schema();
+
 // --- The per-account input (the model's facts) -------------------------------
 
 // One signed driver reason code: a feature's SHAP attribution and which way it

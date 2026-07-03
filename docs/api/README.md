@@ -27,6 +27,10 @@ MCP/HTTP work.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
   pages (#645): plain-GET agent docs generated live from the registry + node
   state, no second prose source.
+- [specs-index.md](specs-index.md) — the spec index (#646): `/v1/specs` +
+  `list_specs`/`get_spec` serving the OpenAPI document + every capability and
+  boundary schema from their C++ accessors, drift-checked through one shared
+  table.
 
 ## The endpoints (shipped with #615, REST with #618)
 
@@ -51,7 +55,9 @@ registered schemas (drift-checked into `schemas/openapi.json`).
 The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
 `/llms-full.txt` — agent-readable pages generated live from the registry +
 node state, so a no-MCP agent orients with one GET
-([llms-endpoints.md](llms-endpoints.md), #645).
+([llms-endpoints.md](llms-endpoints.md), #645) — and `GET /v1/specs` /
+`/v1/specs/<name>`, the spec index over every schema in the system
+([specs-index.md](specs-index.md), #646).
 
 ## Capabilities (v1)
 
@@ -74,6 +80,8 @@ node state, so a no-MCP agent orients with one GET
 | `list_datasets` | read | api:query | every dataset's computed summary, structured (columns/partitions as arrays) |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |
+| `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
+| `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |

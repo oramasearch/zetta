@@ -47,6 +47,11 @@ struct AwsConfig {
     static std::optional<AwsConfig> from_json(const nlohmann::json& value);
 };
 
+// The AwsConfig JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/aws_config.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& aws_config_schema();
+
 // The cloud control-plane operations the AWS backend needs, abstracted behind a
 // small **injectable seam** so AwsProvisioner stays in zetta-core with no AWS SDK
 // and is unit-testable against a fake. The reference binding is AwsCliControlPlane

@@ -118,6 +118,11 @@ private:
     int replication_factor_ = 1;  // total copies per shard (see above)
 };
 
+// The ReplicationStrategy JSON Schema (draft 2020-12) — the code-owned source of
+// truth; schemas/replication_strategy.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& replication_strategy_schema();
+
 // Read the optional "replication" strategy field out of a metadata document (a
 // database.json / table.json file, or a db:/tbl: CRDT value) at the boundary.
 // Absent → the default (ReplicateToAll). Present-but-malformed → also the default:

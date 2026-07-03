@@ -263,6 +263,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   `GET /llms.txt` / `/llms/<topic>.txt` / `/llms-full.txt` — agent docs
   generated live from the registry + node state, no second prose source
   ([api/llms-endpoints.md](api/llms-endpoints.md)).
+- **#646 spec index built** (and the #469 fold completed with it):
+  `GET /v1/specs` + `/v1/specs/<name>` and the `list_specs`/`get_spec` tools
+  serve the OpenAPI document + every capability schema + all 62 boundary
+  schemas from their C++ accessors; the shared table is
+  `zetta::schemas::boundary_schemas()`, drift-checked by `test_schemas`
+  ([api/specs-index.md](api/specs-index.md)).
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next

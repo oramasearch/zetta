@@ -83,4 +83,9 @@ void to_json(nlohmann::json& document, const ValidationReport& report);
 std::optional<ValidationReport> validation_report_from_json(
     const nlohmann::json& document);
 
+// The ValidationReport JSON Schema (draft 2020-12) — the code-owned source of
+// truth; schemas/validation_report.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& validation_report_schema();
+
 }  // namespace zetta::pipeline

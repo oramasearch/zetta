@@ -19,6 +19,9 @@
 //   get_trace        read    every span of one trace id (#640)
 //   submit_feedback  action  snapshot a feedback bundle as a large object (#640)
 //   create_project   action  the action template: mutates, audited, replicated
+//   list_specs       read    the spec index (#646): OpenAPI + every capability
+//                            and boundary schema as names, kinds, links
+//   get_spec         read    one spec document by its list_specs name
 //
 // The #616 slice adds the typed detail reads + list_* siblings; the #617 slice
 // adds governed action parity — the rest of the product loop as thin callers

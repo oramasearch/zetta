@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "active": {
+      "type": "boolean"
+    },
+    "connections": {
+      "type": "object"
+    },
+    "name": {
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "parameters": {
+            "type": "object"
+          },
+          "position": {
+            "type": "array"
+          },
+          "type": {
+            "type": "string"
+          },
+          "typeVersion": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "nodes",
+    "connections"
+  ],
+  "title": "n8n.Workflow",
+  "type": "object"
+}

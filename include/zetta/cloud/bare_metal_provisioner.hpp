@@ -48,6 +48,11 @@ struct BareMetalConfig {
     static std::optional<BareMetalConfig> from_json(const nlohmann::json& value);
 };
 
+// The BareMetalConfig JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/bare_metal_config.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& bare_metal_config_schema();
+
 // The host control-plane operations the bare-metal backend needs, abstracted behind
 // a small **injectable seam** so BareMetalProvisioner stays in zetta-core with no
 // container SDK and is unit-testable against a fake. The reference binding is

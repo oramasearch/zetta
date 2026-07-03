@@ -121,4 +121,79 @@ std::optional<NodeCapability> NodeCapability::from_json(
     return capability;
 }
 
+const nlohmann::json& node_capability_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/node_capability.schema.json",
+  "title": "NodeCapability",
+  "description": "The node capability model (ENT-32, part of the native distributed accelerated compute pass for UC-1 churn — ARC-13). Describes one node's compute resources — CPU cores, memory, and an optional GPU (type + throughput) — used both as the capability a node reports and as the per-node floor a provision request asks for. Mirrored by zetta::NodeCapability in include/zetta/node_capability.hpp and enforced by NodeCapability::from_json() in src/core/node_capability.cpp — keep them in sync. Distinct from the access-control capability in access_key.schema.json (that is a *right*; this is *compute*). A malformed capability is rejected at the boundary so a node never silently over- or under-states what it offers.",
+  "type": "object",
+  "required": ["cores", "memory_bytes"],
+  "additionalProperties": false,
+  "properties": {
+    "cores": {
+      "description": "Logical CPU cores the node provides.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "memory_bytes": {
+      "description": "Total memory in bytes.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "gpu": {
+      "description": "The node's accelerator. Optional; absent means CPU-only (equivalent to kind 'none').",
+      "$ref": "#/$defs/gpu"
+    }
+  },
+  "$defs": {
+    "gpu": {
+      "description": "A node's accelerator. kind 'none' (with zero throughput) is a CPU-only node; the named kinds are GPU families. Throughput is a single comparable scalar (teraFLOPS), not a vendor benchmark.",
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "The accelerator family. Append-only enum (the lowercase name is the stored identifier).",
+          "type": "string",
+          "enum": ["none", "cuda", "rocm", "metal"]
+        },
+        "throughput_tflops": {
+          "description": "Coarse throughput in teraFLOPS the autoscaler ranks placements by. 0 when there is no GPU.",
+          "type": "number",
+          "minimum": 0
+        },
+        "model": {
+          "description": "Optional free-form GPU model name (e.g. 'A100', 'H100', 'MI300X').",
+          "type": "string"
+        }
+      }
+    },
+    "provisioned_node": {
+      "description": "A node a Provisioner has stood up (or, for the Local backend, an existing cluster node it reports): identity + reachable address + capability. Mirrored by zetta::ProvisionedNode in include/zetta/provisioner.hpp (ProvisionedNode::from_json in src/core/provisioner.cpp).",
+      "type": "object",
+      "required": ["node_id", "capability"],
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "description": "The node's stable id (its cluster / CRDT actor id).",
+          "type": "string"
+        },
+        "address": {
+          "description": "host:port to reach the node. Optional; omitted/empty when the node is not networked.",
+          "type": "string"
+        },
+        "capability": {
+          "description": "What the node provides.",
+          "$ref": "#"
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 }  // namespace zetta::cloud

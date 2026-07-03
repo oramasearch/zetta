@@ -48,6 +48,11 @@ struct GcpConfig {
     static std::optional<GcpConfig> from_json(const nlohmann::json& value);
 };
 
+// The GcpConfig JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/gcp_config.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& gcp_config_schema();
+
 // The cloud control-plane operations the GCP backend needs, abstracted behind a
 // small **injectable seam** so GcpProvisioner stays in zetta-core with no GCP SDK
 // and is unit-testable against a fake. The reference binding is GcpCliControlPlane

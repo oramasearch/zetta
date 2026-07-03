@@ -131,6 +131,11 @@ std::string encode_fulltext_query(const FulltextQueryRequest& request);
 std::optional<FulltextQueryRequest> decode_fulltext_query(
     std::string_view payload, std::string* error = nullptr);
 
+// The FulltextQueryRequest JSON Schema (draft-07) — the code-owned source of
+// truth decode_fulltext_query enforces; schemas/fulltext_query.schema.json is
+// generated from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& fulltext_query_schema();
+
 // The gather response: this node's ranked hits for the request (already merged
 // across its own partitions, capped to top_k).
 struct FulltextQueryResponse {
@@ -148,6 +153,11 @@ std::string encode_fulltext_hits(const FulltextQueryResponse& response);
 // path-qualified reason in `error` (when non-null) on any failure.
 std::optional<FulltextQueryResponse> decode_fulltext_hits(
     std::string_view payload, std::string* error = nullptr);
+
+// The FulltextQueryResponse JSON Schema (draft-07) — the code-owned source of
+// truth decode_fulltext_hits enforces; schemas/fulltext_hits.schema.json is
+// generated from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& fulltext_hits_schema();
 
 // --- the per-node distributed full-text index --------------------------------
 

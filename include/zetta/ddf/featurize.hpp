@@ -126,6 +126,11 @@ struct FeaturizeSpec {
     static std::optional<FeaturizeSpec> from_json(const nlohmann::json& value);
 };
 
+// The FeaturizeSpec JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/featurize_spec.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& featurize_spec_schema();
+
 // --- The result --------------------------------------------------------------
 
 // A dense, host-side feature table: one row per entity (the account universe), in

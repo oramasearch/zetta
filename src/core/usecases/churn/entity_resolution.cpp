@@ -5,6 +5,8 @@
 #include <sstream>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::usecases::churn {
 
 namespace {
@@ -138,6 +140,52 @@ nlohmann::json entity_resolution_annotation(
                            {"resolved", resolved}});
     }
     return nlohmann::json{{"entity_resolution", {{"records", std::move(records)}}}};
+}
+
+
+const nlohmann::json& entity_resolution_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/entity_resolution.schema.json",
+  "title": "zetta.EntityResolution",
+  "description": "The entity-resolution payload carried in an ExecutionGraph node's `attributes` under the `entity_resolution` key, and evaluated by zetta::EntityResolutionCheck (the FEAT-3 / TC-4 correctness eval). Each record carries the raw `mention`, its ground-truth `entity` (the division it truly belongs to), and the `resolved` account the step assigned it. The check fails the gate when one account conflates two distinct entities. Mirrored by the embedded draft-07 schema in src/core/checks/entity_resolution_check.cpp and enforced there at the boundary — keep the two in sync.",
+  "type": "object",
+  "required": ["records"],
+  "additionalProperties": false,
+  "properties": {
+    "records": {
+      "description": "The resolved records to evaluate. May be empty (nothing to conflate).",
+      "type": "array",
+      "items": { "$ref": "#/definitions/record" }
+    }
+  },
+  "definitions": {
+    "record": {
+      "type": "object",
+      "required": ["entity", "resolved"],
+      "additionalProperties": false,
+      "properties": {
+        "mention": {
+          "description": "The raw input string the resolver saw (e.g. \"FedEx Freight\"). Provenance/display only.",
+          "type": "string"
+        },
+        "entity": {
+          "description": "Ground-truth canonical entity/division the mention truly belongs to (the fixture label).",
+          "type": "string",
+          "minLength": 1
+        },
+        "resolved": {
+          "description": "The account the resolution step assigned the mention to.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 }  // namespace zetta::usecases::churn

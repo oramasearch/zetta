@@ -1,23 +1,37 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.FulltextQueryResponse",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "from": { "type": "string" },
-    "hits": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "id": { "type": "string" },
-          "score": { "type": "number" }
-        },
-        "required": ["id", "score"],
-        "additionalProperties": false
-      }
+    "from": {
+      "type": "string"
     },
-    "sub_indexes": { "type": "integer", "minimum": 0 }
+    "hits": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "score": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "score"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "sub_indexes": {
+      "minimum": 0,
+      "type": "integer"
+    }
   },
-  "required": ["hits"],
-  "additionalProperties": false
+  "required": [
+    "hits"
+  ],
+  "title": "zetta.FulltextQueryResponse",
+  "type": "object"
 }

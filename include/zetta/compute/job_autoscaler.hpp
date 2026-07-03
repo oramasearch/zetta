@@ -97,6 +97,11 @@ struct AutoscalerConfig {
     static std::optional<AutoscalerConfig> from_json(const nlohmann::json& value);
 };
 
+// The AutoscalerConfig JSON Schema (draft 2020-12) — the code-owned source of
+// truth; schemas/autoscaler_config.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& autoscaler_config_schema();
+
 // What one control-loop tick did — everything an observer (a test, the GUI, a log)
 // needs to see the decision and the action it produced.
 struct AutoscaleTick {

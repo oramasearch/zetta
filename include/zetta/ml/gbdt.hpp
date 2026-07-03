@@ -80,6 +80,11 @@ struct GbdtParams {
     static std::optional<GbdtParams> from_json(const nlohmann::json& value);
 };
 
+// The GbdtParams JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/gbdt_params.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& gbdt_params_schema();
+
 // --- The trained model -------------------------------------------------------
 
 // One node of a binary regression tree. An internal node splits left when

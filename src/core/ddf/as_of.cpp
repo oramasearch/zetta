@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::ddf {
 
 using compute::ComputeDevice;
@@ -139,6 +141,54 @@ nlohmann::json AsOfAggregate::to_json() const {
     };
     if (window_start) value["window_start"] = *window_start;
     return value;
+}
+
+// The AsOfAggregate JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/as_of_aggregate.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& as_of_aggregate_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/as_of_aggregate.schema.json",
+  "title": "AsOfAggregate",
+  "description": "A DDF window / as-of (point-in-time) aggregation over a numeric DataFrame (ARC-12, #384; part of the native distributed accelerated compute pass for UC-1 churn — #264). The leakage-free featurization primitive: for each entity, reduce the values of only the rows whose timestamp falls inside the time window — at or before `as_of`, and (when set) at or after `window_start` — so a feature computed as of t0 never sees a future event. Mirrored by zetta::ddf::AsOfAggregate in include/zetta/ddf/as_of.hpp and enforced by AsOfAggregate::from_json() in src/core/ddf/as_of.cpp — keep them in sync.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["entity_column", "time_column", "value_column", "as_of", "op"],
+  "properties": {
+    "entity_column": {
+      "description": "The integer-dtype column whose value groups rows into entities (the exact group key).",
+      "type": "string",
+      "minLength": 1
+    },
+    "time_column": {
+      "description": "The numeric column carrying each row's timestamp (e.g. epoch seconds, or any monotonic encoding of time).",
+      "type": "string",
+      "minLength": 1
+    },
+    "value_column": {
+      "description": "The numeric column reduced per entity over the window.",
+      "type": "string",
+      "minLength": 1
+    },
+    "as_of": {
+      "description": "The upper cutoff (inclusive): a row qualifies iff its timestamp is <= as_of. The point-in-time at which the feature is computed.",
+      "type": "number"
+    },
+    "window_start": {
+      "description": "Optional lower cutoff (inclusive): a row also qualifies iff its timestamp is >= window_start, giving a trailing window [window_start, as_of]. Omitted for the unbounded-below (-inf, as_of] point-in-time case. Must not exceed as_of (that would be an empty window).",
+      "type": "number"
+    },
+    "op": {
+      "description": "How qualifying values combine into the per-entity aggregate.",
+      "type": "string",
+      "enum": ["sum", "product", "minimum", "maximum"]
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 std::optional<AsOfAggregate> AsOfAggregate::from_json(const nlohmann::json& value) {

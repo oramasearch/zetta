@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "zetta/compute/work_stealing_scheduler.hpp"
 #include "zetta/cluster/signal.hpp"
 #include "zetta/observability/trace.hpp"
@@ -215,5 +217,15 @@ private:
     std::atomic<std::size_t> lost_node_requeued_{0};
     std::atomic<std::size_t> steal_requests_sent_{0};
 };
+
+// The steal / steal-offer / steal-result wire-message JSON Schemas (draft-07) —
+// the code-owned source of truth; schemas/steal_request.schema.json,
+// schemas/steal_offer.schema.json, and schemas/steal_result.schema.json are
+// generated from them and drift-checked by tests/test_schemas.cpp (#646).
+// Every peer payload the scheduler receives is validated against its schema
+// before it is trusted.
+const nlohmann::json& steal_request_schema();
+const nlohmann::json& steal_offer_schema();
+const nlohmann::json& steal_result_schema();
 
 }  // namespace zetta::compute
