@@ -38,6 +38,9 @@ lens on a cluster that is primarily driven programmatically
 
 ## The loop
 
+Landing on Home answers the operator's first questions before a single click —
+is the cluster healthy, what ran, what needs attention, how fast intent became
+a deployment ([../gui/home-dashboard.md](../../gui/home-dashboard.md), SCR-1).
 Watch what you (or your agent) asked for happen live; click through the object
 graph (run → model → job → graph); export a feedback bundle when something is
 wrong ([../architecture/observability.md](../../architecture/observability.md)).

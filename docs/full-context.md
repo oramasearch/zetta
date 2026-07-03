@@ -132,6 +132,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   Deployment → Run, Dataset → Cluster, Audit → target); the Graph workspace
   and Deploy panels now consume their pending selections
   ([docs/gui/cross-entity-links.md](gui/cross-entity-links.md)).
+  **#629 Home is a real dashboard (SCR-1)**: cluster health strip +
+  needs-attention + recent runs + projects with last activity + the
+  intent→deployed velocity KPI, every tile a click-through; the guided-start
+  empty state is the seam #623 onboarding grows
+  ([docs/gui/home-dashboard.md](gui/home-dashboard.md)).
 - **Security**: CTL-2/TB-3 inter-node transport security is **built**
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
