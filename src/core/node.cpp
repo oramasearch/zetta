@@ -1,7 +1,9 @@
 #include "zetta/node.hpp"
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/compute/coordinated_launch.hpp"
 #include "zetta/compute/job_coordinator.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/pipeline/executor.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
@@ -295,6 +297,13 @@ void Node::tick() {
                 encode_node_metrics(metrics, node_id()));
         }
     }
+    // 5. Coordinated co-launch (#601): execute any `run.launch` requests peers
+    //    fanned out, HERE on the owner thread — the launched SPMD body blocks on
+    //    collective rounds, which must never run on the network thread that
+    //    delivered the signal (it services those very rounds). This is the
+    //    same "synchronous on the thread that owns the Node" pattern every
+    //    interactive submitter uses; the tick resumes when the co-run finishes.
+    if (launch_listener_) launch_listener_->drain();
 }
 
 void Node::stop() {
@@ -336,8 +345,20 @@ void Node::start_coordinator() {
     // the compute plane. Created once (the cache persists across a stop()/start()
     // cycle) and reused on each attach.
     if (!telemetry_) telemetry_ = std::make_unique<zetta::cluster::NodeTelemetryExchange>();
+    // The coordinated cross-process launch listener (#601) sits between the
+    // compute plane and the telemetry exchange in the signal-handler chain:
+    // the coordinator forwards every non-steal / non-collective signal to it,
+    // it consumes `run.launch` tasks (validate + queue — tick() drains and
+    // executes on this owner thread), and everything else flows on to the
+    // telemetry fallback. The built-in launch kinds are registered here, on
+    // EVERY clustered node — that is what lets any member co-run a peer's
+    // interactive SPMD run.
+    launch_listener_ = std::make_unique<compute::CoordinatedLaunchListener>(
+        *cluster_, telemetry_.get());
+    launch_listener_->set_span_recorder(&span_recorder_);
+    zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
-                                                             telemetry_.get());
+                                                             launch_listener_.get());
     // Every job this coordinator runs (and every stolen task it executes for a
     // peer) records spans into this node's ring (#640).
     coordinator_->set_span_recorder(&span_recorder_);
@@ -374,6 +395,11 @@ void Node::stop_coordinator() {
     if (!coordinator_) return;
     coordinator_->stop();   // join the steal loop, restore the cluster's handler
     coordinator_.reset();
+    // After the coordinator (which held it as the handler fallback): drop the
+    // launch listener — pending, undrained launches are ephemeral signal-plane
+    // messages and die with the attachment (the initiator's collective rounds
+    // surface the absence with their bounded timeout).
+    launch_listener_.reset();
 }
 
 zetta::index::SearchResult Node::search(

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -48,17 +49,22 @@
 // graph by parse_solution_catalog, and the Run / ComputeJob / GBDT-weights records
 // at their own schema boundaries. This module adds no parser of its own.
 //
-// **Single node here, SPMD elsewhere.** run_churn_solution_on_node runs the dataset
-// it is handed on *this* node (the whole dataset, this node's shard). On a real
-// multi-node cluster each node runs the same graph against its own shard and the
-// underlying jobs combine partials over the collectives — the single-node ==
-// multi-node equivalence is proven in the per-op job suites; this bridge does not
-// re-prove it.
+// **SPMD across the live membership, coordinated (#601).** The underlying jobs
+// are SPMD — every collective round waits for all connected peers — so on a
+// multi-node cluster run_churn_solution_on_node fans the launch out first: it
+// snapshots the roster, sends every peer a `run.launch` task over the signal
+// plane (compute/coordinated_launch.hpp), and each participant (initiator
+// included) co-runs the same graph over its own **disjoint shard** of the
+// encoded dataset (entity % roster-size == its rank — union == the whole, so
+// the allreduce combines to the global model without double-counting). On a
+// standalone or single-member cluster the roster is just this node and the run
+// is exactly the local whole-dataset run it always was.
 //
-// See docs/use-cases/churn-solution.md.
+// See docs/use-cases/churn-solution.md + docs/compute/coordinated-launch.md.
 namespace zetta::storage { class StorageEngine; }
 namespace zetta { class Node; }
 namespace zetta::compute { class ComputeDevice; }
+namespace zetta::compute { class CoordinatedLaunchListener; }
 namespace zetta::ir { class ExecutionGraph; }
 
 namespace zetta::usecases::churn {
@@ -101,6 +107,10 @@ struct ChurnSolutionOptions {
     std::string model_name = "churn_model";  // the registered Model's human name
     std::string project;                     // labels the Run + every ComputeJob
     std::string graph;                       // graph id label
+    // Fan the run out to the live membership when the cluster has peers (#601).
+    // False = run this node's copy alone — only correct on a single-member
+    // cluster (a lone submitter fails the SPMD collective rounds otherwise).
+    bool coordinate = true;
 };
 
 // What running the churn solution on the real engine produced.
@@ -144,14 +154,16 @@ struct ChurnSolutionResult {
 // with execution.error set (it provisions nothing — the caller surfaces the reason),
 // so it never silently no-ops.
 //
-// **Single-node-or-coordinated membership.** The underlying jobs are SPMD: every
-// collective round waits for *all* connected peers (a bounded timeout). A single node
-// submitting this over a multi-node cluster whose peers are not co-running the same
-// graph will fail those rounds. So today this is correct for the common interactive
-// case — a standalone node, or a single-member cluster — where the live coordinator
-// IS the cluster. Fanning the launch out to every peer so they co-run (a coordinated
-// cross-process SPMD launch over the signal plane) is a later slice; the collectives
-// already handle the *combine*, the *co-launch* is what is missing.
+// **Coordinated membership (#601).** The underlying jobs are SPMD: every
+// collective round waits for *all* connected peers (a bounded timeout). So on a
+// multi-node cluster this runner first fans the launch out — a `run.launch` task
+// to every roster peer over the signal plane (each co-runs the same graph over
+// its own disjoint entity shard, via the runner install_churn_launch_runner
+// registers) — then runs its own shard; the collectives combine the partials to
+// the one global model, registered by the deterministic root and replicated to
+// every node. `options.coordinate = false` opts out (single-member-correct
+// only). A peer that misses the launch fails the rounds with the bounded
+// timeout — observable, never silent.
 ChurnSolutionResult run_churn_solution_on_node(
     Node& node, compute::ComputeDevice& device,
     const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
@@ -171,5 +183,30 @@ bool is_churn_graph(const ir::ExecutionGraph& graph);
 // healthy ones do not), so a run over it produces a sensible ranked list + drivers
 // without depending on the committed test fixture.
 ChurnDataset demo_churn_dataset();
+
+// --- The coordinated cross-process launch (#601) -----------------------------
+
+// The `run.launch` kind the churn solution registers / fans out.
+inline constexpr std::string_view kChurnLaunchKind = "churn_solution";
+
+// The churn `run.launch` payload JSON Schema (draft-07) — the **code-owned
+// source of truth**; `schemas/churn_coordinated_run.schema.json` is generated
+// from it and drift-checked by `tests/test_schemas.cpp`. The payload carries the
+// graph (the IR's own validated boundary), the full **encoded numeric shards**
+// (global entity ids — each participant filters its own disjoint shard locally;
+// the raw ChurnDataset never crosses the wire), the `as_of` cutoff, and the run
+// options (params ride the GbdtParams boundary).
+const nlohmann::json& churn_coordinated_run_schema();
+
+// Register the churn co-run on a node's launch listener (Node::attach_cluster
+// wires this for every clustered node). The runner — executed on the node-owning
+// thread when a peer's `run.launch` arrives — validates the payload against
+// churn_coordinated_run_schema, re-checks the graph (is_churn_graph + the
+// correctness gate: RULE-1 holds on every member, not just the initiator),
+// derives this node's shard rank from the roster, and co-runs the graph over
+// that shard on the node's live coordinator — so the initiator's collective
+// rounds find every peer contributing.
+void install_churn_launch_runner(compute::CoordinatedLaunchListener& listener,
+                                 Node& node);
 
 }  // namespace zetta::usecases::churn

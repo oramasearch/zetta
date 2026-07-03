@@ -38,6 +38,7 @@ namespace zetta::cluster { class Cluster; }
 namespace zetta::pipeline { struct ExecutionResult; }
 namespace zetta::ir { class ExecutionGraph; }
 namespace zetta::compute { class JobCoordinator; }
+namespace zetta::compute { class CoordinatedLaunchListener; }
 
 namespace zetta::cluster { class ReplicationManager; }
 
@@ -188,6 +189,16 @@ public:
     compute::JobCoordinator* job_coordinator() { return coordinator_.get(); }
     const compute::JobCoordinator* job_coordinator() const {
         return coordinator_.get();
+    }
+
+    // This node's `run.launch` listener (#601) — the coordinated cross-process
+    // SPMD launch seam, wired by attach_cluster as the coordinator's signal
+    // fallback and drained from tick(). An initiator fans a launch out through
+    // it; each peer's copy co-runs the registered kind on its owner thread.
+    // nullptr when no cluster is attached (like job_coordinator()). See
+    // compute/coordinated_launch.hpp / docs/compute/coordinated-launch.md.
+    compute::CoordinatedLaunchListener* coordinated_launch() {
+        return launch_listener_.get();
     }
 
     // Deployment (ENT-6 / FEAT-4): place a validated execution graph onto a
@@ -724,6 +735,15 @@ private:
     // replicated.
     std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
+    // The coordinated cross-process launch listener (#601): the `run.launch`
+    // seam, wired as the coordinator's signal-handler fallback (delegating
+    // everything else to telemetry_, which is why it is declared between the
+    // two: it must outlive the coordinator that points at it and die before
+    // the telemetry it points at). Created in start_coordinator() with the
+    // built-in runners registered (churn first); drained from tick() so the
+    // co-run's blocking collectives execute on this owner thread, never the
+    // network thread that delivered the signal.
+    std::unique_ptr<compute::CoordinatedLaunchListener> launch_listener_;
     std::unique_ptr<compute::JobCoordinator> coordinator_;
     // The distributed search plane (#641): the per-partition fulltext machinery
     // over the attached cluster, chained over the coordinator's signal handler —

@@ -184,10 +184,13 @@ verbs over the same envelope: `collective.contribute` / `collective.result`
 ([collectives](collectives.md)), `steal` / `steal_result`
 ([work-stealing scheduler](../compute/work-stealing-scheduler.md)), `ddf.shuffle`
 ([distributed sort](../ddf/ddf-distributed-sort.md)), `fulltext.query`
-([distributed full-text](../indexing/distributed-fulltext.md)), and the fire-and-forget
+([distributed full-text](../indexing/distributed-fulltext.md)), the fire-and-forget
 **`node.metrics`** event the [per-node telemetry exchange](../gui/cluster-node-gauges.md)
 broadcasts (#584) so the headed cluster view can animate every node's resource
-gauges. Each rides a schema-validated payload (the
+gauges, and the **`run.launch`** Task — the first consumer of the Task kind —
+that the [coordinated cross-process SPMD launch](../compute/coordinated-launch.md)
+fans out so every member co-runs an interactive run against its own shard
+(#601). Each rides a schema-validated payload (the
 [collective message](collectives.md) / telemetry boundary pattern); none adds a new
 wire verb beyond `ZETTA/1 SIGNAL`.
 

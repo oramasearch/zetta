@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "zetta/compute/compute_device.hpp"
@@ -31,6 +33,28 @@ namespace {
 // same convention the default orchestrator uses.
 std::string step_label(const ir::Node& step) {
     return step.name.empty() ? step.id : step.name;
+}
+
+// This node's slice of the global feature table: the rows whose entity is in
+// `keep`. The global table has one row per entity ascending, so the slice stays
+// sorted and the slices across nodes union back to the exact global table (the
+// #530 near-data composition's slice step — disjoint because an entity's rows
+// live in exactly one node's shard).
+ddf::FeatureTable slice_feature_table(const ddf::FeatureTable& global,
+                                      const std::unordered_set<std::int64_t>& keep) {
+    ddf::FeatureTable slice;
+    slice.feature_names = global.feature_names;
+    slice.label_name = global.label_name;
+    slice.features.resize(global.features.size());
+    for (std::size_t row = 0; row < global.row_count(); ++row) {
+        if (!keep.contains(global.entities[row])) continue;
+        slice.entities.push_back(global.entities[row]);
+        for (std::size_t column = 0; column < global.features.size(); ++column) {
+            slice.features[column].push_back(global.features[column][row]);
+        }
+        if (global.has_label()) slice.labels.push_back(global.labels[row]);
+    }
+    return slice;
 }
 
 // The lineage source a connect step pulls from, read from its free-form attributes
@@ -165,7 +189,25 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
         return zetta::pipeline::StepOutcome{/*ok=*/false,
                            "featurize job failed: " + job->detail(), {}, {}};
     }
-    state.feature_table = std::move(result.table);
+    // The featurize job broadcasts the GLOBAL feature table (identical on every
+    // node), but the downstream jobs are SPMD over each node's OWN rows — train
+    // partials, per-entity scores, per-entity explanations all combine over the
+    // collectives. Keep only this node's slice: the entities of its accounts
+    // shard (disjoint across nodes, union == the global table — the #530
+    // near-data composition's slice step), so a coordinated multi-node run
+    // (#601) counts every entity exactly once. On a single node the shard IS
+    // the whole table, so this is the identity there.
+    std::unordered_set<std::int64_t> local_entities;
+    if (config_.accounts_store != nullptr) {
+        for (std::size_t row = 0; row < config_.accounts_store->size(); ++row) {
+            const nlohmann::json& account = config_.accounts_store->at(row);
+            if (const auto entity = account.find(config_.entity_column);
+                entity != account.end() && entity->is_number_integer()) {
+                local_entities.insert(entity->get<std::int64_t>());
+            }
+        }
+    }
+    state.feature_table = slice_feature_table(result.table, local_entities);
 
     auto frame = state.feature_table.to_data_frame(device_);
     if (!frame.ok()) {
