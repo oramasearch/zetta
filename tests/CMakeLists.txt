@@ -15,6 +15,7 @@ FetchContent_MakeAvailable(googletest)
 
 add_executable(zetta-tests
   api/test_registry.cpp
+  api/test_mcp_server.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   pipeline/test_validation.cpp
@@ -137,7 +138,8 @@ target_include_directories(zetta-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
-target_link_libraries(zetta-tests PRIVATE zetta-core GTest::gtest_main)
+target_link_libraries(zetta-tests
+  PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main)
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)

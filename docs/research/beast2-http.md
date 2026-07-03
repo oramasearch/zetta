@@ -72,6 +72,15 @@ transitive libs). Two vendoring options for #615, in preference order:
 nlohmann/json everywhere. Conversion happens ONCE, in the HTTP adapter
 (serialize/parse at the boundary) — Boost.JSON must not leak past the seam.
 
+## As vendored (2026-07-02, #615)
+
+Option 1 shipped: `modules/http` + `modules/beast2` submodules; the remaining
+Boost libs (json, url + 12 header-only transitives) via the official
+boost-1.91.0 cmake tarball (FetchContent, `BOOST_INCLUDE_LIBRARIES`).
+`modules/http` points at the **oramasearch/http fork**, branch `zetta-patches`
+(one patch: portable file-time→epoch conversion; libc++ lacks
+`std::chrono::clock_cast`) — upstream the patch when practical.
+
 ## Risk + the seam that contains it
 
 Beta, develop-branch, no tags (same maturity class as capy/corosio, which

@@ -83,7 +83,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [#627](https://github.com/oramasearch/zetta/issues/627) (GUI usability);
   **wtm plan 19** ("Product wave") — 36 nodes / 31 agent-analyzed edges
   (don't run the wtm GUI generate buttons on it; they overwrite the analysis).
-  Layer-0 unlocks: #615 MCP server (core shipped; Beast2 adapter remains),
+  Layer-0 unlocks: #615 MCP server (SHIPPED end to end: Beast2-embedded POST /mcp in both run modes, feat/mcp-server),
   #637 churn-runner consolidation, #638 app_operations TU split.
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed

@@ -713,6 +713,7 @@ void App::run() {
     while (running_) {
         if (stop_requested()) break;
         node_.tick();
+        if (tick_hook_) tick_hook_();
         // Apply any finished async "Add nodes" op on the UI thread (the thread that
         // owns the node). Cheap no-op when nothing is in flight; runs regardless of
         // the active view so a background provision completes even if the user

@@ -42,7 +42,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
-  api/                      the programmatic control surface (docs/api/): registry.hpp (Capability/ApiResult/ApiContext/Registry — one entry renders as MCP tool + REST route + palette action; every call a span, authorized + audited), bridge.hpp (MainThreadBridge — coroutine-first marshaling onto the owning loop via runtime::async_event), capabilities.hpp (register_core_capabilities: server_info · sql · list_projects · list_traces · get_trace · create_project)
+  api/                      the programmatic control surface (docs/api/): registry.hpp (Capability/ApiResult/ApiContext/Registry — one entry renders as MCP tool + REST route + palette action; every call a span, authorized + audited), bridge.hpp (MainThreadBridge — coroutine-first marshaling onto the owning loop via runtime::async_event), capabilities.hpp (register_core_capabilities: server_info · sql · list_projects · list_traces · get_trace · create_project), server.hpp (ApiServer — the embedded Beast2 MCP endpoint behind a pimpl seam; POST /mcp, bearer auth, drain())
   observability/            trace.hpp — OTel-style TraceContext/Span/SpanRecorder/ScopedSpan + traceparent codec; the four captures (intent · plan · performance · result_shape) on a bounded per-node ring (docs/architecture/observability.md)
   cluster/                  the distributed plane: membership, the signal plane, collectives, CRDT replication, telemetry
     cluster.hpp             zetta::cluster::Cluster — equal-peer membership over TCP + the signal-plane API
@@ -209,7 +209,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     sha256.hpp              zetta::util::sha256_hex — large-object body fingerprint
     timestamp.hpp           zetta::util::now_iso8601() — UTC ISO-8601 stamp (created/updated)
     bytes.hpp / duration.hpp  human-readable size / time formatters
-src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + capabilities.cpp; observability/: trace.cpp)
+src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + capabilities.cpp + http_server.cpp — the ONE beast2/Boost.JSON adapter TU, builds into zetta-api; observability/: trace.cpp)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   json_boundary.hpp         internal: the shared JSON-boundary field readers (string/int/…, required/optional) every cloud-burst Config from_json parser uses, so the boundary checks live once instead of copy-pasted per <x>_provisioner.cpp
