@@ -205,7 +205,7 @@ set(AUTOMERGE_CPP_BUILD_FUZZ       OFF CACHE BOOL "" FORCE)
 add_subdirectory(modules/automerge-cpp EXCLUDE_FROM_ALL)
 
 # json-schema-validator (pboettch) — validates stored/replicated JSON against a
-# JSON Schema at the storage boundary (the Run record; see src/core/run.cpp). It
+# JSON Schema at the storage boundary (the Run record; see src/core/pipeline/run.cpp). It
 # builds on nlohmann/json, so it MUST be declared AFTER automerge-cpp above (which
 # provides the `nlohmann_json::nlohmann_json` target) — that way it reuses our
 # json target instead of fetching a second, clashing copy. Used only by
@@ -338,89 +338,89 @@ endif()
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
-  src/core/cluster.cpp
-  src/core/signal.cpp
-  src/core/collectives.cpp
-  src/core/replication.cpp
-  src/core/replication_strategy.cpp
+  src/core/cluster/cluster.cpp
+  src/core/cluster/signal.cpp
+  src/core/cluster/collectives.cpp
+  src/core/cluster/replication.cpp
+  src/core/data/replication_strategy.cpp
   src/core/node.cpp
-  src/core/node_metrics.cpp
-  src/core/node_telemetry.cpp
-  src/core/database.cpp
-  src/core/project.cpp
-  src/core/project_input.cpp
-  src/core/project_graph.cpp
-  src/core/deployment_target.cpp
-  src/core/deployment.cpp
-  src/core/deployment_controller.cpp
-  src/core/node_capability.cpp
-  src/core/provisioner.cpp
-  src/core/provisioner_detect.cpp
-  src/core/add_nodes.cpp
-  src/core/local_provisioner.cpp
-  src/core/command_runner.cpp
-  src/core/azure_provisioner.cpp
-  src/core/azure_cli_control_plane.cpp
-  src/core/aws_provisioner.cpp
-  src/core/aws_cli_control_plane.cpp
-  src/core/gcp_provisioner.cpp
-  src/core/gcp_cli_control_plane.cpp
-  src/core/oci_provisioner.cpp
-  src/core/oci_cli_control_plane.cpp
-  src/core/k8s_provisioner.cpp
-  src/core/k8s_cli_control_plane.cpp
-  src/core/bare_metal_provisioner.cpp
-  src/core/bare_metal_cli_control_plane.cpp
-  src/core/burst_identity.cpp
-  src/core/scaling_policy.cpp
-  src/core/burst_approval_gate.cpp
-  src/core/job_autoscaler.cpp
-  src/core/solution_catalog.cpp
-  src/core/cloud_provider.cpp
-  src/core/cloud_inspector.cpp
-  src/core/run.cpp
-  src/core/model.cpp
+  src/core/cluster/node_metrics.cpp
+  src/core/cluster/node_telemetry.cpp
+  src/core/data/database.cpp
+  src/core/pipeline/project.cpp
+  src/core/pipeline/project_input.cpp
+  src/core/pipeline/project_graph.cpp
+  src/core/pipeline/deployment_target.cpp
+  src/core/pipeline/deployment.cpp
+  src/core/pipeline/deployment_controller.cpp
+  src/core/cloud/node_capability.cpp
+  src/core/cloud/provisioner.cpp
+  src/core/cloud/provisioner_detect.cpp
+  src/core/cloud/add_nodes.cpp
+  src/core/cloud/local_provisioner.cpp
+  src/core/cloud/command_runner.cpp
+  src/core/cloud/azure_provisioner.cpp
+  src/core/cloud/azure_cli_control_plane.cpp
+  src/core/cloud/aws_provisioner.cpp
+  src/core/cloud/aws_cli_control_plane.cpp
+  src/core/cloud/gcp_provisioner.cpp
+  src/core/cloud/gcp_cli_control_plane.cpp
+  src/core/cloud/oci_provisioner.cpp
+  src/core/cloud/oci_cli_control_plane.cpp
+  src/core/cloud/k8s_provisioner.cpp
+  src/core/cloud/k8s_cli_control_plane.cpp
+  src/core/cloud/bare_metal_provisioner.cpp
+  src/core/cloud/bare_metal_cli_control_plane.cpp
+  src/core/cloud/burst_identity.cpp
+  src/core/compute/scaling_policy.cpp
+  src/core/cloud/burst_approval_gate.cpp
+  src/core/compute/job_autoscaler.cpp
+  src/core/pipeline/solution_catalog.cpp
+  src/core/cloud/cloud_provider.cpp
+  src/core/cloud/cloud_inspector.cpp
+  src/core/pipeline/run.cpp
+  src/core/ml/model.cpp
   src/core/index/index.cpp
   src/core/index/index_registry.cpp
   src/core/index/index_step_executor.cpp
   src/core/index/in_memory_index_backend.cpp
   src/core/index/oramacore_fulltext_index.cpp
   src/core/index/distributed_fulltext.cpp
-  src/core/compute_job.cpp
-  src/core/dataset_partition.cpp
-  src/core/rendezvous_placement.cpp
-  src/core/partition_writer.cpp
-  src/core/partition_rebalance.cpp
-  src/core/principal.cpp
-  src/core/access_key.cpp
-  src/core/scope.cpp
-  src/core/capability.cpp
-  src/core/audit_event.cpp
-  src/core/table.cpp
-  src/core/partitioner.cpp
-  src/core/jsonl_store.cpp
-  src/core/uuid.cpp
-  src/core/sha256.cpp
-  src/core/timestamp.cpp
-  src/core/validation.cpp
-  src/core/gate.cpp
-  src/core/graph_checks.cpp
-  src/core/checks/entity_resolution_check.cpp
-  src/core/entity_resolution.cpp
-  src/core/executor.cpp
-  src/core/churn_step_executor.cpp
-  src/core/churn_solution.cpp
-  src/core/intent_compiler.cpp
-  src/core/graph_plan.cpp
-  src/core/duration.cpp
-  src/core/bytes.cpp
-  src/core/large_object.cpp
-  src/core/replicated_blob_store.cpp
-  src/core/import.cpp
-  src/core/add_dataset.cpp
-  src/core/churn_dataset.cpp
-  src/core/n8n_import.cpp
-  src/core/n8n_compile.cpp
+  src/core/compute/compute_job.cpp
+  src/core/data/dataset_partition.cpp
+  src/core/data/rendezvous_placement.cpp
+  src/core/data/partition_writer.cpp
+  src/core/data/partition_rebalance.cpp
+  src/core/governance/principal.cpp
+  src/core/governance/access_key.cpp
+  src/core/governance/scope.cpp
+  src/core/governance/capability.cpp
+  src/core/governance/audit_event.cpp
+  src/core/data/table.cpp
+  src/core/data/partitioner.cpp
+  src/core/storage/jsonl_store.cpp
+  src/core/util/uuid.cpp
+  src/core/util/sha256.cpp
+  src/core/util/timestamp.cpp
+  src/core/pipeline/validation.cpp
+  src/core/pipeline/gate.cpp
+  src/core/pipeline/graph_checks.cpp
+  src/core/usecases/churn/entity_resolution_check.cpp
+  src/core/usecases/churn/entity_resolution.cpp
+  src/core/pipeline/executor.cpp
+  src/core/usecases/churn/churn_step_executor.cpp
+  src/core/usecases/churn/churn_solution.cpp
+  src/core/pipeline/intent_compiler.cpp
+  src/core/pipeline/graph_plan.cpp
+  src/core/util/duration.cpp
+  src/core/util/bytes.cpp
+  src/core/data/large_object.cpp
+  src/core/data/replicated_blob_store.cpp
+  src/core/data/import.cpp
+  src/core/data/add_dataset.cpp
+  src/core/usecases/churn/churn_dataset.cpp
+  src/core/pipeline/n8n_import.cpp
+  src/core/pipeline/n8n_compile.cpp
   src/core/parquet/metadata.cpp
   src/core/parquet/snappy.cpp
   src/core/parquet/column_decoder.cpp
@@ -499,7 +499,7 @@ target_include_directories(zetta-core PUBLIC
 target_link_libraries(zetta-core PUBLIC
   nlohmann_json::nlohmann_json Boost::capy zetta-compute)
 # Corosio (networking), automerge-cpp (the replication CRDT), and the JSON-Schema
-# validator (boundary validation in src/core/run.cpp) are used only by zetta-core's
+# validator (boundary validation in src/core/pipeline/run.cpp) are used only by zetta-core's
 # adapters — PRIVATE so they stay out of zetta-core's public surface and the GUI.
 target_link_libraries(zetta-core PRIVATE
   Boost::corosio

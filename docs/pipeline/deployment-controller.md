@@ -1,6 +1,6 @@
 # Deployment controller (reconcile + self-heal)
 
-The **deployment controller** (`include/zetta/deployment_controller.hpp`) is the
+The **deployment controller** (`include/zetta/pipeline/deployment_controller.hpp`) is the
 **control plane** for local deployments: a reconcile loop that drives a node from
 *desired* state toward *actual* state and **self-heals** when a placed run is
 killed or fails. This is an atomic slice of *one-button deploy* (FEAT-4, `#135`)
@@ -121,7 +121,7 @@ owns it.
 
 ## Tests
 
-`tests/test_deployment_controller.cpp` covers:
+`tests/pipeline/test_deployment_controller.cpp` covers:
 
 - **desired → actual** — a freshly placed local deployment gets a running run;
   the report counts it.

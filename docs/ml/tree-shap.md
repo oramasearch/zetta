@@ -18,7 +18,7 @@ per-node **cover** TreeSHAP needs, and the explanation runs through the
   — the distributed `explain` ComputeJob (`run_explain_job`).
 - Impl: [`src/core/ml/tree_shap.cpp`](../../src/core/ml/tree_shap.cpp),
   [`src/core/ml/gbdt_explain_job.cpp`](../../src/core/ml/gbdt_explain_job.cpp).
-- Tests: [`tests/test_tree_shap.cpp`](../../tests/test_tree_shap.cpp).
+- Tests: [`tests/ml/test_tree_shap.cpp`](../../tests/ml/test_tree_shap.cpp).
 
 ## What SHAP gives you
 
@@ -68,7 +68,7 @@ efficiency identity holds exactly per entity:
 predict_raw(x)  ==  base_value + Σ_i φ_i(x)        (within floating-point tolerance)
 ```
 
-`tests/test_tree_shap.cpp` asserts this for a hand-built tree (a closed-form value), a
+`tests/ml/test_tree_shap.cpp` asserts this for a hand-built tree (a closed-form value), a
 trained separable model, and every entity of the churn fixture.
 
 ### Pure, deterministic, non-throwing
@@ -106,7 +106,7 @@ be identical on every node (it defaults to a deterministic, model-derived tag).
 ```cpp
 // Train (see gbdt.md) -> a GbdtModel; then explain a feature frame across the cluster.
 auto features = feature_table.to_data_frame(device);     // X (+ entity key) on a device
-auto job = node.create_job(zetta::JobKind::Explain);
+auto job = node.create_job(zetta::compute::JobKind::Explain);
 auto out = zetta::ml::run_explain_job(
     coordinator, *job, model, features.frame, /*entity_column=*/"entity");
 // out.explanations[i] — this node's i-th entity: predicted, φ per feature,
@@ -127,9 +127,9 @@ auto out = zetta::ml::run_explain_job(
 - **Persistence:** `run_explain_job` returns the per-entity scores + the driver
   ranking; persisting the scores as a dataset / a [Run](../pipeline/runs.md) output, and writing
   the SHAP driver ranking onto the [`Model`](models.md)'s `feature_schema.drivers` (so
-  it surfaces in the Runs panel via `zetta::ranked_drivers`), are later slices.
+  it surfaces in the Runs panel via `zetta::ml::ranked_drivers`), are later slices.
 
-## Acceptance (in `tests/test_tree_shap.cpp`)
+## Acceptance (in `tests/ml/test_tree_shap.cpp`)
 
 - A hand-built single-split tree gives the **closed-form** SHAP value
   (`φ_0 = predict_raw − base_value`), and a constant model (no features) attributes

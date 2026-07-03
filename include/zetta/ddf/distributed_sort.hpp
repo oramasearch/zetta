@@ -9,10 +9,10 @@
 #include <string_view>
 #include <vector>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_device.hpp"
 #include "zetta/ddf/data_frame.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // The **distributed sort** over the DDF substrate (ARC-12, #385) — sample-partition
 // + local sort + merge across the cluster. Every participating node owns a shard
@@ -77,7 +77,7 @@ std::optional<PartitionMessage> decode_partition_message(
 // Cluster and the device its shards live on; it registers itself as the cluster's
 // signal handler (chained over an owned Collectives) and restores the previous
 // handler (the optional `delegate`) on destruction.
-class DistributedSorter : public SignalHandler {
+class DistributedSorter : public zetta::cluster::SignalHandler {
 public:
     // This node's output partition (populated only when `status.ok()`).
     struct Result {
@@ -89,7 +89,7 @@ public:
     // `delegate`, when given, receives every signal that is neither a `ddf.shuffle`
     // nor a collective, so the sorter can coexist with another signal consumer.
     // `cluster` and `device` must outlive the sorter.
-    DistributedSorter(Cluster& cluster, compute::ComputeDevice& device,
+    DistributedSorter(zetta::cluster::Cluster& cluster, compute::ComputeDevice& device,
                       SignalHandler* delegate = nullptr);
     ~DistributedSorter() override;
 
@@ -106,7 +106,7 @@ public:
     Result sort(const DataFrame& local_shard, std::string_view key_column,
                 compute::SortOrder order = compute::SortOrder::Ascending,
                 const std::string& round_tag = "ddf.sort",
-                std::chrono::milliseconds timeout = Collectives::kDefaultTimeout);
+                std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout);
 
     // The participants of the round: this node + connected peers, sorted by node id
     // (so participant index r is the same on every node — partition r's owner).
@@ -114,15 +114,15 @@ public:
         return collectives_.participants();
     }
 
-    Collectives& collectives() { return collectives_; }
+    zetta::cluster::Collectives& collectives() { return collectives_; }
 
     // --- SignalHandler (runs on the cluster network thread) ------------------
-    SignalResponse on_request(const Signal& request) override;
-    void on_event(const Signal& event) override;
-    void on_task(const Signal& task) override;
+    zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
+    void on_event(const zetta::cluster::Signal& event) override;
+    void on_task(const zetta::cluster::Signal& task) override;
 
 private:
-    Cluster& cluster_;
+    zetta::cluster::Cluster& cluster_;
     compute::ComputeDevice& device_;
     SignalHandler* delegate_ = nullptr;
 
@@ -137,7 +137,7 @@ private:
     // and restores `delegate` on destruction (the safe, external handler). The
     // sorter then registers *itself* as the chain head in the constructor body and
     // restores the collectives in its destructor body. Do not reorder.
-    Collectives collectives_;
+    zetta::cluster::Collectives collectives_;
 };
 
 }  // namespace zetta::ddf

@@ -51,7 +51,7 @@ This is the **first** of five issues; the rest build on it:
 > reference** — matching its per-operator preconditions and edge cases
 > (integer-dtype rejection, safe integer divide, bounds-checked `gather`/`scatter`,
 > deterministic duplicate-index `scatter`) — and added the CPU↔CUDA conformance
-> suite (`tests/test_cuda_device.cpp`). It remains the home for any further GPU
+> suite (`tests/compute/test_cuda_device.cpp`). It remains the home for any further GPU
 > operators (DDF / GBDT / SHAP) layered on this same seam.
 
 `HostStubDevice` is **not** the CPU backend. It is a memory/transfer stub used to
@@ -272,12 +272,12 @@ translation unit nvcc compiles:
 > all tests) is verified on macOS/CI. The `.cu` requires a CUDA toolkit + NVIDIA
 > GPU to compile and run, which dev Macs don't have; validate the CUDA build on a
 > Linux CUDA host before relying on the GPU kernels. The CPU↔CUDA conformance
-> suite (`tests/test_cuda_device.cpp`, below) is the harness that proves the
+> suite (`tests/compute/test_cuda_device.cpp`, below) is the harness that proves the
 > "matches the CPU reference" criterion when run there.
 
 ## Tests
 
-`tests/test_compute_device.cpp` covers the `DataType` helpers, the typed
+`tests/compute/test_compute_device.cpp` covers the `DataType` helpers, the typed
 host⇄device round-trip for floats and ints (the **acceptance test**), byte-level
 transfer validation (oversized copy, dtype/size mismatch on download), buffer
 RAII + move semantics, `DeviceInfo`, and that every operator reports
@@ -286,9 +286,9 @@ block adds a `CudaDevice` round-trip + `map`/`reduce` test that compiles only in
 CUDA build and skips at runtime when no GPU is present (so a toolkit-but-no-GPU
 host still passes).
 
-`tests/test_cpu_device.cpp` asserts the exact per-operator results that are the
+`tests/compute/test_cpu_device.cpp` asserts the exact per-operator results that are the
 **numerical reference** — `CudaDevice` is checked against these.
-`tests/test_cuda_device.cpp` is the **CPU↔CUDA conformance suite** (the acceptance
+`tests/compute/test_cuda_device.cpp` is the **CPU↔CUDA conformance suite** (the acceptance
 test of #361): for every operator it runs identical inputs through both
 `CpuDevice` and `CudaDevice` and asserts they agree (bit-identical for integer
 ops, within tolerance for floating-point), plus the edge-case parity that

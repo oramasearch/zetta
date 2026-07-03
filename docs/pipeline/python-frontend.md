@@ -161,7 +161,7 @@ seams that already exist:
 | `train(ds, target=…)` | `model` | [`ChurnStepExecutor`](../use-cases/churn-step-executor.md)`::run_model` | native distributed [GBDT train](../ml/gbdt.md) → a real [`Model`](../ml/models.md) |
 | `rank(model)` / `score(…)` | `index` | `ChurnStepExecutor::run_index` | distributed [batch scoring / rank-at-risk](../ml/gbdt-score.md) |
 | `explain(model)` | `serve` | `ChurnStepExecutor::run_serve` | exact [TreeSHAP](../ml/tree-shap.md) (per-entity + population drivers) |
-| `cluster.add_nodes(n, provider=…)` | `act` | `zetta::input::run_add_nodes_step` | the permanent-add control action [`zetta::add_nodes`](../cloud/add-nodes.md) |
+| `cluster.add_nodes(n, provider=…)` | `act` | `zetta::input::run_add_nodes_step` | the permanent-add control action [`zetta::cloud::add_nodes`](../cloud/add-nodes.md) |
 
 The three ML verbs need **no new execution code**: because they lower to the
 `model` / `index` / `serve` steps the `ChurnStepExecutor` already interprets, a
@@ -173,13 +173,13 @@ producing a real trained `Model`, the ranked at-risk list, and the churn drivers
 cluster control action. The frontend lowers it to an `act`-stage node (recording
 `n` + `provider=` in the `python` provenance bag), and the matching execution
 binding `zetta::input::run_add_nodes_step` (`include/zetta/input/cluster_bindings.hpp`)
-reads the count from that node and drives `zetta::add_nodes`:
+reads the count from that node and drives `zetta::cloud::add_nodes`:
 
 ```cpp
 zetta::input::FrontendResult lowered =
     zetta::input::PythonFrontend{}.compile("cluster.add_nodes(3, provider='azure')");
 const auto* step = lowered.graph.find_node("add_nodes").get();
-zetta::AddNodesResult added = zetta::input::run_add_nodes_step(*step, provisioner);
+zetta::cloud::AddNodesResult added = zetta::input::run_add_nodes_step(*step, provisioner);
 // added.members.size() == 3 (best-effort)
 ```
 
@@ -223,7 +223,7 @@ the existing [`GraphExecutor`](execution.md) / `ChurnStepExecutor` and passes th
   recursive-descent parser + the AST → IR lowering + the verb table.
 - `include/zetta/input/cluster_bindings.hpp` /
   `src/core/input/cluster_bindings.cpp` — the cluster control binding:
-  `run_add_nodes_step` (a lowered `cluster.add_nodes` IR node → `zetta::add_nodes`)
+  `run_add_nodes_step` (a lowered `cluster.add_nodes` IR node → `zetta::cloud::add_nodes`)
   + `add_nodes_count` (#522).
 - `include/zetta/input/datasets_bindings.hpp` /
   `src/core/input/datasets_bindings.cpp` — the `datasets` shim binding:
@@ -231,10 +231,10 @@ the existing [`GraphExecutor`](execution.md) / `ChurnStepExecutor` and passes th
   `load_dataset(...)` IR node → a (partitioned) table via the native Parquet reader),
   behind the injectable `DatasetResolver` IO seam (#521). See
   [datasets-shim.md](datasets-shim.md).
-- `tests/test_python_frontend.cpp` — the lowering acceptance + the subset coverage.
-- `tests/test_python_engine_bindings.cpp` — the #522 end-to-end acceptance: a
+- `tests/pipeline/test_python_frontend.cpp` — the lowering acceptance + the subset coverage.
+- `tests/pipeline/test_python_engine_bindings.cpp` — the #522 end-to-end acceptance: a
   lowered sim-Python churn script runs through the real engine, and a lowered
-  `cluster.add_nodes` step drives `zetta::add_nodes`.
+  `cluster.add_nodes` step drives `zetta::cloud::add_nodes`.
 
 ## See also
 

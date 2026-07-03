@@ -13,7 +13,7 @@ parquet-cpp.** This is the third of the four native Parquet slices (ADR-32 /
   `zetta-core`). The shared Thrift compact-protocol reader lives in
   `src/core/parquet/thrift_compact.hpp` (used by both the footer parser and the
   page-header parser).
-- **Test:** `tests/test_parquet_column_decoder.cpp`.
+- **Test:** `tests/data/test_parquet_column_decoder.cpp`.
 - **Fixture + golden:** `tests/fixtures/parquet/churn_decode.parquet` +
   `tests/fixtures/parquet/churn_decode.values.json`.
 - **Issue / ADR:** #506, the column-chunk-decoder slice of **ADR-32** (#481) — a
@@ -126,7 +126,7 @@ bytes as a JSON string) — has a schema:
 
 ## Test + golden (no foreign runtime)
 
-`tests/test_parquet_column_decoder.cpp` decodes every column of
+`tests/data/test_parquet_column_decoder.cpp` decodes every column of
 `churn_decode.parquet` and asserts the assembled `{ num_rows, columns }` document
 equals the committed golden field for field.
 

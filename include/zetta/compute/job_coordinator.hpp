@@ -8,10 +8,10 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/distributed_scheduler.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // The **job coordinator** (ARC-11, #372) — the single entry the native
 // distributed accelerated-compute algorithms (DDF / GBDT / SHAP) submit work
@@ -51,7 +51,7 @@
 //
 // See docs/compute/job-coordinator.md.
 namespace zetta {
-class Cluster;
+namespace cluster { class Cluster; }
 }
 
 namespace zetta::compute {
@@ -90,25 +90,25 @@ public:
 
     std::optional<std::vector<double>> allreduce(
         const std::string& tag, const std::vector<double>& local,
-        CollectiveOp op = CollectiveOp::Sum,
-        std::chrono::milliseconds timeout = Collectives::kDefaultTimeout) {
+        zetta::cluster::CollectiveOp op = zetta::cluster::CollectiveOp::Sum,
+        std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
         return collectives_.allreduce(tag, local, op, timeout);
     }
 
     std::optional<std::vector<double>> broadcast(
         const std::string& tag, const std::vector<double>& value,
-        std::chrono::milliseconds timeout = Collectives::kDefaultTimeout) {
+        std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
         return collectives_.broadcast(tag, value, timeout);
     }
 
     bool barrier(const std::string& tag,
-                 std::chrono::milliseconds timeout = Collectives::kDefaultTimeout) {
+                 std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
         return collectives_.barrier(tag, timeout);
     }
 
     std::optional<std::vector<std::vector<double>>> gather(
         const std::string& tag, const std::vector<double>& local,
-        std::chrono::milliseconds timeout = Collectives::kDefaultTimeout) {
+        std::chrono::milliseconds timeout = zetta::cluster::Collectives::kDefaultTimeout) {
         return collectives_.gather(tag, local, timeout);
     }
 
@@ -135,7 +135,7 @@ public:
 
 private:
     friend class JobCoordinator;
-    JobRound(DistributedScheduler& scheduler, Collectives& collectives,
+    JobRound(DistributedScheduler& scheduler, zetta::cluster::Collectives& collectives,
              std::string node_id, std::string job_id)
         : scheduler_(scheduler),
           collectives_(collectives),
@@ -143,7 +143,7 @@ private:
           job_id_(std::move(job_id)) {}
 
     DistributedScheduler& scheduler_;
-    Collectives& collectives_;
+    zetta::cluster::Collectives& collectives_;
     std::string node_id_;
     std::string job_id_;
 };
@@ -177,11 +177,11 @@ public:
     // SPMD parallel_map path). `fallback`, when given, receives every signal that
     // is neither a steal nor a collective, so the coordinator can coexist with
     // another signal consumer. `cluster` must outlive the coordinator.
-    JobCoordinator(Cluster& cluster, unsigned worker_count,
-                   SignalHandler* fallback = nullptr);
-    JobCoordinator(Cluster& cluster, unsigned worker_count,
+    JobCoordinator(zetta::cluster::Cluster& cluster, unsigned worker_count,
+                   zetta::cluster::SignalHandler* fallback = nullptr);
+    JobCoordinator(zetta::cluster::Cluster& cluster, unsigned worker_count,
                    DistributedScheduler::Config config,
-                   SignalHandler* fallback = nullptr);
+                   zetta::cluster::SignalHandler* fallback = nullptr);
     ~JobCoordinator();
 
     JobCoordinator(const JobCoordinator&) = delete;
@@ -212,14 +212,14 @@ public:
     // The owned pieces, for direct use / observability (e.g. scheduler stats).
     DistributedScheduler& scheduler() { return scheduler_; }
     const DistributedScheduler& scheduler() const { return scheduler_; }
-    Collectives& collectives() { return collectives_; }
+    zetta::cluster::Collectives& collectives() { return collectives_; }
 
 private:
-    Cluster& cluster_;
+    zetta::cluster::Cluster& cluster_;
     // Declared FIRST so it registers as the cluster handler before the scheduler,
     // and is destroyed LAST so it restores the application fallback after the
     // scheduler has restored it as the handler. Do not reorder.
-    Collectives collectives_;
+    zetta::cluster::Collectives collectives_;
     DistributedScheduler scheduler_;
 };
 

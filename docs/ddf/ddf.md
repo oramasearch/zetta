@@ -19,7 +19,7 @@ onto.
 include/zetta/ddf/data_frame.hpp   the DataFrame / Column / DataFrameSchema types + loader
 src/core/ddf/data_frame.cpp        the loader, schema inference, and the schema JSON boundary
 schemas/data_frame_schema.schema.json   the schema-config JSON boundary (draft-07)
-tests/test_data_frame.cpp          load/round-trip, chunking, inference, and boundary tests
+tests/ddf/test_data_frame.cpp          load/round-trip, chunking, inference, and boundary tests
 ```
 
 ## What it is — and isn't
@@ -143,7 +143,7 @@ config fails fast with no partial frame.
 
 ## Tests
 
-`tests/test_data_frame.cpp` covers the acceptance and the boundaries: the
+`tests/ddf/test_data_frame.cpp` covers the acceptance and the boundaries: the
 load → read-back **round-trip** across float / int / uint columns (over both an
 in-memory `JsonStore` and a real on-disk `Table`), **chunking** (a small
 `chunk_rows` splitting rows into multiple buffers that reassemble in order),

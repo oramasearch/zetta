@@ -8,7 +8,7 @@ properties together: a **calibrated ranked at-risk list**, **division-correct
 entity resolution**, and a **gated, governed run**.
 
 ```
-tests/test_uc1_end_to_end.cpp   the integration test (two cases)
+tests/usecases/churn/test_uc1_end_to_end.cpp   the integration test (two cases)
 ```
 
 It composes pieces that already landed and are unit-tested in isolation — it adds

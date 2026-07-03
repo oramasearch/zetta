@@ -14,16 +14,16 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/node.hpp"
 #include "zetta/parquet/reader.hpp"
-#include "zetta/partition_writer.hpp"
-#include "zetta/partitioner.hpp"
-#include "zetta/run.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/partition_writer.hpp"
+#include "zetta/data/partitioner.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/data/table.hpp"
 
 namespace zetta::input {
 namespace {
@@ -98,7 +98,7 @@ std::string dataset_table_name(const std::string& source,
 
 // A free table name in `database` starting from `base`: `base`, then `base_2`,
 // `base_3`, … so a second load of the same dataset does not collide.
-std::string unique_table_name(const Database& database, std::string base) {
+std::string unique_table_name(const zetta::data::Database& database, std::string base) {
     if (!database.find_table(base)) return base;
     for (int suffix = 2;; ++suffix) {
         std::string candidate = base + "_" + std::to_string(suffix);
@@ -285,7 +285,7 @@ DatasetLoadResult run_load_dataset_step(const ir::Node& step, Node& node,
     }
 
     // Materialize into a (partitioned) table on the node.
-    std::shared_ptr<Database> database = node.find_database(options.database);
+    std::shared_ptr<zetta::data::Database> database = node.find_database(options.database);
     if (!database) database = node.create_database(options.database);
     if (!database) {
         result.error = "could not create database '" + options.database + "'";
@@ -295,7 +295,7 @@ DatasetLoadResult run_load_dataset_step(const ir::Node& step, Node& node,
 
     const std::string table_name = unique_table_name(
         *database, dataset_table_name(spec->source, spec->split));
-    std::shared_ptr<Table> table = database->create_table(table_name);
+    std::shared_ptr<zetta::data::Table> table = database->create_table(table_name);
     if (!table) {
         result.error = "could not create table '" + table_name + "'";
         return result;
@@ -309,7 +309,7 @@ DatasetLoadResult run_load_dataset_step(const ir::Node& step, Node& node,
     // write path so it is a *partitioned* table (blobs + catalog placement).
     if (options.partitioner) {
         table->set_partitioner(options.partitioner);
-        PartitionWriteResult written =
+        zetta::data::PartitionWriteResult written =
             write_partitioned(node, *database, *table, options.members);
         if (!written.ok()) {
             result.error = "partition: " + written.error;
@@ -327,14 +327,14 @@ DatasetStepExecutor::DatasetStepExecutor(Node& node, DatasetResolver resolver,
       resolver_(std::move(resolver)),
       options_(std::move(options)) {}
 
-StepOutcome DatasetStepExecutor::run_step(const ir::Node& step) const {
+zetta::pipeline::StepOutcome DatasetStepExecutor::run_step(const ir::Node& step) const {
     // Only a Parquet dataset-load connect step is ours; everything else (other
     // step kinds, other connect verbs) runs through the default executor.
     if (!is_dataset_load_step(step)) return fallback_.run_step(step);
 
     const DatasetLoadResult loaded =
         run_load_dataset_step(step, node_, resolver_, options_);
-    StepOutcome outcome;
+    zetta::pipeline::StepOutcome outcome;
     if (!loaded.ok()) {
         outcome.ok = false;
         outcome.error = loaded.error;
@@ -350,7 +350,7 @@ StepOutcome DatasetStepExecutor::run_step(const ir::Node& step) const {
     }
     if (loaded.table) {
         outcome.outputs.push_back(
-            RunOutput{"dataset", loaded.table->name(), "tbl:" + loaded.table->id()});
+            zetta::pipeline::RunOutput{"dataset", loaded.table->name(), "tbl:" + loaded.table->id()});
     }
     return outcome;
 }

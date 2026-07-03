@@ -12,7 +12,7 @@ obvious risk (RSK-8): how do we know the from-scratch reimplementation is *right
 oracle answers it with three independent layers, all over the committed
 [synthetic churn fixture](../use-cases/churn-dataset.md), and all pure C++ that runs offline in CI.
 
-- Tests: [`tests/test_native_oracle.cpp`](../../tests/test_native_oracle.cpp).
+- Tests: [`tests/ml/test_native_oracle.cpp`](../../tests/ml/test_native_oracle.cpp).
 - Golden data: [`tests/fixtures/golden/churn_oracle.json`](../../tests/fixtures/golden/churn_oracle.json).
 - Format: [`include/zetta/ml/golden_oracle.hpp`](../../include/zetta/ml/golden_oracle.hpp),
   [`src/core/ml/golden_oracle.cpp`](../../src/core/ml/golden_oracle.cpp).

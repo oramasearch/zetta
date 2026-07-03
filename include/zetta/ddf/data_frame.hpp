@@ -222,7 +222,7 @@ struct DataFrameResult {
 // `schema` entry. Non-throwing: returns a failing ComputeStatus (and an empty
 // frame) on a device error or when a row's field is missing, not a number, not an
 // integer for an integer column, or out of range for the column's dtype.
-DataFrameResult load_data_frame(const StorageEngine& store,
+DataFrameResult load_data_frame(const zetta::storage::StorageEngine& store,
                                 const DataFrameSchema& schema,
                                 compute::ComputeDevice& device,
                                 std::size_t chunk_rows = kDefaultChunkRows);
@@ -232,6 +232,6 @@ DataFrameResult load_data_frame(const StorageEngine& store,
 // schema round-trips), typed Int64 when every value is an integer, else Float64.
 // Columns are in the first row's key order. An empty store, or one whose rows share
 // no numeric field, yields an empty schema.
-DataFrameSchema infer_schema(const StorageEngine& store);
+DataFrameSchema infer_schema(const zetta::storage::StorageEngine& store);
 
 }  // namespace zetta::ddf

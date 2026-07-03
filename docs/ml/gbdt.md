@@ -17,7 +17,7 @@ and the [job coordinator](../compute/job-coordinator.md).
   — the distributed `train` ComputeJob that produces a `Model`.
 - Impl: [`src/core/ml/gbdt.cpp`](../../src/core/ml/gbdt.cpp),
   [`src/core/ml/gbdt_train_job.cpp`](../../src/core/ml/gbdt_train_job.cpp).
-- Tests: [`tests/test_gbdt.cpp`](../../tests/test_gbdt.cpp).
+- Tests: [`tests/ml/test_gbdt.cpp`](../../tests/ml/test_gbdt.cpp).
 
 ## What a histogram GBDT is, briefly
 
@@ -67,7 +67,7 @@ single-node run and a multi-node run produce an equivalent model. Within a singl
 run, every node sees byte-identical allreduce results and so grows **bit-identical**
 trees; across two *different* shardings the per-bin sums differ only in the last
 floating-point bits (the standard GBDT "equivalent up to floating-point" guarantee),
-so the models agree to a tight tolerance. `tests/test_gbdt.cpp` asserts both.
+so the models agree to a tight tolerance. `tests/ml/test_gbdt.cpp` asserts both.
 
 ## Host-side reference, device-backed data
 
@@ -120,7 +120,7 @@ return a `compute::ComputeStatus`.
   attached via `set_weights` (fingerprinted + replicated peer-to-peer like any
   large-object body), with the evaluation metrics in `metrics` and the per-feature
   gains as the ranked `feature_schema.drivers` (explainability — read by
-  `zetta::ranked_drivers`, surfaced in the [Runs panel](../pipeline/runs.md)). One logical model
+  `zetta::ml::ranked_drivers`, surfaced in the [Runs panel](../pipeline/runs.md)). One logical model
   is produced (at the root, which replicates to peers); deduping per-node
   registrations into a single record on every node is a later slice.
 
@@ -131,13 +131,13 @@ must be identical on every node (it defaults to a deterministic, spec-derived ta
 ```cpp
 // Featurize → device-backed feature frame → train → Model.
 auto features = feature_table.to_data_frame(device);          // X + y on the device
-auto job = node.create_job(zetta::JobKind::Train);
+auto job = node.create_job(zetta::compute::JobKind::Train);
 auto result = zetta::ml::run_train_job(
     coordinator, *job, features.frame,
     feature_table.feature_names, feature_table.label_name,
     zetta::ml::GbdtParams{}, &node);
 // result.model is the ensemble; result.metrics.auc the score;
-// result.model_id the registered zetta::Model (on the root).
+// result.model_id the registered zetta::ml::Model (on the root).
 ```
 
 ## Probability calibration
@@ -170,7 +170,7 @@ same round, and a node lacking a checkpoint (e.g. a replacement burst node) simp
 forces a fresh start rather than desyncing the rounds. Because the trees up to a
 given round are identical on every node (grown off the global histograms), seeding +
 truncating to the agreed round is safe and the resumed model is **byte-identical to
-an uninterrupted run** (the acceptance, `GbdtCheckpoint.*` in `tests/test_gbdt.cpp`).
+an uninterrupted run** (the acceptance, `GbdtCheckpoint.*` in `tests/ml/test_gbdt.cpp`).
 Disabled by default (no store) — the loop is then exactly the trainer above. The
 mechanics of the seam (the durable `JobCheckpoint`, the store, the resume driver)
 live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
@@ -189,7 +189,7 @@ live in [docs/compute/job-checkpoint.md](../compute/job-checkpoint.md).
   Per-prediction SHAP attribution is the **exact TreeSHAP** slice — see
   [tree-shap.md](tree-shap.md).
 
-## Acceptance (in `tests/test_gbdt.cpp`)
+## Acceptance (in `tests/ml/test_gbdt.cpp`)
 
 - The model + params JSON boundaries round-trip and reject malformed input
   (bad objective, out-of-range child index, unknown key, bad hyperparameters).

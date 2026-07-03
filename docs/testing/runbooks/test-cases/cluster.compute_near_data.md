@@ -38,7 +38,7 @@ pass/fail, the metrics (bytes read near data vs moved over wire, the read/moved
 ratio), and the log.
 
 **Headless:** the case is exercised (at `nodes=2`, `rows=600`) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests

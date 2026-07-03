@@ -8,7 +8,7 @@ parquet-cpp**. It is the layout foundation the data decoders consume; it decodes
 
 - **Code:** `include/zetta/parquet/metadata.hpp`, `src/core/parquet/metadata.cpp`
   (namespace `zetta::parquet`, in `zetta-core`).
-- **Test:** `tests/test_parquet_metadata.cpp`.
+- **Test:** `tests/data/test_parquet_metadata.cpp`.
 - **Fixture + golden:** `tests/fixtures/parquet/churn_sample.parquet` +
   `tests/fixtures/parquet/churn_sample.metadata.json`.
 - **Issue / ADR:** #505, realizing the footer slice of **ADR-32** (#481) — a
@@ -124,7 +124,7 @@ have a schema:
 
 ## Test + golden (no foreign runtime)
 
-`tests/test_parquet_metadata.cpp` parses the committed fixture and asserts its
+`tests/data/test_parquet_metadata.cpp` parses the committed fixture and asserts its
 `to_json` form equals the committed **pyarrow golden** field for field — an
 *independent* reference for the schema + row-group / column-chunk layout. The
 fixture is small but representative: 5 columns spanning `int64` / `double` /

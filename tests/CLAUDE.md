@@ -1,6 +1,7 @@
 # tests — conventions
 
-GoogleTest suites, one file per area, linking **`zetta-core` only** — tests
+GoogleTest suites, one file per area **under the domain's `tests/<domain>/`
+directory** (mirroring `src/core/<domain>/`), linking **`zetta-core` only** — tests
 exercise the headless core, never the GUI. Run:
 `cmake --build build --target zetta-tests && ctest --test-dir build --output-on-failure`.
 

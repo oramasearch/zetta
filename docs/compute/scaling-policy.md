@@ -1,6 +1,6 @@
 # Job objective / reward model (ScalingPolicy)
 
-The **`ScalingPolicy`** (`include/zetta/scaling_policy.hpp`) is the per-job
+The **`ScalingPolicy`** (`include/zetta/compute/scaling_policy.hpp`) is the per-job
 **reward objective an autoscaler optimizes** — part of the **native distributed
 accelerated compute** pass for UC-1 churn (`#264`). It realizes **ADR-29** and
 entity **ENT-34**, and sits beside the sibling slices in the same pass: the
@@ -145,7 +145,7 @@ hand-written `{"min_nodes": 2}` and a round-tripped value both parse.
 
 ## Tests
 
-`tests/test_scaling_policy.cpp` covers the enum names, `clamp_nodes`, the
+`tests/compute/test_scaling_policy.cpp` covers the enum names, `clamp_nodes`, the
 objective evaluation for each of the three objectives over `(progress, elapsed,
 cost)` samples (scale up when behind, down when ahead, reward peaks on target /
 on a matched allocation), the cost cap as a hard constraint, and the JSON

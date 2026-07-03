@@ -37,7 +37,7 @@ and click **Run**; the result pane shows pass/fail, the metrics (rows / columns 
 embeddings dropped / chunk rows), and the log.
 
 **Headless:** the case is exercised by
-`tests/test_testkit.cpp::ParquetReaderParityCasePasses` — at the default chunk size
+`tests/testkit/test_testkit.cpp::ParquetReaderParityCasePasses` — at the default chunk size
 **and** at a tiny `chunk_rows=5` (each column splits across chunks yet still matches
 the golden):
 

@@ -33,8 +33,8 @@ case takes no options). The result pane shows pass (it failed as expected), the
 metrics (phase, offending statement), and the log.
 
 **Headless:** the example cases are exercised by
-`tests/test_testkit.cpp::ExampleScriptCasesRunGreen` and by
-`tests/test_example_scripts.cpp`:
+`tests/testkit/test_testkit.cpp::ExampleScriptCasesRunGreen` and by
+`tests/testkit/test_example_scripts.cpp`:
 
 ```bash
 cmake --build build --target zetta-tests

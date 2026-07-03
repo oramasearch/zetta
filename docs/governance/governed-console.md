@@ -14,7 +14,7 @@ Like the rest of the console it is split **model-in-`zetta-core` /
 GUI-as-thin-renderer**: the governance pipeline is
 **`zetta::repl::GovernedConsole`** (`include/zetta/repl/governed_console.hpp`,
 `src/core/repl/governed_console.cpp`) — **no SDL/ImGui**, so it runs headless (a
-future CLI REPL, `tests/test_governed_console.cpp`) and under the GUI screen
+future CLI REPL, `tests/repl/test_governed_console.cpp`) and under the GUI screen
 (`App::draw_console`, `src/gui/app_explorer.cpp`), which only sets the session
 inputs (the acting key + current database) and draws the **"Run as"** selector.
 
@@ -94,7 +94,7 @@ is ephemeral session state.
 
 ## Tests
 
-`tests/test_governed_console.cpp` (links `zetta-core`, no GUI) covers the pipeline
+`tests/repl/test_governed_console.cpp` (links `zetta-core`, no GUI) covers the pipeline
 headless: a SQL run returns a grid + records one `data_access` event; a
 simulated-Python statement lowers, passes the gate, executes (a Run is produced),
 and is audited; a compile error is recorded inline (still audited, still allowed);

@@ -12,7 +12,7 @@ backs the headed component today and a **future CLI** with no rework:
   `src/core/repl/console_model.cpp`) — the engine-agnostic REPL *session*: the
   selected frontend, the input buffer, the scrollback transcript, and the submit
   logic. **No SDL/ImGui** — it lives in zetta-core, so it is headless-runnable
-  (`tests/test_repl_console.cpp`) and a CLI can render it.
+  (`tests/repl/test_repl_console.cpp`) and a CLI can render it.
 - **`zetta::gui::ReplConsole`** (`src/gui/repl_console.hpp` /
   `src/gui/repl_console.cpp`) — the Dear ImGui renderer: a frontend selector, a
   multiline editor, Run / Clear controls, the scrollback transcript, and the
@@ -104,7 +104,7 @@ audit boundaries — all of which validate at their own existing seams.
 
 ## Tests
 
-`tests/test_repl_console.cpp` (links zetta-core, no GUI) covers the model: submit
+`tests/repl/test_repl_console.cpp` (links zetta-core, no GUI) covers the model: submit
 records an entry + clears the prompt, the selected frontend rides into the handler
 + the entry, blank/whitespace input and a null handler are rejected, an error
 result is recorded inline, `clear()` drops the transcript but keeps the frontend,

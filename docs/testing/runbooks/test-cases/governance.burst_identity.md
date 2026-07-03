@@ -35,7 +35,7 @@ nodes, distinct principals/keys, `key_issued` / `key_revoked`, orphans), and the
 log.
 
 **Headless:** the case is exercised (at `nodes=4`) by
-`tests/test_testkit.cpp::GovernanceCasesPass`:
+`tests/testkit/test_testkit.cpp::GovernanceCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

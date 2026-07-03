@@ -1,21 +1,21 @@
 #include "zetta/node.hpp"
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/executor.hpp"
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/index/in_memory_index_backend.hpp"
 #ifdef ZETTA_WITH_ORAMACORE
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #endif
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
-#include "zetta/partition_rebalance.hpp"
-#include "zetta/project_graph.hpp"
-#include "zetta/replication.hpp"
-#include "zetta/sha256.hpp"
-#include "zetta/timestamp.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/data/partition_rebalance.hpp"
+#include "zetta/pipeline/project_graph.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/util/sha256.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 #include "catalog.hpp"
@@ -57,7 +57,7 @@ std::vector<std::string> membership_from_snapshot(const nlohmann::json& snapshot
 
 }  // namespace
 
-Node::Node(NodeConfig config, ReplicationManager* replication)
+Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
@@ -67,9 +67,9 @@ Node::Node(NodeConfig config, ReplicationManager* replication)
     // reference Search backend; OramaCoreFulltextIndex ("oramacore_fulltext") is
     // the native full-text (BM25F) Search backend, registered only when its
     // private submodule was built (ZETTA_WITH_ORAMACORE). A host may add more.
-    index_registry_.add(std::make_shared<InMemoryIndexBackend>());
+    index_registry_.add(std::make_shared<zetta::index::InMemoryIndexBackend>());
 #ifdef ZETTA_WITH_ORAMACORE
-    index_registry_.add(std::make_shared<OramaCoreFulltextIndex>());
+    index_registry_.add(std::make_shared<zetta::index::OramaCoreFulltextIndex>());
 #endif
 }
 
@@ -94,7 +94,7 @@ std::vector<compute::JobCheckpoint> Node::checkpoints() const {
     return result;
 }
 
-void Node::record_pipeline_job(PipelineJobInstrumentation instrumentation) {
+void Node::record_pipeline_job(zetta::compute::PipelineJobInstrumentation instrumentation) {
     // Append the recorded near-data job, bounding the ring to the most-recent
     // kMaxPipelineJobs (drop oldest) so this ephemeral, observed registry can't grow
     // without limit over a long-lived node. The source for system.pipeline_jobs.
@@ -108,25 +108,25 @@ void Node::record_pipeline_job(PipelineJobInstrumentation instrumentation) {
     }
 }
 
-std::vector<PipelineJobInstrumentation> Node::pipeline_jobs() const {
+std::vector<zetta::compute::PipelineJobInstrumentation> Node::pipeline_jobs() const {
     std::lock_guard<std::mutex> lock(pipeline_jobs_mutex_);
     return pipeline_jobs_;
 }
 
-std::vector<DatasetSummary> Node::datasets() const {
+std::vector<zetta::data::DatasetSummary> Node::datasets() const {
     // One dataset per table across every database — computed live from the tree +
     // the partition catalog, so the system.datasets view never drifts from the
     // truth (RULE-7; #585). A dataset is a first-class primitive with no stored
     // entity: one dataset == one table. (The virtual `system` catalog has no real
     // Database here, so it is naturally absent.)
-    std::vector<DatasetSummary> result;
+    std::vector<zetta::data::DatasetSummary> result;
     for (const auto& database : databases_) {
         for (const auto& table : database->tables()) {
-            DatasetSummary dataset;
+            zetta::data::DatasetSummary dataset;
             dataset.name = table->name();
             dataset.database = database->name();
             dataset.table_id = table->id();
-            const StorageEngine& store = table->store();
+            const zetta::storage::StorageEngine& store = table->store();
             dataset.format = store.name();
             dataset.replication =
                 std::string(to_string(table->replication_strategy().kind()));
@@ -160,9 +160,9 @@ std::vector<DatasetSummary> Node::datasets() const {
             // node — empty for a non-partitioned (replicate-to-all) dataset.
             for (const auto& partition : dataset_partitions_) {
                 if (partition->table() != table->id()) continue;
-                const PartitionRowRange& range = partition->row_range();
+                const zetta::data::PartitionRowRange& range = partition->row_range();
                 dataset.partitions.push_back(
-                    DatasetPlacement{partition->id(), partition->blob_ref(),
+                    zetta::data::DatasetPlacement{partition->id(), partition->blob_ref(),
                                      range.start, range.end,
                                      partition->owner_nodes()});
             }
@@ -281,10 +281,10 @@ void Node::tick() {
         if (last_telemetry_sample_.time_since_epoch().count() == 0 ||
             now - last_telemetry_sample_ >= kTelemetryInterval) {
             last_telemetry_sample_ = now;
-            const NodeMetrics metrics = sample_node_metrics();
+            const zetta::cluster::NodeMetrics metrics = sample_node_metrics();
             telemetry_->record_local(node_id(), metrics);
             cluster_->broadcast_event(
-                std::string(NodeTelemetryExchange::kMethod),
+                std::string(zetta::cluster::NodeTelemetryExchange::kMethod),
                 encode_node_metrics(metrics, node_id()));
         }
     }
@@ -302,7 +302,7 @@ void Node::stop() {
     std::fflush(stdout);
 }
 
-void Node::attach_cluster(Cluster& cluster, unsigned worker_count) {
+void Node::attach_cluster(zetta::cluster::Cluster& cluster, unsigned worker_count) {
     cluster_ = &cluster;
     compute_workers_ = worker_count;
     // If the node is already running (the normal path — main attaches right after
@@ -328,7 +328,7 @@ void Node::start_coordinator() {
     // a collective, so it caches peers' `node.metrics` events without disturbing
     // the compute plane. Created once (the cache persists across a stop()/start()
     // cycle) and reused on each attach.
-    if (!telemetry_) telemetry_ = std::make_unique<NodeTelemetryExchange>();
+    if (!telemetry_) telemetry_ = std::make_unique<zetta::cluster::NodeTelemetryExchange>();
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
                                                              telemetry_.get());
     // Register on the cluster's signal plane + start the cross-node steal loop, so
@@ -361,10 +361,10 @@ void Node::load_databases() {
         const auto meta = nlohmann::json::parse(in, nullptr,
                                                 /*allow_exceptions=*/false);
         if (meta.is_discarded() || !meta.contains("name")) continue;
-        auto db = std::make_shared<Database>(
+        auto db = std::make_shared<zetta::data::Database>(
             entry.path().filename().string(),
             meta["name"].get<std::string>(), entry.path(), replication_,
-            replication_strategy_from_meta(meta));
+            zetta::data::replication_strategy_from_meta(meta));
         db->load();
         databases_.push_back(std::move(db));
     }
@@ -391,7 +391,7 @@ void Node::load_projects() {
             !meta.contains("name") || !meta["name"].is_string()) {
             continue;
         }
-        auto project = std::make_shared<Project>(
+        auto project = std::make_shared<zetta::pipeline::Project>(
             entry.path().filename().string(),
             meta["name"].get<std::string>(),
             meta.value("created", std::string{}),
@@ -406,7 +406,7 @@ void Node::load_projects() {
               [](const auto& a, const auto& b) { return a->name() < b->name(); });
 }
 
-std::shared_ptr<Project> Node::find_project_by_id(const std::string& id) const {
+std::shared_ptr<zetta::pipeline::Project> Node::find_project_by_id(const std::string& id) const {
     for (const auto& project : projects_) {
         if (project->id() == id) return project;
     }
@@ -431,7 +431,7 @@ std::string Node::resolve_node_id() {
         }
         if (!id.empty()) return id;
     }
-    const std::string id = new_uuid();
+    const std::string id = zetta::util::new_uuid();
     std::ofstream(path, std::ios::trunc) << id << '\n';
     return id;
 }
@@ -465,11 +465,11 @@ void Node::load_deployments() {
             !meta.contains("graph_name") || !meta["graph_name"].is_string()) {
             continue;
         }
-        const std::optional<DeploymentTarget> target =
-            DeploymentTarget::from_json(
+        const std::optional<zetta::pipeline::DeploymentTarget> target =
+            zetta::pipeline::DeploymentTarget::from_json(
                 meta.value("target", nlohmann::json::object()));
         if (!target) continue;
-        deployments_.push_back(std::make_shared<Deployment>(
+        deployments_.push_back(std::make_shared<zetta::pipeline::Deployment>(
             entry.path().filename().string(),
             meta["graph_name"].get<std::string>(), *target,
             meta.value("node", std::string{}),
@@ -516,9 +516,9 @@ void Node::load_principals() {
             }
         }
         if (unknown_field) continue;
-        const auto kind = principal_kind_from(meta["kind"].get<std::string>());
+        const auto kind = zetta::governance::principal_kind_from(meta["kind"].get<std::string>());
         if (!kind) continue;
-        auto principal = std::make_shared<Principal>(
+        auto principal = std::make_shared<zetta::governance::Principal>(
             entry.path().filename().string(), *kind,
             meta["name"].get<std::string>(),
             meta.value("created", std::string{}), entry.path(), replication_);
@@ -530,7 +530,7 @@ void Node::load_principals() {
               [](const auto& a, const auto& b) { return a->name() < b->name(); });
 }
 
-std::shared_ptr<Principal> Node::find_principal_by_id(
+std::shared_ptr<zetta::governance::Principal> Node::find_principal_by_id(
     const std::string& id) const {
     for (const auto& principal : principals_) {
         if (principal->id() == id) return principal;
@@ -538,12 +538,12 @@ std::shared_ptr<Principal> Node::find_principal_by_id(
     return nullptr;
 }
 
-std::shared_ptr<Database> Node::create_database(
-    std::string name, ReplicationStrategy replication_strategy) {
+std::shared_ptr<zetta::data::Database> Node::create_database(
+    std::string name, zetta::data::ReplicationStrategy replication_strategy) {
     // "system" is reserved for the virtual system database (computed system
     // tables like system.zetta_nodes); never a real on-disk database.
     if (name.empty() || name == "system" || find_database(name)) return nullptr;
-    const std::string id = new_uuid();
+    const std::string id = zetta::util::new_uuid();
     if (replication_) {
         // The default (ReplicateToAll) is omitted, so the db: value is unchanged
         // from before databases carried a strategy (ENT-35).
@@ -557,28 +557,28 @@ std::shared_ptr<Database> Node::create_database(
                                std::move(replication_strategy));
 }
 
-std::shared_ptr<Database> Node::materialize_database(
-    std::string id, std::string name, ReplicationStrategy strategy) {
+std::shared_ptr<zetta::data::Database> Node::materialize_database(
+    std::string id, std::string name, zetta::data::ReplicationStrategy strategy) {
     if (auto existing = find_database_by_id(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto db = std::make_shared<Database>(std::move(id), std::move(name), dir,
+    auto db = std::make_shared<zetta::data::Database>(std::move(id), std::move(name), dir,
                                          replication_, std::move(strategy));
     db->persist_meta();
     databases_.push_back(db);
     return db;
 }
 
-std::shared_ptr<Database> Node::find_database(const std::string& name) const {
+std::shared_ptr<zetta::data::Database> Node::find_database(const std::string& name) const {
     for (const auto& db : databases_) {
         if (db->name() == name) return db;
     }
     return nullptr;
 }
 
-std::shared_ptr<Database> Node::find_database_by_id(
+std::shared_ptr<zetta::data::Database> Node::find_database_by_id(
     const std::string& id) const {
     for (const auto& db : databases_) {
         if (db->id() == id) return db;
@@ -596,7 +596,7 @@ bool Node::drop_database(const std::string& name) {
 bool Node::materialize_drop_database(const std::string& id) {
     const auto it = std::find_if(
         databases_.begin(), databases_.end(),
-        [&](const std::shared_ptr<Database>& d) { return d->id() == id; });
+        [&](const std::shared_ptr<zetta::data::Database>& d) { return d->id() == id; });
     if (it == databases_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -625,11 +625,11 @@ std::vector<std::string> Node::database_names() const {
 
 // ----- projects (mirror the database CRUD; replicated as project:<uuid>) -----
 
-std::shared_ptr<Project> Node::create_project(std::string name,
+std::shared_ptr<zetta::pipeline::Project> Node::create_project(std::string name,
                                               std::string owner) {
     if (name.empty() || find_project(name)) return nullptr;
-    const std::string id = new_uuid();
-    const std::string now = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
     if (replication_) {
         replication_->set(catalog::project_key(id),
                           nlohmann::json{{"name", name},
@@ -640,7 +640,7 @@ std::shared_ptr<Project> Node::create_project(std::string name,
     return materialize_project(id, std::move(name), now, now, std::move(owner));
 }
 
-std::shared_ptr<Project> Node::materialize_project(std::string id,
+std::shared_ptr<zetta::pipeline::Project> Node::materialize_project(std::string id,
                                                    std::string name,
                                                    std::string created,
                                                    std::string updated,
@@ -650,7 +650,7 @@ std::shared_ptr<Project> Node::materialize_project(std::string id,
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto project = std::make_shared<Project>(std::move(id), std::move(name),
+    auto project = std::make_shared<zetta::pipeline::Project>(std::move(id), std::move(name),
                                              std::move(created),
                                              std::move(updated),
                                              std::move(owner), dir,
@@ -660,7 +660,7 @@ std::shared_ptr<Project> Node::materialize_project(std::string id,
     return project;
 }
 
-std::shared_ptr<Project> Node::find_project(const std::string& name) const {
+std::shared_ptr<zetta::pipeline::Project> Node::find_project(const std::string& name) const {
     for (const auto& project : projects_) {
         if (project->name() == name) return project;
     }
@@ -684,7 +684,7 @@ bool Node::drop_project(const std::string& name) {
 bool Node::materialize_drop_project(const std::string& id) {
     const auto it = std::find_if(
         projects_.begin(), projects_.end(),
-        [&](const std::shared_ptr<Project>& p) { return p->id() == id; });
+        [&](const std::shared_ptr<zetta::pipeline::Project>& p) { return p->id() == id; });
     if (it == projects_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -696,7 +696,7 @@ bool Node::rename_project(const std::string& from, const std::string& to) {
     if (to.empty() || find_project(to)) return false;  // empty or clashes
     auto project = find_project(from);
     if (!project) return false;
-    project->set_metadata(to, project->created(), now_iso8601(),
+    project->set_metadata(to, project->created(), zetta::util::now_iso8601(),
                           project->owner());
     if (replication_) {
         replication_->set(catalog::project_key(project->id()),
@@ -714,8 +714,8 @@ std::vector<std::string> Node::project_names() const {
 
 // ----- deployments (place a graph onto a target; replicated as deployment:<id>)
 
-std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
-                                               DeploymentTarget target,
+std::shared_ptr<zetta::pipeline::Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
+                                               zetta::pipeline::DeploymentTarget target,
                                                std::string graph_name) {
     // R1 places onto the local node only; k8s/cloud targets are deferred.
     if (!target.is_local()) return nullptr;
@@ -727,22 +727,22 @@ std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
     // Deploy panel runs, and an ungated/failing graph can never be placed. A gate
     // failure is a governed decision: record a blocked (allowed=false) deploy event
     // and place nothing.
-    const ValidationReport report = default_gate().run(graph);
+    const zetta::pipeline::ValidationReport report = zetta::pipeline::default_gate().run(graph);
     if (!report.passed()) {
         std::string reason = "correctness gate failed";
-        for (const CheckResult& check : report.checks) {
-            if (check.status == CheckStatus::Fail) {
+        for (const zetta::pipeline::CheckResult& check : report.checks) {
+            if (check.status == zetta::pipeline::CheckStatus::Fail) {
                 reason = "gate check '" + check.name + "' failed: " + check.reason;
                 break;
             }
         }
         record_audit_event(
-            {AuditAction::GraphDeployed, {}, graph_name, false, reason, {}});
+            {zetta::governance::AuditAction::GraphDeployed, {}, graph_name, false, reason, {}});
         return nullptr;
     }
 
-    const std::string id = new_uuid();
-    const std::string now = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
     const std::size_t node_count = graph.node_count();
     const std::size_t edge_count = graph.edge_count();
     if (replication_) {
@@ -761,7 +761,7 @@ std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
     // action. Record it once the placement is materialized.
     if (deployment) {
         record_audit_event(
-            {AuditAction::GraphDeployed, {}, graph_name, true,
+            {zetta::governance::AuditAction::GraphDeployed, {}, graph_name, true,
              "graph '" + graph_name + "' deployed (" +
                  std::to_string(node_count) + " nodes, " +
                  std::to_string(edge_count) + " edges) on node " + node_id_,
@@ -770,8 +770,8 @@ std::shared_ptr<Deployment> Node::deploy_graph(const ir::ExecutionGraph& graph,
     return deployment;
 }
 
-std::shared_ptr<Deployment> Node::materialize_deployment(
-    std::string id, std::string graph_name, DeploymentTarget target,
+std::shared_ptr<zetta::pipeline::Deployment> Node::materialize_deployment(
+    std::string id, std::string graph_name, zetta::pipeline::DeploymentTarget target,
     std::string node_id, std::size_t node_count, std::size_t edge_count,
     std::string created) {
     if (auto existing = find_deployment(id)) return existing;
@@ -779,7 +779,7 @@ std::shared_ptr<Deployment> Node::materialize_deployment(
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto deployment = std::make_shared<Deployment>(
+    auto deployment = std::make_shared<zetta::pipeline::Deployment>(
         std::move(id), std::move(graph_name), std::move(target),
         std::move(node_id), node_count, edge_count, std::move(created), dir);
     deployment->persist_meta();
@@ -787,7 +787,7 @@ std::shared_ptr<Deployment> Node::materialize_deployment(
     return deployment;
 }
 
-std::shared_ptr<Deployment> Node::find_deployment(const std::string& id) const {
+std::shared_ptr<zetta::pipeline::Deployment> Node::find_deployment(const std::string& id) const {
     for (const auto& deployment : deployments_) {
         if (deployment->id() == id) return deployment;
     }
@@ -796,11 +796,11 @@ std::shared_ptr<Deployment> Node::find_deployment(const std::string& id) const {
 
 // ----- principals (mirror the project CRUD; replicated as principal:<uuid>) ---
 
-std::shared_ptr<Principal> Node::create_principal(std::string name,
-                                                  PrincipalKind kind) {
+std::shared_ptr<zetta::governance::Principal> Node::create_principal(std::string name,
+                                                  zetta::governance::PrincipalKind kind) {
     if (name.empty() || find_principal(name)) return nullptr;
-    const std::string id = new_uuid();
-    const std::string now = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
     if (replication_) {
         replication_->set(catalog::principal_key(id),
                           nlohmann::json{{"kind", to_string(kind)},
@@ -810,8 +810,8 @@ std::shared_ptr<Principal> Node::create_principal(std::string name,
     return materialize_principal(id, kind, std::move(name), now);
 }
 
-std::shared_ptr<Principal> Node::materialize_principal(std::string id,
-                                                       PrincipalKind kind,
+std::shared_ptr<zetta::governance::Principal> Node::materialize_principal(std::string id,
+                                                       zetta::governance::PrincipalKind kind,
                                                        std::string name,
                                                        std::string created) {
     if (auto existing = find_principal_by_id(id)) return existing;
@@ -819,7 +819,7 @@ std::shared_ptr<Principal> Node::materialize_principal(std::string id,
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto principal = std::make_shared<Principal>(
+    auto principal = std::make_shared<zetta::governance::Principal>(
         std::move(id), kind, std::move(name), std::move(created), dir,
         replication_);
     principal->persist_meta();
@@ -827,7 +827,7 @@ std::shared_ptr<Principal> Node::materialize_principal(std::string id,
     return principal;
 }
 
-std::shared_ptr<Principal> Node::find_principal(const std::string& name) const {
+std::shared_ptr<zetta::governance::Principal> Node::find_principal(const std::string& name) const {
     for (const auto& principal : principals_) {
         if (principal->name() == name) return principal;
     }
@@ -837,7 +837,7 @@ std::shared_ptr<Principal> Node::find_principal(const std::string& name) const {
 bool Node::materialize_drop_deployment(const std::string& id) {
     const auto it = std::find_if(
         deployments_.begin(), deployments_.end(),
-        [&](const std::shared_ptr<Deployment>& d) { return d->id() == id; });
+        [&](const std::shared_ptr<zetta::pipeline::Deployment>& d) { return d->id() == id; });
     if (it == deployments_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -863,10 +863,10 @@ void Node::load_runs() {
         // rejected here (with a logged reason) rather than allowed to corrupt
         // the in-memory tree — fail fast, don't propagate bad state.
         std::string error;
-        const std::optional<RunValue> value =
+        const std::optional<zetta::pipeline::RunValue> value =
             meta.is_discarded()
                 ? std::nullopt
-                : parse_run_value(meta, &error);
+                : zetta::pipeline::parse_run_value(meta, &error);
         if (!value) {
             std::printf("zetta: skipping invalid run %s (%s)\n",
                         entry.path().filename().string().c_str(),
@@ -874,7 +874,7 @@ void Node::load_runs() {
                                             : error.c_str());
             continue;
         }
-        runs_.push_back(std::make_shared<Run>(entry.path().filename().string(),
+        runs_.push_back(std::make_shared<zetta::pipeline::Run>(entry.path().filename().string(),
                                               *value, entry.path(),
                                               replication_));
     }
@@ -886,35 +886,35 @@ void Node::load_runs() {
     });
 }
 
-std::shared_ptr<Run> Node::create_run(std::string project, std::string graph,
+std::shared_ptr<zetta::pipeline::Run> Node::create_run(std::string project, std::string graph,
                                       std::string deployment) {
-    const std::string id = new_uuid();
-    const std::string now = now_iso8601();
-    RunValue value;
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
+    zetta::pipeline::RunValue value;
     value.project = std::move(project);
     value.graph = std::move(graph);
     value.deployment = std::move(deployment);
-    value.status = RunStatus::Pending;
+    value.status = zetta::pipeline::RunStatus::Pending;
     value.created = now;
     value.updated = now;
     if (replication_) replication_->set(catalog::run_key(id), to_json(value));
     return materialize_run(id, std::move(value));
 }
 
-std::shared_ptr<Run> Node::materialize_run(std::string id, RunValue value) {
+std::shared_ptr<zetta::pipeline::Run> Node::materialize_run(std::string id, zetta::pipeline::RunValue value) {
     if (auto existing = find_run(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto run = std::make_shared<Run>(std::move(id), std::move(value), dir,
+    auto run = std::make_shared<zetta::pipeline::Run>(std::move(id), std::move(value), dir,
                                      replication_);
     run->persist_meta();
     runs_.push_back(run);
     return run;
 }
 
-std::shared_ptr<Run> Node::find_run(const std::string& id) const {
+std::shared_ptr<zetta::pipeline::Run> Node::find_run(const std::string& id) const {
     for (const auto& run : runs_) {
         if (run->id() == id) return run;
     }
@@ -939,15 +939,15 @@ void Node::load_models() {
         // rejected here (with a logged reason) rather than allowed to corrupt the
         // in-memory tree — fail fast, don't propagate bad state.
         std::string error;
-        const std::optional<ModelValue> value =
-            meta.is_discarded() ? std::nullopt : parse_model_value(meta, &error);
+        const std::optional<zetta::ml::ModelValue> value =
+            meta.is_discarded() ? std::nullopt : zetta::ml::parse_model_value(meta, &error);
         if (!value) {
             std::printf("zetta: skipping invalid model %s (%s)\n",
                         entry.path().filename().string().c_str(),
                         meta.is_discarded() ? "unparseable JSON" : error.c_str());
             continue;
         }
-        models_.push_back(std::make_shared<Model>(
+        models_.push_back(std::make_shared<zetta::ml::Model>(
             entry.path().filename().string(), *value, entry.path(),
             replication_));
     }
@@ -959,29 +959,29 @@ void Node::load_models() {
     });
 }
 
-std::shared_ptr<Model> Node::create_model(ModelValue value) {
+std::shared_ptr<zetta::ml::Model> Node::create_model(zetta::ml::ModelValue value) {
     if (value.kind.empty()) return nullptr;  // basic guard (kind is required)
-    const std::string id = new_uuid();
-    value.created = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    value.created = zetta::util::now_iso8601();
     value.weights.reset();  // weights are attached separately via set_weights
     if (replication_) replication_->set(catalog::model_key(id), to_json(value));
     return materialize_model(id, std::move(value));
 }
 
-std::shared_ptr<Model> Node::materialize_model(std::string id, ModelValue value) {
+std::shared_ptr<zetta::ml::Model> Node::materialize_model(std::string id, zetta::ml::ModelValue value) {
     if (auto existing = find_model(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto model = std::make_shared<Model>(std::move(id), std::move(value), dir,
+    auto model = std::make_shared<zetta::ml::Model>(std::move(id), std::move(value), dir,
                                          replication_);
     model->persist_meta();
     models_.push_back(model);
     return model;
 }
 
-std::shared_ptr<Model> Node::find_model(const std::string& id) const {
+std::shared_ptr<zetta::ml::Model> Node::find_model(const std::string& id) const {
     for (const auto& model : models_) {
         if (model->id() == id) return model;
     }
@@ -997,7 +997,7 @@ bool Node::drop_model(const std::string& id) {
 bool Node::materialize_drop_model(const std::string& id) {
     const auto it = std::find_if(
         models_.begin(), models_.end(),
-        [&](const std::shared_ptr<Model>& m) { return m->id() == id; });
+        [&](const std::shared_ptr<zetta::ml::Model>& m) { return m->id() == id; });
     if (it == models_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -1023,15 +1023,15 @@ void Node::load_indexes() {
         // rejected here (with a logged reason) rather than allowed to corrupt the
         // in-memory tree — fail fast, don't propagate bad state.
         std::string error;
-        const std::optional<IndexValue> value =
-            meta.is_discarded() ? std::nullopt : parse_index_value(meta, &error);
+        const std::optional<zetta::index::IndexValue> value =
+            meta.is_discarded() ? std::nullopt : zetta::index::parse_index_value(meta, &error);
         if (!value) {
             std::printf("zetta: skipping invalid index %s (%s)\n",
                         entry.path().filename().string().c_str(),
                         meta.is_discarded() ? "unparseable JSON" : error.c_str());
             continue;
         }
-        indexes_.push_back(std::make_shared<Index>(
+        indexes_.push_back(std::make_shared<zetta::index::Index>(
             entry.path().filename().string(), *value, entry.path(),
             replication_));
     }
@@ -1043,32 +1043,32 @@ void Node::load_indexes() {
     });
 }
 
-std::shared_ptr<Index> Node::create_index(IndexValue value) {
+std::shared_ptr<zetta::index::Index> Node::create_index(zetta::index::IndexValue value) {
     // Basic guards (the schema enforces the rest at persist/reconcile): a usable
     // index needs a source table, a backend to build it, and at least one field.
     if (value.table.empty() || value.backend.empty() || value.fields.empty()) {
         return nullptr;
     }
-    const std::string id = new_uuid();
-    value.created = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    value.created = zetta::util::now_iso8601();
     if (replication_) replication_->set(catalog::index_key(id), to_json(value));
     return materialize_index(id, std::move(value));
 }
 
-std::shared_ptr<Index> Node::materialize_index(std::string id, IndexValue value) {
+std::shared_ptr<zetta::index::Index> Node::materialize_index(std::string id, zetta::index::IndexValue value) {
     if (auto existing = find_index(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto index = std::make_shared<Index>(std::move(id), std::move(value), dir,
+    auto index = std::make_shared<zetta::index::Index>(std::move(id), std::move(value), dir,
                                          replication_);
     index->persist_meta();
     indexes_.push_back(index);
     return index;
 }
 
-std::shared_ptr<Index> Node::find_index(const std::string& id) const {
+std::shared_ptr<zetta::index::Index> Node::find_index(const std::string& id) const {
     for (const auto& index : indexes_) {
         if (index->id() == id) return index;
     }
@@ -1084,7 +1084,7 @@ bool Node::drop_index(const std::string& id) {
 bool Node::materialize_drop_index(const std::string& id) {
     const auto it = std::find_if(
         indexes_.begin(), indexes_.end(),
-        [&](const std::shared_ptr<Index>& i) { return i->id() == id; });
+        [&](const std::shared_ptr<zetta::index::Index>& i) { return i->id() == id; });
     if (it == indexes_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -1110,9 +1110,9 @@ void Node::load_jobs() {
         // rejected here (with a logged reason) rather than allowed to corrupt the
         // in-memory tree — fail fast, don't propagate bad state.
         std::string error;
-        const std::optional<ComputeJobValue> value =
+        const std::optional<zetta::compute::ComputeJobValue> value =
             meta.is_discarded() ? std::nullopt
-                                : parse_compute_job_value(meta, &error);
+                                : zetta::compute::parse_compute_job_value(meta, &error);
         if (!value) {
             std::printf("zetta: skipping invalid job %s (%s)\n",
                         entry.path().filename().string().c_str(),
@@ -1120,7 +1120,7 @@ void Node::load_jobs() {
                                             : error.c_str());
             continue;
         }
-        jobs_.push_back(std::make_shared<ComputeJob>(
+        jobs_.push_back(std::make_shared<zetta::compute::ComputeJob>(
             entry.path().filename().string(), *value, entry.path(),
             replication_, /*audit=*/this));
     }
@@ -1132,14 +1132,14 @@ void Node::load_jobs() {
     });
 }
 
-std::shared_ptr<ComputeJob> Node::create_job(JobKind kind, std::string project,
+std::shared_ptr<zetta::compute::ComputeJob> Node::create_job(zetta::compute::JobKind kind, std::string project,
                                              std::string graph, std::string run,
                                              std::string scaling_policy) {
-    const std::string id = new_uuid();
-    const std::string now = now_iso8601();
-    ComputeJobValue value;
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
+    zetta::compute::ComputeJobValue value;
     value.kind = kind;
-    value.status = JobStatus::Queued;
+    value.status = zetta::compute::JobStatus::Queued;
     value.project = std::move(project);
     value.graph = std::move(graph);
     value.run = std::move(run);
@@ -1153,28 +1153,28 @@ std::shared_ptr<ComputeJob> Node::create_job(JobKind kind, std::string project,
     // reconcile (materialize_job) already carrying its own replicated audit event.
     if (job) {
         record_audit_event(
-            {AuditAction::JobCreated, {}, job->id(), true,
+            {zetta::governance::AuditAction::JobCreated, {}, job->id(), true,
              "compute job " + std::string(to_string(job->kind())) + " queued",
              {}});
     }
     return job;
 }
 
-std::shared_ptr<ComputeJob> Node::materialize_job(std::string id,
-                                                  ComputeJobValue value) {
+std::shared_ptr<zetta::compute::ComputeJob> Node::materialize_job(std::string id,
+                                                  zetta::compute::ComputeJobValue value) {
     if (auto existing = find_job(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto job = std::make_shared<ComputeJob>(std::move(id), std::move(value), dir,
+    auto job = std::make_shared<zetta::compute::ComputeJob>(std::move(id), std::move(value), dir,
                                             replication_, /*audit=*/this);
     job->persist_meta();
     jobs_.push_back(job);
     return job;
 }
 
-std::shared_ptr<ComputeJob> Node::find_job(const std::string& id) const {
+std::shared_ptr<zetta::compute::ComputeJob> Node::find_job(const std::string& id) const {
     for (const auto& job : jobs_) {
         if (job->id() == id) return job;
     }
@@ -1190,7 +1190,7 @@ bool Node::drop_job(const std::string& id) {
 bool Node::materialize_drop_job(const std::string& id) {
     const auto it = std::find_if(
         jobs_.begin(), jobs_.end(),
-        [&](const std::shared_ptr<ComputeJob>& j) { return j->id() == id; });
+        [&](const std::shared_ptr<zetta::compute::ComputeJob>& j) { return j->id() == id; });
     if (it == jobs_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -1216,9 +1216,9 @@ void Node::load_dataset_partitions() {
         // JSON Schema is rejected here (with a logged reason) rather than allowed
         // to corrupt the in-memory tree — fail fast, don't propagate bad state.
         std::string error;
-        const std::optional<DatasetPartitionValue> value =
+        const std::optional<zetta::data::DatasetPartitionValue> value =
             meta.is_discarded() ? std::nullopt
-                                : parse_dataset_partition_value(meta, &error);
+                                : zetta::data::parse_dataset_partition_value(meta, &error);
         if (!value) {
             std::printf("zetta: skipping invalid partition %s (%s)\n",
                         entry.path().filename().string().c_str(),
@@ -1226,7 +1226,7 @@ void Node::load_dataset_partitions() {
                                             : error.c_str());
             continue;
         }
-        dataset_partitions_.push_back(std::make_shared<DatasetPartition>(
+        dataset_partitions_.push_back(std::make_shared<zetta::data::DatasetPartition>(
             entry.path().filename().string(), *value, entry.path(),
             replication_));
     }
@@ -1240,26 +1240,26 @@ void Node::load_dataset_partitions() {
               });
 }
 
-std::shared_ptr<DatasetPartition> Node::create_dataset_partition(
-    DatasetPartitionValue value) {
+std::shared_ptr<zetta::data::DatasetPartition> Node::create_dataset_partition(
+    zetta::data::DatasetPartitionValue value) {
     // A partition must reference a table — that ref is the catalog's anchor.
     if (value.table.empty()) return nullptr;
-    const std::string id = new_uuid();
-    if (value.created.empty()) value.created = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    if (value.created.empty()) value.created = zetta::util::now_iso8601();
     if (replication_) {
         replication_->set(catalog::partition_key(id), to_json(value));
     }
     return materialize_dataset_partition(id, std::move(value));
 }
 
-std::shared_ptr<DatasetPartition> Node::materialize_dataset_partition(
-    std::string id, DatasetPartitionValue value) {
+std::shared_ptr<zetta::data::DatasetPartition> Node::materialize_dataset_partition(
+    std::string id, zetta::data::DatasetPartitionValue value) {
     if (auto existing = find_dataset_partition(id)) return existing;
     const fs::path dir = fs::path(config_.data_dir) / id;
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto partition = std::make_shared<DatasetPartition>(
+    auto partition = std::make_shared<zetta::data::DatasetPartition>(
         std::move(id), std::move(value), dir, replication_);
     partition->persist_meta();
     dataset_partitions_.push_back(partition);
@@ -1272,7 +1272,7 @@ std::shared_ptr<DatasetPartition> Node::materialize_dataset_partition(
     return partition;
 }
 
-std::shared_ptr<DatasetPartition> Node::find_dataset_partition(
+std::shared_ptr<zetta::data::DatasetPartition> Node::find_dataset_partition(
     const std::string& id) const {
     for (const auto& partition : dataset_partitions_) {
         if (partition->id() == id) return partition;
@@ -1289,7 +1289,7 @@ bool Node::drop_dataset_partition(const std::string& id) {
 bool Node::materialize_drop_dataset_partition(const std::string& id) {
     const auto it = std::find_if(
         dataset_partitions_.begin(), dataset_partitions_.end(),
-        [&](const std::shared_ptr<DatasetPartition>& p) {
+        [&](const std::shared_ptr<zetta::data::DatasetPartition>& p) {
             return p->id() == id;
         });
     if (it == dataset_partitions_.end()) return false;
@@ -1301,13 +1301,13 @@ bool Node::materialize_drop_dataset_partition(const std::string& id) {
 
 // ----- cloud inspections (ephemeral; not replicated, not persisted) ----------
 
-void Node::record_cloud_inspection(CloudInspectReport report) {
+void Node::record_cloud_inspection(zetta::cloud::CloudInspectReport report) {
     // Latest report per provider wins, so the cache holds one current row per
     // provider for system.zetta_cloud_status. No CRDT capture, no disk write —
     // this is session-local observed state (RULE-7).
     const auto it = std::find_if(
         cloud_inspections_.begin(), cloud_inspections_.end(),
-        [&](const CloudInspectReport& existing) {
+        [&](const zetta::cloud::CloudInspectReport& existing) {
             return existing.provider_id == report.provider_id;
         });
     if (it == cloud_inspections_.end()) {
@@ -1319,14 +1319,14 @@ void Node::record_cloud_inspection(CloudInspectReport report) {
 
 // ----- provisioner configs (ephemeral; CLI-detected, not replicated) ----------
 
-void Node::record_provisioner_config(ProvisionerConfig config) {
+void Node::record_provisioner_config(zetta::cloud::ProvisionerConfig config) {
     // Latest config per target wins, so the cache holds one current row per target
     // for system.zetta_provisioners — like record_cloud_inspection, this is
     // session-local observed state from the local CLI (RULE-7): no CRDT capture,
     // no disk write, no credentials.
     const auto it = std::find_if(
         provisioner_configs_.begin(), provisioner_configs_.end(),
-        [&](const ProvisionerConfig& existing) {
+        [&](const zetta::cloud::ProvisionerConfig& existing) {
             return existing.target == config.target;
         });
     if (it == provisioner_configs_.end()) {
@@ -1357,7 +1357,7 @@ bool Node::drop_principal(const std::string& name) {
 bool Node::materialize_drop_principal(const std::string& id) {
     const auto it = std::find_if(
         principals_.begin(), principals_.end(),
-        [&](const std::shared_ptr<Principal>& p) { return p->id() == id; });
+        [&](const std::shared_ptr<zetta::governance::Principal>& p) { return p->id() == id; });
     if (it == principals_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -1384,7 +1384,7 @@ std::vector<std::string> Node::principal_names() const {
     return names;
 }
 
-std::shared_ptr<AccessKey> Node::find_access_key(
+std::shared_ptr<zetta::governance::AccessKey> Node::find_access_key(
     const std::string& key_id) const {
     for (const auto& principal : principals_) {
         if (auto key = principal->find_key(key_id)) return key;
@@ -1401,7 +1401,7 @@ bool Node::drop_run(const std::string& id) {
 bool Node::materialize_drop_run(const std::string& id) {
     const auto it = std::find_if(
         runs_.begin(), runs_.end(),
-        [&](const std::shared_ptr<Run>& r) { return r->id() == id; });
+        [&](const std::shared_ptr<zetta::pipeline::Run>& r) { return r->id() == id; });
     if (it == runs_.end()) return false;
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
@@ -1409,17 +1409,17 @@ bool Node::materialize_drop_run(const std::string& id) {
     return true;
 }
 
-AccessDecision Node::authorize(const std::string& key_id,
-                               const Resource& resource) {
+zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
+                               const zetta::governance::Resource& resource) {
     auto key = find_access_key(key_id);
-    const AccessDecision decision =
-        key ? zetta::authorize(*key, resource)
-            : AccessDecision{false, "unknown access key — denied"};
+    const zetta::governance::AccessDecision decision =
+        key ? zetta::governance::authorize(*key, resource)
+            : zetta::governance::AccessDecision{false, "unknown access key — denied"};
     // Audit the data access (FEAT-9): every authorization decision — allow or
     // deny — is an immutable audit event. The target is the resource the request
     // tried to reach; the detail is the decision's human-readable reason.
     record_audit_event(
-        {AuditAction::DataAccess, key_id,
+        {zetta::governance::AuditAction::DataAccess, key_id,
          std::string(to_string(resource.kind)) + ":" + resource.name,
          decision.allowed, decision.reason, {}});
     return decision;
@@ -1448,9 +1448,9 @@ void Node::load_audit_events() {
         // Schema is rejected here (with a logged reason) rather than allowed to
         // corrupt the in-memory trail — fail fast, don't propagate bad state.
         std::string error;
-        const std::optional<AuditEventValue> value =
+        const std::optional<zetta::governance::AuditEventValue> value =
             meta.is_discarded() ? std::nullopt
-                                : parse_audit_event_value(meta, &error);
+                                : zetta::governance::parse_audit_event_value(meta, &error);
         if (!value) {
             std::printf("zetta: skipping invalid audit event %s (%s)\n",
                         entry.path().filename().string().c_str(),
@@ -1458,7 +1458,7 @@ void Node::load_audit_events() {
                                             : error.c_str());
             continue;
         }
-        audit_events_.push_back(std::make_shared<AuditEvent>(
+        audit_events_.push_back(std::make_shared<zetta::governance::AuditEvent>(
             entry.path().stem().string(), *value, root));
     }
     // Stable, chronological order (fixed-width ISO-8601 sorts as text); id breaks
@@ -1470,11 +1470,11 @@ void Node::load_audit_events() {
               });
 }
 
-void Node::record_audit_event(AuditEventValue value) {
+void Node::record_audit_event(zetta::governance::AuditEventValue value) {
     // The sink owns identity + time: stamp a fresh id and the current time so the
     // append-only contract holds regardless of what the caller passed.
-    const std::string id = new_uuid();
-    value.time = now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    value.time = zetta::util::now_iso8601();
     // CRDT first (the source of truth), then materialize the on-disk projection.
     if (replication_) {
         replication_->set(catalog::audit_key(id), to_json(value));
@@ -1482,8 +1482,8 @@ void Node::record_audit_event(AuditEventValue value) {
     materialize_audit_event(id, std::move(value));
 }
 
-std::shared_ptr<AuditEvent> Node::materialize_audit_event(
-    std::string id, AuditEventValue value) {
+std::shared_ptr<zetta::governance::AuditEvent> Node::materialize_audit_event(
+    std::string id, zetta::governance::AuditEventValue value) {
     for (const auto& event : audit_events_) {
         if (event->id() == id) return event;  // already present (append-only)
     }
@@ -1491,27 +1491,27 @@ std::shared_ptr<AuditEvent> Node::materialize_audit_event(
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) return nullptr;
-    auto event = std::make_shared<AuditEvent>(std::move(id), std::move(value),
+    auto event = std::make_shared<zetta::governance::AuditEvent>(std::move(id), std::move(value),
                                               dir);
     event->persist_meta();
     audit_events_.push_back(event);
     return event;
 }
 
-AccessDecision Node::authorize(const std::string& key_id,
-                               const Operation& operation) const {
+zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
+                               const zetta::governance::Operation& operation) const {
     auto key = find_access_key(key_id);
     if (!key) {
-        return AccessDecision{false, "unknown access key — denied"};
+        return zetta::governance::AccessDecision{false, "unknown access key — denied"};
     }
-    return zetta::authorize(*key, operation, now_iso8601());
+    return zetta::governance::authorize(*key, operation, zetta::util::now_iso8601());
 }
 
-ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
+zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
                                 std::string project, std::string graph_id) {
     // Delegate to the standalone orchestrator with the default per-step executor.
     // The Run it creates is owned by this node (replicated + persisted as usual).
-    return GraphExecutor{}.execute(*this, graph, std::move(project),
+    return zetta::pipeline::GraphExecutor{}.execute(*this, graph, std::move(project),
                                    std::move(graph_id));
 }
 
@@ -1572,7 +1572,7 @@ void Node::migrate_to_replication() {
                 }
                 replication_->set(catalog::table_key(table->id()), value);
             }
-            const StorageEngine& store = table->store();
+            const zetta::storage::StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
                 const std::string& row_id = store.id_at(i);
                 if (!snapshot.contains(catalog::row_key(row_id))) {
@@ -1583,7 +1583,7 @@ void Node::migrate_to_replication() {
                 }
             }
         }
-        for (const LargeObject& lo : db->large_objects().list()) {
+        for (const zetta::data::LargeObject& lo : db->large_objects().list()) {
             if (!snapshot.contains(catalog::large_object_key(lo.id))) {
                 replication_->set(catalog::large_object_key(lo.id),
                                   nlohmann::json{{"db", db->id()},
@@ -1698,7 +1698,7 @@ void Node::rebalance_partitions_on_membership_change(
     // First observation (baseline established in start(), but be defensive) — and
     // a now-empty membership (nowhere to place) — never trigger a rebalance.
     if (previous.empty() || members.empty()) return;
-    rebalance_partitions(*this, members, previous);
+    zetta::data::rebalance_partitions(*this, members, previous);
 }
 
 // Databases, tables, rows, and large objects reconcile together: they decode in
@@ -1706,12 +1706,12 @@ void Node::rebalance_partitions_on_membership_change(
 // each kept database, so they don't split into independent helpers cleanly.
 void Node::reconcile_databases(const nlohmann::json& snapshot) {
     // Decode the flat catalog keys into desired databases / tables / rows.
-    struct DatabaseEntry { std::string name; ReplicationStrategy strategy; };
+    struct DatabaseEntry { std::string name; zetta::data::ReplicationStrategy strategy; };
     std::map<std::string, DatabaseEntry> databases;           // id -> entry
     struct TableEntry {
         std::string database_id;
         std::string name;
-        ReplicationStrategy strategy;
+        zetta::data::ReplicationStrategy strategy;
     };
     std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; };
@@ -1729,7 +1729,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             !id.empty() && value.is_object() && value.contains("name")) {
             databases.emplace(std::move(id),
                               DatabaseEntry{value["name"].get<std::string>(),
-                                            replication_strategy_from_meta(value)});
+                                            zetta::data::replication_strategy_from_meta(value)});
         } else if (std::string table_id =
                        catalog::id_after(key, catalog::kTablePrefix);
                    !table_id.empty() && value.is_object() &&
@@ -1737,7 +1737,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             tables.emplace(std::move(table_id),
                            TableEntry{value["db"].get<std::string>(),
                                       value["name"].get<std::string>(),
-                                      replication_strategy_from_meta(value)});
+                                      zetta::data::replication_strategy_from_meta(value)});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -1778,7 +1778,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             }
         }
         std::vector<std::string> local_lo_ids;
-        for (const LargeObject& lo : db->large_objects().list()) {
+        for (const zetta::data::LargeObject& lo : db->large_objects().list()) {
             local_lo_ids.push_back(lo.id);
         }
         for (const std::string& lo_id : local_lo_ids) {
@@ -1807,7 +1807,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         }
     }
     for (auto& [id, entry] : rows) {
-        auto db_table = [&]() -> std::shared_ptr<Table> {
+        auto db_table = [&]() -> std::shared_ptr<zetta::data::Table> {
             for (const auto& db : databases_) {
                 if (auto table = db->find_table_by_id(entry.table_id)) {
                     return table;
@@ -1820,7 +1820,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     for (const auto& [id, entry] : large_objects) {
         auto db = find_database_by_id(entry.database_id);
         if (!db) continue;
-        LargeObject object;
+        zetta::data::LargeObject object;
         object.id = id;
         object.name = entry.name;
         object.size = entry.size;
@@ -1880,8 +1880,8 @@ void Node::reconcile_inputs(const nlohmann::json& snapshot) {
     // payload body is not in the document and does not transfer yet.
     struct InputEntry {
         std::string project_id;
-        ProjectInputKind kind;
-        ProjectInputSource source;
+        zetta::pipeline::ProjectInputKind kind;
+        zetta::pipeline::ProjectInputSource source;
         std::string filename;
         std::string content_hash;
         std::uintmax_t size;
@@ -1894,9 +1894,9 @@ void Node::reconcile_inputs(const nlohmann::json& snapshot) {
         if (id.empty() || !value.is_object() || !value.contains("project")) {
             continue;
         }
-        const auto kind = project_input_kind_from(
+        const auto kind = zetta::pipeline::project_input_kind_from(
             value.value("kind", std::string{}));
-        const auto source = project_input_source_from(
+        const auto source = zetta::pipeline::project_input_source_from(
             value.value("source", std::string{}));
         if (!kind || !source) continue;  // boundary validation
         inputs.emplace(std::move(id),
@@ -1994,7 +1994,7 @@ void Node::reconcile_deployments(const nlohmann::json& snapshot) {
     // self-heal that mutates them is a later task.
     struct DeploymentEntry {
         std::string graph_name;
-        DeploymentTarget target;
+        zetta::pipeline::DeploymentTarget target;
         std::string node_id;
         std::size_t node_count;
         std::size_t edge_count;
@@ -2006,8 +2006,8 @@ void Node::reconcile_deployments(const nlohmann::json& snapshot) {
         if (id.empty() || !value.is_object() || !value.contains("graph_name")) {
             continue;
         }
-        const std::optional<DeploymentTarget> target =
-            DeploymentTarget::from_json(
+        const std::optional<zetta::pipeline::DeploymentTarget> target =
+            zetta::pipeline::DeploymentTarget::from_json(
                 value.value("target", nlohmann::json::object()));
         if (!target) continue;
         deployments.emplace(
@@ -2041,11 +2041,11 @@ void Node::reconcile_runs(const nlohmann::json& snapshot) {
     // the desired set at the boundary (a malformed CRDT value is ignored, not
     // trusted), then drop / add / update the local projection to match — with no
     // re-capture (apply_value / materialize_run do not write back to the CRDT).
-    std::map<std::string, RunValue> runs;  // id -> value
+    std::map<std::string, zetta::pipeline::RunValue> runs;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kRunPrefix);
         if (id.empty()) continue;
-        if (std::optional<RunValue> parsed = parse_run_value(value)) {
+        if (std::optional<zetta::pipeline::RunValue> parsed = zetta::pipeline::parse_run_value(value)) {
             runs.emplace(std::move(id), std::move(*parsed));
         }
     }
@@ -2071,11 +2071,11 @@ void Node::reconcile_models(const nlohmann::json& snapshot) {
     // match — with no re-capture. apply_value updates only the metadata; the
     // serialized weights body is NOT in the document and arrives separately over
     // the large-object body seam (the blob store requests it when missing).
-    std::map<std::string, ModelValue> models;  // id -> value
+    std::map<std::string, zetta::ml::ModelValue> models;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kModelPrefix);
         if (id.empty()) continue;
-        if (std::optional<ModelValue> parsed = parse_model_value(value)) {
+        if (std::optional<zetta::ml::ModelValue> parsed = zetta::ml::parse_model_value(value)) {
             models.emplace(std::move(id), std::move(*parsed));
         }
     }
@@ -2100,11 +2100,11 @@ void Node::reconcile_indexes(const nlohmann::json& snapshot) {
     // not trusted), then drop / add / update the local projection to match — with
     // no re-capture. An index is metadata only (no body), so apply_value rewrites
     // index.json and nothing more.
-    std::map<std::string, IndexValue> indexes;  // id -> value
+    std::map<std::string, zetta::index::IndexValue> indexes;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kIndexPrefix);
         if (id.empty()) continue;
-        if (std::optional<IndexValue> parsed = parse_index_value(value)) {
+        if (std::optional<zetta::index::IndexValue> parsed = zetta::index::parse_index_value(value)) {
             indexes.emplace(std::move(id), std::move(*parsed));
         }
     }
@@ -2130,12 +2130,12 @@ void Node::reconcile_jobs(const nlohmann::json& snapshot) {
     // no re-capture and no audit (apply_value / materialize_job do not write back
     // to the CRDT, and a peer's create/finish arrives already-audited as its own
     // replicated `audit:` event).
-    std::map<std::string, ComputeJobValue> compute_jobs;  // id -> value
+    std::map<std::string, zetta::compute::ComputeJobValue> compute_jobs;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kJobPrefix);
         if (id.empty()) continue;
-        if (std::optional<ComputeJobValue> parsed =
-                parse_compute_job_value(value)) {
+        if (std::optional<zetta::compute::ComputeJobValue> parsed =
+                zetta::compute::parse_compute_job_value(value)) {
             compute_jobs.emplace(std::move(id), std::move(*parsed));
         }
     }
@@ -2161,12 +2161,12 @@ void Node::reconcile_partitions(const nlohmann::json& snapshot) {
     // ignored, not trusted), then drop / add / update the local projection to match
     // — with no re-capture (apply_value / materialize_dataset_partition do not write
     // back to the CRDT).
-    std::map<std::string, DatasetPartitionValue> partitions;  // id -> value
+    std::map<std::string, zetta::data::DatasetPartitionValue> partitions;  // id -> value
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kPartitionPrefix);
         if (id.empty()) continue;
-        if (std::optional<DatasetPartitionValue> parsed =
-                parse_dataset_partition_value(value)) {
+        if (std::optional<zetta::data::DatasetPartitionValue> parsed =
+                zetta::data::parse_dataset_partition_value(value)) {
             partitions.emplace(std::move(id), std::move(*parsed));
         }
     }
@@ -2195,7 +2195,7 @@ void Node::reconcile_principals(const nlohmann::json& snapshot) {
     // created }. Decode the desired set, then drop / add / update the local
     // projection to match the document — no re-capture.
     struct PrincipalEntry {
-        PrincipalKind kind;
+        zetta::governance::PrincipalKind kind;
         std::string name;
         std::string created;
     };
@@ -2205,7 +2205,7 @@ void Node::reconcile_principals(const nlohmann::json& snapshot) {
         if (id.empty() || !value.is_object() || !value.contains("name")) {
             continue;
         }
-        const auto kind = principal_kind_from(value.value("kind", std::string{}));
+        const auto kind = zetta::governance::principal_kind_from(value.value("kind", std::string{}));
         if (!kind) continue;  // boundary validation
         principals.emplace(std::move(id),
                            PrincipalEntry{*kind,
@@ -2239,8 +2239,8 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
     // adds them under their owning principal and drops the ones a peer removed.
     struct AccessKeyEntry {
         std::string principal_id;
-        Scope scope;
-        CapabilitySet capabilities;
+        zetta::governance::Scope scope;
+        zetta::governance::CapabilitySet capabilities;
         std::string created;
     };
     std::map<std::string, AccessKeyEntry> access_keys;  // id -> entry
@@ -2250,13 +2250,13 @@ void Node::reconcile_access_keys(const nlohmann::json& snapshot) {
             !value.contains("scope")) {
             continue;
         }
-        const auto scope = scope_from_json(value["scope"]);
+        const auto scope = zetta::governance::scope_from_json(value["scope"]);
         if (!scope) continue;  // boundary
         // Capabilities are optional (a peer on an older shape omits them => no
         // rights); a present-yet-malformed set is rejected rather than applied.
-        CapabilitySet capabilities;
+        zetta::governance::CapabilitySet capabilities;
         if (value.contains("capabilities")) {
-            const auto parsed = capability_set_from_json(value["capabilities"]);
+            const auto parsed = zetta::governance::capability_set_from_json(value["capabilities"]);
             if (!parsed) continue;
             capabilities = *parsed;
         }
@@ -2300,8 +2300,8 @@ void Node::reconcile_audit_events(const nlohmann::json& snapshot) {
     for (const auto& [key, value] : snapshot.items()) {
         std::string id = catalog::id_after(key, catalog::kAuditPrefix);
         if (id.empty()) continue;
-        if (std::optional<AuditEventValue> parsed =
-                parse_audit_event_value(value)) {
+        if (std::optional<zetta::governance::AuditEventValue> parsed =
+                zetta::governance::parse_audit_event_value(value)) {
             materialize_audit_event(std::move(id), std::move(*parsed));
         }
     }
@@ -2321,7 +2321,7 @@ IntegrityReport Node::check_integrity() const {
             ++report.tables;
             report.rows += table->row_count();
         }
-        for (const LargeObject& object : db->large_objects().list()) {
+        for (const zetta::data::LargeObject& object : db->large_objects().list()) {
             ++report.large_objects;
             if (!object.body_present) {
                 ++report.large_object_bodies_missing;
@@ -2332,7 +2332,7 @@ IntegrityReport Node::check_integrity() const {
             const std::optional<std::string> body =
                 db->large_objects().read(object.id);
             if (!body || (!object.sha256.empty() &&
-                          sha256_hex(*body) != object.sha256)) {
+                          zetta::util::sha256_hex(*body) != object.sha256)) {
                 ++report.corrupt_large_objects;
             }
         }
@@ -2352,9 +2352,9 @@ IntegrityReport Node::check_integrity() const {
         }
         ++report.model_weights_present;
         const std::optional<std::string> body = model->read_weights();
-        const ModelWeights& weights = *model->weights();
+        const zetta::ml::ModelWeights& weights = *model->weights();
         if (!body || (!weights.sha256.empty() &&
-                      sha256_hex(*body) != weights.sha256)) {
+                      zetta::util::sha256_hex(*body) != weights.sha256)) {
             ++report.corrupt_model_weights;
         }
     }

@@ -10,11 +10,10 @@
 #include "zetta/index/index_backend.hpp"
 #include "zetta/index/index_kind.hpp"
 
-namespace zetta {
+namespace zetta::cluster { class ReplicationManager; }
 
-class ReplicationManager;
+namespace zetta::index {
 
-// The replicated/on-disk value of an index — everything the CRDT key
 // `index:<uuid>` carries (the id is the key / folder name, so it isn't repeated).
 // This is exactly the shape validated by the Index JSON Schema at every boundary.
 //
@@ -63,7 +62,7 @@ std::optional<IndexValue> parse_index_value(const nlohmann::json& value,
                                             std::string* error = nullptr);
 
 // An Index record: a registered index over a table (ENT-39 / ENT-40, ADR-34). A
-// top-level entity with no parent, modeled like zetta::Model (minus the weights
+// top-level entity with no parent, modeled like zetta::ml::Model (minus the weights
 // body — an index has no large-object body, only metadata) — **replicated state**
 // (flat key `index:<uuid>`) whose in-memory + on-disk (`<index-uuid>/index.json`)
 // forms are a projection of the Automerge CRDT document.
@@ -76,7 +75,7 @@ std::optional<IndexValue> parse_index_value(const nlohmann::json& value,
 class Index {
 public:
     Index(std::string id, IndexValue value, std::filesystem::path dir,
-          ReplicationManager* replication = nullptr);
+          zetta::cluster::ReplicationManager* replication = nullptr);
 
     const std::string& id() const { return id_; }
     const std::string& table() const { return value_.table; }
@@ -107,7 +106,7 @@ private:
     std::string id_;
     IndexValue value_;
     std::filesystem::path dir_;
-    ReplicationManager* replication_;  // null = standalone (not replicated)
+    zetta::cluster::ReplicationManager* replication_;  // null = standalone (not replicated)
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

@@ -63,7 +63,7 @@ time, the source index trailing the write index.
 
 ## Testing — byte-identical decode
 
-`tests/test_parquet_snappy.cpp` proves the acceptance ("snappy-compressed pages
+`tests/data/test_parquet_snappy.cpp` proves the acceptance ("snappy-compressed pages
 decode byte-identical to an uncompressed golden") without a foreign Snappy
 *compressor* in the build (ADR-17 forbids a foreign runtime), so the ground truth
 is the published block format itself, made executable:

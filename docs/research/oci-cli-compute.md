@@ -7,7 +7,7 @@
 >
 > **Status:** reference / background. It is the cited basis for the `oci` command
 > shapes the **OCI cloud-burst provisioner** uses — `OciCliControlPlane`
-> (`src/core/oci_cli_control_plane.cpp`); see
+> (`src/core/cloud/oci_cli_control_plane.cpp`); see
 > [oci-provisioner.md](../cloud/oci-provisioner.md). zetta's burst backend uses only the
 > **Instance Pool + preemptible** slice (§2.8 Preemptible instances, §2.10
 > Instance pools + autoscaling); the rest (single VMs, Container Instances, OKE,

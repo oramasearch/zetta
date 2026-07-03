@@ -1,6 +1,10 @@
 # include/zetta — public API rules
 
-This tree is zetta-core's **public surface**. Per-file annotations live in
+This tree is zetta-core's **public surface**. **Namespace == directory:** a
+header in `zetta/<domain>/` declares into `namespace zetta::<domain>` (root
+exceptions: `node.hpp`, `runtime.hpp`, `version.hpp`, `headless.hpp`,
+`signals.hpp`); forward-declare another domain's type at file scope, fully
+qualified — never inside your own namespace block. Per-file annotations live in
 [docs/architecture/code-map.md](../../docs/architecture/code-map.md) — update
 it in the same commit when adding, moving, or renaming a header.
 

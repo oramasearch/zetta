@@ -7,14 +7,14 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/executor.hpp"
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
-#include "zetta/run.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/testkit/harness.hpp"  // ScratchDir
-#include "zetta/validation.hpp"
+#include "zetta/pipeline/validation.hpp"
 
 // The sim-Python example-script harness (issue #523): run a script end to end
 // (parse -> IR -> gate -> run) and check its declared expectations, surfacing the
@@ -109,9 +109,9 @@ bool has_dataflow_edge(const ir::ExecutionGraph& graph, const std::string& from,
 // The first failing check's "name: reason" — the offending-statement locator at
 // the gate phase (the gate's CheckResult carries no node id, so its reason, which
 // names the step, is the best available locator).
-std::string first_gate_failure(const ValidationReport& report) {
-    for (const CheckResult& check : report.checks) {
-        if (check.status == CheckStatus::Fail) {
+std::string first_gate_failure(const zetta::pipeline::ValidationReport& report) {
+    for (const zetta::pipeline::CheckResult& check : report.checks) {
+        if (check.status == zetta::pipeline::CheckStatus::Fail) {
             return check.name + ": " + check.reason;
         }
     }
@@ -218,7 +218,7 @@ ExampleRunReport run_example_script_impl(const ExampleScript& script) {
     // ---- Phase 2: gate (RULE-1 — no run without a passing gate) -------------
     report.reached = ExamplePhase::Gate;
     report.log.push_back("gate: running default_gate()");
-    const ValidationReport gate = default_gate().run(graph);
+    const zetta::pipeline::ValidationReport gate = zetta::pipeline::default_gate().run(graph);
     report.metrics.push_back(
         TestMetric{"gate checks", std::to_string(gate.checks.size())});
 
@@ -250,11 +250,11 @@ ExampleRunReport run_example_script_impl(const ExampleScript& script) {
     ScratchDir dir;
     Node node{scratch_config(dir)};
     node.start();
-    const ExecutionResult execution = node.run_graph(graph, "examples", script.id);
-    const RunStatus status =
-        execution.run ? execution.run->status() : RunStatus::Failed;
-    const std::vector<RunOutput> outputs =
-        execution.run ? execution.run->outputs() : std::vector<RunOutput>{};
+    const zetta::pipeline::ExecutionResult execution = node.run_graph(graph, "examples", script.id);
+    const zetta::pipeline::RunStatus status =
+        execution.run ? execution.run->status() : zetta::pipeline::RunStatus::Failed;
+    const std::vector<zetta::pipeline::RunOutput> outputs =
+        execution.run ? execution.run->outputs() : std::vector<zetta::pipeline::RunOutput>{};
     node.stop();
 
     report.metrics.push_back(TestMetric{"run", std::string(to_string(status))});
@@ -288,7 +288,7 @@ ExampleRunReport run_example_script_impl(const ExampleScript& script) {
     // ---- assert on the produced outputs (attributed to Run) -----------------
     for (const std::string& kind : expect.output_kinds) {
         bool found = false;
-        for (const RunOutput& output : outputs) {
+        for (const zetta::pipeline::RunOutput& output : outputs) {
             if (output.kind == kind) {
                 found = true;
                 break;

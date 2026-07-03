@@ -1,6 +1,6 @@
 # Partitioner seam
 
-The **`Partitioner`** seam (`include/zetta/partitioner.hpp`) is the pluggable
+The **`Partitioner`** seam (`include/zetta/data/partitioner.hpp`) is the pluggable
 policy that decides **data placement** for a partitioned table. It realizes
 **ADR-31** and entity **ENT-37** (`#512`). The seam plus a trivial baseline and
 per-table configuration landed in `#512`; the concrete **record → partition**
@@ -17,11 +17,11 @@ persistence/replication and the placement half are separate, dependent slices:
 - **the partition catalog** — `system.dataset_partitions`, the replicated record
   of where each partition landed — `#510`.
 - **the partitioned write path** — rows → partition → blob, placement recorded —
-  **`#511`, built** (`zetta::write_partitioned`, see
+  **`#511`, built** (`zetta::data::write_partitioned`, see
   [partitioned-write-path.md](partitioned-write-path.md)): it drives both halves of
   this seam over a partitioned table's rows.
 - **rebalance on membership change** — `#517`, **built**
-  (`zetta::rebalance_partitions`, see
+  (`zetta::data::rebalance_partitions`, see
   [partition-rebalance.md](partition-rebalance.md)): on a join it re-runs the
   partition→node half over the new membership and moves only the changed partitions.
   **compute-near-data** (a DDF op runs over the node's local partitions) — `#516`.
@@ -137,7 +137,7 @@ PartitionId partition = partitioner.assign_partition(row);  // hash(row.account_
   on **every node and across restarts** (durable placement), so the hash is a
   64-bit **FNV-1a** over the key columns' JSON text — the same small,
   deterministic, well-distributed hash zetta already uses for content fingerprints
-  (`src/core/replication.cpp`, `gbdt_train_job.cpp`). `std::hash` is unusable
+  (`src/core/cluster/replication.cpp`, `gbdt_train_job.cpp`). `std::hash` is unusable
   here: its value is unspecified and varies across standard-library
   implementations and runs.
 - **Balanced for a typical key.** A good hash spreads arbitrary keys roughly
@@ -176,7 +176,7 @@ partitioned write path's job (`#511`); standalone, the caller supplies it.
 
 ## `RendezvousPlacement` — partition→node(s) (HRW)
 
-`RendezvousPlacement` (`include/zetta/rendezvous_placement.hpp`, `#514`) is the
+`RendezvousPlacement` (`include/zetta/data/rendezvous_placement.hpp`, `#514`) is the
 first non-trivial **partition→node** strategy — **rendezvous hashing**, also
 called **highest-random-weight (HRW)**. It answers `place_partition`: given a
 partition and the current `members`, it scores each member with a deterministic
@@ -322,7 +322,7 @@ already-validated row documents a `StorageEngine` holds.
 
 ## Tests
 
-`tests/test_partitioner.cpp` covers the trivial baseline (one partition,
+`tests/data/test_partitioner.cpp` covers the trivial baseline (one partition,
 everything→0, replicate-to-all placement, empty membership), a custom
 `ModuloPartitioner` test double driving non-trivial logic through the base
 pointer, **configuring a `Table`** with a partitioner (default none, set, swap,
@@ -340,7 +340,7 @@ clear), and the `#513` strategies + boundary:
   configuration through the boundary, and rejection of every malformed-config
   shape above.
 
-`tests/test_rendezvous_placement.cpp` covers `RendezvousPlacement`: assignment
+`tests/data/test_rendezvous_placement.cpp` covers `RendezvousPlacement`: assignment
 spreads across partitions + is deterministic; placement is deterministic and
 order-independent, returns distinct replicas with the primary first, clamps the
 replication factor to the member count, and balances primaries roughly evenly

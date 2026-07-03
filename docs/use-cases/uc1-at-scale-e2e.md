@@ -21,7 +21,7 @@ assertions.
 ```
 src/core/testkit/cases_uc1_scale.cpp   the case + the shared canonical script
 src/core/testkit/cases_examples.cpp    examples.uc1_at_scale (the example registration)
-tests/test_testkit.cpp                 DistributedCasesRunOnARealCluster (headless gtest)
+tests/testkit/test_testkit.cpp                 DistributedCasesRunOnARealCluster (headless gtest)
 ```
 
 ## The canonical program
@@ -106,7 +106,7 @@ the real pipeline:
 - **Single-node == multi-node** — every node converges on the **identical** model +
   ranking (the trees grow off globally-allreduced histograms, the result is
   broadcast). The rigorous single-node-vs-N-node oracle equivalence is proven in
-  [`tests/test_gbdt_train_partitions.cpp`](uc1-train-over-partitions.md).
+  [`tests/ml/test_gbdt_train_partitions.cpp`](uc1-train-over-partitions.md).
 - **Compute-near-data** — each node read its own shard off local disk (the raw
   data never crosses the wire) and, multi-node, read only its shard — not the whole
   dataset; every conversation was read near data and explained exactly once. Only

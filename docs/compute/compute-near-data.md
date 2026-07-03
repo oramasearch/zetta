@@ -12,7 +12,7 @@ of TC-11 [#501](https://github.com/oramasearch/zetta/issues/501)).
 This is the placement-aware replacement for the **"shard handed in out-of-band"**
 path: the [distributed group-by](../ddf/ddf-groupby.md) and friends already exchanged only
 partials, but the caller built each node's `DataFrame` however it liked (see the
-`ComputeNode` / `shards[i]` setup in `tests/test_ddf_group_by.cpp`). Now the shard
+`ComputeNode` / `shards[i]` setup in `tests/ddf/test_ddf_group_by.cpp`). Now the shard
 **source** is the catalog + the node's locally-held blob bodies, the way
 [sharded blob placement](../data/sharded-blob-placement.md) (#515) intended: a partition
 body is fetched + held only by its owner node(s), so a node reading its owned
@@ -25,9 +25,9 @@ include/zetta/ddf/local_group_by_job.hpp  run_near_data_group_by_job + NearDataG
 src/core/ddf/local_group_by_job.cpp       load_local_partitions → run_group_by_job, reporting local-read vs wire-moved bytes
 include/zetta/ddf/local_featurize_job.hpp run_near_data_featurize_job + NearDataFeaturizeResult — near-data featurize over a partitioned table (#532)
 src/core/ddf/local_featurize_job.cpp      load_local_partitions → run_featurize_job, reporting local-read vs wire-moved bytes
-include/zetta/collectives.hpp             Collectives::wire_bytes() — the "bytes moved over the wire" meter
-tests/test_ddf_local_partitions.cpp       the loader round-trip + the near-data group-by == single-node-oracle + bytes acceptance
-tests/test_ddf_featurize_partitions.cpp   the near-data featurize == single-node-oracle, leakage-free (#532)
+include/zetta/cluster/collectives.hpp             Collectives::wire_bytes() — the "bytes moved over the wire" meter
+tests/ddf/test_ddf_local_partitions.cpp       the loader round-trip + the near-data group-by == single-node-oracle + bytes acceptance
+tests/ddf/test_ddf_featurize_partitions.cpp   the near-data featurize == single-node-oracle, leakage-free (#532)
 src/core/testkit/cases_distributed.cpp    cluster.compute_near_data — TC-11 as a runnable test-suite case
 ```
 
@@ -125,14 +125,14 @@ bytes-moved  ≈  partials     ≪     bytes-read-near-data  ≈  the dataset
 ```
 
 That is the **TC-11 / #501 acceptance**, asserted directly in
-`tests/test_ddf_local_partitions.cpp`: across a real 3-node loopback cluster, each
+`tests/ddf/test_ddf_local_partitions.cpp`: across a real 3-node loopback cluster, each
 node loads its shard from its own partitions, the near-data group-by matches the
 single-node oracle on every node, and the whole cluster moves under a fifth of what
 it read near data. The same acceptance is also surfaced as a **runnable test-suite
 case** — `cluster.compute_near_data` in the [in-app test suite](../testing/test-suite.md)
 catalog (`zetta::testkit`, `TestCategory::Distributed`) — so TC-11 can be run + tuned
 (nodes / rows / groups / partitions per node) from the headed **Operations → Test
-suite** panel and headless (`tests/test_testkit.cpp`), reporting bytes-read-near-data
+suite** panel and headless (`tests/testkit/test_testkit.cpp`), reporting bytes-read-near-data
 vs bytes-moved-over-the-wire as live metrics. Two further gtests harden the loader:
 it is the reusable shard source for **other** DDF ops (a `filter` + group-by over the
 loaded shard equals the same over the full table), and a partition **owned** by this
@@ -162,7 +162,7 @@ dataset (a static [`FeaturizeSpec`](../ddf/ddf-featurize.md#static-mode--enginee
 `event_ts <= as_of`). Each node reads only the partition bodies it holds (the dropped
 embeddings never reach the wire), exchanges only the per-entity partials, and the
 broadcast feature table matches a single-node oracle on every node.
-`tests/test_ddf_featurize_partitions.cpp` proves it over a real 3-node loopback
+`tests/ddf/test_ddf_featurize_partitions.cpp` proves it over a real 3-node loopback
 cluster (no leakage; matches the oracle); the in-app **Distributed →
 Featurize over partitions == single-node** test-suite case
 (`cluster.featurize_partitions`) runs it interactively.

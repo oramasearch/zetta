@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/runtime.hpp"
 
@@ -42,7 +42,7 @@ std::string default_round_tag(const GbdtModel& model) {
 }  // namespace
 
 DistributedExplainResult run_explain_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job, const GbdtModel& model,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job, const GbdtModel& model,
     const ddf::DataFrame& features, const std::string& entity_column,
     const std::string& round_tag, std::chrono::milliseconds timeout) {
     DistributedExplainResult out;
@@ -116,7 +116,7 @@ DistributedExplainResult run_explain_job(
         }
         partial[feature_count] = static_cast<double>(local_rows);
         const std::optional<std::vector<double>> reduced =
-            round.allreduce(tag + ".driver_sum", partial, CollectiveOp::Sum, timeout);
+            round.allreduce(tag + ".driver_sum", partial, zetta::cluster::CollectiveOp::Sum, timeout);
         if (!reduced || reduced->size() != feature_count + 1) {
             return {.ok = false, .detail = "explain: driver allreduce failed"};
         }

@@ -44,7 +44,7 @@ For the selected model, `render_model_card` (reused from the Runs panel) renders
 - **Ranked drivers** — the feature importances, **strongest |influence| first**,
   each a normalized bar with its signed value, read tolerantly from the model's
   free-form `feature_schema.drivers` via
-  [`zetta::ranked_drivers`](../ml/models.md#ranked-drivers-explainability).
+  [`zetta::ml::ranked_drivers`](../ml/models.md#ranked-drivers-explainability).
 
 Below the card, a quiet mono strip adds the `created` stamp and the model's lineage
 refs (`project` / `run`) when set.

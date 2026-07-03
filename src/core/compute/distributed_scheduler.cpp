@@ -7,8 +7,8 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/cluster.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/cluster/cluster.hpp"
+#include "zetta/util/uuid.hpp"
 
 #include "../base64.hpp"
 
@@ -142,11 +142,11 @@ std::optional<nlohmann::json> parse_and_validate(
 
 }  // namespace
 
-DistributedScheduler::DistributedScheduler(Cluster& cluster,
+DistributedScheduler::DistributedScheduler(zetta::cluster::Cluster& cluster,
                                            unsigned worker_count)
     : DistributedScheduler(cluster, worker_count, Config{}) {}
 
-DistributedScheduler::DistributedScheduler(Cluster& cluster,
+DistributedScheduler::DistributedScheduler(zetta::cluster::Cluster& cluster,
                                            unsigned worker_count, Config config)
     : cluster_(cluster), config_(config), local_(worker_count) {}
 
@@ -192,7 +192,7 @@ std::vector<std::string> DistributedScheduler::map(
         job->pending.push_back(index);
     }
 
-    const std::string job_id = new_uuid();
+    const std::string job_id = zetta::util::new_uuid();
     {
         const std::lock_guard<std::mutex> lock(jobs_mutex_);
         jobs_[job_id] = job;
@@ -282,7 +282,7 @@ bool DistributedScheduler::try_steal_once() {
     // active → don't steal from others, just finish our own.
     if (local_.active_count() >= local_.worker_count()) return false;
 
-    const std::vector<ClusterPeer> peers = cluster_.peers();
+    const std::vector<zetta::cluster::ClusterPeer> peers = cluster_.peers();
     if (peers.empty()) return false;
 
     const unsigned start =
@@ -291,11 +291,11 @@ bool DistributedScheduler::try_steal_once() {
     const unsigned want = std::max(1u, local_.worker_count());
 
     for (std::size_t offset = 0; offset < peers.size(); ++offset) {
-        const ClusterPeer& peer = peers[(start + offset) % peers.size()];
+        const zetta::cluster::ClusterPeer& peer = peers[(start + offset) % peers.size()];
 
         nlohmann::json request{{"count", want}};
         steal_requests_sent_.fetch_add(1, std::memory_order_relaxed);
-        const SignalResponse response =
+        const zetta::cluster::SignalResponse response =
             cluster_.request(peer.node_id, std::string(kStealMethod),
                              request.dump(), config_.steal_timeout);
         if (!response.ok) continue;
@@ -364,7 +364,7 @@ void DistributedScheduler::sweep_lost_assignments() {
     // fast "lost node detected and re-stolen" path (#367); the lease deadline is
     // the slower backstop for a peer that is still connected but silent.
     std::unordered_set<std::string> connected;
-    for (const ClusterPeer& peer : cluster_.peers()) connected.insert(peer.node_id);
+    for (const zetta::cluster::ClusterPeer& peer : cluster_.peers()) connected.insert(peer.node_id);
 
     std::vector<std::shared_ptr<Job>> owned;
     {
@@ -396,12 +396,12 @@ void DistributedScheduler::sweep_lost_assignments() {
     }
 }
 
-SignalResponse DistributedScheduler::handle_steal(const Signal& request) {
+zetta::cluster::SignalResponse DistributedScheduler::handle_steal(const zetta::cluster::Signal& request) {
     std::string reason;
     const std::optional<nlohmann::json> document =
         parse_and_validate(request.payload, steal_request_validator(), &reason);
     if (!document) {
-        return SignalResponse{.ok = false, .error = "bad steal request: " + reason};
+        return zetta::cluster::SignalResponse{.ok = false, .error = "bad steal request: " + reason};
     }
     auto remaining = document->at("count").get<std::size_t>();
 
@@ -432,15 +432,15 @@ SignalResponse DistributedScheduler::handle_steal(const Signal& request) {
             handed_out_.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    return SignalResponse{.ok = true, .payload = offer.dump()};
+    return zetta::cluster::SignalResponse{.ok = true, .payload = offer.dump()};
 }
 
-SignalResponse DistributedScheduler::handle_steal_result(const Signal& request) {
+zetta::cluster::SignalResponse DistributedScheduler::handle_steal_result(const zetta::cluster::Signal& request) {
     std::string reason;
     const std::optional<nlohmann::json> document =
         parse_and_validate(request.payload, steal_result_validator(), &reason);
     if (!document) {
-        return SignalResponse{.ok = false, .error = "bad steal result: " + reason};
+        return zetta::cluster::SignalResponse{.ok = false, .error = "bad steal result: " + reason};
     }
     const auto job_id = document->at("job").get<std::string>();
 
@@ -450,7 +450,7 @@ SignalResponse DistributedScheduler::handle_steal_result(const Signal& request) 
         const auto it = jobs_.find(job_id);
         if (it != jobs_.end()) job = it->second;
     }
-    if (!job) return SignalResponse{.ok = true};  // job already finished/gone
+    if (!job) return zetta::cluster::SignalResponse{.ok = true};  // job already finished/gone
 
     const std::size_t count = job->inputs.size();
     for (const nlohmann::json& result : document->at("results")) {
@@ -462,10 +462,10 @@ SignalResponse DistributedScheduler::handle_steal_result(const Signal& request) 
                            result.at("payload").get<std::string>()),
                        /*from_local=*/false);
     }
-    return SignalResponse{.ok = true};
+    return zetta::cluster::SignalResponse{.ok = true};
 }
 
-SignalResponse DistributedScheduler::on_request(const Signal& request) {
+zetta::cluster::SignalResponse DistributedScheduler::on_request(const zetta::cluster::Signal& request) {
     if (request.method == kStealMethod) return handle_steal(request);
     if (request.method == kStealResultMethod) return handle_steal_result(request);
     if (SignalHandler* fallback = fallback_.load(std::memory_order_acquire)) {
@@ -474,13 +474,13 @@ SignalResponse DistributedScheduler::on_request(const Signal& request) {
     return SignalHandler::on_request(request);
 }
 
-void DistributedScheduler::on_event(const Signal& event) {
+void DistributedScheduler::on_event(const zetta::cluster::Signal& event) {
     if (SignalHandler* fallback = fallback_.load(std::memory_order_acquire)) {
         fallback->on_event(event);
     }
 }
 
-void DistributedScheduler::on_task(const Signal& task) {
+void DistributedScheduler::on_task(const zetta::cluster::Signal& task) {
     if (SignalHandler* fallback = fallback_.load(std::memory_order_acquire)) {
         fallback->on_task(task);
     }

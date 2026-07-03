@@ -17,10 +17,10 @@ through the [job coordinator](../compute/job-coordinator.md)
 include/zetta/ddf/group_by.hpp   the AggregateOp / GroupBySpec / GroupByResult / GroupByPartial types + entry points
 src/core/ddf/group_by.cpp        the local op, the partial merge / wire form, the JSON boundary
 schemas/group_by_spec.schema.json   the spec JSON boundary (draft-07)
-tests/test_group_by.cpp          single-node, the partial/merge/wire, the JSON boundary, the multi-node acceptance
+tests/ddf/test_group_by.cpp          single-node, the partial/merge/wire, the JSON boundary, the multi-node acceptance
 include/zetta/ddf/group_by_job.hpp   run_group_by_job — the op as a recorded ComputeJob (#387)
 src/core/ddf/group_by_job.cpp        drives distributed_group_by through the coordinator's job lifecycle
-tests/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.zetta_jobs)
+tests/ddf/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.zetta_jobs)
 ```
 
 ## What it is
@@ -97,7 +97,7 @@ aggregate `a`'s value for group `g` (`value(name)` looks one up by output name).
 
 `distributed_group_by` combines every participant's local partial into one result
 identical on every node. It is a template over any **collective surface** that
-exposes `gather` + `broadcast` — both [`zetta::Collectives`](../cluster/collectives.md) and
+exposes `gather` + `broadcast` — both [`zetta::cluster::Collectives`](../cluster/collectives.md) and
 the job coordinator's [`JobRound`](../compute/job-coordinator.md) qualify — so a SPMD job body
 calls it directly with its `JobRound`:
 
@@ -144,7 +144,7 @@ accelerated compute.
 ```cpp
 #include "zetta/ddf/group_by_job.hpp"
 
-auto job = node.create_job(zetta::JobKind::Ddf);          // the record
+auto job = node.create_job(zetta::compute::JobKind::Ddf);          // the record
 auto out = zetta::ddf::run_group_by_job(
     coordinator, *job, my_shard_frame, spec,
     /*round_tag=*/"region-agg-round");                    // shared across nodes
@@ -198,7 +198,7 @@ a conditional rule enforced in code on top of the draft-07 shape.
 
 ## Tests
 
-`tests/test_group_by.cpp` covers the op names, the **JSON boundary** (round-trip +
+`tests/ddf/test_group_by.cpp` covers the op names, the **JSON boundary** (round-trip +
 every malformed shape), the **single-node** op across the full aggregate set, the
 **partial** (wire round-trip, `from_wire` rejections, a hand-merge of the three
 shards), and — the acceptance — `GroupBy.DistributedMatchesSingleNode`: a 3-node

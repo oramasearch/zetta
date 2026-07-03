@@ -39,7 +39,7 @@ modal and click **Run**; the result pane shows pass/fail, the gate verdict
 (passed/blocked) + the `entity_resolution` status (pass/fail), and the log.
 
 **Headless:** the case is exercised **at both resolver values** by
-`tests/test_testkit.cpp::GovernanceCasesPass`:
+`tests/testkit/test_testkit.cpp::GovernanceCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

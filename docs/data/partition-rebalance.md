@@ -34,7 +34,7 @@ After adding one node to a cluster of N:
 
 `rebalance_partitions(Node& node, const std::vector<std::string>& members,
 const std::vector<std::string>& previous_members = {})`
-(`include/zetta/partition_rebalance.hpp`, `src/core/partition_rebalance.cpp`) is a
+(`include/zetta/data/partition_rebalance.hpp`, `src/core/data/partition_rebalance.cpp`) is a
 pure, non-throwing function — a sibling of [`write_partitioned`](partitioned-write-path.md).
 For each **placed** partition in the catalog (`owner_nodes` non-empty):
 
@@ -140,7 +140,7 @@ validated field.
 
 ## Tests
 
-`tests/test_partition_rebalance.cpp`:
+`tests/data/test_partition_rebalance.cpp`:
 
 - **`RendezvousMovesAboutOneOverNToNewNodeRfOne`** — the acceptance at `rf = 1`:
   adding a node moves *some* partitions onto it but **not all** (the HRW win); each
@@ -178,21 +178,21 @@ validated field.
 The same acceptance is also a runnable **in-app test-suite case** —
 `cluster.partition_rebalance` ("Partition rebalance on node join (TC-10)") under
 **Operations → Test suite** ([docs/testing/test-suite.md](../testing/test-suite.md)) — so it can be
-exercised headless (`tests/test_testkit.cpp`) and from the GUI with tunable members
+exercised headless (`tests/testkit/test_testkit.cpp`) and from the GUI with tunable members
 / replication-factor / rows.
 
 ## Where it lives
 
-- `include/zetta/partition_rebalance.hpp` / `src/core/partition_rebalance.cpp` —
+- `include/zetta/data/partition_rebalance.hpp` / `src/core/data/partition_rebalance.cpp` —
   the `rebalance_partitions` function + the `RebalanceResult` / `PartitionMove`
   report.
-- `include/zetta/dataset_partition.hpp` / `src/core/dataset_partition.cpp` —
+- `include/zetta/data/dataset_partition.hpp` / `src/core/data/dataset_partition.cpp` —
   `DatasetPartition::set_owner_nodes`, the capturing owner mutator.
 - `src/core/node.cpp` — the auto-trigger
   (`Node::rebalance_partitions_on_membership_change`, driven by `Node::tick()`; the
   membership baseline in `Node::start()`) + `Node::cluster_members()` (the current
   `node:<id>` membership the direct trigger feeds in as `previous_members`).
-- `include/zetta/add_nodes.hpp` / `src/core/add_nodes.cpp` — the #519 direct trigger:
+- `include/zetta/cloud/add_nodes.hpp` / `src/core/cloud/add_nodes.cpp` — the #519 direct trigger:
   the `add_nodes(Node&, …)` overloads that provision then drive `rebalance_partitions`.
 
 See [dataset-partitions.md](dataset-partitions.md),

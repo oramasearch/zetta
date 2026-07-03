@@ -4,23 +4,23 @@
 #include <string>
 #include <vector>
 
-#include "zetta/aws_cli_control_plane.hpp"
-#include "zetta/aws_provisioner.hpp"
-#include "zetta/azure_cli_control_plane.hpp"
-#include "zetta/azure_provisioner.hpp"
-#include "zetta/bare_metal_cli_control_plane.hpp"
-#include "zetta/bare_metal_provisioner.hpp"
-#include "zetta/gcp_cli_control_plane.hpp"
-#include "zetta/gcp_provisioner.hpp"
-#include "zetta/k8s_cli_control_plane.hpp"
-#include "zetta/k8s_provisioner.hpp"
-#include "zetta/oci_cli_control_plane.hpp"
-#include "zetta/oci_provisioner.hpp"
-#include "zetta/provisioner_config.hpp"
+#include "zetta/cloud/aws_cli_control_plane.hpp"
+#include "zetta/cloud/aws_provisioner.hpp"
+#include "zetta/cloud/azure_cli_control_plane.hpp"
+#include "zetta/cloud/azure_provisioner.hpp"
+#include "zetta/cloud/bare_metal_cli_control_plane.hpp"
+#include "zetta/cloud/bare_metal_provisioner.hpp"
+#include "zetta/cloud/gcp_cli_control_plane.hpp"
+#include "zetta/cloud/gcp_provisioner.hpp"
+#include "zetta/cloud/k8s_cli_control_plane.hpp"
+#include "zetta/cloud/k8s_provisioner.hpp"
+#include "zetta/cloud/oci_cli_control_plane.hpp"
+#include "zetta/cloud/oci_provisioner.hpp"
+#include "zetta/cloud/provisioner_config.hpp"
+
+namespace zetta::gui { class App; }
 
 namespace zetta::gui {
-
-class App;
 
 // CloudProvisioners — wires the cloud-burst Provisioner backends (Azure / AWS /
 // GCP / OCI / Kubernetes / bare-metal) into the headed App's "Add nodes" control
@@ -60,22 +60,22 @@ public:
     // detected config is reported skipped. Never throws — a malformed detected
     // config is simply skipped, matching the seam's no-throw contract.
     std::vector<Wiring> wire(App& app,
-                             const std::vector<ProvisionerConfig>& configs,
+                             const std::vector<zetta::cloud::ProvisionerConfig>& configs,
                              const std::string& default_seed_peer);
 
 private:
-    std::optional<AzCliControlPlane> azure_cp_;
-    std::optional<AzureProvisioner> azure_;
-    std::optional<AwsCliControlPlane> aws_cp_;
-    std::optional<AwsProvisioner> aws_;
-    std::optional<GcpCliControlPlane> gcp_cp_;
-    std::optional<GcpProvisioner> gcp_;
-    std::optional<OciCliControlPlane> oci_cp_;
-    std::optional<OciProvisioner> oci_;
-    std::optional<K8sCliControlPlane> k8s_cp_;
-    std::optional<K8sProvisioner> k8s_;
-    std::optional<BareMetalCliControlPlane> bare_metal_cp_;
-    std::optional<BareMetalProvisioner> bare_metal_;
+    std::optional<zetta::cloud::AzCliControlPlane> azure_cp_;
+    std::optional<zetta::cloud::AzureProvisioner> azure_;
+    std::optional<zetta::cloud::AwsCliControlPlane> aws_cp_;
+    std::optional<zetta::cloud::AwsProvisioner> aws_;
+    std::optional<zetta::cloud::GcpCliControlPlane> gcp_cp_;
+    std::optional<zetta::cloud::GcpProvisioner> gcp_;
+    std::optional<zetta::cloud::OciCliControlPlane> oci_cp_;
+    std::optional<zetta::cloud::OciProvisioner> oci_;
+    std::optional<zetta::cloud::K8sCliControlPlane> k8s_cp_;
+    std::optional<zetta::cloud::K8sProvisioner> k8s_;
+    std::optional<zetta::cloud::BareMetalCliControlPlane> bare_metal_cp_;
+    std::optional<zetta::cloud::BareMetalProvisioner> bare_metal_;
 };
 
 }  // namespace zetta::gui

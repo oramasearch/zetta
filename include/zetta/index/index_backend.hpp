@@ -26,7 +26,7 @@
 // Like ComputeDevice, every call returns a status rather than throwing —
 // zetta-core compiles with -fexperimental-library and must never unwind across a
 // seam. No SDL/CUDA/heavy type appears here; it is pure zetta-core.
-namespace zetta {
+namespace zetta::index {
 
 // What an index is built over, independent of which backend builds it: the source
 // `table`, the index `kind` (search / vector / feature), the `backend` name that
@@ -178,4 +178,4 @@ public:
     virtual IndexStatus drop(const IndexSpec& spec) = 0;
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

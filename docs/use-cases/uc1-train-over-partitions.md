@@ -15,7 +15,7 @@ in-line featurization.
 ```
 include/zetta/ml/local_train_job.hpp   run_near_data_train_job + NearDataTrainResult — the near-data train→explain→rank pipeline
 src/core/ml/local_train_job.cpp        load_local_partitions → run_train_job (+ calibrate) → run_explain_job → run_score_job
-tests/test_gbdt_train_partitions.cpp   3-node near-data train == single-node oracle: calibrated model + drivers + ranking, near-data instrumentation
+tests/ml/test_gbdt_train_partitions.cpp   3-node near-data train == single-node oracle: calibrated model + drivers + ranking, near-data instrumentation
 ```
 
 ## What it is
@@ -88,7 +88,7 @@ every node) keep the phases from colliding.
 The model + metrics + ranking are **broadcast**, so they are bit-identical on every
 node; across different shardings they are equal within floating-point reduction
 tolerance (the histogram allreduce reduces in a different order). The acceptance
-(`tests/test_gbdt_train_partitions.cpp`) shards the same feature table across a
+(`tests/ml/test_gbdt_train_partitions.cpp`) shards the same feature table across a
 real 3-node loopback cluster and asserts the distributed result **matches a
 single-node oracle** over the whole dataset — the metrics within `1e-3` and every
 entity's calibrated risk within `1e-3` — while the global top SHAP driver is the

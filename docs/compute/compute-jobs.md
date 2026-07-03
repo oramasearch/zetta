@@ -1,6 +1,6 @@
 # Compute jobs
 
-A **ComputeJob** (`zetta::ComputeJob`) is the record of **one unit of native
+A **ComputeJob** (`zetta::compute::ComputeJob`) is the record of **one unit of native
 distributed accelerated compute** — featurize / train / explain / score / a DDF
 op — with a lifecycle (`Queued → Running → Succeeded | Failed`). It is the
 foundational entity of the *native distributed accelerated compute* pass for UC-1
@@ -24,14 +24,14 @@ collectives and drives its lifecycle is also built
 observation source into the coordinator is the remaining slice. A job created here
 is the durable, replicated record the coordinator drives.
 
-It is modeled **exactly like** [`zetta::Run`](../pipeline/runs.md): a top-level entity keyed
+It is modeled **exactly like** [`zetta::pipeline::Run`](../pipeline/runs.md): a top-level entity keyed
 by id, a flat CRDT key + on-disk JSON projection, mutators on the handle, and
 boundary validation against a formal JSON Schema. If you know `Run`, you know
 `ComputeJob`.
 
 ## The type
 
-A `ComputeJob` (`include/zetta/compute_job.hpp`) is a top-level entity with no
+A `ComputeJob` (`include/zetta/compute/compute_job.hpp`) is a top-level entity with no
 parent. Its value:
 
 | Field | Type | Notes |
@@ -51,7 +51,7 @@ parent. Its value:
 when it is scheduled onto compute, and ends `Succeeded` or `Failed` (`detail`
 surfaces the reason on failure). `Succeeded` / `Failed` are **terminal** —
 `is_terminal(status)` is the predicate the finish-audit emission hinges on.
-Stamps come from `zetta::now_iso8601()` (fixed-width, so they order
+Stamps come from `zetta::util::now_iso8601()` (fixed-width, so they order
 chronologically as plain text).
 
 `kind` and the four refs (`project` / `graph` / `run` / `scaling_policy`) are
@@ -80,10 +80,10 @@ bumps `updated`, captures `job:<id>` into the CRDT (when replicated), then
 rewrites `job.json`; an optional `detail` records a note (non-empty replaces):
 
 ```cpp
-auto job = node.create_job(zetta::JobKind::Train, "project-uuid", "graph-1");
-job->set_status(zetta::JobStatus::Running);
+auto job = node.create_job(zetta::compute::JobKind::Train, "project-uuid", "graph-1");
+job->set_status(zetta::compute::JobStatus::Running);
 // ... compute happens ...
-job->set_status(zetta::JobStatus::Succeeded, "12 nodes, 4.2s");
+job->set_status(zetta::compute::JobStatus::Succeeded, "12 nodes, 4.2s");
 ```
 
 ## Queryable via SQL (`system.zetta_jobs`)
@@ -169,8 +169,8 @@ Like [`Run`](../pipeline/runs.md) and the [audit event](../governance/audit-trai
 is validated against a **formal JSON Schema** (draft-07) rather than ad-hoc shape
 checks. The schema is the single source of truth for the value shape — `kind` and
 `status` are closed enums and `additionalProperties` is `false` — and is exposed
-via `zetta::compute_job_value_schema()`. It lives inline in
-`src/core/compute_job.cpp` and is mirrored, for reference, in
+via `zetta::compute::compute_job_value_schema()`. It lives inline in
+`src/core/compute/compute_job.cpp` and is mirrored, for reference, in
 [`schemas/compute_job.schema.json`](../../schemas/compute_job.schema.json) (keep the
 two in sync).
 
@@ -194,7 +194,7 @@ never cross the library boundary as a thrown type.
 
 ## Tests
 
-`tests/test_compute_job.cpp` covers create / update (lifecycle) / query, the
+`tests/compute/test_compute_job.cpp` covers create / update (lifecycle) / query, the
 `job_created` + `job_finished` audit emission (including that non-terminal
 transitions don't audit and a terminal state audits exactly once), survival
 across a restart (both disk-only and CRDT-only), replication of a job + a later

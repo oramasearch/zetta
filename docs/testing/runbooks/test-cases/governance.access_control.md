@@ -28,7 +28,7 @@ suite → Governance → Key-scoped access**. Click **Run**; the result pane sho
 pass/fail, the per-decision metrics (allow/deny), and the log.
 
 **Headless:** the case is exercised by
-`tests/test_testkit.cpp::GovernanceCasesPass`:
+`tests/testkit/test_testkit.cpp::GovernanceCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

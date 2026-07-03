@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <utility>
 
-namespace zetta {
+namespace zetta::index {
 
 namespace {
 
@@ -99,4 +99,4 @@ IndexStatus InMemoryIndexBackend::drop(const IndexSpec& spec) {
     return IndexStatus::success();
 }
 
-}  // namespace zetta
+}  // namespace zetta::index

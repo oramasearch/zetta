@@ -21,11 +21,11 @@ include/zetta/ddf/ops.hpp              scan / filter / project + FilterPredicate
 src/core/ddf/ops.cpp                   the ops + the predicate/projection JSON boundaries
 schemas/ddf_filter_predicate.schema.json   the filter-predicate JSON boundary (draft-07)
 schemas/ddf_projection.schema.json         the projection-spec JSON boundary (draft-07)
-tests/test_ddf_ops.cpp                 the scan/filter/project acceptance + per-op + JSON-boundary tests
+tests/ddf/test_ddf_ops.cpp                 the scan/filter/project acceptance + per-op + JSON-boundary tests
 include/zetta/ddf/data_frame_ops.hpp   sort / concat / slice declarations
 src/core/ddf/data_frame_ops.cpp        the ops + the host-staging helpers
 src/core/ddf/data_frame_internal.hpp   the internal HostFrame staging (shared with distributed_sort)
-tests/test_data_frame_ops.cpp          single-node sort/concat/slice op + boundary tests
+tests/ddf/test_data_frame_ops.cpp          single-node sort/concat/slice op + boundary tests
 ```
 
 ## What they are — and where the compute runs
@@ -208,7 +208,7 @@ clear [`ComputeStatus`](../compute/compute-device.md#error-model-computestatus):
 
 ## Tests
 
-`tests/test_ddf_ops.cpp` covers the scan/filter/project **acceptance** (scan → filter
+`tests/ddf/test_ddf_ops.cpp` covers the scan/filter/project **acceptance** (scan → filter
 → project on a fixture frame matches the expected rows + cols, with `chunk_rows` small
 enough that the kept rows span multiple chunks — exercising the per-chunk gather and
 re-pack), each op in isolation (every comparison, multi-chunk gather, select-none,
@@ -219,7 +219,7 @@ The ops are generic over any `ComputeDevice`, so a guarded block asserts **CUDA 
 where built** (`ZETTA_WITH_CUDA`): the same filter+project run on a `CudaDevice` must
 match the `CpuDevice` reference.
 
-`tests/test_data_frame_ops.cpp` covers sort's ordering + payload-carry, descending
+`tests/ddf/test_data_frame_ops.cpp` covers sort's ordering + payload-carry, descending
 order, sort **stability** for equal keys, sorting **across chunks** (a small
 `chunk_rows`), the unknown-key and single-row paths; concat's row-order append,
 single-frame copy, empty-list and schema-mismatch rejections; slice's range cut and

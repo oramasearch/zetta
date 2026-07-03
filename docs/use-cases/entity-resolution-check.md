@@ -1,7 +1,7 @@
 # Entity-resolution correctness eval
 
-The **entity-resolution check** (`zetta::EntityResolutionCheck`,
-`include/zetta/checks/entity_resolution_check.hpp`) is the first concrete
+The **entity-resolution check** (`zetta::usecases::churn::EntityResolutionCheck`,
+`include/zetta/usecases/churn/entity_resolution_check.hpp`) is the first concrete
 correctness check to plug into the [correctness gate](../pipeline/gate.md). It is the
 **make-or-break** eval of FEAT-3 and realizes test case **TC-4**: it verifies
 that an execution graph resolved entities *division-correct* — that **"FedEx
@@ -69,20 +69,20 @@ actionable — *a reason, not a stack trace*.
 The `entity_resolution` payload is **schema-validated before it is evaluated**.
 The check carries an embedded draft-07 schema and runs every payload through a
 `pboettch/json-schema-validator` validator (the same library and
-error-handler-not-exceptions pattern as [`src/core/run.cpp`](../pipeline/runs.md)); a payload
+error-handler-not-exceptions pattern as [`src/core/pipeline/run.cpp`](../pipeline/runs.md)); a payload
 that violates the schema (missing `entity`/`resolved`, an empty string, an
 unknown property) **fails the check** with the validation error in the reason,
 rather than being silently mis-evaluated. The schema is published at
 [`schemas/entity_resolution.schema.json`](../../schemas/entity_resolution.schema.json)
 and mirrored by the embedded copy in
-`src/core/checks/entity_resolution_check.cpp` — **keep the two in sync**.
+`src/core/usecases/churn/entity_resolution_check.cpp` — **keep the two in sync**.
 
 ## Using it
 
 It runs automatically as part of the default gate:
 
 ```cpp
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"
 using namespace zetta;
 
@@ -96,7 +96,7 @@ if (report.block_deploy) {
 To run it on its own:
 
 ```cpp
-#include "zetta/checks/entity_resolution_check.hpp"
+#include "zetta/usecases/churn/entity_resolution_check.hpp"
 CheckResult result = EntityResolutionCheck{}.evaluate(graph);
 ```
 
@@ -105,7 +105,7 @@ CheckResult result = EntityResolutionCheck{}.evaluate(graph);
 This is one concrete check on the gate's `Check` seam; the schema/type,
 data-leakage and point-in-time checks (`#309`) plug in the same way. The
 **producer** of the payload it reads is the entity resolver
-([entity-resolution.md](entity-resolution.md), `zetta::EntityResolver`, #394) —
+([entity-resolution.md](entity-resolution.md), `zetta::usecases::churn::EntityResolver`, #394) —
 resolver produces, this gate verifies. See [gate.md](../pipeline/gate.md) (the runner that
 hosts it), [validation.md](../pipeline/validation.md) (the `CheckResult` / `ValidationReport`
 it produces), and [execution-graph.md](../pipeline/execution-graph.md) (the IR it inspects).

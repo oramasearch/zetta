@@ -100,7 +100,7 @@ load; a neutral flow for network); an unreportable counter degrades to a faint
 byte totals, in/out rates) in the detail pane.
 
 The gauges are fed by a **cluster-wide telemetry exchange over the
-[signal plane](signal-plane.md)** (`zetta::NodeTelemetryExchange`): `system.node_metrics`
+[signal plane](signal-plane.md)** (`zetta::cluster::NodeTelemetryExchange`): `system.node_metrics`
 sees only the local host, so each node periodically broadcasts its own sample as an
 ephemeral `node.metrics` event and every node caches what it receives, so a single
 `Node::telemetry_snapshot()` returns the whole cluster's live gauges (self + fresh
@@ -111,7 +111,7 @@ schema-validated wire boundary. Full detail in
 ### Add nodes control (the headed control)
 
 Above the canvas sits the **Add nodes** control (`App::draw_add_nodes_control`,
-#583) — the GUI front door for [`zetta::add_nodes`](../cloud/add-nodes.md), driven over an
+#583) — the GUI front door for [`zetta::cloud::add_nodes`](../cloud/add-nodes.md), driven over an
 **injected [`Provisioner`](../cloud/provisioner.md)**. Pick a target (the
 [provider catalog](../cloud/cloud-inspector.md)) + a count: the given-hardware **Local**
 target uses the injected [`LocalProvisioner`](../cloud/provisioner.md) and runs on a plain
@@ -126,8 +126,8 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 ## How it works
 
 - Networking is **Corosio** (coroutine-native TCP), confined to the adapter
-  `src/core/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
-  public API (`include/zetta/cluster.hpp`) exposes no backend types.
+  `src/core/cluster/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
+  public API (`include/zetta/cluster/cluster.hpp`) exposes no backend types.
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
   an accept loop plus one dial coroutine per `--peer`.

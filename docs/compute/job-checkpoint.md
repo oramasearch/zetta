@@ -29,7 +29,7 @@ round 0. This module is the missing **job-level** piece.
 include/zetta/compute/checkpoint.hpp   JobCheckpoint + CheckpointStore + FileCheckpointStore + run_resumable_rounds
 src/core/compute/checkpoint.cpp        the value boundary, the file store, the resume driver
 schemas/job_checkpoint.schema.json     generated from job_checkpoint_schema() (schema-as-code)
-tests/test_checkpoint.cpp              the value/boundary + store + resume/restart acceptance
+tests/compute/test_checkpoint.cpp              the value/boundary + store + resume/restart acceptance
 ```
 
 It is a **standalone seam** with no `Node` / SQL / cluster wiring of its own (the
@@ -116,7 +116,7 @@ ResumableResult run_resumable_rounds(
 
 Calling it again over the **same store** (a fresh process / node after an eviction)
 resumes where the last checkpoint left off, so the committed rounds are **never
-recomputed**. The acceptance (`tests/test_checkpoint.cpp`): a job of 10 rounds
+recomputed**. The acceptance (`tests/compute/test_checkpoint.cpp`): a job of 10 rounds
 evicted after 4 resumes at round 4, runs only rounds 4..9 (each round runs exactly
 once across both attempts), and produces a result **identical** to an uninterrupted
 run.

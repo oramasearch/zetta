@@ -59,7 +59,7 @@ The replicated `principal:<uuid>` / `key:<uuid>` records are **auth credentials*
 siblings of `Run`/`Model`/`ComputeJob`/`AuditEvent` — all of which validate against a
 formal JSON Schema at the storage boundary. Principals/keys instead enter via bare
 `contains()` / `is_string()` checks (`src/core/node.cpp` load path,
-`src/core/principal.cpp`). `schemas/principal.schema.json` is **orphaned** (referenced
+`src/core/governance/principal.cpp`). `schemas/principal.schema.json` is **orphaned** (referenced
 only by a doc, no validator), and `schemas/access_key.schema.json` is enforced only by
 hand-mirrored comments. CLAUDE.md never flags this as known debt. **Fix:** route
 principal/key loads through the same boundary as their siblings (see §5 schema plan).

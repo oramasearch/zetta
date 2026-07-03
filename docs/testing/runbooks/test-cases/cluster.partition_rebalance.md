@@ -38,7 +38,7 @@ and the log.
 
 **Headless:** the case is exercised (at `nodes=3`, `rf=2`, `rows=120`, with
 replicas to exercise the rf-preserved path) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests
@@ -69,7 +69,7 @@ ctest --test-dir build -R 'Testkit.DistributedCasesRunOnARealCluster' --output-o
 - Engine: [partition-rebalance.md](../../../data/partition-rebalance.md) ·
   [dataset-partitions.md](../../../data/dataset-partitions.md) ·
   [partitioner.md](../../../data/partitioner.md)
-- gtest counterpart: `tests/test_partition_rebalance.cpp::CatalogConvergesOnEveryNodeAfterJoin`
+- gtest counterpart: `tests/data/test_partition_rebalance.cpp::CatalogConvergesOnEveryNodeAfterJoin`
 - Sibling cases: [`cluster.compute_near_data`](cluster.compute_near_data.md) ·
   [`cluster.featurize_partitions`](cluster.featurize_partitions.md) ·
   [`cluster.fulltext_index`](cluster.fulltext_index.md)

@@ -235,7 +235,7 @@ location, e.g. `edges[1]: edge references an unknown node ("a" -> "ghost")`.
   When a serialized form is introduced, it gets a JSON Schema validated at the
   boundary.
 - **The gate** — the runner that validates a graph now exists
-  (`zetta::CorrectnessGate`, [gate.md](gate.md)): it runs a set of checks over a
+  (`zetta::pipeline::CorrectnessGate`, [gate.md](gate.md)): it runs a set of checks over a
   graph and blocks deploy on failure. The concrete *semantic* checks — acyclicity,
   legal stage transitions, required inputs — are the remaining work that plugs
   into its `Check` seam.

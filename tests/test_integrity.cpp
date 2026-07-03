@@ -7,17 +7,17 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
-#include "zetta/database.hpp"
-#include "zetta/large_object.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
-#include "zetta/replication.hpp"
-#include "zetta/table.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/util/uuid.hpp"
 
 using zetta::IntegrityReport;
 using zetta::Node;
 using zetta::NodeConfig;
-using zetta::ReplicationManager;
+using zetta::cluster::ReplicationManager;
 using zetta::test::TempDir;
 
 namespace {
@@ -91,15 +91,15 @@ TEST(Integrity, DetectsCorruptLargeObjectBody) {
 
 TEST(Integrity, DetectsDanglingReferences) {
     TempDir tmp;
-    const std::string node_id = zetta::new_uuid();
+    const std::string node_id = zetta::util::new_uuid();
     ReplicationManager replication{node_id};
     Node node{config_for(tmp), &replication};
     node.start();
 
     // A row whose table doesn't exist, and a table whose database doesn't exist.
-    replication.set("row:" + zetta::new_uuid(),
+    replication.set("row:" + zetta::util::new_uuid(),
                     nlohmann::json{{"tbl", "ghost-table"}, {"data", nlohmann::json::object()}});
-    replication.set("tbl:" + zetta::new_uuid(),
+    replication.set("tbl:" + zetta::util::new_uuid(),
                     nlohmann::json{{"db", "ghost-db"}, {"name", "orphan"}});
 
     const IntegrityReport report = node.check_integrity();

@@ -1,6 +1,6 @@
 # Kubernetes provisioner (cloud burst)
 
-The **`K8sProvisioner`** (`include/zetta/k8s_provisioner.hpp`) is the Kubernetes
+The **`K8sProvisioner`** (`include/zetta/cloud/k8s_provisioner.hpp`) is the Kubernetes
 cloud-burst backend behind the [`Provisioner`](provisioner.md) seam — a **mirror**
 of the reference [`AzureProvisioner`](azure-provisioner.md) (`#376`) and the
 [`GcpProvisioner`](gcp-provisioner.md) (`#378`) / [`OciProvisioner`](oci-provisioner.md)
@@ -54,7 +54,7 @@ provisioner.
 > **"No client library behind the seam."** Same rule the `Provisioner` header
 > states and the same isolation SDL/ImGui and CUDA get. The `kubectl` binding is
 > plain subprocess + JSON parsing — no Kubernetes headers, no new build dependency.
-> The shared `CommandRunner` (`include/zetta/command_runner.hpp`) is the same exec
+> The shared `CommandRunner` (`include/zetta/cloud/command_runner.hpp`) is the same exec
 > seam the Azure `az`, GCP `gcloud`, and OCI `oci` bindings use.
 
 ## The burst lifecycle
@@ -107,7 +107,7 @@ K8sProvisioner provisioner{kubectl, config, hooks};
 
 This is the zetta-side identity (a short-lived service `Principal` + `AccessKey` per
 pod, scoped to the job), distinct from the pod's in-cluster `ServiceAccount` (set via
-`config.service_account`). `tests/test_k8s_provisioner.cpp` exercises the mint/revoke
+`config.service_account`). `tests/cloud/test_k8s_provisioner.cpp` exercises the mint/revoke
 wiring against a real `BurstIdentityManager`.
 
 ## Configuration (`K8sConfig`)
@@ -143,7 +143,7 @@ emitted by `to_json` only when set; `spot` is always emitted.
 
 ## The reference `kubectl` binding (`K8sCliControlPlane`)
 
-`K8sCliControlPlane` (`include/zetta/k8s_cli_control_plane.hpp`) is the reference
+`K8sCliControlPlane` (`include/zetta/cloud/k8s_cli_control_plane.hpp`) is the reference
 `K8sControlPlane`. It borrows the **Deployment + scale shape** (not a client
 library): a stable, named Deployment *is* the burst pool, scaling it is the burst,
 deleting a pod is teardown. It builds `kubectl` argv, runs them through an injected
@@ -176,7 +176,7 @@ using CommandRunner = std::function<CommandResult(const std::vector<std::string>
 ```
 
 `CommandRunner` is **shared, vendor-neutral** infrastructure
-(`include/zetta/command_runner.hpp`) — the same exec seam the cloud CLI bindings use
+(`include/zetta/cloud/command_runner.hpp`) — the same exec seam the cloud CLI bindings use
 (see [cloud-provisioner-pattern.md](cloud-provisioner-pattern.md)). The runner takes
 **argv** (program + arguments, no shell — so no shell-injection risk) and returns
 `{ exit_code, stdout_text, stderr_text }`. The default (`default_command_runner()`)
@@ -213,7 +213,7 @@ shape directly.
 
 ## Tests
 
-`tests/test_k8s_provisioner.cpp` mirrors the cloud tests — the config boundary, the
+`tests/cloud/test_k8s_provisioner.cpp` mirrors the cloud tests — the config boundary, the
 lifecycle, and the reference binding:
 
 - **`K8sConfig` JSON boundary** — round-trips a minimal and a full config (the

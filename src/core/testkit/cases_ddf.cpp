@@ -28,8 +28,8 @@ std::string number(double value) {
     return buffer;
 }
 
-JsonStore numeric_store(std::size_t rows, int modulus) {
-    JsonStore store;
+zetta::storage::JsonStore numeric_store(std::size_t rows, int modulus) {
+    zetta::storage::JsonStore store;
     for (std::size_t i = 0; i < rows; ++i) {
         store.add("row-" + std::to_string(i),
                   nlohmann::json{{"entity", static_cast<std::int64_t>(i)},
@@ -47,7 +47,7 @@ TestResult run_scan_filter(const TestOptions& options, TestContext& context) {
     context.emit("scanning " + std::to_string(rows) + " rows into a DataFrame");
 
     CpuDevice device;
-    const JsonStore store = numeric_store(rows, 10);
+    const zetta::storage::JsonStore store = numeric_store(rows, 10);
     ddf::DataFrameSchema schema;
     schema.columns = {
         ddf::ColumnSchema{.name = "entity", .dtype = DataType::Int64},
@@ -91,7 +91,7 @@ TestResult run_group_by(const TestOptions& options, TestContext& context) {
                  std::to_string(groups) + " groups");
 
     CpuDevice device;
-    JsonStore store;
+    zetta::storage::JsonStore store;
     std::map<std::int64_t, double> host_sum;
     std::map<std::int64_t, std::int64_t> host_count;
     for (std::size_t i = 0; i < rows; ++i) {

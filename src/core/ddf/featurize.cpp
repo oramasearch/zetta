@@ -362,7 +362,7 @@ DataFrameResult FeatureTable::to_data_frame(compute::ComputeDevice& device,
                                             std::size_t chunk_rows) const {
     // Materialize the table back into a store + schema and reuse the storage loader,
     // so no new device-buffer-construction path is introduced.
-    JsonStore store;
+    zetta::storage::JsonStore store;
     for (std::size_t row = 0; row < row_count(); ++row) {
         nlohmann::json doc;
         doc["entity"] = entities[row];

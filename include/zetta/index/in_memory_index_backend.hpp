@@ -19,7 +19,7 @@
 // search (tokenization, ranking, on-disk segments) and the vector / feature
 // backends are later slices behind the same seam; this backend is correctness +
 // shape, not a production search engine.
-namespace zetta {
+namespace zetta::index {
 
 class InMemoryIndexBackend final : public IndexBackend {
 public:
@@ -64,4 +64,4 @@ private:
     std::map<std::string, BuiltIndex> indexes_;  // spec.key() -> built index
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

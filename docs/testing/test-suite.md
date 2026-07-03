@@ -16,7 +16,7 @@ src/core/testkit/test_suite.cpp        the engine (options, result, runner, buil
 src/core/testkit/harness.cpp           the loopback cluster + dataset helpers
 src/core/testkit/cases_*.cpp           the canned cases, one file per category
 src/gui/app.cpp (draw_test_suite)      the headed renderer
-tests/test_testkit.cpp                 runs every representative case headless
+tests/testkit/test_testkit.cpp                 runs every representative case headless
 ```
 
 ## The model — catalog in core, GUI as renderer
@@ -64,7 +64,7 @@ declared expectations asserted on the outputs, so the example programs *are* the
 integration tests. A green script doubles as a canonical usage example; a negative
 script proves a failure surfaces with the **offending statement**. The catalog
 (`example_scripts()`) + the runner (`run_example_script`) live in zetta-core, so they
-run headless (`tests/test_example_scripts.cpp`) and render in the panel like every
+run headless (`tests/testkit/test_example_scripts.cpp`) and render in the panel like every
 other case. See [example-scripts.md](example-scripts.md).
 
 ## Real multi-node, not a simulation
@@ -137,7 +137,7 @@ reports `Error`, but prefer the non-throwing engine APIs and `TestResult::fail`)
 and **deterministic** (no wall-clock / RNG in the assertion). Report what happened
 with `metric(...)` + `context.emit(...)`. A distributed case spins a thread per node
 calling the collective / op concurrently (the SPMD pattern). Then add an assertion in
-`tests/test_testkit.cpp` so the case is covered headless. Never call a real cloud
+`tests/testkit/test_testkit.cpp` so the case is covered headless. Never call a real cloud
 (the permission-gated rule) — inject a fake control plane instead.
 
 ## Inventory: candidate cases to add

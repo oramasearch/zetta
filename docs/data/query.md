@@ -308,7 +308,7 @@ Future system tables slot into the same database — notably **`system.leadershi
 
 `QueryService::Outcome::elapsed` is the wall-clock time of the whole parse +
 execute, measured at nanosecond resolution (`std::chrono::nanoseconds`). The UI
-renders it with `zetta::format_duration`, which picks a human unit by
+renders it with `zetta::util::format_duration`, which picks a human unit by
 magnitude — ns, µs, ms, s, min, h, d, wk — e.g. `(523 ns)`, `(1.500 ms)`,
 `(2.00 wk)`.
 

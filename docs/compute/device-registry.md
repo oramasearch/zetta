@@ -20,7 +20,7 @@ things, the issue's scope:
 include/zetta/compute/device_registry.hpp  DeviceRegistry + DeviceRequest + is_accelerator + the DeviceInfo JSON boundary
 src/core/compute/device_registry.cpp       enumeration + selection + boundary validation
 schemas/device_registry.schema.json         the capability-report JSON Schema (mirror)
-tests/test_device_registry.cpp              enumeration, the selection unit test, capability report, JSON boundary
+tests/compute/test_device_registry.cpp              enumeration, the selection unit test, capability report, JSON boundary
 ```
 
 ## Where this sits in the "accel" family
@@ -156,7 +156,7 @@ JSON-free.
 
 ## Tests
 
-`tests/test_device_registry.cpp` covers enumeration (registration order, `find` /
+`tests/compute/test_device_registry.cpp` covers enumeration (registration order, `find` /
 `has` / `at`, null-ignored), the **acceptance criterion** (CPU reported on any
 machine, CUDA only where present), the **selection unit test** (accelerator-first
 default, CPU preference, `require_kind` / `min_memory_bytes` filters, CPU-only

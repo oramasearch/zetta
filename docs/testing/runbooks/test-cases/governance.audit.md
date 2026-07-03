@@ -27,7 +27,7 @@ pass/fail, the event counts (total, `graph_deployed`, `data_access`), and the
 log.
 
 **Headless:** the case is exercised by
-`tests/test_testkit.cpp::GovernanceCasesPass`:
+`tests/testkit/test_testkit.cpp::GovernanceCasesPass`:
 
 ```bash
 cmake --build build --target zetta-tests

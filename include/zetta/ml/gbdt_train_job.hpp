@@ -7,7 +7,7 @@
 
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ml/gbdt.hpp"
 
@@ -33,7 +33,7 @@
 // weighted-histogram kernel is a later optimization behind the same API).
 //
 // **Produces a Model.** When `node` is provided, the deterministic collective root
-// registers the trained model as a `zetta::Model` (kind `classifier`): the GBDT
+// registers the trained model as a `zetta::ml::Model` (kind `classifier`): the GBDT
 // weights body (the JSON the `GbdtModel` serializes to, schema-validated) is
 // attached via `set_weights` (fingerprinted + replicated p2p like any large-object
 // body), with the evaluation metrics in `metrics` and the per-feature gains as the
@@ -106,14 +106,14 @@ struct DistributedTrainResult {
     std::string model_id;
     // The job's terminal status (Succeeded when the rounds completed; Failed on a
     // bad column / single-class labels / a device error / a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
     // The boosting round training resumed from (0 = trained from scratch). Non-zero
     // only when a TrainCheckpointConfig store held a checkpoint for this job.
     std::uint64_t resumed_from_round = 0;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Train a histogram GBDT across the cluster as a `train` ComputeJob, with
@@ -134,7 +134,7 @@ struct DistributedTrainResult {
 // When `checkpoint.store` is set, training checkpoints per round and resumes from
 // the latest checkpoint (eviction tolerance, RULE-5 / #468); disabled by default.
 DistributedTrainResult run_train_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job,
     const ddf::DataFrame& features,
     const std::vector<std::string>& feature_columns,
     const std::string& label_column, const GbdtParams& params,

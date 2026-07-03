@@ -25,7 +25,7 @@ std::string default_round_tag(const GroupBySpec& spec) {
 }  // namespace
 
 DistributedGroupByResult run_group_by_job(compute::JobCoordinator& coordinator,
-                                          ComputeJob& job,
+                                          zetta::compute::ComputeJob& job,
                                           const DataFrame& local_frame,
                                           const GroupBySpec& spec,
                                           const std::string& round_tag,

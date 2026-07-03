@@ -10,7 +10,7 @@
 
 #include "zetta/storage/engine.hpp"
 
-namespace zetta {
+namespace zetta::storage {
 
 // An in-memory storage engine: keeps rows (and their ids) in std::vectors with
 // no persistence. Kept for a future `:memory:` mode; the on-disk JsonlStore is
@@ -40,4 +40,4 @@ private:
     std::unordered_set<std::string> id_index_;  // for contains()
 };
 
-}  // namespace zetta
+}  // namespace zetta::storage

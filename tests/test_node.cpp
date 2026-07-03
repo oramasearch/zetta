@@ -3,9 +3,9 @@
 #include <nlohmann/json.hpp>
 
 #include "temp_dir.hpp"
-#include "zetta/database.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/node.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/table.hpp"
 
 using nlohmann::json;
 using zetta::Node;

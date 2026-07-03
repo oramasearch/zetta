@@ -7,18 +7,18 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/access_key.hpp"
-#include "zetta/audit_event.hpp"
-#include "zetta/capability.hpp"
-#include "zetta/duration.hpp"
-#include "zetta/executor.hpp"
+#include "zetta/governance/access_key.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/util/duration.hpp"
+#include "zetta/pipeline/executor.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 #include "zetta/node.hpp"
 #include "zetta/query/service.hpp"
-#include "zetta/run.hpp"
-#include "zetta/timestamp.hpp"
-#include "zetta/validation.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/pipeline/validation.hpp"
 
 namespace zetta::repl {
 
@@ -56,9 +56,9 @@ std::string summarize(const std::string& source) {
 
 // The first failing check's "<name>: <reason>" — the gate-block reason surfaced
 // to the author (FEAT-3: a reason, never a stack trace).
-std::string first_failure(const ValidationReport& report) {
-    for (const CheckResult& check : report.checks) {
-        if (check.status == CheckStatus::Fail) {
+std::string first_failure(const zetta::pipeline::ValidationReport& report) {
+    for (const zetta::pipeline::CheckResult& check : report.checks) {
+        if (check.status == zetta::pipeline::CheckStatus::Fail) {
             return check.name + ": " + check.reason;
         }
     }
@@ -70,7 +70,7 @@ std::string first_failure(const ValidationReport& report) {
 // parse/execute error otherwise.
 Result sql_result(query::QueryService::Outcome outcome) {
     Result result;
-    result.elapsed = format_duration(outcome.elapsed);
+    result.elapsed = zetta::util::format_duration(outcome.elapsed);
     if (!outcome.ok()) {
         result.error = std::move(outcome.error);
         return result;
@@ -113,7 +113,7 @@ Result sql_result(query::QueryService::Outcome outcome) {
 // summary of the produced Run — the tabular result an ad-hoc Python statement
 // returns.
 Result sim_python_result(const ir::ExecutionGraph& graph,
-                         const ExecutionResult& exec) {
+                         const zetta::pipeline::ExecutionResult& exec) {
     Result result;
     result.columns = {"step", "kind", "name"};
     for (const auto& step : graph.nodes()) {
@@ -135,25 +135,25 @@ Result sim_python_result(const ir::ExecutionGraph& graph,
 
 }  // namespace
 
-Operation required_operation(Frontend frontend) {
+zetta::governance::Operation required_operation(Frontend frontend) {
     switch (frontend) {
         case Frontend::Sql:
             // Issue a query — an API-surface right (the documented "query" action).
-            return Operation{CapabilityDomain::Api, "query"};
+            return zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"};
         case Frontend::SimPython:
             // Lower + run a graph — an orchestration right (start a run).
-            return Operation{CapabilityDomain::Orchestration, "start_run"};
+            return zetta::governance::Operation{zetta::governance::CapabilityDomain::Orchestration, "start_run"};
     }
-    return Operation{CapabilityDomain::Api, "query"};
+    return zetta::governance::Operation{zetta::governance::CapabilityDomain::Api, "query"};
 }
 
 GovernedConsole::GovernedConsole(Node& node, query::QueryService& query,
-                                 CorrectnessGate gate)
+                                 zetta::pipeline::CorrectnessGate gate)
     : node_(node), query_(query), gate_(std::move(gate)) {}
 
 Result GovernedConsole::run(Frontend frontend, const std::string& source) {
-    const std::string now = now_iso8601();
-    const Operation op = required_operation(frontend);
+    const std::string now = zetta::util::now_iso8601();
+    const zetta::governance::Operation op = required_operation(frontend);
     const std::string frontend_name(to_string(frontend));
     const std::string summary = summarize(source);
 
@@ -171,7 +171,7 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
             permitted = false;
             deny_reason = "unknown key";
         } else {
-            const AccessDecision decision = authorize(*key, op, now);
+            const zetta::governance::AccessDecision decision = authorize(*key, op, now);
             permitted = decision.allowed;
             if (!permitted) deny_reason = decision.reason;
         }
@@ -185,8 +185,8 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
     // One immutable `data_access` audit event per statement (FEAT-9): the acting
     // key, what it touched, the governance decision, and a one-line summary.
     auto record = [&](bool allowed, std::string detail) {
-        AuditEventValue event;
-        event.action = AuditAction::DataAccess;
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::DataAccess;
         event.actor = actor;
         event.target = target;
         event.allowed = allowed;
@@ -220,7 +220,7 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
                 return Result::failure("sim-python: " + lowered.error);
             }
             // Run the correctness gate (RULE-1) — a failing gate blocks the run.
-            const ValidationReport report = gate_.run(lowered.graph);
+            const zetta::pipeline::ValidationReport report = gate_.run(lowered.graph);
             if (report.block_deploy) {
                 const std::string why = first_failure(report);
                 record(false, "console sim-python blocked by gate · " + why);
@@ -232,7 +232,7 @@ Result GovernedConsole::run(Frontend frontend, const std::string& source) {
             // routes a churn-shaped graph through the real churn engine on the node's
             // live JobCoordinator (#580). Governance (capability check above + the
             // audit record below) is identical either way.
-            const ExecutionResult exec = graph_runner_
+            const zetta::pipeline::ExecutionResult exec = graph_runner_
                                              ? graph_runner_(lowered.graph)
                                              : node_.run_graph(lowered.graph);
             Result result = sim_python_result(lowered.graph, exec);

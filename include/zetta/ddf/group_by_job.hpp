@@ -4,7 +4,7 @@
 #include <string>
 
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 
@@ -47,13 +47,13 @@ struct DistributedGroupByResult {
     GroupByResult result;
     // The job's terminal status (Succeeded when the round completed, Failed on a
     // bad spec / column / device error or a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id) —
     // the node that gathered + merged the partials. Informational; the broadcast
     // means `result` is set on every node regardless.
     bool is_root = false;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Run `spec` as a groupby-aggregate ComputeJob across the cluster, with
@@ -70,7 +70,7 @@ struct DistributedGroupByResult {
 // correct whenever the cluster runs one groupby of a given shape at a time; pass
 // an explicit shared tag to isolate concurrent groupby jobs of the *same* shape.
 DistributedGroupByResult run_group_by_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job,
     const DataFrame& local_frame, const GroupBySpec& spec,
     const std::string& round_tag = {},
     std::chrono::milliseconds timeout = kDefaultGroupByTimeout);

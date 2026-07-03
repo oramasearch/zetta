@@ -22,6 +22,10 @@ the working checklist. For the annotated file-by-file codebase map see
   with Homebrew Clang on macOS / `clang++-NN` (≥17) on Linux, auto-selected in
   CMakeLists.txt's pre-`project()` block; Apple Clang / Ubuntu GCC 13 are too old.
 - **Follow the C++ Core Guidelines.**
+- **Namespaces match the domain directories** (`include/zetta/<d>/` +
+  `src/core/<d>/` + `tests/<d>/` ↔ `namespace zetta::<d>`; no aliases; root
+  exceptions Node/runtime/gui). Full statement:
+  `docs/architecture/coding-conventions.md`.
 - **Full, descriptive names — legibility first.** No 1–2 letter or cryptic
   abbreviations for namespaces, types, functions, variables, or template
   parameters (`runtime` not `rt`, `error_code` not `ec`, `Value` not `T`).
@@ -79,7 +83,7 @@ the working checklist. For the annotated file-by-file codebase map see
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking goes through `zetta::runtime::net`
   (`include/zetta/runtime/net.hpp`), included **only** by the adapter
-  `src/core/cluster.cpp`. **Never name `boost::capy` / `boost::corosio`
+  `src/core/cluster/cluster.cpp`. **Never name `boost::capy` / `boost::corosio`
   directly** outside those seams — the beta backend must stay swappable.
 - **Bridge/modules:** pinned third-party deps are git submodules under `modules/`
   — **capy** (coroutines), **corosio** (networking), **automerge-cpp** (CRDT;

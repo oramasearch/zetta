@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/gbdt_score.hpp"
@@ -52,11 +52,11 @@ struct DistributedScoreResult {
     std::vector<EntityScore> ranked;
     // The job's terminal status (Succeeded when the rounds completed; Failed on a
     // bad column / a device error / a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Batch-score `features` (this node's shard — the columns the model's
@@ -71,7 +71,7 @@ struct DistributedScoreResult {
 // participating node** (a node's own `job` id cannot serve); it defaults to a
 // deterministic, model-derived tag.
 DistributedScoreResult run_score_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job,
     const ddf::DataFrame& features, const GbdtModel& model,
     const std::string& entity_column, std::size_t top_k = 0,
     const std::string& round_tag = {},

@@ -9,7 +9,7 @@ real equal-peer cluster forms before the heavier cases build on it.
 ## What it does
 
 1. **Stands up N real nodes.** `LoopbackCluster(nodes)` brings up N
-   [`zetta::Cluster`](../../../cluster/cluster.md)s on loopback TCP (`127.0.0.1`): a real,
+   [`zetta::cluster::Cluster`](../../../cluster/cluster.md)s on loopback TCP (`127.0.0.1`): a real,
    fully-connected, equal-peer cluster, not a simulation. It waits for them to
    connect within the bring-up window.
 2. **Confirms convergence.** It checks `cluster.connected()`, then reads each
@@ -24,7 +24,7 @@ multi-node loopback cluster, so the UI stays responsive. The result pane shows
 pass/fail, the metrics (the node count and each node's peer count), and the log.
 
 **Headless:** the case is exercised (at `nodes=2`) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests

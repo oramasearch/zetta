@@ -1,6 +1,6 @@
 # Dataset partitions (the partition catalog)
 
-A **DatasetPartition** (`zetta::DatasetPartition`) is one entry in the **partition
+A **DatasetPartition** (`zetta::data::DatasetPartition`) is one entry in the **partition
 catalog** — a record of **where a slice of a table's data physically lives**. It
 realizes the entity spec **ENT-36 / TBL-13**: a node knows, for every table, which
 contiguous row ranges exist, which large-object body holds each one's bytes, and
@@ -13,7 +13,7 @@ type, its `part:<uuid>` CRDT key, how it reconciles onto every node, its
 JSON-Schema boundary, and the read-only **`system.dataset_partitions`** SQL view
 that exposes it. The *producer* that fills this catalog — the
 [partitioned write path](partitioned-write-path.md) (`#511`,
-`zetta::write_partitioned`), which splits a partitioned table into partitions,
+`zetta::data::write_partitioned`), which splits a partitioned table into partitions,
 writes each one's bytes as a blob, and records an entry here — is documented
 separately. This slice is **storage + provenance + replication of the catalog
 only** — recording and replicating where data lives.
@@ -30,14 +30,14 @@ updated (so the bodies move to their new owners over the same #515 seam); see
 slice): locality-aware reads that route a scan to a partition's owner and read its
 blob back (`#516`).
 
-It is modeled **exactly like** [`zetta::ComputeJob`](../compute/compute-jobs.md) /
-[`zetta::Run`](../pipeline/runs.md): a top-level entity keyed by id, a flat CRDT key + on-disk
+It is modeled **exactly like** [`zetta::compute::ComputeJob`](../compute/compute-jobs.md) /
+[`zetta::pipeline::Run`](../pipeline/runs.md): a top-level entity keyed by id, a flat CRDT key + on-disk
 JSON projection, boundary validation against a formal JSON Schema. If you know
 `ComputeJob`, you know `DatasetPartition`.
 
 ## The type
 
-A `DatasetPartition` (`include/zetta/dataset_partition.hpp`) is a top-level entity
+A `DatasetPartition` (`include/zetta/data/dataset_partition.hpp`) is a top-level entity
 with no parent. Its value:
 
 | Field | Type | Notes |
@@ -76,7 +76,7 @@ jobs, partitions have **no human name** — they are keyed by `id`, so `find` /
 | `dataset_partition_count()` | `size_t` | — |
 
 ```cpp
-zetta::DatasetPartitionValue value;
+zetta::data::DatasetPartitionValue value;
 value.table = items_table->id();
 value.blob_ref = body_id;            // a lo:<uuid> holding the slice's bytes
 value.row_range = {0, 10'000};       // rows [0, 10000)
@@ -161,8 +161,8 @@ value is validated against a **formal JSON Schema** (draft-07) rather than ad-ho
 shape checks. The schema is the single source of truth for the value shape — the
 shape is sealed (`additionalProperties: false`), `table` is required, and
 `owner_nodes` must be an array of strings — and is exposed via
-`zetta::dataset_partition_value_schema()`. It lives inline in
-`src/core/dataset_partition.cpp`; [`schemas/dataset_partition.schema.json`](../../schemas/dataset_partition.schema.json)
+`zetta::data::dataset_partition_value_schema()`. It lives inline in
+`src/core/data/dataset_partition.cpp`; [`schemas/dataset_partition.schema.json`](../../schemas/dataset_partition.schema.json)
 is **generated** from it and kept in sync by `tests/test_schemas.cpp` (regenerate
 with `ZETTA_WRITE_SCHEMAS=1 ctest --test-dir build -R Schemas`).
 
@@ -183,7 +183,7 @@ validator is the `pboettch/json-schema-validator` library, linked **PRIVATE** to
 
 ## Tests
 
-`tests/test_dataset_partition.cpp` covers the value type's JSON round-trip + the
+`tests/data/test_dataset_partition.cpp` covers the value type's JSON round-trip + the
 schema boundary rejecting malformed values, the Node CRUD (create / find / drop +
 the empty-`table` rejection), survival across a restart (disk projection), the
 `system.dataset_partitions` view (rows, projection, `WHERE`), and — the

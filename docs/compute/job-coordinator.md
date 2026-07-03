@@ -26,8 +26,8 @@ root.
 include/zetta/compute/job_coordinator.hpp   JobCoordinator + JobRound
 src/core/compute/job_coordinator.cpp        lifecycle driving + handler wiring
 include/zetta/node.hpp + src/core/node.cpp  Node::attach_cluster / job_coordinator (the node-owned spine, #579)
-tests/test_job_coordinator.cpp              the distributed-sum acceptance + edges
-tests/test_node_job_coordinator.cpp         the node-owned coordinator acceptance (#579)
+tests/compute/test_job_coordinator.cpp              the distributed-sum acceptance + edges
+tests/compute/test_node_job_coordinator.cpp         the node-owned coordinator acceptance (#579)
 ```
 
 ## The execution model: SPMD, with map as the alternative
@@ -74,12 +74,12 @@ coordinator.set_executor([](std::string_view method, std::string_view payload) {
 coordinator.start();   // register the handler chain + start the steal loop
 
 // Drive a ComputeJob (created on a Node) through its lifecycle:
-auto job = node.create_job(zetta::JobKind::Train, project_id, graph_id);
-zetta::JobStatus status = coordinator.run(*job, [&](zetta::compute::JobRound& round) {
+auto job = node.create_job(zetta::compute::JobKind::Train, project_id, graph_id);
+zetta::compute::JobStatus status = coordinator.run(*job, [&](zetta::compute::JobRound& round) {
     // 1. local partial: split this node's shard across the worker pool
     auto partial = compute_partial(round, my_shard);
     // 2. round boundary: combine partials across the cluster
-    auto total = round.allreduce("epoch-1", partial, zetta::CollectiveOp::Sum);
+    auto total = round.allreduce("epoch-1", partial, zetta::cluster::CollectiveOp::Sum);
     if (!total) return zetta::compute::JobCoordinator::Outcome{.ok = false,
                                                               .detail = "round failed"};
     return zetta::compute::JobCoordinator::Outcome{.ok = true, .detail = "done"};
@@ -204,7 +204,7 @@ new place for it to enter.
 
 ## Acceptance: a distributed sum end-to-end
 
-`tests/test_job_coordinator.cpp` runs the headline scenario: a trivial
+`tests/compute/test_job_coordinator.cpp` runs the headline scenario: a trivial
 distributed-sum job through the coordinator on a **multi-node loopback cluster**.
 Three nodes each own a shard; each sums its shard across its local pool
 (`parallel_map`), then `allreduce` combines the partials at the round boundary, so
@@ -215,7 +215,7 @@ coordinator (an idle peer steals and runs every task of a zero-worker source), a
 single-node cluster degenerating cleanly, and a failing job body marking the job
 `Failed` with its reason.
 
-`tests/test_node_job_coordinator.cpp` proves the **node-owned** path (#579): three
+`tests/compute/test_node_job_coordinator.cpp` proves the **node-owned** path (#579): three
 loopback nodes each `attach_cluster` and then run the same distributed sum
 **through `Node::job_coordinator()`** — every node reaches the same global sum and
 records its job `Succeeded` — plus the lifecycle edges (a single-node cluster, that

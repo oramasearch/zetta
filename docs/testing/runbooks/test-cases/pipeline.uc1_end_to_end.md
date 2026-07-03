@@ -40,7 +40,7 @@ modal and click **Run**; the result pane shows pass/fail, the metrics (accounts,
 risk, top driver, jobs succeeded, audit events, calibrated), and the log.
 
 **Headless:** the case is exercised (both the green run and the blocked run) by
-`tests/test_testkit.cpp::Uc1PipelineGatedAndGoverned`, which runs the `resolver` at
+`tests/testkit/test_testkit.cpp::Uc1PipelineGatedAndGoverned`, which runs the `resolver` at
 `full_name` (passes by running) and at `brand` (passes by the gate blocking):
 
 ```bash

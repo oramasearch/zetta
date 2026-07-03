@@ -1,7 +1,9 @@
 # src/core — zetta-core implementation rules
 
 The static core library. Everything here must run **headless** — no SDL/ImGui
-type may appear in this tree, ever. Orient with
+type may appear in this tree, ever. **Namespace == directory** (`src/core/<d>/`
+implements `namespace zetta::<d>`, mirroring `include/zetta/<d>/`; a class's
+nested/pImpl declarations stay nested). Orient with
 [docs/architecture/code-map.md](../../docs/architecture/code-map.md); read the
 touched domain's `docs/<domain>/README.md` before changing its code.
 

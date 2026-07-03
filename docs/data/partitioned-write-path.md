@@ -1,7 +1,7 @@
 # Partitioned write path (rows → partition → blob, placement recorded)
 
-The **partitioned write path** (`zetta::write_partitioned`,
-`include/zetta/partition_writer.hpp`, **#511**) is where the partitioning pieces
+The **partitioned write path** (`zetta::data::write_partitioned`,
+`include/zetta/data/partition_writer.hpp`, **#511**) is where the partitioning pieces
 finally meet: it takes a table configured with a [`Partitioner`](partitioner.md)
 and **lays its rows out as partitions** — assigning each row to a partition,
 serializing each partition's bytes, storing them as a
@@ -18,7 +18,7 @@ It composes three already-built slices into one operation:
 
 **Acceptance:** loading a dataset into a partitioned table produces **N partition
 blobs + N catalog rows with correct row ranges** — verified by
-`tests/test_partition_writer.cpp`.
+`tests/data/test_partition_writer.cpp`.
 
 ## The entry point
 
@@ -145,7 +145,7 @@ drives.
 
 ## Tests
 
-`tests/test_partition_writer.cpp` covers:
+`tests/data/test_partition_writer.cpp` covers:
 
 - **the acceptance** — a hash-partitioned 12-row load produces *N* blobs + *N*
   catalog rows whose ranges tile `[0, 12)`, each blob existing as a large object

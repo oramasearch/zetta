@@ -34,7 +34,7 @@ the breadth of backends is in flight
 What's inside, by domain (each links to that domain's docs):
 
 - **[AI projects + the pipeline](docs/pipeline/README.md)** — the central,
-  user-managed **AI project** (`zetta::Project`) owns its raw **inputs** (NL
+  user-managed **AI project** (`zetta::pipeline::Project`) owns its raw **inputs** (NL
   intent, imported artifacts such as n8n workflows) and its **execution
   graphs** (the `zetta::ir::ExecutionGraph` IR: a typed
   `connect→clean→model→index→serve→act` step graph, persisted + replicated as

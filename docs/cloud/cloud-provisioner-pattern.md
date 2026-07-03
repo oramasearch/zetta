@@ -26,7 +26,7 @@ them `<Vendor>` — `Aws` (built), `Gcp` (built), `Oci` (built), `K8s` (built),
 1. **`<Vendor>Provisioner : BurstProvisioner<<Vendor>Config, <Vendor>ControlPlane>`**
    — the burst **orchestration** is **shared, not copied**: the
    `BurstProvisioner<Config, ControlPlane>` class template
-   ([`burst_provisioner.hpp`](../../include/zetta/burst_provisioner.hpp)) implements
+   ([`burst_provisioner.hpp`](../../include/zetta/cloud/burst_provisioner.hpp)) implements
    `provision` → `control_plane.bring_up` + mint identities; `teardown` →
    `control_plane.destroy` + bulk-revoke when the pool drains; `provisioned` →
    `control_plane.list`, once for every vendor. A `<Vendor>Provisioner` is then just
@@ -50,9 +50,9 @@ them `<Vendor>` — `Aws` (built), `Gcp` (built), `Oci` (built), `K8s` (built),
 
 | Reuse | From | Why it is shared |
 |---|---|---|
-| `Provisioner` seam + `ProvisionedNode` / `ProvisionRequest` / `ProvisionResult` | [`provisioner.hpp`](../../include/zetta/provisioner.hpp) | the vendor-neutral contract + DTOs (with their `from_json` boundary) |
-| `NodeCapability` (cores / memory / GPU) | [`node_capability.hpp`](../../include/zetta/node_capability.hpp) | the per-node spec a request asks for; map it to a vendor SKU in the binding |
-| **`CommandRunner` / `CommandResult` / `default_command_runner`** | [`command_runner.hpp`](../../include/zetta/command_runner.hpp) | the **shared, vendor-neutral** exec seam every CLI binding runs through (argv, no shell; `fork`/`execvp`; testable with a fake) |
+| `Provisioner` seam + `ProvisionedNode` / `ProvisionRequest` / `ProvisionResult` | [`provisioner.hpp`](../../include/zetta/cloud/provisioner.hpp) | the vendor-neutral contract + DTOs (with their `from_json` boundary) |
+| `NodeCapability` (cores / memory / GPU) | [`node_capability.hpp`](../../include/zetta/cloud/node_capability.hpp) | the per-node spec a request asks for; map it to a vendor SKU in the binding |
+| **`CommandRunner` / `CommandResult` / `default_command_runner`** | [`command_runner.hpp`](../../include/zetta/cloud/command_runner.hpp) | the **shared, vendor-neutral** exec seam every CLI binding runs through (argv, no shell; `fork`/`execvp`; testable with a fake) |
 | `IdentityHooks` (mint / revoke) | the provisioner, bound to [`BurstIdentityManager`](burst-identity.md) | bulk burst identity is vendor-independent — reuse the `Principal`/`AccessKey` model, not a per-cloud identity system |
 | `BurstApprovalGate` | [`burst-approval-gate.md`](burst-approval-gate.md) | the cost-cap gate is a `Provisioner` **decorator** — it wraps *any* backend unchanged |
 
@@ -119,7 +119,7 @@ TTL is the backstop, the bulk revoke is the clean-shutdown path).
 
 ### Concrete binding shapes
 
-The reference Azure binding (`src/core/azure_cli_control_plane.cpp`) is the
+The reference Azure binding (`src/core/cloud/azure_cli_control_plane.cpp`) is the
 template; the built GCP (`gcp_cli_control_plane.cpp`) and OCI
 (`oci_cli_control_plane.cpp`) bindings build the analogous argv, and AWS follows.
 Sketches (illustrative — real bindings add a launch template / instance template,
@@ -201,10 +201,10 @@ id.
    seam + `<Vendor>Provisioner`. Copy `AzureProvisioner`'s structure; only the
    config type changes. Keep `IdentityHooks` and the "revoke on drain" logic.
 4. **`include/zetta/<vendor>_cli_control_plane.hpp` + `.cpp`** — `#include
-   "zetta/command_runner.hpp"` and build the vendor argv. Parse `list` output at
+   "zetta/cloud/command_runner.hpp"` and build the vendor argv. Parse `list` output at
    the `ProvisionedNode` boundary. This is the only file with real vendor specifics.
 5. **`tests/test_<vendor>_provisioner.cpp`** — mirror
-   `tests/test_azure_provisioner.cpp`: config JSON boundary (round-trip + malformed
+   `tests/cloud/test_azure_provisioner.cpp`: config JSON boundary (round-trip + malformed
    rejection); the lifecycle against a **fake control plane** (provision+mint,
    best-effort, zero-count no-op, no-mint-when-empty, bulk-revoke on drain,
    idempotent teardown, eviction reflected); and the binding against a **fake

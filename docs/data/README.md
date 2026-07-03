@@ -8,17 +8,17 @@ touching storage, ingestion, partitioning/placement, the query layer, or the `sy
 views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) and
 [../compute/](../compute/compute-near-data.md).
 
-- [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam (`zetta::StorageEngine`).
+- [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam (`zetta::storage::StorageEngine`).
 - [large-objects.md](large-objects.md) — storing files as large objects (metadata in the CRDT, bodies peer-to-peer) and importing JSON/JSONL records.
 - [query.md](query.md) — the dialect-agnostic query layer: the Postgres subset, `GROUP BY` through the [DDF engine](../ddf/ddf.md), and the virtual `system` tables.
-- [replication-strategy.md](replication-strategy.md) — the per-table/db strategy: `ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(rf)`, recorded + replicated (`zetta::ReplicationStrategy`, ENT-35).
+- [replication-strategy.md](replication-strategy.md) — the per-table/db strategy: `ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(rf)`, recorded + replicated (`zetta::data::ReplicationStrategy`, ENT-35).
 - [partitioner.md](partitioner.md) — the `Partitioner` seam: record→partition (Hash/RoundRobin) + partition→node (`RendezvousPlacement` HRW) over a fixed P >> nodes (ADR-31 / #512–#514).
-- [dataset-partitions.md](dataset-partitions.md) — the replicate-to-all partition catalog: where each slice of a table's data lives (`zetta::DatasetPartition`, ENT-36 / #510).
-- [partitioned-write-path.md](partitioned-write-path.md) — rows → partition → blob, placement recorded in the catalog (`zetta::write_partitioned`, #511).
-- [sharded-blob-placement.md](sharded-blob-placement.md) — a partition body is held only by its owner node(s), not replicate-to-all (`zetta::ReplicatedBlobStore`, #515).
-- [partition-rebalance.md](partition-rebalance.md) — between-jobs rebalance on a membership change: ≈rf/N partitions move onto a new node, bodies follow (`zetta::rebalance_partitions`, #517).
+- [dataset-partitions.md](dataset-partitions.md) — the replicate-to-all partition catalog: where each slice of a table's data lives (`zetta::data::DatasetPartition`, ENT-36 / #510).
+- [partitioned-write-path.md](partitioned-write-path.md) — rows → partition → blob, placement recorded in the catalog (`zetta::data::write_partitioned`, #511).
+- [sharded-blob-placement.md](sharded-blob-placement.md) — a partition body is held only by its owner node(s), not replicate-to-all (`zetta::data::ReplicatedBlobStore`, #515).
+- [partition-rebalance.md](partition-rebalance.md) — between-jobs rebalance on a membership change: ≈rf/N partitions move onto a new node, bodies follow (`zetta::data::rebalance_partitions`, #517).
 - [system-datasets.md](system-datasets.md) — datasets as a first-class observability primitive: the computed `system.datasets` view over the live tree + catalog (`Node::datasets()`, #585).
-- [add-dataset.md](add-dataset.md) — the "Add dataset" affordance backend: load a parquet/jsonl/json/csv file as a partitioned table placed across the cluster (`zetta::add_dataset_file`, #587).
+- [add-dataset.md](add-dataset.md) — the "Add dataset" affordance backend: load a parquet/jsonl/json/csv file as a partitioned table placed across the cluster (`zetta::data::add_dataset_file`, #587).
 - [parquet-metadata.md](parquet-metadata.md) — the native (no Arrow) Parquet footer/metadata parser via a self-contained Thrift compact decoder (`parse_parquet_metadata`, ADR-32 / #505).
 - [parquet-snappy.md](parquet-snappy.md) — the self-contained Snappy raw-block decoder for Parquet's default-codec data pages (`snappy_decompress`, #507).
 - [parquet-column-decoders.md](parquet-column-decoders.md) — column-chunk decoders: PLAIN + dictionary pages, definition levels → typed values + validity bitmap (`decode_column`, #506).

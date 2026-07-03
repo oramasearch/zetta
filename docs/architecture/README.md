@@ -8,6 +8,7 @@ in the sibling directories.
 
 - [architecture.md](architecture.md) — the node, run modes, data model, and module map.
 - [code-map.md](code-map.md) — the annotated file-by-file map of the codebase (build targets, include/zetta, src/core, src/gui, tests).
+- [coding-conventions.md](coding-conventions.md) — the canonical conventions reference: C++ style, the domain layout + namespace rule, boundaries/no-throw, seams, commit/branch flow.
 - [runtime.md](runtime.md) — the `zetta::runtime` async/coroutine seam over Capy/Corosio (incl. `parallel_for`) and the migration plan.
 - [schemas.md](schemas.md) — **schema as code**: the embedded C++ draft-07 schema is the source of truth; `schemas/*.json` is generated + drift-checked (#464).
 - [true-hybrid.md](true-hybrid.md) — one equal-peer cluster spanning heterogeneous hardware (CPU/GPU/ASIC, on-prem + cloud) and the seams that make it work, with a built-vs-planned matrix.

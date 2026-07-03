@@ -15,7 +15,7 @@ byte** so the eventual compiler sees exactly what the user exported.
 
 ## The API
 
-`include/zetta/n8n_import.hpp` (namespace `zetta`):
+`include/zetta/pipeline/n8n_import.hpp` (namespace `zetta`):
 
 | Function | Returns | Behavior |
 |---|---|---|
@@ -31,7 +31,7 @@ is null, `error` explains why, and **nothing is stored**.
 ```cpp
 auto project = node.create_project("churn");
 
-auto result = zetta::import_n8n_workflow_file(*project, "churn_workflow.json",
+auto result = zetta::pipeline::import_n8n_workflow_file(*project, "churn_workflow.json",
                                               "user:steve");
 if (!result.ok()) {
     // result.error: "invalid JSON" / "not an n8n workflow: …" / "cannot open file: …"
@@ -109,7 +109,7 @@ same hash (on two distinct input records — duplicates are allowed, as elsewher
 
 ## Tests
 
-`tests/test_n8n_import.cpp` exercises the slice against a realistic churn
+`tests/pipeline/test_n8n_import.cpp` exercises the slice against a realistic churn
 workflow fixture (`tests/fixtures/churn_workflow.json` — a schedule → Postgres →
 code → HTTP score → Slack alert pipeline, with the usual UI-export metadata):
 

@@ -5,9 +5,9 @@
 // Internal: the per-category case registrars assembled by TestSuite::builtin().
 // Each appends its canned cases to the suite. Keeping them in separate translation
 // units keeps each category's includes local and the files readable.
-namespace zetta::testkit {
+namespace zetta::testkit { class TestSuite; }
 
-class TestSuite;
+namespace zetta::testkit {
 
 void register_compute_cases(TestSuite& suite);
 void register_ddf_cases(TestSuite& suite);

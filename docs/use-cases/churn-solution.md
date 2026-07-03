@@ -1,6 +1,6 @@
-# Wiring the churn solution to the real engine (`zetta::run_churn_solution`)
+# Wiring the churn solution to the real engine (`zetta::usecases::churn::run_churn_solution`)
 
-`zetta::run_churn_solution` (`include/zetta/churn_solution.hpp`) is the bridge from
+`zetta::usecases::churn::run_churn_solution` (`include/zetta/usecases/churn/churn_solution.hpp`) is the bridge from
 the catalog **churn-prediction** blueprint — the one a user picks in the
 [Deploy panel](../pipeline/solution-catalog.md) — to a **real trained [Model](../ml/models.md) +
 ranked at-risk list + churn drivers**, running the actual
@@ -9,16 +9,16 @@ featurize → train → explain → rank → playbook pipeline instead of the st
 part of the native distributed accelerated-compute pass (#264).
 
 ```
-include/zetta/churn_solution.hpp   run_churn_solution, ChurnSolutionOptions/Result,
+include/zetta/usecases/churn/churn_solution.hpp   run_churn_solution, ChurnSolutionOptions/Result,
                                    encode_churn_dataset, the standard churn config,
                                    demo_churn_dataset
-src/core/churn_solution.cpp        the encoder + config builders + the runner
+src/core/usecases/churn/churn_solution.cpp        the encoder + config builders + the runner
 ```
 
 ## Why a bridge was needed
 
 The real per-step compute already exists as
-[`zetta::ChurnStepExecutor`](churn-step-executor.md) (#396), but it is driven **by
+[`zetta::usecases::churn::ChurnStepExecutor`](churn-step-executor.md) (#396), but it is driven **by
 injection** into a `GraphExecutor` and needs things the `StepExecutor` seam can't
 supply on its own:
 
@@ -147,7 +147,7 @@ reflect the run.
 
 ## Tests
 
-`tests/test_churn_solution.cpp` is the #398 acceptance:
+`tests/usecases/churn/test_churn_solution.cpp` is the #398 acceptance:
 
 - **Deploy + run the catalog churn solution.** It takes
   `SolutionCatalog::builtin().find("churn-prediction")`, deploys it (the gate passes

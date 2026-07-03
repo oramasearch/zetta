@@ -91,7 +91,7 @@ ComputeStatus extract(const nlohmann::json& doc, const std::string& field,
 // type `Element`, one per chunk of `chunk_rows` rows. Stops + returns on the first
 // boundary or device error.
 template <class Element>
-ComputeStatus fill_chunks(const StorageEngine& store, const std::string& field,
+ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std::string& field,
                           ComputeDevice& device, std::size_t chunk_rows,
                           std::vector<DeviceBuffer>& out) {
     const std::size_t row_count = store.size();
@@ -121,7 +121,7 @@ ComputeStatus fill_chunks(const StorageEngine& store, const std::string& field,
 }
 
 // Build one column by dispatching the chunk fill on the column's runtime dtype.
-ComputeStatus build_column(const StorageEngine& store, const ColumnSchema& spec,
+ComputeStatus build_column(const zetta::storage::StorageEngine& store, const ColumnSchema& spec,
                            ComputeDevice& device, std::size_t chunk_rows,
                            Column& out) {
     const std::string& field = spec.source_field();
@@ -233,7 +233,7 @@ DataFrameSchema DataFrame::schema() const {
 
 // --- Loader + inference ------------------------------------------------------
 
-DataFrameResult load_data_frame(const StorageEngine& store,
+DataFrameResult load_data_frame(const zetta::storage::StorageEngine& store,
                                 const DataFrameSchema& schema,
                                 ComputeDevice& device, std::size_t chunk_rows) {
     if (chunk_rows == 0) {
@@ -254,7 +254,7 @@ DataFrameResult load_data_frame(const StorageEngine& store,
     return {std::move(frame), ComputeStatus::success()};
 }
 
-DataFrameSchema infer_schema(const StorageEngine& store) {
+DataFrameSchema infer_schema(const zetta::storage::StorageEngine& store) {
     DataFrameSchema schema;
     const std::size_t row_count = store.size();
     if (row_count == 0) return schema;

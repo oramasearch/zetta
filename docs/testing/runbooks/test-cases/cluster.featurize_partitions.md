@@ -36,7 +36,7 @@ shows pass/fail, the metrics (conversations, feature rows, excluded post-cutoff,
 features), and the log.
 
 **Headless:** the case is exercised (at `nodes=2`, `rows=140`) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests

@@ -24,8 +24,8 @@ their messages through this layer.
 
 ## The four kinds
 
-`zetta::SignalKind` (`include/zetta/signal.hpp`), ordered
-`request → response → event → task`. A `zetta::Signal` carries:
+`zetta::cluster::SignalKind` (`include/zetta/cluster/signal.hpp`), ordered
+`request → response → event → task`. A `zetta::cluster::Signal` carries:
 
 | field     | meaning                                                            |
 |-----------|-------------------------------------------------------------------|
@@ -41,14 +41,14 @@ their messages through this layer.
 Wire a handler in and send from any thread:
 
 ```cpp
-class MyHandler : public zetta::SignalHandler {
+class MyHandler : public zetta::cluster::SignalHandler {
 public:
     // RPC: return the response payload. Runs on the cluster network thread.
-    zetta::SignalResponse on_request(const zetta::Signal& request) override {
+    zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override {
         return {.ok = true, .payload = compute(request.payload)};
     }
-    void on_event(const zetta::Signal& event) override { /* ... */ }
-    void on_task(const zetta::Signal& task)   override { /* ... */ }
+    void on_event(const zetta::cluster::Signal& event) override { /* ... */ }
+    void on_task(const zetta::cluster::Signal& task)   override { /* ... */ }
 };
 
 MyHandler handler;
@@ -56,7 +56,7 @@ cluster.set_signal_handler(&handler);   // any time; nullptr clears
 
 // Request/response RPC — blocks until the peer replies, times out, or the peer
 // is unreachable:
-zetta::SignalResponse response =
+zetta::cluster::SignalResponse response =
     cluster.request(peer_node_id, "sum", "[1,2,3]", std::chrono::seconds(5));
 if (response.ok) use(response.payload);
 
@@ -125,7 +125,7 @@ newline, so it survives the newline-framed transport):
 The envelope is **validated at the boundary** on receipt, exactly like the
 [Run record](../pipeline/runs.md) and the [audit trail](../governance/audit-trail.md): against a draft-07
 **JSON Schema** (`schemas/signal_envelope.schema.json`, mirrored embedded in
-`src/core/signal.cpp` — that embedded copy is the one enforced at runtime, via
+`src/core/cluster/signal.cpp` — that embedded copy is the one enforced at runtime, via
 `pboettch/json-schema-validator`). `kind` is a closed enum and no unknown fields
 are allowed, then the kind-specific required fields (a request/response needs an
 `id`; a request/event/task needs a `method`; a response needs `ok`) are checked
@@ -135,23 +135,23 @@ rejected with a path-qualified reason and **never reaches a handler**;
 `decode_signal` is non-throwing (it returns `std::optional` + a reason), matching
 zetta's no-exceptions-across-the-core-seam convention.
 
-`zetta::encode_signal` / `zetta::decode_signal` (declared in
-`include/zetta/signal.hpp`) are the serialization seam; the
+`zetta::cluster::encode_signal` / `zetta::cluster::decode_signal` (declared in
+`include/zetta/cluster/signal.hpp`) are the serialization seam; the
 [cluster](cluster.md) transport only adds/strips the `ZETTA/1 SIGNAL ` framing.
 
 ## Where it sits
 
 ```
-include/zetta/signal.hpp   Signal / SignalKind / SignalResponse / SignalHandler;
+include/zetta/cluster/signal.hpp   Signal / SignalKind / SignalResponse / SignalHandler;
                            encode_signal / decode_signal (the envelope seam)
-src/core/signal.cpp        the envelope JSON form + its JSON-Schema boundary
-src/core/cluster.cpp       the transport: a per-peer outbox, the per-link writer,
+src/core/cluster/signal.cpp        the envelope JSON form + its JSON-Schema boundary
+src/core/cluster/cluster.cpp       the transport: a per-peer outbox, the per-link writer,
                            RPC correlation, and signal dispatch on the read pump
 src/core/base64.hpp        shared base64 (the signal payload + the gossip blobs)
 schemas/signal_envelope.schema.json   the draft-07 schema (mirror)
 ```
 
-The `zetta::Cluster` API (`set_signal_handler`, `request`, `send_event`,
+The `zetta::cluster::Cluster` API (`set_signal_handler`, `request`, `send_event`,
 `broadcast_event`, `send_task`) is the public surface; it exposes no backend
 types, like the rest of the cluster.
 

@@ -17,8 +17,8 @@ score a churn dashboard shows means what it says.
   `train` job wires it via `CalibrationConfig` in
   [`include/zetta/ml/gbdt_train_job.hpp`](../../include/zetta/ml/gbdt_train_job.hpp).
 - Schema: [`schemas/calibration.schema.json`](../../schemas/calibration.schema.json).
-- Tests: [`tests/test_calibration.cpp`](../../tests/test_calibration.cpp) +
-  the distributed slice in [`tests/test_gbdt.cpp`](../../tests/test_gbdt.cpp).
+- Tests: [`tests/ml/test_calibration.cpp`](../../tests/ml/test_calibration.cpp) +
+  the distributed slice in [`tests/ml/test_gbdt.cpp`](../../tests/ml/test_gbdt.cpp).
 
 ## The two methods
 
@@ -122,7 +122,7 @@ When attached to a `GbdtModel`, the model schema allows a loose `calibration`
 object and the strict validation happens once in `Calibrator::from_json` (the way
 the tree child-index rule is enforced after the model's schema pass).
 
-## Acceptance (in `tests/test_calibration.cpp`)
+## Acceptance (in `tests/ml/test_calibration.cpp`)
 
 - The calibrator + wire boundaries round-trip and reject malformed input
   (bad method, unknown key, a Platt map missing a parameter, isotonic arrays of
@@ -135,7 +135,7 @@ the tree child-index rule is enforced after the model's schema pass).
 - `calibrate_model` attaches a map that `predict_proba` applies, preserves the
   ranking (AUC unchanged), round-trips through the GBDT model schema, and rejects a
   single-class held-out set.
-- The distributed `train` job (in `tests/test_gbdt.cpp`) produces a calibrated
+- The distributed `train` job (in `tests/ml/test_gbdt.cpp`) produces a calibrated
   model whose weights re-validate, with single-node and multi-node fitting an
   equivalent calibrated model (the content-hash split is sharding-invariant).
 

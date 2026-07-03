@@ -7,7 +7,7 @@
 >
 > **Status:** reference / background. It is the cited basis for the `aws`
 > command shapes the **AWS provisioner** uses — `AwsCliControlPlane`
-> (`src/core/aws_cli_control_plane.cpp`); see
+> (`src/core/cloud/aws_cli_control_plane.cpp`); see
 > [aws-provisioner.md](../cloud/aws-provisioner.md). zetta's burst backend uses only the
 > **EC2 Auto Scaling Group + Spot** slice (§2.9–2.10); the rest (EC2 basics, ECS
 > on Fargate, EKS, Batch, Lambda, App Runner, GPU/HPC) is background for choosing

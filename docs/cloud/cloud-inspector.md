@@ -23,9 +23,9 @@ In the UI this is a **load-bearing consent gate**: nothing is read or called
 until the user explicitly allows that one inspection, and consent is **never
 remembered** across providers or selections.
 
-## The provider catalog (`zetta::CloudProviderCatalog`)
+## The provider catalog (`zetta::cloud::CloudProviderCatalog`)
 
-`include/zetta/cloud_provider.hpp` + `src/core/cloud_provider.cpp`.
+`include/zetta/cloud/cloud_provider.hpp` + `src/core/cloud/cloud_provider.cpp`.
 
 A `CloudProvider` is **pure metadata** — identity + presentation plus a
 *description* of what an inspect would touch:
@@ -102,14 +102,14 @@ A list + detail layout (like the Runs / Admin panels):
 synchronously on the UI thread (which owns the node, so caching the result races
 with nothing) and records the report via `Node::record_cloud_inspection`.
 
-## The inspector (`zetta::CloudInspector`)
+## The inspector (`zetta::cloud::CloudInspector`)
 
-`include/zetta/cloud_inspector.hpp` + `src/core/cloud_inspector.cpp`.
+`include/zetta/cloud/cloud_inspector.hpp` + `src/core/cloud/cloud_inspector.cpp`.
 
 `CloudInspector::inspect(provider)` is **the real cloud read** — but it performs
 **no consent itself**: the caller (the GUI gate) must obtain explicit, per-action,
 deny-by-default permission *before* calling it. It runs every command through the
-shared `CommandRunner` seam (`include/zetta/command_runner.hpp` — argv, no shell;
+shared `CommandRunner` seam (`include/zetta/cloud/command_runner.hpp` — argv, no shell;
 the same exec seam the [CLI control planes](cloud-provisioner-pattern.md) use), so
 it is testable with a fake runner (no cloud CLI installed) and free of
 shell-injection risk. It returns a `CloudInspectReport`:
@@ -165,19 +165,19 @@ the UI thread (a brief block on a user-initiated click) rather than off-thread.
 
 ## Tests
 
-- `tests/test_cloud_provider.cpp` — the catalog covers every backend, `find`
+- `tests/cloud/test_cloud_provider.cpp` — the catalog covers every backend, `find`
   returns null for unknown ids, **Local reads nothing and needs no consent**,
   every non-Local provider `requires_consent()` and names its files + commands +
   CLI, the CLI providers are `runnable()` while **bare-metal is not**, AWS names
   its credential files (and its commands + argv are read-only), Kubernetes names
   its kubeconfig, and provider ids are unique.
-- `tests/test_cloud_inspector.cpp` — with a **fake `CommandRunner`** (no cloud
+- `tests/cloud/test_cloud_inspector.cpp` — with a **fake `CommandRunner`** (no cloud
   touched): AWS/GCP/Azure/OCI/Kubernetes success paths extract identity +
   regions/nodes; a missing CLI is reported not-reachable; malformed / wrong-shape
   JSON degrades gracefully; bare-metal runs nothing (`ran = false`); and the
   report round-trips through its JSON boundary (a malformed report fails
   validation).
-- `tests/test_query.cpp` — `system.zetta_cloud_providers` covers every backend
+- `tests/data/test_query.cpp` — `system.zetta_cloud_providers` covers every backend
   with WHERE/projection; `system.zetta_cloud_status` is empty until an inspect is
   recorded, then returns it.
 

@@ -31,7 +31,7 @@ up a real multi-node loopback cluster, so the UI stays responsive. The result pa
 shows pass/fail, the metrics (nodes, rows, groups), and the log.
 
 **Headless:** the case is exercised (at `nodes=2`, `rows=400`) by
-`tests/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
+`tests/testkit/test_testkit.cpp::DistributedCasesRunOnARealCluster`:
 
 ```bash
 cmake --build build --target zetta-tests

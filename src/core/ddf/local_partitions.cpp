@@ -10,9 +10,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
-#include "zetta/large_object.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/json_store.hpp"
 
@@ -26,7 +26,7 @@ namespace {
 // holds the body locally.
 std::optional<std::string> read_blob_body(Node& node, const std::string& blob_ref) {
     for (const std::string& name : node.database_names()) {
-        const std::shared_ptr<Database> database = node.find_database(name);
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
         if (!database) continue;
         if (std::optional<std::string> body =
                 database->large_objects().read(blob_ref)) {
@@ -43,7 +43,7 @@ std::optional<std::string> read_blob_body(Node& node, const std::string& blob_re
 // since a silently-dropped row would diverge from the single-node oracle. Returns
 // false (and a reason in `error`) on the first malformed line.
 bool append_partition_rows(const std::string& body, const std::string& partition_id,
-                           JsonStore& store, std::uint64_t& rows,
+                           zetta::storage::JsonStore& store, std::uint64_t& rows,
                            std::string* error) {
     std::istringstream in(body);
     std::string line;
@@ -97,8 +97,8 @@ LocalShardResult load_local_partitions(Node& node, const std::string& table,
 
     // Enumerate this node's owned partitions of `table`, ascending by row range so
     // the loaded shard is deterministic / reproducible.
-    std::vector<std::shared_ptr<DatasetPartition>> owned;
-    for (const std::shared_ptr<DatasetPartition>& partition :
+    std::vector<std::shared_ptr<zetta::data::DatasetPartition>> owned;
+    for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :
          node.dataset_partitions()) {
         if (!partition || partition->table() != table) continue;
         const std::vector<std::string>& owners = partition->owner_nodes();
@@ -106,13 +106,13 @@ LocalShardResult load_local_partitions(Node& node, const std::string& table,
         owned.push_back(partition);
     }
     std::sort(owned.begin(), owned.end(),
-              [](const std::shared_ptr<DatasetPartition>& a,
-                 const std::shared_ptr<DatasetPartition>& b) {
+              [](const std::shared_ptr<zetta::data::DatasetPartition>& a,
+                 const std::shared_ptr<zetta::data::DatasetPartition>& b) {
                   return a->row_range().start < b->row_range().start;
               });
 
-    JsonStore store;
-    for (const std::shared_ptr<DatasetPartition>& partition : owned) {
+    zetta::storage::JsonStore store;
+    for (const std::shared_ptr<zetta::data::DatasetPartition>& partition : owned) {
         if (partition->blob_ref().empty()) continue;  // unplaced / empty partition
         const std::optional<std::string> body =
             read_blob_body(node, partition->blob_ref());

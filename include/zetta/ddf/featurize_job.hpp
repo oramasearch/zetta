@@ -4,7 +4,7 @@
 #include <string>
 
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/featurize.hpp"
 #include "zetta/ddf/group_by.hpp"
@@ -57,12 +57,12 @@ struct DistributedFeaturizeResult {
     FeatureTable table;
     // The job's terminal status (Succeeded when the rounds completed, Failed on a bad
     // spec / column / device error or a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     // Informational; the broadcast means `table` is set on every node regardless.
     bool is_root = false;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Run `spec` as a point-in-time featurization ComputeJob across the cluster, with
@@ -83,7 +83,7 @@ struct DistributedFeaturizeResult {
 // distinct `ComputeJob` for the same logical work). When empty it defaults to a
 // deterministic, spec-derived tag.
 DistributedFeaturizeResult run_featurize_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job, const DataFrame& events,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job, const DataFrame& events,
     const DataFrame& accounts, const FeaturizeSpec& spec,
     const std::string& round_tag = {},
     std::chrono::milliseconds timeout = kDefaultGroupByTimeout);

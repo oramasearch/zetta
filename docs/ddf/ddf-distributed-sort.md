@@ -12,7 +12,7 @@ global sort.
 include/zetta/ddf/distributed_sort.hpp   PartitionMessage + DistributedSorter
 src/core/ddf/distributed_sort.cpp        the sample-sort + the all-to-all shuffle + the JSON boundary
 schemas/ddf_partition.schema.json        the shuffle-message JSON boundary (draft-07)
-tests/test_distributed_sort.cpp          single- + multi-node + boundary tests
+tests/ddf/test_distributed_sort.cpp          single- + multi-node + boundary tests
 ```
 
 ## The algorithm
@@ -110,7 +110,7 @@ failure): it enforces the schema, then the cross-field rule the schema can't exp
 
 ## Tests
 
-`tests/test_distributed_sort.cpp` runs over **real in-process loopback clusters**
+`tests/ddf/test_distributed_sort.cpp` runs over **real in-process loopback clusters**
 (the shape of [test_collectives.cpp](../cluster/collectives.md) /
 [test_distributed_scheduler.cpp](../compute/work-stealing-scheduler.md)): the **single-node**
 fast path; **two- and three-node** sorts whose scrambled shards force the shuffle to

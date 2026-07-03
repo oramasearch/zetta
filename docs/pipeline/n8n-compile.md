@@ -19,7 +19,7 @@ R1 covers the node kinds in the **churn** workflows (the fixture
 
 ## The API
 
-`include/zetta/n8n_compile.hpp` (namespace `zetta`):
+`include/zetta/pipeline/n8n_compile.hpp` (namespace `zetta`):
 
 | Function | Returns | Behavior |
 |---|---|---|
@@ -34,11 +34,11 @@ instead of producing a half-built graph.
 
 ```cpp
 auto project = node.create_project("churn");
-auto imported = zetta::import_n8n_workflow_file(*project, "churn_workflow.json");
+auto imported = zetta::pipeline::import_n8n_workflow_file(*project, "churn_workflow.json");
 
 std::string error;
 std::optional<zetta::ir::ExecutionGraph> graph =
-    zetta::compile_n8n_workflow(*imported.input, &error);
+    zetta::pipeline::compile_n8n_workflow(*imported.input, &error);
 if (!graph) {
     // error: "invalid JSON" / "not an n8n workflow: …" /
     //        'nodes[2]: unsupported n8n node type "…" (node "…")' / …
@@ -138,7 +138,7 @@ boundary unchanged).
 
 ## Tests
 
-`tests/test_n8n_compile.cpp`:
+`tests/pipeline/test_n8n_compile.cpp`:
 
 - the churn fixture compiles into a **well-formed** graph with the right step
   kinds and edges (and survives an `ir::to_json` → `ir::from_json` round-trip);

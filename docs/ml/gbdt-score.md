@@ -20,7 +20,7 @@ ranking operator), the [collectives](../cluster/collectives.md), and the
   — the distributed `score` ComputeJob producing the global at-risk list.
 - Impl: [`src/core/ml/gbdt_score.cpp`](../../src/core/ml/gbdt_score.cpp),
   [`src/core/ml/gbdt_score_job.cpp`](../../src/core/ml/gbdt_score_job.cpp).
-- Tests: [`tests/test_gbdt_score.cpp`](../../tests/test_gbdt_score.cpp).
+- Tests: [`tests/ml/test_gbdt_score.cpp`](../../tests/ml/test_gbdt_score.cpp).
 
 ## Calibrated risk, for free
 
@@ -112,7 +112,7 @@ acceptance.
 ```cpp
 // A device-backed feature frame (one row per entity, entity-key column + features).
 auto frame = feature_table.to_data_frame(device);
-auto job = node.create_job(zetta::JobKind::Score);
+auto job = node.create_job(zetta::compute::JobKind::Score);
 auto result = zetta::ml::run_score_job(
     coordinator, *job, frame.frame, model, /*entity_column=*/"entity",
     /*top_k=*/100);  // the 100 most at-risk accounts
@@ -133,7 +133,7 @@ be identical on every node (it defaults to a deterministic, model-derived tag).
 - **Objective.** Binary logistic only, matching the trainer; other objectives extend
   alongside `GbdtModel::objective`.
 
-## Acceptance (in `tests/test_gbdt_score.cpp`)
+## Acceptance (in `tests/ml/test_gbdt_score.cpp`)
 
 - `score_gbdt` ranks by risk descending (entity-ascending tie-break), every listed
   risk equals `predict_proba`, `top_k` truncates to the highest-risk prefix, the

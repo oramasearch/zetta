@@ -1,6 +1,6 @@
 # Correctness gate
 
-The **correctness gate** (`zetta::CorrectnessGate`, `include/zetta/gate.hpp`) is
+The **correctness gate** (`zetta::pipeline::CorrectnessGate`, `include/zetta/pipeline/gate.hpp`) is
 the **runner** for the FEAT-3 correctness gate: register a set of checks, run
 them all over an `ExecutionGraph`, aggregate their outcomes into a
 `ValidationReport`, and **block deploy when any check fails**. It enforces
@@ -8,7 +8,7 @@ them all over an `ExecutionGraph`, aggregate their outcomes into a
 
 It is the piece that joins the two data-model slices that came before it: the
 [ExecutionGraph IR](execution-graph.md) it inspects (`zetta::ir::ExecutionGraph`)
-and the [ValidationReport](validation.md) it produces (`zetta::ValidationReport`).
+and the [ValidationReport](validation.md) it produces (`zetta::pipeline::ValidationReport`).
 The IR is *what* it validates; the report is *what it returns*; this is the part
 that does the running.
 
@@ -88,7 +88,7 @@ registered there too.
 ## Using it
 
 ```cpp
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/ir/execution_graph.hpp"
 using namespace zetta;
 

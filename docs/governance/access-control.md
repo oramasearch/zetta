@@ -76,11 +76,11 @@ kind *and* name — there is no cross-kind or wildcard match within a kind in V1
 
 ```cpp
 Scope scope;
-scope.grant(zetta::ResourceKind::Database, "churn");   // a key scoped to one db
+scope.grant(zetta::governance::ResourceKind::Database, "churn");   // a key scoped to one db
 
-scope.permits({zetta::ResourceKind::Database, "churn"});  // true  — in scope
-scope.permits({zetta::ResourceKind::Database, "fraud"});  // false — out of scope
-scope.permits({zetta::ResourceKind::Project,  "churn"});  // false — wrong kind
+scope.permits({zetta::governance::ResourceKind::Database, "churn"});  // true  — in scope
+scope.permits({zetta::governance::ResourceKind::Database, "fraud"});  // false — out of scope
+scope.permits({zetta::governance::ResourceKind::Project,  "churn"});  // false — wrong kind
 ```
 
 A request inherits its key's scope. The node-level entry point is
@@ -97,7 +97,7 @@ node.authorize(key->id(), {ResourceKind::Database, "fraud"});    // denied
 node.authorize("no-such-key", {ResourceKind::Database, "churn"});// denied
 ```
 
-`zetta::authorize(const AccessKey&, const Resource&)` is the pure decision over a
+`zetta::governance::authorize(const AccessKey&, const Resource&)` is the pure decision over a
 known key; `Node::authorize(key_id, resource)` is the seam a request path calls.
 
 ## The capability decision (ENT-22)
@@ -110,9 +110,9 @@ operation iff its `domain` and `action` are exactly equal, and its TTL (if any)
 has not elapsed as of the time of the check.
 
 ```cpp
-zetta::CapabilitySet caps;
-caps.grant(zetta::CapabilityDomain::Data, "read");                  // an open-ended right
-caps.grant(zetta::CapabilityDomain::Api, "deploy", "2026-07-01T00:00:00.000Z");  // TTL'd
+zetta::governance::CapabilitySet caps;
+caps.grant(zetta::governance::CapabilityDomain::Data, "read");                  // an open-ended right
+caps.grant(zetta::governance::CapabilityDomain::Api, "deploy", "2026-07-01T00:00:00.000Z");  // TTL'd
 
 caps.permits({CapabilityDomain::Data, "read"},  now);   // true  — matching right
 caps.permits({CapabilityDomain::Data, "write"}, now);   // false — never granted
@@ -125,7 +125,7 @@ now)` (capability), and proceeds only if both allow. Through the node:
 
 ```cpp
 auto pipeline = node.create_principal("pipeline", PrincipalKind::Service);
-zetta::CapabilitySet caps;
+zetta::governance::CapabilitySet caps;
 caps.grant(CapabilityDomain::Orchestration, "start_run");
 auto key = pipeline->create_key(scope, caps);            // scope + capabilities
 
@@ -133,7 +133,7 @@ node.authorize(key->id(), Operation{CapabilityDomain::Orchestration, "start_run"
 node.authorize(key->id(), Operation{CapabilityDomain::Data, "write"});               // denied
 ```
 
-`zetta::authorize(const AccessKey&, const Operation&, std::string_view now)` is the
+`zetta::governance::authorize(const AccessKey&, const Operation&, std::string_view now)` is the
 pure decision (the injectable `now` makes TTL deterministic in tests). Its deny
 reason **distinguishes** a right that was never granted from one whose TTL has
 expired — context the audit trail will record.
@@ -241,12 +241,12 @@ slice.
 
 ## Pointers
 
-- `include/zetta/principal.hpp` — `zetta::Principal` (ENT-20) + `PrincipalKind`.
-- `include/zetta/access_key.hpp` — `zetta::AccessKey` (ENT-21), `AccessDecision`,
+- `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
+- `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,
   `authorize()`.
-- `include/zetta/scope.hpp` — `zetta::Scope` / `Resource` / `ResourceKind` (the
+- `include/zetta/governance/scope.hpp` — `zetta::governance::Scope` / `Resource` / `ResourceKind` (the
   deny-by-default *resource* decision).
-- `include/zetta/capability.hpp` — `zetta::Capability` / `CapabilitySet` /
+- `include/zetta/governance/capability.hpp` — `zetta::governance::Capability` / `CapabilitySet` /
   `Operation` / `CapabilityDomain` (ENT-22; the deny-by-default *rights* decision,
   TTL'd).
 - `include/zetta/node.hpp` — principal CRUD + `Node::authorize` (resource +

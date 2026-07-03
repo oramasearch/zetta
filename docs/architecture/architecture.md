@@ -85,7 +85,7 @@ semantic validation (the gate) are later slices. See
 **Deploy** has its first slice: `Node::deploy_graph` places a validated graph onto
 a `DeploymentTarget` (R1 local) and records the placement (replicated + queryable).
 See [deployments.md](../pipeline/deployments.md). **Run** has its first slice too:
-`zetta::GraphExecutor` / `Node::run_graph` executes a graph step-by-step in
+`zetta::pipeline::GraphExecutor` / `Node::run_graph` executes a graph step-by-step in
 dependency order, producing a [Run](../pipeline/runs.md) with outputs + lineage (a pluggable
 `StepExecutor` seam for per-step work). See [execution.md](../pipeline/execution.md).
 
@@ -94,9 +94,9 @@ dependency order, producing a [Run](../pipeline/runs.md) with outputs + lineage 
 The coroutine / IO / networking backend (C++ Alliance Capy + Corosio, vendored
 in `modules/`) lives behind the `zetta::runtime` seam — see
 [runtime.md](runtime.md). Its first user is the **cluster**: nodes form a mesh
-of equal peers over TCP via `zetta::Cluster` — see [cluster.md](../cluster/cluster.md).
+of equal peers over TCP via `zetta::cluster::Cluster` — see [cluster.md](../cluster/cluster.md).
 
-**Replication** (`zetta::ReplicationManager`) holds a node's DDL/metadata/rows
+**Replication** (`zetta::cluster::ReplicationManager`) holds a node's DDL/metadata/rows
 as an Automerge CRDT (`modules/automerge-cpp`) and merges peers' state
 conflict-free — see [replication.md](../cluster/replication.md).
 

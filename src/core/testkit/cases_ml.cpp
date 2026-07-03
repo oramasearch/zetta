@@ -5,7 +5,7 @@
 #include <vector>
 
 #include "cases.hpp"
-#include "zetta/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/tree_shap.hpp"
@@ -41,7 +41,7 @@ struct FeatureTable {
     std::vector<double> labels;                // {0,1} per row
 };
 
-FeatureTable featurize(const ChurnNumericShards& numeric) {
+FeatureTable featurize(const zetta::usecases::churn::ChurnNumericShards& numeric) {
     const std::size_t accounts = numeric.accounts.size();
     FeatureTable table;
     table.columns.assign(feature_names().size(), std::vector<double>(accounts, 0.0));
@@ -77,9 +77,9 @@ std::vector<double> row_features(const FeatureTable& table, std::size_t row) {
 }
 
 FeatureTable dataset_table(const TestContext& context, TestResult& note_into) {
-    ChurnDataset dataset = sample_churn_dataset();
+    zetta::usecases::churn::ChurnDataset dataset = sample_churn_dataset();
     if (!context.custom_data_path.empty()) {
-        const ChurnDatasetResult loaded = load_churn_dataset(context.custom_data_path);
+        const zetta::usecases::churn::ChurnDatasetResult loaded = zetta::usecases::churn::load_churn_dataset(context.custom_data_path);
         if (loaded.ok()) {
             dataset = loaded.dataset;
             note_into.note("using custom dataset at " + context.custom_data_path);

@@ -15,8 +15,8 @@ include/zetta/testkit/example_script.hpp   ExampleScript / ExampleExpectations /
 src/core/testkit/example_script.cpp        the harness: parse→IR→gate→run + assert
                                            + offending-statement reconstruction
 src/core/testkit/cases_examples.cpp        the built-in catalog + register_example_cases
-tests/test_example_scripts.cpp             the harness, headless
-tests/test_testkit.cpp                     the example cases in the catalog, headless
+tests/testkit/test_example_scripts.cpp             the harness, headless
+tests/testkit/test_testkit.cpp                     the example cases in the catalog, headless
 ```
 
 It builds directly on the [simulated-Python frontend](../pipeline/python-frontend.md) (#520),

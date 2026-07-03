@@ -1,6 +1,6 @@
 # Projects
 
-An **AI project** (`zetta::Project`) is the central, user-managed artifact in
+An **AI project** (`zetta::pipeline::Project`) is the central, user-managed artifact in
 Orama Zetta. A project is instantiated from a **use-case type** (e.g. churn
 intelligence) on a team's data, and — in later slices — owns that use case's
 inputs, execution graph(s), and runs. Orama Zetta's job is to *manage projects
@@ -13,7 +13,7 @@ screen are separate work.
 
 ## The type
 
-A `Project` (`include/zetta/project.hpp`) is metadata plus the execution graphs
+A `Project` (`include/zetta/pipeline/project.hpp`) is metadata plus the execution graphs
 it owns (see [Execution graphs](#execution-graphs) below). The metadata:
 
 | Field | Type | Notes |
@@ -24,10 +24,10 @@ it owns (see [Execution graphs](#execution-graphs) below). The metadata:
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on rename. |
 | `owner` | `std::string` | Owner **key** (for key-scoped access); empty by default. |
 
-Stamps come from `zetta::now_iso8601()` (`include/zetta/timestamp.hpp`) — a
+Stamps come from `zetta::util::now_iso8601()` (`include/zetta/util/timestamp.hpp`) — a
 fixed-width UTC string, so the values also order chronologically as plain text.
 
-A project owns its **inputs** (`zetta::ProjectInput`) — raw intent/artifact
+A project owns its **inputs** (`zetta::pipeline::ProjectInput`) — raw intent/artifact
 payloads captured with provenance; see [project-inputs.md](project-inputs.md) —
 and its **execution graphs** ([below](#execution-graphs)), the same way a
 database owns its tables. Its runs are **not** part of this type yet; they attach
@@ -93,8 +93,8 @@ than allowed to corrupt the in-memory tree — matching how `database.json` /
 
 ## Execution graphs
 
-A project owns zero or more **execution graphs** (`zetta::ProjectGraph`,
-`include/zetta/project_graph.hpp`) — named, persisted `ExecutionGraph` IRs (see
+A project owns zero or more **execution graphs** (`zetta::pipeline::ProjectGraph`,
+`include/zetta/pipeline/project_graph.hpp`) — named, persisted `ExecutionGraph` IRs (see
 [execution-graph.md](execution-graph.md)). This mirrors how a `Database` owns
 tables: the CRUD captures into the CRDT, and the `materialize_*` variants are the
 reverse path used by reconciliation.
@@ -102,7 +102,7 @@ reverse path used by reconciliation.
 | Method (on `Project`) | Returns | Behavior |
 |---|---|---|
 | `create_graph(name, graph)` | `shared_ptr<ProjectGraph>` | New UUID; empty handle if `name` is empty or already taken. Captures `graph:<uuid>`. |
-| `compile_intent_to_graph(input_id, name = {})` | `shared_ptr<ProjectGraph>` | Compile a stored **intent** input into a new graph via [`zetta::compile_intent`](intent-compiler.md), then store it with `create_graph` (name defaults to `"<shape> skeleton"`). Empty handle if the input is unknown / not an `Intent` / has no local body, the intent is empty, or the name collides. The bridge from a captured intent (FEAT-1) to an editable graph (FEAT-2). |
+| `compile_intent_to_graph(input_id, name = {})` | `shared_ptr<ProjectGraph>` | Compile a stored **intent** input into a new graph via [`zetta::pipeline::compile_intent`](intent-compiler.md), then store it with `create_graph` (name defaults to `"<shape> skeleton"`). Empty handle if the input is unknown / not an `Intent` / has no local body, the intent is empty, or the name collides. The bridge from a captured intent (FEAT-1) to an editable graph (FEAT-2). |
 | `update_graph(name, graph, new_name = {})` | `shared_ptr<ProjectGraph>` | Replace an existing graph's contents (found by current `name`), optionally renaming to `new_name`. Same id; rewrites the projection **and** re-captures `graph:<uuid>`, so an edit replicates exactly like a create. Empty handle if no graph by `name` exists, the final name is empty, or `new_name` collides. The "persist an edit back to the IR" path. |
 | `find_graph(name)` / `find_graph_by_id(id)` | `shared_ptr<ProjectGraph>` | Empty handle on miss. |
 | `drop_graph(name)` | `bool` | `true` if one was removed (also removes the CRDT key). |
@@ -191,12 +191,12 @@ edit here) and the correctness gate are separate slices.
 
 ## Tests
 
-`tests/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
+`tests/pipeline/test_project.cpp` covers create/find/rename/drop (+ owner + stamps),
 survival across a restart (both disk-only and CRDT-only), and replication of a
-project + a rename to a connected peer. `tests/test_project_graph.cpp` does the
+project + a rename to a connected peer. `tests/pipeline/test_project_graph.cpp` does the
 same for a project's execution graphs: create/find/drop, **`update_graph`**
 (content edits + rename guards, and that an edit re-captures the `graph:` key and
 survives restart via the CRDT), restart via disk and via the CRDT, and
 replication of a graph to a peer (with a faithful round-trip checked each time).
 Graph (de)serialization and the in-place `remove_node` / `remove_edge` edits are
-covered in `tests/test_execution_graph.cpp`.
+covered in `tests/pipeline/test_execution_graph.cpp`.

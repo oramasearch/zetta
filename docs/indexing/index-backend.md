@@ -14,7 +14,7 @@ ADR-34**) delivers two halves:
    `{ table, kind, backend, fields }` keyed by id (`index:<uuid>`), with `Node`
    CRUD, an on-disk projection, JSON-Schema boundary validation, and a
    `system.zetta_indexes` registry table — modeled exactly like
-   [`zetta::Model`](../ml/models.md) (minus the weights body: an index has no
+   [`zetta::ml::Model`](../ml/models.md) (minus the weights body: an index has no
    large-object body, only metadata).
 
 The seam is *how an index is built and queried*; the entity is *the durable
@@ -135,7 +135,7 @@ acceptance criterion.
 ## The entity — `Index`
 
 `Index` (`include/zetta/index/index.hpp`) is a top-level entity with no parent,
-modeled like [`zetta::Model`](../ml/models.md) — keyed by id (indexes have no human-name
+modeled like [`zetta::ml::Model`](../ml/models.md) — keyed by id (indexes have no human-name
 lookup; the registry is `Node::indexes()` + the system table). Its value
 (`IndexValue`):
 
@@ -156,9 +156,9 @@ the bridge from the durable entity to the seam (`registry.resolve(index->spec())
 `Node` owns indexes like it owns [models](../ml/models.md):
 
 ```cpp
-zetta::IndexValue spec;
+zetta::index::IndexValue spec;
 spec.table = "accounts";
-spec.kind = zetta::IndexKind::Search;
+spec.kind = zetta::index::IndexKind::Search;
 spec.backend = "memory_search";
 spec.fields = {"plan", "region"};
 auto index = node.create_index(spec);     // empty handle if table/backend/fields are empty
