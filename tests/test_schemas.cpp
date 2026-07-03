@@ -11,6 +11,8 @@
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/coordinated_launch.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
@@ -78,6 +80,10 @@ const std::vector<SchemaEntry>& schema_registry() {
         {"crash_report.schema.json", &zetta::observability::crash_report_schema},
         {"feedback_bundle.schema.json",
          &zetta::observability::feedback_bundle_schema},
+        {"coordinated_launch_request.schema.json",
+         &zetta::compute::coordinated_launch_request_schema},
+        {"churn_coordinated_run.schema.json",
+         &zetta::usecases::churn::churn_coordinated_run_schema},
     };
     return registry;
 }

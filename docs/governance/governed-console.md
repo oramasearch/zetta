@@ -114,10 +114,11 @@ it, the **real churn engine over the live cluster** for a churn-shaped graph (#5
 A churn-shaped interactive program currently trains over a built-in demo churn dataset
 (the program selects the pipeline shape, not yet the data); driving the run from data
 named in the program (`load_dataset` → near-data partitions) is the
-[UC-1-at-scale](../use-cases/uc1-at-scale-e2e.md) path. A **coordinated cross-process SPMD launch**
-(every peer co-running the same graph over the live cluster) is a later slice — the
-[collectives](../cluster/collectives.md) already combine partials; the co-launch over the
-[signal plane](../cluster/signal-plane.md) is what is missing. Scope-axis (resource) checks and a
+[UC-1-at-scale](../use-cases/uc1-at-scale-e2e.md) path. On a multi-node cluster the
+runner **co-launches** (#601): a `run.launch` task over the
+[coordinated launch seam](../compute/coordinated-launch.md) has every member co-run
+the same graph over its own shard, and each peer re-runs the correctness gate before
+co-running — RULE-1 holds on every member. Scope-axis (resource) checks and a
 first-class console capability vocabulary can layer on later behind the same
 `required_operation` seam.
 

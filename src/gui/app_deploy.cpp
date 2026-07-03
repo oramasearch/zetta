@@ -338,13 +338,15 @@ void App::run_churn_demo() {
 
     // Run over the node's **live** JobCoordinator — the long-lived compute spine the
     // running node owns over its real Cluster (#579/#580), the ONE churn run entry
-    // point (#637). The featurize / train / explain / rank jobs combine over the real
-    // cluster membership (single-node here in the common headed deployment), and the
-    // produced Model + jobs + Run register on the App's node_ (so the Runs / Models /
-    // Jobs / Admin panels reflect them). Synchronous on the UI thread that owns the
-    // node — the same deliberate per-click pattern as run_cloud_inspect. The headed
-    // app always attaches a cluster; if none is attached the runner fails with a
-    // clear reason, surfaced below like any failed run.
+    // point (#637). On a cluster with peers the runner co-launches first (#601): a
+    // run.launch task fans out over the signal plane and every member co-runs its
+    // own disjoint shard, so the featurize / train / explain / rank jobs combine
+    // over the real cluster membership, and the produced Model + jobs + Run land on
+    // the live cluster (so the Runs / Models / Jobs / Admin panels reflect them).
+    // Synchronous on the UI thread that owns the node — the same deliberate
+    // per-click pattern as run_cloud_inspect. The headed app always attaches a
+    // cluster; if none is attached the runner fails with a clear reason, surfaced
+    // below like any failed run.
     const zetta::usecases::churn::ChurnSolutionResult result = run_churn_solution_on_node(
         node_, device, selected->graph, zetta::usecases::churn::demo_churn_dataset(), options);
 

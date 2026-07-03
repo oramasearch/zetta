@@ -122,14 +122,20 @@ not yet `attach_cluster`'d) has no live coordinator: the runner returns a failed
 surfaces the reason), so it never silently no-ops. This one entry point is what
 the MCP `run` tool (#617) and the cross-process SPMD co-launch (#601) build on.
 
-**Single-node-or-coordinated membership.** The underlying jobs are SPMD: every
-collective round waits for *all* connected peers (a bounded timeout). A single node
-submitting this over a multi-node cluster whose peers are **not** co-running the same
-graph fails those rounds. So today it is correct for the common interactive case — a
-standalone node, or a single-member cluster, where the live coordinator **is** the
-cluster. The collectives already handle the **combine**; the missing piece is the
-**co-launch** — telling every peer to co-run the same SPMD graph (a coordinated
-cross-process launch over the signal plane), a later slice.
+**Coordinated membership (#601).** The underlying jobs are SPMD: every collective
+round waits for *all* connected peers (a bounded timeout), so a lone submitter over
+a multi-node cluster would fail those rounds. The runner therefore **co-launches**:
+on a cluster with peers it snapshots the roster (the collective participants),
+fans a `run.launch` task out over the
+[coordinated launch seam](../compute/coordinated-launch.md), and runs its own
+**disjoint entity shard** of the encoded dataset (`entity % roster-size == rank`);
+every peer's listener co-runs the same graph over its own shard on its
+node-owning thread, the collectives combine the partials to one global model, and
+the root-registered `Model` replicates to every member. On a standalone or
+single-member cluster the roster is just this node and the run is the local
+whole-dataset run it always was (`options.coordinate = false` forces that
+behavior). Each peer **re-gates the graph before co-running** — RULE-1 holds on
+every member, not just the initiator.
 
 `is_churn_graph(graph)` is the companion predicate: `true` when a graph has the
 featurize → train backbone the pipeline needs (≥1 `connect`, ≥1 `clean`, ≥1 `model`
@@ -178,6 +184,14 @@ node (#637):
   A standalone node (never `attach_cluster`'d, so no coordinator) fails clearly and
   registers no Model; `is_churn_graph` recognizes the catalog backbone and rejects a
   graph missing the featurize step.
+
+`tests/usecases/churn/test_churn_coordinated_launch.cpp` is the #601 acceptance —
+the coordinated cross-process launch over a REAL replicated 3-member loopback
+cluster (each member wired the way `main` wires a live process, each peer on its
+own tick thread): the coordinated run's ranked list / risks / top driver match a
+single-member oracle (single-node == multi-node, every account counted exactly
+once), and ONE logical Model registers (the collective root's) and replicates so
+the same id resolves on every member; plus the `coordinate = false` opt-out.
 
 See also [churn-step-executor.md](churn-step-executor.md) (the real per-step
 compute), [solution-catalog.md](../pipeline/solution-catalog.md) (the catalog + Deploy panel),

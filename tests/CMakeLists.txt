@@ -69,6 +69,7 @@ add_executable(zetta-tests
   pipeline/test_run_progress.cpp
   usecases/churn/test_churn_step_executor.cpp
   usecases/churn/test_churn_solution.cpp
+  usecases/churn/test_churn_coordinated_launch.cpp
   usecases/churn/test_uc1_end_to_end.cpp
   testkit/test_testkit.cpp
   testkit/test_example_scripts.cpp
@@ -125,6 +126,7 @@ add_executable(zetta-tests
   test_runtime.cpp
   compute/test_work_stealing_scheduler.cpp
   compute/test_distributed_scheduler.cpp
+  compute/test_coordinated_launch.cpp
   compute/test_job_coordinator.cpp
   compute/test_node_job_coordinator.cpp
   cluster/test_cluster.cpp

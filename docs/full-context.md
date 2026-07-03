@@ -139,6 +139,21 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   testkit UC-1 cases, and the acceptance tests all route through it. Unblocks
   the MCP `run` tool (#617) and the SPMD co-launch (#601); harness-dedup tail
   filed as [#681](https://github.com/oramasearch/zetta/issues/681).
+- **Coordinated cross-process SPMD launch shipped
+  ([#601](https://github.com/oramasearch/zetta/issues/601))**: the co-launch
+  half of distributed compute — a schema-validated `run.launch` Task (the
+  first consumer of `SignalKind::Task`) fans an interactive run out to the
+  live membership; each member's `CoordinatedLaunchListener` (the
+  coordinator's signal fallback, drained by `Node::tick`) co-runs the
+  registered kind over its own disjoint entity shard on its owner thread.
+  Churn is the first kind (`run_churn_solution_on_node` now fans out on a
+  multi-node cluster; peers re-gate, RULE-1 everywhere); the
+  `ChurnStepExecutor` slices the broadcast feature table to local entities
+  (the latent multi-node double-count fixed). Proven single-node ==
+  multi-node + one root Model replicated everywhere over a real replicated
+  3-member loopback cluster
+  ([docs/compute/coordinated-launch.md](compute/coordinated-launch.md)).
+  Near-data (#531) cross-process launch on this seam is the follow-on.
 - **Observability build-out (#640, closed) — PR #665 in flight**: all six
   slices on one branch — system.traces/spans/crashes read views over the
   Node-owned span ring (`Node::span_recorder()`, RULE-7 one source), crash
