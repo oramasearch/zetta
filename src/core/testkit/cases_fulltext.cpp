@@ -32,18 +32,27 @@
 // engine half): build a full-text index over a table's PARTITIONS via the index
 // seam (ADR-34) on a real multi-node loopback cluster — each node builds one
 // sub-index per partition it OWNS (compute-near-data, no full-dataset pull) — then
-// query by scatter-gather and assert the ranked results match a single
-// consolidated-index ORACLE on every node.
+// query by scatter-gather and assert against a single consolidated-index ORACLE on
+// every node.
 //
 // "via the oramacore-cpp backend" when the private submodule is compiled in
 // (ZETTA_WITH_ORAMACORE): the real BM25F OramaCoreFulltextIndex is the backend AND
 // the oracle. On a CPU-only checkout that lacks the submodule the engine degrades
 // to Unsupported, so the case falls back to a deterministic, partition-INDEPENDENT
 // term-frequency reference scorer — proving the same build-over-partitions +
-// scatter-gather + merge-vs-oracle plumbing end to end while staying green. The
-// corpus is tf-dominated so the global ranking is unambiguous either way (exact for
-// the global top-k; the same robustness the gtest relies on). See docs/testing/test-suite.md
-// and docs/indexing/distributed-fulltext.md.
+// scatter-gather + merge-vs-oracle plumbing end to end while staying green.
+//
+// What "matches the oracle" means differs by backend (#611). The reference scorer
+// is partition-independent, so its distributed ranking equals the oracle EXACTLY
+// for any sharding the knobs produce. Real BM25F scores each shard with LOCAL
+// statistics (local IDF / average field lengths), so under knob-driven placement
+// the rank order is the standard local-IDF query-then-fetch approximation; the
+// acceptance is what that contract guarantees — the exact hit SET, one identical
+// global ranking on every coordinator, scores descending. (The gtest half pins
+// exact rank equality on a fixture whose per-partition statistics are engineered
+// to equal the consolidated ones; a global-statistics scoring pass is the exact
+// general fix, tracked as a later slice.) See docs/testing/test-suite.md and
+// docs/indexing/distributed-fulltext.md.
 namespace zetta::testkit {
 namespace {
 
@@ -193,11 +202,16 @@ nlohmann::json article(const std::string& title, const std::string& body) {
 }
 
 // A corpus where "postgres" matches several rows with clearly separated term
-// frequencies (5 / 3 / 2 / 1 / 0), so the global ranking is unambiguous
-// (tf-dominated) — robust both for the reference scorer AND for real BM25F's
-// per-shard IDF variation. `copies` repeats it (with distinct row ids assigned by
-// the partitioned write) so the rows genuinely spread across several partitions per
-// node; the relative tf separation — hence the ranking — is preserved.
+// frequencies (5 / 3 / 2 / 1 / 0). For the partition-independent reference scorer
+// that separation makes the global ranking exact for ANY sharding. For real BM25F
+// it does NOT (#611): per-shard IDF varies with each shard's composition — a term
+// matching few of a shard's rows scores far higher there than in a shard where it
+// matches most rows, a swing the k1 saturation cannot outweigh — and the `copies` /
+// `partitions` / `nodes` knobs let placement compose shards freely. So the real
+// engine's acceptance below is the local-IDF query-then-fetch contract (exact hit
+// set + one agreed global ranking), not oracle-exact rank order. `copies` repeats
+// the corpus (with distinct row ids assigned by the partitioned write) so the rows
+// genuinely spread across several partitions per node.
 std::vector<nlohmann::json> postgres_corpus(std::size_t copies) {
     const std::vector<nlohmann::json> base = {
         article("Postgres deep dive",
@@ -327,14 +341,28 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
         return TestResult::fail("no partition bodies were read near data");
     }
 
-    // The consolidated oracle over EVERY node's rows.
+    // The consolidated oracle over EVERY node's rows: the ranked top_k for the
+    // reference scorer's exact comparison, and the FULL match set (top_k 0) for the
+    // real engine's hit-set comparison.
     const zetta::index::IndexQuery query = text_query("postgres", top_k);
     const std::vector<std::string> oracle =
         consolidated_oracle(tables, real_engine, spec, query);
     if (oracle.empty()) return TestResult::fail("the oracle matched no rows");
+    std::vector<std::string> oracle_all_matches =
+        top_k == 0 ? oracle
+                   : consolidated_oracle(tables, real_engine, spec,
+                                         text_query("postgres", 0));
+    std::sort(oracle_all_matches.begin(), oracle_all_matches.end());
 
-    // Every node, acting as the query coordinator, scatters to its peers and merges —
-    // and each must produce the IDENTICAL global ranking, equal to the oracle.
+    // Every node, acting as the query coordinator, scatters to its peers and merges.
+    // Every coordinator must produce the IDENTICAL global ranking (the distributed
+    // agreement that makes the index usable from any node). With the
+    // partition-independent reference scorer that ranking is additionally exact —
+    // equal to the consolidated oracle for any sharding. With real BM25F, per-shard
+    // local IDF makes the rank ORDER approximate under arbitrary knob-driven
+    // placement (#611, the standard local-IDF query-then-fetch contract), but the
+    // hit SET is still exact: a full query returns exactly the oracle's matches, a
+    // top_k query the right count drawn from them.
     context.emit("scatter-gather querying \"postgres\" from every node");
     std::vector<zetta::index::DistributedFulltextIndex::QueryResult> results(nodes);
     std::vector<std::thread> threads;
@@ -352,7 +380,12 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
             return TestResult::fail("node " + std::to_string(i) +
                                     " query failed: " + result.status.message);
         }
-        if (result.row_ids != oracle) {
+        if (result.row_ids != results[0].row_ids ||
+            result.scores != results[0].scores) {
+            return TestResult::fail("node " + std::to_string(i) +
+                                    " disagreed with node 0's global ranking");
+        }
+        if (!real_engine && result.row_ids != oracle) {
             return TestResult::fail("node " + std::to_string(i) +
                                     " ranking disagreed with the consolidated oracle");
         }
@@ -371,6 +404,33 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
         }
         total_wire_bytes += result.wire_bytes_moved;
     }
+
+    // The real engine's hit-set exactness (recall): a full query returns exactly the
+    // rows the oracle matched; a top_k query returns the oracle's count, every hit a
+    // genuine match.
+    if (real_engine) {
+        std::vector<std::string> hits = results[0].row_ids;
+        std::sort(hits.begin(), hits.end());
+        if (top_k == 0) {
+            if (hits != oracle_all_matches) {
+                return TestResult::fail(
+                    "the distributed hit set disagreed with the consolidated oracle");
+            }
+        } else {
+            const std::size_t expected =
+                std::min<std::size_t>(top_k, oracle_all_matches.size());
+            if (hits.size() != expected) {
+                return TestResult::fail(
+                    "a top_k query returned " + std::to_string(hits.size()) +
+                    " hits, expected " + std::to_string(expected));
+            }
+            if (!std::includes(oracle_all_matches.begin(), oracle_all_matches.end(),
+                               hits.begin(), hits.end())) {
+                return TestResult::fail(
+                    "a top_k query returned a row the oracle did not match");
+            }
+        }
+    }
     // A multi-node query genuinely moves hits over the wire (scatter + gather); a
     // single-node cluster answers locally and moves nothing.
     if (nodes > 1 && total_wire_bytes == 0) {
@@ -378,8 +438,13 @@ TestResult run_fulltext_index(const TestOptions& options, TestContext& context) 
     }
 
     TestResult result = TestResult::pass(
-        "the per-partition full-text index built over each node's owned partitions; "
-        "the scatter-gather ranking matched the consolidated oracle on every node");
+        real_engine
+            ? "the per-partition full-text index built over each node's owned "
+              "partitions; the scatter-gather hit set matched the consolidated "
+              "oracle and every node agreed on one global ranking"
+            : "the per-partition full-text index built over each node's owned "
+              "partitions; the scatter-gather ranking matched the consolidated "
+              "oracle on every node");
     result.metric("backend", real_engine ? "oramacore_fulltext (BM25F)"
                                           : "tf_reference (oramacore-cpp submodule absent)")
         .metric("nodes", std::to_string(nodes))
@@ -402,9 +467,10 @@ void register_fulltext_cases(TestSuite& suite) {
             "Build a full-text index over a table's partitions via the index seam "
             "(ADR-34) on a real multi-node cluster — each node builds one sub-index "
             "per partition it owns (compute-near-data) — then query by scatter-gather "
-            "and assert the ranked results match a single consolidated-index oracle on "
-            "every node. Uses the oramacore-cpp BM25F backend when compiled in, else a "
-            "partition-independent reference scorer (the same plumbing, always green).",
+            "and assert against a single consolidated-index oracle on every node: the "
+            "exact hit set + one agreed global ranking with the oramacore-cpp BM25F "
+            "backend (local-IDF query-then-fetch), exact rank equality with the "
+            "partition-independent reference scorer used when the engine is absent.",
         .options = {TestOption::integer("nodes", "Nodes", 3, 1, 6),
                     TestOption::integer("copies", "Corpus copies", 6, 1, 64,
                                         "Repeats the article corpus so the rows spread "
