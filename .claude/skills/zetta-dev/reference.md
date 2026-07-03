@@ -83,7 +83,12 @@ two-node convergence test (see `tests/cluster/test_data_replication.cpp`). If th
 is a rich/structured payload, **validate it against a JSON Schema at the
 boundary** (both disk + CRDT entry points) — model on `src/core/pipeline/run.cpp`'s
 `run_value_schema()` / `parse_run_value()` (pboettch/json-schema-validator,
-PRIVATE to zetta-core, error-handler not exceptions).
+PRIVATE to zetta-core, error-handler not exceptions). Expose the schema via a
+public `*_schema()` accessor and register it in
+`zetta::schemas::boundary_schemas()` (`src/core/schemas/registry.cpp`, #646) —
+that one entry makes it drift-checked (`ZETTA_WRITE_SCHEMAS=1 ctest -R
+Schemas` regenerates `schemas/<name>.json`) and discoverable on the spec index
+(`/v1/specs`, `list_specs`/`get_spec`).
 
 **Add a cluster protocol message** — add a `ZETTA/1 <VERB> …` line builder +
 handle it in `apply_gossip` (read pump) and/or `gossip_writer` (write pump) in

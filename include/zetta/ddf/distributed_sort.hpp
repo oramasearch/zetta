@@ -9,6 +9,8 @@
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_device.hpp"
 #include "zetta/ddf/data_frame.hpp"
@@ -66,12 +68,16 @@ struct PartitionMessage {
 std::string encode_partition_message(const PartitionMessage& message);
 
 // Parse + validate a partition message at the **boundary**: against the draft-07
-// schema (schemas/ddf_partition.schema.json, mirrored embedded in
-// distributed_sort.cpp), then the cross-field rule that every column carries
-// exactly `rows` values. Non-throwing — nullopt with a path-qualified reason in
-// `error` (when non-null) on any failure.
+// schema (ddf_partition_schema() below), then the cross-field rule that every
+// column carries exactly `rows` values. Non-throwing — nullopt with a
+// path-qualified reason in `error` (when non-null) on any failure.
 std::optional<PartitionMessage> decode_partition_message(
     std::string_view payload, std::string* error = nullptr);
+
+// The PartitionMessage JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/ddf_partition.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& ddf_partition_schema();
 
 // The per-node distributed sorter. Construct one over a started (or startable)
 // Cluster and the device its shards live on; it registers itself as the cluster's

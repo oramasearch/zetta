@@ -47,69 +47,19 @@ void set_error(std::string* out, std::string message) {
     if (out) *out = std::move(message);
 }
 
-// The fulltext.query REQUEST schema (draft-07). Mirrored at
-// schemas/fulltext_query.schema.json; this embedded copy is the one enforced at
-// runtime (the signal-envelope / collective-message pattern). A closed object: the
-// index it names (table/kind/fields) + the query (term) are required; backend /
-// field / tag / top_k are optional.
-const nlohmann::json& query_schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.FulltextQueryRequest",
-      "type": "object",
-      "properties": {
-        "tag":     { "type": "string" },
-        "table":   { "type": "string", "minLength": 1 },
-        "kind":    { "type": "string", "enum": ["search", "vector", "feature"] },
-        "backend": { "type": "string" },
-        "fields":  { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "field":   { "type": "string" },
-        "term":    { "type": ["string", "number", "boolean", "null"] },
-        "top_k":   { "type": "integer", "minimum": 0 }
-      },
-      "required": ["table", "kind", "fields", "term"],
-      "additionalProperties": false
-    })JSONSCHEMA");
-    return schema;
-}
-
-// The fulltext.query RESPONSE schema (draft-07). Mirrored at
-// schemas/fulltext_hits.schema.json. One node's ranked hits: a list of
-// { id, score } objects.
-const nlohmann::json& hits_schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.FulltextQueryResponse",
-      "type": "object",
-      "properties": {
-        "from": { "type": "string" },
-        "hits": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id":    { "type": "string" },
-              "score": { "type": "number" }
-            },
-            "required": ["id", "score"],
-            "additionalProperties": false
-          }
-        },
-        "sub_indexes": { "type": "integer", "minimum": 0 }
-      },
-      "required": ["hits"],
-      "additionalProperties": false
-    })JSONSCHEMA");
-    return schema;
-}
-
+// Process-wide validators, compiled once from the schemas (the expensive
+// step). The schemas themselves are the public fulltext_query_schema() /
+// fulltext_hits_schema() accessors below — the code-owned source of truth
+// (#646).
 nlohmann::json_schema::json_validator& query_validator() {
-    static nlohmann::json_schema::json_validator validator(query_schema_document());
+    static nlohmann::json_schema::json_validator validator(
+        fulltext_query_schema());
     return validator;
 }
 
 nlohmann::json_schema::json_validator& hits_validator() {
-    static nlohmann::json_schema::json_validator validator(hits_schema_document());
+    static nlohmann::json_schema::json_validator validator(
+        fulltext_hits_schema());
     return validator;
 }
 
@@ -188,6 +138,71 @@ bool parse_body_documents(const std::string& body, const std::string& partition_
 }
 
 }  // namespace
+
+// --- the schema accessors (schema-as-code, #646) ------------------------------
+
+// The fulltext.query REQUEST schema (draft-07) — the code-owned source of
+// truth enforced at the decode_fulltext_query boundary (the signal-envelope /
+// collective-message pattern); schemas/fulltext_query.schema.json is generated
+// from it and drift-checked by tests/test_schemas.cpp. A closed object: the
+// index it names (table/kind/fields) + the query (term) are required; backend /
+// field / tag / top_k are optional.
+const nlohmann::json& fulltext_query_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.FulltextQueryRequest",
+  "type": "object",
+  "properties": {
+    "tag": { "type": "string" },
+    "table": { "type": "string", "minLength": 1 },
+    "kind": { "type": "string", "enum": ["search", "vector", "feature"] },
+    "backend": { "type": "string" },
+    "fields": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "field": { "type": "string" },
+    "term": { "type": ["string", "number", "boolean", "null"] },
+    "top_k": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["table", "kind", "fields", "term"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+    return schema;
+}
+
+// The fulltext.query RESPONSE schema (draft-07) — the code-owned source of
+// truth enforced at the decode_fulltext_hits boundary;
+// schemas/fulltext_hits.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp. One node's ranked hits: a list of { id, score }
+// objects.
+const nlohmann::json& fulltext_hits_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.FulltextQueryResponse",
+  "type": "object",
+  "properties": {
+    "from": { "type": "string" },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "score": { "type": "number" }
+        },
+        "required": ["id", "score"],
+        "additionalProperties": false
+      }
+    },
+    "sub_indexes": { "type": "integer", "minimum": 0 }
+  },
+  "required": ["hits"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+    return schema;
+}
 
 // --- the pure merge ----------------------------------------------------------
 

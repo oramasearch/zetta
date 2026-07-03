@@ -81,6 +81,11 @@ struct GroupBySpec {
     static std::optional<GroupBySpec> from_json(const nlohmann::json& value);
 };
 
+// The GroupBySpec JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/group_by_spec.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& group_by_spec_schema();
+
 // --- The result --------------------------------------------------------------
 
 // The result of a groupby-aggregate: one row per distinct group key, the keys in

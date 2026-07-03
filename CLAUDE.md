@@ -170,9 +170,10 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   Untrusted input is **validated at the boundary**: top-level replicated
   entities use the embedded draft-07 schema + pboettch validator (the Run
   pattern); value-type DTOs use the hand-written non-throwing `from_json`
-  mirroring their `schemas/*.json`. **Schema as code:** the C++ embedded schema
-  is the source of truth; `schemas/*.json` is generated and drift-checked
-  (`ZETTA_WRITE_SCHEMAS=1` regenerates). See
+  mirroring their type's `*_schema()` accessor. **Schema as code:** the C++
+  embedded schema is the source of truth for EVERY boundary schema
+  (`zetta::schemas::boundary_schemas()` is the table); `schemas/*.json` is
+  generated and drift-checked (`ZETTA_WRITE_SCHEMAS=1` regenerates). See
   [`docs/architecture/schemas.md`](docs/architecture/schemas.md).
 
 - **Surface observable state as a `system.<table>` by default (RULE-7).** State

@@ -1,49 +1,61 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://oramasearch.github.io/zetta/schemas/device_registry.schema.json",
-  "title": "DeviceRegistry capability report",
-  "description": "The coordinator-facing report a node's DeviceRegistry produces (ARC-9, #362): the compute devices enumerated on the node, each with its coarse capability (DeviceInfo). This is the JSON boundary the ComputeDevice slice (#359) anticipated for the registry — it feeds the autoscaler / coordinator's capability model. Mirrored by zetta::compute::DeviceRegistry::to_json() / parse_device_report() in include/zetta/compute/device_registry.hpp and enforced by device_info_from_json() in src/core/compute/device_registry.cpp — keep them in sync. A malformed report is rejected at the boundary so a node never silently mis-states its hardware.",
-  "type": "object",
-  "required": ["devices"],
-  "additionalProperties": false,
-  "properties": {
-    "devices": {
-      "description": "The compute devices enumerated on the node, in registration order. Empty when the registry holds none.",
-      "type": "array",
-      "items": { "$ref": "#/$defs/device_info" }
-    }
-  },
   "$defs": {
     "device_info": {
-      "description": "One compute device's identity and coarse capability — what the registry/coordinator reads to enumerate devices and pick one for a piece of work. Kept deliberately coarse (presence + rough capacity); per-operator support is reported by each op's return status, not duplicated here. Mirrors zetta::compute::DeviceInfo in include/zetta/compute/compute_device.hpp.",
-      "type": "object",
-      "required": ["kind", "name", "compute_units", "memory_bytes"],
       "additionalProperties": false,
+      "description": "One compute device's identity and coarse capability — what the registry/coordinator reads to enumerate devices and pick one for a piece of work. Kept deliberately coarse (presence + rough capacity); per-operator support is reported by each op's return status, not duplicated here. Mirrors zetta::compute::DeviceInfo in include/zetta/compute/compute_device.hpp.",
       "properties": {
+        "compute_units": {
+          "description": "CPU logical cores or GPU streaming multiprocessors.",
+          "minimum": 0,
+          "type": "integer"
+        },
         "kind": {
           "description": "The hardware family the device drives. Append-only enum (the lowercase name is the stored identifier); 'cpu' is reported on every machine, 'cuda' only where a CUDA backend is present.",
-          "type": "string",
-          "enum": ["cpu", "cuda"]
+          "enum": [
+            "cpu",
+            "cuda"
+          ],
+          "type": "string"
+        },
+        "memory_bytes": {
+          "description": "Total device memory in bytes. 0 means host / unknown (a CPU device's host RAM is not separately budgeted).",
+          "minimum": 0,
+          "type": "integer"
         },
         "name": {
           "description": "Human label, e.g. 'host-stub' or 'NVIDIA A100'.",
           "type": "string"
         },
-        "compute_units": {
-          "description": "CPU logical cores or GPU streaming multiprocessors.",
-          "type": "integer",
-          "minimum": 0
-        },
-        "memory_bytes": {
-          "description": "Total device memory in bytes. 0 means host / unknown (a CPU device's host RAM is not separately budgeted).",
-          "type": "integer",
-          "minimum": 0
-        },
         "unified_memory": {
           "description": "Whether the device shares the host address space (a CPU device, or an integrated GPU). Optional; absent means false.",
           "type": "boolean"
         }
-      }
+      },
+      "required": [
+        "kind",
+        "name",
+        "compute_units",
+        "memory_bytes"
+      ],
+      "type": "object"
     }
-  }
+  },
+  "$id": "https://oramasearch.github.io/zetta/schemas/device_registry.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The coordinator-facing report a node's DeviceRegistry produces (ARC-9, #362): the compute devices enumerated on the node, each with its coarse capability (DeviceInfo). This is the JSON boundary the ComputeDevice slice (#359) anticipated for the registry — it feeds the autoscaler / coordinator's capability model. Mirrored by zetta::compute::DeviceRegistry::to_json() / parse_device_report() in include/zetta/compute/device_registry.hpp and enforced by device_info_from_json() in src/core/compute/device_registry.cpp — keep them in sync. A malformed report is rejected at the boundary so a node never silently mis-states its hardware.",
+  "properties": {
+    "devices": {
+      "description": "The compute devices enumerated on the node, in registration order. Empty when the registry holds none.",
+      "items": {
+        "$ref": "#/$defs/device_info"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "devices"
+  ],
+  "title": "DeviceRegistry capability report",
+  "type": "object"
 }

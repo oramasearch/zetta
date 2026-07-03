@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "zetta/api/background.hpp"
+#include "zetta/api/specs.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/data/add_dataset.hpp"
@@ -2007,6 +2008,89 @@ ApiResult handle_testkit_run(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- list_specs / get_spec (#646) --------------------------------------------
+
+// The spec index: the OpenAPI document + every capability input/output schema
+// + every boundary schema, rendered by specs.cpp from the registry and
+// zetta::schemas::boundary_schemas() — served from the C++ accessors, never
+// from the generated schemas/*.json artifacts.
+
+const nlohmann::json& list_specs_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_specs_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"count", "specs"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"count", {{"type", "integer"}}},
+          {"specs",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"name", "kind", "href"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"name",
+                 {{"type", "string"},
+                  {"description", "pass to get_spec for the document"}}},
+                {"kind",
+                 {{"type", "string"},
+                  {"enum", {"openapi", "capability_input", "capability_output",
+                            "boundary"}}}},
+                {"href",
+                 {{"type", "string"},
+                  {"description", "GET this route for the raw document"}}},
+                {"capability", {{"type", "string"}}},
+                {"file",
+                 {{"type", "string"},
+                  {"description",
+                   "the generated schemas/<file> artifact this accessor "
+                   "keeps honest"}}},
+                {"description", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_spec_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "a spec name from list_specs: 'openapi', '<capability>.input', "
+             "'<capability>.output', or a boundary schema name like 'run'"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_spec_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "kind", "schema"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", {"openapi", "capability_input", "capability_output",
+                      "boundary"}}}},
+          {"capability", {{"type", "string"}}},
+          {"file", {{"type", "string"}}},
+          {"description", {{"type", "string"}}},
+          {"schema",
+           {{"type", "object"},
+            {"description",
+             "the document itself — draft-07 JSON Schema, or the OpenAPI 3.1 "
+             "document for 'openapi'"}}}}}};
+    return schema;
+}
+
 }  // namespace
 
 void register_core_capabilities(Registry& registry) {
@@ -2401,6 +2485,52 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_testkit_run});
+
+    // The spec index (#646, docs/api/specs-index.md): discovery of every
+    // schema the cluster speaks, served from the C++ accessors. The handlers
+    // capture the registry they live in — safe: the registry is populated at
+    // startup, then only read, and outlives its own entries.
+    registry.add(Capability{
+        "list_specs",
+        "List specs",
+        "Read the spec index: the OpenAPI document plus every JSON Schema "
+        "this node speaks — capability input/output schemas and all "
+        "schema-as-code boundary schemas — as names, kinds, and links. No "
+        "side effects.",
+        list_specs_schema(),
+        list_specs_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        [&registry](const nlohmann::json&, ApiContext&) {
+            return ApiResult::success(spec_index(registry));
+        }});
+
+    registry.add(Capability{
+        "get_spec",
+        "Get one spec",
+        "Read one spec document by its list_specs name — 'openapi', "
+        "'<capability>.input' / '<capability>.output', or a boundary schema "
+        "name like 'run'. No side effects.",
+        get_spec_schema(),
+        get_spec_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        [&registry](const nlohmann::json& input, ApiContext&) {
+            const std::string name = input.at("name").get<std::string>();
+            auto spec = find_spec(registry, name);
+            if (!spec) {
+                return ApiResult::failure(
+                    "not_found",
+                    "unknown spec '" + name +
+                        "' — call list_specs for the index",
+                    "/name");
+            }
+            return ApiResult::success(std::move(*spec));
+        }});
 
     // The cloud-touching tools + the consent protocol tools (#621) — the
     // consent-gated slice, in its own TU (cloud_capabilities.cpp).

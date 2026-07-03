@@ -93,6 +93,24 @@ enum class ChurnDataFormat { Jsonl, Csv, Parquet };
 
 std::string_view to_string(ChurnDataFormat format);
 
+// The ChurnDatasetManifest JSON Schema (draft-07) — the **code-owned source of
+// truth**; `schemas/churn_dataset.schema.json` is generated from it and
+// drift-checked by `tests/test_schemas.cpp` (#646). The loader validates
+// dataset.json against it at the boundary.
+const nlohmann::json& churn_dataset_schema();
+
+// The ChurnAccount JSON Schema (draft-07) — the **code-owned source of
+// truth**; `schemas/churn_account.schema.json` is generated from it and
+// drift-checked by `tests/test_schemas.cpp` (#646). The loader validates every
+// account record against it at the boundary.
+const nlohmann::json& churn_account_schema();
+
+// The ChurnEvent JSON Schema (draft-07) — the **code-owned source of truth**;
+// `schemas/churn_event.schema.json` is generated from it and drift-checked by
+// `tests/test_schemas.cpp` (#646). The loader validates every event record
+// against it at the boundary.
+const nlohmann::json& churn_event_schema();
+
 // Load + schema-validate a churn dataset from `dir`. Expects dataset.json (always
 // JSON) plus accounts.<ext> + events.<ext> for the chosen `format`
 // (jsonl/csv/parquet). Every record is validated against its draft-07 schema at

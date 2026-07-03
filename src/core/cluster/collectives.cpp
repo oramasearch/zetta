@@ -17,30 +17,12 @@ namespace {
 constexpr std::string_view kContributeMethod = "collective.contribute";
 constexpr std::string_view kResultMethod = "collective.result";
 
-// The collective-message JSON Schema (draft-07). Mirrored at
-// schemas/collective_message.schema.json; this embedded copy is the one enforced
-// at runtime (same pattern as the signal envelope — see src/core/signal.cpp). A
-// closed object with no unknown fields: `tag` is required; `from`/`values` are
-// optional (a barrier carries no values).
-const nlohmann::json& schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.CollectiveMessage",
-      "type": "object",
-      "properties": {
-        "tag":    { "type": "string" },
-        "from":   { "type": "string" },
-        "values": { "type": "array", "items": { "type": "number" } }
-      },
-      "required": ["tag"],
-      "additionalProperties": false
-    })JSONSCHEMA");
-    return schema;
-}
-
 // A process-wide validator, compiled once from the schema (the expensive step).
+// The schema itself is the public collective_message_schema() accessor below —
+// the code-owned source of truth (#646).
 nlohmann::json_schema::json_validator& schema_validator() {
-    static nlohmann::json_schema::json_validator validator(schema_document());
+    static nlohmann::json_schema::json_validator validator(
+        collective_message_schema());
     return validator;
 }
 
@@ -100,6 +82,32 @@ std::optional<std::vector<double>> reduce_in_order(
 }
 
 }  // namespace
+
+// The CollectiveMessage JSON Schema (draft-07) — the code-owned source of
+// truth enforced at the decode_collective_message boundary (same pattern as
+// the signal envelope — see src/core/cluster/signal.cpp);
+// schemas/collective_message.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646). A closed object with no
+// unknown fields: `tag` is required; `from`/`values` are optional (a barrier
+// carries no values).
+const nlohmann::json& collective_message_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.CollectiveMessage",
+  "description": "The payload of a collective-plane RPC (collective.contribute / collective.result), carried as the opaque payload of a signal. `tag` names the collective round; `from` is the sender's node id (a contribution); `values` is the per-node vector (empty for a barrier). Validated at the boundary, exactly like the signal envelope.",
+  "type": "object",
+  "properties": {
+    "tag":    { "type": "string" },
+    "from":   { "type": "string" },
+    "values": { "type": "array", "items": { "type": "number" } }
+  },
+  "required": ["tag"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+    return schema;
+}
 
 std::string_view to_string(CollectiveOp op) {
     switch (op) {

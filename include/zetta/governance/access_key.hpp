@@ -77,6 +77,12 @@ private:
     std::filesystem::path dir_;
 };
 
+// The AccessKey JSON Schema (draft 2020-12) — the code-owned source of truth
+// for the key.json / replicated `key:<uuid>` value shape enforced by
+// scope_from_json/capability_set_from_json; schemas/access_key.schema.json is
+// generated from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& access_key_schema();
+
 // The outcome of an access check: allow or deny, plus a human-readable reason.
 // The reason explains *why* — fit for the audit trail FEAT-9 builds toward,
 // never a stack trace.

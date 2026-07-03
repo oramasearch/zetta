@@ -87,4 +87,9 @@ struct NodeCapability {
     static std::optional<NodeCapability> from_json(const nlohmann::json& value);
 };
 
+// The NodeCapability JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/node_capability.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& node_capability_schema();
+
 }  // namespace zetta::cloud

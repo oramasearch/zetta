@@ -76,6 +76,11 @@ struct FilterPredicate {
     static std::optional<FilterPredicate> from_json(const nlohmann::json& value);
 };
 
+// The FilterPredicate JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/ddf_filter_predicate.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& ddf_filter_predicate_schema();
+
 // Keep the rows of `frame` that satisfy `predicate`, returning a new frame with
 // the same columns (names + dtypes) and the same chunk_rows, holding only the
 // surviving rows. The selected rows are moved through the device `gather` op (the
@@ -125,6 +130,11 @@ struct Projection {
     // non-empty `name`, known op names, and unique output names.
     static std::optional<Projection> from_json(const nlohmann::json& value);
 };
+
+// The Projection JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/ddf_projection.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& ddf_projection_schema();
 
 // Build a new frame with `projection`'s output columns over `frame`'s rows — the
 // same row_count + chunk_rows, the columns selected / computed. Passthrough copies

@@ -92,7 +92,8 @@ parameters or a request body from the input schema **plus the reserved
   OpenAPI document is generated output, never read back.
 - `rest.hpp`/`rest.cpp` stay HTTP-free; beast2/Boost.JSON stay confined to
   `http_server.cpp`.
-- Later slices: `/v1/specs` (#646); SSE/streaming stays with the MCP surface.
+- The spec index (`/v1/specs`, #646) shipped —
+  [specs-index.md](specs-index.md); SSE/streaming stays with the MCP surface.
 
 Tests: `tests/api/test_openapi.cpp` (route derivation, query coercion, status
 mapping, document ↔ registry, the added-once rule, the drift check) and

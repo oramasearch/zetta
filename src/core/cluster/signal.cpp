@@ -11,39 +11,12 @@ namespace zetta::cluster {
 
 namespace {
 
-// The signal-envelope JSON Schema (draft-07). The single declarative source of
-// truth for the on-the-wire shape of `ZETTA/1 SIGNAL <envelope>`. Mirrored at
-// schemas/signal_envelope.schema.json for documentation; this embedded copy is
-// the one enforced at runtime (same pattern as the Run record — see
-// src/core/run.cpp). `kind` is a closed enum and no unknown fields are allowed,
-// so a malformed or version-skewed envelope fails at the boundary. The
-// kind-specific required fields (a Request needs an id + method; a Response
-// needs an id + ok; an Event/Task needs a method) are enforced in code below,
-// the way ir::from_json layers structural rules on top of the schema.
-const nlohmann::json& schema_document() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.SignalEnvelope",
-      "type": "object",
-      "properties": {
-        "kind":    { "type": "string",
-                     "enum": ["request", "response", "event", "task"] },
-        "id":      { "type": "string" },
-        "method":  { "type": "string" },
-        "payload": { "type": "string" },
-        "ok":      { "type": "boolean" },
-        "error":   { "type": "string" },
-        "traceparent": { "type": "string" }
-      },
-      "required": ["kind"],
-      "additionalProperties": false
-    })JSONSCHEMA");
-    return schema;
-}
-
 // A process-wide validator, compiled once from the schema (the expensive step).
+// The schema itself is the public signal_envelope_schema() accessor below —
+// the code-owned source of truth (#646).
 nlohmann::json_schema::json_validator& schema_validator() {
-    static nlohmann::json_schema::json_validator validator(schema_document());
+    static nlohmann::json_schema::json_validator validator(
+        signal_envelope_schema());
     return validator;
 }
 
@@ -69,6 +42,41 @@ void set_error(std::string* out, std::string message) {
 }
 
 }  // namespace
+
+// The signal-envelope JSON Schema (draft-07) — the code-owned source of truth
+// for the on-the-wire shape of `ZETTA/1 SIGNAL <envelope>`, enforced at the
+// decode_signal boundary; schemas/signal_envelope.schema.json is generated
+// from it and drift-checked by tests/test_schemas.cpp (#646). `kind` is a
+// closed enum and no unknown fields are allowed, so a malformed or
+// version-skewed envelope fails at the boundary. The kind-specific required
+// fields (a Request needs an id + method; a Response needs an id + ok; an
+// Event/Task needs a method) are enforced in code below, the way
+// ir::from_json layers structural rules on top of the schema.
+const nlohmann::json& signal_envelope_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.SignalEnvelope",
+  "description": "The wire envelope for one signal carried by the cluster transport's `ZETTA/1 SIGNAL <envelope>` frame: an ephemeral RPC request/response, event, or task. The opaque application payload is base64-encoded into the `payload` string (binary-safe). Mirrors the embedded copy in src/core/signal.cpp, which is the copy enforced at runtime. The kind-specific required fields (a request/response needs `id`; a request/event/task needs `method`; a response needs `ok`) are enforced in code on top of this schema. The optional `traceparent` (W3C trace context) lets a signal's handling on the receiving node join the sender's trace (#640).",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "type": "string",
+      "enum": ["request", "response", "event", "task"]
+    },
+    "id": { "type": "string" },
+    "method": { "type": "string" },
+    "payload": { "type": "string" },
+    "ok": { "type": "boolean" },
+    "error": { "type": "string" },
+    "traceparent": { "type": "string" }
+  },
+  "required": ["kind"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
+    return schema;
+}
 
 std::string_view to_string(SignalKind kind) {
     switch (kind) {

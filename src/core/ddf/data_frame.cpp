@@ -8,6 +8,8 @@
 #include <unordered_set>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::ddf {
 
 using compute::ComputeDevice;
@@ -168,6 +170,52 @@ nlohmann::json DataFrameSchema::to_json() const {
         columns_json.push_back(std::move(entry));
     }
     return nlohmann::json{{"columns", std::move(columns_json)}};
+}
+
+// The DataFrameSchema JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/data_frame_schema.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& data_frame_schema_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/data_frame_schema.schema.json",
+  "title": "DataFrameSchema",
+  "description": "The typed, columnar schema describing how a table's rows are loaded into a zetta DDF DataFrame (ENT-33). Each column maps a numeric JSON field in a row's doc to a typed device column.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["columns"],
+  "properties": {
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "dtype"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The column's name in the frame (and the row field to read, unless overridden by `field`)."
+          },
+          "field": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The JSON key in each row's doc to read; defaults to `name` when omitted."
+          },
+          "dtype": {
+            "type": "string",
+            "enum": ["float32", "float64", "int32", "int64", "uint32", "uint64", "uint8"],
+            "description": "The numeric element type the column holds (the zetta::compute::DataType set)."
+          }
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 std::optional<DataFrameSchema> DataFrameSchema::from_json(

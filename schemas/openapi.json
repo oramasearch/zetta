@@ -2700,6 +2700,128 @@
         ]
       }
     },
+    "/v1/get_spec": {
+      "get": {
+        "description": "Read one spec document by its list_specs name — 'openapi', '<capability>.input' / '<capability>.output', or a boundary schema name like 'run'. No side effects. Requires api:query.",
+        "operationId": "get_spec",
+        "parameters": [
+          {
+            "description": "a spec name from list_specs: 'openapi', '<capability>.input', '<capability>.output', or a boundary schema name like 'run'",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "a spec name from list_specs: 'openapi', '<capability>.input', '<capability>.output', or a boundary schema name like 'run'",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "capability": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "openapi",
+                            "capability_input",
+                            "capability_output",
+                            "boundary"
+                          ],
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "schema": {
+                          "description": "the document itself — draft-07 JSON Schema, or the OpenAPI 3.1 document for 'openapi'",
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "kind",
+                        "schema"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one spec",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/get_trace": {
       "get": {
         "description": "Read every recorded span of one trace by its 32-hex trace id. No side effects. Requires api:query.",
@@ -3899,6 +4021,135 @@
           }
         },
         "summary": "List runs",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/list_specs": {
+      "get": {
+        "description": "Read the spec index: the OpenAPI document plus every JSON Schema this node speaks — capability input/output schemas and all schema-as-code boundary schemas — as names, kinds, and links. No side effects. Requires api:query.",
+        "operationId": "list_specs",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "count": {
+                          "type": "integer"
+                        },
+                        "specs": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "capability": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "file": {
+                                "description": "the generated schemas/<file> artifact this accessor keeps honest",
+                                "type": "string"
+                              },
+                              "href": {
+                                "description": "GET this route for the raw document",
+                                "type": "string"
+                              },
+                              "kind": {
+                                "enum": [
+                                  "openapi",
+                                  "capability_input",
+                                  "capability_output",
+                                  "boundary"
+                                ],
+                                "type": "string"
+                              },
+                              "name": {
+                                "description": "pass to get_spec for the document",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "kind",
+                              "href"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "count",
+                        "specs"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List specs",
         "tags": [
           "read"
         ]

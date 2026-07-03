@@ -1,81 +1,96 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://oramasearch.github.io/zetta/schemas/featurize_spec.schema.json",
-  "title": "FeaturizeSpec",
-  "description": "A point-in-time (leakage-free) featurization spec (ARC-12 / FEAT-6, #388; part of the native distributed accelerated compute pass for UC-1 — #264). Two shapes: (1) the churn shape — per-entity windowed event aggregates (every feature uses time <= as_of, so a feature computed as of t0 never sees a future event) joined onto a static account dimension; (2) a static carry-through of already-engineered numeric columns (e.g. the saas-sales-conversations engineered columns; #532) where event_features is empty, the account_features are carried through unchanged, and the point-in-time row filter time <= as_of applies 'where applicable' (only when a time_column is set). Realized by zetta::ddf::point_in_time_featurize via the as-of window op (as_of.hpp), the groupby-aggregate op (group_by.hpp), the filter op (ops.hpp), and the equi-join op (join.hpp); distributed via run_featurize_job (featurize_job.hpp); compute-near-data over a partitioned table via run_near_data_featurize_job (local_featurize_job.hpp). Mirrored by zetta::ddf::FeaturizeSpec in include/zetta/ddf/featurize.hpp and enforced by FeaturizeSpec::from_json() in src/core/ddf/featurize.cpp — keep them in sync.",
-  "type": "object",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "required": ["entity_column"],
   "dependencies": {
-    "time_column": ["as_of"],
-    "event_features": ["time_column"]
+    "event_features": [
+      "time_column"
+    ],
+    "time_column": [
+      "as_of"
+    ]
   },
+  "description": "A point-in-time (leakage-free) featurization spec (ARC-12 / FEAT-6, #388; part of the native distributed accelerated compute pass for UC-1 — #264). Two shapes: (1) the churn shape — per-entity windowed event aggregates (every feature uses time <= as_of, so a feature computed as of t0 never sees a future event) joined onto a static account dimension; (2) a static carry-through of already-engineered numeric columns (e.g. the saas-sales-conversations engineered columns; #532) where event_features is empty, the account_features are carried through unchanged, and the point-in-time row filter time <= as_of applies 'where applicable' (only when a time_column is set). Realized by zetta::ddf::point_in_time_featurize via the as-of window op (as_of.hpp), the groupby-aggregate op (group_by.hpp), the filter op (ops.hpp), and the equi-join op (join.hpp); distributed via run_featurize_job (featurize_job.hpp); compute-near-data over a partitioned table via run_near_data_featurize_job (local_featurize_job.hpp). Mirrored by zetta::ddf::FeaturizeSpec in include/zetta/ddf/featurize.hpp and enforced by FeaturizeSpec::from_json() in src/core/ddf/featurize.cpp — keep them in sync.",
   "properties": {
-    "entity_column": {
-      "description": "The integer-dtype entity-key column. With event features it is present in BOTH the events frame and the accounts frame (the join key); in the static case it is the per-row entity key of the engineered table. Each distinct value is one entity — the row unit of the feature table.",
-      "type": "string",
-      "minLength": 1
-    },
-    "time_column": {
-      "description": "The numeric timestamp column (e.g. epoch seconds, or any monotonic encoding of time). Required with windowed event features (each feature compares it against as_of / window_start). Optional for a static carry-through featurization: when set, the row universe is point-in-time filtered to time <= as_of (no leakage); when omitted there is no time dimension.",
-      "type": "string",
-      "minLength": 1
+    "account_features": {
+      "description": "Static account-dimension columns carried through unchanged from the accounts frame (e.g. mrr, seats, tenure_days, or the engineered numeric columns in the static case), joined onto the windowed event features by entity. Names must be unique and not collide with an event-feature name. A spec must produce at least one feature column (an event feature or an account feature).",
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
     },
     "as_of": {
       "description": "The point-in-time cutoff t0 (inclusive): a row/event qualifies only when its timestamp is <= as_of. The single, global no-leakage boundary. Required whenever a time_column is set.",
       "type": "number"
     },
+    "entity_column": {
+      "description": "The integer-dtype entity-key column. With event features it is present in BOTH the events frame and the accounts frame (the join key); in the static case it is the per-row entity key of the engineered table. Each distinct value is one entity — the row unit of the feature table.",
+      "minLength": 1,
+      "type": "string"
+    },
     "event_features": {
       "description": "The windowed per-entity event features. Each aggregates an events column over the window [window_start, as_of] (always <= as_of), optionally restricted to one event type. Optional / empty for a static carry-through featurization; the canonical (to_json) form omits it when empty. When present it requires a time_column.",
-      "type": "array",
       "items": {
-        "type": "object",
         "additionalProperties": false,
-        "required": ["name", "agg"],
         "properties": {
-          "name": {
-            "description": "The output feature column name (unique across event_features and account_features).",
-            "type": "string",
-            "minLength": 1
-          },
           "agg": {
             "description": "How the qualifying rows reduce into the feature value.",
-            "type": "string",
-            "enum": ["count", "sum", "min", "max", "mean"]
+            "enum": [
+              "count",
+              "sum",
+              "min",
+              "max",
+              "mean"
+            ],
+            "type": "string"
           },
-          "value_column": {
-            "description": "The events column reduced; required for sum/min/max/mean, ignored for count.",
-            "type": "string",
-            "minLength": 1
-          },
-          "window_start": {
-            "description": "Optional trailing-window lower bound (inclusive): a row also qualifies iff its timestamp is >= window_start, giving the window [window_start, as_of]. Omitted for the unbounded-below (-inf, as_of] case. Must not exceed as_of.",
-            "type": "number"
+          "name": {
+            "description": "The output feature column name (unique across event_features and account_features).",
+            "minLength": 1,
+            "type": "string"
           },
           "type_column": {
             "description": "Optional events column carrying a numeric event-type code; when set, only rows whose value equals type_value contribute (e.g. count only payment_failed events). Requires type_value.",
-            "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "type": "string"
           },
           "type_value": {
             "description": "The numeric event-type code a row's type_column must equal to qualify. Required iff type_column is set.",
             "type": "number"
+          },
+          "value_column": {
+            "description": "The events column reduced; required for sum/min/max/mean, ignored for count.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "window_start": {
+            "description": "Optional trailing-window lower bound (inclusive): a row also qualifies iff its timestamp is >= window_start, giving the window [window_start, as_of]. Omitted for the unbounded-below (-inf, as_of] case. Must not exceed as_of.",
+            "type": "number"
           }
-        }
-      }
-    },
-    "account_features": {
-      "description": "Static account-dimension columns carried through unchanged from the accounts frame (e.g. mrr, seats, tenure_days, or the engineered numeric columns in the static case), joined onto the windowed event features by entity. Names must be unique and not collide with an event-feature name. A spec must produce at least one feature column (an event feature or an account feature).",
-      "type": "array",
-      "items": {
-        "type": "string",
-        "minLength": 1
-      }
+        },
+        "required": [
+          "name",
+          "agg"
+        ],
+        "type": "object"
+      },
+      "type": "array"
     },
     "label_column": {
       "description": "Optional training-target column from the accounts frame (e.g. churned, or the saas outcome). Carried into the output feature table as the label y, never treated as a feature X. Omitted when the feature table is for scoring rather than training.",
-      "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "type": "string"
+    },
+    "time_column": {
+      "description": "The numeric timestamp column (e.g. epoch seconds, or any monotonic encoding of time). Required with windowed event features (each feature compares it against as_of / window_start). Optional for a static carry-through featurization: when set, the row universe is point-in-time filtered to time <= as_of (no leakage); when omitted there is no time dimension.",
+      "minLength": 1,
+      "type": "string"
     }
-  }
+  },
+  "required": [
+    "entity_column"
+  ],
+  "title": "FeaturizeSpec",
+  "type": "object"
 }

@@ -1,17 +1,54 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.FulltextQueryRequest",
-  "type": "object",
+  "additionalProperties": false,
   "properties": {
-    "tag": { "type": "string" },
-    "table": { "type": "string", "minLength": 1 },
-    "kind": { "type": "string", "enum": ["search", "vector", "feature"] },
-    "backend": { "type": "string" },
-    "fields": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-    "field": { "type": "string" },
-    "term": { "type": ["string", "number", "boolean", "null"] },
-    "top_k": { "type": "integer", "minimum": 0 }
+    "backend": {
+      "type": "string"
+    },
+    "field": {
+      "type": "string"
+    },
+    "fields": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "kind": {
+      "enum": [
+        "search",
+        "vector",
+        "feature"
+      ],
+      "type": "string"
+    },
+    "table": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "tag": {
+      "type": "string"
+    },
+    "term": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "top_k": {
+      "minimum": 0,
+      "type": "integer"
+    }
   },
-  "required": ["table", "kind", "fields", "term"],
-  "additionalProperties": false
+  "required": [
+    "table",
+    "kind",
+    "fields",
+    "term"
+  ],
+  "title": "zetta.FulltextQueryRequest",
+  "type": "object"
 }

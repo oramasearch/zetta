@@ -38,7 +38,8 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   (Run, Model, ComputeJob, AuditEvent, Index, DatasetPartition, …) use the
   embedded draft-07 schema + the pboettch validator (the `parse_run_value`
   pattern). Value-type DTOs (configs, specs, policies) use the hand-written
-  non-throwing `from_json` mirroring their `schemas/*.json`. Binary formats
+  non-throwing `from_json` mirroring their type's `*_schema()` accessor
+  (registered in `zetta::schemas::boundary_schemas()`). Binary formats
   (Parquet, Snappy, checkpoints) are bounds-checked, never trusted.
 - **Schema as code:** the C++ embedded schema (a `*_schema()` accessor) is the
   source of truth; `schemas/*.json` is generated + drift-checked. See

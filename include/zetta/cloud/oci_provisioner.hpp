@@ -50,6 +50,11 @@ struct OciConfig {
     static std::optional<OciConfig> from_json(const nlohmann::json& value);
 };
 
+// The OciConfig JSON Schema (draft 2020-12) — the code-owned source of truth;
+// schemas/oci_config.schema.json is generated from it and drift-checked by
+// tests/test_schemas.cpp (#646).
+const nlohmann::json& oci_config_schema();
+
 // The cloud control-plane operations the OCI backend needs, abstracted behind a
 // small **injectable seam** so OciProvisioner stays in zetta-core with no OCI SDK
 // and is unit-testable against a fake. The reference binding is OciCliControlPlane

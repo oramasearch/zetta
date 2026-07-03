@@ -147,4 +147,9 @@ std::optional<DeviceInfo> device_info_from_json(const nlohmann::json& value);
 std::optional<std::vector<DeviceInfo>> parse_device_report(
     const nlohmann::json& value);
 
+// The DeviceRegistry capability-report JSON Schema (draft 2020-12) — the
+// code-owned source of truth; schemas/device_registry.schema.json is generated
+// from it and drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& device_registry_schema();
+
 }  // namespace zetta::compute

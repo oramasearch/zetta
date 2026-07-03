@@ -19,77 +19,98 @@ namespace {
 constexpr std::string_view kStealMethod = "steal";
 constexpr std::string_view kStealResultMethod = "steal_result";
 
-// The three message schemas (draft-07). Mirrored at schemas/steal_*.schema.json
-// for documentation; these embedded copies are the ones enforced at runtime, the
-// same pattern as the signal envelope (src/core/signal.cpp). Every payload that
-// enters the scheduler from a peer is validated against its schema before it is
+}  // namespace
+
+// The three steal-message JSON Schemas (draft-07) — the code-owned source of
+// truth; schemas/steal_request.schema.json, schemas/steal_offer.schema.json,
+// and schemas/steal_result.schema.json are generated from them and
+// drift-checked by tests/test_schemas.cpp (#646). Every payload that enters
+// the scheduler from a peer is validated against its schema before it is
 // trusted, so a malformed or hostile message fails fast with a path-qualified
-// reason instead of corrupting a job's state.
+// reason instead of corrupting a job's state (the same pattern as the signal
+// envelope, src/core/signal.cpp).
 const nlohmann::json& steal_request_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.StealRequest",
-      "type": "object",
-      "properties": { "count": { "type": "integer", "minimum": 1 } },
-      "required": ["count"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealRequest",
+  "description": "A work-stealing request sent by an idle node to a peer over the signal plane (method \"steal\"): give me up to `count` pending tasks. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many pending tasks the requester is willing to take."
+    }
+  },
+  "required": ["count"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
 
 const nlohmann::json& steal_offer_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.StealOffer",
-      "type": "object",
-      "properties": {
-        "tasks": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "job":     { "type": "string", "minLength": 1 },
-              "index":   { "type": "integer", "minimum": 0 },
-              "method":  { "type": "string" },
-              "payload": { "type": "string" },
-              "traceparent": { "type": "string" }
-            },
-            "required": ["job", "index", "method", "payload"],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": ["tasks"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealOffer",
+  "description": "The reply to a \"steal\" request: the pending tasks the owner hands over (possibly empty). Each task carries its owning job id, its index within that job, the application method to run it with, and the base64-encoded raw input payload; an optional traceparent (W3C trace context, #640) lets the helper's execution spans join the owner's trace. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "job": { "type": "string", "minLength": 1 },
+          "index": { "type": "integer", "minimum": 0 },
+          "method": { "type": "string" },
+          "payload": { "type": "string" },
+          "traceparent": { "type": "string" }
+        },
+        "required": ["job", "index", "method", "payload"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["tasks"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
 
 const nlohmann::json& steal_result_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.StealResult",
-      "type": "object",
-      "properties": {
-        "job": { "type": "string", "minLength": 1 },
-        "results": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "index":   { "type": "integer", "minimum": 0 },
-              "payload": { "type": "string" }
-            },
-            "required": ["index", "payload"],
-            "additionalProperties": false
-          }
-        }
-      },
-      "required": ["job", "results"],
-      "additionalProperties": false
-    })JSONSCHEMA");
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zetta.StealResult",
+  "description": "The results a stealer returns to the owner (method \"steal_result\") after running tasks it stole from a \"steal\" offer: per-index, the base64-encoded raw output payload, all for one owning job. Mirrored, enforced copy in src/core/compute/distributed_scheduler.cpp.",
+  "type": "object",
+  "properties": {
+    "job": { "type": "string", "minLength": 1 },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer", "minimum": 0 },
+          "payload": { "type": "string" }
+        },
+        "required": ["index", "payload"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["job", "results"],
+  "additionalProperties": false
+}
+)JSONSCHEMA");
     return schema;
 }
+
+namespace {
 
 nlohmann::json_schema::json_validator& steal_request_validator() {
     static nlohmann::json_schema::json_validator validator(steal_request_schema());

@@ -1,13 +1,24 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.CollectiveMessage",
+  "additionalProperties": false,
   "description": "The payload of a collective-plane RPC (collective.contribute / collective.result), carried as the opaque payload of a signal. `tag` names the collective round; `from` is the sender's node id (a contribution); `values` is the per-node vector (empty for a barrier). Validated at the boundary, exactly like the signal envelope.",
-  "type": "object",
   "properties": {
-    "tag":    { "type": "string" },
-    "from":   { "type": "string" },
-    "values": { "type": "array", "items": { "type": "number" } }
+    "from": {
+      "type": "string"
+    },
+    "tag": {
+      "type": "string"
+    },
+    "values": {
+      "items": {
+        "type": "number"
+      },
+      "type": "array"
+    }
   },
-  "required": ["tag"],
-  "additionalProperties": false
+  "required": [
+    "tag"
+  ],
+  "title": "zetta.CollectiveMessage",
+  "type": "object"
 }

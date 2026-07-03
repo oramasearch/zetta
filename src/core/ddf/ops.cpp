@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace zetta::ddf {
 
 using compute::BinaryOp;
@@ -358,6 +360,40 @@ nlohmann::json FilterPredicate::to_json() const {
                           {"value", value}};
 }
 
+// The FilterPredicate JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/ddf_filter_predicate.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& ddf_filter_predicate_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/ddf_filter_predicate.schema.json",
+  "title": "DdfFilterPredicate",
+  "description": "A single-column row predicate for the DDF filter op (ARC-12): keep the rows of a DataFrame where `column` <comparison> `value`. Each row's value is widened to double before the comparison, so one predicate covers every numeric column dtype.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["column", "comparison", "value"],
+  "properties": {
+    "column": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The frame column whose value each row is tested on."
+    },
+    "comparison": {
+      "type": "string",
+      "enum": ["eq", "ne", "lt", "le", "gt", "ge"],
+      "description": "The comparison applied to each row's value against `value`."
+    },
+    "value": {
+      "type": "number",
+      "description": "The threshold compared against (the row's value is widened to double)."
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 std::optional<FilterPredicate> FilterPredicate::from_json(
     const nlohmann::json& value) {
     if (!value.is_object()) return std::nullopt;
@@ -481,6 +517,67 @@ nlohmann::json Projection::to_json() const {
         columns_json.push_back(std::move(entry));
     }
     return nlohmann::json{{"columns", std::move(columns_json)}};
+}
+
+// The Projection JSON Schema (draft-07) — the code-owned source of truth;
+// schemas/ddf_projection.schema.json is generated from it and drift-checked
+// by tests/test_schemas.cpp (#646).
+const nlohmann::json& ddf_projection_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/ddf_projection.schema.json",
+  "title": "DdfProjection",
+  "description": "The DDF project/select op spec (ARC-12): the ordered set of output columns over a DataFrame. Each output column is exactly one of three modes: a passthrough of an existing column (`source` only), a unary op over one column (`source` + `unary`), or a binary op over two columns (`left` + `right` + `binary`). Output column names must be unique.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["columns"],
+  "properties": {
+    "columns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The output column's name in the projected frame."
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Passthrough: the existing column copied. Unary: the input column."
+          },
+          "unary": {
+            "type": "string",
+            "enum": ["negate", "absolute", "square", "sqrt", "exp", "log"],
+            "description": "Unary op applied to `source` (the zetta::compute::UnaryOp set)."
+          },
+          "binary": {
+            "type": "string",
+            "enum": ["add", "subtract", "multiply", "divide", "maximum", "minimum"],
+            "description": "Binary op applied to `left` and `right` (the zetta::compute::BinaryOp set)."
+          },
+          "left": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Binary: the left input column."
+          },
+          "right": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Binary: the right input column."
+          }
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 std::optional<Projection> Projection::from_json(const nlohmann::json& value) {

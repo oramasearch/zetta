@@ -1,29 +1,60 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "zetta.ddf.PartitionMessage",
+  "additionalProperties": false,
   "description": "A DDF DataFrame partition shipped over the signal plane during a distributed sort's all-to-all shuffle (method ddf.shuffle), carried as the opaque payload of a signal. `tag` names the shuffle round; `from` is the sender's node id; `rows` is the partition's row count; `columns` carries the partition column-major (one entry per frame column, each with its name, dtype, and `rows` values). Validated at the boundary, exactly like the collective message.",
-  "type": "object",
   "properties": {
-    "tag":  { "type": "string" },
-    "from": { "type": "string" },
-    "rows": { "type": "integer", "minimum": 0 },
     "columns": {
-      "type": "array",
       "items": {
-        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "name":  { "type": "string", "minLength": 1 },
           "dtype": {
-            "type": "string",
-            "enum": ["float32", "float64", "int32", "int64", "uint32", "uint64", "uint8"]
+            "enum": [
+              "float32",
+              "float64",
+              "int32",
+              "int64",
+              "uint32",
+              "uint64",
+              "uint8"
+            ],
+            "type": "string"
           },
-          "values": { "type": "array", "items": { "type": "number" } }
+          "name": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
         },
-        "required": ["name", "dtype", "values"],
-        "additionalProperties": false
-      }
+        "required": [
+          "name",
+          "dtype",
+          "values"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "from": {
+      "type": "string"
+    },
+    "rows": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "tag": {
+      "type": "string"
     }
   },
-  "required": ["tag", "rows", "columns"],
-  "additionalProperties": false
+  "required": [
+    "tag",
+    "rows",
+    "columns"
+  ],
+  "title": "zetta.ddf.PartitionMessage",
+  "type": "object"
 }

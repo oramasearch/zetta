@@ -1,12 +1,95 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "capability": {
+      "additionalProperties": false,
+      "description": "A deny-by-default grant of a specific API/data/orchestration right (ENT-22), optionally TTL'd. An operation is covered iff its (domain, action) match exactly and the capability has not expired.",
+      "properties": {
+        "action": {
+          "description": "The specific right within the domain (e.g. 'query', 'read', 'deploy', 'start_run'). The action taxonomy is open in V1.",
+          "type": "string"
+        },
+        "domain": {
+          "description": "The governance domain of the right.",
+          "enum": [
+            "api",
+            "data",
+            "orchestration"
+          ],
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Optional TTL: the ISO-8601 UTC instant (same fixed-width format as `created`) at/after which the capability is expired. Omitted means it never expires.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain",
+        "action"
+      ],
+      "type": "object"
+    },
+    "resource": {
+      "additionalProperties": false,
+      "description": "A single node-owned resource a grant names. V1 scopes to coarse, top-level resources (databases, projects); finer tiers extend the kind enum.",
+      "properties": {
+        "kind": {
+          "description": "The kind of resource.",
+          "enum": [
+            "database",
+            "project"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "The resource's name (its human-facing handle).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "scope": {
+      "additionalProperties": false,
+      "description": "What the key permits — deny-by-default. A resource is in scope iff `unrestricted` is true or it appears in `grants`.",
+      "properties": {
+        "grants": {
+          "description": "The explicit in-scope resources. Order is preserved.",
+          "items": {
+            "$ref": "#/$defs/resource"
+          },
+          "type": "array"
+        },
+        "unrestricted": {
+          "description": "The '*' grant: when true the key reaches every resource (an admin key) and `grants` need not enumerate them.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unrestricted",
+        "grants"
+      ],
+      "type": "object"
+    }
+  },
   "$id": "https://oramasearch.github.io/zetta/schemas/access_key.schema.json",
-  "title": "AccessKey",
-  "description": "An access key (ENT-21): the login credential whose scope is the V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6) and whose capabilities are the deny-by-default rights model (ENT-22). The on-disk key.json projection of the replicated `key:<uuid>` CRDT value, owned by a principal. Mirrored by zetta::AccessKey in include/zetta/access_key.hpp, zetta::Scope in include/zetta/scope.hpp, and zetta::CapabilitySet in include/zetta/capability.hpp; enforced by scope_from_json()/capability_set_from_json() and Principal::load() in src/core/principal.cpp — keep them in sync. A malformed scope or capability is rejected at the boundary so access never silently widens or narrows.",
-  "type": "object",
-  "required": ["principal", "scope"],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "An access key (ENT-21): the login credential whose scope is the V1 key-scoped access model (RULE-3 / PERM-1 / ADR-6) and whose capabilities are the deny-by-default rights model (ENT-22). The on-disk key.json projection of the replicated `key:<uuid>` CRDT value, owned by a principal. Mirrored by zetta::AccessKey in include/zetta/access_key.hpp, zetta::Scope in include/zetta/scope.hpp, and zetta::CapabilitySet in include/zetta/capability.hpp; enforced by scope_from_json()/capability_set_from_json() and Principal::load() in src/core/principal.cpp — keep them in sync. A malformed scope or capability is rejected at the boundary so access never silently widens or narrows.",
   "properties": {
+    "capabilities": {
+      "description": "The deny-by-default rights this key may exercise (ENT-22) — the verb/right axis, orthogonal to scope's resource axis. Optional; absent means no rights granted. An operation is permitted only by a matching, unexpired capability.",
+      "items": {
+        "$ref": "#/$defs/capability"
+      },
+      "type": "array"
+    },
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    },
     "id": {
       "description": "The key's UUID — its CRDT key and on-disk folder name. Present in key.json (where the folder name is the source of truth) and omitted from the CRDT value (the key carries it).",
       "type": "string"
@@ -15,72 +98,14 @@
       "description": "The id of the Principal this key authenticates as.",
       "type": "string"
     },
-    "scope": { "$ref": "#/$defs/scope" },
-    "capabilities": {
-      "description": "The deny-by-default rights this key may exercise (ENT-22) — the verb/right axis, orthogonal to scope's resource axis. Optional; absent means no rights granted. An operation is permitted only by a matching, unexpired capability.",
-      "type": "array",
-      "items": { "$ref": "#/$defs/capability" }
-    },
-    "created": {
-      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
-      "type": "string"
+    "scope": {
+      "$ref": "#/$defs/scope"
     }
   },
-  "$defs": {
-    "capability": {
-      "description": "A deny-by-default grant of a specific API/data/orchestration right (ENT-22), optionally TTL'd. An operation is covered iff its (domain, action) match exactly and the capability has not expired.",
-      "type": "object",
-      "required": ["domain", "action"],
-      "additionalProperties": false,
-      "properties": {
-        "domain": {
-          "description": "The governance domain of the right.",
-          "type": "string",
-          "enum": ["api", "data", "orchestration"]
-        },
-        "action": {
-          "description": "The specific right within the domain (e.g. 'query', 'read', 'deploy', 'start_run'). The action taxonomy is open in V1.",
-          "type": "string"
-        },
-        "expires_at": {
-          "description": "Optional TTL: the ISO-8601 UTC instant (same fixed-width format as `created`) at/after which the capability is expired. Omitted means it never expires.",
-          "type": "string"
-        }
-      }
-    },
-    "scope": {
-      "description": "What the key permits — deny-by-default. A resource is in scope iff `unrestricted` is true or it appears in `grants`.",
-      "type": "object",
-      "required": ["unrestricted", "grants"],
-      "additionalProperties": false,
-      "properties": {
-        "unrestricted": {
-          "description": "The '*' grant: when true the key reaches every resource (an admin key) and `grants` need not enumerate them.",
-          "type": "boolean"
-        },
-        "grants": {
-          "description": "The explicit in-scope resources. Order is preserved.",
-          "type": "array",
-          "items": { "$ref": "#/$defs/resource" }
-        }
-      }
-    },
-    "resource": {
-      "description": "A single node-owned resource a grant names. V1 scopes to coarse, top-level resources (databases, projects); finer tiers extend the kind enum.",
-      "type": "object",
-      "required": ["kind", "name"],
-      "additionalProperties": false,
-      "properties": {
-        "kind": {
-          "description": "The kind of resource.",
-          "type": "string",
-          "enum": ["database", "project"]
-        },
-        "name": {
-          "description": "The resource's name (its human-facing handle).",
-          "type": "string"
-        }
-      }
-    }
-  }
+  "required": [
+    "principal",
+    "scope"
+  ],
+  "title": "AccessKey",
+  "type": "object"
 }

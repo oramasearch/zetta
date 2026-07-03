@@ -1,28 +1,35 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://oramasearch.github.io/zetta/schemas/principal.schema.json",
-  "title": "Principal",
-  "description": "An authenticated actor (ENT-20) — user, service, or node — the subject of access grants and audit. The on-disk principal.json projection of the replicated `principal:<uuid>` CRDT value. Mirrored by zetta::Principal in include/zetta/principal.hpp and enforced by Node::load_principals() in src/core/node.cpp — keep the three in sync.",
-  "type": "object",
-  "required": ["kind", "name"],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
+  "description": "An authenticated actor (ENT-20) — user, service, or node — the subject of access grants and audit. The on-disk principal.json projection of the replicated `principal:<uuid>` CRDT value. Mirrored by zetta::Principal in include/zetta/principal.hpp and enforced by Node::load_principals() in src/core/node.cpp — keep the three in sync.",
   "properties": {
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    },
     "id": {
       "description": "The principal's UUID — its CRDT key and on-disk folder name. Present in principal.json (where the folder name is the source of truth) and omitted from the CRDT value (the key carries it).",
       "type": "string"
     },
     "kind": {
       "description": "What sort of actor this is.",
-      "type": "string",
-      "enum": ["user", "service", "node"]
+      "enum": [
+        "user",
+        "service",
+        "node"
+      ],
+      "type": "string"
     },
     "name": {
       "description": "The principal's display name.",
       "type": "string"
-    },
-    "created": {
-      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
-      "type": "string"
     }
-  }
+  },
+  "required": [
+    "kind",
+    "name"
+  ],
+  "title": "Principal",
+  "type": "object"
 }

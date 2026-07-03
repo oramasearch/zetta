@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/compute/compute_job.hpp"
 
 namespace zetta::compute {
@@ -73,6 +75,80 @@ std::optional<AutoscalerConfig> AutoscalerConfig::from_json(
     }
 
     return config;
+}
+
+// The AutoscalerConfig JSON Schema (draft 2020-12) — the code-owned source of
+// truth; schemas/autoscaler_config.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& autoscaler_config_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oramasearch.github.io/zetta/schemas/autoscaler_config.schema.json",
+  "title": "AutoscalerConfig",
+  "description": "How the autoscaler control loop (ADR-29 / ARC-11, #371) is tuned: the per-node capability floor for provisioned nodes, the hysteresis confirmation window, and whether a cost-cap breach sheds immediately. The loop observes a running ComputeJob's progress, scores it with the job's ScalingPolicy, and adds/removes nodes through the Provisioner seam within the policy bounds. Mirrored by zetta::AutoscalerConfig in include/zetta/job_autoscaler.hpp and enforced by AutoscalerConfig::from_json() in src/core/job_autoscaler.cpp — keep them in sync. Omitted fields take their defaults; a malformed config is rejected at the boundary so the loop never silently changes how it behaves.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "node_spec": {
+      "description": "The per-node capability floor each provisioned node must meet (passed in the ProvisionRequest on a scale-up). A default (no-floor) capability is satisfied by every node. See node_capability.schema.json.",
+      "$ref": "#/$defs/node_capability"
+    },
+    "confirm_ticks": {
+      "description": "Hysteresis: how many consecutive ticks must recommend the same direction before the loop acts. The anti-thrash guard. Must be >= 1 (1 disables the multi-tick confirmation). Defaults to 2.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "shed_on_cost_breach": {
+      "description": "When the policy reports the cost cap breached, shed immediately — bypass confirm_ticks. The cost cap is a hard safety constraint. Defaults to true.",
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "node_capability": {
+      "description": "What a provisioned node must provide — CPU cores, memory, and an optional GPU (type + throughput). Mirrors node_capability.schema.json.",
+      "type": "object",
+      "required": ["cores", "memory_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "cores": {
+          "description": "Logical CPU cores the node provides.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_bytes": {
+          "description": "Total memory in bytes.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu": {
+          "description": "The node's accelerator. Optional; absent means CPU-only (equivalent to kind 'none').",
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "description": "The accelerator family. Append-only enum (the lowercase name is the stored identifier).",
+              "type": "string",
+              "enum": ["none", "cuda", "rocm", "metal"]
+            },
+            "throughput_tflops": {
+              "description": "Coarse throughput in teraFLOPS. 0 when there is no GPU.",
+              "type": "number",
+              "minimum": 0
+            },
+            "model": {
+              "description": "Optional free-form accelerator model name (e.g. 'A100', 'H100', 'MI300X').",
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
 }
 
 JobAutoscaler::JobAutoscaler(const ComputeJob& job, ScalingPolicy policy,

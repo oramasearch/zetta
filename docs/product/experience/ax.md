@@ -25,11 +25,14 @@ relay it to a person.
   live registry's own descriptions, embedding **live cluster facts** (node id,
   indexes, catalog entries); never a second prose source. Custom beyond the
   community convention wherever AX demands it.
-- **The spec index**
-  ([#646](https://github.com/oramasearch/zetta/issues/646)): `/v1/specs` +
+- **The spec index** — built
+  ([#646](https://github.com/oramasearch/zetta/issues/646),
+  [../../api/specs-index.md](../../api/specs-index.md)): `/v1/specs` +
   `list_specs`/`get_spec` tools serving the OpenAPI document plus **every**
-  JSON Schema in the system (capability schemas + the schema-as-code boundary
-  set) as one navigable index of objects — discovery without reading source.
+  JSON Schema in the system (capability schemas + all 62 schema-as-code
+  boundary schemas, served from their C++ accessors) as one navigable index
+  of objects — discovery without reading source, drift-checked through the
+  same table the build enforces.
 - **Observability threaded back**: every result carries
   trace/span/duration; `get_trace` shows intent · plan · performance · result
   shape including per-node spans of distributed work — an agent can always

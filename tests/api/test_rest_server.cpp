@@ -17,6 +17,8 @@
 #include "temp_dir.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/api/specs.hpp"
+#include "zetta/schemas/registry.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
@@ -220,6 +222,38 @@ TEST_F(RestServerFixture, OpenApiDocumentIsServed) {
     ASSERT_TRUE(document.is_object()) << served.body;
     EXPECT_EQ(document, zetta::api::openapi_document(server->registry()));
     EXPECT_TRUE(document.at("paths").contains("/v1/server_info"));
+}
+
+// The spec index over the wire (#646, docs/api/specs-index.md): GET /v1/specs
+// serves the index, /v1/specs/<name> the raw document (a boundary schema
+// straight from its accessor; "openapi" the #618 document), and an unknown
+// name is a 404 that points back at the index.
+TEST_F(RestServerFixture, SpecIndexIsServed) {
+    auto index = request("GET", "/v1/specs");
+    EXPECT_EQ(index.status, 200);
+    const nlohmann::json index_document = json_of(index);
+    ASSERT_TRUE(index_document.is_object()) << index.body;
+    EXPECT_EQ(index_document,
+              zetta::api::spec_index(server->registry()));
+    EXPECT_GE(index_document.at("count").get<std::size_t>(), 55u);
+
+    auto run_schema = request("GET", "/v1/specs/run");
+    EXPECT_EQ(run_schema.status, 200);
+    EXPECT_EQ(json_of(run_schema),
+              zetta::schemas::find_boundary_schema("run")->schema());
+
+    auto input_schema = request("GET", "/v1/specs/sql.input");
+    EXPECT_EQ(input_schema.status, 200);
+    EXPECT_EQ(json_of(input_schema),
+              server->registry().find("sql")->input_schema);
+
+    auto openapi = request("GET", "/v1/specs/openapi");
+    EXPECT_EQ(openapi.status, 200);
+    EXPECT_EQ(json_of(openapi).at("openapi"), "3.1.0");
+
+    auto missing = request("GET", "/v1/specs/no-such-spec");
+    EXPECT_EQ(missing.status, 404);
+    EXPECT_EQ(json_of(missing).at("error").at("code"), "not_found");
 }
 
 TEST(RestServerAuth, ConfiguredTokenIsRequired) {

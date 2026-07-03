@@ -1,47 +1,61 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://oramasearch.github.io/zetta/schemas/validation_report.schema.json",
-  "title": "ValidationReport",
-  "description": "The correctness-gate result for a graph version (ENT-5 / FEAT-3): per-check results, a derived overall verdict, and a block-deploy flag. Mirrored by zetta::ValidationReport in include/zetta/validation.hpp and enforced by validation_report_from_json() in src/core/validation.cpp — keep the three in sync.",
-  "type": "object",
-  "required": ["checks", "block_deploy"],
-  "additionalProperties": false,
-  "properties": {
-    "checks": {
-      "description": "Per-check results. Order is preserved.",
-      "type": "array",
-      "items": { "$ref": "#/$defs/checkResult" }
-    },
-    "verdict": {
-      "description": "Derived: the worst status across checks (an empty list is \"pass\"). Emitted for readability; advisory on input — when present it must equal the verdict computed from the checks.",
-      "$ref": "#/$defs/checkStatus"
-    },
-    "block_deploy": {
-      "description": "The gate's deploy policy for this report. Independent of the verdict so a gate can block on a warning (strict) or allow a deploy despite a failure (signed-off override).",
-      "type": "boolean"
-    }
-  },
   "$defs": {
-    "checkStatus": {
-      "description": "A single check's outcome, ordered by severity pass < warn < fail.",
-      "type": "string",
-      "enum": ["pass", "warn", "fail"]
-    },
     "checkResult": {
-      "type": "object",
-      "required": ["name", "status"],
       "additionalProperties": false,
       "properties": {
         "name": {
           "description": "Identifier of the check.",
           "type": "string"
         },
-        "status": { "$ref": "#/$defs/checkStatus" },
         "reason": {
           "description": "Human-readable explanation of the outcome. Optional; defaults to an empty string.",
           "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/checkStatus"
         }
-      }
+      },
+      "required": [
+        "name",
+        "status"
+      ],
+      "type": "object"
+    },
+    "checkStatus": {
+      "description": "A single check's outcome, ordered by severity pass < warn < fail.",
+      "enum": [
+        "pass",
+        "warn",
+        "fail"
+      ],
+      "type": "string"
     }
-  }
+  },
+  "$id": "https://oramasearch.github.io/zetta/schemas/validation_report.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The correctness-gate result for a graph version (ENT-5 / FEAT-3): per-check results, a derived overall verdict, and a block-deploy flag. Mirrored by zetta::ValidationReport in include/zetta/validation.hpp and enforced by validation_report_from_json() in src/core/validation.cpp — keep the three in sync.",
+  "properties": {
+    "block_deploy": {
+      "description": "The gate's deploy policy for this report. Independent of the verdict so a gate can block on a warning (strict) or allow a deploy despite a failure (signed-off override).",
+      "type": "boolean"
+    },
+    "checks": {
+      "description": "Per-check results. Order is preserved.",
+      "items": {
+        "$ref": "#/$defs/checkResult"
+      },
+      "type": "array"
+    },
+    "verdict": {
+      "$ref": "#/$defs/checkStatus",
+      "description": "Derived: the worst status across checks (an empty list is \"pass\"). Emitted for readability; advisory on input — when present it must equal the verdict computed from the checks."
+    }
+  },
+  "required": [
+    "checks",
+    "block_deploy"
+  ],
+  "title": "ValidationReport",
+  "type": "object"
 }

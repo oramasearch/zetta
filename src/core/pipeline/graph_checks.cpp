@@ -15,61 +15,86 @@
 
 namespace zetta::pipeline {
 
+// The step-annotation JSON Schema (draft-07) — the code-owned source of truth
+// for the shape of the correctness annotations both checks read out of a
+// node's free-form `attributes` bag. Only the named fields are constrained —
+// a node may carry any other attributes (`source`, `table`, …) — so a step
+// that uses none of these is valid trivially.
+// schemas/graph_step_annotations.schema.json is generated from it and
+// drift-checked by tests/test_schemas.cpp (#646).
+const nlohmann::json& graph_step_annotations_schema() {
+    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA(
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://oramasearch.github.io/zetta/schemas/graph_step_annotations.schema.json",
+  "title": "zetta.GraphStepAnnotations",
+  "description": "The correctness annotations the gate's concrete checks (#309) read from an ExecutionGraph node's free-form `attributes` bag: source/required schema profiles (schema_type check) and point-in-time / target-leakage metadata (data_leakage check). Only the named fields are constrained; a node may carry any other attributes. Mirrored verbatim by the inline schema in src/core/graph_checks.cpp (the runtime source of truth) — keep the two in sync.",
+  "type": "object",
+  "properties": {
+    "schema": {
+      "description": "The fields this step OUTPUTS and their types — a source profile for a Connect step, the transformed shape for a Clean step. Field name -> type token (an opaque string, compared case-insensitively).",
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "requires": {
+      "description": "The fields this step EXPECTS from its data-flow inputs and the type each must have. Each is checked against the merged `schema` of the step's transitive data-flow ancestors: a missing field or a type mismatch fails the schema_type check.",
+      "type": "object",
+      "additionalProperties": { "type": "string", "minLength": 1 }
+    },
+    "as_of": {
+      "description": "The point-in-time cutoff for an ML step: every feature must be computed only from data available at or before this instant. ISO-8601 UTC date or date-time (e.g. \"2024-01-01\" or \"2024-01-01T00:00:00Z\"). Required when `features` is present.",
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+    },
+    "label": {
+      "description": "The name of the target/label column the model predicts. Used to detect target leakage (a feature that is, or is derived from, the label).",
+      "type": "string",
+      "minLength": 1
+    },
+    "features": {
+      "description": "The features an ML step consumes. Each is checked for point-in-time and target leakage against `as_of` / `label`.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "The feature's name.",
+            "type": "string",
+            "minLength": 1
+          },
+          "data_as_of": {
+            "description": "The latest instant of data this feature draws on. If it is after the step's `as_of` cutoff, the feature leaks future data (a point-in-time violation). Same ISO-8601 UTC format as `as_of`.",
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
+          },
+          "derived_from": {
+            "description": "What the feature is computed from. The literal \"label\", or the `label` column name, marks the feature as target leakage.",
+            "type": "string"
+          },
+          "leaks_target": {
+            "description": "Explicit marker that the feature encodes the target — target leakage.",
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}
+)JSONSCHEMA");
+    return schema;
+}
+
 namespace {
 
 using nlohmann::json;
 
-// The step-annotation JSON Schema (draft-07). One declarative source of truth for
-// the shape of the correctness annotations both checks read out of a node's
-// free-form `attributes` bag. Only the named fields are constrained — a node may
-// carry any other attributes (`source`, `table`, …) — so a step that uses none of
-// these is valid trivially. Mirrors schemas/graph_step_annotations.schema.json;
-// keep the two in sync.
-const json& annotations_schema() {
-    static const json schema = json::parse(R"JSONSCHEMA({
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "title": "zetta.GraphStepAnnotations",
-      "type": "object",
-      "properties": {
-        "schema": {
-          "type": "object",
-          "additionalProperties": { "type": "string", "minLength": 1 }
-        },
-        "requires": {
-          "type": "object",
-          "additionalProperties": { "type": "string", "minLength": 1 }
-        },
-        "as_of": {
-          "type": "string",
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
-        },
-        "label": { "type": "string", "minLength": 1 },
-        "features": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "required": ["name"],
-            "additionalProperties": false,
-            "properties": {
-              "name": { "type": "string", "minLength": 1 },
-              "data_as_of": {
-                "type": "string",
-                "pattern": "^\\d{4}-\\d{2}-\\d{2}(T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z?)?$"
-              },
-              "derived_from": { "type": "string" },
-              "leaks_target": { "type": "boolean" }
-            }
-          }
-        }
-      }
-    })JSONSCHEMA");
-    return schema;
-}
-
 // A process-wide validator, compiled once from the schema (the expensive step);
 // validate() is then cheap and runs at every step's attribute bag.
 nlohmann::json_schema::json_validator& annotations_validator() {
-    static nlohmann::json_schema::json_validator validator(annotations_schema());
+    static nlohmann::json_schema::json_validator validator(
+        graph_step_annotations_schema());
     return validator;
 }
 
