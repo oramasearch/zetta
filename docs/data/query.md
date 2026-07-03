@@ -216,6 +216,23 @@ SELECT action, actor, target FROM system.audit WHERE allowed = false;
 
 All four are qualified-name only.
 
+Layered over those sources is **`system.activity`** — the merged, newest-first
+activity feed (#622; [../gui/activity-feed.md](../gui/activity-feed.md)): the
+audit trail + runs composed chronologically at query time by
+`zetta::observability::activity_entries`, each row with who asked (actor +
+surface: `local` / `console` / `api`), what for (action + target), and how it
+went (outcome: `ok` / `denied` / `failed` / `info`). The exact feed the headed
+Activity view renders (RULE-7), named plainly (no `zetta_` prefix):
+
+```sql
+SELECT * FROM system.activity;
+SELECT time, surface, actor, action, target FROM system.activity WHERE surface = 'api';
+```
+
+Columns: `time`, `surface`, `actor`, `action`, `target`, `outcome`, `detail`,
+`ref_kind`, `ref_id` (the owning entity for deep links: `run` / `job` / `graph`
+/ `deployment` / `audit`). Qualified-name only.
+
 One more table surfaces the **partition catalog** (see
 [dataset-partitions.md](dataset-partitions.md), ENT-36 / TBL-13) — where each
 table's data slices live, replicate-to-all so every node sees the same placement:

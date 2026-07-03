@@ -43,7 +43,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   api/                      the programmatic control surface (docs/api/): registry.hpp (Capability/ApiResult/ApiContext/Registry — one entry renders as MCP tool + REST route + palette action; every call a span, authorized + audited), bridge.hpp (MainThreadBridge — coroutine-first marshaling onto the owning loop via runtime::async_event), capabilities.hpp (register_core_capabilities: server_info · sql · list_projects · list_traces · get_trace · create_project), server.hpp (ApiServer — the embedded Beast2 MCP endpoint behind a pimpl seam; POST /mcp, bearer auth, drain())
-  observability/            trace.hpp — OTel-style TraceContext/Span/SpanRecorder/ScopedSpan + traceparent codec; the four captures (intent · plan · performance · result_shape) on a bounded per-node ring (docs/architecture/observability.md)
+  observability/            trace.hpp — OTel-style TraceContext/Span/SpanRecorder/ScopedSpan + traceparent codec; the four captures (intent · plan · performance · result_shape) on a bounded per-node ring (docs/architecture/observability.md); activity.hpp — ActivityEntry/ActivitySurface/ActivityOutcome + activity_entries(Node) — the merged audit-trail+runs activity feed, computed at call time (#622, docs/gui/activity-feed.md)
   cluster/                  the distributed plane: membership, the signal plane, collectives, CRDT replication, telemetry
     cluster.hpp             zetta::cluster::Cluster — equal-peer membership over TCP (mutual TLS when ClusterConfig::security is enabled) + the signal-plane API
     security.hpp            zetta::cluster::ClusterSecurity + generate/valid_join_token/derive_cluster_security/load_or_create_cluster_security/cluster_secret_schema — inter-node transport security (CTL-2/TB-3, #466): the join token derives the cluster CA (deterministic Ed25519), each node mints a CA-signed identity, persisted under <data_dir>/security/ with a schema-validated secret file (docs/cluster/security.md)
@@ -75,7 +75,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     ast.hpp                 the generic, dialect-neutral query AST (CreateDatabase/DropDatabase/CreateTable/DropTable/Insert/Select statements + TableRef/WhereClause/AggregateExpr) every frontend parses into and the executor runs — support a new dialect by writing a frontend, never by touching execution
     dialect.hpp             zetta::query::Dialect/ParseResult — the frontend interface: dialect text → generic statements
     postgres.hpp            zetta::query::PostgresDialect — the PostgreSQL-flavored frontend: a basic subset (CREATE/DROP DATABASE|TABLE, INSERT … VALUES, SELECT … [WHERE col = value]); case-insensitive keywords, `--` comments, `;`-separated statements
-    executor.hpp            zetta::query::Executor/QueryResult — run generic statements against a Node (dialect-neutral, only ever sees the AST), current_database for unqualified table names; hosts the read-only system.* observability tables (nodes/datasets/dataset_partitions/node_metrics/pipeline_jobs/collective_rounds/provisioners/…)
+    executor.hpp            zetta::query::Executor/QueryResult — run generic statements against a Node (dialect-neutral, only ever sees the AST), current_database for unqualified table names; hosts the read-only system.* observability tables (nodes/datasets/dataset_partitions/node_metrics/pipeline_jobs/collective_rounds/provisioners/activity/…)
     service.hpp             zetta::query::QueryService/Outcome — the facade the UI (and tests) call: parse with the Postgres dialect + execute every statement; pass a Cluster to make the nodes system table queryable; swapping/adding a dialect is a one-line change here
   parquet/                  zetta::parquet — native (no Arrow/parquet-cpp) Parquet reader (ADR-32; #481)
     snappy.hpp              zetta::parquet::snappy_decompress — Snappy raw-block page decoder (Parquet's default codec), non-throwing + bounds-checked (#507)
@@ -209,9 +209,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   util/                     small shared utilities
     uuid.hpp                zetta::util::new_uuid() — v4 UUID for folder names
     sha256.hpp              zetta::util::sha256_hex — large-object body fingerprint
-    timestamp.hpp           zetta::util::now_iso8601() — UTC ISO-8601 stamp (created/updated)
+    timestamp.hpp           zetta::util::now_iso8601() / iso8601_seconds_ago() — UTC ISO-8601 stamps (created/updated + window cutoffs)
     bytes.hpp / duration.hpp  human-readable size / time formatters
-src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + capabilities.cpp + http_server.cpp — the ONE beast2/Boost.JSON adapter TU, builds into zetta-api; observability/: trace.cpp)
+src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + capabilities.cpp + http_server.cpp — the ONE beast2/Boost.JSON adapter TU, builds into zetta-api; observability/: trace.cpp + activity.cpp)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   json_boundary.hpp         internal: the shared JSON-boundary field readers (string/int/…, required/optional) every cloud-burst Config from_json parser uses, so the boundary checks live once instead of copy-pasted per <x>_provisioner.cpp
@@ -244,7 +244,7 @@ src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + c
     replicated_blob_store.cpp  large-object body transfer (CRDT metadata + disk)
   query/
     postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST)
-    executor.cpp            zetta::query::Executor — statement execution against the Node + the read-only system.* observability tables (nodes / deployments / runs / models / indexes / jobs / principals / keys / audit / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / cloud_providers / cloud_status / provisioners)
+    executor.cpp            zetta::query::Executor — statement execution against the Node + the read-only system.* observability tables (nodes / deployments / runs / models / indexes / jobs / principals / keys / audit / activity / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / cloud_providers / cloud_status / provisioners)
     service.cpp             zetta::query::QueryService — parse-with-Postgres + execute-each-statement facade (the Outcome the REPL/GUI render)
   parquet/
     thrift_compact.hpp      zetta::parquet::detail::CompactReader — the shared, non-throwing Thrift compact-protocol cursor (used by both the footer and page-header parsers; internal header)
@@ -375,13 +375,13 @@ src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + c
     uuid.cpp
     bytes.cpp / duration.cpp  the size / time formatter impls
     sha256.cpp              self-contained SHA-256 (no crypto dependency)
-    timestamp.cpp           zetta::util::now_iso8601() — UTC ISO-8601 stamp
+    timestamp.cpp           zetta::util::now_iso8601() / iso8601_seconds_ago() — UTC ISO-8601 stamps
 src/gui/                    headed UI (links SDL3 + ImGui)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
-  app_internal.hpp          shared GUI-only helpers: the Orama design tokens, Tone + tone_color/tone_dot_color/tone_background + the status widget forms status_label (rows) / status_pill (headers) / status_dot(tone) (#636), the widget grammar (page_header/header_action/section_card/stat_tile/empty_state/banner, #630), the master-detail scaffold (MasterRow/detail_header/master_detail, #634), wash/eyebrow/mono_line/primary_button, extern g_mono_font/g_heading_font (not in the public include/zetta surface)
-  tones.hpp                 the ONE mapping site from engine statuses to visual tones (#636): tone_of(RunStatus/StepRunStatus/JobStatus/ScalingAction/CheckStatus/TestOutcome/cluster::NodeStatus/StepPlacement) + tone_of_log_level + tone_of_utilization (the shared gauge thresholds), with static_asserts locking the cross-lifecycle agreements
+  app_internal.hpp          shared GUI-only helpers: the Orama design tokens, Tone + tone_color/tone_dot_color/tone_background + the status widget forms status_label (rows) / status_pill (headers) / status_dot(tone) (#636), the widget grammar (page_header/header_action/section_card/stat_tile/empty_state/banner, #630), the master-detail scaffold (MasterRow/detail_header/master_detail, #634), wash/eyebrow/mono_line/primary_button, activity_surface_label (#622), extern g_mono_font/g_heading_font (not in the public include/zetta surface)
+  tones.hpp                 the ONE mapping site from engine statuses to visual tones (#636): tone_of(RunStatus/StepRunStatus/JobStatus/ScalingAction/CheckStatus/TestOutcome/ActivityOutcome/cluster::NodeStatus/StepPlacement) + tone_of_log_level + tone_of_utilization (the shared gauge thresholds), with static_asserts locking the cross-lifecycle agreements
   app_views.cpp             the view registry (App::view_registry, one ViewInfo row per view) + navigate_to/take_pending_selection + entity_link + the sidebar rail (#628) + sidebar badges
   cloud_wiring.hpp/.cpp     zetta::gui::CloudProvisioners — wires the cloud-burst Provisioner backends (Azure/AWS/GCP/OCI/K8s/bare-metal) into the headed App's "Add nodes" control from the node's detected provisioner configs (detect_provisioner_configs → App::set_provisioner) and OWNS them for the App's lifetime (stable-address std::optional members, declared before the App); the consent gate stays deny-by-default — a provider with no detected config stays unwired, and every cloud add remains per-action consent-gated
   cluster_telemetry.hpp     zetta::gui::NodeGaugeState/Sparkline/Gauge — pure-data (no ImGui) animation state for the cluster node-box gauges (#584): per-gauge eased value + sparkline history ring, keyed by node id; a thin renderer's working copy of Node::telemetry_snapshot(); the drawing lives in app_cluster.cpp
@@ -392,6 +392,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
                             helpers shared by the per-view operations TUs below (#638): the cluster node-box palette (kClusterBox*), entity_short_id, join_refs, and the render_model_card declaration (defined in app_models.cpp; also used by the Runs detail) — internal to src/gui, not in the public include/zetta surface
   app_graph_workspace.cpp   the Graph Workspace view (open_graph + draw_graph_workspace + draw_graph_canvas + draw_graph_editor), its graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591), and the live-run overlay (latest_run_for_open_graph + draw_graph_run_status + run_open_graph + the canvas status dots/pulse/pinned failure; #626)
   app_deploy.cpp            the correctness gate (draw_gate) + Deploy panel (draw_deploy) + the live churn demo run (run_churn_demo)
+  app_activity.cpp          the Activity view (draw_activity; #622): the merged audit-trail+runs feed via observability::activity_entries, time-window + surface filters, entity_link click-through per entry (docs/gui/activity-feed.md)
   app_runs.cpp              the Runs / outputs / lineage view (draw_runs + render_run_detail)
   app_models.cpp            the Models registry view (draw_models + draw_add_model_form) + render_model_card (shared with the Runs detail via app_operations_internal.hpp)
   app_datasets.cpp          the Datasets view (draw_datasets + the partition-placement overlay draw_dataset_placement; #585)
@@ -413,7 +414,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   fixtures/                 committed test fixtures (churn/ golden/ parquet/ churn_workflow.json)
   test_node.cpp / test_integrity.cpp / test_schemas.cpp / test_runtime.cpp
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime seam)
-  util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ repl/ testkit/ usecases/churn/
+  util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
 build/generated/            embedded font header (generated; git-ignored)
 ```

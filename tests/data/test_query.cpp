@@ -653,6 +653,28 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     ASSERT_GE(audit.rows.size(), 1u);
     EXPECT_EQ(audit.rows[0]["action"].get<std::string>(), "data_access");
 
+    // system.activity — the merged chronological feed (#622): the audit trail +
+    // runs composed at query time, newest first. The run above contributes a
+    // "run created" and a "run succeeded" entry; the authorize decision enters
+    // through its audit event.
+    auto activity = svc.run("SELECT * FROM system.activity;", "");
+    ASSERT_TRUE(activity.ok()) << activity.error;
+    ASSERT_GE(activity.rows.size(), 3u);
+    bool saw_run_succeeded = false;
+    for (const auto& row : activity.rows) {
+        if (row["action"].get<std::string>() == "run succeeded") {
+            saw_run_succeeded = true;
+            EXPECT_EQ(row["outcome"].get<std::string>(), "ok");
+            EXPECT_EQ(row["ref_kind"].get<std::string>(), "run");
+            EXPECT_EQ(row["ref_id"].get<std::string>(), run->id());
+        }
+    }
+    EXPECT_TRUE(saw_run_succeeded);
+    for (std::size_t i = 1; i < activity.rows.size(); ++i) {
+        EXPECT_GE(activity.rows[i - 1]["time"].get<std::string>(),
+                  activity.rows[i]["time"].get<std::string>());
+    }
+
     // WHERE + projection works over the new tables.
     auto projected = svc.run(
         "SELECT name FROM system.principals WHERE name = 'analyst';", "");

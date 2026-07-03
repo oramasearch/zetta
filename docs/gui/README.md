@@ -17,6 +17,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [models-panel.md](models-panel.md) — the standalone Models view: the GUI form of `system.models` — metrics, ranked drivers, weights fingerprint + an inline Add model affordance (#575).
 - [repl-console.md](repl-console.md) — the REPL console component (CMP-6 / #524): `repl::ConsoleModel` in zetta-core + the thin `gui::ReplConsole` renderer behind Data → Console.
 - [admin-panel.md](admin-panel.md) — the Admin & Settings panel (SCR-7 / CMP-5): read-only principals + keys, scope + capability grants, and the audit log.
+- [activity-feed.md](activity-feed.md) — the Activity view (#622): one chronological feed of everything the cluster was asked to do (audit trail + runs merged at render time; `system.activity` is its queryable twin), each entry with actor + surface (GUI · console · MCP) + outcome.
 - [cluster-node-gauges.md](cluster-node-gauges.md) — animated per-node resource gauges + sparklines on the cluster node boxes, fed by the signal-plane telemetry exchange (#584).
 - [cluster-pipeline-animation.md](cluster-pipeline-animation.md) — the distributed-algorithm-at-work animation over the cluster canvas: a thin renderer diffing the live instrumentation views (#590).
 - [graph-run-overlay.md](graph-run-overlay.md) — the Graph Workspace live-run overlay: per-step status on the canvas from the live Run record, pinned failures, output click-through (#626).

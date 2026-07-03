@@ -18,6 +18,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/compute/scaling_policy.hpp"
+#include "zetta/observability/activity.hpp"
 #include "zetta/pipeline/graph_plan.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/run_progress.hpp"
@@ -117,6 +118,19 @@ constexpr Tone tone_of(zetta::pipeline::StepPlacement placement) {
         case zetta::pipeline::StepPlacement::FanOut:      return Tone::Muted;
         case zetta::pipeline::StepPlacement::AllNodes:    return Tone::Muted;
         case zetta::pipeline::StepPlacement::Coordinator: return Tone::Warn;
+    }
+    return Tone::Muted;
+}
+
+// An activity-feed entry's outcome (#622): ok green; denied and failed both
+// red (governance refusing vs the engine failing — the label carries the
+// difference); info (created / queued, no outcome yet) quiet.
+constexpr Tone tone_of(zetta::observability::ActivityOutcome outcome) {
+    switch (outcome) {
+        case zetta::observability::ActivityOutcome::Ok:     return Tone::Ok;
+        case zetta::observability::ActivityOutcome::Denied: return Tone::Error;
+        case zetta::observability::ActivityOutcome::Failed: return Tone::Error;
+        case zetta::observability::ActivityOutcome::Info:   return Tone::Muted;
     }
     return Tone::Muted;
 }

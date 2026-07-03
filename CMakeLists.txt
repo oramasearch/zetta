@@ -370,6 +370,7 @@ endif()
 # zetta-core (the headless database node — no SDL/ImGui dependency)
 # -----------------------------------------------------------------------------
 add_library(zetta-core STATIC
+  src/core/observability/activity.cpp
   src/core/observability/trace.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
@@ -585,6 +586,7 @@ add_executable(zetta
   src/gui/app_explorer.cpp
   src/gui/app_graph_workspace.cpp
   src/gui/app_deploy.cpp
+  src/gui/app_activity.cpp
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
   src/gui/app_datasets.cpp

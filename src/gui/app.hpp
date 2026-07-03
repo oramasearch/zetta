@@ -111,6 +111,7 @@ private:
         Graph,     // the execution-graph workspace
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
+        Activity,  // the chronological activity feed (#622): audit + runs merged
         Runs,      // runs / outputs / lineage
         Models,    // trained models (system.models) + register/import
         Jobs,      // compute jobs + scaling preview
@@ -264,6 +265,12 @@ private:
     // Render the cached inspect result for `provider` (from the node). Read-only;
     // triggers no cloud call. Shown inside the granted consent gate.
     void draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider);
+    // The Activity view (#622, docs/gui/activity-feed.md): ONE chronological
+    // feed of everything the cluster was asked to do, rendered each frame from
+    // zetta::observability::activity_entries (the audit trail + runs merged —
+    // the same source system.activity serves; no GUI copy). Filters below are
+    // presentation state only.
+    void draw_activity();
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
     void draw_models();      // standalone models (system.models): list + detail + add
     // The inline "Add model" affordance inside draw_models: register/import a model
@@ -610,6 +617,11 @@ private:
     std::string add_model_weights_path_;     // staged weights file ("" = none)
     std::string add_model_weights_name_;     // its display filename
     std::string add_model_error_;            // inline register error
+
+    // Activity panel (#622) — presentation-only filters over the feed computed
+    // fresh each frame (zetta::observability::activity_entries; no stored copy).
+    int activity_window_ = 0;   // 0 = last hour, 1 = last 24 hours, 2 = all time
+    int activity_surface_ = 0;  // 0 = all surfaces, 1 = GUI, 2 = console, 3 = MCP
 
     // File ingestion (drag-and-drop + native dialog) and its last status line.
     std::mutex incoming_mutex_;

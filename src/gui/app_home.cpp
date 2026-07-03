@@ -1,8 +1,10 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/tones.hpp"
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
+#include "zetta/observability/activity.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/version.hpp"
 
@@ -125,7 +127,6 @@ void App::draw_home() {
         ImGui::TextColored(kInkMuted,
             "No projects yet. Create one to turn an intent into a deployed "
             "pipeline.");
-        return;
     }
     for (const std::string& name : names) {
         const auto project = node_.find_project(name);
@@ -146,6 +147,41 @@ void App::draw_home() {
         ImGui::Spacing();
         ImGui::PopID();
     }
+
+    // Recent activity — a compact strip of the same feed the Activity view
+    // renders (#622): the newest few entries, recomputed each frame from
+    // zetta::observability::activity_entries (no copy), with the link into
+    // the full feed. Quiet metadata lines in the strip grammar.
+    ImGui::Spacing();
+    ImGui::Spacing();
+    eyebrow(mono_font_, "RECENT ACTIVITY");
+    ImGui::Spacing();
+    const std::vector<zetta::observability::ActivityEntry> recent =
+        zetta::observability::activity_entries(node_);
+    if (recent.empty()) {
+        ImGui::TextColored(kInkMuted,
+            "Nothing yet. Runs, deploys, compute jobs, and MCP calls land "
+            "here as they happen.");
+        return;
+    }
+    const std::size_t shown = recent.size() < 5 ? recent.size() : 5;
+    if (mono_font_) ImGui::PushFont(mono_font_);
+    for (std::size_t i = 0; i < shown; ++i) {
+        const zetta::observability::ActivityEntry& entry = recent[i];
+        // "14:03:21" from the fixed-width ISO stamp; the full stamp lives in
+        // the Activity view.
+        const std::string clock =
+            entry.time.size() >= 19 ? entry.time.substr(11, 8) : entry.time;
+        status_dot(tone_color(tone_of(entry.outcome)));
+        std::string line = clock + " · " +
+                           activity_surface_label(entry.surface) + " · " +
+                           entry.action;
+        if (!entry.target.empty()) line += " · " + entry.target;
+        ImGui::TextColored(kInkSecondary, "%s", line.c_str());
+    }
+    if (mono_font_) ImGui::PopFont();
+    ImGui::Spacing();
+    entity_link("View all activity", View::Activity, {});
 }
 
 void App::draw_dashboard() {

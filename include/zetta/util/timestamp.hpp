@@ -10,4 +10,9 @@ namespace zetta::util {
 // on replicated entities (e.g. zetta::pipeline::Project).
 std::string now_iso8601();
 
+// The UTC time `seconds_ago` seconds before now, in the same fixed-width
+// ISO-8601 shape — a cutoff stamp for time-window filters ("last hour", #622):
+// compare it lexicographically against entity stamps.
+std::string iso8601_seconds_ago(long long seconds_ago);
+
 }  // namespace zetta::util

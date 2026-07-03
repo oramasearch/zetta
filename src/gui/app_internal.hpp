@@ -17,6 +17,8 @@
 #include <string_view>
 #include <vector>
 
+#include "zetta/observability/activity.hpp"
+
 namespace zetta::gui {
 
 // ── Orama design-system palette (light) ───────────────────────────────────
@@ -79,6 +81,19 @@ inline constexpr ImVec4 tone_background(Tone tone) {
         case Tone::Muted:  return kSidebar;
     }
     return kSidebar;
+}
+
+// The product name of an activity surface (#622): local in-process actions
+// ARE the headed GUI here; `api` is the MCP server (REST gets its own label
+// when the REST rendering, #618, lands and the server can tell them apart).
+inline const char* activity_surface_label(
+    zetta::observability::ActivitySurface surface) {
+    switch (surface) {
+        case zetta::observability::ActivitySurface::Local:   return "GUI";
+        case zetta::observability::ActivitySurface::Console: return "console";
+        case zetta::observability::ActivitySurface::Api:     return "MCP";
+    }
+    return "GUI";
 }
 
 // A small, valid execution graph (the IR's canonical JSON form) prefilled into
