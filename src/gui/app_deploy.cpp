@@ -106,9 +106,7 @@ void App::draw_gate() {
         }
     }
 
-    if (!gate_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", gate_error_.c_str());
-    }
+    banner(Tone::Error, gate_error_);
 
     if (!gate_report_) return;
     const zetta::pipeline::ValidationReport& report = *gate_report_;
@@ -268,11 +266,7 @@ void App::draw_deploy() {
         }
     }
     ImGui::EndDisabled();
-    if (!deploy_status_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(tone_color(deploy_failed_ ? Tone::Error : Tone::Ok),
-                           "%s", deploy_status_.c_str());
-    }
+    banner(deploy_failed_ ? Tone::Error : Tone::Ok, deploy_status_);
 
     // 3b) Run over the cluster — the churn solution actually trains a Model, ranks
     //     the at-risk accounts, and explains the drivers (FEAT-4 / UC-1, #398) on the
@@ -288,11 +282,7 @@ void App::draw_deploy() {
         ImGui::SameLine();
         ImGui::TextDisabled(
             "trains a real model on a built-in demo dataset, over the live cluster");
-        if (!churn_run_status_.empty()) {
-            ImGui::TextColored(
-                tone_color(churn_run_failed_ ? Tone::Error : Tone::Ok), "%s",
-                churn_run_status_.c_str());
-        }
+        banner(churn_run_failed_ ? Tone::Error : Tone::Ok, churn_run_status_);
     }
 
     // 4) Deployment status — the recorded placements (acceptance: "see its

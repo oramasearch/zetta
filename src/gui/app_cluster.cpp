@@ -1348,8 +1348,10 @@ void App::draw_add_nodes_control() {
             ImGui::EndChild();
             ImGui::PopStyleColor();
         } else {
-            ImGui::TextColored(tone_color(Tone::Ok), "%s",
-                               add_nodes_status_.c_str());
+            // The async add's completion outcome (#632) — the per-panel banner.
+            // The warn branch above deliberately stays a scrollable box: a
+            // provider CLI failure runs to many lines and needs Copy.
+            banner(Tone::Ok, add_nodes_status_);
         }
     }
 }

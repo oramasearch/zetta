@@ -227,9 +227,11 @@ void App::draw_test_suite() {
         if (mono_font_) ImGui::PushFont(mono_font_);
         ImGui::TextColored(kInkQuiet, "· %.3fs", result.elapsed_seconds);
         if (mono_font_) ImGui::PopFont();
+        // The run's outcome as the per-panel banner (#632): the case's summary,
+        // or its failure reason verbatim, toned by the outcome.
         const std::string& message =
             result.summary.empty() ? result.error : result.summary;
-        if (!message.empty()) ImGui::TextWrapped("%s", message.c_str());
+        banner(tone_of(result.outcome), message);
 
         if (!result.metrics.empty()) {
             ImGui::Spacing();

@@ -11,6 +11,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [design-system.md](design-system.md) — the Orama design system as applied to the headed GUI: colour tokens, Geist typography, copy rules, coral discipline, component grammar. **Read before touching the GUI.**
 - [master-detail.md](master-detail.md) — the master-detail scaffold: one split + row shape + selection model for every list panel (Runs / Models / Jobs / Datasets / Cloud / Admin swept onto it, #634).
 - [status-tones.md](status-tones.md) — one status visual language: `Tone` + `tone_of(...)` in the single mapping site `tones.hpp`, rendered by `status_label` (rows) / `status_pill` (headers) (#636).
+- [feedback-grammar.md](feedback-grammar.md) — one language for action outcomes (#632): inline field validation, the per-panel `banner` (engine reason verbatim), the job pattern for async work; no modals, no silent failures.
 - [new-project-screen.md](new-project-screen.md) — the New Project screen (SCR-2): name a project, paste an NL intent, import/drop an n8n workflow artifact in one atomic create (FEAT-1).
 - [datasets-panel.md](datasets-panel.md) — the Datasets view: the GUI form of [`system.datasets`](../data/system-datasets.md), with partition placement as a node-box overlay (#586).
 - [search-view.md](search-view.md) — the Search view: the GUI rendering of [`Node::search`](../indexing/node-search.md) — ranked hits + per-node provenance, the same path as the `search` MCP tool (#641).

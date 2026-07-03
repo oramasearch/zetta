@@ -530,11 +530,16 @@ private:
     std::string rename_project_input_;
     std::string rename_db_input_;
     std::string doc_input_{R"({"name": "example", "value": 1})"};
-    // Per-column inline error messages.
+    // Per-column action feedback (#632): each Explorer column surfaces its last
+    // action's outcome as a banner where the action was taken. `*_error_` carry
+    // the failure reason; `project_status_` carries the create-project success
+    // summary (set by the New Project modal, shown in the Projects column).
     std::string project_error_;
+    std::string project_status_;
     std::string db_error_;
     std::string table_error_;
     std::string row_error_;
+    std::string large_object_error_;
 
     // New Project modal (SCR-2 / FEAT-1): the full "name + paste intent + import
     // n8n artifact" front door, opened from the Projects column or File menu.
@@ -648,16 +653,20 @@ private:
     std::string add_model_weights_path_;     // staged weights file ("" = none)
     std::string add_model_weights_name_;     // its display filename
     std::string add_model_error_;            // inline register error
+    std::string add_model_status_;           // last register's success summary
 
     // Activity panel (#622) — presentation-only filters over the feed computed
     // fresh each frame (zetta::observability::activity_entries; no stored copy).
     int activity_window_ = 0;   // 0 = last hour, 1 = last 24 hours, 2 = all time
     int activity_surface_ = 0;  // 0 = all surfaces, 1 = GUI, 2 = console, 3 = MCP
 
-    // File ingestion (drag-and-drop + native dialog) and its last status line.
+    // File ingestion (drag-and-drop + native dialog) and its last status line,
+    // rendered as a banner on Home and Datasets; `io_status_error_` picks the
+    // banner's tone so a failed add/import/store reads as a failure (#632).
     std::mutex incoming_mutex_;
     std::vector<IncomingFile> incoming_files_;
     std::string io_status_;
+    bool io_status_error_ = false;
 
     // Graph Workspace state. The panel edits a *working copy* of the open graph
     // (editing_graph_) and only writes it back to the IR on Save, so an edit is
@@ -672,6 +681,7 @@ private:
     bool graph_dirty_ = false;         // working copy has structural edits to save
     std::string selected_node_id_;     // node selected in the canvas ("" = none)
     std::string graph_error_;          // inline error for graph/list operations
+    std::string graph_status_;         // last save's success summary (#632)
     std::string new_graph_input_;      // name field for "New graph"
     std::string rename_graph_input_;   // name field for the open graph (rename)
     std::string add_node_name_input_;  // name field for a new node

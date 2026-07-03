@@ -495,6 +495,7 @@ void App::handle_incoming_files() {
             add_model_weights_path_ = f.path;
             add_model_weights_name_ = path.filename().string();
             io_status_ = "Staged weights: " + add_model_weights_name_;
+            io_status_error_ = false;
             continue;
         }
         // A dataset file (parquet/jsonl/json/csv) is loaded as a *partitioned*
@@ -510,11 +511,13 @@ void App::handle_incoming_files() {
                              std::to_string(loaded.rows) + " row(s), " +
                              std::to_string(loaded.partitions.size()) +
                              " partition(s))";
+                io_status_error_ = false;
                 // Surface it: switch to the Datasets view and select it.
                 navigate_to(View::Datasets,
                             loaded.table ? loaded.table->id() : std::string());
             } else {
                 io_status_ = "Add dataset failed: " + loaded.error;
+                io_status_error_ = true;
             }
             continue;
         }
@@ -532,23 +535,27 @@ void App::handle_incoming_files() {
             if (!table) {
                 io_status_ = "Import: select a table first (" +
                              path.filename().string() + ")";
+                io_status_error_ = true;
                 continue;
             }
             const zetta::data::ImportResult r = import_records(*table, path);
             io_status_ = r.ok() ? "Imported " + std::to_string(r.added) +
                                       " record(s) into " + table->name()
                                 : "Import failed: " + r.error;
+            io_status_error_ = !r.ok();
         } else {
             auto db = node_.find_database(selected_db_);
             if (!db) {
                 io_status_ = "Store: select a database first (" +
                              path.filename().string() + ")";
+                io_status_error_ = true;
                 continue;
             }
             const auto lo = db->large_objects().import_file(path);
             io_status_ = lo ? "Stored " + lo->name + " (" +
                                   zetta::util::format_bytes(lo->size) + ") as a large object"
                             : "Store failed: " + path.string();
+            io_status_error_ = !lo.has_value();
         }
     }
 }

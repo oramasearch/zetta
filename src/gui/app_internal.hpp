@@ -484,6 +484,9 @@ inline void banner(Tone tone, const std::string& message) {
     if (message.empty()) return;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, tone_background(tone));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    // Scope the child id by the message so a panel can show several banners
+    // (e.g. a form error above a save result) without an id collision.
+    ImGui::PushID(message.c_str());
     ImGui::BeginChild("##banner", ImVec2(0.0f, 0.0f),
                       ImGuiChildFlags_AutoResizeY |
                           ImGuiChildFlags_AlwaysUseWindowPadding);
@@ -492,6 +495,7 @@ inline void banner(Tone tone, const std::string& message) {
     ImGui::TextColored(kInkPrimary, "%s", message.c_str());
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
+    ImGui::PopID();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
     ImGui::Spacing();
