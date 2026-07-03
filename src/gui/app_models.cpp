@@ -46,9 +46,7 @@ void render_model_card(const zetta::ml::Model& model) {
     }
     if (g_mono_font) ImGui::PopFont();
 
-    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
-                                        ImGuiTableFlags_RowBg |
-                                        ImGuiTableFlags_SizingStretchProp;
+    const ImGuiTableFlags table_flags = kDataTableFlags;
 
     // Metrics — the evaluation scores (auc / f1 / …). A flat name→number map; a
     // value in [0, 1] also gets a bar so a score reads at a glance.
@@ -94,7 +92,7 @@ void render_model_card(const zetta::ml::Model& model) {
             for (const zetta::ml::ModelDriver& driver : drivers) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(0);
-                ImGui::Text("%d", ++rank);
+                table_numeric(std::to_string(++rank));
                 ImGui::TableSetColumnIndex(1);
                 ImGui::TextUnformatted(driver.feature.c_str());
                 ImGui::TableSetColumnIndex(2);
