@@ -1,6 +1,8 @@
 #pragma once
 
+#include <optional>
 #include <string>
+#include <string_view>
 
 namespace zetta::util {
 
@@ -14,5 +16,13 @@ std::string now_iso8601();
 // ISO-8601 shape — a cutoff stamp for time-window filters ("last hour", #622):
 // compare it lexicographically against entity stamps.
 std::string iso8601_seconds_ago(long long seconds_ago);
+
+// Parse a UTC ISO-8601 stamp in the shape now_iso8601() writes
+// ("2026-06-25T14:03:21.123Z"; the fractional part is optional) into seconds
+// since the Unix epoch. The inverse needed for duration math between entity
+// stamps (e.g. Home's intent→deployed velocity KPI, #629). Non-throwing
+// boundary: nullopt when the text doesn't match the shape or names an
+// impossible date/time.
+std::optional<double> parse_iso8601_seconds(std::string_view stamp);
 
 }  // namespace zetta::util

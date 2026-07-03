@@ -41,8 +41,9 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   **sentence case**, **no em-dashes** in product copy (use `·`/colons).
   Run the design-system self-check before shipping.
 - **Compose the widget grammar — never hand-roll visuals.** Panels build from
-  `page_header`/`header_action`/`section_card`/`stat_tile`/`empty_state`/
-  `banner` (+ the older `eyebrow`/`status_dot`/`mono_line`/`primary_button`)
+  `page_header`/`header_action`/`section_card`/`stat_tile`/`stat_tile_link`/
+  `empty_state`/`banner` (+ the older `eyebrow`/`status_dot`/`mono_line`/
+  `primary_button`)
   in `app_internal.hpp`, plus plain ImGui tables/plots. No local colors,
   paddings, or one-off buttons — a new visual becomes a grammar widget first.
   **Status colors come ONLY from `tone_of(...)` in `tones.hpp`** (#636); a new

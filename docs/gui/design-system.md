@@ -18,7 +18,7 @@ coral discipline, and the component grammar **as implemented in
 
 1. **One coral, used surgically.** Coral `#E2545A` is the brand "this is Orama /
    you are here" signal — the active-view checkmark, the selected graph-node
-   border, the single focal phrase on the Home hero. **Never** for status, never
+   border, the tagline in the About dialog. **Never** for status, never
    on hover, at most a few per screen. If a second thing needs emphasis, use
    charcoal/ink, not coral.
 2. **Density over decoration.** Practitioner tool: tight, typographic, no
@@ -85,7 +85,8 @@ Hover/selected washes and ghost-button fills are black at low alpha
   fill), coral checkmark/nav-highlight.
 - **Buttons.** Ghost by default (faint wash + hairline border, ink text). A true
   primary "New …" action is **charcoal-filled, white text** (push `ImGuiCol_Button
-  = kInkPrimary` + `Text = kWhite`); see `draw_home`. Coral is never a button
+  = kInkPrimary` + `Text = kWhite`); see `primary_button` / `empty_state` in
+  `app_internal.hpp`. Coral is never a button
   fill (there is no "send" here).
 - **Selection.** Soft black wash (`ImGuiCol_Header`), never coral or charcoal
   fill.

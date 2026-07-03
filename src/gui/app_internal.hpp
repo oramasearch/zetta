@@ -301,6 +301,30 @@ inline void stat_tile(const char* label, const std::string& value,
     ImGui::EndGroup();
 }
 
+// A stat_tile that is also a link (#629, the Home dashboard's "every tile is
+// a click-through" rule): identical geometry and typography to stat_tile,
+// plus the entity_link hover affordance (hand cursor + an underline beneath
+// the eyebrow label). Returns true when clicked so the caller can
+// navigate_to(...) its owning panel. Not a button — links are wayfinding, so
+// there is no fill, no border, and never coral (the design system's link
+// rules).
+inline bool stat_tile_link(const char* label, const std::string& value,
+                           Tone tone = Tone::Muted) {
+    stat_tile(label, value, tone);  // its BeginGroup/EndGroup is the hover item
+    const bool hovered = ImGui::IsItemHovered();
+    const bool clicked = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    if (hovered) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        const ImVec2 tile_min = ImGui::GetItemRectMin();
+        const ImVec2 tile_max = ImGui::GetItemRectMax();
+        ImGui::GetWindowDrawList()->AddLine(
+            ImVec2(tile_min.x, tile_max.y + 1.0f),
+            ImVec2(tile_max.x, tile_max.y + 1.0f),
+            ImGui::GetColorU32(kInkSecondary));
+    }
+    return clicked;
+}
+
 // The ONLY way a panel renders "nothing here" (#631): one headline, one
 // sentence of muted body, and the single next action. Returns true when the
 // action is clicked; pass "" to render no action.

@@ -56,6 +56,10 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
   eyebrow title; cards never nest.
 - `stat_tile(label, value, tone)` — dashboard/summary numbers, mono value
   colored by tone (`Tone::Muted` renders plain ink); lay out with `SameLine`.
+- `stat_tile_link(label, value, tone) -> bool` — a stat_tile that is also a
+  link (#629): same geometry plus the entity_link hover affordance (hand
+  cursor + underline), returning clicked so the caller can `navigate_to` the
+  owning panel. Home's health strip is the worked example.
 - `empty_state(headline, body, action_label) -> bool` — the ONLY way a panel
   renders "nothing here" (#631): one sentence + the single next action;
   returns true when clicked (pass `""` for no action).

@@ -125,7 +125,7 @@ private:
     // of every panel stacked in one long scroll. Ordered along the product flow:
     // your data → architect the pipeline → operate it → govern it.
     enum class View {
-        Home,      // project-first landing (the default)
+        Home,      // the dashboard landing (SCR-1, the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
         Datasets,  // datasets (system.datasets): schema/size/format + placement
         Search,    // fulltext search over registered indexes (Node::search, #641)
@@ -241,7 +241,8 @@ private:
     void draw_menu_bar();     // selects the view; Quit toggles running_
     void draw_active_view();  // render whichever View is selected (the menu switcher)
     void draw_about_modal();  // the Help → About Orama Zetta dialog
-    void draw_home();         // project-first landing (hero + New project + projects)
+    void draw_home();         // the dashboard landing (SCR-1, #629): health strip,
+                              // needs-attention, recent runs, projects, activity
     void draw_dashboard();
     void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
     void draw_projects();    // top-level AI projects (create/select/rename/delete)

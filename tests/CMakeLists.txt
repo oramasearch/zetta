@@ -27,6 +27,7 @@ add_executable(zetta-tests
   usecases/churn/test_entity_resolution_check.cpp
   usecases/churn/test_entity_resolution.cpp
   util/test_duration.cpp
+  util/test_timestamp.cpp
   data/test_jsonl_store.cpp
   data/test_partitioner.cpp
   data/test_rendezvous_placement.cpp
