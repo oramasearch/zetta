@@ -18,7 +18,7 @@ const CloudProviderCatalog& CloudProviderCatalog::builtin() {
             .id = "local",
             .name = "Local",
             .category = "Local",
-            .summary = "This machine — the running zetta node. No external "
+            .summary = "This machine (the running zetta node). No external "
                        "access; nothing to authorize.",
             .cli = {},
             .config_paths = {},
