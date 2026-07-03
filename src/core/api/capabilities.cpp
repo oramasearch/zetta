@@ -439,6 +439,9 @@ const nlohmann::json& list_indexes_schema() {
     return schema;
 }
 
+// The index registry as a tool (#642) — read from the same live source
+// (Node::indexes()) the system.indexes SQL view computes from (RULE-7), so an
+// agent can discover what `search` can target before searching.
 ApiResult handle_list_indexes(const nlohmann::json&, ApiContext& context) {
     nlohmann::json indexes = nlohmann::json::array();
     for (const auto& index : context.node.indexes()) {
@@ -837,7 +840,8 @@ void register_core_capabilities(Registry& registry) {
         "list_indexes",
         "List indexes",
         "Read a compact listing of every registered index — id, table, kind, "
-        "backend, fields. No side effects.",
+        "backend, fields — to discover what `search` can target. No side "
+        "effects.",
         list_indexes_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},

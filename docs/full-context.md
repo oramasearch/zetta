@@ -87,13 +87,19 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   tick) with per-node provenance + one trace; surfaced as the `search` MCP
   capability and the GUI Search view
   ([docs/indexing/node-search.md](indexing/node-search.md)).
-- **In flight (this branch)**: [#643](https://github.com/oramasearch/zetta/issues/643)
+- **Merged to `dev` 2026-07-02 (search view)**: [#643](https://github.com/oramasearch/zetta/issues/643)
   — the Search view finished as a first-class distributed+observable surface:
   sub-indexes-queried provenance end to end (`NodeContribution.sub_indexes`,
   the `fulltext_hits` wire field, the `search` capability), the provenance
   strip + the cluster strip replaying the scatter-gather as #590 flows,
   master-detail hits with source-row fields and entity_links
   ([docs/gui/search-view.md](gui/search-view.md)).
+- **In flight (this branch)**: [#642](https://github.com/oramasearch/zetta/issues/642)
+  — the search capability rounded out: `list_indexes` (the index registry as
+  a tool — discover what `search` can target) and the layer-1 distributed
+  search journey (3-node loopback cluster: list_indexes → search → ranked
+  hits + per-node provenance → get_trace per-peer spans;
+  `tests/api/test_search_journey.cpp`).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.
