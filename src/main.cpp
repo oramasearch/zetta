@@ -381,6 +381,10 @@ int main(int argc, char** argv) {
         // GUI-driven searches record their trace into the same span ring MCP
         // calls use, so list_traces shows one history (no ring = no spans).
         if (api_server) app.set_span_recorder(&api_server->recorder());
+        // The command palette (#625) renders + executes the same capability
+        // registry the MCP server serves — one list, many renderings. With
+        // --no-mcp the App builds its own from register_core_capabilities.
+        if (api_server) app.set_capability_registry(&api_server->registry());
         app.set_provisioner("local", local_provisioner);
 
         // Burst nodes auto-join this cluster by seeding from a reachable address.

@@ -26,7 +26,9 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   `app_governance` / `app_test_suite`);
   operations-view helpers shared across TUs live in
   `app_operations_internal.hpp`; the view registry + sidebar + navigation
-  live in `app_views.cpp`.
+  live in `app_views.cpp`; the Cmd+K command palette lives in
+  `app_palette.cpp` (#625 — fuzzy matching itself is
+  `zetta::util::fuzzy_score` in zetta-core, tested headless).
 - **Navigation goes through the registry.** A view exists as one `ViewInfo`
   row in `App::view_registry()` (app_views.cpp); `navigate_to(view, entity)`
   is the ONLY way code changes the active view (never assign `active_view_`),

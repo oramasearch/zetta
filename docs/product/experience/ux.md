@@ -31,6 +31,10 @@ lens on a cluster that is primarily driven programmatically
 - Empty states teach (one sentence + the single next action); feedback quotes
   the engine verbatim; consent gates name exactly what would happen; long
   operations are visible jobs, never frozen frames.
+- Keyboard-first for operators who live in the app: the Cmd+K command palette
+  ([../gui/command-palette.md](../../gui/command-palette.md)) reaches every
+  view, every named entity, and the capability registry's actions — the tool
+  list rendered for humans, same gating everywhere (#625).
 
 ## The loop
 

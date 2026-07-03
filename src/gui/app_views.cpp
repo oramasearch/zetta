@@ -1,6 +1,6 @@
 // The view registry + navigation + sidebar (#628, docs/gui/architecture.md).
 // Each view is declared exactly once in the registry table below; the sidebar,
-// navigation, and (later) the command palette all consume the same rows.
+// navigation, and the command palette (#625) all consume the same rows.
 
 #include <cfloat>
 #include <string>
