@@ -65,9 +65,13 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
-    // The constructing thread starts as the owner thread (#624); tick()
-    // refreshes it, so the node follows whichever loop drives it.
-    owner_thread_.store(std::this_thread::get_id(), std::memory_order_release);
+    // The owner thread is adopted LAZILY, at the first tick() (#624) — never
+    // here. A constructed-but-never-ticked node has no owner loop to drain
+    // the gate, so run_on_owner treats it as ungated (inline); adopting the
+    // constructing thread here would instead deadlock any cross-thread caller
+    // against an owner that never drains (a harness that builds nodes and
+    // drives them from its own threads without ticking — the testkit's
+    // per-node SPMD threads).
     // Register the always-available index backends so an `index` step resolves
     // out of the box (the per-node container the run path builds + queries
     // through, #528). InMemoryIndexBackend ("memory_search") is the pure-host

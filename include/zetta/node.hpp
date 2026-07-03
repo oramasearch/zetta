@@ -143,18 +143,21 @@ public:
     // so engine runners can be driven from a worker.
     //
     // `work` must be quick (it executes inside a tick) and must not throw.
-    // Calling from a non-owner thread requires a live owner loop — EXCEPT on
-    // a node no loop has ever ticked: with no owner to drain the queue the
-    // work runs inline (the pre-gate contract — a harness driving nodes from
-    // its own threads arranges exclusive access itself; both apps adopt an
-    // owner on their first loop pass, before any background action exists).
-    // The wait rides the runtime seam (async_event + block_on) — no
-    // caller-facing condition variables.
+    // Calling from a non-owner thread requires a live owner loop — and the
+    // owner is adopted LAZILY, at the first tick(), never at construction. A
+    // node no loop has ever ticked is UNGATED: the work runs inline on the
+    // caller (the pre-gate contract — a harness driving nodes from its own
+    // threads without ticking them arranges exclusive access itself; both
+    // apps tick from their first loop pass, before any background action
+    // exists, so interactive runs always gate). Once a loop HAS adopted the
+    // node it must keep ticking (or drain) while gated workers run. The wait
+    // rides the runtime seam (async_event + block_on) — no caller-facing
+    // condition variables.
     void run_on_owner(const std::function<void()>& work);
 
-    // True when the calling thread is the node's owner thread (the thread
-    // that constructed it, refreshed by tick() so a node handed to another
-    // loop follows its ticker).
+    // True when the calling thread is the node's owner thread (adopted at
+    // the first tick(), refreshed every tick so a node handed to another
+    // loop follows its ticker; false on a never-ticked node).
     bool on_owner_thread() const;
 
     // The owner loop's drain point: execute every queued run_on_owner work
