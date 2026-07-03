@@ -175,7 +175,7 @@ void App::draw_datasets() {
             ImGui::Spacing();
             eyebrow(mono_font_, "SCHEMA");
             if (dataset->columns.empty()) {
-                ImGui::TextDisabled("(no columns — the dataset is empty)");
+                ImGui::TextDisabled("(no columns: the dataset is empty)");
             } else {
                 // The inferred field names (first-seen order), wrapped in mono.
                 if (g_mono_font) ImGui::PushFont(g_mono_font);
@@ -328,12 +328,10 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
 
     // The literal per-partition placement table: which slice → which owners — the
     // catalog rows behind the overlay above, in row-range order.
-    if (ImGui::BeginTable("##dataset_partitions", 3,
-                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                              ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("partition");
-        ImGui::TableSetupColumn("row range");
-        ImGui::TableSetupColumn("owner nodes");
+    if (ImGui::BeginTable("##dataset_partitions", 3, kDataTableFlags)) {
+        ImGui::TableSetupColumn("Partition");
+        ImGui::TableSetupColumn("Row range");
+        ImGui::TableSetupColumn("Owner nodes");
         ImGui::TableHeadersRow();
         for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
             ImGui::TableNextRow();
