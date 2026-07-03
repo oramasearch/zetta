@@ -102,7 +102,7 @@ NearDataGroupByResult run_near_data_group_by_job(
 It loads this node's shard with `load_local_partitions`, then drives the *exact
 same* distributed group-by + [`ComputeJob`](compute-jobs.md) lifecycle as
 [`run_group_by_job`](../ddf/ddf-groupby.md) (#387) over that local frame — so the work is
-recorded, audited, and appears in `system.zetta_jobs`. Call it **concurrently on
+recorded, audited, and appears in `system.jobs`. Call it **concurrently on
 every participating node** (the collectives need all participants);
 `coordinator.start()` must have run.
 

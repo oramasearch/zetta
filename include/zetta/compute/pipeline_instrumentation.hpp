@@ -18,7 +18,7 @@
 // `system.pipeline_jobs`.
 //
 // **Ephemeral / observed — never replicated (no CRDT).** Like `system.node_metrics`
-// / `system.checkpoints` / `system.zetta_cloud_status`, these are a measurement of
+// / `system.checkpoints` / `system.cloud_status`, these are a measurement of
 // what this node did, not durable agreed state, so they live only in memory on the
 // node that ran the job and are bounded (the registry keeps the most-recent N). They
 // introduce **no new JSON boundary**: a runner constructs this struct from its own

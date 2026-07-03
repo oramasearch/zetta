@@ -76,7 +76,7 @@ the GUI, every frame:
   signal is a message, not durable state): telemetry goes stale in seconds, so the
   cache **drops a peer whose last sample aged past the TTL** (default 8s) and
   nothing is gossiped through the CRDT. It is the same *ephemeral, observed*
-  altitude as [`system.zetta_cloud_status`](../cloud/cloud-inspector.md) /
+  altitude as [`system.cloud_status`](../cloud/cloud-inspector.md) /
   [`system.checkpoints`](../compute/job-checkpoint.md).
 - The GUI is a **thin renderer over `telemetry_snapshot()`**: it holds only the
   animation state (`zetta::gui::NodeGaugeState` in `src/gui/cluster_telemetry.hpp`

@@ -15,7 +15,7 @@ size + SHA-256 recorded in the metadata.
 
 This page documents the **storage + data model**: the `Model` type, its
 lifecycle (create / attach weights / query / drop) on a `Node`, how it
-replicates, and the `system.zetta_models` registry table.
+replicates, and the `system.models` registry table.
 
 ## The type
 
@@ -166,14 +166,14 @@ arrived yet is **informational** (`model_weights_missing` — awaiting transfer)
 present body that no longer matches its digest is **corruption**
 (`corrupt_model_weights`, which fails `IntegrityReport::ok()`).
 
-## The registry — `system.zetta_models`
+## The registry — `system.models`
 
 The model registry is surfaced as a read-only [system table](../data/query.md) (like
-`system.zetta_deployments`), computed at query time from `Node::models()`:
+`system.deployments`), computed at query time from `Node::models()`:
 
 ```sql
-SELECT * FROM system.zetta_models;
-SELECT model_id, kind FROM system.zetta_models WHERE kind = 'classifier';
+SELECT * FROM system.models;
+SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 ```
 
 Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
@@ -203,4 +203,4 @@ bytes the caller already has.
 - [runs.md](../pipeline/runs.md) — the sibling top-level entity this is modeled on.
 - [large-objects.md](../data/large-objects.md) — the body-transfer seam the weights reuse.
 - [replication.md](../cluster/replication.md) — the CRDT data plane.
-- [query.md](../data/query.md) — the system-table mechanism behind `system.zetta_models`.
+- [query.md](../data/query.md) — the system-table mechanism behind `system.models`.

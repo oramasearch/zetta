@@ -139,12 +139,12 @@ how `project.json` / `database.json` are read.
 Deployments are queryable two ways:
 
 - **C++ API** — `Node::deployments()` / `find_deployment()` (above).
-- **SQL** — the virtual **`system.zetta_deployments`** table
-  ([query.md](../data/query.md)), alongside `system.zetta_nodes`:
+- **SQL** — the virtual **`system.deployments`** table
+  ([query.md](../data/query.md)), alongside `system.nodes`:
 
   ```sql
-  SELECT * FROM system.zetta_deployments;
-  SELECT graph_name, node_count FROM system.zetta_deployments
+  SELECT * FROM system.deployments;
+  SELECT graph_name, node_count FROM system.deployments
     WHERE target_kind = 'local';
   ```
 
@@ -178,7 +178,7 @@ launchable straight from a deployment record.
 
 `tests/pipeline/test_deployment.cpp` covers the `DeploymentTarget` JSON round-trip +
 boundary validation, placing a graph onto a local target (and rejecting an empty
-graph / non-local target), the `system.zetta_deployments` query surface, survival
+graph / non-local target), the `system.deployments` query surface, survival
 across a restart (both disk-only and CRDT-only), and replication of a deployment
 to a connected peer (recording the placing node).
 

@@ -140,15 +140,15 @@ cached on the node and surfaced as SQL.
 
 ## SQL surface (`system` tables)
 
-Per the [house rule](../../CLAUDE.md) *surface observable state as a `system.zetta_*`
+Per the [house rule](../../CLAUDE.md) *surface observable state as a `system.*`
 table by default*, the inspector is queryable through the
 [query layer](../data/query.md):
 
-- **`system.zetta_cloud_providers`** — the provider catalog as a table
+- **`system.cloud_providers`** — the provider catalog as a table
   (`provider` / `name` / `category` / `cli` / `requires_consent` / `runnable` /
   `config_paths` / `inspect_commands`). **Pure metadata — reads nothing from any
   cloud.**
-- **`system.zetta_cloud_status`** — the cached results of consent-gated inspects
+- **`system.cloud_status`** — the cached results of consent-gated inspects
   (`Node::cloud_inspections()`: `provider` / `name` / `reachable` /
   `authenticated` / `identity` / `regions` / `resources` / `commands_ok` /
   `commands_total` / `checked_at` / `detail`). **Querying it never triggers a
@@ -178,8 +178,8 @@ the UI thread (a brief block on a user-initiated click) rather than off-thread.
   JSON degrades gracefully; bare-metal runs nothing (`ran = false`); and the
   report round-trips through its JSON boundary (a malformed report fails
   validation).
-- `tests/data/test_query.cpp` — `system.zetta_cloud_providers` covers every backend
-  with WHERE/projection; `system.zetta_cloud_status` is empty until an inspect is
+- `tests/data/test_query.cpp` — `system.cloud_providers` covers every backend
+  with WHERE/projection; `system.cloud_status` is empty until an inspect is
   recorded, then returns it.
 
 ## Related

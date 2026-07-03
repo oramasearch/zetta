@@ -177,7 +177,7 @@ void App::draw_databases() {
     }
 
     // The virtual, read-only `system` database (computed system tables like
-    // system.zetta_nodes). It isn't a real on-disk database, so it's listed
+    // system.nodes). It isn't a real on-disk database, so it's listed
     // apart and can't be renamed/dropped.
     ImGui::Separator();
     if (ImGui::Selectable("system  (virtual)", selected_db_ == "system")) {
@@ -213,7 +213,7 @@ void App::draw_tables() {
     if (selected_db_ == "system") {
         ImGui::TextDisabled("in 'system' (read-only)");
         ImGui::Separator();
-        for (const char* table_name : {"zetta_nodes"}) {
+        for (const char* table_name : {"nodes"}) {
             if (ImGui::Selectable(table_name, selected_table_ == table_name)) {
                 selected_table_ = table_name;
             }

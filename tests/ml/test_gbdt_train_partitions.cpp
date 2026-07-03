@@ -316,7 +316,7 @@ TEST(GbdtTrainPartitions, NearDataTrainCalibratedModelDriversRankMatchOracle) {
         EXPECT_GT(result.wire_bytes_moved, 0u) << "node " << index;
         total_rows_read += result.rows_read;
 
-        // Every step is durably recorded (system.zetta_jobs): the train job passed in,
+        // Every step is durably recorded (system.jobs): the train job passed in,
         // plus the explain + score jobs this runner created.
         EXPECT_TRUE(nodes[index]->node.find_job(jobs[index]->id())) << "node " << index;
         EXPECT_EQ(jobs[index]->kind(), JobKind::Train) << "node " << index;

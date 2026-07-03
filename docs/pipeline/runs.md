@@ -187,7 +187,7 @@ passes the matches to the detail renderer.
 
 `render_model_card` is **shared** with the standalone
 [Models panel](../gui/models-panel.md) (`App::draw_models`, **Operations → Models**), the
-model-first view over the whole [`system.zetta_models`](../data/query.md) registry — so a
+model-first view over the whole [`system.models`](../data/query.md) registry — so a
 model reads identically whether seen alongside its run here or browsed on its own
 there.
 

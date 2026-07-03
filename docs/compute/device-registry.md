@@ -58,7 +58,7 @@ double standing in for a CUDA device.
 
 This slice adds **no `Node` wiring and no SQL table** — it is a standalone library
 seam, the same altitude `ComputeDevice` and `Provisioner` shipped at. The
-coordinator that owns a registry per node, and any `system.zetta_devices` view,
+coordinator that owns a registry per node, and any `system.devices` view,
 are later slices.
 
 ## Enumeration

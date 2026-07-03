@@ -140,7 +140,7 @@ ChurnSolutionResult run_churn_solution(Node& node,
 // runs there — so the featurize / train / explain / rank jobs combine their partials
 // over the node's real cluster membership through the existing collectives (which ride
 // the signal plane), and the produced Run + Model + ranked list land on the live node
-// (visible in system.zetta_runs / system.zetta_models). It is otherwise identical to
+// (visible in system.runs / system.models). It is otherwise identical to
 // run_churn_solution — same encoding, specs, gated/governed surfaces wrap it the same
 // way, **no new JSON format**.
 //

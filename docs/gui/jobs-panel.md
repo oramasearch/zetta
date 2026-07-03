@@ -6,7 +6,7 @@ SCR). It surfaces two things an operator wants while a job runs, neither of whic
 had a GUI before:
 
 - **live compute jobs** — the GUI form of the
-  [`system.zetta_jobs`](../data/query.md) registry: every
+  [`system.jobs`](../data/query.md) registry: every
   [`ComputeJob`](../compute/compute-jobs.md) the node holds, with its lifecycle status
   (queued → running → succeeded | failed);
 - **per-job objective/scaling controls** — set the reward objective + bounds and
@@ -104,7 +104,7 @@ panels reuse their entities' schemas.
 
 This is the **compute view** slice of FEAT-5's GUI. It sits alongside the existing
 read-only panels (Cluster, Runs, Admin) and depends on two shipped subsystems: the
-[ComputeJob registry](../compute/compute-jobs.md) (`system.zetta_jobs`) and the
+[ComputeJob registry](../compute/compute-jobs.md) (`system.jobs`) and the
 [ScalingPolicy reward model](../compute/scaling-policy.md). The natural next slices are the
 **mutating** compute actions — creating + scheduling a job (the coordinator), and
 persisting a `ScalingPolicy` so the controls drive the live
@@ -116,7 +116,7 @@ previewing its evaluation.
 - `src/gui/app_jobs.cpp` — `App::draw_jobs` + `App::draw_job_scaling_controls` +
   `App::reset_scaling_controls`; status/action colours come from
   `tone_of(...)` in `src/gui/tones.hpp` (#636).
-- [compute-jobs.md](../compute/compute-jobs.md) — the `ComputeJob` entity + `system.zetta_jobs`
+- [compute-jobs.md](../compute/compute-jobs.md) — the `ComputeJob` entity + `system.jobs`
   registry the job list renders.
 - [scaling-policy.md](../compute/scaling-policy.md) — the `ScalingPolicy` reward model + the
   `evaluate()` the controls preview.

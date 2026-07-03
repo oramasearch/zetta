@@ -137,7 +137,7 @@ ensemble — see below).
   `<data_dir>/checkpoints`, surfaced as the read-only `system.checkpoints` table
   (one row per checkpointed job: kind / sequence / total / progress) — checkpoints
   are **local, ephemeral** durability artifacts, so the view has no CRDT backing
-  (like `system.zetta_cloud_status`).
+  (like `system.cloud_status`).
 - **Later slices:** a **replicated / shared** checkpoint store so a *replacement*
   burst node can resume a distributed job; driving the restart **automatically**
   from the autoscaler / deployment controller on a *detected* eviction (today the

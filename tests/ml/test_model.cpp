@@ -248,7 +248,7 @@ TEST(Model, RegistryVisibleViaSystemTable) {
     ASSERT_TRUE(model->set_weights(sample_weights()));
 
     QueryService svc{node};
-    auto sel = svc.run("SELECT * FROM system.zetta_models;", "");
+    auto sel = svc.run("SELECT * FROM system.models;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     ASSERT_EQ(sel.rows.size(), 1u);
     EXPECT_EQ(sel.rows[0]["model_id"].get<std::string>(), model->id());
@@ -261,7 +261,7 @@ TEST(Model, RegistryVisibleViaSystemTable) {
 
     // WHERE + projection over the registry.
     auto by_kind = svc.run(
-        "SELECT model_id FROM system.zetta_models WHERE kind = 'classifier';",
+        "SELECT model_id FROM system.models WHERE kind = 'classifier';",
         "");
     ASSERT_TRUE(by_kind.ok()) << by_kind.error;
     EXPECT_EQ(by_kind.rows.size(), 1u);

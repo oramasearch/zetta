@@ -20,7 +20,7 @@ schemas/group_by_spec.schema.json   the spec JSON boundary (draft-07)
 tests/ddf/test_group_by.cpp          single-node, the partial/merge/wire, the JSON boundary, the multi-node acceptance
 include/zetta/ddf/group_by_job.hpp   run_group_by_job — the op as a recorded ComputeJob (#387)
 src/core/ddf/group_by_job.cpp        drives distributed_group_by through the coordinator's job lifecycle
-tests/ddf/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.zetta_jobs)
+tests/ddf/test_ddf_group_by.cpp          the ComputeJob acceptance (the job records + shows in system.jobs)
 ```
 
 ## What it is
@@ -138,7 +138,7 @@ body. **`run_group_by_job`** (`include/zetta/ddf/group_by_job.hpp`, **FEAT-8**,
 [#387](https://github.com/oramasearch/zetta/issues/387)) packages that exact pattern
 as a reusable function that runs the groupby as a **recorded
 [`ComputeJob`](../compute/compute-jobs.md) of kind `ddf`** — so the work is durable, audited
-(`job_finished`), and **appears in `system.zetta_jobs`**, like any other unit of
+(`job_finished`), and **appears in `system.jobs`**, like any other unit of
 accelerated compute.
 
 ```cpp

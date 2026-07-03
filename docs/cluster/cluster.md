@@ -66,7 +66,7 @@ is wired in, peers gossip their documents and status over the connection (see
 
 - **Headed** — the Cluster panel's spatial node-box canvas (below).
 - **Headless** — the heartbeat prints a per-node table when it changes.
-- **SQL** — `SELECT * FROM system.zetta_nodes;` (see [query.md](../data/query.md)).
+- **SQL** — `SELECT * FROM system.nodes;` (see [query.md](../data/query.md)).
 
 ### Spatial node-box view (the headed canvas)
 
@@ -178,7 +178,7 @@ validated against a JSON Schema at the boundary. Full detail in
 
 zetta is **multi-leader by default** — the CRDT data plane needs no leader, so
 the cluster stays equal peers with no global election. Leadership applies only to
-**exclusive** structures (locks, etc.) via a planned, replicated `system.zetta_leadership`
+**exclusive** structures (locks, etc.) via a planned, replicated `system.leadership`
 table (lease + timeout + ascension), with Raft as a future option scoped to those
 structures. Leadership is **per-(node, resource)**: a node holds **zero to many**
 roles at once (leader for one resource, follower for another), so `ClusterRole`

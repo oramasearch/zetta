@@ -10,7 +10,7 @@ namespace zetta::cloud {
 // ProvisionerConfig — one cloud-burst provisioner's deployment context, detected
 // from the operator's own local CLI (`detect_provisioner_configs`) and held on the
 // Node as node-local observed state (like a CloudInspectReport — not replicated,
-// not persisted), surfaced as the system.zetta_provisioners SQL table.
+// not persisted), surfaced as the system.provisioners SQL table.
 //
 // It carries **no credentials**: the local CLI (`az` / `aws` / `gcloud` / `oci` /
 // `kubectl` / `docker`) keeps its own auth, and the reference CLI control plane

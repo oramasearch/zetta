@@ -20,7 +20,7 @@ namespace query {
 // execute every statement against the node, using `current_database` for
 // unqualified table names. Swapping/adding a dialect is a one-line change here.
 //
-// Pass a Cluster to make the `zetta_nodes` system table queryable (all nodes +
+// Pass a Cluster to make the `nodes` system table queryable (all nodes +
 // replication status).
 class QueryService {
 public:

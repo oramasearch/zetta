@@ -91,7 +91,7 @@ valid JSON, or fails schema validation.
 
 `run_score_job` (gbdt_score_job.hpp) drives scoring through the
 [job coordinator](../compute/job-coordinator.md) as a recorded, audited `score`
-[ComputeJob](../compute/compute-jobs.md) (so it appears in `system.zetta_jobs`). The model is
+[ComputeJob](../compute/compute-jobs.md) (so it appears in `system.jobs`). The model is
 **SPMD**, the way the [trainer](gbdt.md) and [featurization](../ddf/ddf-featurize.md) run:
 
 1. Each participating node holds a shard of the entities to score (a feature

@@ -106,7 +106,7 @@ return a `compute::ComputeStatus`.
 
 `run_train_job` (gbdt_train_job.hpp) drives training through the
 [job coordinator](../compute/job-coordinator.md) as a recorded, audited `train`
-[ComputeJob](../compute/compute-jobs.md) (so it appears in `system.zetta_jobs`) and, when a
+[ComputeJob](../compute/compute-jobs.md) (so it appears in `system.jobs`) and, when a
 `Node` is provided, **produces a [`Model`](models.md)**:
 
 - Each participating node reads its shard back from the device and runs the boosting

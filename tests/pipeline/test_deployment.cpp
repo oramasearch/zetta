@@ -167,7 +167,7 @@ TEST(Deployment, DeployGraphIsGatedRule1) {
     node.stop();
 }
 
-// ---- queryable via the system.zetta_deployments table ----------------------
+// ---- queryable via the system.deployments table ----------------------
 
 TEST(Deployment, QueryableViaSystemTable) {
     TempDir tmp;
@@ -177,7 +177,7 @@ TEST(Deployment, QueryableViaSystemTable) {
 
     QueryService svc{node};  // no cluster needed: deployments come from the node
 
-    auto all = svc.run("SELECT * FROM system.zetta_deployments;", "");
+    auto all = svc.run("SELECT * FROM system.deployments;", "");
     ASSERT_TRUE(all.ok()) << all.error;
     ASSERT_EQ(all.rows.size(), 1u);
     EXPECT_EQ(all.rows[0]["graph_name"], "churn");
@@ -187,15 +187,15 @@ TEST(Deployment, QueryableViaSystemTable) {
 
     // Projection + WHERE equality work exactly as for a regular table.
     auto projected = svc.run(
-        "SELECT graph_name, edge_count FROM system.zetta_deployments "
+        "SELECT graph_name, edge_count FROM system.deployments "
         "WHERE graph_name = 'churn';",
         "");
     ASSERT_TRUE(projected.ok()) << projected.error;
     ASSERT_EQ(projected.rows.size(), 1u);
     EXPECT_EQ(projected.rows[0]["edge_count"], 2);
 
-    // The bare alias is reserved for zetta_nodes only; deployments is system.<t>.
-    EXPECT_FALSE(svc.run("SELECT * FROM zetta_deployments;", "").ok());
+    // The bare alias is reserved for nodes only; deployments is system.<t>.
+    EXPECT_FALSE(svc.run("SELECT * FROM deployments;", "").ok());
     node.stop();
 }
 

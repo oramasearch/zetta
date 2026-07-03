@@ -98,14 +98,22 @@ query time* — not stored, not replicated (each node's view is its own). `syste
 can't be created, dropped, or written to, and no real database may be named
 `system`.
 
-Its first table is **`zetta_nodes`** — cluster membership + [replication](../cluster/replication.md)
+Its first table is **`nodes`** — cluster membership + [replication](../cluster/replication.md)
 status — available whenever the `QueryService` was given a `Cluster` (the headed
 UI wires this; without a cluster, selecting it returns a clear error):
 
 ```sql
-SELECT * FROM system.zetta_nodes;
-SELECT node_id, address, in_sync FROM system.zetta_nodes WHERE is_self = false;
-SELECT * FROM zetta_nodes;   -- bare name still resolves (back-compat alias)
+SELECT * FROM system.nodes;
+SELECT node_id, address, in_sync FROM system.nodes WHERE is_self = false;
+SELECT * FROM zetta_nodes;   -- the historical bare spelling still resolves
+```
+
+There is **no bare `nodes` alias** (it would shadow a user table named `nodes`);
+only the pre-rename `zetta_nodes` spelling resolves unqualified, and every
+legacy `system.zetta_<table>` name resolves to its plain `system.<table>`:
+
+```sql
+SELECT * FROM system.zetta_nodes;   -- back-compat alias for system.nodes
 ```
 
 Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
@@ -115,42 +123,41 @@ sources the rows from `Cluster::nodes()` instead of a storage engine. The headed
 explorer also lists `system` (marked *virtual*) so its tables are browsable, not
 just queryable.
 
-A second table is **`zetta_deployments`** — the recorded graph→target
+A second table is **`deployments`** — the recorded graph→target
 [placements](../pipeline/deployments.md) (no cluster needed; it is sourced from
 `Node::deployments()`):
 
 ```sql
-SELECT * FROM system.zetta_deployments;
-SELECT graph_name, node_count FROM system.zetta_deployments
+SELECT * FROM system.deployments;
+SELECT graph_name, node_count FROM system.deployments
   WHERE target_kind = 'local';
 ```
 
 Columns: `deployment_id`, `graph_name`, `target_kind`, `binding`,
-`credentials_ref`, `node_id`, `node_count`, `edge_count`, `created`. (Unlike
-`zetta_nodes`, there is **no** bare-name alias — use the qualified
-`system.zetta_deployments`.)
+`credentials_ref`, `node_id`, `node_count`, `edge_count`, `created`. (There is
+no bare-name alias — use the qualified `system.deployments`.)
 
-A third table is **`zetta_models`** — the [model registry](../ml/models.md) (no
+A third table is **`models`** — the [model registry](../ml/models.md) (no
 cluster needed; sourced from `Node::models()`):
 
 ```sql
-SELECT * FROM system.zetta_models;
-SELECT model_id, kind FROM system.zetta_models WHERE kind = 'classifier';
+SELECT * FROM system.models;
+SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 ```
 
 Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
 `metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
 `weights_present`. The serialized weights body itself isn't in the registry (it's
 a large binary on the body seam); its fingerprint and local presence are.
-Qualified name only (no bare alias), like `system.zetta_deployments`.
+Qualified name only (no bare alias), like `system.deployments`.
 
-A fourth table is **`zetta_jobs`** — the [compute-job registry](../compute/compute-jobs.md)
+A fourth table is **`jobs`** — the [compute-job registry](../compute/compute-jobs.md)
 (no cluster needed; sourced from `Node::jobs()`): one row per unit of native
 distributed accelerated compute (ARC-11 / ENT-31) and its lifecycle:
 
 ```sql
-SELECT * FROM system.zetta_jobs;
-SELECT job_id, kind, status FROM system.zetta_jobs WHERE status = 'running';
+SELECT * FROM system.jobs;
+SELECT job_id, kind, status FROM system.jobs WHERE status = 'running';
 ```
 
 Columns: `job_id`, `kind`, `status`, `project`, `graph`, `run`,
@@ -160,23 +167,23 @@ whose replicated view these rows are read from (jobs replicate, so every node
 lists the same set); recording which node actually *runs* a job is a later
 slice (the scheduler), so until then `node` is "which node's registry you
 queried", not a placement assignment. Qualified name only (no bare alias), like
-`system.zetta_deployments`.
+`system.deployments`.
 
 Two more tables back the [Cloud Inspector](../cloud/cloud-inspector.md).
-**`system.zetta_cloud_providers`** is the provider catalog as a table — **pure
+**`system.cloud_providers`** is the provider catalog as a table — **pure
 metadata, it reads nothing from any cloud**:
 
 ```sql
-SELECT * FROM system.zetta_cloud_providers;
-SELECT name, runnable FROM system.zetta_cloud_providers WHERE requires_consent = true;
+SELECT * FROM system.cloud_providers;
+SELECT name, runnable FROM system.cloud_providers WHERE requires_consent = true;
 ```
 
 Columns: `provider`, `name`, `category`, `cli`, `requires_consent`, `runnable`,
-`config_paths`, `inspect_commands`. **`system.zetta_cloud_status`** is the cached
+`config_paths`, `inspect_commands`. **`system.cloud_status`** is the cached
 results of consent-gated inspects (sourced from `Node::cloud_inspections()`):
 
 ```sql
-SELECT provider, reachable, authenticated, identity FROM system.zetta_cloud_status;
+SELECT provider, reachable, authenticated, identity FROM system.cloud_status;
 ```
 
 Columns: `provider`, `name`, `reachable`, `authenticated`, `identity`, `regions`,
@@ -189,22 +196,22 @@ Four more tables surface the run + governance state as read views (RULE-7 — th
 queryable counterpart of the GUI Runs / Admin panels, so SQL and the GUI never
 diverge), each computed at query time from the live `Node` accessors:
 
-- **`system.zetta_runs`** — the run registry (`Node::runs()`): one row per graph
+- **`system.runs`** — the run registry (`Node::runs()`): one row per graph
   execution. Columns: `run_id`, `project`, `graph`, `deployment`, `status`,
   `created`, `updated`, `log_count`, `output_count`, `confidence`, `freshness`.
-- **`system.zetta_principals`** — the authenticated actors (`Node::principals()`).
+- **`system.principals`** — the authenticated actors (`Node::principals()`).
   Columns: `principal_id`, `name`, `kind`, `created`, `key_count`.
-- **`system.zetta_keys`** — the access keys the principals own. Columns: `key_id`,
+- **`system.keys`** — the access keys the principals own. Columns: `key_id`,
   `principal_id`, `principal`, `unrestricted`, `scope`, `capabilities`, `created`.
   `scope` + `capabilities` are readable strings (`project:churn`,
   `orchestration:start_run`, an `@<ttl>` suffix when time-bounded); a key record
   carries no secret material, so this exposes nothing the Admin panel doesn't.
-- **`system.zetta_audit`** — the immutable audit trail (`Node::audit_events()`).
+- **`system.audit`** — the immutable audit trail (`Node::audit_events()`).
   Columns: `audit_id`, `action`, `actor`, `target`, `allowed`, `detail`, `time`.
 
 ```sql
-SELECT run_id, status FROM system.zetta_runs WHERE status = 'failed';
-SELECT action, actor, target FROM system.zetta_audit WHERE allowed = false;
+SELECT run_id, status FROM system.runs WHERE status = 'failed';
+SELECT action, actor, target FROM system.audit WHERE allowed = false;
 ```
 
 All four are qualified-name only.
@@ -245,7 +252,7 @@ There is also **`system.checkpoints`** — burst-job eviction tolerance
 `Node::checkpoints()` (the latest checkpoint per job in this node's **local** store).
 Columns: `job_id`, `kind`, `sequence` (units completed = the resume point), `total`,
 `progress` (`sequence / total`), `created`. Unlike the catalog above, checkpoints are
-**ephemeral + local + not replicated** (like `system.zetta_cloud_status`): the view
+**ephemeral + local + not replicated** (like `system.cloud_status`): the view
 has no CRDT backing and reflects only what is durably resumable on this node.
 Qualified-name only.
 
@@ -264,7 +271,7 @@ returns exactly **one row** — the node the query hits. Columns: `node_id`,
 `storage_percent`, `net_rx_bytes_per_sec`, `net_tx_bytes_per_sec`, `net_percent`,
 `sampled_at`. Counters a host can't report are `null` (graceful degradation — the
 GPU group is absent in a CPU-only core build). Like `system.checkpoints` /
-`system.zetta_cloud_status` it is **ephemeral, observed, NOT replicated** (no CRDT
+`system.cloud_status` it is **ephemeral, observed, NOT replicated** (no CRDT
 backing). Qualified-name only.
 
 ```sql
@@ -294,11 +301,12 @@ SELECT job_id, kind, local_bytes_read, wire_bytes_moved FROM system.pipeline_job
 SELECT rounds_completed, wire_bytes_moved FROM system.collective_rounds;
 ```
 
-> **Naming.** `system.dataset_partitions` is the **first system table without the
-> `zetta_` prefix**: the `system` database is reserved + zetta-controlled, so the
-> prefix is redundant. New system tables are named plainly; the legacy `zetta_*`
-> tables above are kept until the system-wide rename in
-> [#538](https://github.com/oramasearch/zetta/issues/538).
+> **Naming.** System tables are named **plainly, without a `zetta_` prefix**: the
+> `system` database is reserved + zetta-controlled, so the prefix is redundant.
+> The legacy tables that originally shipped as `system.zetta_<table>` were renamed
+> in [#538](https://github.com/oramasearch/zetta/issues/538); the old spellings
+> (`system.zetta_nodes`, `system.zetta_jobs`, …) still resolve as **back-compat
+> aliases** for at least one cycle, as does the historical bare `zetta_nodes`.
 
 Future system tables slot into the same database — notably **`system.leadership`**
 (which exclusive resource is held by which node, with lease/timeout), which is

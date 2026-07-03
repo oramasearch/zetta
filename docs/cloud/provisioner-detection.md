@@ -11,7 +11,7 @@ drives the provider's own local CLI (`az`, `aws`, `gcloud`, `oci`, `kubectl`,
 So zetta sources that configuration **from the local CLI itself**, not from a
 file: at startup it asks each installed, logged-in CLI for its active deployment
 context, records the result on the node, surfaces it as the
-**`system.zetta_provisioners`** table, and wires a CLI-backed provisioner per
+**`system.provisioners`** table, and wires a CLI-backed provisioner per
 detected target into the Add-nodes control. This is the credential-free sibling
 of the consent-gated [Cloud Inspector](cloud-inspector.md), which reads the same
 CLIs.
@@ -22,7 +22,7 @@ CLIs.
 main() ── detect_provisioner_configs()         # run the local CLIs (read-only)
    │         → [ProvisionerConfig{target, cli, summary, config}]
    ├── node.record_provisioner_config(...)      # node-local state (no CRDT, no disk)
-   │         → system.zetta_provisioners         # the SQL read view (both modes)
+   │         → system.provisioners         # the SQL read view (both modes)
    └── (headed) CloudProvisioners::wire(app, node.provisioner_configs(), seed)
              → App::set_provisioner("azure", …)  # the Allow button lights up
 ```
@@ -42,7 +42,7 @@ main() ── detect_provisioner_configs()         # run the local CLIs (read-on
   (mirrors `record_cloud_inspection`) hold it as **node-local, observed state** —
   not replicated, not persisted (RULE-7), because it reflects *this* node's CLI
   auth + defaults. Latest config per target wins.
-- **`system.zetta_provisioners`** (`src/core/query/executor.cpp`) is the read view:
+- **`system.provisioners`** (`src/core/query/executor.cpp`) is the read view:
   one row per detected target — `target`, `cli`, `subscription` / `project` /
   `region` / `resource_group` / `pool` / `spot`, `summary`. Populated in **both**
   headed and headless modes.
@@ -68,7 +68,7 @@ still the one explicit, billable write.
   `eastus` when unset — so a logged-in `az` always yields a valid, wireable config.
   An operator who wants different targeting sets
   `az configure --defaults group=… location=…` (visible in
-  `system.zetta_provisioners`).
+  `system.provisioners`).
 
 ## Extending to the other targets
 
@@ -82,7 +82,7 @@ detector lights up its target with no other change.
 
 - `tests/cloud/test_provisioner_detect.cpp` — the Azure detector against a fake
   `CommandRunner` (logged-in, no-defaults fallback, CLI-missing, malformed output).
-- `tests/data/test_query.cpp::SelectsProvisionersSystemTable` — `system.zetta_provisioners`
+- `tests/data/test_query.cpp::SelectsProvisionersSystemTable` — `system.provisioners`
   reflects recorded configs (and latest-per-target wins).
 
 ## See also

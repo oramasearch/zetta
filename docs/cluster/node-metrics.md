@@ -16,7 +16,7 @@ SELECT * FROM system.node_metrics;
 SELECT node_id, cpu_percent, memory_percent FROM system.node_metrics;
 ```
 
-Like [`system.zetta_cloud_status`](../cloud/cloud-inspector.md) and
+Like [`system.cloud_status`](../cloud/cloud-inspector.md) and
 [`system.checkpoints`](../compute/job-checkpoint.md), it is an **ephemeral, observed** read
 view — **no CRDT backing, never replicated**. A query reads live counters here
 and now; nothing is stored or gossiped. This is the deliberate exception to

@@ -30,7 +30,7 @@ sequences, and other single-writer resources where "two holders at once" is
 incorrect. Those are the exception, not the rule, and they get a scoped
 mechanism rather than making the whole system single-leader:
 
-- **A replicated `system.zetta_leadership` table** (planned — not built yet)
+- **A replicated `system.leadership` table** (planned — not built yet)
   tracks, per exclusive resource, the current holder and a **lease with a
   timeout**. Leadership is acquired by *ascension*: if a resource is unheld or
   its lease has expired, a node claims it; concurrent claims are resolved
@@ -136,7 +136,7 @@ replication status. It surfaces three ways:
 - **Headed** — the Cluster panel's *Nodes & replication* table (id, address,
   role, entries, version, in-sync/syncing + age).
 - **Headless** — the heartbeat logs a per-node table whenever it changes.
-- **SQL** — `SELECT * FROM system.zetta_nodes;` (see [query.md](../data/query.md)).
+- **SQL** — `SELECT * FROM system.nodes;` (see [query.md](../data/query.md)).
 
 ## Data replication: CRDT is the source of truth, disk follows
 
@@ -208,7 +208,7 @@ are a materialized *projection* of it.** Concretely:
   the cluster** with per-node status in `nodes()` (`tests/cluster/test_cluster.cpp`); and
   **data replication** — DDL + rows captured into the document, reconciled onto
   every node's disk, and persisted across restart (`tests/cluster/test_data_replication.cpp`).
-- **Documented, not built:** the leadership / `zetta_leadership` table and Raft
+- **Documented, not built:** the leadership / `leadership` table and Raft
   (see *Consistency model* above) — design only for now.
 - **Known limits (v1):** the whole document is re-saved on each change and
   reconcile rescans on each version bump (fine for modest data; incremental

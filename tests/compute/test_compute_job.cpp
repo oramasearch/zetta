@@ -326,7 +326,7 @@ TEST(ComputeJob, InvalidJobJsonOnDiskIsSkipped) {
     node.stop();
 }
 
-// ---- queryable via the system.zetta_jobs table -----------------------------
+// ---- queryable via the system.jobs table -----------------------------
 
 TEST(ComputeJob, QueryableViaSystemTable) {
     TempDir tmp;
@@ -344,7 +344,7 @@ TEST(ComputeJob, QueryableViaSystemTable) {
 
     QueryService svc{node};  // no cluster needed: jobs come from the node
 
-    auto all = svc.run("SELECT * FROM system.zetta_jobs;", "");
+    auto all = svc.run("SELECT * FROM system.jobs;", "");
     ASSERT_TRUE(all.ok()) << all.error;
     ASSERT_EQ(all.rows.size(), 2u);
     // jobs() is ordered (created, then id); the train job was created first.
@@ -361,14 +361,14 @@ TEST(ComputeJob, QueryableViaSystemTable) {
 
     // Projection + WHERE equality work exactly as for a regular table.
     auto running = svc.run(
-        "SELECT job_id, kind FROM system.zetta_jobs WHERE status = 'queued';",
+        "SELECT job_id, kind FROM system.jobs WHERE status = 'queued';",
         "");
     ASSERT_TRUE(running.ok()) << running.error;
     ASSERT_EQ(running.rows.size(), 1u);
     EXPECT_EQ(running.rows[0]["job_id"], score->id());
     EXPECT_EQ(running.rows[0]["kind"], "score");
 
-    // The bare alias is reserved for zetta_nodes only; jobs is system.<table>.
-    EXPECT_FALSE(svc.run("SELECT * FROM zetta_jobs;", "").ok());
+    // The bare alias is reserved for nodes only; jobs is system.<table>.
+    EXPECT_FALSE(svc.run("SELECT * FROM jobs;", "").ok());
     node.stop();
 }

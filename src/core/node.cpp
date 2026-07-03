@@ -541,7 +541,7 @@ std::shared_ptr<zetta::governance::Principal> Node::find_principal_by_id(
 std::shared_ptr<zetta::data::Database> Node::create_database(
     std::string name, zetta::data::ReplicationStrategy replication_strategy) {
     // "system" is reserved for the virtual system database (computed system
-    // tables like system.zetta_nodes); never a real on-disk database.
+    // tables like system.nodes); never a real on-disk database.
     if (name.empty() || name == "system" || find_database(name)) return nullptr;
     const std::string id = zetta::util::new_uuid();
     if (replication_) {
@@ -1303,7 +1303,7 @@ bool Node::materialize_drop_dataset_partition(const std::string& id) {
 
 void Node::record_cloud_inspection(zetta::cloud::CloudInspectReport report) {
     // Latest report per provider wins, so the cache holds one current row per
-    // provider for system.zetta_cloud_status. No CRDT capture, no disk write —
+    // provider for system.cloud_status. No CRDT capture, no disk write —
     // this is session-local observed state (RULE-7).
     const auto it = std::find_if(
         cloud_inspections_.begin(), cloud_inspections_.end(),
@@ -1321,7 +1321,7 @@ void Node::record_cloud_inspection(zetta::cloud::CloudInspectReport report) {
 
 void Node::record_provisioner_config(zetta::cloud::ProvisionerConfig config) {
     // Latest config per target wins, so the cache holds one current row per target
-    // for system.zetta_provisioners — like record_cloud_inspection, this is
+    // for system.provisioners — like record_cloud_inspection, this is
     // session-local observed state from the local CLI (RULE-7): no CRDT capture,
     // no disk write, no credentials.
     const auto it = std::find_if(

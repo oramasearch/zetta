@@ -59,7 +59,7 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
 
 A governed run reuses the existing **`data_access`** audit action — the same seam
 `Node::authorize` records on — rather than a new action, so the audit schema is
-unchanged. It is queryable through `system.zetta_audit` and the
+unchanged. It is queryable through `system.audit` and the
 [Admin panel](../gui/admin-panel.md)'s audit log alongside every other governed event.
 
 ## Tabular results
