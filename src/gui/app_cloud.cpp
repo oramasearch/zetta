@@ -149,69 +149,64 @@ void App::draw_cloud() {
             }
             if (mono_font_) ImGui::PopFont();
 
-            // The consent gate — a tinted callout box so the permission
+            // The consent gate — the grammar's callout so the permission
             // boundary reads as a deliberate stop, deny-by-default. Until the
             // user explicitly allows this one inspection nothing is read or
             // run. On allow, run_cloud_inspect() shells out to the read-only
             // commands and caches the result; the result is rendered below and
-            // stays queryable as system.cloud_status.
+            // stays queryable as system.cloud_status. Amber (caution) while
+            // locked; green (success) once granted.
             ImGui::Spacing();
             const bool consented = cloud_consent_provider_ == provider->id;
-            // Amber (caution) wash while locked; green (success) once granted.
-            ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                                  tone_background(consented ? Tone::Ok : Tone::Warn));
-            ImGui::BeginChild("##consent", ImVec2(0, 0),
-                              ImGuiChildFlags_Borders |
-                                  ImGuiChildFlags_AutoResizeY);
-            // While an inspect is in flight the launch buttons are disabled
-            // (one at a time) — the CLI runs off the UI thread (#624), so the
-            // panel keeps rendering; the affordance below shows live elapsed.
-            const bool inspecting = cloud_inspect_op_ != nullptr;
-            const bool inspecting_here =
-                inspecting && cloud_inspect_op_->provider.id == provider->id;
-            if (!consented) {
-                status_label(Tone::Warn, "Permission required");
-                ImGui::TextColored(kInkSecondary,
-                    "zetta will not run the commands above until you allow it. "
-                    "Consent applies to this one inspection and is not "
-                    "remembered. Credential files are never read or shown.");
-                ImGui::Spacing();
-                const std::string allow_label =
-                    "Allow inspection of " + provider->name;
-                ImGui::BeginDisabled(inspecting);
-                if (primary_button(allow_label.c_str())) {
-                    cloud_consent_provider_ = provider->id;
-                    run_cloud_inspect(*provider);  // the one cloud call, behind consent
-                }
-                ImGui::EndDisabled();
-            } else {
-                status_label(Tone::Ok, "Permission granted for this inspection");
-                if (inspecting_here) {
-                    const double elapsed =
-                        std::chrono::duration<double>(
-                            std::chrono::steady_clock::now() -
-                            cloud_inspect_op_->started)
-                            .count();
-                    char inspecting_line[64];
-                    std::snprintf(inspecting_line, sizeof(inspecting_line),
-                                  "Inspecting · %.0fs", elapsed);
-                    status_label(Tone::Active, inspecting_line);
+            callout(consented ? Tone::Ok : Tone::Warn, "##consent", [&] {
+                // While an inspect is in flight the launch buttons are disabled
+                // (one at a time) — the CLI runs off the UI thread (#624), so the
+                // panel keeps rendering; the affordance below shows live elapsed.
+                const bool inspecting = cloud_inspect_op_ != nullptr;
+                const bool inspecting_here =
+                    inspecting && cloud_inspect_op_->provider.id == provider->id;
+                if (!consented) {
+                    status_label(Tone::Warn, "Permission required");
+                    ImGui::TextColored(kInkSecondary,
+                        "zetta will not run the commands above until you allow it. "
+                        "Consent applies to this one inspection and is not "
+                        "remembered. Credential files are never read or shown.");
+                    ImGui::Spacing();
+                    const std::string allow_label =
+                        "Allow inspection of " + provider->name;
+                    ImGui::BeginDisabled(inspecting);
+                    if (primary_button(allow_label.c_str())) {
+                        cloud_consent_provider_ = provider->id;
+                        run_cloud_inspect(*provider);  // the one cloud call, behind consent
+                    }
+                    ImGui::EndDisabled();
                 } else {
-                    draw_cloud_inspect_result(*provider);
+                    status_label(Tone::Ok, "Permission granted for this inspection");
+                    if (inspecting_here) {
+                        const double elapsed =
+                            std::chrono::duration<double>(
+                                std::chrono::steady_clock::now() -
+                                cloud_inspect_op_->started)
+                                .count();
+                        char inspecting_line[64];
+                        std::snprintf(inspecting_line, sizeof(inspecting_line),
+                                      "Inspecting · %.0fs", elapsed);
+                        status_label(Tone::Active, inspecting_line);
+                    } else {
+                        draw_cloud_inspect_result(*provider);
+                    }
+                    ImGui::Spacing();
+                    ImGui::BeginDisabled(inspecting);
+                    if (ImGui::Button("Re-inspect")) {
+                        run_cloud_inspect(*provider);
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Revoke permission")) {
+                        cloud_consent_provider_.clear();
+                    }
                 }
-                ImGui::Spacing();
-                ImGui::BeginDisabled(inspecting);
-                if (ImGui::Button("Re-inspect")) {
-                    run_cloud_inspect(*provider);
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Revoke permission")) {
-                    cloud_consent_provider_.clear();
-                }
-            }
-            ImGui::EndChild();
-            ImGui::PopStyleColor();
+            });
         });
 }
 
