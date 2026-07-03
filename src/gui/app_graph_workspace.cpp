@@ -314,6 +314,7 @@ void App::run_open_graph(zetta::pipeline::Project& project) {
         options.project = project.id();
         options.graph = stored->id();
         churn_run_from_deploy_ = false;
+        churn_run_from_onboarding_ = false;
         churn_run_ = zetta::usecases::churn::AsyncChurnRun::start(
             node_, stored->graph(),
             zetta::usecases::churn::demo_churn_dataset(), options);

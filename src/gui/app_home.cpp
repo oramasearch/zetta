@@ -292,8 +292,18 @@ void App::draw_home() {
         }
     });
 
-    // ── The guided-start card (#623 grows this): the nothing-yet node ─────
-    if (project_names.empty() && runs.empty() && activity.empty()) {
+    // ── The guided demo (#623): first-run onboarding on the empty node ────
+    // A truly empty node opens on the guided UC-1 churn walkthrough
+    // (app_onboarding.cpp); the card stays while the demo is mid-flight this
+    // session (its own steps create projects/runs) or when replayed from
+    // Help · Guided demo. Dismissing it falls back to the plain guided-start
+    // empty state below; once a project exists it never auto-shows again.
+    const bool node_is_empty =
+        project_names.empty() && runs.empty() && activity.empty();
+    if (onboarding_active_ || (node_is_empty && !onboarding_dismissed_)) {
+        draw_guided_demo_card();
+        if (node_is_empty) return;
+    } else if (node_is_empty) {
         // Scoped id: the action label repeats the page header's New project…
         // (both visible here), and this one renders in the root window.
         ImGui::PushID("home_guided_start");

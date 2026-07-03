@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 
@@ -351,6 +352,69 @@ ChurnEvent event_from_json(const nlohmann::json& value) {
     return event;
 }
 
+// ---- serializers (the writer's half of the one boundary) -------------------
+// Emit exactly the schema shape the loader validates, so write → load is an
+// identity round trip and both directions share the embedded schemas above.
+
+nlohmann::json manifest_to_json(const ChurnDataset& dataset) {
+    return nlohmann::json{
+        {"name", dataset.name},
+        {"description", dataset.description},
+        {"entity_field", dataset.entity_field},
+        {"time_field", dataset.time_field},
+        {"label_field", dataset.label_field},
+        {"as_of_date", dataset.as_of_date},
+        {"churn_horizon_days", dataset.churn_horizon_days},
+        {"label_definition", dataset.label_definition},
+    };
+}
+
+nlohmann::json account_to_json(const ChurnAccount& account) {
+    return nlohmann::json{
+        {"account_id", account.account_id},
+        {"name", account.name},
+        {"brand", account.brand},
+        {"entity", account.entity},
+        {"plan_tier", account.plan_tier},
+        {"industry", account.industry},
+        {"region", account.region},
+        {"mrr", account.mrr},
+        {"seats", account.seats},
+        {"tenure_days", account.tenure_days},
+        {"renewal_date", account.renewal_date},
+        {"churned", account.churned},
+        {"churn_date", account.churn_date},
+    };
+}
+
+nlohmann::json event_to_json(const ChurnEvent& event) {
+    return nlohmann::json{
+        {"event_id", event.event_id},
+        {"account_id", event.account_id},
+        {"event_ts", event.event_ts},
+        {"event_type", event.event_type},
+        {"channel", event.channel},
+        {"mention", event.mention},
+        {"value", event.value},
+    };
+}
+
+// Write `lines` (one dumped JSON document per line) to `path`. "" on success.
+std::string write_lines(const fs::path& path,
+                        const std::vector<std::string>& lines) {
+    std::ofstream output(path, std::ios::trunc);
+    if (!output) {
+        return "churn dataset: cannot open " + path.filename().string() +
+               " for writing";
+    }
+    for (const std::string& line : lines) output << line << '\n';
+    output.flush();
+    if (!output) {
+        return "churn dataset: failed writing " + path.filename().string();
+    }
+    return {};
+}
+
 bool load_manifest(const fs::path& path, ChurnDataset& dataset, std::string& error) {
     const std::string file = path.filename().string();
     std::ifstream input(path);
@@ -438,6 +502,57 @@ ChurnDatasetResult load_churn_dataset(const fs::path& dir, ChurnDataFormat forma
     }
 
     return result;
+}
+
+std::string write_churn_dataset(const ChurnDataset& dataset, const fs::path& dir) {
+    // Serialize + validate EVERYTHING first — only a fully valid dataset writes,
+    // so a failure never leaves a partial or malformed fixture behind.
+    const nlohmann::json manifest = manifest_to_json(dataset);
+    {
+        const std::string reason = validation_error(manifest_validator(), manifest);
+        if (!reason.empty()) return "dataset.json: " + reason;
+    }
+
+    std::vector<std::string> account_lines;
+    account_lines.reserve(dataset.accounts.size());
+    for (std::size_t index = 0; index < dataset.accounts.size(); ++index) {
+        const nlohmann::json record = account_to_json(dataset.accounts[index]);
+        const std::string reason = validation_error(account_validator(), record);
+        if (!reason.empty()) {
+            return "accounts.jsonl record " + std::to_string(index + 1) + ": " +
+                   reason;
+        }
+        account_lines.push_back(record.dump());
+    }
+
+    std::vector<std::string> event_lines;
+    event_lines.reserve(dataset.events.size());
+    for (std::size_t index = 0; index < dataset.events.size(); ++index) {
+        const nlohmann::json record = event_to_json(dataset.events[index]);
+        const std::string reason = validation_error(event_validator(), record);
+        if (!reason.empty()) {
+            return "events.jsonl record " + std::to_string(index + 1) + ": " +
+                   reason;
+        }
+        event_lines.push_back(record.dump());
+    }
+
+    std::error_code directory_error;
+    fs::create_directories(dir, directory_error);
+    if (directory_error) {
+        return "churn dataset: cannot create " + dir.string() + ": " +
+               directory_error.message();
+    }
+
+    if (std::string error = write_lines(dir / "dataset.json", {manifest.dump(2)});
+        !error.empty()) {
+        return error;
+    }
+    if (std::string error = write_lines(dir / "accounts.jsonl", account_lines);
+        !error.empty()) {
+        return error;
+    }
+    return write_lines(dir / "events.jsonl", event_lines);
 }
 
 nlohmann::json entity_resolution_attribute(const ChurnDataset& dataset,

@@ -601,6 +601,7 @@ add_executable(zetta
   src/main.cpp
   src/gui/app.cpp
   src/gui/app_home.cpp
+  src/gui/app_onboarding.cpp
   src/gui/app_views.cpp
   src/gui/app_palette.cpp
   src/gui/app_activity.cpp

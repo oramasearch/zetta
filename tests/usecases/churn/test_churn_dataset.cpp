@@ -10,6 +10,7 @@
 #include "temp_dir.hpp"
 #include "zetta/usecases/churn/entity_resolution_check.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"  // demo_churn_dataset
 #include "zetta/data/database.hpp"
 #include "zetta/pipeline/gate.hpp"
 #include "zetta/data/import.hpp"
@@ -318,4 +319,68 @@ TEST(ChurnDataset, ParquetFormatLoadsIdentically) {
         EXPECT_EQ(a.events[i].mention, b.events[i].mention);
         EXPECT_DOUBLE_EQ(a.events[i].value, b.events[i].value);
     }
+}
+
+// ---- the writer: write → load is an identity round trip (#623) --------------
+
+TEST(ChurnDataset, WriteThenLoadRoundTripsTheDemoDataset) {
+    const ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
+    ASSERT_FALSE(demo.accounts.empty());
+    ASSERT_FALSE(demo.events.empty());
+
+    TempDir tmp;
+    const fs::path dir = tmp.path() / "demo-churn";
+    const std::string error =
+        zetta::usecases::churn::write_churn_dataset(demo, dir);
+    ASSERT_TRUE(error.empty()) << error;
+    EXPECT_TRUE(fs::exists(dir / "dataset.json"));
+    EXPECT_TRUE(fs::exists(dir / "accounts.jsonl"));
+    EXPECT_TRUE(fs::exists(dir / "events.jsonl"));
+
+    // The written files pass the loader's schema boundary and reproduce the
+    // dataset exactly — the writer emits the same shape the loader validates.
+    const auto loaded = load_churn_dataset(dir, ChurnDataFormat::Jsonl);
+    ASSERT_TRUE(loaded.ok()) << loaded.error;
+    const ChurnDataset& round = loaded.dataset;
+    EXPECT_EQ(round.name, demo.name);
+    EXPECT_EQ(round.entity_field, demo.entity_field);
+    EXPECT_EQ(round.time_field, demo.time_field);
+    EXPECT_EQ(round.label_field, demo.label_field);
+    EXPECT_EQ(round.as_of_date, demo.as_of_date);
+    EXPECT_EQ(round.churn_horizon_days, demo.churn_horizon_days);
+    EXPECT_EQ(round.label_definition, demo.label_definition);
+    ASSERT_EQ(round.accounts.size(), demo.accounts.size());
+    ASSERT_EQ(round.events.size(), demo.events.size());
+    for (std::size_t i = 0; i < demo.accounts.size(); ++i) {
+        EXPECT_EQ(round.accounts[i].account_id, demo.accounts[i].account_id);
+        EXPECT_EQ(round.accounts[i].name, demo.accounts[i].name);
+        EXPECT_EQ(round.accounts[i].entity, demo.accounts[i].entity);
+        EXPECT_EQ(round.accounts[i].plan_tier, demo.accounts[i].plan_tier);
+        EXPECT_DOUBLE_EQ(round.accounts[i].mrr, demo.accounts[i].mrr);
+        EXPECT_EQ(round.accounts[i].seats, demo.accounts[i].seats);
+        EXPECT_EQ(round.accounts[i].tenure_days, demo.accounts[i].tenure_days);
+        EXPECT_EQ(round.accounts[i].churned, demo.accounts[i].churned);
+        EXPECT_EQ(round.accounts[i].churn_date, demo.accounts[i].churn_date);
+    }
+    for (std::size_t i = 0; i < demo.events.size(); ++i) {
+        EXPECT_EQ(round.events[i].event_id, demo.events[i].event_id);
+        EXPECT_EQ(round.events[i].account_id, demo.events[i].account_id);
+        EXPECT_EQ(round.events[i].event_ts, demo.events[i].event_ts);
+        EXPECT_EQ(round.events[i].event_type, demo.events[i].event_type);
+        EXPECT_DOUBLE_EQ(round.events[i].value, demo.events[i].value);
+    }
+}
+
+TEST(ChurnDataset, WriteRejectsAnInvalidDatasetBeforeTouchingDisk) {
+    ChurnDataset invalid = zetta::usecases::churn::demo_churn_dataset();
+    invalid.accounts.at(0).plan_tier = "platinum";  // not in the schema enum
+
+    TempDir tmp;
+    const fs::path dir = tmp.path() / "invalid-churn";
+    const std::string error =
+        zetta::usecases::churn::write_churn_dataset(invalid, dir);
+    ASSERT_FALSE(error.empty());
+    EXPECT_NE(error.find("accounts.jsonl record 1"), std::string::npos) << error;
+    // Validation runs before any file is written — nothing lands on disk.
+    EXPECT_FALSE(fs::exists(dir));
 }

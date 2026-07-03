@@ -33,9 +33,10 @@ work completes even when the user navigates away.
   jobs records — the same `system.runs` / `system.jobs` rows an MCP caller
   polls through `sql`. No panel-owned copy of engine progress exists
   (thin-renderer rule); the only GUI state is the op handles themselves.
-- **One churn run at a time.** The Deploy panel and the workspace share
-  `churn_run_`; both launch buttons disable while it is set.
-  `churn_run_from_deploy_` decides who owns the completion status line (the
+- **One churn run at a time.** The Deploy panel, the workspace, and the
+  guided demo ([onboarding.md](onboarding.md), #623) share `churn_run_`; every
+  launch button disables while it is set. `churn_run_from_deploy_` /
+  `churn_run_from_onboarding_` decide who owns the completion status line (the
   workspace's feedback is the live-run overlay itself).
 - **Completion → activity feed.** A finished dataset add records
   `dataset_added` (deep-links to the Datasets view), an inspect records

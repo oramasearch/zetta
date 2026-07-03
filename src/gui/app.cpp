@@ -428,6 +428,29 @@ void App::draw_menu_bar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Help")) {
+        // The guided demo replay (#623): every step reachable later. Each item
+        // reopens the guided card on Home — step progress is derived from live
+        // engine state, so the named step is exactly where the card resumes
+        // (a completed step keeps its links; the run step can run again).
+        if (ImGui::BeginMenu("Guided demo")) {
+            static constexpr const char* kGuidedSteps[] = {
+                "1 · Load the demo dataset", "2 · Create the churn project",
+                "3 · Watch the gate pass", "4 · Run over the cluster",
+                "5 · See who is at risk and why"};
+            for (const char* step : kGuidedSteps) {
+                if (ImGui::MenuItem(step)) {
+                    onboarding_dismissed_ = false;
+                    onboarding_active_ = true;
+                    navigate_to(View::Home);
+                }
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Hide the guided demo")) {
+                onboarding_active_ = false;
+                onboarding_dismissed_ = true;
+            }
+            ImGui::EndMenu();
+        }
         if (ImGui::MenuItem("About Orama Zetta")) about_requested_ = true;
         ImGui::EndMenu();
     }
@@ -631,8 +654,9 @@ void App::poll_background_ops() {
 
     // Churn run (#624): while in flight the Deploy panel / run overlay render
     // live from the Run + jobs records; here we only apply the outcome once
-    // the worker has finished. The status line belongs to the Deploy panel —
-    // a workspace-launched run's feedback is the overlay itself.
+    // the worker has finished. The status line belongs to the launching panel —
+    // Deploy's result line, the guided demo's summary (#623), or (for a
+    // workspace-launched run) the live-run overlay itself.
     if (churn_run_ && churn_run_->done()) {
         const zetta::usecases::churn::ChurnSolutionResult& result =
             churn_run_->result();
@@ -655,6 +679,51 @@ void App::poll_background_ops() {
                 }
                 churn_run_status_ = line;
             }
+        } else if (churn_run_from_onboarding_) {
+            // The guided demo's step 5: the ranked at-risk accounts + their
+            // dominant drivers, as the finished action's outcome summary. The
+            // demo dataset is deterministic, so its entity keys (dense ints by
+            // file order) map back to account names for the card's table.
+            if (!result.ok()) {
+                onboarding_failed_ = true;
+                onboarding_status_ =
+                    "Run failed: " +
+                    (result.execution.error.empty()
+                         ? std::string("the churn pipeline did not complete")
+                         : result.execution.error);
+            } else {
+                onboarding_failed_ = false;
+                onboarding_run_id_ =
+                    result.execution.run ? result.execution.run->id()
+                                         : std::string();
+                onboarding_at_risk_.clear();
+                const zetta::usecases::churn::ChurnDataset demo =
+                    zetta::usecases::churn::demo_churn_dataset();
+                for (const zetta::usecases::churn::RetentionAction& action :
+                     result.playbook) {
+                    if (onboarding_at_risk_.size() >= 5) break;
+                    std::string account =
+                        "entity " + std::to_string(action.entity);
+                    if (action.entity >= 0 &&
+                        static_cast<std::size_t>(action.entity) <
+                            demo.accounts.size()) {
+                        account = demo.accounts[static_cast<std::size_t>(
+                                                    action.entity)]
+                                      .name;
+                    }
+                    onboarding_at_risk_.push_back(
+                        {account, action.risk, action.dominant_driver});
+                }
+                std::string line = "Trained model " +
+                                   result.model_id.substr(0, 8) + " · " +
+                                   std::to_string(result.ranked.size()) +
+                                   " accounts ranked";
+                if (!result.top_driver.empty()) {
+                    line += " · top driver: " + result.top_driver;
+                }
+                onboarding_status_ = line;
+            }
+            churn_run_from_onboarding_ = false;
         }
         churn_run_.reset();  // the worker already finished: the join is immediate
     }

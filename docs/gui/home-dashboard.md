@@ -19,10 +19,13 @@ JSON format.
    to a deployment a run ties back to that project (`run.project` +
    `run.deployment` is the link), computed with
    `zetta::util::parse_iso8601_seconds`.
-2. **The guided-start card** — when the node is truly empty (no projects, no
-   runs, no activity) the dashboard collapses to the health strip plus one
-   `empty_state` whose action opens the New Project modal. Onboarding (#623)
-   grows this card; Home renders the empty case, not a tour.
+2. **The guided demo card** — when the node is truly empty (no projects, no
+   runs, no activity) the dashboard collapses to the health strip plus the
+   first-run guided UC-1 demo (#623, [onboarding.md](onboarding.md)); while
+   the demo is mid-flight the card stays above the dashboard sections, which
+   fill in beneath it as its steps create real state. A dismissed empty node
+   falls back to the one-sentence guided-start `empty_state` whose action
+   opens the New Project modal.
 3. **Needs attention**: failed runs, failed jobs, denials in the last 24
    hours (activity entries with outcome Denied — the gate refusing a deploy,
    governance refusing a caller), and any peer whose replication is behind.
@@ -57,7 +60,8 @@ action in the empty cases).
   entity stamps (tests: `tests/util/test_timestamp.cpp`).
 - The thin-renderer rule holds: sources are read fresh each frame, the panel
   stores nothing (`selected_project_` is shared presentation state).
-- **Later slices:** the guided-start card's onboarding content (#623); richer
-  velocity KPIs (per-project, trend) once more intent→deploy pairs exist;
-  a Deploy-panel deep link that preselects a deployment (the panel takes no
-  entity today, so deployment links navigate only).
+- **Later slices:** richer velocity KPIs (per-project, trend) once more
+  intent→deploy pairs exist; a Deploy-panel deep link that preselects a
+  deployment (the panel takes no entity today, so deployment links navigate
+  only). The guided-start card's onboarding content shipped as the guided
+  demo (#623, [onboarding.md](onboarding.md)).

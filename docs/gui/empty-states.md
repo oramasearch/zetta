@@ -28,6 +28,7 @@ link can't fire after the first item arrives.
 
 | Panel | Empty when | Action → lands in |
 |---|---|---|
+| Home · fresh node | no projects, runs, or activity | the [guided demo card](onboarding.md) (#623); once dismissed, the guided-start `empty_state` with **New project…** |
 | Home · projects | no projects | none (the New project… hero button is directly above) |
 | Home · recent activity | nothing recorded | none (a quiet strip; the hero button is the next step) |
 | Explorer · each column | no projects / databases / tables / rows / large objects | none (each column's create/add affordance is directly above) |
