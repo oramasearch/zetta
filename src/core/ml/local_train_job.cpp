@@ -22,9 +22,24 @@ NearDataTrainResult run_near_data_train_job(
     std::chrono::milliseconds timeout) {
     NearDataTrainResult out;
 
+    // One trace per distributed job (#640): stamp the replicated job record up
+    // front so THIS node's near-data span, the coordinator's job span, and
+    // every peer's spans all join the same trace.
+    if (job.value().trace_id.empty()) {
+        job.set_trace_id(zetta::observability::make_root_trace().trace_id);
+    }
+    zetta::observability::ScopedSpan near_data_span(
+        &node.span_recorder(),
+        zetta::observability::TraceContext{
+            job.value().trace_id, zetta::observability::make_span_id()},
+        "near-data:train");
+    near_data_span.set_attribute("job_id", job.id());
+    near_data_span.set_attribute("node", node.node_id());
+
     // Record this pipeline's near-data instrumentation into the node before
     // returning (it spans the train + explain + score phases), so the counters
-    // survive the call and surface in system.pipeline_jobs (#589).
+    // survive the call and surface in system.pipeline_jobs (#589). The same
+    // counters close the near-data span as its result shape.
     auto record_instrumentation = [&] {
         node.record_pipeline_job({.job_id = job.id(),
                                   .kind = zetta::compute::NearDataJobKind::Train,
@@ -35,6 +50,14 @@ NearDataTrainResult run_near_data_train_job(
                                   .wire_bytes_moved = out.wire_bytes_moved,
                                   .status = out.status,
                                   .recorded_at = zetta::util::now_iso8601()});
+        near_data_span.set_attribute(
+            "result_shape",
+            nlohmann::json{{"partitions_read", out.partitions_read},
+                           {"rows_read", out.rows_read},
+                           {"local_bytes_read", out.local_bytes_read},
+                           {"wire_bytes_moved", out.wire_bytes_moved},
+                           {"status", to_string(out.status)}});
+        near_data_span.finish(out.status == compute::JobStatus::Succeeded);
     };
 
     // (1) Compute near data: materialize this node's shard from its OWNED partitions
@@ -97,6 +120,8 @@ NearDataTrainResult run_near_data_train_job(
     // same project/graph as the train job.
     std::shared_ptr<zetta::compute::ComputeJob> explain_job =
         node.create_job(zetta::compute::JobKind::Explain, job.project(), job.graph());
+    // The derived job belongs to the same distributed run: ONE trace (#640).
+    explain_job->set_trace_id(job.value().trace_id);
     out.explain_job_id = explain_job->id();
     DistributedExplainResult explained = run_explain_job(
         coordinator, *explain_job, trained.model, shard.frame, entity_column,
@@ -112,6 +137,8 @@ NearDataTrainResult run_near_data_train_job(
     // identical on every node.
     std::shared_ptr<zetta::compute::ComputeJob> score_job =
         node.create_job(zetta::compute::JobKind::Score, job.project(), job.graph());
+    // Same distributed run: the score job joins the train job's trace (#640).
+    score_job->set_trace_id(job.value().trace_id);
     out.score_job_id = score_job->id();
     DistributedScoreResult scored =
         run_score_job(coordinator, *score_job, shard.frame, trained.model,

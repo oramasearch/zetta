@@ -46,6 +46,7 @@ parent. Its value:
 | `created` | `std::string` | ISO-8601 UTC stamp at creation. |
 | `updated` | `std::string` | ISO-8601 UTC stamp; bumped on every change. |
 | `detail` | `std::string` | Human-readable note / failure reason. Optional. |
+| `trace_id` | `std::string` | The job's trace (32-hex W3C id, #640) — stamped by the first coordinator to run it; replicated, so every node's spans join ONE trace. Optional. |
 
 `status` is grounded in the job events: a job starts `Queued`, moves to `Running`
 when it is scheduled onto compute, and ends `Succeeded` or `Failed` (`detail`

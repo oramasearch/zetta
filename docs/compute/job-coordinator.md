@@ -225,6 +225,22 @@ records its job `Succeeded` — plus the lifecycle edges (a single-node cluster,
 `stop()` releases the coordinator and a restart re-attaches it, and that an
 unattached standalone node has no coordinator).
 
+## Tracing (#640)
+
+Every job the coordinator runs is a trace
+([observability.md](../architecture/observability.md)): `run()` stamps the
+replicated `ComputeJob.trace_id` when empty (the trace's anchor is the
+replicated record), records a `job:<kind>` root span on this node, and the
+`JobRound` records each collective round (`collective:allreduce` / `broadcast`
+/ `barrier` / `gather`) and each cross-node `map:<method>` as child spans.
+Steal offers carry the owner's `traceparent`, so a helper executing stolen
+tasks records a `steal:<method>` span **in its own ring joined to the owner's
+trace** — reading `system.spans WHERE trace_id = …` on each node shows where
+the work actually ran. Wire the ring with
+`coordinator.set_span_recorder(&node.span_recorder())`
+(`Node::attach_cluster` does this for the attached coordinator); null = spans
+no-op.
+
 ## Limits / future
 
 - **One round shape, driven by the body.** The coordinator drives whatever rounds

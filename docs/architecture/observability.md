@@ -94,8 +94,20 @@ lands with its testkit case, and both land observable.
    start-up prints a pointer when prior reports exist. Capturing truly
    in-flight ("active") spans at crash time is a deliberate later slice — the
    report carries the ring's most recent finished spans.
-4. Cross-node propagation (signal-plane envelope carries traceparent; runs +
-   compute jobs record their trace id) — one trace per distributed run.
+4. **Shipped** — cross-node propagation: the signal envelope carries an
+   optional `traceparent` (validated, all kinds); `Run` and `ComputeJob`
+   records carry a replicated `trace_id` — the trace's anchor is the
+   replicated record, so every node that runs the job joins ONE trace. The
+   coordinator records the job root span (`job:<kind>`), each collective
+   round and cross-node `map` a child span; steal offers carry the owner's
+   traceparent, so a helper's execution of stolen tasks records a
+   `steal:<method>` span in ITS ring joined to the OWNER's trace; the
+   near-data runners record `near-data:<kind>` spans whose result shape is
+   the pipeline counters (train's derived explain/score jobs inherit the
+   trace); `GraphExecutor` stamps every run's trace and records `run:` +
+   per-`step:` spans. Scope note: SPMD siblings that each create their OWN
+   job record trace separately until an orchestrated fan-out shares one job
+   record (first-stamper-wins on the CRDT).
 5. GUI: trace pane + activity feed integration; feedback bundle affordance.
 6. `submit_feedback` capability + bundle export.
 

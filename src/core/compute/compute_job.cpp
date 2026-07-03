@@ -40,7 +40,8 @@ const nlohmann::json& schema_document() {
         "scaling_policy": { "type": "string" },
         "created":        { "type": "string" },
         "updated":        { "type": "string" },
-        "detail":         { "type": "string" }
+        "detail":         { "type": "string" },
+        "trace_id":       { "type": "string" }
       },
       "required": ["kind", "status"],
       "additionalProperties": false
@@ -127,7 +128,8 @@ nlohmann::json to_json(const ComputeJobValue& value) {
         {"scaling_policy", value.scaling_policy},
         {"created", value.created},
         {"updated", value.updated},
-        {"detail", value.detail}};
+        {"detail", value.detail},
+        {"trace_id", value.trace_id}};
 }
 
 const nlohmann::json& compute_job_value_schema() { return schema_document(); }
@@ -162,6 +164,7 @@ std::optional<ComputeJobValue> parse_compute_job_value(
     parsed.created = value.value("created", std::string{});
     parsed.updated = value.value("updated", std::string{});
     parsed.detail = value.value("detail", std::string{});
+    parsed.trace_id = value.value("trace_id", std::string{});
     return parsed;
 }
 
@@ -193,6 +196,11 @@ void ComputeJob::set_status(JobStatus status, std::string detail) {
                  (value_.detail.empty() ? "" : " (" + value_.detail + ")"),
              {}});
     }
+}
+
+void ComputeJob::set_trace_id(std::string trace_id) {
+    value_.trace_id = std::move(trace_id);
+    capture_and_persist();
 }
 
 void ComputeJob::apply_value(ComputeJobValue value) {

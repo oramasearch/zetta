@@ -319,3 +319,44 @@ TEST(Executor, CustomStepExecutorIsHonoured) {
 
     node.stop();
 }
+
+// --- Run tracing (#640) --------------------------------------------------------
+
+// Every run is a trace: the executor stamps the replicated run record with a
+// trace id and records a run root span + one child span per step into the
+// node's ring — so system.traces / get_trace answer "what happened" for a run.
+TEST(Executor, RunRecordsATraceWithPerStepSpans) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    GraphExecutor executor;
+    const ExecutionResult result =
+        executor.execute(node, churn_pipeline(), "proj", "churn_v1");
+    ASSERT_TRUE(result.ok) << result.error;
+
+    const std::string trace_id = result.run->value().trace_id;
+    ASSERT_EQ(trace_id.size(), 32u);
+
+    const auto spans = node.span_recorder().trace(trace_id);
+    std::string run_span_id;
+    std::size_t step_spans = 0;
+    for (const auto& span : spans) {
+        if (span.name == "run:churn_v1") {
+            run_span_id = span.span_id;
+            EXPECT_EQ(span.attributes.at("plan").at("steps"), 6);
+            EXPECT_TRUE(span.ok);
+        }
+    }
+    ASSERT_FALSE(run_span_id.empty());
+    for (const auto& span : spans) {
+        if (span.name.starts_with("step:")) {
+            ++step_spans;
+            EXPECT_EQ(span.parent_span_id, run_span_id);
+            EXPECT_TRUE(span.ok);
+        }
+    }
+    EXPECT_EQ(step_spans, 6u);
+
+    node.stop();
+}

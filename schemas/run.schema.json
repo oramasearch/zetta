@@ -99,6 +99,9 @@
       ],
       "type": "string"
     },
+    "trace_id": {
+      "type": "string"
+    },
     "updated": {
       "type": "string"
     }
