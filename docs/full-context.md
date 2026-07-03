@@ -5,7 +5,7 @@ this file — it maps everything: what the project is, where every kind of truth
 lives, what has shipped, what is in flight, and the working agreements.
 **Keep it current**: whenever a PR merges, a plan changes, a wave ships, or a
 new foundation lands, update this map in the same commit. A stale map is
-worse than none. Last full refresh: **2026-07-02**.
+worse than none. Last full refresh: **2026-07-02 (post-merge)**.
 
 ## The project in one paragraph
 
@@ -63,14 +63,15 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
-- **PR chain (stacked, retarget to `dev` as each merges)**:
+- **Merged to `dev` 2026-07-02**: the full restructure + foundations chain —
   [#610](https://github.com/oramasearch/zetta/pull/610) docs domain
-  restructure → [#612](https://github.com/oramasearch/zetta/pull/612)
-  code/tests/namespaces match domains (full hard rename) →
+  restructure, [#649](https://github.com/oramasearch/zetta/pull/649)
+  (supersedes #612) code/tests/namespaces match domains,
   [#613](https://github.com/oramasearch/zetta/pull/613) control-surfaces
-  product docs → [#644](https://github.com/oramasearch/zetta/pull/644)
-  foundations (API registry + observability core + bridge, three conventions,
-  experience contracts, product build-out, four skills; 11/11 tests).
+  product docs, [#644](https://github.com/oramasearch/zetta/pull/644)
+  foundations (API registry + observability core + coroutine-first bridge,
+  three conventions, experience contracts, product build-out, four skills;
+  11/11 tests). `dev` promoted to `main` immediately after.
 - **Tests**: 1077/1079 green; the 2 failures are pre-existing on clean `dev`
   ([#611](https://github.com/oramasearch/zetta/issues/611), fulltext
   ranking-oracle, reproduced + analyzed).
