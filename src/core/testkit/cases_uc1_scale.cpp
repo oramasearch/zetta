@@ -30,10 +30,11 @@
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
+#include "zetta/ddf/featurize.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/gbdt_score.hpp"
-#include "zetta/ml/local_train_job.hpp"
+#include "zetta/ml/local_featurize_train_job.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cloud/node_capability.hpp"
@@ -54,8 +55,9 @@
 //
 //   load the saas-sales-conversations parquet as a PARTITIONED table
 //     -> add permanent nodes
-//       -> train a calibrated GBDT on `outcome` compute-near-data over the partitions
-//         -> explain (per-row TreeSHAP drivers) + rank (the at-risk list)
+//       -> featurize the engineered columns compute-near-data over the partitions
+//         -> train a calibrated GBDT on `outcome` over the RESULTING feature table
+//           -> explain (per-row TreeSHAP drivers) + rank (the at-risk list)
 //
 // gated (RULE-1) and governed (key-scoped access + an audit trail). The same script
 // is registered as a sim-Python example (examples.uc1_at_scale) so it doubles as the
@@ -71,7 +73,7 @@ using compute::CpuDevice;
 using compute::DataType;
 using ddf::ColumnSchema;
 using ddf::DataFrameSchema;
-using ml::NearDataTrainResult;
+using ml::NearDataFeaturizeTrainResult;
 
 // The canonical UC-1-at-scale program. One statement per line (the sim-Python
 // frontend lowers each call to a typed step; refs become data-flow edges):
@@ -360,10 +362,20 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
         return TestResult::fail("the scoped key reached a project outside its scope");
     }
 
-    // ---- 8) SPMD near-data train -> explain -> rank across the cluster ----------
-    context.emit("training on '" + label + "' compute-near-data over the partitions");
+    // ---- 8) SPMD near-data featurize -> train -> explain -> rank ----------------
+    // The composed UC-1 pipeline (#530): point-in-time featurize the engineered
+    // columns from each node's owned partitions (a static FeaturizeSpec — the
+    // engineered columns carried through, `outcome` the label; the saas table has no
+    // time dimension, so there is nothing to cut), then train the GBDT on the
+    // RESULTING feature table — not the raw engineered columns.
+    context.emit("featurizing the engineered columns + training on '" + label +
+                 "' compute-near-data over the partitions");
+    ddf::FeaturizeSpec spec;
+    spec.entity_column = "conversation_id";
+    spec.account_features = feature_columns;
+    spec.label_column = label;
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs(nodes);
-    std::vector<NearDataTrainResult> results(nodes);
+    std::vector<NearDataFeaturizeTrainResult> results(nodes);
     // Every node submits through ITS OWN long-lived coordinator (the #579 spine,
     // #637) — attach_cluster brings it up over that node's real cluster membership.
     for (std::size_t i = 0; i < nodes; ++i) {
@@ -374,12 +386,11 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
         for (std::size_t i = 0; i < nodes; ++i) {
             jobs[i] = cluster.node(i).create_job(zetta::compute::JobKind::Train);
             threads.emplace_back([&, i] {
-                results[i] = ml::run_near_data_train_job(
+                results[i] = ml::run_near_data_featurize_train_job(
                     *cluster.node(i).job_coordinator(), cluster.node(i), *jobs[i],
-                    members[i].table_id, schema, feature_columns, label, gbdt_params(),
-                    *members[i].device, "conversation_id", calibration_config(calibrate),
-                    "uc1-outcome-gbdt", /*top_k=*/0, /*round_tag=*/"uc1.at_scale",
-                    std::chrono::seconds(20));
+                    members[i].table_id, schema, spec, gbdt_params(), *members[i].device,
+                    calibration_config(calibrate), "uc1-outcome-gbdt",
+                    /*top_k=*/0, /*round_tag=*/"uc1.at_scale", std::chrono::seconds(20));
             });
         }
         for (std::thread& thread : threads) thread.join();
@@ -387,44 +398,68 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
 
     // ---- 9) Assert the at-scale result -----------------------------------------
     std::uint64_t total_rows_read = 0;
+    std::uint64_t total_feature_rows = 0;
     std::uint64_t total_local_bytes = 0;
     std::uint64_t total_wire_bytes = 0;
     std::size_t total_explanations = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
-        const NearDataTrainResult& result = results[i];
+        const NearDataFeaturizeTrainResult& result = results[i];
         if (result.status != zetta::compute::JobStatus::Succeeded) {
             return TestResult::fail("node " + std::to_string(i) +
-                                    " near-data train did not succeed: " + jobs[i]->detail());
+                                    " near-data featurize-train did not succeed: " +
+                                    jobs[i]->detail());
+        }
+        // The GBDT trained on the broadcast FEATURE TABLE — one row per conversation,
+        // the engineered columns as X, identical on every node.
+        if (result.feature_table.row_count() != dataset.rows.size()) {
+            return TestResult::fail("node " + std::to_string(i) + " featurized " +
+                                    std::to_string(result.feature_table.row_count()) +
+                                    " of " + std::to_string(dataset.rows.size()) +
+                                    " conversations");
+        }
+        if (result.feature_table.feature_names != feature_columns) {
+            return TestResult::fail("node " + std::to_string(i) +
+                                    " feature-table columns diverged from the script");
+        }
+        if (result.feature_table.entities != results[0].feature_table.entities ||
+            result.feature_table.features != results[0].feature_table.features) {
+            return TestResult::fail("node " + std::to_string(i) +
+                                    " feature table differs from the root");
+        }
+        if (result.featurize_job_id.empty() ||
+            !cluster.node(i).find_job(result.featurize_job_id)) {
+            return TestResult::fail("node " + std::to_string(i) +
+                                    " featurize job was not recorded");
         }
         // The pipeline produced a model, per-row drivers, and a ranked at-risk list.
-        if (result.feature_names != feature_columns) {
+        if (result.train.feature_names != feature_columns) {
             return TestResult::fail("node " + std::to_string(i) + " feature ordering diverged");
         }
-        if (result.top_driver.empty()) {
+        if (result.train.top_driver.empty()) {
             return TestResult::fail("node " + std::to_string(i) + " surfaced no churn driver");
         }
-        if (result.ranked.size() != dataset.rows.size()) {
+        if (result.train.ranked.size() != dataset.rows.size()) {
             return TestResult::fail("node " + std::to_string(i) + " ranked " +
-                                    std::to_string(result.ranked.size()) + " of " +
+                                    std::to_string(result.train.ranked.size()) + " of " +
                                     std::to_string(dataset.rows.size()) + " conversations");
         }
-        for (std::size_t r = 1; r < result.ranked.size(); ++r) {
-            if (result.ranked[r - 1].risk < result.ranked[r].risk) {
+        for (std::size_t r = 1; r < result.train.ranked.size(); ++r) {
+            if (result.train.ranked[r - 1].risk < result.train.ranked[r].risk) {
                 return TestResult::fail("node " + std::to_string(i) +
                                         " at-risk list is not ranked by risk descending");
             }
         }
-        for (const ml::EntityScore& score : result.ranked) {
+        for (const ml::EntityScore& score : result.train.ranked) {
             if (score.risk < 0.0 || score.risk > 1.0) {
                 return TestResult::fail("node " + std::to_string(i) + " risk out of [0,1]");
             }
         }
         // Every node converges on the IDENTICAL model + metrics + ranking (SPMD broadcast).
-        if (result.model.to_json().dump() != results[0].model.to_json().dump()) {
+        if (result.train.model.to_json().dump() != results[0].train.model.to_json().dump()) {
             return TestResult::fail("node " + std::to_string(i) +
                                     " model differs from the root (single-node != multi-node)");
         }
-        if (result.ranked.size() != results[0].ranked.size()) {
+        if (result.train.ranked.size() != results[0].train.ranked.size()) {
             return TestResult::fail("node " + std::to_string(i) + " ranking differs from the root");
         }
         // Near-data instrumentation: this node read its OWN partitions off local disk
@@ -441,21 +476,26 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
                                     " read the whole dataset instead of its shard");
         }
         total_rows_read += result.rows_read;
+        total_feature_rows += result.feature_rows;
         total_local_bytes += result.local_bytes_read;
         total_wire_bytes += result.wire_bytes_moved;
-        total_explanations += result.explanations.size();
+        total_explanations += result.train.explanations.size();
     }
     // The model learned a real signal off the (mostly) separable saas data.
-    if (!(results[0].metrics.auc > 0.6)) {
+    if (!(results[0].train.metrics.auc > 0.6)) {
         return TestResult::fail("the trained model did not learn the signal (AUC " +
-                                number(results[0].metrics.auc) + ")");
+                                number(results[0].train.metrics.auc) + ")");
     }
-    if (calibrate && !results[0].calibrated) {
+    if (calibrate && !results[0].train.calibrated) {
         return TestResult::fail("calibration was requested but the model was not calibrated");
     }
-    // Every conversation was read near data, across the shards, and explained exactly once.
-    if (total_rows_read != dataset.rows.size() || total_explanations != dataset.rows.size()) {
+    // Every conversation was read near data across the shards exactly once, landed in
+    // the feature table exactly once, and was explained exactly once.
+    if (total_rows_read != dataset.rows.size() ||
+        total_feature_rows != dataset.rows.size() ||
+        total_explanations != dataset.rows.size()) {
         return TestResult::fail("rows read near data (" + std::to_string(total_rows_read) +
+                                ") / featurized (" + std::to_string(total_feature_rows) +
                                 ") / explained (" + std::to_string(total_explanations) +
                                 ") != conversations (" + std::to_string(dataset.rows.size()) + ")");
     }
@@ -471,8 +511,8 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
         }
     }
     if (!found_root) return TestResult::fail("no node reported being the collective root");
-    if (results[root_index].model_id.empty() ||
-        !cluster.node(root_index).find_model(results[root_index].model_id)) {
+    if (results[root_index].train.model_id.empty() ||
+        !cluster.node(root_index).find_model(results[root_index].train.model_id)) {
         return TestResult::fail("the trained Model was not registered on the root node");
     }
 
@@ -486,8 +526,9 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
             default: break;
         }
     }
-    // The 3 authorize(resource) decisions + the train/explain/score jobs on the driver.
-    if (data_access < 2 || job_created < 3 || job_finished < 3) {
+    // The 3 authorize(resource) decisions + the featurize/train/explain/score jobs on
+    // the driver.
+    if (data_access < 2 || job_created < 4 || job_finished < 4) {
         return TestResult::fail("the run was not fully audited (data_access=" +
                                 std::to_string(data_access) + " job_created=" +
                                 std::to_string(job_created) + " job_finished=" +
@@ -495,17 +536,18 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
     }
 
     TestResult result = TestResult::pass(
-        "loaded the saas parquet partitioned, added nodes, and trained a calibrated "
-        "`" + label + "` model near data across the cluster — gated, governed, and "
-        "identical on every node");
+        "loaded the saas parquet partitioned, added nodes, featurized the engineered "
+        "columns near data, and trained a calibrated `" + label + "` model on the "
+        "feature table across the cluster — gated, governed, and identical on every node");
     result.metric("nodes", std::to_string(nodes))
         .metric("requested nodes (script)", std::to_string(requested_nodes))
         .metric("provisioned", std::to_string(added.members.size()))
         .metric("conversations", std::to_string(dataset.rows.size()))
         .metric("real fixture rows", std::to_string(dataset.real_rows))
-        .metric("top churn driver", results[0].top_driver)
-        .metric("AUC", number(results[0].metrics.auc))
-        .metric("calibrated", results[0].calibrated ? "yes" : "no")
+        .metric("feature-table rows", std::to_string(results[0].feature_table.row_count()))
+        .metric("top churn driver", results[0].train.top_driver)
+        .metric("AUC", number(results[0].train.metrics.auc))
+        .metric("calibrated", results[0].train.calibrated ? "yes" : "no")
         .metric("raw data read near data (bytes)", std::to_string(total_local_bytes))
         .metric("partials over wire (bytes)", std::to_string(total_wire_bytes))
         .metric("audit events", std::to_string(data_access + job_created + job_finished));
@@ -524,7 +566,8 @@ void register_uc1_scale_cases(TestSuite& suite) {
         .description =
             "The capstone scale test, driven by one canonical sim-Python program: load "
             "the saas-sales-conversations parquet as a partitioned table, add permanent "
-            "nodes, and train a calibrated GBDT on `outcome` compute-near-data across a "
+            "nodes, featurize the engineered columns compute-near-data, and train a "
+            "calibrated GBDT on `outcome` over the resulting feature table across a "
             "real loopback cluster — explained (per-row TreeSHAP drivers) and ranked "
             "(the at-risk list), gated (RULE-1) and governed (key-scoped access + audit). "
             "Asserts a real model identical on every node, with only partials over the "

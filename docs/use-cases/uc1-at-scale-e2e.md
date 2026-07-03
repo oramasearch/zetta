@@ -7,8 +7,9 @@ canonical **sim-Python program** drives the whole UC-1 pipeline at scale over a
 ```
 load the saas-sales-conversations parquet as a PARTITIONED table
   → add permanent nodes
-    → train a calibrated GBDT on `outcome`, compute-near-data over the partitions
-      → explain (per-row TreeSHAP drivers) + rank (the at-risk list)
+    → featurize the engineered columns, compute-near-data over the partitions
+      → train a calibrated GBDT on `outcome` over the RESULTING feature table
+        → explain (per-row TreeSHAP drivers) + rank (the at-risk list)
 ```
 
 — **gated** (RULE-1) and **governed** (key-scoped access + an audit trail). The
@@ -89,16 +90,21 @@ the real pipeline:
    [principal](../governance/access-control.md) holds a key scoped to the `uc1` project + `data`
    database with `orchestration:start_run` + `data:read` capabilities. The case
    authorizes against it (in-scope allowed; out-of-scope denied — deny-by-default).
-6. **Train near data, SPMD.** Every node concurrently runs
-   [`run_near_data_train_job`](uc1-train-over-partitions.md) on `outcome` over the
-   features named by the script: load this node's owned partitions, then train
-   (+ calibrate) → explain (per-row TreeSHAP) → rank (the at-risk list), each a
-   recorded [`ComputeJob`](../compute/compute-jobs.md). Only the per-node partials cross the
-   wire.
+6. **Featurize + train near data, SPMD.** Every node concurrently runs
+   [`run_near_data_featurize_train_job`](uc1-featurize-train-over-partitions.md)
+   (#530) with a static [`FeaturizeSpec`](../ddf/ddf-featurize.md) built from the
+   script (the projected columns as `account_features`, the `target=` kwarg as the
+   label): load this node's owned partitions once, featurize (the broadcast feature
+   table, identical on every node), then train (+ calibrate) → explain (per-row
+   TreeSHAP) → rank (the at-risk list) **over the feature table** — not the raw
+   engineered columns — each a recorded [`ComputeJob`](../compute/compute-jobs.md).
+   Only the per-node partials cross the wire.
 
 ## What it asserts
 
-- **A real model + drivers + ranking on every node** — the pipeline `Succeeded`,
+- **A real feature table + model + drivers + ranking on every node** — the pipeline
+  `Succeeded`, the broadcast feature table covers every conversation with the
+  script's columns and is identical on every node, its `featurize` job is recorded,
   a calibrated [`Model`](../ml/models.md) is registered (`find_model`), the per-row
   TreeSHAP drivers are in `feature_columns` order with a non-empty top driver, and
   the at-risk list ranks every conversation once by risk descending, each risk in
@@ -143,9 +149,11 @@ suite** panel (pick the node count, watch it run over a real loopback cluster).
 
 ## Relation
 
-- The **train slice** it runs is [train GBDT(outcome) over partitions](uc1-train-over-partitions.md)
-  (#533); the **featurize slice** is [featurize engineered columns over partitions](../ddf/ddf-featurize.md)
-  (#532); both ride the [compute-near-data](../compute/compute-near-data.md) loader (#516).
+- The **pipeline step** it runs is the
+  [featurize → train composition](uc1-featurize-train-over-partitions.md) (#530),
+  which composes [featurize engineered columns over partitions](../ddf/ddf-featurize.md)
+  (#532) with [train GBDT(outcome) over partitions](uc1-train-over-partitions.md)
+  (#533); all ride the [compute-near-data](../compute/compute-near-data.md) loader (#516).
 - It is the at-scale sibling of the single-node [UC-1 end-to-end](uc1-end-to-end.md)
   (#399), and the capstone of **UC-4** (#267, burst-train on temporary nodes) — the
   add-nodes + near-data-train control surface UC-4 builds on.

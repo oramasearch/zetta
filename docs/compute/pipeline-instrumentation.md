@@ -70,6 +70,13 @@ completes. The ring keeps the most-recent `Node::kMaxPipelineJobs` (512) records
 its own mutex — a background interactive run records while the GUI / query thread
 reads.
 
+The composed [featurize → train runner](../use-cases/uc1-featurize-train-over-partitions.md)
+(#530) records **two rows per run**: a `featurize` row carrying its one shard read
+(`partitions_read` / `rows_read` / `local_bytes_read`) + the featurization partials,
+and a `train` row carrying the feature rows this node trained on + the
+train/explain/score partials — so summing the view never double-counts the shared
+read.
+
 ## `system.collective_rounds` — live collective-plane progress
 
 Always **exactly one row** (this node), like `system.node_metrics`. It reflects the

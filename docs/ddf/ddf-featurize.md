@@ -302,12 +302,13 @@ from the frame's device and composes the leaf ops in host code (correctness over
 throughput, the way [`CpuDevice`](../compute/cpu-device.md) is the numerical reference for
 [`CudaDevice`](../compute/compute-device.md)); the distributed op runs it as a recorded
 `featurize` ComputeJob; and `run_near_data_featurize_job` runs it compute-near-data
-over a partitioned table. The next slices build on the feature table: **training** a
-model from it over the partitioned dataset
-([#530](https://github.com/oramasearch/zetta/issues/530) /
-[#533](https://github.com/oramasearch/zetta/issues/533)) and the
-[UC-1-at-scale E2E](https://github.com/oramasearch/zetta/issues/531), plus the
-left-join distributed path once `distributed_join` gains outer-join support.
+over a partitioned table. The slices built on the feature table have shipped:
+**training** a model from it over the partitioned dataset — the standalone
+[train over partitions](../use-cases/uc1-train-over-partitions.md) (#533) and the
+[featurize → train composition](../use-cases/uc1-featurize-train-over-partitions.md)
+(#530, the GBDT fed this feature table) — and the
+[UC-1-at-scale E2E](../use-cases/uc1-at-scale-e2e.md) (#531). Still a later slice:
+the left-join distributed path once `distributed_join` gains outer-join support.
 
 See also [ddf.md](ddf.md) (the DataFrame substrate), [ddf-as-of.md](ddf-as-of.md)
 (the windowing primitive), [ddf-groupby.md](ddf-groupby.md) (the aggregate op),

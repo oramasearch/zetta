@@ -8,8 +8,85 @@
 #include "zetta/node.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/util/timestamp.hpp"
+#include "near_data_train_pipeline.hpp"
 
 namespace zetta::ml {
+
+namespace detail {
+
+void run_train_explain_rank_phases(
+    compute::JobCoordinator& coordinator, Node& node, zetta::compute::ComputeJob& job,
+    const ddf::DataFrame& frame, const std::vector<std::string>& feature_columns,
+    const std::string& label_column, const GbdtParams& params,
+    const std::string& entity_column, CalibrationConfig calibration,
+    const std::string& model_name, std::size_t top_k, const std::string& base_tag,
+    std::chrono::milliseconds timeout, NearDataTrainResult& out) {
+    // Measure the collective-plane bytes this node moves across the three phases (the
+    // training histograms / metrics, the SHAP partials, the score pairs — not the rows).
+    const std::uint64_t wire_before = coordinator.collectives().wire_bytes();
+
+    // (1) Train (+ calibrate) over the local frame. Drives the headline `train` job and,
+    // on the root, registers the calibrated Model (metrics = global AUC/log-loss/
+    // accuracy, feature_schema.drivers = per-feature gains).
+    DistributedTrainResult trained = run_train_job(
+        coordinator, job, frame, feature_columns, label_column, params, &node,
+        model_name, base_tag + ":train", calibration, timeout);
+    out.model = trained.model;
+    out.metrics = trained.metrics;
+    out.feature_importances = trained.feature_importances;
+    out.calibrated = trained.calibrated;
+    out.model_id = trained.model_id;
+    out.status = trained.status;
+    out.is_root = trained.is_root;
+
+    if (!trained.ok()) {
+        // Training failed — surface it without attempting explain/rank over an unbuilt
+        // model. The instrumentation still reflects what this node moved.
+        out.wire_bytes_moved = coordinator.collectives().wire_bytes() - wire_before;
+        return;
+    }
+
+    // (2) Per-row TreeSHAP drivers over the same frame, with the trained model. A
+    // self-created `explain` ComputeJob (so it appears in system.jobs), under the
+    // same project/graph as the train job.
+    std::shared_ptr<zetta::compute::ComputeJob> explain_job =
+        node.create_job(zetta::compute::JobKind::Explain, job.project(), job.graph());
+    // The derived job belongs to the same distributed run: ONE trace (#640).
+    explain_job->set_trace_id(job.value().trace_id);
+    out.explain_job_id = explain_job->id();
+    DistributedExplainResult explained = run_explain_job(
+        coordinator, *explain_job, trained.model, frame, entity_column,
+        base_tag + ":explain", timeout);
+    out.explanations = std::move(explained.explanations);
+    out.feature_names = std::move(explained.feature_names);
+    out.shap_base_value = explained.base_value;
+    out.mean_abs_shap = std::move(explained.mean_abs_shap);
+    out.top_driver = std::move(explained.top_driver);
+
+    // (3) The global ranked at-risk list over the same frame. A self-created `score`
+    // ComputeJob; the gather + device sort_by_key + broadcast make the ranking
+    // identical on every node.
+    std::shared_ptr<zetta::compute::ComputeJob> score_job =
+        node.create_job(zetta::compute::JobKind::Score, job.project(), job.graph());
+    // Same distributed run: the score job joins the train job's trace (#640).
+    score_job->set_trace_id(job.value().trace_id);
+    out.score_job_id = score_job->id();
+    DistributedScoreResult scored =
+        run_score_job(coordinator, *score_job, frame, trained.model,
+                      entity_column, top_k, base_tag + ":score", timeout);
+    out.ranked = std::move(scored.ranked);
+
+    out.wire_bytes_moved = coordinator.collectives().wire_bytes() - wire_before;
+
+    // The pipeline succeeds only when all three phases did — the per-row drivers + rank
+    // are part of the deliverable, not optional decoration.
+    out.status = (explained.status == zetta::compute::JobStatus::Succeeded &&
+                  scored.status == zetta::compute::JobStatus::Succeeded)
+                     ? zetta::compute::JobStatus::Succeeded
+                     : zetta::compute::JobStatus::Failed;
+}
+
+}  // namespace detail
 
 NearDataTrainResult run_near_data_train_job(
     compute::JobCoordinator& coordinator, Node& node, zetta::compute::ComputeJob& job,
@@ -89,70 +166,12 @@ NearDataTrainResult run_near_data_train_job(
     const std::string base =
         round_tag.empty() ? ("near-data-train:" + table) : round_tag;
 
-    // Measure the collective-plane bytes this node moves across all three phases (the
-    // training histograms / metrics, the SHAP partials, the score pairs — not the rows).
-    const std::uint64_t wire_before = coordinator.collectives().wire_bytes();
-
-    // (2) Train (+ calibrate) over the local shard. Drives the headline `train` job and,
-    // on the root, registers the calibrated Model (metrics = global AUC/log-loss/
-    // accuracy, feature_schema.drivers = per-feature gains).
-    DistributedTrainResult trained = run_train_job(
-        coordinator, job, shard.frame, feature_columns, label_column, params, &node,
-        model_name, base + ":train", calibration, timeout);
-    out.model = trained.model;
-    out.metrics = trained.metrics;
-    out.feature_importances = trained.feature_importances;
-    out.calibrated = trained.calibrated;
-    out.model_id = trained.model_id;
-    out.status = trained.status;
-    out.is_root = trained.is_root;
-
-    if (!trained.ok()) {
-        // Training failed — surface it without attempting explain/rank over an unbuilt
-        // model. The instrumentation still reflects what this node moved.
-        out.wire_bytes_moved = coordinator.collectives().wire_bytes() - wire_before;
-        record_instrumentation();
-        return out;
-    }
-
-    // (3) Per-row TreeSHAP drivers over the same shard, with the trained model. A
-    // self-created `explain` ComputeJob (so it appears in system.jobs), under the
-    // same project/graph as the train job.
-    std::shared_ptr<zetta::compute::ComputeJob> explain_job =
-        node.create_job(zetta::compute::JobKind::Explain, job.project(), job.graph());
-    // The derived job belongs to the same distributed run: ONE trace (#640).
-    explain_job->set_trace_id(job.value().trace_id);
-    out.explain_job_id = explain_job->id();
-    DistributedExplainResult explained = run_explain_job(
-        coordinator, *explain_job, trained.model, shard.frame, entity_column,
-        base + ":explain", timeout);
-    out.explanations = std::move(explained.explanations);
-    out.feature_names = std::move(explained.feature_names);
-    out.shap_base_value = explained.base_value;
-    out.mean_abs_shap = std::move(explained.mean_abs_shap);
-    out.top_driver = std::move(explained.top_driver);
-
-    // (4) The global ranked at-risk list over the same shard. A self-created `score`
-    // ComputeJob; the gather + device sort_by_key + broadcast make the ranking
-    // identical on every node.
-    std::shared_ptr<zetta::compute::ComputeJob> score_job =
-        node.create_job(zetta::compute::JobKind::Score, job.project(), job.graph());
-    // Same distributed run: the score job joins the train job's trace (#640).
-    score_job->set_trace_id(job.value().trace_id);
-    out.score_job_id = score_job->id();
-    DistributedScoreResult scored =
-        run_score_job(coordinator, *score_job, shard.frame, trained.model,
-                      entity_column, top_k, base + ":score", timeout);
-    out.ranked = std::move(scored.ranked);
-
-    out.wire_bytes_moved = coordinator.collectives().wire_bytes() - wire_before;
-
-    // The pipeline succeeds only when all three phases did — the per-row drivers + rank
-    // are part of the deliverable, not optional decoration.
-    out.status = (explained.status == zetta::compute::JobStatus::Succeeded &&
-                  scored.status == zetta::compute::JobStatus::Succeeded)
-                     ? zetta::compute::JobStatus::Succeeded
-                     : zetta::compute::JobStatus::Failed;
+    // (2) Train (+ calibrate) → explain → rank over the local shard — the shared phase
+    // driver (near_data_train_pipeline.hpp), which fills everything but the shard-load
+    // instrumentation set above.
+    detail::run_train_explain_rank_phases(
+        coordinator, node, job, shard.frame, feature_columns, label_column, params,
+        entity_column, calibration, model_name, top_k, base, timeout, out);
     record_instrumentation();
     return out;
 }

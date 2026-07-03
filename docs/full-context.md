@@ -101,7 +101,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   navigate_to + sidebar, #628 closed). Plan 19 reconciled 2026-07-03: grammar
   edges inverted (it shipped, so #634 master-detail leads the panel sweeps,
   #631/#632/#633 follow it, #630 audit + #635 terminology close); layer-0 now
-  #637 · #611 · #466 · #538 · #530 · #641 · #634 · #626;
+  #637 · #611 · #466 · #538 · #641 · #634 · #626;
   #616/#625/#645 also unblocked. **#636 adoption swept**: every panel status
   renders via tone_of + status_label/status_pill
   ([status-tones.md](gui/status-tones.md)). **#622 activity feed shipped**
@@ -135,6 +135,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   spans), traced testkit (`testkit:<case.id>` spans), the GUI Traces view
   (the per-operation trace pane beside #668's Activity feed), and the
   `submit_feedback` capability (bundle as a large object, explicit export).
+- **#530 shipped** (UC-1 featurize → train over partitions):
+  `zetta::ml::run_near_data_featurize_train_job` composes #532 featurize +
+  #533 train so the GBDT trains on the feature table, and `cluster.uc1_at_scale`
+  now featurizes before training — see
+  [use-cases/uc1-featurize-train-over-partitions.md](use-cases/uc1-featurize-train-over-partitions.md).
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next
