@@ -395,11 +395,11 @@ void App::draw_rows() {
 }
 
 void App::draw_query() {
-    ImGui::SeparatorText("SQL query (postgres)");
-    ImGui::TextDisabled(
-        "Unqualified names use the selected database (%s); use db.table to "
-        "target another.",
-        selected_db_.empty() ? "none" : selected_db_.c_str());
+    const std::string query_subtitle =
+        "Postgres dialect. Unqualified names use the selected database (" +
+        (selected_db_.empty() ? std::string("none") : selected_db_) +
+        "); use db.table to target another.";
+    page_header("SQL query", query_subtitle.c_str());
 
     // The SQL editor is code: render it in Geist Mono.
     if (mono_font_) ImGui::PushFont(mono_font_);
