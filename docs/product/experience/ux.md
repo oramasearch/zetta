@@ -14,6 +14,13 @@ lens on a cluster that is primarily driven programmatically
   — the same read model + registry rendered in a browser for operators away
   from the desktop and for sharing a cluster view across a team. Strictly a
   rendering; never a fourth behavior path.
+- **A coding agent (Claude Code first)** — for many users the primary way to
+  operate zetta: they say what they want in their own words, the agent drives
+  the MCP surface on their behalf, and the desktop/web lens shows them what
+  their agent is doing as it happens (#620). Conversational operation is a
+  designed UX mode, not a workaround — the human's words ride the `intent`
+  field, so what they *meant* is recorded alongside what was invoked, and the
+  trace + activity feed let them audit their agent afterwards.
 
 ## Principles
 

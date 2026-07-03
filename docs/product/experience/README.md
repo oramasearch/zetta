@@ -16,5 +16,12 @@ did.
 Cross-cutting: [serving.md](serving.md) — models and indexes as governed HTTP
 endpoints (cluster-internal by default), the `serve` step's full meaning.
 
+**One mode spans all three experiences: using zetta through Claude Code (or
+another coding agent).** Users operate the cluster conversationally (UX),
+developers build zetta with agents as the normal mode (DX), and the agent in
+the middle is exactly who the tool surface serves (AX) — the `intent` field,
+prompts, traces, and GUI live surfacing are the same loop seen from three
+seats.
+
 When a surface or convention changes, update the affected experience page in
 the same commit — these pages are the contract each audience reads.
