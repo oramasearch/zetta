@@ -150,7 +150,7 @@ This is the audit half of FEAT-9, on top of the
 [key-scoped access model](access-control.md). The pieces still ahead: **approval
 gates** (block a risky action pending sign-off), threading the login key through
 the **request path** (so every query / mutation is authorized and audited, not
-just the `authorize` seam), and a **`system.zetta_audit`** SQL table (the trail is
+just the `authorize` seam), and a **`system.audit`** SQL table (the trail is
 queryable via the C++ API today). The trail is now surfaced in the **GUI**: the
 headed [Admin & Settings panel](../gui/admin-panel.md) (SCR-7 / CMP-5) renders it as a
 read-only table.

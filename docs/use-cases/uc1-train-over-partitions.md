@@ -40,7 +40,7 @@ per-row drivers + ranked list.
 ## The pipeline — three recorded jobs over the one local shard
 
 `run_near_data_train_job` loads the local shard **once** and runs three phases over
-it, each a `ComputeJob` (so they appear in `system.zetta_jobs`):
+it, each a `ComputeJob` (so they appear in `system.jobs`):
 
 1. **train + calibrate** — [`run_train_job`](../ml/gbdt.md) over the local shard
    (calibration opt-in via [`CalibrationConfig`](../ml/calibration.md)), driving the

@@ -149,7 +149,7 @@ node converge onto every node, in memory and on disk, conflict-free, with no
 leader. Large-object bodies transfer peer-to-peer and are SHA-256-verified;
 partitioned tables place their bodies on owner nodes only. See all nodes and
 their replication status in the headed **Cluster** panel, the headless
-heartbeat log, or SQL (`SELECT * FROM system.zetta_nodes;`). Detail:
+heartbeat log, or SQL (`SELECT * FROM system.nodes;`). Detail:
 [docs/cluster/](docs/cluster/README.md).
 
 The first configure clones SDL3, Dear ImGui, and GoogleTest via CMake

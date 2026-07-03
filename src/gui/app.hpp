@@ -110,7 +110,7 @@ private:
         Gate,      // the correctness gate
         Deploy,    // the AI Solution Library → one-button deploy
         Runs,      // runs / outputs / lineage
-        Models,    // trained models (system.zetta_models) + register/import
+        Models,    // trained models (system.models) + register/import
         Jobs,      // compute jobs + scaling preview
         Cluster,   // membership + replication
         Cloud,     // cloud provider inspector (permission-gated)
@@ -263,7 +263,7 @@ private:
     // triggers no cloud call. Shown inside the granted consent gate.
     void draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider);
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
-    void draw_models();      // standalone models (system.zetta_models): list + detail + add
+    void draw_models();      // standalone models (system.models): list + detail + add
     // The inline "Add model" affordance inside draw_models: register/import a model
     // via Node::create_model (+ optional Model::set_weights). The assembled value is
     // re-validated against the Model JSON Schema at this boundary, so malformed
@@ -272,7 +272,7 @@ private:
     void draw_add_model_form();
     // Clear the Add-model form fields (name/kind/metrics/features/staged weights/error).
     void reset_add_model_form();
-    void draw_jobs();        // compute jobs (system.zetta_jobs) + per-job objective/scaling
+    void draw_jobs();        // compute jobs (system.jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
     void draw_test_suite();  // the in-app test suite: canned cases + options + run
     // Start the selected case on a worker thread (so distributed cases, which stand
@@ -427,7 +427,7 @@ private:
     // Editable placement for a cloud add: region + VM size, applied to the injected
     // provisioner via Provisioner::set_placement before the add so the operator can
     // steer where a burst lands (complementing the backend's own SKU fallback).
-    // Pre-filled from the detected system.zetta_provisioners config when the target
+    // Pre-filled from the detected system.provisioners config when the target
     // changes (tracked by add_nodes_placement_target_).
     std::string add_nodes_region_;
     std::string add_nodes_vm_size_;
@@ -447,7 +447,7 @@ private:
     // reset whenever the selection changes, so consent is never carried over to a
     // different provider or remembered across selections (CLAUDE.md hard rule).
     // Only after consent does run_cloud_inspect() run the provider's read-only
-    // commands; the result is cached on the node (system.zetta_cloud_status).
+    // commands; the result is cached on the node (system.cloud_status).
     std::string selected_cloud_provider_;
     std::string cloud_consent_provider_;
 

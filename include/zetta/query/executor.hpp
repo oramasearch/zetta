@@ -27,7 +27,7 @@ struct QueryResult {
 // unqualified table references (the UI's selected database). Dialect-neutral:
 // it only ever sees the generic AST.
 //
-// An optional Cluster lets SELECT read the `zetta_nodes` system table (all nodes
+// An optional Cluster lets SELECT read the `nodes` system table (all nodes
 // + replication status); without one, querying it returns a clear error.
 class Executor {
 public:

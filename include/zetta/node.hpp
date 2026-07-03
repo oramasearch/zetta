@@ -154,7 +154,7 @@ public:
 
     // The cluster membership this node currently observes: the sorted, unique set
     // of node ids from the replicated node:<id> keys (the source of
-    // system.zetta_nodes and the #517 rebalance baseline). A standalone node (no
+    // system.nodes and the #517 rebalance baseline). A standalone node (no
     // replication) reports just itself; before start() it is empty. Used by the
     // add_nodes(Node&, …) overload to feed the previous membership into the
     // between-jobs rebalance (#519).
@@ -191,7 +191,7 @@ public:
     // target and record it. R1 supports a **Local** target only; deploy_graph
     // returns an empty handle for a non-local target or an empty graph. The
     // recorded deployment is replicated + on disk and queryable via
-    // deployments() / find_deployment() (and the system.zetta_deployments SQL
+    // deployments() / find_deployment() (and the system.deployments SQL
     // table). The graph is recorded as a summary (name + node/edge counts) since
     // the IR has no serialized form yet. Reconcile/self-heal is a later slice.
     std::shared_ptr<zetta::pipeline::Deployment> deploy_graph(const ir::ExecutionGraph& graph,
@@ -222,7 +222,7 @@ public:
     // CRUD for models (a trained model registered on the node — see model.hpp /
     // docs/ml/models.md; ENT-14 / FEAT-6). Models are keyed by id (like runs), so
     // find / drop take the id; the registry is models() + the
-    // system.zetta_models SQL table. create stamps `created` and requires a
+    // system.models SQL table. create stamps `created` and requires a
     // non-empty `kind` (empty handle otherwise); the caller fills the rest of the
     // ModelValue (name / feature_schema / metrics / project / run). Weights are
     // attached separately via the returned Model handle's set_weights (the body
@@ -237,7 +237,7 @@ public:
     // CRUD for indexes (a registered index over a table — search / vector /
     // feature; ENT-39 / ENT-40, see index/index.hpp / docs/indexing/index-backend.md). Like
     // models, indexes are keyed by id (no human name), so find / drop take the id;
-    // the registry is indexes() + the system.zetta_indexes SQL table. create stamps
+    // the registry is indexes() + the system.indexes SQL table. create stamps
     // `created` and requires a non-empty `table` / `backend` and at least one field
     // (empty handle otherwise — the IndexValue is validated at the schema boundary
     // on persist/reconcile). An index is metadata only: this records its
@@ -339,7 +339,7 @@ public:
     // docs/cloud/cloud-inspector.md). **Ephemeral, observed state with NO CRDT backing**
     // — it is neither replicated nor persisted (a live inspect is session-local;
     // see RULE-7 in CLAUDE.md). The Cloud Inspector records a report here only
-    // AFTER the user consents to that one inspection; `system.zetta_cloud_status`
+    // AFTER the user consents to that one inspection; `system.cloud_status`
     // reads this cache and never triggers a cloud call. The latest report per
     // provider id replaces the previous one; cloud_inspections() is in provider
     // insertion order.
@@ -353,7 +353,7 @@ public:
     // observed state with NO CRDT backing** — like cloud_inspections(), node-local
     // and never replicated/persisted, because it reflects *this* node's CLI auth +
     // defaults. It carries no credentials (the CLI keeps its own); it is the source
-    // for the read-only `system.zetta_provisioners` view and for wiring the headed
+    // for the read-only `system.provisioners` view and for wiring the headed
     // Add-nodes control. The latest config per target id replaces the previous one;
     // provisioner_configs() is in target insertion order.
     void record_provisioner_config(zetta::cloud::ProvisionerConfig config);
@@ -417,7 +417,7 @@ public:
     std::vector<std::string> principal_names() const;
     std::size_t principal_count() const { return principals_.size(); }
     // The principals in insertion order — the live source for the
-    // system.zetta_principals / system.zetta_keys read views (each principal owns
+    // system.principals / system.keys read views (each principal owns
     // its keys via Principal::keys()).
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals() const {
         return principals_;

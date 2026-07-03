@@ -27,7 +27,7 @@ struct CloudInspectCommand {
 // the provider's identity (account / user / project / namespace, provider-
 // specific), the locations (regions) it offers, any resources it surfaced (k8s
 // nodes), and the per-command outcomes. This is zetta's own contract — it is
-// cached on the Node and surfaced as `system.zetta_cloud_status`, and is
+// cached on the Node and surfaced as `system.cloud_status`, and is
 // boundary-validated against schemas/cloud_inspect_report.schema.json.
 //
 // It carries **no credentials**: the inspector runs the read-only commands but

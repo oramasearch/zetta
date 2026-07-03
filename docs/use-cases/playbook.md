@@ -161,6 +161,6 @@ The playbook is a deterministic transform of already-computed scores + drivers, 
 this slice is a **pure library** (like [`score_gbdt`](../ml/gbdt-score.md) /
 [`tree_shap`](../ml/tree-shap.md)), non-throwing, in `zetta-core`. Wiring it through the
 [job coordinator](../compute/job-coordinator.md) as a recorded `playbook` `ComputeJob` (so it
-appears in `system.zetta_jobs`), a `system.zetta_*` read view of the generated
+appears in `system.jobs`), a `system.*` read view of the generated
 playbook, persisting the playbook + outcome log as durable entities, a GUI panel, and
 a real Anthropic-Messages-API `NarratorCompletion` binding are later slices.

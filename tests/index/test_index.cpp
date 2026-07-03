@@ -522,7 +522,7 @@ TEST(NodeIndex, RegistryVisibleViaSystemTable) {
     ASSERT_TRUE(index);
 
     QueryService svc{node};
-    auto sel = svc.run("SELECT * FROM system.zetta_indexes;", "");
+    auto sel = svc.run("SELECT * FROM system.indexes;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     ASSERT_EQ(sel.rows.size(), 1u);
     EXPECT_EQ(sel.rows[0]["index_id"].get<std::string>(), index->id());
@@ -534,7 +534,7 @@ TEST(NodeIndex, RegistryVisibleViaSystemTable) {
     EXPECT_EQ(sel.rows[0]["field_count"].get<int>(), 2);
 
     auto by_kind = svc.run(
-        "SELECT index_id FROM system.zetta_indexes WHERE kind = 'search';", "");
+        "SELECT index_id FROM system.indexes WHERE kind = 'search';", "");
     ASSERT_TRUE(by_kind.ok()) << by_kind.error;
     EXPECT_EQ(by_kind.rows.size(), 1u);
     node.stop();

@@ -179,7 +179,7 @@ void App::draw_graph_workspace() {
 zetta::pipeline::ClusterPlan App::build_graph_plan() const {
     if (!editing_graph_) return zetta::pipeline::ClusterPlan{};
 
-    // Members projected over = the live cluster (system.zetta_nodes / the spatial
+    // Members projected over = the live cluster (system.nodes / the spatial
     // Cluster view's source), so the plan tracks joins/leaves with no separate copy.
     std::vector<std::string> members;
     for (const zetta::cluster::NodeStatus& node : cluster_.nodes()) members.push_back(node.node_id);

@@ -53,7 +53,7 @@ the symmetric handshake records it on both sides** (`Cluster::peers()` /
 `Cluster::nodes()`). Its UUID is its [CRDT actor id](../cluster/replication.md), so it owns a
 replicated `node:<id>` key in `replication.automerge` — which means the new member
 **persists across restart** and shows up in the
-[`system.zetta_nodes`](../data/query.md) view, exactly like any other node. This is the
+[`system.nodes`](../data/query.md) view, exactly like any other node. This is the
 [everything-is-derived rule](../cluster/replication.md): the cluster's existing membership +
 replication path *is* "persist as members"; `add_nodes` just makes the cloud
 provisioner feed it automatically.

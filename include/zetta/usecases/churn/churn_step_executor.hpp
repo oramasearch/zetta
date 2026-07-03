@@ -106,7 +106,7 @@ struct ChurnPipelineConfig {
     std::string model_name = "churn_model";  // the registered Model's human name
 
     // Optional refs stamped on every ComputeJob this executor creates (observability
-    // in system.zetta_jobs); the Run is labelled separately via GraphExecutor.
+    // in system.jobs); the Run is labelled separately via GraphExecutor.
     std::string project;
     std::string graph;
 };

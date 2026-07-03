@@ -12,7 +12,7 @@ namespace zetta::cluster {
 // read-only, **ephemeral** `system.node_metrics` table (the animated per-node
 // gauges of #575 area 2). It is **observed state, never replicated**: it is
 // sampled straight from the host's OS counters at query time, never stored or
-// gossiped (like `system.zetta_cloud_status` / `system.checkpoints`).
+// gossiped (like `system.cloud_status` / `system.checkpoints`).
 //
 // A node measures only **its own** host, so a query on one node reports that
 // node's row. Counters a host can't report **degrade gracefully**: each group

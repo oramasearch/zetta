@@ -14,7 +14,7 @@
 // Run histogram GBDT training as a distributed **`train` ComputeJob** through the
 // [job coordinator](../compute/job_coordinator.hpp) (FEAT-6 / ENT-14, #390) — the
 // slice that makes training a recorded, durable, audited unit of accelerated
-// compute that appears in `system.zetta_jobs` and **produces a `Model`**.
+// compute that appears in `system.jobs` and **produces a `Model`**.
 //
 // **The distributed shape.** This is the SPMD entry the training algorithm runs
 // through: each participating node holds a shard of the feature table (one row per

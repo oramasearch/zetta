@@ -187,7 +187,7 @@ TEST(QueryService, ReportsExecutionErrors) {
     node.stop();
 }
 
-// ---- zetta_nodes system table ---------------------------------------------
+// ---- nodes system table ---------------------------------------------
 
 TEST(QueryService, SelectsClusterNodesSystemTable) {
     TempDir tmp;
@@ -207,19 +207,23 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
 
     QueryService svc{node, &cluster};
     // It lives in the `system` database.
-    auto sel = svc.run("SELECT * FROM system.zetta_nodes;", "");
+    auto sel = svc.run("SELECT * FROM system.nodes;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     ASSERT_EQ(sel.rows.size(), 1u);  // just this node
     EXPECT_EQ(sel.rows[0]["node_id"].get<std::string>(), node_id);
     EXPECT_TRUE(sel.rows[0]["is_self"].get<bool>());
     EXPECT_EQ(sel.rows[0]["entries"].get<int>(), 1);
 
-    // The bare name still resolves (back-compat alias).
+    // The legacy pre-#538 spellings still resolve (back-compat aliases): the
+    // qualified system.zetta_nodes and the historical bare zetta_nodes.
+    EXPECT_TRUE(svc.run("SELECT * FROM system.zetta_nodes;", "").ok());
     EXPECT_TRUE(svc.run("SELECT * FROM zetta_nodes;", "").ok());
+    // But there is NO bare `nodes` alias — it would shadow a user table.
+    EXPECT_FALSE(svc.run("SELECT * FROM nodes;", "").ok());
 
     // WHERE + projection work over the system table too.
     auto projected = svc.run(
-        "SELECT node_id, address FROM system.zetta_nodes WHERE node_id = '" +
+        "SELECT node_id, address FROM system.nodes WHERE node_id = '" +
             node_id + "';",
         "");
     ASSERT_TRUE(projected.ok()) << projected.error;
@@ -241,7 +245,7 @@ TEST(QueryService, ClusterNodesNeedsACluster) {
     Node node{config_for(tmp)};
     node.start();
     QueryService svc{node};  // no cluster wired in
-    auto sel = svc.run("SELECT * FROM zetta_nodes;", "");
+    auto sel = svc.run("SELECT * FROM system.nodes;", "");
     EXPECT_FALSE(sel.ok());
     node.stop();
 }
@@ -454,7 +458,7 @@ TEST(QueryService, GroupByRejectsBadQueries) {
 
     // GROUP BY over a system table is not supported.
     EXPECT_FALSE(svc.run(
-        "SELECT kind, COUNT(*) FROM system.zetta_jobs GROUP BY kind;", "").ok());
+        "SELECT kind, COUNT(*) FROM system.jobs GROUP BY kind;", "").ok());
 
     node.stop();
 }
@@ -469,14 +473,19 @@ TEST(QueryService, SelectsCloudProvidersSystemTable) {
 
     // The provider catalog is queryable as a system table — pure metadata, no
     // cloud access. It covers every backend (local + 6 others).
-    auto sel = svc.run("SELECT * FROM system.zetta_cloud_providers;", "");
+    auto sel = svc.run("SELECT * FROM system.cloud_providers;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     EXPECT_EQ(sel.rows.size(), 7u);
+
+    // The legacy pre-#538 spelling aliases to the same table.
+    auto legacy = svc.run("SELECT * FROM system.zetta_cloud_providers;", "");
+    ASSERT_TRUE(legacy.ok()) << legacy.error;
+    EXPECT_EQ(legacy.rows.size(), 7u);
 
     // WHERE + projection over it: aws requires consent and is runnable.
     auto aws = svc.run(
         "SELECT name, requires_consent, runnable FROM "
-        "system.zetta_cloud_providers WHERE provider = 'aws';",
+        "system.cloud_providers WHERE provider = 'aws';",
         "");
     ASSERT_TRUE(aws.ok()) << aws.error;
     ASSERT_EQ(aws.rows.size(), 1u);
@@ -485,7 +494,7 @@ TEST(QueryService, SelectsCloudProvidersSystemTable) {
 
     // local reads nothing — no consent required.
     auto local = svc.run(
-        "SELECT requires_consent FROM system.zetta_cloud_providers WHERE "
+        "SELECT requires_consent FROM system.cloud_providers WHERE "
         "provider = 'local';",
         "");
     ASSERT_TRUE(local.ok()) << local.error;
@@ -503,7 +512,7 @@ TEST(QueryService, SelectsCloudStatusSystemTable) {
 
     // Empty until a consent-gated inspect is recorded — querying never triggers a
     // cloud call.
-    auto empty = svc.run("SELECT * FROM system.zetta_cloud_status;", "");
+    auto empty = svc.run("SELECT * FROM system.cloud_status;", "");
     ASSERT_TRUE(empty.ok()) << empty.error;
     EXPECT_EQ(empty.rows.size(), 0u);
 
@@ -518,7 +527,7 @@ TEST(QueryService, SelectsCloudStatusSystemTable) {
     report.locations = {"us-east-1", "eu-west-1"};
     node.record_cloud_inspection(report);
 
-    auto sel = svc.run("SELECT * FROM system.zetta_cloud_status;", "");
+    auto sel = svc.run("SELECT * FROM system.cloud_status;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     ASSERT_EQ(sel.rows.size(), 1u);
     EXPECT_EQ(sel.rows[0]["provider"].get<std::string>(), "aws");
@@ -528,7 +537,7 @@ TEST(QueryService, SelectsCloudStatusSystemTable) {
     node.stop();
 }
 
-// system.zetta_provisioners surfaces the cloud-burst targets detected from this
+// system.provisioners surfaces the cloud-burst targets detected from this
 // node's own local CLIs (Node::provisioner_configs()), with no credentials — only
 // the non-secret deployment context that drives the headed Add-nodes control.
 TEST(QueryService, SelectsProvisionersSystemTable) {
@@ -538,7 +547,7 @@ TEST(QueryService, SelectsProvisionersSystemTable) {
     QueryService svc{node};
 
     // Empty until detection records a target — querying never runs a CLI.
-    auto empty = svc.run("SELECT * FROM system.zetta_provisioners;", "");
+    auto empty = svc.run("SELECT * FROM system.provisioners;", "");
     ASSERT_TRUE(empty.ok()) << empty.error;
     EXPECT_EQ(empty.rows.size(), 0u);
 
@@ -556,7 +565,7 @@ TEST(QueryService, SelectsProvisionersSystemTable) {
     };
     node.record_provisioner_config(provisioner);
 
-    auto sel = svc.run("SELECT * FROM system.zetta_provisioners;", "");
+    auto sel = svc.run("SELECT * FROM system.provisioners;", "");
     ASSERT_TRUE(sel.ok()) << sel.error;
     ASSERT_EQ(sel.rows.size(), 1u);
     EXPECT_EQ(sel.rows[0]["target"].get<std::string>(), "azure");
@@ -570,7 +579,7 @@ TEST(QueryService, SelectsProvisionersSystemTable) {
     provisioner.summary = "subscription sub-1 · my-rg · eastus";
     provisioner.config["location"] = "eastus";
     node.record_provisioner_config(provisioner);
-    auto again = svc.run("SELECT * FROM system.zetta_provisioners;", "");
+    auto again = svc.run("SELECT * FROM system.provisioners;", "");
     ASSERT_TRUE(again.ok()) << again.error;
     ASSERT_EQ(again.rows.size(), 1u);
     EXPECT_EQ(again.rows[0]["region"].get<std::string>(), "eastus");
@@ -579,8 +588,8 @@ TEST(QueryService, SelectsProvisionersSystemTable) {
 }
 
 // RULE-7: runs / principals / keys / the audit trail are observable as
-// system.zetta_* read views (not GUI-only), computed at query time from the live
-// Node accessors — same as zetta_models / zetta_jobs.
+// system.* read views (not GUI-only), computed at query time from the live
+// Node accessors — same as models / jobs.
 TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     TempDir tmp;
     Node node{config_for(tmp)};
@@ -588,10 +597,10 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     QueryService svc{node};
 
     // Empty until the entities exist.
-    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_runs;", "").rows.size(), 0u);
-    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_principals;", "").rows.size(), 0u);
-    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_keys;", "").rows.size(), 0u);
-    EXPECT_EQ(svc.run("SELECT * FROM system.zetta_audit;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.runs;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.principals;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.keys;", "").rows.size(), 0u);
+    EXPECT_EQ(svc.run("SELECT * FROM system.audit;", "").rows.size(), 0u);
 
     // A run.
     auto run = node.create_run("churn", "g1");
@@ -611,24 +620,24 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
     // An audit event (authorize records a data_access decision).
     node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"});
 
-    // zetta_runs
-    auto runs = svc.run("SELECT * FROM system.zetta_runs;", "");
+    // runs
+    auto runs = svc.run("SELECT * FROM system.runs;", "");
     ASSERT_TRUE(runs.ok()) << runs.error;
     ASSERT_EQ(runs.rows.size(), 1u);
     EXPECT_EQ(runs.rows[0]["run_id"].get<std::string>(), run->id());
     EXPECT_EQ(runs.rows[0]["status"].get<std::string>(), "succeeded");
     EXPECT_EQ(runs.rows[0]["project"].get<std::string>(), "churn");
 
-    // zetta_principals
-    auto principals = svc.run("SELECT * FROM system.zetta_principals;", "");
+    // principals
+    auto principals = svc.run("SELECT * FROM system.principals;", "");
     ASSERT_TRUE(principals.ok()) << principals.error;
     ASSERT_EQ(principals.rows.size(), 1u);
     EXPECT_EQ(principals.rows[0]["name"].get<std::string>(), "analyst");
     EXPECT_EQ(principals.rows[0]["kind"].get<std::string>(), "user");
     EXPECT_EQ(principals.rows[0]["key_count"].get<int>(), 1);
 
-    // zetta_keys — scope + capabilities rendered as readable strings, no secrets.
-    auto keys = svc.run("SELECT * FROM system.zetta_keys;", "");
+    // keys — scope + capabilities rendered as readable strings, no secrets.
+    auto keys = svc.run("SELECT * FROM system.keys;", "");
     ASSERT_TRUE(keys.ok()) << keys.error;
     ASSERT_EQ(keys.rows.size(), 1u);
     EXPECT_EQ(keys.rows[0]["principal"].get<std::string>(), "analyst");
@@ -638,15 +647,15 @@ TEST(QueryService, SelectsGovernanceAndRunSystemTables) {
                   "orchestration:start_run"),
               std::string::npos);
 
-    // zetta_audit — the authorize decision landed in the trail.
-    auto audit = svc.run("SELECT * FROM system.zetta_audit;", "");
+    // audit — the authorize decision landed in the trail.
+    auto audit = svc.run("SELECT * FROM system.audit;", "");
     ASSERT_TRUE(audit.ok()) << audit.error;
     ASSERT_GE(audit.rows.size(), 1u);
     EXPECT_EQ(audit.rows[0]["action"].get<std::string>(), "data_access");
 
     // WHERE + projection works over the new tables.
     auto projected = svc.run(
-        "SELECT name FROM system.zetta_principals WHERE name = 'analyst';", "");
+        "SELECT name FROM system.principals WHERE name = 'analyst';", "");
     ASSERT_TRUE(projected.ok()) << projected.error;
     ASSERT_EQ(projected.rows.size(), 1u);
     EXPECT_EQ(projected.rows[0]["name"].get<std::string>(), "analyst");

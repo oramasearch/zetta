@@ -39,7 +39,7 @@ thread). Landed as seven commits (`bcaa8c9`…`19d3523`):
 
 | Piece | What | Where |
 |---|---|---|
-| **CLI detection** | At startup, ask each installed, logged-in CLI (`az`) for its deployment context (subscription / region / group) — **no credentials stored** — and wire a provisioner per detected target. | `src/core/cloud/provisioner_detect.cpp`, `system.zetta_provisioners` |
+| **CLI detection** | At startup, ask each installed, logged-in CLI (`az`) for its deployment context (subscription / region / group) — **no credentials stored** — and wire a provisioner per detected target. | `src/core/cloud/provisioner_detect.cpp`, `system.provisioners` |
 | **Async provisioning** | The provider CLI (`az vmss create`, minutes) runs **off the UI thread** as a `runtime::spawn`'d coroutine; a progress bar + per-target ETA baseline animates; `poll_add_nodes` applies the result on the UI thread. Failures render in full, **copyable**. | `runtime::spawn` (`src/core/runtime.cpp`), `App::run_add_nodes` / `poll_add_nodes` |
 | **Correct Flexible create** | Microsoft-Learn-verified `az vmss create` shape (fault-domain-count, single-placement-group, image + admin + SSH keys). | `src/core/cloud/azure_cli_control_plane.cpp`, [research doc §2.7](../research/azure-cli-compute.md) |
 | **Fresh resource group** | Each burst picks the first free `zetta-node-group-NN` (a deprovisioning group reads as in-use), so delete + re-add never races. | `pick_resource_group` |

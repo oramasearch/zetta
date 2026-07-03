@@ -168,7 +168,7 @@ needs a test fake exposed to the testkit.
 - `ddf.featurize` — `point_in_time_featurize` over the churn dataset vs a leakage-free ground truth (node)
 - `ddf.distributed_sort` — sample-sort across the cluster; globally range-ordered partitions (cluster)
 - `ddf.distributed_join` — repartition + local join; single-node == multi-node (cluster)
-- `ddf.group_by_job` / `ddf.featurize_job` — the recorded `ComputeJob` path (appears in `system.zetta_jobs`) (coordinator)
+- `ddf.group_by_job` / `ddf.featurize_job` — the recorded `ComputeJob` path (appears in `system.jobs`) (coordinator)
 - `query.group_by_sql` — `SELECT … GROUP BY` routed through the DDF engine (node)
 
 ### Machine learning
@@ -219,7 +219,7 @@ needs a test fake exposed to the testkit.
 
 ### Query layer & catalog
 - `query.ddl_dml` — CREATE / DROP DATABASE + TABLE, INSERT, SELECT with a `WHERE` comparison (node)
-- `query.system_tables` — `system.zetta_nodes` / `zetta_deployments` / `zetta_models` / `zetta_jobs` computed at query time (node / cluster)
+- `query.system_tables` — `system.nodes` / `deployments` / `models` / `jobs` computed at query time (node / cluster)
 - `solution.catalog` — the built-in AI Solution Library blueprints parse + schema-validate + id-uniqueness (pure)
 - `solution.churn` — `run_churn_solution`: the catalog churn blueprint on the real engine → a real `Model` + ranked list + drivers (coordinator)
 

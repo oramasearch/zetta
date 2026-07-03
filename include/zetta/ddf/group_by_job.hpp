@@ -22,7 +22,7 @@
 // `Collective` exposing `gather`/`broadcast`, and a `JobRound` is one — so this
 // runner simply drives it inside the coordinator's job lifecycle. The only thing
 // #387 adds over #383 is the **ComputeJob**: the work is recorded, audited, and
-// appears in `system.zetta_jobs`.
+// appears in `system.jobs`.
 //
 // **Compute-near-data, node-scoped.** Raw rows never leave a node — only each
 // node's small per-group partial crosses the wire (the existing,
@@ -30,7 +30,7 @@
 //
 // **Recorded.** `run_group_by_job` drives the supplied `ComputeJob` (kind `ddf`)
 // through the coordinator's lifecycle (Running → Succeeded | Failed) and records
-// it, so it appears in `system.zetta_jobs` and is audited like any other job.
+// it, so it appears in `system.jobs` and is audited like any other job.
 //
 // **No new wire format / JSON.** The partials ride the schema-validated
 // `CollectiveMessage`; the op spec carries its own validated boundary

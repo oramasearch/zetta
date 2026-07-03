@@ -14,7 +14,7 @@
 // Run batch scoring / rank-at-risk as a distributed **`score` ComputeJob** through
 // the [job coordinator](../compute/job_coordinator.hpp) (FEAT-6 / CMD-10, #392) —
 // the slice that makes scoring a recorded, durable, audited unit of accelerated
-// compute that appears in `system.zetta_jobs` and produces the global at-risk list.
+// compute that appears in `system.jobs` and produces the global at-risk list.
 //
 // **The distributed shape (SPMD).** Each participating node holds a shard of the
 // entities to score (a feature `DataFrame`, one row per entity). Because the

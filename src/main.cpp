@@ -281,7 +281,7 @@ int main(int argc, char** argv) {
 
     // Detect which cloud-burst targets this node can drive from the operator's own
     // local CLIs (`az` logged in, …) and record each on the node so it surfaces as
-    // system.zetta_provisioners — in BOTH modes, since the table is useful headless
+    // system.provisioners — in BOTH modes, since the table is useful headless
     // too. No credentials are stored: the CLI keeps its own auth, and the control
     // plane uses that same CLI to act. The headed App then wires a Provisioner per
     // detected target into its consent-gated Add-nodes control (below).

@@ -3,7 +3,7 @@
 The headed app's standalone **Models view** (`App::draw_models`,
 `src/gui/app_models.cpp`) — a dedicated, top-level screen for the
 trained-[`Model`](../ml/models.md) registry, reached from **Operations → Models**. It is
-the GUI form of [`system.zetta_models`](../data/query.md): one place to browse every model
+the GUI form of [`system.models`](../data/query.md): one place to browse every model
 the node holds, inspect its metrics / ranked drivers / weights fingerprint, and
 **register or import** a new one.
 
@@ -72,7 +72,7 @@ GUI to [`Node::create_model`](../ml/models.md#lifecycle-on-a-node) (+ optional
    [large-object body seam](../data/large-objects.md). The bytes are opaque — no validation.
 
 **Register model** runs the create atomically: it appears in the list immediately
-(and in `system.zetta_models`), with `selected_model_` set to it. **Clear** resets
+(and in `system.models`), with `selected_model_` set to it. **Clear** resets
 the form.
 
 ## Boundary validation
@@ -106,7 +106,7 @@ yet: replacing weights / updating metrics on an existing model (`set_weights` /
   switch arm, the `on_open_model_weights` file-dialog callback, and the
   `FileIntent::ModelWeights` staging branch in `handle_incoming_files`.
 - [models.md](../ml/models.md) — the `Model` entity (lifecycle, schema, weights body,
-  `system.zetta_models` registry) the view renders.
+  `system.models` registry) the view renders.
 - [runs.md](../pipeline/runs.md#trained-models--metrics--ranked-drivers) — the sibling surface:
   the same `render_model_card` inside a run's detail pane.
 - [jobs-panel.md](jobs-panel.md) — the sibling read-only Operations panel this

@@ -68,7 +68,7 @@ the working checklist. For the annotated file-by-file codebase map see
 - **Pluggable seams — extend, don't special-case:** storage formats implement
   `StorageEngine`; query inputs are dialect-agnostic (parse to the generic
   `zetta::query` AST; the `Executor` is dialect-neutral — the virtual read-only
-  `system` database, e.g. `system.zetta_nodes`, is resolved there, not in a
+  `system` database, e.g. `system.nodes`, is resolved there, not in a
   dialect). Add a dialect/engine by implementing the interface, not the executor.
   (To add a whole new input *language*, see the **new-input** skill.)
 - **Surface observable state as a `system.zetta_*` table by default (RULE-7).**

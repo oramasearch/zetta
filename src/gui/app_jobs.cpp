@@ -153,7 +153,7 @@ void App::draw_jobs() {
                 "Native distributed compute: lifecycle, references, and the "
                 "scaling preview");
 
-    // The GUI form of system.zetta_jobs: the live compute-job registry (one row
+    // The GUI form of system.jobs: the live compute-job registry (one row
     // per unit of native distributed accelerated compute — featurize / train /
     // explain / score / a DDF op — with its lifecycle status). Read-only over the
     // replicated, already-validated ComputeJob handles, like the Runs panel —

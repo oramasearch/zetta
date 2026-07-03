@@ -171,7 +171,7 @@ engineered columns + label, one row per entity, ascending.
 `run_featurize_job` runs the *same* featurization across the cluster through the
 [job coordinator](../compute/job-coordinator.md) as a recorded
 [`ComputeJob`](../compute/compute-jobs.md) of kind **`featurize`**, so it is durable, audited,
-and appears in `system.zetta_jobs`. It is the literal `churn_features.sql` shape
+and appears in `system.jobs`. It is the literal `churn_features.sql` shape
 (`accounts ⋈ events … GROUP BY account`) realized with the distributed ops:
 
 1. **[distributed_join](ddf-join.md)** the events shard with the accounts shard on
@@ -189,7 +189,7 @@ auto job = node.create_job(zetta::compute::JobKind::Featurize);
 auto out = zetta::ddf::run_featurize_job(coordinator, *job, events_shard,
                                          accounts_shard, spec);
 // out.table is the GLOBAL feature table, identical on every participating node;
-// out.status == JobStatus::Succeeded; the job is recorded in system.zetta_jobs.
+// out.status == JobStatus::Succeeded; the job is recorded in system.jobs.
 ```
 
 Call it **concurrently on every participating node** (the collectives need all

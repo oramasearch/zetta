@@ -124,7 +124,7 @@ struct NearDataTrainResult {
     // --- the recorded jobs -------------------------------------------------
     // The explain / score ComputeJobs this runner created on the node (the headline
     // train job is the `job` passed in). Surfaced so the caller can find them in
-    // system.zetta_jobs. Empty when the train phase failed before they ran.
+    // system.jobs. Empty when the train phase failed before they ran.
     std::string explain_job_id;
     std::string score_job_id;
 
@@ -156,7 +156,7 @@ struct NearDataTrainResult {
 // must have run.
 //
 // `job` is the headline `train` ComputeJob (the caller creates it via
-// `node.create_job(JobKind::Train, …)` and observes it in system.zetta_jobs); the
+// `node.create_job(JobKind::Train, …)` and observes it in system.jobs); the
 // explain + score jobs are created on `node` here and their ids returned in the result.
 // `feature_columns` names the design-matrix columns (the model's feature ordering),
 // `label_column` the {0,1} target, `entity_column` the integer key that labels the

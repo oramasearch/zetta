@@ -40,7 +40,7 @@ class ApiServer {
 public:
     // The server owns its Registry (populated with the core capabilities), a
     // MainThreadBridge, and a SpanRecorder; `cluster` (optional) enables the
-    // system.zetta_nodes view through the sql capability.
+    // system.nodes view through the sql capability.
     ApiServer(Node& node, const zetta::cluster::Cluster* cluster,
               ServerOptions options);
     ~ApiServer();

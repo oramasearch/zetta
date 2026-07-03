@@ -132,7 +132,7 @@ void App::draw_add_model_form() {
     ImGui::TextDisabled(
         "Register a trained model on this node. Kind is required; metrics and "
         "feature schema are optional JSON; weights are optional. It then appears "
-        "below and in system.zetta_models.");
+        "below and in system.models.");
     ImGui::Spacing();
 
     // 1) Name (optional) + kind (required).
@@ -282,7 +282,7 @@ void App::draw_models() {
     page_header("Models",
                 "Trained models: metrics, ranked drivers, and weights");
 
-    // The GUI form of system.zetta_models: the trained-model registry (ENT-14 /
+    // The GUI form of system.models: the trained-model registry (ENT-14 /
     // FEAT-6). A thin, read-only viewer over the replicated, already-validated
     // Model handles — models arrive from a train job, the API, or replication —
     // plus the inline "Add model" affordance to register/import one. Held by id and

@@ -10,7 +10,7 @@ per-entity choice ([#648](https://github.com/oramasearch/zetta/issues/648)):
   endpoint is answered by the whole cluster, not one node).
 - Governance as everywhere: exposure is an `orchestration:` capability,
   endpoint access is key-scoped, every request is a trace span, exposure
-  state is visible in `system.zetta_models` / `system.zetta_indexes` and
+  state is visible in `system.models` / `system.indexes` and
   audited. Un-exposing is one action.
 
 This is the `serve` step's full meaning: the pipeline doesn't just produce

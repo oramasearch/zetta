@@ -83,7 +83,7 @@ panels (Cluster, Runs) and depends on three shipped subsystems:
 [key-scoped access](../governance/access-control.md), the [capability model](../governance/access-control.md#the-capability-decision-ent-22),
 and the [audit trail](../governance/audit-trail.md). The natural next slices are the **mutating**
 admin actions (issue a key, grant/revoke a capability, approval gates) and a
-queryable **`system.zetta_audit`** SQL table.
+queryable **`system.audit`** SQL table.
 
 ## Pointers
 

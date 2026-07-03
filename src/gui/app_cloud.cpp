@@ -26,7 +26,7 @@ void App::draw_cloud() {
     // explicitly consents — per inspection, never remembered (CLAUDE.md hard
     // rule). Only on consent does run_cloud_inspect() shell out (through the
     // shared CommandRunner) and cache the result on the node
-    // (system.zetta_cloud_status). The credential FILES are never read or printed
+    // (system.cloud_status). The credential FILES are never read or printed
     // — only the read-only commands run.
     ImGui::TextColored(kInkMuted,
         "Inspect a deployment target. Running a provider's read-only commands "
@@ -116,7 +116,7 @@ void App::draw_cloud() {
             // user explicitly allows this one inspection nothing is read or
             // run. On allow, run_cloud_inspect() shells out to the read-only
             // commands and caches the result; the result is rendered below and
-            // stays queryable as system.zetta_cloud_status.
+            // stays queryable as system.cloud_status.
             ImGui::Spacing();
             const bool consented = cloud_consent_provider_ == provider->id;
             // Amber (caution) wash while locked; green (success) once granted.
@@ -239,7 +239,7 @@ void App::run_cloud_inspect(const zetta::cloud::CloudProvider& provider) {
     // consent gate's Allow / Re-inspect actions. Synchronous: the inspect runs on
     // the UI thread (which owns the node), so recording the result races with
     // nothing. The default CommandRunner shells out to the provider's CLI; the
-    // result is cached for the panel and for system.zetta_cloud_status.
+    // result is cached for the panel and for system.cloud_status.
     zetta::cloud::CloudInspector inspector;
     node_.record_cloud_inspection(inspector.inspect(provider));
 }

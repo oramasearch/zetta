@@ -36,33 +36,33 @@ namespace {
 
 // The virtual `system` database holds read-only system tables (à la Postgres'
 // pg_catalog). Its tables are computed at query time, not stored/replicated.
-//  - `zetta_nodes` — cluster membership + replication status (Cluster::nodes()).
-//    `SELECT * FROM system.zetta_nodes` (the bare name still works, back-compat).
-//  - `zetta_deployments` — recorded graph→target placements (Node::deployments()).
-//  - `zetta_models` — the model registry (Node::models()): trained models +
+//  - `nodes` — cluster membership + replication status (Cluster::nodes()).
+//    `SELECT * FROM system.nodes` (bare `zetta_nodes` still works, back-compat).
+//  - `deployments` — recorded graph→target placements (Node::deployments()).
+//  - `models` — the model registry (Node::models()): trained models +
 //    their kind / metrics / weights fingerprint.
-//  - `zetta_indexes` — the index registry (Node::indexes()): one row per registered
+//  - `indexes` — the index registry (Node::indexes()): one row per registered
 //    index over a table — its kind / backend / fields (ENT-39 / ENT-40).
-//  - `zetta_jobs` — the compute-job registry (Node::jobs()): one row per unit of
+//  - `jobs` — the compute-job registry (Node::jobs()): one row per unit of
 //    native distributed accelerated compute + its lifecycle (ARC-11 / ENT-31).
-//  - `zetta_cloud_providers` — the deployment-target / provider catalog
+//  - `cloud_providers` — the deployment-target / provider catalog
 //    (CloudProviderCatalog::builtin()): pure metadata, reads nothing from any
 //    cloud. Surfaces what the Cloud Inspector would touch (RULE-7).
-//  - `zetta_cloud_status` — cached results of consent-gated cloud inspects
+//  - `cloud_status` — cached results of consent-gated cloud inspects
 //    (Node::cloud_inspections()). Querying it NEVER triggers a cloud call: it
 //    only reflects inspects the user already consented to in the Cloud Inspector
 //    (empty until then). Ephemeral, not replicated.
-//  - `zetta_provisioners` — cloud-burst provisioners detected from this node's own
+//  - `provisioners` — cloud-burst provisioners detected from this node's own
 //    local CLIs (Node::provisioner_configs()): one row per wired target with its
 //    non-secret deployment context (subscription / region / …). Carries NO
 //    credentials (the CLI keeps its own). Ephemeral, not replicated — it reflects
 //    this node's CLI auth + defaults, and drives the headed Add-nodes control.
-//  - `zetta_runs` — the run registry (Node::runs()): one row per graph execution
+//  - `runs` — the run registry (Node::runs()): one row per graph execution
 //    + its lifecycle / pipeline refs / lineage (FEAT-5).
-//  - `zetta_principals` — the authenticated actors (Node::principals(); ENT-20).
-//  - `zetta_keys` — the access keys the principals own (ENT-21/22): each key's
+//  - `principals` — the authenticated actors (Node::principals(); ENT-20).
+//  - `keys` — the access keys the principals own (ENT-21/22): each key's
 //    scope (resources) + capabilities (rights), no secret material.
-//  - `zetta_audit` — the immutable, append-only audit trail (Node::audit_events();
+//  - `audit` — the immutable, append-only audit trail (Node::audit_events();
 //    ENT-23 / FEAT-9).
 //  - `dataset_partitions` — the partition catalog (Node::dataset_partitions()):
 //    one row per recorded dataset partition (where a slice of a table's data lives
@@ -80,7 +80,7 @@ namespace {
 //  - `node_metrics` — this node's live host resource utilization
 //    (Node::sample_node_metrics()): CPU / memory / GPU + VRAM / storage / network,
 //    sampled from OS counters at query time. Ephemeral, observed, NOT replicated
-//    (like zetta_cloud_status), the engine source for the animated per-node gauges
+//    (like cloud_status), the engine source for the animated per-node gauges
 //    (#575 area 2). A node measures only its own host, so this returns one row —
 //    the node the query hits; counters a host can't report are null (the GPU
 //    group is absent in a CPU-only core build).
@@ -89,22 +89,23 @@ namespace {
 // Future: system.leadership, etc.
 //
 // Naming: the `system` database is reserved + zetta-controlled, so a `zetta_`
-// prefix on its tables is redundant — new system tables are named plainly
-// (`dataset_partitions`, not `zetta_dataset_partitions`). The legacy `zetta_*`
-// tables below predate this and are kept until the system-wide rename (#538).
+// prefix on its tables is redundant — system tables are named plainly
+// (`nodes`, `dataset_partitions`). The tables originally shipped as
+// `system.zetta_<table>`; those legacy spellings still resolve as back-compat
+// aliases (canonical_system_table below, #538) for at least one cycle.
 constexpr std::string_view kSystemDatabase = "system";
-constexpr std::string_view kNodesTable = "zetta_nodes";
-constexpr std::string_view kDeploymentsTable = "zetta_deployments";
-constexpr std::string_view kModelsTable = "zetta_models";
-constexpr std::string_view kIndexesTable = "zetta_indexes";
-constexpr std::string_view kJobsTable = "zetta_jobs";
-constexpr std::string_view kCloudProvidersTable = "zetta_cloud_providers";
-constexpr std::string_view kCloudStatusTable = "zetta_cloud_status";
-constexpr std::string_view kProvisionersTable = "zetta_provisioners";
-constexpr std::string_view kRunsTable = "zetta_runs";
-constexpr std::string_view kPrincipalsTable = "zetta_principals";
-constexpr std::string_view kKeysTable = "zetta_keys";
-constexpr std::string_view kAuditTable = "zetta_audit";
+constexpr std::string_view kNodesTable = "nodes";
+constexpr std::string_view kDeploymentsTable = "deployments";
+constexpr std::string_view kModelsTable = "models";
+constexpr std::string_view kIndexesTable = "indexes";
+constexpr std::string_view kJobsTable = "jobs";
+constexpr std::string_view kCloudProvidersTable = "cloud_providers";
+constexpr std::string_view kCloudStatusTable = "cloud_status";
+constexpr std::string_view kProvisionersTable = "provisioners";
+constexpr std::string_view kRunsTable = "runs";
+constexpr std::string_view kPrincipalsTable = "principals";
+constexpr std::string_view kKeysTable = "keys";
+constexpr std::string_view kAuditTable = "audit";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
@@ -112,10 +113,34 @@ constexpr std::string_view kNodeMetricsTable = "node_metrics";
 constexpr std::string_view kPipelineJobsTable = "pipeline_jobs";
 constexpr std::string_view kCollectiveRoundsTable = "collective_rounds";
 
+// The pre-#538 table names: `system.zetta_<table>` still resolves to
+// `system.<table>` for the tables that shipped under the legacy prefix.
+// Only those twelve alias — newer tables never had a prefixed spelling.
+std::string canonical_system_table(const std::string& name) {
+    constexpr std::string_view kLegacyPrefix = "zetta_";
+    if (!name.starts_with(kLegacyPrefix)) return name;
+    const std::string_view plain =
+        std::string_view{name}.substr(kLegacyPrefix.size());
+    for (const std::string_view renamed :
+         {kNodesTable, kDeploymentsTable, kModelsTable, kIndexesTable,
+          kJobsTable, kCloudProvidersTable, kCloudStatusTable,
+          kProvisionersTable, kRunsTable, kPrincipalsTable, kKeysTable,
+          kAuditTable}) {
+        if (plain == renamed) return std::string{plain};
+    }
+    return name;
+}
+
 // The system-table name a TableRef refers to, or empty if it's a normal table.
 std::string system_table_of(const TableRef& ref) {
-    if (ref.database == kSystemDatabase) return ref.table;            // system.<t>
-    if (ref.database.empty() && ref.table == kNodesTable) return ref.table;  // bare alias
+    if (ref.database == kSystemDatabase) {
+        return canonical_system_table(ref.table);                     // system.<t>
+    }
+    // The historical bare spelling of the nodes table (no qualifier). Only the
+    // legacy name aliases — a bare `nodes` would shadow user tables.
+    if (ref.database.empty() && ref.table == "zetta_nodes") {
+        return std::string{kNodesTable};
+    }
     return {};
 }
 
@@ -132,7 +157,7 @@ QueryResult error(std::string message) {
     return r;
 }
 
-// One JSON row per node for the zetta_nodes system table. Unknown replication
+// One JSON row per node for the nodes system table. Unknown replication
 // fields (e.g. a peer that hasn't reported yet, or self's sync state) are null.
 std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& cluster) {
     std::vector<nlohmann::json> rows;
@@ -160,7 +185,7 @@ std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& clu
     return rows;
 }
 
-// One JSON row per recorded deployment for the zetta_deployments system table.
+// One JSON row per recorded deployment for the deployments system table.
 // Sourced from Node::deployments() (the placements recorded by deploy_graph).
 std::vector<nlohmann::json> deployment_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
@@ -181,7 +206,7 @@ std::vector<nlohmann::json> deployment_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per registered model for the zetta_models system table — the
+// One JSON row per registered model for the models system table — the
 // model registry. Sourced from Node::models(). The serialized weights body is
 // not in the registry (it's a large binary that moves over the body seam); its
 // fingerprint (size + sha256) and presence are, so the registry shows what is
@@ -212,7 +237,7 @@ std::vector<nlohmann::json> model_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per registered index for the zetta_indexes system table — the
+// One JSON row per registered index for the indexes system table — the
 // index registry (ENT-39 / ENT-40). Sourced from Node::indexes() (every index
 // replicates, so each node sees the same set). An index is metadata only: this
 // exposes its definition — the source table, the index kind (search / vector /
@@ -235,7 +260,7 @@ std::vector<nlohmann::json> index_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per compute job for the zetta_jobs system table — the compute-job
+// One JSON row per compute job for the jobs system table — the compute-job
 // registry (ARC-11 / ENT-31). Sourced from Node::jobs() (every job replicates, so
 // each node sees the same set). Exposes the job's identity + lifecycle (id / kind
 // / status / created / updated / detail) and its optional id references (project /
@@ -321,7 +346,7 @@ std::string join_comma(const std::vector<std::string>& items) {
     return joined;
 }
 
-// One JSON row per provider for the zetta_cloud_providers system table — the
+// One JSON row per provider for the cloud_providers system table — the
 // deployment-target / provider catalog (CloudProviderCatalog::builtin()). **Pure
 // metadata: reads nothing from any cloud.** It surfaces, queryable via SQL, what
 // the Cloud Inspector would touch (the config files + read-only commands) and
@@ -348,7 +373,7 @@ std::vector<nlohmann::json> cloud_provider_rows() {
     return rows;
 }
 
-// One JSON row per cached cloud inspect for the zetta_cloud_status system table —
+// One JSON row per cached cloud inspect for the cloud_status system table —
 // the results of consent-gated inspects (Node::cloud_inspections()). **Reading
 // this never triggers a cloud call**: it only reflects inspects the user already
 // ran (and consented to) in the Cloud Inspector, so it is empty until then.
@@ -376,7 +401,7 @@ std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per detected provisioner for the zetta_provisioners system table —
+// One JSON row per detected provisioner for the provisioners system table —
 // the cloud-burst targets this node can drive, derived from its own local CLIs
 // (Node::provisioner_configs()). **Reading this never triggers a cloud call** and
 // **exposes no credentials**: it reflects only the non-secret deployment context
@@ -405,7 +430,7 @@ std::vector<nlohmann::json> provisioner_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per run for the zetta_runs system table — the run registry
+// One JSON row per run for the runs system table — the run registry
 // (FEAT-5). Sourced from Node::runs() (every run replicates, so each node sees the
 // same set). Exposes the run's identity + lifecycle + its place in the pipeline
 // (project / graph / deployment) and summary counts of its logs / outputs plus the
@@ -430,9 +455,9 @@ std::vector<nlohmann::json> run_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per principal for the zetta_principals system table — the
+// One JSON row per principal for the principals system table — the
 // authenticated actors (ENT-20). Sourced from Node::principals(): identity + kind
-// + created + how many access keys it owns; the keys themselves are zetta_keys.
+// + created + how many access keys it owns; the keys themselves are keys.
 std::vector<nlohmann::json> principal_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const auto& principal : node.principals()) {
@@ -447,7 +472,7 @@ std::vector<nlohmann::json> principal_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per access key for the zetta_keys system table — the credentials
+// One JSON row per access key for the keys system table — the credentials
 // the principals own (ENT-21/22), the queryable read view of the Admin panel. Each
 // key's reach is two human-readable strings: its `scope` (the resources it may
 // touch — "*" for an unrestricted/admin key) and its `capabilities` (the rights it
@@ -489,7 +514,7 @@ std::vector<nlohmann::json> access_key_rows(const Node& node) {
     return rows;
 }
 
-// One JSON row per audit event for the zetta_audit system table — the immutable,
+// One JSON row per audit event for the audit system table — the immutable,
 // append-only audit trail (ENT-23 / FEAT-9), the queryable read view of the Admin
 // panel's audit log. Sourced from Node::audit_events() (chronological).
 std::vector<nlohmann::json> audit_rows(const Node& node) {
@@ -590,7 +615,7 @@ std::vector<nlohmann::json> dataset_rows(const Node& node) {
 // eviction tolerance (RULE-5 / #468). Sourced from Node::checkpoints() (the latest
 // checkpoint per job in this node's LOCAL store), so it shows what is durably
 // resumable here. Checkpoints are ephemeral, local durability artifacts — NOT
-// replicated state (like system.zetta_cloud_status), so this view has no CRDT
+// replicated state (like system.cloud_status), so this view has no CRDT
 // backing and querying it touches only the local filesystem.
 std::vector<nlohmann::json> checkpoint_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
@@ -1123,24 +1148,24 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys != kNodesTable) {
                         return error("no such system table \"" + sys +
-                                     "\" (try system.zetta_nodes, "
-                                     "system.zetta_deployments, "
-                                     "system.zetta_models, system.zetta_indexes, "
-                                     "system.zetta_jobs, "
-                                     "system.zetta_runs, system.zetta_principals, "
-                                     "system.zetta_keys, system.zetta_audit, "
+                                     "\" (try system.nodes, "
+                                     "system.deployments, "
+                                     "system.models, system.indexes, "
+                                     "system.jobs, "
+                                     "system.runs, system.principals, "
+                                     "system.keys, system.audit, "
                                      "system.dataset_partitions, "
                                      "system.datasets, "
                                      "system.checkpoints, "
                                      "system.node_metrics, "
                                      "system.pipeline_jobs, "
                                      "system.collective_rounds, "
-                                     "system.zetta_cloud_providers, "
-                                     "system.zetta_cloud_status, or "
-                                     "system.zetta_provisioners)");
+                                     "system.cloud_providers, "
+                                     "system.cloud_status, or "
+                                     "system.provisioners)");
                     }
                     if (!cluster_) {
-                        return error("system.zetta_nodes is unavailable here "
+                        return error("system.nodes is unavailable here "
                                      "(no cluster)");
                     }
                     return select_over_rows(s, cluster_node_rows(*cluster_));

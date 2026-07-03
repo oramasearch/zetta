@@ -179,9 +179,10 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
   exposed for inspection — nodes, deployments, models, jobs, datasets, cloud
   state — is a virtual, read-only `system` table computed at query time from the
   live source, never a stored or hand-synced copy, and the GUI renders the same
-  source. Name new system tables **plainly** (`system.datasets`), no `zetta_`
-  prefix (legacy `system.zetta_*` tables await the
-  [`#538`](https://github.com/oramasearch/zetta/issues/538) rename). Durable
+  source. Name system tables **plainly** (`system.nodes`, `system.datasets`),
+  no `zetta_` prefix — the legacy `system.zetta_*` spellings were renamed in
+  [`#538`](https://github.com/oramasearch/zetta/issues/538) and remain only as
+  back-compat query aliases. Durable
   state's CRDT is the read view's source; ephemeral/observed state (telemetry,
   cloud inspects) is a read view with no CRDT backing. Cloud-derived tables stay
   permission-gated.

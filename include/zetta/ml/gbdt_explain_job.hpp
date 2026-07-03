@@ -14,7 +14,7 @@
 // Run exact TreeSHAP explanation as a distributed **`explain` ComputeJob** through the
 // [job coordinator](../compute/job_coordinator.hpp) (FEAT-6, #393) — the slice that
 // turns per-entity explanation into a recorded, audited unit of accelerated compute
-// that appears in `system.zetta_jobs`, distributed for **batch explanation** of a
+// that appears in `system.jobs`, distributed for **batch explanation** of a
 // whole entity universe.
 //
 // **The distributed shape.** Each participating node holds a shard of the feature

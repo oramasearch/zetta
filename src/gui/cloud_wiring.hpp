@@ -31,7 +31,7 @@ namespace zetta::gui {
 // button only appears once a configured Provisioner has been injected for that
 // target (App::set_provisioner). The configuration is not a file and carries no
 // credentials: it is the deployment context detected from the operator's own
-// local CLI (`detect_provisioner_configs`, surfaced as system.zetta_provisioners),
+// local CLI (`detect_provisioner_configs`, surfaced as system.provisioners),
 // and the reference CLI control plane uses that same CLI's credentials to act. A
 // provider with no detected config simply stays unwired (the gate then reads "no
 // provisioner wired", unchanged) — nothing is provisioned that the local CLI did

@@ -457,7 +457,7 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
                                 ") / explained (" + std::to_string(total_explanations) +
                                 ") != conversations (" + std::to_string(dataset.rows.size()) + ")");
     }
-    // The produced Model is registered on the deterministic root (system.zetta_models);
+    // The produced Model is registered on the deterministic root (system.models);
     // it replicates to peers. The root is the lowest node id — not necessarily node 0.
     std::size_t root_index = 0;
     bool found_root = false;

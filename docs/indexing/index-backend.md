@@ -13,7 +13,7 @@ ADR-34**) delivers two halves:
 2. The **`Index` entity** — a top-level, **replicated** record
    `{ table, kind, backend, fields }` keyed by id (`index:<uuid>`), with `Node`
    CRUD, an on-disk projection, JSON-Schema boundary validation, and a
-   `system.zetta_indexes` registry table — modeled exactly like
+   `system.indexes` registry table — modeled exactly like
    [`zetta::ml::Model`](../ml/models.md) (minus the weights body: an index has no
    large-object body, only metadata).
 
@@ -214,18 +214,18 @@ drift-checked (`tests/test_schemas.cpp`) — see [schemas.md](../architecture/sc
 runs via `pboettch/json-schema-validator` (the same path as Run/Model), linked
 PRIVATE to `zetta-core`.
 
-### The registry — `system.zetta_indexes`
+### The registry — `system.indexes`
 
 The index registry is surfaced as a read-only [system table](../data/query.md) (like
-`system.zetta_models`), computed at query time from `Node::indexes()`:
+`system.models`), computed at query time from `Node::indexes()`:
 
 ```sql
-SELECT * FROM system.zetta_indexes;
-SELECT index_id, kind FROM system.zetta_indexes WHERE kind = 'search';
+SELECT * FROM system.indexes;
+SELECT index_id, kind FROM system.indexes WHERE kind = 'search';
 ```
 
 Columns: `index_id`, `table`, `kind`, `backend`, `fields` (a JSON array, like
-`system.zetta_models`' `feature_schema`), `field_count`, `created`.
+`system.models`' `feature_schema`), `field_count`, `created`.
 
 ## Running an index step
 
@@ -265,4 +265,4 @@ long). See [distributed-fulltext.md](distributed-fulltext.md).
 - [models.md](../ml/models.md) — the sibling top-level entity this is modeled on.
 - [device-registry.md](../compute/device-registry.md) — the registry whose shape `IndexRegistry` mirrors.
 - [execution-graph.md](../pipeline/execution-graph.md) — the IR whose `index` step resolves to a backend.
-- [query.md](../data/query.md) — the system-table mechanism behind `system.zetta_indexes`.
+- [query.md](../data/query.md) — the system-table mechanism behind `system.indexes`.

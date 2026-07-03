@@ -170,7 +170,7 @@ TEST(ChurnSolution, DeployCatalogChurnAndRunProducesRealModelAndDrivers) {
         result.playbook.begin(), result.playbook.end(),
         [](const RetentionAction& a) { return !a.dominant_driver.empty(); }));
 
-    // Each heavy step ran as a recorded, Succeeded ComputeJob (system.zetta_jobs).
+    // Each heavy step ran as a recorded, Succeeded ComputeJob (system.jobs).
     int featurize = 0, train = 0, score = 0, explain = 0;
     for (const auto& job : host.node.jobs()) {
         EXPECT_EQ(job->status(), JobStatus::Succeeded) << job->id();

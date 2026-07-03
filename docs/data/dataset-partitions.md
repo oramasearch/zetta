@@ -119,11 +119,11 @@ SELECT partition_id, table, owner_count
 `SELECT *`, projection, and a single `WHERE` comparison work exactly as for any
 system table. Qualified name only (`system.dataset_partitions`).
 
-> **Naming.** This is the **first system table without the `zetta_` prefix**. The
+> **Naming.** This was the **first system table without the `zetta_` prefix**. The
 > `system` database is reserved + zetta-controlled, so `zetta_` is redundant — the
-> corrected convention names system tables plainly. The legacy `zetta_*` tables
-> (`zetta_nodes`, `zetta_jobs`, …) are kept until the system-wide rename tracked in
-> [#538](https://github.com/oramasearch/zetta/issues/538).
+> corrected convention names system tables plainly. The legacy tables were renamed
+> to match in [#538](https://github.com/oramasearch/zetta/issues/538); their old
+> `system.zetta_*` spellings still resolve as back-compat aliases.
 
 ## Persistence & replication
 

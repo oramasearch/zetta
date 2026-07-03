@@ -93,7 +93,7 @@ NearDataTrainResult run_near_data_train_job(
     }
 
     // (3) Per-row TreeSHAP drivers over the same shard, with the trained model. A
-    // self-created `explain` ComputeJob (so it appears in system.zetta_jobs), under the
+    // self-created `explain` ComputeJob (so it appears in system.jobs), under the
     // same project/graph as the train job.
     std::shared_ptr<zetta::compute::ComputeJob> explain_job =
         node.create_job(zetta::compute::JobKind::Explain, job.project(), job.graph());

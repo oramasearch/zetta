@@ -82,7 +82,7 @@ std::string_view to_string(CapabilityKind kind);
 // quick (they run inside a tick).
 struct ApiContext {
     Node& node;
-    const zetta::cluster::Cluster* cluster = nullptr;  // for system.zetta_nodes
+    const zetta::cluster::Cluster* cluster = nullptr;  // for system.nodes
     std::string acting_key;                             // AccessKey id or empty
 
     // The trace this call belongs to (an inbound traceparent, or a fresh root

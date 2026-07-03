@@ -12,7 +12,7 @@
 // Run the point-in-time [featurization](featurize.hpp) as a distributed
 // **ComputeJob** through the [job coordinator](../compute/job_coordinator.hpp)
 // (ARC-12 / FEAT-6, #388) — the slice that makes the churn featurization a recorded,
-// durable, audited unit of accelerated compute that appears in `system.zetta_jobs`.
+// durable, audited unit of accelerated compute that appears in `system.jobs`.
 //
 // **The churn_features.sql shape, distributed.** This is the literal SQL shape
 // `accounts ⋈ events … GROUP BY account`, realized with the distributed DDF ops:

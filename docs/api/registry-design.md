@@ -85,8 +85,8 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
 
 **No new job infrastructure.** The engine already gives every long operation a
 durable, replicated, queryable handle: a `Run` (`run:<uuid>`) or a
-`ComputeJob` (`job:<uuid>`), visible in `system.zetta_runs` /
-`system.zetta_jobs`. A `kind: job` capability submits and returns
+`ComputeJob` (`job:<uuid>`), visible in `system.runs` /
+`system.jobs`. A `kind: job` capability submits and returns
 `{run_id | job_id}` immediately; progress/outcome is read back through the
 read surface. No request-scoped blocking, no bespoke async protocol, and MCP,
 REST, SQL, and the GUI all observe the same lifecycle rows.
