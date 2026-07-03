@@ -17,6 +17,10 @@ MCP/HTTP work.
 - [governed-actions.md](governed-actions.md) — action parity (#617): the
   product loop's mutating tools, the kind:job handle semantics
   (BackgroundActions, run-id-at-submit), gate parity, boundaries.
+- [consent.md](consent.md) — remote consent for cloud-touching tools (#621):
+  the challenge protocol (never executes on first call), the
+  distinctly-privileged approval rule (approver key / headed surface), the
+  consent ledger + `system.consent_requests`, audit + spans on both sides.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
   pages (#645): plain-GET agent docs generated live from the registry + node
   state, no second prose source.
@@ -71,6 +75,12 @@ node state, so a no-MCP agent orients with one GET
 | `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
 | `testkit_run` | job | orchestration:testkit_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
+| `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
+| `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated** re-detect of the local CLIs' deployment contexts → `system.provisioners` |
+| `add_nodes` | action | orchestration:add_nodes | add permanent cluster nodes via a wired provisioner; cloud targets **consent-gated** (billable), `local` executes directly |
+| `list_consent_requests` | read | api:query | the node's consent ledger — pending challenges, decisions, and executed results |
+| `approve_consent` | action | orchestration:approve_consent | approve one challenge and execute exactly the named action once — must be a **different principal** than the requester |
+| `deny_consent` | action | orchestration:deny_consent | refuse (or withdraw) a pending challenge; the action never runs |
 
 All accept the reserved optional `intent` field (recorded to the span,
 stripped before schema validation).

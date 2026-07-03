@@ -73,13 +73,15 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   seams inherit those seams' own enforcement too (RULE-1 cannot be bypassed
   by construction, because handlers call the same engine entry points the GUI
   calls).
-- **Consent (design for #621):** a `requires_consent` capability NEVER
-  executes on first call — it returns a structured consent challenge naming
-  exactly what would be read/run (the Cloud Inspector grammar) plus a
-  one-time challenge id. Confirmation must come from a **different,
-  approval-capable principal** (an approver key, or a human in the headed
-  app's approval surface) — the calling key repeating the call can never
-  satisfy it. Per-action, never remembered, audited on both sides.
+- **Consent (shipped, #621 — [consent.md](consent.md)):** a `requires_consent`
+  capability NEVER executes on first call — it returns a structured consent
+  challenge naming exactly what would be read/run (the Cloud Inspector
+  grammar) plus a one-time challenge id. Confirmation must come from a
+  **different, approval-capable principal** (an approver key via
+  `approve_consent`, or a human in the headed app's approval surface) — the
+  calling key repeating the call can never satisfy it. Approval executes
+  exactly the named (frozen) action once. Per-action, never remembered,
+  audited on both sides; the ledger surfaces as `system.consent_requests`.
 
 ## Long-running work — reuse the durable handles
 

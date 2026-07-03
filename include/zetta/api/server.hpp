@@ -65,6 +65,11 @@ public:
     // The node's span ring (convenience passthrough to Node::span_recorder()).
     observability::SpanRecorder& recorder();
     void set_activity_hook(ActivityHook hook);
+    // Wire the provision targets the consent-gated add_nodes capability may
+    // drive (#621). The resolved Provisioners must outlive the server; call
+    // before start(). Unwired targets fail with a clear reason — nothing is
+    // provisioned by default.
+    void set_provisioner_resolver(ProvisionerResolver resolver);
 
 private:
     struct Impl;

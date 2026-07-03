@@ -31,4 +31,17 @@ namespace zetta::api {
 
 void register_core_capabilities(Registry& registry);
 
+// The cloud-touching tools + the consent protocol (#621; called by
+// register_core_capabilities; docs/api/consent.md):
+//
+//   cloud_inspect          action  consent-gated read-only provider inspect
+//   detect_provisioners    action  consent-gated local-CLI context re-detect
+//   add_nodes              action  permanent add; cloud targets consent-gated,
+//                                  `local` executes directly (no cloud)
+//   list_consent_requests  read    the node's consent ledger, results included
+//   approve_consent        action  distinctly-privileged approval: executes
+//                                  exactly the named action once
+//   deny_consent           action  refuse (or withdraw) a pending challenge
+void register_cloud_capabilities(Registry& registry);
+
 }  // namespace zetta::api

@@ -59,9 +59,10 @@ governed-console precedent). That one path gives the palette, for free:
   shows the trace id, readable back in the Traces view / `get_trace`.
 - **The consent gate** — a `requires_consent` (cloud-touching) entry is marked
   `· consent` in its row and never executes on a plain call: the registry
-  refuses with its reason (verbatim in the palette's banner) until the #621
-  challenge/approval flow lands, at which point the palette inherits it —
-  same gate as everywhere else, per the cloud hard rule.
+  issues a #621 consent challenge (its id + reason verbatim in the palette's
+  banner) that awaits a decision on the Admin panel's approval surface
+  ([../api/consent.md](../api/consent.md)) — same gate as everywhere else,
+  per the cloud hard rule.
 
 Outcomes render in the overlay: a `banner` (Ok/Error tone, the engine's
 path-qualified reason verbatim), the mono trace id, and the result JSON in a
@@ -76,6 +77,4 @@ surface never loses actions and the list never forks.
 
 ## Later slices
 
-- The #621 consent challenge/approval surface (the palette then renders the
-  challenge instead of the refusal).
 - Recent/frecency ordering and per-view scoped actions.

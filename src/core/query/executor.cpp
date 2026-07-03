@@ -131,6 +131,7 @@ constexpr std::string_view kJobsTable = "jobs";
 constexpr std::string_view kCloudProvidersTable = "cloud_providers";
 constexpr std::string_view kCloudStatusTable = "cloud_status";
 constexpr std::string_view kProvisionersTable = "provisioners";
+constexpr std::string_view kConsentRequestsTable = "consent_requests";
 constexpr std::string_view kRunsTable = "runs";
 constexpr std::string_view kPrincipalsTable = "principals";
 constexpr std::string_view kKeysTable = "keys";
@@ -564,6 +565,30 @@ std::vector<nlohmann::json> provisioner_rows(const Node& node) {
         row["pool"] = config.value("pool_name", std::string{});
         row["spot"] = config.value("spot", false);
         row["summary"] = provisioner.summary;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per consent challenge for the consent_requests system table —
+// the node's remote consent ledger (#621, Node::consent_ledger()): pending
+// challenges awaiting a distinctly-privileged approval, plus decided ones with
+// their outcome. **Ephemeral, never replicated** (consent is per-action and
+// never remembered); reading this never triggers a cloud call.
+std::vector<nlohmann::json> consent_request_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& challenge : node.consent_ledger().all()) {
+        const nlohmann::json value = zetta::governance::to_json(*challenge);
+        nlohmann::json row;
+        row["id"] = challenge->id;
+        row["capability"] = challenge->capability;
+        row["summary"] = challenge->action.summary;
+        row["requested_by"] = value.value("requested_by", std::string{});
+        row["status"] = value.value("status", std::string{});
+        row["created_at"] = challenge->created_at;
+        row["expires_at"] = challenge->expires_at;
+        row["decided_by"] = challenge->decided_by;
+        row["detail"] = challenge->detail;
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1410,6 +1435,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kProvisionersTable) {
                         return select_over_rows(s, provisioner_rows(node_));
+                    }
+                    if (sys == kConsentRequestsTable) {
+                        return select_over_rows(s, consent_request_rows(node_));
                     }
                     if (sys == kRunsTable) {
                         return select_over_rows(s, run_rows(node_));

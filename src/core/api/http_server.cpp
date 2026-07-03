@@ -81,6 +81,9 @@ struct ApiServer::Impl {
     // Owns the worker handles the kind:job capabilities launch (#617); pruned
     // each drain() on the owner thread, where their destructors may join.
     BackgroundActions background;
+    // The provision targets this embedding wired (#621) — consulted by the
+    // consent-gated add_nodes capability. Empty = no targets wired.
+    ProvisionerResolver provisioners;
 
     boost::corosio::io_context io_context;
     std::unique_ptr<boost::beast2::http_server> server;
@@ -146,7 +149,8 @@ struct ApiServer::Impl {
             // io coroutine is suspended on the bridge until it completes.
             auto work = [&] {
                 ApiContext context{node, cluster, acting_key, trace,
-                                   &node.span_recorder(), &background};
+                                   &node.span_recorder(), &background,
+                                   provisioners};
                 call_result =
                     capability_registry.call(tool_name, arguments, context);
             };
@@ -163,6 +167,11 @@ struct ApiServer::Impl {
                 payload["error"] = {{"code", call_result.error.code},
                                     {"message", call_result.error.message},
                                     {"path", call_result.error.path}};
+                // Structured failure payloads ride along — the consent
+                // challenge a "consent_required" refusal names (#621).
+                if (!call_result.error.details.is_null()) {
+                    payload["error"]["details"] = call_result.error.details;
+                }
             }
             payload["trace_id"] = call_result.trace_id;
             payload["span_id"] = call_result.span_id;
@@ -403,6 +412,9 @@ void ApiServer::drain() {
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
     return impl_->node.span_recorder();
+}
+void ApiServer::set_provisioner_resolver(ProvisionerResolver resolver) {
+    impl_->provisioners = std::move(resolver);
 }
 void ApiServer::set_activity_hook(ActivityHook hook) {
     impl_->capability_registry.set_activity_hook(std::move(hook));

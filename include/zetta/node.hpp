@@ -16,6 +16,7 @@
 
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/consent.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
@@ -445,6 +446,17 @@ public:
         return cloud_inspections_;
     }
 
+    // The remote consent ledger (#621; docs/api/consent.md): the challenges
+    // consent-gated capabilities issue over the control surface, awaiting a
+    // distinctly-privileged approval. **Ephemeral, owner-thread-only, with NO
+    // CRDT backing** — consent is per-action and never remembered (the cloud
+    // hard rule), so challenges neither persist nor replicate. Source for the
+    // read-only `system.consent_requests` view and the headed approval surface.
+    zetta::governance::ConsentLedger& consent_ledger() { return consent_ledger_; }
+    const zetta::governance::ConsentLedger& consent_ledger() const {
+        return consent_ledger_;
+    }
+
     // Cloud-burst provisioner deployment contexts detected from this node's own
     // local CLIs (detect_provisioner_configs; docs/cloud/provisioner-detection.md). **Ephemeral,
     // observed state with NO CRDT backing** — like cloud_inspections(), node-local
@@ -744,6 +756,7 @@ private:
         dataset_partitions_;                                // sorted (created, id)
     std::vector<zetta::cloud::CloudInspectReport> cloud_inspections_;     // ephemeral; not replicated
     std::vector<zetta::cloud::ProvisionerConfig> provisioner_configs_;    // ephemeral; not replicated
+    zetta::governance::ConsentLedger consent_ledger_;                     // ephemeral; not replicated (#621)
     zetta::cluster::NodeMetricsSampler node_metrics_sampler_;               // ephemeral; not replicated
     // Live near-data pipeline instrumentation (#589): a bounded, in-memory ring of
     // the most-recent recorded jobs' local-vs-wire counters, the source for the

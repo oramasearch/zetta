@@ -21,11 +21,29 @@ states of [empty-states.md](empty-states.md) until something creates them
 key, granting a capability as a first-class command/event (ENT-22 →
 `GrantCapability` / `CapabilityGranted`), or approval gates — is a **later FEAT-9
 slice**; this slice is the "view principals/keys, grants, and audit events"
-acceptance only.
+acceptance only — with one exception: the panel now also carries the **#621
+consent approval surface** (below), the headed half of remote consent, which
+IS a mutating affordance (approving executes the named action once).
 
 ## Layout
 
-The panel is one collapsing header, **Admin & Settings**, with two sections.
+The panel is one collapsing header, **Admin & Settings**, with three sections.
+
+### Consent requests (#621)
+
+`App::draw_consent_requests` — the **headed approval surface** for remote
+consent challenges ([../api/consent.md](../api/consent.md)). Each pending
+challenge on `node_.consent_ledger()` renders as an amber, deny-by-default
+callout (the Cloud Inspector / Add-nodes gate grammar): the summary (what +
+cost), the requester, the expiry, and **exactly** what would be read
+(`THE CLI MAY READ`) and run (`WOULD RUN`) in mono. **Approve and run once**
+drives `Registry::decide_consent` as the trusted `HeadedApp` surface —
+executing the frozen action exactly once under the requester's identity (the
+async cloud workers land in `palette_background_`, pruned by
+`poll_background_ops()`); **Deny** refuses it. Outcomes render as the
+section's banner with the engine's reason verbatim (#632). Consent is
+per-action and never remembered; an empty section states where challenges
+come from.
 
 ### Principals & access keys
 

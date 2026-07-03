@@ -173,7 +173,10 @@ void App::run_palette_capability(const std::string& capability_name) {
                             .acting_key = {},
                             .trace = zetta::observability::make_root_trace(),
                             .recorder = &node_.span_recorder(),
-                            .background = palette_background_.get()};
+                            .background = palette_background_.get(),
+                            .provisioners = [this](const std::string& target) {
+                                return provisioner_for(target);
+                            }};
     // The registry is shared with the MCP server, whose activity hook feeds
     // the external-activity strip (#620) — a palette call is self-initiated,
     // so suppress it for the synchronous duration of the call (the hook fires
@@ -192,13 +195,23 @@ void App::run_palette_capability(const std::string& capability_name) {
     } else {
         // The engine's reason verbatim (banner rule #632), never a laundered
         // "operation failed". A consent-gated entry lands here with the
-        // registry's consent_required reason until the #621 approval flow.
+        // registry's consent_required reason; its challenge then awaits a
+        // decision on the Admin panel's approval surface (#621).
         palette_failed_ = true;
         palette_status_ = result.error.code + ": " + result.error.message;
         if (!result.error.path.empty()) {
             palette_status_ += " (" + result.error.path + ")";
         }
     }
+}
+
+zetta::api::Registry& App::ensure_capability_registry() {
+    if (!capability_registry_) {
+        owned_capability_registry_ = std::make_unique<api::Registry>();
+        api::register_core_capabilities(*owned_capability_registry_);
+        capability_registry_ = owned_capability_registry_.get();
+    }
+    return *capability_registry_;
 }
 
 void App::draw_command_palette() {
@@ -217,11 +230,7 @@ void App::draw_command_palette() {
         // wired none (--no-mcp) it builds its own from the SAME core
         // registration, so the action list never forks (one registry, many
         // renderings).
-        if (!capability_registry_) {
-            owned_capability_registry_ = std::make_unique<api::Registry>();
-            api::register_core_capabilities(*owned_capability_registry_);
-            capability_registry_ = owned_capability_registry_.get();
-        }
+        ensure_capability_registry();
         palette_query_.clear();
         palette_selected_ = 0;
         palette_capability_.clear();
