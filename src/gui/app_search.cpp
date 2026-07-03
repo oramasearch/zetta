@@ -356,9 +356,7 @@ void App::draw_search() {
     // distributed-first foundation wants the operator to SEE the whole cluster
     // answering, node by node.
     section_card("##search-provenance", "Per-node provenance", [&] {
-        if (ImGui::BeginTable("##search-nodes", 6,
-                              ImGuiTableFlags_RowBg |
-                                  ImGuiTableFlags_SizingStretchProp)) {
+        if (ImGui::BeginTable("##search-nodes", 6, kDataTableFlags)) {
             ImGui::TableSetupColumn("Node");
             ImGui::TableSetupColumn("Role", ImGuiTableColumnFlags_WidthFixed,
                                     ImGui::GetFontSize() * 7.0f);
@@ -387,16 +385,13 @@ void App::draw_search() {
                 ImGui::TextUnformatted(contribution.local ? "this node"
                                                           : "peer");
                 ImGui::TableSetColumnIndex(2);
-                ImGui::Text("%zu", contribution.hits);
+                table_numeric(std::to_string(contribution.hits));
                 ImGui::TableSetColumnIndex(3);
-                ImGui::Text("%zu", contribution.sub_indexes);
+                table_numeric(std::to_string(contribution.sub_indexes));
                 ImGui::TableSetColumnIndex(4);
-                ImGui::TextUnformatted(
-                    format_latency(contribution.latency_ms).c_str());
+                table_numeric(format_latency(contribution.latency_ms));
                 ImGui::TableSetColumnIndex(5);
-                ImGui::Text("%llu",
-                            static_cast<unsigned long long>(
-                                contribution.wire_bytes));
+                table_numeric(std::to_string(contribution.wire_bytes));
             }
             ImGui::EndTable();
         }
