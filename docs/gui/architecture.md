@@ -66,6 +66,14 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
 - `banner(tone, message)` — per-panel action feedback (#632); a tinted strip
   (`tone_background`) with the engine's path-qualified reason verbatim;
   renders nothing on an empty message; no modal alerts.
+- `callout(tone, id, fn)` — the deliberate-boundary box (#630): a tinted,
+  bordered child the caller fills (a `status_label` headline + explanation +
+  one action). The consent gates (Cloud inspector, Add nodes) are the worked
+  examples.
+- **Tables (#630)**: plain `ImGui::BeginTable` with the shared
+  `kDataTableFlags` (borders, proportional stretch, zebra off; OR in
+  `ScrollY` per site), sentence-case `TableSetupColumn` labels, and numeric
+  columns rendered right-aligned mono via `table_numeric(value)`.
 - `entity_link(label, view, id)` — renders as a link, calls `navigate_to`;
   `link_line(label, display, view, id)` is its detail-pane "label: ref" form.
   The wired edges of the object graph (Run ↔ Model ↔ Job, Run → Graph →

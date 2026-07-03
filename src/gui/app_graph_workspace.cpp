@@ -34,19 +34,10 @@
 namespace zetta::gui {
 namespace {
 
-// Graph-workspace canvas palette (ImU32, for the window draw list) — light
-// cards on the Orama canvas. Nodes are white boxes with hairline borders laid
-// out in columns by StepKind; the selected node gets a coral border (the "you
-// are here" accent). Edges are gray lines (data) / amber (control).
-constexpr ImU32 kCanvasHeaderColor = IM_COL32(95, 95, 92, 255);      // ink-muted
-constexpr ImU32 kNodeFill = IM_COL32(255, 255, 255, 255);           // white
-constexpr ImU32 kNodeFillHover = IM_COL32(242, 242, 240, 255);      // wash
-constexpr ImU32 kNodeFillSelected = IM_COL32(247, 238, 239, 255);   // coral wash
-constexpr ImU32 kNodeBorder = IM_COL32(224, 224, 224, 255);         // border
-constexpr ImU32 kNodeBorderSelected = IM_COL32(226, 84, 90, 255);   // coral
-constexpr ImU32 kNodeTextColor = IM_COL32(28, 28, 26, 255);         // ink-primary
-constexpr ImU32 kDataEdgeColor = IM_COL32(150, 150, 146, 220);      // gray line
-constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
+// The canvas colours (kCanvasBox*, kCanvasEdge*) come from the shared canvas
+// palette in app_internal.hpp (#630): nodes are white boxes with hairline
+// borders laid out in columns by StepKind; the selected node gets a coral
+// border (the "you are here" accent); edges are grey (data) / amber (control).
 
 // The colour a step's projected cluster placement is drawn in (#591): the
 // shared placement tone (#636) — coral stays the "you are here" accent, never
@@ -446,9 +437,9 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                 const ImVec2 header_pos(x, origin.y);
                 if (mono_font_) {
                     draw->AddText(mono_font_, ImGui::GetFontSize() * 0.92f,
-                                  header_pos, kCanvasHeaderColor, header.c_str());
+                                  header_pos, kCanvasBoxMuted, header.c_str());
                 } else {
-                    draw->AddText(header_pos, kCanvasHeaderColor, header.c_str());
+                    draw->AddText(header_pos, kCanvasBoxMuted, header.c_str());
                 }
                 float y = origin.y + header_h;
                 for (const auto& node : graph.nodes_of_kind(kinds[column])) {
@@ -481,8 +472,8 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                 const auto to = center_of.find(edge.to);
                 if (from == center_of.end() || to == center_of.end()) continue;
                 const ImU32 color = edge.kind == ir::EdgeKind::Control
-                                        ? kControlEdgeColor
-                                        : kDataEdgeColor;
+                                        ? kCanvasEdgeControl
+                                        : kCanvasEdgeData;
                 const ImVec2 start = border_point(from->second, to->second);
                 const ImVec2 end = border_point(to->second, from->second);
                 draw->AddLine(start, end, color, font * 0.1f);
@@ -545,17 +536,17 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                         ImGui::GetColorU32(glow), rounding, 0, font * 0.14f);
                 }
 
-                const ImU32 fill = selected ? kNodeFillSelected
-                                            : (hovered ? kNodeFillHover : kNodeFill);
+                const ImU32 fill = selected ? kCanvasBoxFillSelected
+                                            : (hovered ? kCanvasBoxFillHover : kCanvasBoxFill);
                 draw->AddRectFilled(item.top_left, item.bottom_right, fill,
                                     rounding);
                 // A failed step is pinned red; the coral selection accent still
                 // wins ("you are here" stays coral — status never borrows it).
                 const ImU32 border =
-                    selected ? kNodeBorderSelected
+                    selected ? kCanvasBoxBorderSelected
                              : (step_failed
                                     ? ImGui::GetColorU32(tone_color(Tone::Error))
-                                    : kNodeBorder);
+                                    : kCanvasBoxBorder);
                 draw->AddRect(item.top_left, item.bottom_right, border,
                               rounding, 0, selected || step_failed ? 2.0f : 1.0f);
                 draw->PushClipRect(item.top_left, item.bottom_right, true);
@@ -592,7 +583,7 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                                       badge.c_str());
                     }
                 }
-                draw->AddText(ImVec2(name_x, name_y), kNodeTextColor,
+                draw->AddText(ImVec2(name_x, name_y), kCanvasBoxText,
                               item.node->name.c_str());
 
                 // Live-run overlay (#626): a status dot in the top-right corner
@@ -808,9 +799,9 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
             const ImVec2 bottom_right(top_left.x + box_w, top_left.y + box_h);
             const bool here = runs_here(node.node_id);
             draw->AddRectFilled(top_left, bottom_right,
-                                here ? kNodeFillSelected : kNodeFill, rounding);
+                                here ? kCanvasBoxFillSelected : kCanvasBoxFill, rounding);
             draw->AddRect(top_left, bottom_right,
-                          here ? kNodeBorderSelected : kNodeBorder, rounding, 0,
+                          here ? kCanvasBoxBorderSelected : kCanvasBoxBorder, rounding, 0,
                           here ? 2.0f : 1.0f);
             draw->PushClipRect(top_left, bottom_right, true);
             const float dot_radius = font * 0.26f;
@@ -823,17 +814,17 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
             const ImVec2 id_pos(dot_center.x + dot_radius + font * 0.4f,
                                 top_left.y + box_pad);
             if (mono_font_) {
-                draw->AddText(mono_font_, font, id_pos, kNodeTextColor, id.c_str());
+                draw->AddText(mono_font_, font, id_pos, kCanvasBoxText, id.c_str());
             } else {
-                draw->AddText(id_pos, kNodeTextColor, id.c_str());
+                draw->AddText(id_pos, kCanvasBoxText, id.c_str());
             }
             const ImVec2 addr_pos(top_left.x + box_pad,
                                   top_left.y + box_pad + font * 1.4f);
             if (mono_font_) {
-                draw->AddText(mono_font_, font * 0.82f, addr_pos, kCanvasHeaderColor,
+                draw->AddText(mono_font_, font * 0.82f, addr_pos, kCanvasBoxMuted,
                               node.address.c_str());
             } else {
-                draw->AddText(addr_pos, kCanvasHeaderColor, node.address.c_str());
+                draw->AddText(addr_pos, kCanvasBoxMuted, node.address.c_str());
             }
             draw->PopClipRect();
         }

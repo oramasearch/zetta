@@ -446,12 +446,12 @@ void App::draw_search_cluster_strip(const zetta::index::SearchResult& result) {
                               with_alpha(kFlowLocal, activity->second * 0.8f),
                               7.0f, 0, 2.0f);
             }
-            draw->AddRectFilled(top_left, bottom_right, kClusterBoxFill, 6.0f);
+            draw->AddRectFilled(top_left, bottom_right, kCanvasBoxFill, 6.0f);
             // Coral border on the coordinating node — the "you are here"
             // accent; peers keep the hairline.
             draw->AddRect(top_left, bottom_right,
-                          contribution.local ? kClusterBoxBorderSelected
-                                             : kClusterBoxBorder,
+                          contribution.local ? kCanvasBoxBorderSelected
+                                             : kCanvasBoxBorder,
                           6.0f, 0, contribution.local ? 2.0f : 1.0f);
             const std::string id = entity_short_id(contribution.node_id);
             const ImVec2 id_pos(top_left.x + pad, top_left.y + pad);
@@ -464,16 +464,16 @@ void App::draw_search_cluster_strip(const zetta::index::SearchResult& result) {
                                      top_left.y + pad + font * 2.35f);
             const float small = font * 0.85f;
             if (g_mono_font) {
-                draw->AddText(g_mono_font, font, id_pos, kClusterBoxText,
+                draw->AddText(g_mono_font, font, id_pos, kCanvasBoxText,
                               id.c_str());
-                draw->AddText(g_mono_font, small, shape_pos, kClusterBoxMuted,
+                draw->AddText(g_mono_font, small, shape_pos, kCanvasBoxMuted,
                               shape.c_str());
-                draw->AddText(g_mono_font, small, latency_pos, kClusterBoxMuted,
+                draw->AddText(g_mono_font, small, latency_pos, kCanvasBoxMuted,
                               format_latency(contribution.latency_ms).c_str());
             } else {
-                draw->AddText(id_pos, kClusterBoxText, id.c_str());
-                draw->AddText(shape_pos, kClusterBoxMuted, shape.c_str());
-                draw->AddText(latency_pos, kClusterBoxMuted,
+                draw->AddText(id_pos, kCanvasBoxText, id.c_str());
+                draw->AddText(shape_pos, kCanvasBoxMuted, shape.c_str());
+                draw->AddText(latency_pos, kCanvasBoxMuted,
                               format_latency(contribution.latency_ms).c_str());
             }
             centers[contribution.node_id] =

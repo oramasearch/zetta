@@ -119,8 +119,8 @@ box to filter the partition table to that node's slices, surfacing
 ## Pointers
 
 - `src/gui/app_datasets.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
-  reusing the shared cluster node-box constants (`kClusterBox*`) and
-  `entity_short_id` from `app_operations_internal.hpp`, plus the
+  reusing the shared canvas node-box palette (`kCanvasBox*`, `app_internal.hpp`)
+  and `entity_short_id` from `app_operations_internal.hpp`, plus the
   "Add dataset…" button.
 - `src/gui/app.cpp` — the `Data → Datasets` menu item and the `View::Datasets`
   switch arm; the `File → Add dataset…` item, the `FileIntent::Dataset` ingestion
