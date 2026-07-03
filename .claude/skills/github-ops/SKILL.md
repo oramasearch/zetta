@@ -43,6 +43,12 @@ git push -u origin <type>/<short-slug>
 gh pr create -R oramasearch/zetta --base dev --assignee @me
 ```
 
+### Merges shift state — refresh the reload map
+
+Merging a PR, closing a wave issue, or reshaping a worktree plan changes
+project state: update `docs/full-context.md` (Current state section) in the
+same commit or immediately after the merge.
+
 ### Commit messages — Conventional Commits
 
 `<type>(scope): imperative subject ≤72 chars`, body explains *why*. Types:
