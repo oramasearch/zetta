@@ -14,6 +14,9 @@ MCP/HTTP work.
   the error mapping, the consent challenge.
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
+- [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
+  pages (#645): plain-GET agent docs generated live from the registry + node
+  state, no second prose source.
 
 ## The endpoint (shipped with #615)
 
@@ -26,6 +29,11 @@ unauthenticated-local session; flags: `--mcp-listen HOST:PORT`,
 `ok/value|error`, `trace_id`, `span_id`, `duration_ms`; inbound `traceparent`
 is honored. The handlers marshal onto the owning loop (headless tick / headed
 frame) via the bridge — the loops drain it beside `Node::tick()`.
+
+The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
+`/llms-full.txt` — agent-readable pages generated live from the registry +
+node state, so a no-MCP agent orients with one GET
+([llms-endpoints.md](llms-endpoints.md), #645).
 
 ## Capabilities (v1)
 

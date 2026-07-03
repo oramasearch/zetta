@@ -21,7 +21,9 @@
 
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
+#include "zetta/api/llms.hpp"
 #include "zetta/node.hpp"
+#include "zetta/observability/trace.hpp"
 #include "zetta/version.hpp"
 
 namespace zetta::api {
@@ -51,6 +53,19 @@ std::string jsonrpc_result(const nlohmann::json& id, nlohmann::json result) {
     response["id"] = id;
     response["result"] = std::move(result);
     return response.dump();
+}
+
+// The beast2 worker reuses ONE response object across requests (and across
+// connections) without clearing its headers, and route_params::send only
+// fills ETag / Content-Length when they are absent — so the first response's
+// values would survive onto every later one, truncating any longer body on
+// the wire (#700). Until the vendored worker loop clears the response, stamp
+// both explicitly before every send.
+void stamp_response_headers(boost::http::route_params& route,
+                            std::string_view body) {
+    route.res.erase(boost::http::field::etag);
+    route.res.erase(boost::http::field::content_length);
+    route.res.set_payload_size(body.size());
 }
 
 }  // namespace
@@ -158,6 +173,75 @@ struct ApiServer::Impl {
         }
         return jsonrpc_error(id, -32601, "unknown method '" + method + "'");
     }
+
+    // Serve one llms.txt page (#645): `page` is "index" (/llms.txt), "full"
+    // (/llms-full.txt), or a topic name (/llms/<topic>.txt). Same bearer
+    // policy as /mcp; rendering touches the Node, so it is marshaled onto the
+    // owning loop via the bridge, wrapped in a span (every operation is
+    // observable). Shared by the three GET routes registered in start().
+    boost::http::route_task serve_llms(boost::http::route_params& route,
+                                       std::string page) {
+        namespace http = boost::http;
+
+        std::string bearer;
+        if (route.req.count(http::field::authorization) != 0) {
+            std::string_view header_value =
+                route.req.at(http::field::authorization);
+            if (header_value.starts_with("Bearer ")) {
+                bearer = std::string(header_value.substr(7));
+            }
+        }
+        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
+            route.status(http::status::unauthorized);
+            stamp_response_headers(route, "missing or invalid bearer token");
+            auto [send_error] =
+                co_await route.send("missing or invalid bearer token");
+            (void)send_error;
+            co_return http::route_done;
+        }
+
+        std::string traceparent;
+        if (route.req.count("traceparent") != 0) {
+            traceparent = std::string(route.req.at("traceparent"));
+        }
+        const auto trace =
+            zetta::observability::parse_traceparent(traceparent)
+                .value_or(zetta::observability::make_root_trace());
+
+        std::string body;
+        bool found = true;
+        co_await bridge.run_on_owner([&] {
+            zetta::observability::ScopedSpan span(
+                &node.span_recorder(), trace, "llms:" + page);
+            span.set_attribute("page", page);
+            if (page == "index") {
+                body = render_llms_index(node, capability_registry);
+            } else if (page == "full") {
+                body = render_llms_full(node, capability_registry);
+            } else {
+                auto rendered =
+                    render_llms_topic(node, capability_registry, page);
+                found = rendered.has_value();
+                if (found) body = std::move(*rendered);
+            }
+            span.finish(found,
+                        found ? std::string() : "unknown topic '" + page + "'");
+        });
+
+        if (!found) {
+            body = "unknown topic '" + page + "'. Topics:";
+            for (const auto& topic : llms_topics()) body += " " + topic.name;
+            body += "\n";
+            route.status(http::status::not_found);
+        } else {
+            route.status(http::status::ok);
+        }
+        route.res.set(http::field::content_type, "text/plain; charset=utf-8");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
 };
 
 ApiServer::ApiServer(Node& node, const zetta::cluster::Cluster* cluster,
@@ -179,6 +263,7 @@ bool ApiServer::start() {
     router.use("/mcp", [&impl](http::route_params& route) -> http::route_task {
         if (route.req.method() != http::method::post) {
             route.status(http::status::method_not_allowed);
+            stamp_response_headers(route, "POST /mcp only");
             auto [send_error] = co_await route.send("POST /mcp only");
             (void)send_error;
             co_return http::route_done;
@@ -199,6 +284,8 @@ bool ApiServer::start() {
         if (!impl.options.bearer_token.empty() &&
             bearer != impl.options.bearer_token) {
             route.status(http::status::unauthorized);
+            stamp_response_headers(
+                route, "{\"error\":\"missing or invalid bearer token\"}");
             auto [send_error] = co_await route.send(
                 "{\"error\":\"missing or invalid bearer token\"}");
             (void)send_error;
@@ -234,16 +321,44 @@ bool ApiServer::start() {
 
         if (response_body.empty()) {
             route.status(http::status::accepted);  // notification: no reply
+            stamp_response_headers(route, "");
             auto [send_error] = co_await route.send("");
             (void)send_error;
             co_return http::route_done;
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, response_body);
         auto [send_error] = co_await route.send(response_body);
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     });
+
+    // The llms.txt progressive-disclosure surface (#645,
+    // docs/api/llms-endpoints.md): plain GET pages an agent with no MCP
+    // client can orient from, generated live from the registry + node state
+    // (llms.cpp). GET-only by registration; everything else is shared with
+    // /mcp via Impl::serve_llms.
+    router.add(http::method::get, "/llms.txt",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_llms(route, "index");
+               });
+    router.add(http::method::get, "/llms-full.txt",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_llms(route, "full");
+               });
+    router.add(http::method::get, "/llms/:topic",
+               [&impl](http::route_params& route) -> http::route_task {
+                   std::string topic;
+                   for (const auto& [parameter, value] : route.params) {
+                       if (parameter == "topic") topic = value;
+                   }
+                   // /llms/<topic>.txt is canonical; the bare name works too.
+                   if (topic.ends_with(".txt")) {
+                       topic.resize(topic.size() - 4);
+                   }
+                   return impl.serve_llms(route, topic);
+               });
 
     impl.server = std::make_unique<beast2::http_server>(
         impl.io_context, impl.options.worker_coroutines, std::move(router),

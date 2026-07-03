@@ -19,11 +19,12 @@ What it installs (or install manually):
   macOS; the newest installed `clang++-NN` (≥17) on Linux. Override with
   `-DCMAKE_CXX_COMPILER=...` (e.g. `clang++-19` or `g++-14`) or
   `-DZETTA_USE_SYSTEM_COMPILER=ON`. `install-deps.sh` installs a suitable clang.
-  On macOS the Homebrew-LLVM path also defines `_LIBCPP_DISABLE_AVAILABILITY`:
-  we compile against **and link/rpath** Homebrew's own libc++, so Apple's
-  OS-version availability gating in its headers doesn't apply — without it,
-  LLVM 22+ rejects features like floating-point `std::from_chars` as
-  "introduced in macOS 26" on older hosts.
+  With any Homebrew LLVM (the `llvm` keg or a versioned `llvm@NN`) the build
+  links Homebrew's own libc++ and defines `_LIBCPP_DISABLE_AVAILABILITY`:
+  since LLVM 21.1.8 the headers availability-gate symbols the macOS *system*
+  dylib lacks (floating-point `std::from_chars` → "'from_chars' is
+  unavailable: introduced in macOS 26.0"), which is a false alarm when running
+  against Homebrew's dylib.
 - **OpenSSL 3** (`openssl@3` on Homebrew, `libssl-dev` on apt) — **required**:
   it backs the cluster's inter-node mutual TLS (Corosio's TLS provider) and the
   node-identity certificate minting (CTL-2, #466;

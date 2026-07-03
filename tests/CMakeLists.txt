@@ -16,6 +16,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(zetta-tests
   api/test_registry.cpp
   api/test_mcp_server.cpp
+  api/test_llms.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   util/test_fuzzy.cpp

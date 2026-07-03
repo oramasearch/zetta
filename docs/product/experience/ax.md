@@ -16,13 +16,15 @@ relay it to a person.
   stating side effects; **prompts as progressive disclosure** (orientation →
   use-case runs → journeys → investigation → feedback) so an agent never
   needs the full tool table to start.
-- **`llms.txt` progressive-disclosure endpoints**
-  ([#645](https://github.com/oramasearch/zetta/issues/645)): the node serves
+- **`llms.txt` progressive-disclosure endpoints** — built
+  ([#645](https://github.com/oramasearch/zetta/issues/645),
+  [../../api/llms-endpoints.md](../../api/llms-endpoints.md)): the node serves
   its own agent-readable documentation over plain HTTP — `/llms.txt` (what
   this cluster is, the first three reads, where everything lives) →
-  `/llms/<topic>.txt` → `/llms-full.txt` — generated from the docs + the live
-  registry, embedding **live cluster facts** (node id, indexes, catalog
-  entries). Custom beyond the community convention wherever AX demands it.
+  `/llms/<topic>.txt` → `/llms-full.txt` — generated at request time from the
+  live registry's own descriptions, embedding **live cluster facts** (node id,
+  indexes, catalog entries); never a second prose source. Custom beyond the
+  community convention wherever AX demands it.
 - **The spec index**
   ([#646](https://github.com/oramasearch/zetta/issues/646)): `/v1/specs` +
   `list_specs`/`get_spec` tools serving the OpenAPI document plus **every**
