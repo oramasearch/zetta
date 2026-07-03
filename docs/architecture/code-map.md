@@ -42,7 +42,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   runtime/net.hpp           networking slice of the seam (Corosio; adapter-only) incl. the TLS surface (tls_context/openssl_stream/any_stream, #466)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
-  api/                      the programmatic control surface (docs/api/): registry.hpp (Capability/ApiResult/ApiContext/Registry — one entry renders as MCP tool + REST route + palette action; every call a span, authorized + audited), bridge.hpp (MainThreadBridge — coroutine-first marshaling onto the owning loop via runtime::async_event), capabilities.hpp (register_core_capabilities: server_info · sql · list_projects · list_traces · get_trace · submit_feedback · create_project), server.hpp (ApiServer — the embedded Beast2 MCP endpoint behind a pimpl seam; POST /mcp, bearer auth, drain())
+  api/                      the programmatic control surface (docs/api/): registry.hpp (Capability/ApiResult/ApiContext/Registry — one entry renders as MCP tool + REST route + palette action; every call a span, authorized + audited), bridge.hpp (MainThreadBridge — coroutine-first marshaling onto the owning loop via runtime::async_event), capabilities.hpp (register_core_capabilities: server_info · sql · list_projects · list_traces · get_trace · submit_feedback · create_project), server.hpp (ApiServer — the embedded Beast2 MCP endpoint behind a pimpl seam; POST /mcp, bearer auth, drain()), llms.hpp (the llms.txt progressive-disclosure pages, #645 — render_llms_index/topic/full, generated live from the registry + node state; docs/api/llms-endpoints.md)
   observability/            trace.hpp — OTel-style TraceContext/Span/SpanRecorder/ScopedSpan + traceparent codec; the four captures (intent · plan · performance · result_shape) on a bounded per-node ring (docs/architecture/observability.md); activity.hpp — ActivityEntry/ActivitySurface/ActivityOutcome + activity_entries(Node) — the merged audit-trail+runs activity feed, computed at call time (#622, docs/gui/activity-feed.md); crash.hpp — crash reports (#640): the fatal-signal handler (install_crash_handler), the validated <data_dir>/crashes/<uuid>.json report (CrashReport + schema), load_crash_reports (the system.crashes source)
   cluster/                  the distributed plane: membership, the signal plane, collectives, CRDT replication, telemetry
     cluster.hpp             zetta::cluster::Cluster — equal-peer membership over TCP (mutual TLS when ClusterConfig::security is enabled) + the signal-plane API
@@ -215,7 +215,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     timestamp.hpp           zetta::util::now_iso8601() / iso8601_seconds_ago() — UTC ISO-8601 stamps (created/updated + window cutoffs)
     bytes.hpp / duration.hpp  human-readable size / time formatters
     fuzzy.hpp               zetta::util::fuzzy_score — case-insensitive subsequence scorer (header-only) ranking the command palette's search-as-you-type matches (#625)
-src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + capabilities.cpp + http_server.cpp — the ONE beast2/Boost.JSON adapter TU, builds into zetta-api; observability/: trace.cpp + activity.cpp + crash.cpp)
+src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + capabilities.cpp + llms.cpp (the llms.txt renderers) + http_server.cpp — the ONE beast2/Boost.JSON adapter TU (POST /mcp + the /llms*.txt GETs), builds into zetta-api; observability/: trace.cpp + activity.cpp + crash.cpp)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   catalog.hpp               flat-key scheme for the replicated catalog (internal)
   json_boundary.hpp         internal: the shared JSON-boundary field readers (string/int/…, required/optional) every cloud-burst Config from_json parser uses, so the boundary checks live once instead of copy-pasted per <x>_provisioner.cpp
@@ -425,7 +425,7 @@ tests/                      GoogleTest unit tests (CTest); link zetta-core
   fixtures/                 committed test fixtures (churn/ golden/ parquet/ churn_workflow.json)
   test_node.cpp / test_integrity.cpp / test_schemas.cpp / test_runtime.cpp
                             cross-domain root tests (Node CRUD, integrity, schema drift-check, runtime seam)
-  util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ repl/ testkit/ usecases/churn/
+  api/ util/ cluster/ data/ ddf/ ml/ compute/ index/ pipeline/ cloud/ governance/ observability/ repl/ testkit/ usecases/churn/
                             one test directory per domain, mirroring include/zetta + src/core (each test file lives with its domain)
 build/generated/            embedded font header (generated; git-ignored)
 ```

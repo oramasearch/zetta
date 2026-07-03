@@ -169,6 +169,10 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   #533 train so the GBDT trains on the feature table, and `cluster.uc1_at_scale`
   now featurizes before training — see
   [use-cases/uc1-featurize-train-over-partitions.md](use-cases/uc1-featurize-train-over-partitions.md).
+- **#645 llms.txt endpoints built**: the MCP server also answers plain
+  `GET /llms.txt` / `/llms/<topic>.txt` / `/llms-full.txt` — agent docs
+  generated live from the registry + node state, no second prose source
+  ([api/llms-endpoints.md](api/llms-endpoints.md)).
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next

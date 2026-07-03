@@ -42,16 +42,18 @@ project(zetta
   LANGUAGES C CXX
 )
 
-# When built by Homebrew clang, run against its newer libc++ (its headers are
-# ahead of the system dylib); link + rpath the matching runtime. Since the
-# runtime IS Homebrew's own libc++, Apple's OS-version availability gating in
-# the headers is meaningless here — without disabling it, LLVM 22+ marks
-# features like floating-point std::from_chars "introduced in macOS 26" and
-# the build breaks on older hosts.
-if(APPLE AND CMAKE_CXX_COMPILER MATCHES "/opt/homebrew/opt/llvm/")
+# When built by Homebrew clang (the default `llvm` keg or a versioned
+# `llvm@NN`), run against its newer libc++ (its headers are ahead of the
+# system dylib); link + rpath the matching runtime. Because we run against
+# Homebrew's own libc++, its headers' availability annotations — which gate
+# symbols on the macOS *system* dylib, e.g. floating-point std::from_chars
+# ("introduced in macOS 26.0" since LLVM 21.1.8) — are false alarms here:
+# disable them.
+if(APPLE AND CMAKE_CXX_COMPILER MATCHES "^(/opt/homebrew/opt/llvm[^/]*)/")
+  set(ZETTA_HOMEBREW_LLVM_PREFIX "${CMAKE_MATCH_1}")
+  add_link_options(-L${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++
+                   -Wl,-rpath,${ZETTA_HOMEBREW_LLVM_PREFIX}/lib/c++)
   add_compile_definitions(_LIBCPP_DISABLE_AVAILABILITY)
-  add_link_options(-L/opt/homebrew/opt/llvm/lib/c++
-                   -Wl,-rpath,/opt/homebrew/opt/llvm/lib/c++)
 endif()
 
 # We don't use C++20 modules; skip the clang-scan-deps pass.
@@ -381,6 +383,7 @@ add_library(zetta-core STATIC
   src/core/observability/feedback.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
+  src/core/api/llms.cpp
   src/core/api/registry.cpp
   src/core/cluster/cluster.cpp
   src/core/cluster/security.cpp
