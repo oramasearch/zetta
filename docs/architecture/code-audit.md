@@ -38,14 +38,15 @@ compliance verdict: ✅ built · 🟡 partial / enforced in only one place · �
 | **RULE-7** | Observable state defaults to a virtual, read-only `system.zetta_*` table computed at query time — not a GUI-only panel or hand-synced copy. | 🟡 **Drift.** `system.zetta_nodes/_deployments/_models/_jobs/_cloud_providers/_cloud_status` comply, but **Runs, Principals, Keys, and the Audit trail are GUI-only with no table** — though Model and Job (Run's siblings) both have one. The rule itself warns this is exactly how "SQL and the GUI drift." **Decision: add all four.** See §2.2. |
 | **PERM-2 / CTL-6** | Only principals holding the orchestration capability may provision infra / deploy nodes. | 🟡 The capability model exists (`CapabilityDomain::Orchestration`); whether `deploy_graph` / the provisioners actually *check* it is not yet wired (they're not behind an `authorize(operation)` call). |
 | **CTL-1 / TB-2** | Capability-scoped deny-by-default sandbox: no ambient authority, no fs/network by default, all calls audited (the extension/runner sandbox). | 🔭 Planned — no extension/runner sandbox yet (RSK-7). |
-| **CTL-2 / TB-3** | mTLS on all inter-node traffic + cryptographic per-node identity + token-gated join. | ⛔ The cluster is plaintext TCP today; no mTLS, no enrollment token. The inter-node trust boundary is unprotected. |
+| **CTL-2 / TB-3** | mTLS on all inter-node traffic + cryptographic per-node identity + token-gated join. | 🟡 **Built** ([cluster/security.md](../cluster/security.md), #466): mutual TLS 1.3 on every link (handshake before any protocol line, fail-closed), per-node Ed25519 identity certs, and a token-gated join (the token derives the cluster CA) — on by default in the binary, `--cluster-plaintext` the explicit opt-out. Remaining: member-vs-member node-id impersonation (needs CSR enrollment + a Corosio peer-cert accessor), token rotation/revocation UX, and join-token plumbing for burst provisioners. |
 | **CTL-5** | Immutable audit trail + approval gates for risky/shared actions. | ✅ Audit trail built (append-only `AuditEvent`); `BurstApprovalGate` gates over-cap bursts. Extension-publish approval (RULE-4/APR-1) is 🔭. |
 | **ADR-17** | No foreign runtime — native reimplementations, no Python/XGBoost/warehouse in the engine/build/CI (RSK-8). | ✅ Followed rigorously; the [native correctness oracle](../ml/native-oracle.md) mitigates the RSK-8 correctness/maintenance burden. |
 
 **Net:** the *data-plane and governance primitives* are largely built and faithful
 to the blueprint; the gaps cluster in (a) **enforcement wiring** (RULE-1 not at the
 `deploy_graph` seam, PERM-2 not checked), (b) **the security hardening track**
-(CTL-2 mTLS, CTL-1 sandbox; RULE-5 eviction tolerance now has its
+(CTL-2 mTLS now built with follow-ups above; CTL-1 sandbox; RULE-5 eviction
+tolerance now has its
 [checkpoint/restart primitive](../compute/job-checkpoint.md), with a shared store + auto-restart
 trigger remaining), and (c) **one concrete RULE-7 drift** (missing system tables).
 (a) and (c) are cheap to close now; (b) is a planned epic.
@@ -201,10 +202,12 @@ tests through a shared `run_churn_pipeline(config)` core.
 
 The blueprint's own risk register frames the priority: **RSK-1** (Orama Zetta maturity)
 and **RSK-3** (control-plane on a CRDT without transactions/leadership) are the gating
-risks, and they map directly to the §1 security/enforcement gaps (CTL-2 mTLS, leader
-election, RULE-1 wiring) — those matter more than the §3 redundancies. The redundancies
+risks, and they map directly to the §1 security/enforcement gaps (leader
+election, RULE-1 wiring; CTL-2 mTLS is now built, #466) — those matter more than the
+§3 redundancies. The redundancies
 (R1–R5) and smells (§4) are **cheap, low-risk paydown** that should happen
 opportunistically; the **enforcement wiring** (RULE-1 at `deploy_graph`, PERM-2 checks)
-and the **security track** (CTL-1/CTL-2) are the load-bearing follow-ups.
+and the **security track** (CTL-1, and CTL-2's enrollment follow-ups) are the
+load-bearing follow-ups.
 
 See the recommendations issue for the prioritized, actionable breakdown.

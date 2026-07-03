@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "zetta/cluster/security.hpp"
 #include "zetta/cluster/signal.hpp"
 
 namespace zetta::data { class BlobStore; }
@@ -75,11 +76,21 @@ struct ClusterConfig {
     // body requests/transfers, keepalive, reconnect) to stderr — for debugging
     // gossip/convergence issues. Off by default; enable with `--log-cluster`.
     bool log_events = false;
+    // Inter-node transport security (CTL-2, #466): when enabled(), every
+    // connection — accepted or dialed — runs mutual TLS 1.3 against the
+    // token-derived cluster CA before any protocol line is exchanged, so a
+    // node without the join token cannot join. Default (all-empty) is
+    // plaintext; the zetta binary always populates this (see main.cpp), so
+    // plaintext is reached only by explicit --cluster-plaintext or by
+    // embedding a bare Cluster. See docs/cluster/security.md.
+    ClusterSecurity security;
 };
 
-// Cluster membership over TCP. Every node is an equal peer: it listens for
-// connections and dials its configured `seeds`, exchanging a symmetric
-// handshake so both sides record each other. Leadership is NOT configured —
+// Cluster membership over TCP — mutual TLS 1.3 when ClusterConfig::security
+// is enabled (CTL-2, #466; see docs/cluster/security.md), plaintext otherwise.
+// Every node is an equal peer: it listens for connections and dials its
+// configured `seeds`, exchanging a symmetric handshake so both sides record
+// each other. Leadership is NOT configured —
 // leader election and failover are planned; until then `role()` is Follower.
 // Networking runs on a background thread; the public surface exposes no Corosio
 // types (the adapter is src/core/cluster.cpp).

@@ -14,15 +14,19 @@ box. To run several nodes on one host (e.g. one per NUMA node), each binds the
 node grabs `7778` automatically. Point a node at others with `--peer HOST:PORT`
 (repeatable; all peers are equal — a seed is just somewhere to start).
 
+All inter-node traffic runs **mutual TLS**, and joining needs the cluster's
+**join token** (the first node generates it; the printed join command carries
+it) — see [security.md](security.md).
+
 ```bash
-# First node (binds 0.0.0.0:7777, prints its LAN address):
+# First node (binds 0.0.0.0:7777, prints its LAN address + join command):
 zetta
 
-# Another machine joins it (use the LAN address it printed):
-zetta --peer 192.168.1.10:7777
+# Another machine joins it (copy the exact command the first node printed):
+zetta --peer 192.168.1.10:7777 --join-token <64-hex>
 
 # Second node on the same host (auto-binds 7778), joining the first:
-zetta --peer 127.0.0.1:7777
+zetta --peer 127.0.0.1:7777 --join-token <64-hex>
 
 # Restrict to loopback (not reachable from other machines):
 zetta --listen 127.0.0.1:7777
@@ -37,7 +41,8 @@ and the command to add another node:
 zetta: cluster node 229431f5-275e-4754-acb9-2eea4bac007b
 zetta: listening on 192.168.123.140:7777
 zetta: listening on 127.0.0.1:7777
-zetta: add another node with: zetta --peer 192.168.123.140:7777
+zetta: inter-node mTLS on (join token in <data_dir>/security/cluster-secret.json)
+zetta: add another node with: zetta --peer 192.168.123.140:7777 --join-token <64-hex>
 ```
 
 When bound to a specific host that's the one address. When bound to a **wildcard**
@@ -128,6 +133,11 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 - Networking is **Corosio** (coroutine-native TCP), confined to the adapter
   `src/core/cluster/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
   public API (`include/zetta/cluster/cluster.hpp`) exposes no backend types.
+- **Every connection runs mutual TLS 1.3 first** (Corosio's OpenSSL provider)
+  when `ClusterConfig::security` is enabled — the handshake precedes any
+  `ZETTA/1` line, so an unenrolled peer never reaches `HELLO`. The zetta binary
+  enables it by default; `--cluster-plaintext` opts out for debugging. See
+  [security.md](security.md).
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
   an accept loop plus one dial coroutine per `--peer`.

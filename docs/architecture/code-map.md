@@ -39,13 +39,14 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   version.hpp               kVersion (keep in sync with project() VERSION)
   node.hpp                  zetta::Node — the node; CRUD over databases + projects + deployments + runs + models + indexes + jobs + dataset partitions + principals; the per-node IndexRegistry (index_registry(), #528); the per-node checkpoint store (checkpoint_store()/checkpoints(), <data_dir>/checkpoints, RULE-5/#468); the per-node telemetry sampler (sample_node_metrics(), #581) + the cluster-wide telemetry snapshot (telemetry_snapshot(), #584); the live near-data pipeline instrumentation registry (record_pipeline_job()/pipeline_jobs(), the bounded source for system.pipeline_jobs, #589); the computed-at-query-time dataset summaries (datasets(), the source for system.datasets, #585) + the detected-provisioner cache (record_provisioner_config()/provisioner_configs(), ephemeral, the source for system.zetta_provisioners); run_graph; the audit sink; cluster_members() (the replicated node:<id> membership, #519); the long-lived compute plane over the real cluster — attach_cluster() + job_coordinator() (#579)
   runtime.hpp               zetta::runtime — async/coroutine seam over Capy (task/block_on/thread_pool + parallel_for data-parallel fan-out)
-  runtime/net.hpp           networking slice of the seam (Corosio; adapter-only)
+  runtime/net.hpp           networking slice of the seam (Corosio; adapter-only) incl. the TLS surface (tls_context/openssl_stream/any_stream, #466)
   headless.hpp              zetta::run_headless(Node&, Cluster&)
   signals.hpp               install_signal_handlers / stop_requested
   api/                      the programmatic control surface (docs/api/): registry.hpp (Capability/ApiResult/ApiContext/Registry — one entry renders as MCP tool + REST route + palette action; every call a span, authorized + audited), bridge.hpp (MainThreadBridge — coroutine-first marshaling onto the owning loop via runtime::async_event), capabilities.hpp (register_core_capabilities: server_info · sql · list_projects · list_traces · get_trace · create_project), server.hpp (ApiServer — the embedded Beast2 MCP endpoint behind a pimpl seam; POST /mcp, bearer auth, drain())
   observability/            trace.hpp — OTel-style TraceContext/Span/SpanRecorder/ScopedSpan + traceparent codec; the four captures (intent · plan · performance · result_shape) on a bounded per-node ring (docs/architecture/observability.md)
   cluster/                  the distributed plane: membership, the signal plane, collectives, CRDT replication, telemetry
-    cluster.hpp             zetta::cluster::Cluster — equal-peer membership over TCP + the signal-plane API
+    cluster.hpp             zetta::cluster::Cluster — equal-peer membership over TCP (mutual TLS when ClusterConfig::security is enabled) + the signal-plane API
+    security.hpp            zetta::cluster::ClusterSecurity + generate/valid_join_token/derive_cluster_security/load_or_create_cluster_security/cluster_secret_schema — inter-node transport security (CTL-2/TB-3, #466): the join token derives the cluster CA (deterministic Ed25519), each node mints a CA-signed identity, persisted under <data_dir>/security/ with a schema-validated secret file (docs/cluster/security.md)
     signal.hpp              zetta::cluster::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
     collectives.hpp         zetta::cluster::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365); wire_bytes() + rounds_completed() live meters feed system.collective_rounds (#589)
     replication.hpp         zetta::cluster::ReplicationManager — Automerge CRDT state
@@ -219,7 +220,8 @@ src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + c
   headless.cpp              signal-driven headless loop
   signals.cpp               SIGINT/SIGTERM stop flag (OS signals, not the signal plane)
   cluster/
-    cluster.cpp             cluster networking adapter (the one Corosio user) + signal-plane transport
+    cluster.cpp             cluster networking adapter (the one Corosio user) + signal-plane transport; mutual TLS 1.3 per link (openssl_stream over the token-derived CA, handshake before any protocol line, fail-closed) when security is on (#466)
+    security.cpp            zetta::cluster security material (the one OpenSSL-libcrypto user): join-token CSPRNG + deterministic Ed25519 CA derivation + per-node cert minting + PEM/secret-file persistence with the schema-validated boundary (#466)
     signal.cpp              zetta::cluster::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
     collectives.cpp         zetta::cluster::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
     replication.cpp         replication CRDT adapter (the one automerge-cpp user)

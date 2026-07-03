@@ -66,7 +66,7 @@ level can be trusted — a stale card is worse than none.
 | Anything a user, developer, or agent experiences | [`docs/product/experience/`](docs/product/experience/README.md) → ux.md · dx.md · ax.md · serving.md — update the affected page in the same commit |
 | Node, run modes, module layout, schemas-as-code | [`docs/architecture/`](docs/architecture/README.md) |
 | Storage, large objects, partitioning, Parquet, SQL | [`docs/data/`](docs/data/README.md) |
-| Cluster, replication/CRDT, signal plane, collectives | [`docs/cluster/`](docs/cluster/README.md) |
+| Cluster, replication/CRDT, signal plane, collectives, transport security (mTLS/join token) | [`docs/cluster/`](docs/cluster/README.md) |
 | Devices, schedulers, jobs, autoscaler, near-data | [`docs/compute/`](docs/compute/README.md) |
 | DataFrames + distributed ops | [`docs/ddf/`](docs/ddf/README.md) |
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |

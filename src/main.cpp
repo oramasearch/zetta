@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -43,6 +44,8 @@ struct Options {
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string mcp_token;                      // --mcp-token (acting key id)
+    std::string join_token;         // --join-token (join an existing cluster)
+    bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -75,6 +78,10 @@ void print_usage(const char* argv0) {
         "  --port-range N      Ports to try from --listen, for several nodes\n"
         "                      per host (default: %u)\n"
         "  --peer HOST:PORT    A node to connect to (repeatable; all equal)\n"
+        "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
+        "                      persisted in data-dir on first use\n"
+        "  --cluster-plaintext Disable inter-node mTLS (debugging only —\n"
+        "                      anyone who can reach the port can join)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  -h, --help          Show this help\n",
@@ -138,6 +145,12 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--peer");
             if (!v) break;
             o.cluster.seeds.emplace_back(v);
+        } else if (arg == "--join-token") {
+            const char* v = take_value(argc, argv, i, o, "--join-token");
+            if (!v) break;
+            o.join_token = v;
+        } else if (arg == "--cluster-plaintext") {
+            o.cluster_plaintext = true;
         } else if (arg == "--log-cluster") {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
@@ -179,7 +192,7 @@ std::string load_or_create_node_id(const std::string& data_dir) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    const Options opts = parse_args(argc, argv);
+    Options opts = parse_args(argc, argv);
     if (opts.bad_usage) {
         print_usage(argv[0]);
         return 2;
@@ -187,6 +200,11 @@ int main(int argc, char** argv) {
     if (opts.show_help) {
         print_usage(argv[0]);
         return 0;
+    }
+    if (opts.cluster_plaintext && !opts.join_token.empty()) {
+        std::fprintf(stderr,
+                     "zetta: --cluster-plaintext and --join-token conflict\n");
+        return 2;
     }
 
     // One UUID is both the cluster node id and the replication actor id, so a
@@ -196,6 +214,30 @@ int main(int argc, char** argv) {
     // source of truth for data; it must outlive the Node (which captures into and
     // reconciles from it) and the Cluster (whose thread gossips it).
     const std::string node_id = load_or_create_node_id(opts.node.data_dir);
+
+    // Inter-node transport security (CTL-2, #466): secure by default. The
+    // first start generates a join token into data_dir/security/ (or adopts
+    // --join-token) and mints this node's identity; the Cluster then refuses
+    // any connection that can't prove that token's CA. Plaintext is an
+    // explicit opt-out, for debugging only.
+    if (!opts.cluster_plaintext) {
+        std::string reason;
+        std::optional<zetta::cluster::ClusterSecurity> security =
+            zetta::cluster::load_or_create_cluster_security(
+                opts.node.data_dir, node_id, opts.join_token, &reason);
+        if (!security) {
+            std::fprintf(stderr, "zetta: cluster security setup failed: %s\n",
+                         reason.c_str());
+            return 1;
+        }
+        opts.cluster.security = std::move(*security);
+    } else {
+        std::fprintf(stderr,
+                     "zetta: WARNING inter-node TLS disabled "
+                     "(--cluster-plaintext): any host that can reach the "
+                     "listen port can join this cluster\n");
+    }
+
     zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
@@ -227,6 +269,12 @@ int main(int argc, char** argv) {
     std::printf("zetta: cluster node %s\n", cluster.node_id().c_str());
     for (const std::string& address : cluster.listen_addresses()) {
         std::printf("zetta: listening on %s\n", address.c_str());
+    }
+    if (opts.cluster.security.enabled()) {
+        std::printf("zetta: inter-node mTLS on (join token in %s)\n",
+                    (std::filesystem::path(opts.node.data_dir) / "security" /
+                     "cluster-secret.json")
+                        .c_str());
     }
     std::printf("zetta: add another node with: %s\n",
                 cluster.peer_command().c_str());

@@ -25,7 +25,8 @@ install_macos() {
     fi
     note "Installing build dependencies via Homebrew…"
     # llvm     — Clang 17+/C++26 (zetta auto-selects /opt/homebrew/opt/llvm)
-    # openssl@3 — Corosio's (optional) TLS provider
+    # openssl@3 — REQUIRED: inter-node mTLS (Corosio's TLS provider) + node
+    #             identity minting (CTL-2, docs/cluster/security.md)
     # cmake/ninja/ccache — build system + compiler cache
     brew install cmake ninja llvm openssl@3 ccache
     note "Done. zetta builds with Homebrew Clang automatically (no PATH change needed)."
