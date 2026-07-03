@@ -98,8 +98,8 @@ const char* cluster_node_state(const zetta::cluster::NodeStatus& node) {
 // exchange gathers (Node::telemetry_snapshot()). The boxes show the live, eased
 // bars; the detail pane shows the same gauges with fuller read-outs.
 
-constexpr ImU32 kGaugeTrack = IM_COL32(236, 236, 234, 255);  // light meter track
-constexpr ImU32 kGaugeSpark = IM_COL32(95, 95, 92, 140);     // faint ink trend line
+// The gauge track/spark colours are the shared canvas palette's
+// kCanvasGaugeTrack / kCanvasGaugeSpark (app_internal.hpp, #630).
 
 // A load gauge's fill: the shared utilization thresholds (#636) on the
 // semantic status palette (never coral). The gauges keep their richer
@@ -285,14 +285,14 @@ void draw_node_gauge(ImDrawList* draw, ImFont* mono, float font, ImVec2 pos,
     // Label (mono, muted), vertically centered.
     const ImVec2 label_pos(pos.x, pos.y + (row_h - text_size) * 0.5f);
     if (mono) {
-        draw->AddText(mono, text_size, label_pos, kClusterBoxMuted, label);
+        draw->AddText(mono, text_size, label_pos, kCanvasBoxMuted, label);
     } else {
-        draw->AddText(label_pos, kClusterBoxMuted, label);
+        draw->AddText(label_pos, kCanvasBoxMuted, label);
     }
 
     const ImVec2 meter_min(meter_x0, meter_y0);
     const ImVec2 meter_max(meter_x1, meter_y1);
-    draw->AddRectFilled(meter_min, meter_max, kGaugeTrack, rounding);
+    draw->AddRectFilled(meter_min, meter_max, kCanvasGaugeTrack, rounding);
 
     if (available) {
         // Fill bar (the eased gauge), drawn first at moderate alpha so the trend
@@ -318,17 +318,17 @@ void draw_node_gauge(ImDrawList* draw, ImFont* mono, float font, ImVec2 pos,
                 points.emplace_back(x, meter_y1 - value * meter_h);
             }
             draw->AddPolyline(points.data(), static_cast<int>(points.size()),
-                              kGaugeSpark, 0, 1.4f);
+                              kCanvasGaugeSpark, 0, 1.4f);
         }
     } else if (mono) {
         draw->AddText(mono, text_size, ImVec2(meter_x0 + gap, label_pos.y),
-                      kClusterBoxMuted, "n/a");
+                      kCanvasBoxMuted, "n/a");
     }
-    draw->AddRect(meter_min, meter_max, kClusterBoxBorder, rounding);
+    draw->AddRect(meter_min, meter_max, kCanvasBoxBorder, rounding);
 
     // Right read-out (mono), right-aligned, colored by the gauge (muted for n/a).
     const ImU32 text_color =
-        available ? ImGui::GetColorU32(fill) : kClusterBoxMuted;
+        available ? ImGui::GetColorU32(fill) : kCanvasBoxMuted;
     float text_w = ImGui::CalcTextSize(right_text.c_str()).x;
     if (mono) {
         text_w = mono->CalcTextSizeA(text_size, FLT_MAX, 0.0f,
@@ -735,13 +735,13 @@ void App::draw_cluster() {
             }
 
             const ImU32 fill = selected
-                                   ? kClusterBoxFillSelected
-                                   : (hovered ? kClusterBoxFillHover
-                                              : kClusterBoxFill);
+                                   ? kCanvasBoxFillSelected
+                                   : (hovered ? kCanvasBoxFillHover
+                                              : kCanvasBoxFill);
             draw->AddRectFilled(top_left, bottom_right, fill, rounding);
             draw->AddRect(top_left, bottom_right,
-                          selected ? kClusterBoxBorderSelected
-                                   : kClusterBoxBorder,
+                          selected ? kCanvasBoxBorderSelected
+                                   : kCanvasBoxBorder,
                           rounding, 0, selected ? 2.0f : 1.0f);
 
             draw->PushClipRect(top_left, bottom_right, true);
@@ -757,19 +757,19 @@ void App::draw_cluster() {
             const ImVec2 id_pos(dot_center.x + dot_radius + font * 0.45f,
                                 top_left.y + pad);
             if (mono_font_) {
-                draw->AddText(mono_font_, font, id_pos, kClusterBoxText,
+                draw->AddText(mono_font_, font, id_pos, kCanvasBoxText,
                               id.c_str());
             } else {
-                draw->AddText(id_pos, kClusterBoxText, id.c_str());
+                draw->AddText(id_pos, kCanvasBoxText, id.c_str());
             }
             // Address + a one-word sync state below it.
             const float small = font * 0.85f;
             const ImVec2 addr_pos(top_left.x + pad, top_left.y + pad + font * 1.5f);
             if (mono_font_) {
-                draw->AddText(mono_font_, small, addr_pos, kClusterBoxMuted,
+                draw->AddText(mono_font_, small, addr_pos, kCanvasBoxMuted,
                               node.address.c_str());
             } else {
-                draw->AddText(addr_pos, kClusterBoxMuted, node.address.c_str());
+                draw->AddText(addr_pos, kCanvasBoxMuted, node.address.c_str());
             }
             const ImVec2 state_pos(top_left.x + pad,
                                    top_left.y + pad + font * 2.65f);
@@ -806,10 +806,10 @@ void App::draw_cluster() {
             } else {
                 const ImVec2 note_pos(gauge_x, gauge_top + font * 1.6f);
                 if (mono_font_) {
-                    draw->AddText(mono_font_, small, note_pos, kClusterBoxMuted,
+                    draw->AddText(mono_font_, small, note_pos, kCanvasBoxMuted,
                                   "awaiting telemetry");
                 } else {
-                    draw->AddText(note_pos, kClusterBoxMuted, "awaiting telemetry");
+                    draw->AddText(note_pos, kCanvasBoxMuted, "awaiting telemetry");
                 }
             }
             draw->PopClipRect();

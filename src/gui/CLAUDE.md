@@ -42,9 +42,13 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   Run the design-system self-check before shipping.
 - **Compose the widget grammar — never hand-roll visuals.** Panels build from
   `page_header`/`header_action`/`section_card`/`stat_tile`/`stat_tile_link`/
-  `empty_state`/`banner` (+ the older `eyebrow`/`status_dot`/`mono_line`/
-  `primary_button`)
-  in `app_internal.hpp`, plus plain ImGui tables/plots. No local colors,
+  `empty_state`/`banner`/`callout` (+ the older `eyebrow`/`status_dot`/
+  `mono_line`/`primary_button`)
+  in `app_internal.hpp`, plus plain ImGui tables/plots. Data tables use the
+  shared `kDataTableFlags` (zebra off), sentence-case headers, and
+  `table_numeric(value)` for right-aligned mono numeric cells. Draw-list
+  canvases colour ONLY from the shared canvas palette (`kCanvasBox*` etc.) in
+  `app_internal.hpp`. No local colors,
   paddings, or one-off buttons — a new visual becomes a grammar widget first.
   **Status colors come ONLY from `tone_of(...)` in `tones.hpp`** (#636); a new
   status-bearing enum adds one overload there, never a panel-local switch. A

@@ -36,8 +36,8 @@ inline constexpr ImVec4 kSidebar{0.961f, 0.957f, 0.949f, 1.0f};     // #F5F4F2
 inline constexpr ImVec4 kWhite{1.0f, 1.0f, 1.0f, 1.0f};             // #FFFFFF
 inline constexpr ImVec4 kBorder{0.878f, 0.878f, 0.878f, 1.0f};      // #E0E0E0
 // The coral wash — the "you are here" *fill* (a selected node box, a
-// deep-linked table row). The ImU32 forms in the canvas palettes
-// (kNodeFillSelected, kClusterBoxFillSelected) are this same token.
+// deep-linked table row). The canvas palette's kCanvasBoxFillSelected is this
+// same token in ImU32 form.
 inline constexpr ImVec4 kCoralWash{0.969f, 0.933f, 0.937f, 1.0f};   // #F7EEEF
 
 // Semantic state palette (product only) — for status, never coral.
@@ -49,6 +49,31 @@ inline constexpr ImVec4 kErrorColor{0.706f, 0.137f, 0.094f, 1.0f};  // error #B4
 // A black wash at the given alpha — the design system's hover/selected washes
 // and ghost-button fills (rgba(0,0,0,a)), which blend over whatever is behind.
 inline constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alpha); }
+
+// ── Canvas palette (ImU32, for window draw lists) ──────────────────────────
+// The draw-list forms of the tokens above, for the spatial canvases: the graph
+// workspace's node boxes, the Cluster view's node boxes, the Datasets
+// partition-placement overlay, and the Search cluster strip. Same grammar
+// everywhere — white cards with hairline borders, a soft wash on hover, a
+// coral border + wash (the "you are here" accent) when selected. Panels never
+// define draw-list colours of their own; a new one lands here first.
+inline constexpr ImU32 kCanvasBoxFill = IM_COL32(255, 255, 255, 255);          // white
+inline constexpr ImU32 kCanvasBoxFillHover = IM_COL32(242, 242, 240, 255);     // wash
+inline constexpr ImU32 kCanvasBoxFillSelected = IM_COL32(247, 238, 239, 255);  // coral wash
+inline constexpr ImU32 kCanvasBoxBorder = IM_COL32(224, 224, 224, 255);        // border
+inline constexpr ImU32 kCanvasBoxBorderSelected = IM_COL32(226, 84, 90, 255);  // coral
+inline constexpr ImU32 kCanvasBoxText = IM_COL32(28, 28, 26, 255);             // ink-primary
+inline constexpr ImU32 kCanvasBoxMuted = IM_COL32(95, 95, 92, 255);            // ink-muted
+// The per-node resource gauges (Cluster view): the meter track is the design
+// system's light wash over a white card (opaque for the draw list); the
+// sparkline is ink-muted at low alpha.
+inline constexpr ImU32 kCanvasGaugeTrack = IM_COL32(236, 236, 234, 255);  // wash over white
+inline constexpr ImU32 kCanvasGaugeSpark = IM_COL32(95, 95, 92, 140);     // ink-muted, faint
+// Graph-workspace edges: data edges are a neutral grey line; control edges
+// (the gate/ordering arrows) read amber so they stand apart without stealing
+// the status palette's meaning on boxes.
+inline constexpr ImU32 kCanvasEdgeData = IM_COL32(150, 150, 146, 220);     // grey line
+inline constexpr ImU32 kCanvasEdgeControl = IM_COL32(184, 134, 44, 220);   // amber
 
 // ── Status tones (#636) ────────────────────────────────────────────────────
 // The closed set of visual states a status can render as. Panels obtain a Tone
@@ -502,6 +527,42 @@ inline void master_detail(const char* scaffold_id,
     }
     ImGui::EndChild();
     ImGui::PopID();
+}
+
+// The deliberate-boundary box (#630): a tinted, bordered child on the tone's
+// background — the consent-gate grammar (Cloud inspector, Add nodes). The
+// caller fills it: a status_label headline, the explanation, and one action.
+// Distinct from banner (an outcome strip): a callout gates what happens next.
+template <typename DrawContents>
+inline void callout(Tone tone, const char* callout_id,
+                    DrawContents&& draw_contents) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, tone_background(tone));
+    ImGui::BeginChild(callout_id, ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    draw_contents();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+}
+
+// ── Table style (#630) ──────────────────────────────────────────────────────
+// The one flag set for data tables: hairline borders, proportional stretch,
+// zebra OFF (hierarchy comes from type, not stripes). OR in ScrollY per site
+// when the table scrolls. Header labels are sentence case; a row's height
+// stays the theme default (no per-table padding).
+inline constexpr ImGuiTableFlags kDataTableFlags =
+    ImGuiTableFlags_Borders | ImGuiTableFlags_SizingStretchProp;
+
+// A numeric table cell: right-aligned in its column, mono (the design
+// system's counts/metrics role). Call inside the cell instead of Text.
+inline void table_numeric(const std::string& value) {
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    const float column_width = ImGui::GetContentRegionAvail().x;
+    const float text_width = ImGui::CalcTextSize(value.c_str()).x;
+    if (text_width < column_width) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + column_width - text_width);
+    }
+    ImGui::TextUnformatted(value.c_str());
+    if (g_mono_font) ImGui::PopFont();
 }
 
 // Per-panel action feedback (#632): a tinted strip with a status dot and the

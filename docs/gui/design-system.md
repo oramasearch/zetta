@@ -4,15 +4,16 @@ The headed app follows the **Orama design system** — the same visual language 
 the Orama Zetta marketing site and the product surfaces. This page is the
 zetta-GUI projection of it: the exact tokens, the typography and copy rules, the
 coral discipline, and the component grammar **as implemented in
-`src/gui/app.cpp`**. Follow it whenever you add or change GUI.
+`src/gui/app_internal.hpp`** (the one shared grammar header). Follow it
+whenever you add or change GUI.
 
 > **Canonical source.** The full system lives in the `orama-work` repo
 > (`modules/orama_design_review/design-system/` — `DESIGN.md` +
 > `colors_and_type.css`), with the marketing site as the worked reference
 > (`modules/amaro-marketingsite`). When the canonical CSS and this page diverge
 > on a *token value*, the CSS wins; update it there, then here. This page is
-> self-contained on purpose (the tokens are baked into `app.cpp`), so the zetta
-> repo never has to reach outside itself to render correctly.
+> self-contained on purpose (the tokens are baked into `app_internal.hpp`), so
+> the zetta repo never has to reach outside itself to render correctly.
 
 ## Foundations (the four that govern everything)
 
@@ -33,7 +34,12 @@ coral discipline, and the component grammar **as implemented in
 ## Colour tokens
 
 Exact values, light surfaces. Defined as `constexpr ImVec4` in
-`src/gui/app.cpp` (and the canvas-palette `ImU32`s for the graph draw-list).
+`src/gui/app_internal.hpp`, alongside the **canvas palette** — the `ImU32`
+draw-list forms of the same tokens (`kCanvasBox*`, gauge track/spark, graph
+edge colours) shared by every spatial canvas (graph workspace, cluster node
+boxes, dataset placement, the search cluster strip). Panels define **no**
+colour constants of their own; a new colour joins one of those two tables
+first.
 
 | Role | Token | Hex | In code |
 |------|-------|-----|---------|
@@ -99,8 +105,14 @@ Hover/selected washes and ghost-button fills are black at low alpha
   rides on colour alone, the label says it too.
 - **Metadata strips.** Mono, `·`-separated, tabular counts, no debug noise — see
   `draw_dashboard` (the always-visible node strip) and the project rows on Home.
-- **Callouts.** A tinted, bordered child box for a deliberate boundary — see the
-  Cloud inspector consent gate (amber wash when locked, green when granted).
+- **Callouts.** `callout(tone, id, fn)` — a tinted, bordered child box for a
+  deliberate boundary; see the Cloud inspector / Add-nodes consent gates
+  (amber wash when locked, green when granted). Never hand-rolled.
+- **Tables.** Data tables use the shared `kDataTableFlags` (hairline borders,
+  proportional stretch, **zebra off** — hierarchy comes from type, not
+  stripes; OR in `ScrollY` per site as needed). Headers are sentence case;
+  numeric columns render right-aligned mono via `table_numeric(value)`. Row
+  height stays the theme default — no per-table padding.
 - **Cards.** Child panes are white on canvas with a hairline border (the list /
   detail panes throughout).
 - **Master-detail.** A list+detail panel renders through the

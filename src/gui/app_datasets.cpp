@@ -266,10 +266,10 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             // (coral wash + border, the "you are here"/owner accent); one holding
             // none is the plain card. No hit-test — this is a read-only overlay.
             draw->AddRectFilled(top_left, bottom_right,
-                                owns ? kClusterBoxFillSelected : kClusterBoxFill,
+                                owns ? kCanvasBoxFillSelected : kCanvasBoxFill,
                                 rounding);
             draw->AddRect(top_left, bottom_right,
-                          owns ? kClusterBoxBorderSelected : kClusterBoxBorder,
+                          owns ? kCanvasBoxBorderSelected : kCanvasBoxBorder,
                           rounding, 0, owns ? 2.0f : 1.0f);
 
             draw->PushClipRect(top_left, bottom_right, true);
@@ -279,7 +279,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             if (is_self) id += " (self)";
             else if (departed) id += " (gone)";
             const ImVec2 id_pos(top_left.x + pad, top_left.y + pad);
-            const ImU32 id_color = departed ? kClusterBoxMuted : kClusterBoxText;
+            const ImU32 id_color = departed ? kCanvasBoxMuted : kCanvasBoxText;
             if (mono_font_) {
                 draw->AddText(mono_font_, font, id_pos, id_color, id.c_str());
             } else {
@@ -291,7 +291,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             std::snprintf(caption, sizeof(caption), "%zu partition%s",
                           parts.size(), parts.size() == 1 ? "" : "s");
             const ImVec2 caption_pos(top_left.x + pad, top_left.y + pad + font * 1.5f);
-            const ImU32 caption_color = owns ? kClusterBoxText : kClusterBoxMuted;
+            const ImU32 caption_color = owns ? kCanvasBoxText : kCanvasBoxMuted;
             if (mono_font_) {
                 draw->AddText(mono_font_, small, caption_pos, caption_color,
                               caption);
@@ -310,10 +310,10 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
                 const ImVec2 rows_pos(top_left.x + pad,
                                       top_left.y + pad + font * 2.6f);
                 if (mono_font_) {
-                    draw->AddText(mono_font_, small, rows_pos, kClusterBoxMuted,
+                    draw->AddText(mono_font_, small, rows_pos, kCanvasBoxMuted,
                                   rows_caption);
                 } else {
-                    draw->AddText(rows_pos, kClusterBoxMuted, rows_caption);
+                    draw->AddText(rows_pos, kCanvasBoxMuted, rows_caption);
                 }
             }
             draw->PopClipRect();

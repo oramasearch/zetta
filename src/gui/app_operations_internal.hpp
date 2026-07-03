@@ -25,18 +25,8 @@ class Model;
 
 namespace zetta::gui {
 
-// Cluster node-box palette (ImU32, for the window draw list) — the same Orama
-// canvas grammar as the graph workspace: white cards with hairline borders, a
-// soft wash on hover, a coral border (the "you are here" accent) when selected.
-// Shared by the Cluster view's node-box canvas and the Datasets view's
-// partition-placement overlay (which reuses the spatial grammar).
-inline constexpr ImU32 kClusterBoxFill = IM_COL32(255, 255, 255, 255);          // white
-inline constexpr ImU32 kClusterBoxFillHover = IM_COL32(242, 242, 240, 255);     // wash
-inline constexpr ImU32 kClusterBoxFillSelected = IM_COL32(247, 238, 239, 255);  // coral wash
-inline constexpr ImU32 kClusterBoxBorder = IM_COL32(224, 224, 224, 255);        // border
-inline constexpr ImU32 kClusterBoxBorderSelected = IM_COL32(226, 84, 90, 255);  // coral
-inline constexpr ImU32 kClusterBoxText = IM_COL32(28, 28, 26, 255);             // ink-primary
-inline constexpr ImU32 kClusterBoxMuted = IM_COL32(95, 95, 92, 255);            // ink-muted
+// The canvas node-box palette (kCanvasBox*) lives in app_internal.hpp with
+// the rest of the design-system tokens (#630) — one home for every colour.
 
 // An entity id's first UUID segment — enough to tell entities apart at a
 // glance. Shared by the Cluster view, the Datasets partition-placement
