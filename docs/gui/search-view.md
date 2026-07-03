@@ -37,10 +37,10 @@ SEES the cluster answer.
   the **Datasets** view for the searched table, and the **source row's
   fields** read live from the local store each frame — the indexed fields
   first (the snippet), the remaining fields muted after them. A hit whose row
-  lives in a partition owned by a peer says so honestly instead of showing
-  nothing.
-- **Per-node provenance**: one row per answering node (this node vs peer,
-  pre-merge hits, sub-indexes consulted, latency, wire bytes) plus the
+  lives in a partition owned by another node says so honestly instead of
+  showing nothing.
+- **Per-node provenance**: one row per answering node (this node vs other
+  node, pre-merge hits, sub-indexes consulted, latency, bytes moved) plus the
   search's trace id with an `entity_link` into the **Traces** view when a
   span ring is wired (`App::set_span_recorder`, connected to the API server's
   recorder in main — GUI searches and MCP calls share one `list_traces`

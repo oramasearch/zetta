@@ -140,7 +140,7 @@ void App::run_palette_capability(const std::string& capability_name) {
     const auto capability = capability_registry_->find(capability_name);
     if (!capability) {
         palette_failed_ = true;
-        palette_status_ = "no capability named '" + capability_name + "'";
+        palette_status_ = "no action named '" + capability_name + "'";
         return;
     }
 
@@ -190,7 +190,7 @@ void App::run_palette_capability(const std::string& capability_name) {
     if (result.ok) {
         char duration[32];
         std::snprintf(duration, sizeof(duration), "%.1f", result.duration_ms);
-        palette_status_ = capability_name + ": ok in " + duration + " ms";
+        palette_status_ = capability->title + ": ok in " + duration + " ms";
         palette_result_ = result.value.dump(2);
     } else {
         // The engine's reason verbatim (banner rule #632), never a laundered

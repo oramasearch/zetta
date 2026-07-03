@@ -595,7 +595,7 @@ void App::handle_incoming_files() {
             }
             const auto lo = db->large_objects().import_file(path);
             io_status_ = lo ? "Stored " + lo->name + " (" +
-                                  zetta::util::format_bytes(lo->size) + ") as a large object"
+                                  zetta::util::format_bytes(lo->size) + ")"
                             : "Store failed: " + path.string();
             io_status_error_ = !lo.has_value();
         }

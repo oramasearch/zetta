@@ -117,7 +117,7 @@ void App::draw_traces() {
     }
 
     page_header("Traces",
-                "every operation on this node: intent, timing, and result "
+                "Every operation on this node: intent, timing, and result "
                 "shape, threaded by trace");
 
     const std::vector<zetta::observability::Span> spans =
@@ -178,7 +178,7 @@ void App::draw_traces() {
     const std::vector<zetta::observability::Span> trace_spans =
         node_.span_recorder().trace(selected_trace_);
     if (trace_spans.empty()) {
-        ImGui::TextDisabled("select a trace to see what happened");
+        ImGui::TextDisabled("Select a trace to see what happened.");
     } else {
         mono_line(kInkQuiet, "trace ", selected_trace_);
         ImGui::Spacing();

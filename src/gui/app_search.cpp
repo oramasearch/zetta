@@ -18,6 +18,7 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 #include "gui/app_operations_internal.hpp"
+#include "gui/labels.hpp"
 
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
@@ -193,7 +194,7 @@ void App::draw_search() {
     if (search_indexes.empty()) {
         if (empty_state("No indexes yet",
                         "Deploy a solution with an index step, or add an index "
-                        "over a dataset's table (create_index).",
+                        "over a dataset's table.",
                         "Open the graph workspace")) {
             navigate_to(View::Graph);
         }
@@ -266,10 +267,14 @@ void App::draw_search() {
         ImGui::Dummy(ImVec2(ImGui::GetFontSize() * 1.5f, 0.0f));
         ImGui::SameLine();
     };
-    stat_tile("Path", std::string(zetta::index::to_string(result.path)),
+    stat_tile("Path", std::string(label_of(result.path)),
               result.path == zetta::index::SearchPath::Distributed
                   ? Tone::Ok
                   : Tone::Muted);
+    term_hint(result.path == zetta::index::SearchPath::Distributed
+                  ? "Every node searched its own share of the data."
+                  : "Only this node's index answered (no placed partitions "
+                    "or no cluster attached).");
     tile_gap();
     stat_tile("Nodes answered", std::to_string(result.nodes.size()));
     tile_gap();
@@ -327,7 +332,7 @@ void App::draw_search() {
                 ImGui::TextColored(
                     kInkMuted,
                     "Row content is not stored on this node · it lives in a "
-                    "partition owned by a peer.");
+                    "partition owned by another node.");
                 return;
             }
             const auto field_text = [](const nlohmann::json& value) {
@@ -369,7 +374,7 @@ void App::draw_search() {
                                     ImGui::GetFontSize() * 6.0f);
             ImGui::TableSetupColumn("Latency", ImGuiTableColumnFlags_WidthFixed,
                                     ImGui::GetFontSize() * 6.0f);
-            ImGui::TableSetupColumn("Wire bytes",
+            ImGui::TableSetupColumn("Bytes moved",
                                     ImGuiTableColumnFlags_WidthFixed,
                                     ImGui::GetFontSize() * 6.0f);
             ImGui::TableHeadersRow();
@@ -385,7 +390,7 @@ void App::draw_search() {
                                                          : Tone::Ok));
                 ImGui::SameLine();
                 ImGui::TextUnformatted(contribution.local ? "this node"
-                                                          : "peer");
+                                                          : "other node");
                 ImGui::TableSetColumnIndex(2);
                 ImGui::Text("%zu", contribution.hits);
                 ImGui::TableSetColumnIndex(3);

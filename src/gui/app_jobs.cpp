@@ -1,6 +1,7 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 #include "gui/app_operations_internal.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/compute/compute_job.hpp"
@@ -46,7 +47,7 @@ void App::draw_job_scaling_controls() {
     ImGui::SeparatorText("Objective & scaling (preview)");
     ImGui::TextDisabled(
         "Score a reward objective against a sample; no autoscaler is wired yet, "
-        "so this previews ScalingPolicy::evaluate(); it doesn't change the job.");
+        "so this previews the scaling decision; it doesn't change the job.");
 
     // 1) Objective — "set the reward". The three reward models the autoscaler can
     //    optimize, in declaration order (the combo index maps to ScalingObjective).
@@ -60,12 +61,12 @@ void App::draw_job_scaling_controls() {
     ImGui::SetNextItemWidth(220.0f);
     if (ImGui::BeginCombo(
             "Reward objective",
-            std::string(to_string(kObjectives[scaling_objective_])).c_str())) {
+            std::string(label_of(kObjectives[scaling_objective_])).c_str())) {
         for (int index = 0; index < static_cast<int>(kObjectives.size());
              ++index) {
             const bool is_selected = index == scaling_objective_;
             if (ImGui::Selectable(
-                    std::string(to_string(kObjectives[index])).c_str(),
+                    std::string(label_of(kObjectives[index])).c_str(),
                     is_selected)) {
                 scaling_objective_ = index;
             }
@@ -141,7 +142,7 @@ void App::draw_job_scaling_controls() {
     ImGui::Text("recommended nodes: %u", decision.recommended_nodes);
     ImGui::SameLine();
     ImGui::TextColored(tone_color(tone_of(decision.action)), "(%s)",
-                       std::string(to_string(decision.action)).c_str());
+                       std::string(label_of(decision.action)).c_str());
     ImGui::Text("reward: %.4g", decision.reward);
     if (!decision.within_cost_cap) {
         ImGui::SameLine();
@@ -165,8 +166,8 @@ void App::draw_jobs() {
     std::optional<std::string> pending = take_pending_selection(View::Jobs);
     if (jobs.empty()) {
         if (empty_state("No compute jobs yet",
-                        "Featurize, train, explain, and score work lands here "
-                        "when a solution runs over the cluster.",
+                        "Feature builds, training, explanation, and scoring "
+                        "land here when a solution runs over the cluster.",
                         "Open deploy")) {
             navigate_to(View::Deploy);
         }
@@ -182,8 +183,8 @@ void App::draw_jobs() {
     for (const std::shared_ptr<zetta::compute::ComputeJob>& job : jobs) {
         rows.push_back({.id = job->id(),
                         .title = entity_short_id(job->id()),
-                        .meta = std::string(to_string(job->kind())) + " · " +
-                                std::string(to_string(job->status())),
+                        .meta = std::string(label_of(job->kind())) + " · " +
+                                std::string(label_of(job->status())),
                         .tone = tone_of(job->status()),
                         .id_title = true});
     }
@@ -202,8 +203,11 @@ void App::draw_jobs() {
                 scaling_loaded_job_ = job->id();
             }
 
-            detail_header("job " + job->id(), tone_of(job->status()),
-                          std::string(to_string(job->status())));
+            detail_header("Job " + job->id(), tone_of(job->status()),
+                          std::string(label_of(job->status())));
+            // The human kind first; the raw wire name (what SQL and the API
+            // return) stays one line down in the mono strip.
+            ImGui::TextUnformatted(std::string(label_of(job->kind())).c_str());
             mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
             mono_line(kInkQuiet, "created:  ", job->created());
             if (job->updated() != job->created()) {

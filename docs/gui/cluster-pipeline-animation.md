@@ -51,11 +51,11 @@ While a distributed run is in flight, the canvas (`App::draw_cluster`,
   nodes light up.
 
 Below the canvas a **live activity strip** echoes the real numbers verbatim —
-`rounds`, `wire moved`, `near-data jobs`, `partitions`, and the
+`sync rounds`, `moved over network`, `near-data jobs`, `partitions`, and the
 placed / rebalanced tallies witnessed since the view opened — with a legend tying
-the flow colours to **near data** (green, stays home) vs **over the wire** (ink).
-When no compute plane is attached (a standalone node) the strip says so and the
-canvas stays quiet.
+the flow colours to **near data** (green, stays home) vs **across the network**
+(ink). When the node is not part of a compute cluster (running standalone) the
+strip says so and the canvas stays quiet.
 
 ### Colours (Orama design system)
 

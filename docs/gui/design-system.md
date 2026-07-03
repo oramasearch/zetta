@@ -78,8 +78,17 @@ Hover/selected washes and ghost-button fills are black at low alpha
   ImGui) keep their casing.
 - **No em-dashes in product copy.** Use a colon, comma, or parentheses; use the
   middle dot `·` as the separator in metadata strips (`orama zetta · running ·
-  up 2m`). (Em-dashes also historically rendered as tofu under the old font; the
-  glyph ranges now cover them, but the rule still stands.)
+  up 2m`) and as the empty-cell placeholder (never `—`). (Em-dashes also
+  historically rendered as tofu under the old font; the glyph ranges now cover
+  them, but the rule still stands.)
+- **Product language, never engine-speak (#635).** Kind/status enums render
+  through `label_of(...)` in `src/gui/labels.hpp` (the one mapping site, the
+  `tone_of` pattern); free-text kind tokens through `humanize_kind`. SQL and
+  the `system.*` views keep the raw wire values — only the rendering changes.
+  A raw wire value may appear in a labelled mono metadata line, never as
+  primary text. Where a concept must stay technical, `term_hint("…")` names
+  what it means on hover. The full rules + per-view sign-off:
+  [copy-audit.md](copy-audit.md).
 - Eyebrow labels are rendered by the `eyebrow(mono_font_, "UPPERCASE LABEL")`
   helper.
 

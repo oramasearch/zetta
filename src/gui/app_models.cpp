@@ -33,14 +33,14 @@ namespace zetta::gui {
 void render_model_card(const zetta::ml::Model& model) {
     const std::string short_id = model.id().substr(0, model.id().find('-'));
     ImGui::SeparatorText(
-        (model.name().empty() ? ("model " + short_id) : model.name()).c_str());
+        (model.name().empty() ? ("Model " + short_id) : model.name()).c_str());
     if (g_mono_font) ImGui::PushFont(g_mono_font);
     ImGui::TextColored(kInkQuiet, "kind: %s  ·  id: %s", model.kind().c_str(),
                        short_id.c_str());
     if (model.has_weights()) {
         ImGui::TextColored(
             kInkQuiet, "weights: %s%s", zetta::util::format_bytes(model.weights()->size).c_str(),
-            model.has_weights_body() ? "" : " (awaiting body transfer)");
+            model.has_weights_body() ? "" : " (syncing)");
     } else {
         ImGui::TextColored(kInkQuiet, "weights: (not yet attached)");
     }
@@ -133,7 +133,7 @@ void App::draw_add_model_form() {
     ImGui::TextDisabled(
         "Register a trained model on this node. Kind is required; metrics and "
         "feature schema are optional JSON; weights are optional. It then appears "
-        "below and in system.models.");
+        "below with your other models.");
     ImGui::Spacing();
 
     // 1) Name (optional) + kind (required).
@@ -182,7 +182,7 @@ void App::draw_add_model_form() {
         ImGui::TextColored(kInkSecondary, "%s", add_model_weights_name_.c_str());
         if (mono_font_) ImGui::PopFont();
         ImGui::SameLine();
-        if (ImGui::SmallButton("clear")) {
+        if (ImGui::SmallButton("Clear")) {
             add_model_weights_path_.clear();
             add_model_weights_name_.clear();
         }

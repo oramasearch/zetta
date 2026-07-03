@@ -39,7 +39,7 @@ void ReplConsole::draw(repl::ConsoleModel& model, const repl::RunHandler& run,
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    ImGui::TextDisabled("frontend");
+    ImGui::TextDisabled("Language");
 
     // ── Multiline editor ───────────────────────────────────────────────────
     // The source is code: render it in Geist Mono, bound straight to the model's
@@ -163,7 +163,7 @@ void ReplConsole::draw_result_grid(const repl::Result& result,
                 if (column < cells.size()) {
                     ImGui::TextUnformatted(cells[column].c_str());
                 } else {
-                    ImGui::TextDisabled("—");
+                    ImGui::TextDisabled("·");
                 }
             }
         }

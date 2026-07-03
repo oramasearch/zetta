@@ -43,8 +43,12 @@ gotchas). The experience contract this work serves is
 
 ## Before shipping
 
-- Design-system self-check passes; sentence case; no em-dashes; coral only on
-  the active/you-are-here accent.
+- Design-system self-check passes; sentence case; no em-dashes (`·` is the
+  empty-cell placeholder); coral only on the active/you-are-here accent.
+- Product language (#635): enums/kinds render via `label_of(...)` /
+  `humanize_kind` in `labels.hpp`, never a raw wire name as primary text; raw
+  values only in labelled mono metadata lines; `term_hint` for unavoidable
+  technical terms — [docs/gui/copy-audit.md](../../../docs/gui/copy-audit.md).
 - No local colors/paddings/one-off buttons outside the grammar.
 - Screenshot before/after in the PR for visual changes.
 - Docs same commit: the view's page in `docs/gui/`, gui README index,

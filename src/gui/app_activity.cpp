@@ -27,15 +27,15 @@ using zetta::observability::ActivityOutcome;
 using zetta::observability::ActivitySurface;
 
 // The outcome word beside the tone colour (a word and a colour, never colour
-// alone). Info entries (created / queued) have no outcome yet: a quiet dash.
+// alone). Info entries (created / queued) have no outcome yet: a quiet dot.
 const char* outcome_label(ActivityOutcome outcome) {
     switch (outcome) {
         case ActivityOutcome::Ok:     return "ok";
         case ActivityOutcome::Denied: return "denied";
         case ActivityOutcome::Failed: return "failed";
-        case ActivityOutcome::Info:   return "—";
+        case ActivityOutcome::Info:   return "·";
     }
-    return "—";
+    return "·";
 }
 
 // Compact display form of a target: uuids collapse to their first segment
@@ -145,12 +145,12 @@ void App::draw_activity() {
                                "%s", activity_surface_label(entry->surface));
             ImGui::TableSetColumnIndex(2);
             ImGui::TextColored(kInkSecondary, "%s",
-                               entry->actor.empty() ? "—" : entry->actor.c_str());
+                               entry->actor.empty() ? "·" : entry->actor.c_str());
             ImGui::TableSetColumnIndex(3);
             ImGui::TextColored(kInkPrimary, "%s", entry->action.c_str());
             ImGui::TableSetColumnIndex(4);
             if (entry->target.empty()) {
-                ImGui::TextColored(kInkQuiet, "—");
+                ImGui::TextColored(kInkQuiet, "·");
             } else if (entry->ref_kind == "run") {
                 entity_link(short_target(entry->target).c_str(), View::Runs,
                             entry->ref_id);
@@ -180,7 +180,7 @@ void App::draw_activity() {
             ImGui::TableSetColumnIndex(6);
             ImGui::PushTextWrapPos(0.0f);
             ImGui::TextColored(kInkSecondary, "%s",
-                               entry->detail.empty() ? "—"
+                               entry->detail.empty() ? "·"
                                                      : entry->detail.c_str());
             ImGui::PopTextWrapPos();
             ImGui::PopID();

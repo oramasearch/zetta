@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/labels.hpp"
 
 #include "zetta/api/background.hpp"
 #include "zetta/api/registry.hpp"
@@ -29,7 +30,7 @@ namespace {
 // `now` is the current ISO-8601 stamp the capability TTLs are compared against.
 void render_access_key(const zetta::governance::AccessKey& key, const std::string& now) {
     const std::string short_id = key.id().substr(0, key.id().find('-'));
-    ImGui::SeparatorText(("key " + short_id).c_str());
+    ImGui::SeparatorText(("Key " + short_id).c_str());
     mono_line(kInkQuiet, "created:  ", key.created());
 
     // Scope — which resources this key may touch (the resource axis, RULE-3).
@@ -134,14 +135,16 @@ void App::draw_audit_log(
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(event->time().c_str());
             ImGui::TableSetColumnIndex(1);
+            // The product words for the audit action; the raw wire token
+            // stays in system.activity / the API (labels.hpp rule, #635).
             ImGui::TextUnformatted(
-                std::string(to_string(event->action())).c_str());
+                humanize_kind(to_string(event->action())).c_str());
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(
-                event->actor().empty() ? "—" : event->actor().c_str());
+                event->actor().empty() ? "·" : event->actor().c_str());
             ImGui::TableSetColumnIndex(3);
             if (event->target().empty()) {
-                ImGui::TextUnformatted("—");
+                ImGui::TextUnformatted("·");
             } else {
                 using zetta::governance::AuditAction;
                 ImGui::PushID(event->id().c_str());
@@ -178,7 +181,7 @@ void App::draw_audit_log(
             }
             ImGui::TableSetColumnIndex(5);
             ImGui::TextWrapped(
-                "%s", event->detail().empty() ? "—" : event->detail().c_str());
+                "%s", event->detail().empty() ? "·" : event->detail().c_str());
         }
         ImGui::EndTable();
     }
@@ -311,7 +314,7 @@ void App::draw_admin() {
         empty_state("No principals yet",
                     "Principals hold access keys with scoped, TTL'd "
                     "capabilities; they arrive through the API or by "
-                    "replication from a peer.",
+                    "syncing from another node.",
                     "");
     } else {
         ImGui::TextDisabled("%zu principal(s)", principal_names.size());

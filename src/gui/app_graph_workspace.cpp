@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/cluster/cluster.hpp"
@@ -306,7 +307,7 @@ void App::run_open_graph(zetta::pipeline::Project& project) {
     if (node_.job_coordinator() != nullptr &&
         zetta::usecases::churn::is_churn_graph(stored->graph())) {
         if (churn_run_) {
-            graph_error_ = "a churn run is already in flight — wait for it to "
+            graph_error_ = "a churn run is already in flight · wait for it to "
                            "finish (or cancel it in the Deploy panel)";
             return;
         }
@@ -434,7 +435,7 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                 // Column header as a mono uppercase eyebrow (the StepKind), the
                 // connect→…→act pipeline reading left to right.
                 const std::string header =
-                    to_upper(std::string{ir::to_string(kinds[column])});
+                    to_upper(std::string{label_of(kinds[column])});
                 const ImVec2 header_pos(x, origin.y);
                 if (mono_font_) {
                     draw->AddText(mono_font_, ImGui::GetFontSize() * 0.92f,
@@ -636,8 +637,7 @@ void App::draw_graph_canvas(const zetta::pipeline::ClusterPlan* plan,
                 // failing reason verbatim, and what it materialized.
                 if (hovered && step_run != nullptr) {
                     std::string tip = item.node->name + " · " +
-                                      std::string{zetta::pipeline::to_string(
-                                          step_run->status)};
+                                      std::string{label_of(step_run->status)};
                     if (!step_run->reason.empty()) {
                         tip += "\n" + step_run->reason;
                     }
@@ -686,7 +686,7 @@ void App::draw_graph_run_status(const zetta::pipeline::Run* run,
     if (mono_font_) ImGui::PopFont();
     ImGui::SameLine();
     ImGui::TextColored(tone_color(run_tone), "[%s]",
-                       std::string(to_string(run->status())).c_str());
+                       std::string(label_of(run->status())).c_str());
     ImGui::SameLine();
     ImGui::TextDisabled("%zu of %zu step(s) completed · %zu reached", succeeded,
                         progress.steps.size(), reached);
@@ -846,7 +846,7 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
         return;
     }
     const auto targets_summary = [&](const zetta::pipeline::StepPlan& step) -> std::string {
-        if (step.target_nodes.empty()) return "—";
+        if (step.target_nodes.empty()) return "·";
         switch (step.placement) {
             case zetta::pipeline::StepPlacement::NearData: {
                 std::string ids;
@@ -864,7 +864,7 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
             case zetta::pipeline::StepPlacement::Coordinator:
                 return short_id(step.target_nodes.front()) + " (coordinator)";
         }
-        return "—";
+        return "·";
     };
 
     const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
@@ -896,7 +896,7 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
             ImGui::PopID();
             ImGui::TableSetColumnIndex(1);
             ImGui::TextDisabled("%s",
-                                std::string{ir::to_string(step.kind)}.c_str());
+                                std::string{label_of(step.kind)}.c_str());
             ImGui::TableSetColumnIndex(2);
             status_dot(placement_color(step.placement));
             ImGui::TextColored(placement_color(step.placement), "%s",
@@ -972,10 +972,10 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
     const auto kinds = ir::all_step_kinds();
     ImGui::SetNextItemWidth(font * 7.0f);
     if (ImGui::BeginCombo("##nodekind",
-                          std::string{ir::to_string(kinds[add_node_kind_])}
+                          std::string{label_of(kinds[add_node_kind_])}
                               .c_str())) {
         for (std::size_t i = 0; i < kinds.size(); ++i) {
-            const std::string label{ir::to_string(kinds[i])};
+            const std::string label{label_of(kinds[i])};
             if (ImGui::Selectable(label.c_str(),
                                   static_cast<int>(i) == add_node_kind_)) {
                 add_node_kind_ = static_cast<int>(i);
@@ -1001,7 +1001,7 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
 
     // A picker over the graph's nodes, labelled "<name> [<kind>]".
     const auto node_label = [](const ir::Node& node) {
-        return node.name + "  [" + std::string{ir::to_string(node.kind)} + "]";
+        return node.name + "  [" + std::string{label_of(node.kind)} + "]";
     };
     const auto node_picker = [&](const char* combo_id, const char* placeholder,
                                  std::string& selection) {
@@ -1032,7 +1032,8 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
         node_picker("##edgeto", "(to)", add_edge_to_);
         ImGui::SameLine();
         ImGui::SetNextItemWidth(font * 7.0f);
-        const char* edge_kind_names[] = {"data_flow", "control"};
+        // Display order matches the add_edge mapping below (0 = data flow).
+        const char* edge_kind_names[] = {"Data flow", "Control"};
         ImGui::Combo("##edgekind", &add_edge_kind_, edge_kind_names, 2);
         ImGui::SameLine();
         if (ImGui::Button("Add edge")) {
@@ -1063,7 +1064,7 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
                 "%s → %s  (%s)",
                 from ? from->name.c_str() : edge.from.c_str(),
                 to ? to->name.c_str() : edge.to.c_str(),
-                std::string{ir::to_string(edge.kind)}.c_str());
+                edge.kind == ir::EdgeKind::Control ? "control" : "data flow");
             ImGui::PopID();
         }
         if (remove_at >= 0) {
