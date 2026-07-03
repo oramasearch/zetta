@@ -62,7 +62,12 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
 - `banner(tone, message)` — per-panel action feedback (#632); a tinted strip
   (`tone_background`) with the engine's path-qualified reason verbatim;
   renders nothing on an empty message; no modal alerts.
-- `entity_link(label, view, id)` — renders as a link, calls `navigate_to`.
+- `entity_link(label, view, id)` — renders as a link, calls `navigate_to`;
+  `link_line(label, display, view, id)` is its detail-pane "label: ref" form.
+  The wired edges of the object graph (Run ↔ Model ↔ Job, Run → Graph →
+  Project, Deployment → Run, Dataset → Cluster, Audit → target) and the
+  never-fake-a-destination rule live in
+  [cross-entity-links.md](cross-entity-links.md) (#633).
 - **The master-detail scaffold (#634)**: `master_detail(id, rows, selected,
   pending, …)` — the ONE way a list+detail panel lays itself out: a resizable
   split (ratio persisted per scaffold), identical `MasterRow` rows (status dot

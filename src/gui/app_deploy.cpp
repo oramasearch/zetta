@@ -10,6 +10,7 @@
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/pipeline/gate.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
 
@@ -162,6 +163,12 @@ void App::draw_gate() {
 }
 
 void App::draw_deploy() {
+    // Consume a navigate_to(entity) deep link aimed at this view (#633): a
+    // deployment id (a run's "deployment:" link) or a deployed graph name (an
+    // audit/activity target) — the deployments table highlights the match.
+    if (auto pending_entity = take_pending_selection(View::Deploy)) {
+        selected_deployment_ = *pending_entity;
+    }
     ImGui::SeparatorText("Deploy");
     ImGui::TextDisabled(
         "Pick an AI solution, choose where to run it, and deploy. The "
@@ -286,7 +293,10 @@ void App::draw_deploy() {
     }
 
     // 4) Deployment status — the recorded placements (acceptance: "see its
-    //    status"). Sourced from the replicated deployments() list.
+    //    status"). Sourced from the replicated deployments() list. The graph
+    //    and latest-run cells are entity links (#633): the graph opens in the
+    //    workspace, the run in the Runs view; a deep-linked deployment (a
+    //    run's "deployment:" link, an audit target) highlights its row.
     ImGui::SeparatorText("Deployments");
     const std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments =
         node_.deployments();
@@ -294,29 +304,59 @@ void App::draw_deploy() {
         ImGui::TextDisabled("(none yet)");
         return;
     }
+    const std::vector<std::shared_ptr<zetta::pipeline::Run>> runs = node_.runs();
     const ImGuiTableFlags table_flags =
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
         ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("deployments", 5, table_flags)) {
+    if (ImGui::BeginTable("deployments", 7, table_flags)) {
+        ImGui::TableSetupColumn("Deployment");
         ImGui::TableSetupColumn("Graph");
         ImGui::TableSetupColumn("Target");
         ImGui::TableSetupColumn("Steps");
         ImGui::TableSetupColumn("Edges");
+        ImGui::TableSetupColumn("Latest run");
         ImGui::TableSetupColumn("Created");
         ImGui::TableHeadersRow();
         if (mono_font_) ImGui::PushFont(mono_font_);
         for (const std::shared_ptr<zetta::pipeline::Deployment>& deployment : deployments) {
+            ImGui::PushID(deployment->id().c_str());
             ImGui::TableNextRow();
+            // The deep-linked deployment gets the coral "you are here" wash —
+            // matched by id or by the deployed graph's name (audit targets).
+            if (deployment->id() == selected_deployment_ ||
+                deployment->graph_name() == selected_deployment_) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0,
+                                       ImGui::GetColorU32(kCoralWash));
+            }
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(deployment->graph_name().c_str());
+            ImGui::TextUnformatted(
+                deployment->id().substr(0, deployment->id().find('-')).c_str());
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextUnformatted(to_string(deployment->target().kind).c_str());
+            entity_link(deployment->graph_name().c_str(), View::Graph,
+                        deployment->graph_name());
             ImGui::TableSetColumnIndex(2);
-            ImGui::Text("%zu", deployment->node_count());
+            ImGui::TextUnformatted(to_string(deployment->target().kind).c_str());
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%zu", deployment->edge_count());
+            ImGui::Text("%zu", deployment->node_count());
             ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%zu", deployment->edge_count());
+            ImGui::TableSetColumnIndex(5);
+            // The newest run this deployment's controller started (a run ties
+            // itself back through run.deployment) — the deployment → run hop.
+            std::shared_ptr<zetta::pipeline::Run> latest;
+            for (const std::shared_ptr<zetta::pipeline::Run>& run : runs) {
+                if (!run || run->deployment() != deployment->id()) continue;
+                if (!latest || run->created() > latest->created()) latest = run;
+            }
+            if (latest) {
+                entity_link(latest->id().substr(0, latest->id().find('-')).c_str(),
+                            View::Runs, latest->id());
+            } else {
+                ImGui::TextDisabled("—");
+            }
+            ImGui::TableSetColumnIndex(6);
             ImGui::TextUnformatted(deployment->created().c_str());
+            ImGui::PopID();
         }
         if (mono_font_) ImGui::PopFont();
         ImGui::EndTable();

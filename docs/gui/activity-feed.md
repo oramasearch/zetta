@@ -70,7 +70,8 @@ One registry row (Operations, leading the section), drawn from the grammar:
 - The feed table: Time · Surface · Actor · Action · Target · Outcome ·
   Detail, in Geist Mono. The **target is an `entity_link`**: runs open
   Runs (selected), jobs open Compute jobs (selected), graph changes open the
-  Graph workspace, deploys open Deploy, everything else opens Admin & audit.
+  Graph workspace (the named graph opened, #633), deploys open Deploy (the
+  deployment row highlighted, #633), everything else opens Admin & audit.
   Outcome renders as a tone-coloured word.
 - `empty_state` when the node has no activity at all; a muted "widen the
   window" line when the filters hide everything.

@@ -153,12 +153,19 @@ Layout renders through the
   run can't leave a dangling handle).
 - **Detail** (right) — for the selected run:
   - **identity + status** — full id, the color-coded status, optional
-    `project` / `graph` refs, and `created` / `updated` stamps;
+    `project` / `graph` / `deploy` refs, and `created` / `updated` stamps.
+    The refs are one-click [entity links](../gui/cross-entity-links.md)
+    (#633) when they resolve against the live node — project → Explorer,
+    graph → Graph workspace, deployment → Deploy;
+  - **Compute jobs** — the jobs this run spawned (resolved by the job's
+    `run` back-ref), each linking into the Jobs panel; shown only when any
+    exist;
   - **Logs** — each entry's time, a **severity-colored** level (error red, warn
     amber, else neutral), and the message (the failing step + reason of a failed
     run surface here);
   - **Outputs** — the produced datasets / models / indexes in a `Kind / Name /
-    Ref` table;
+    Ref` table (a model ref that resolves to a real Model links into the
+    Models panel);
   - **Trained models** — the model(s) this run produced, with their metrics and
     ranked drivers (see below); shown only when the run has produced a model;
   - **Lineage** — `sources` and `steps` as joined refs, `freshness`, and
@@ -183,8 +190,10 @@ produced and renders each (`render_model_card`):
 
 The run↔model link is the **durable reverse edge** — a model whose producing-run
 ref (`Model::run()`) is this run's id — not the executor's logical model `output.ref`
-(a placeholder handle in R1). `draw_runs` filters `node_.models()` by that ref and
-passes the matches to the detail renderer.
+(a placeholder handle in R1). `draw_run_detail` filters `node_.models()` by that
+ref; each card carries an "open in models" [entity link](../gui/cross-entity-links.md)
+into the standalone Models panel (#633), and the Models panel's `run:` ref links
+back — the edge is walkable in both directions.
 
 `render_model_card` is **shared** with the standalone
 [Models panel](../gui/models-panel.md) (`App::draw_models`, **Operations → Models**), the

@@ -35,6 +35,10 @@ inline constexpr ImVec4 kCanvas{0.980f, 0.980f, 0.973f, 1.0f};      // #FAFAF8
 inline constexpr ImVec4 kSidebar{0.961f, 0.957f, 0.949f, 1.0f};     // #F5F4F2
 inline constexpr ImVec4 kWhite{1.0f, 1.0f, 1.0f, 1.0f};             // #FFFFFF
 inline constexpr ImVec4 kBorder{0.878f, 0.878f, 0.878f, 1.0f};      // #E0E0E0
+// The coral wash — the "you are here" *fill* (a selected node box, a
+// deep-linked table row). The ImU32 forms in the canvas palettes
+// (kNodeFillSelected, kClusterBoxFillSelected) are this same token.
+inline constexpr ImVec4 kCoralWash{0.969f, 0.933f, 0.937f, 1.0f};   // #F7EEEF
 
 // Semantic state palette (product only) — for status, never coral.
 inline constexpr ImVec4 kSuccessColor{0.059f, 0.431f, 0.337f, 1.0f};// fresh-fg #0F6E56

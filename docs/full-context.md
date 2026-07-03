@@ -121,6 +121,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   + the capability registry's actions rendered for humans, executed through
   the one `Registry::call` path
   ([docs/gui/command-palette.md](gui/command-palette.md)).
+  **#633 cross-entity links wired**: `entity_link`/`link_line` on every
+  cross-entity reference (Run ↔ Model ↔ Job, Run → Graph → Project,
+  Deployment → Run, Dataset → Cluster, Audit → target); the Graph workspace
+  and Deploy panels now consume their pending selections
+  ([docs/gui/cross-entity-links.md](gui/cross-entity-links.md)).
 - **Security**: CTL-2/TB-3 inter-node transport security is **built**
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every

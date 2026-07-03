@@ -88,7 +88,9 @@ owns which partition* two ways:
 
 Below the overlay, a **per-partition table** lists the literal catalog rows behind
 it — each partition's short id, its `[start, end)` row range, and its owner nodes —
-in row-range order. An unplaced partition (empty `owner_nodes`) reads `(unplaced)`.
+in row-range order. Each owner is an [entity link](cross-entity-links.md) (#633):
+one click opens the Cluster view with that node's box selected. An unplaced
+partition (empty `owner_nodes`) reads `(unplaced)`.
 
 ## Boundary validation
 
@@ -128,3 +130,4 @@ box to filter the partition table to that node's slices, surfacing
 - [dataset-partitions.md](../data/dataset-partitions.md) — the `system.dataset_partitions`
   catalog the placement overlay joins.
 - [cluster.md](../cluster/cluster.md) — the sibling spatial node-box view this overlay borrows.
+- [cross-entity-links.md](cross-entity-links.md) — the partition owners are one-click entity links into the Cluster view (#633).

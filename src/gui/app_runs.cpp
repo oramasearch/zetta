@@ -3,6 +3,7 @@
 #include "gui/tones.hpp"
 #include "gui/app_operations_internal.hpp"
 
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
@@ -15,21 +16,72 @@
 #include <vector>
 
 namespace zetta::gui {
-namespace {
 
-// Render the full detail of one run: identity + status, logs, outputs, the
-// trained model(s) it produced (metrics + ranked drivers), and lineage. A pure
-// view over the (already schema-validated) Run handle — no mutation. `models` are
-// the node's models whose producing-run ref is this run (resolved by the caller).
-void render_run_detail(const zetta::pipeline::Run& run,
-                       const std::vector<std::shared_ptr<zetta::ml::Model>>& models) {
+// The full detail of one run: identity + status, its place in the object
+// graph as one-click entity links (#633) — project / graph / deployment /
+// the compute jobs it spawned — then logs, outputs, the trained model(s) it
+// produced (metrics + ranked drivers), and lineage. A read-only view over the
+// (already schema-validated) Run handle; every reference is re-resolved
+// against the live node this frame, and a ref that resolves to nothing stays
+// plain mono — a link never fakes a destination.
+void App::draw_run_detail(const zetta::pipeline::Run& run) {
     detail_header("run " + run.id(), tone_of(run.status()),
                   std::string(to_string(run.status())));
-    if (!run.project().empty()) mono_line(kInkQuiet, "project:  ", run.project());
-    if (!run.graph().empty()) mono_line(kInkQuiet, "graph:    ", run.graph());
+    if (!run.project().empty()) {
+        // Runs carry the project uuid; the explorer selects by name.
+        const std::string project_name = project_name_for(run.project());
+        if (project_name.empty()) {
+            mono_line(kInkQuiet, "project:  ", run.project());
+        } else {
+            link_line("project:  ", project_name, View::Explorer, project_name);
+        }
+    }
+    if (!run.graph().empty()) {
+        // A uuid graph ref collapses to its first segment (the activity feed's
+        // short-target convention); a saved name displays as-is.
+        const bool uuid_like =
+            run.graph().size() == 36 && run.graph().find('-') == 8;
+        const std::string display =
+            uuid_like ? entity_short_id(run.graph()) : run.graph();
+        // Link the graph ref (a stored-graph id or saved name) when a project
+        // actually stores it — the workspace's deep link resolves either form.
+        if (graph_is_stored(run.graph())) {
+            link_line("graph:    ", display, View::Graph, run.graph());
+        } else {
+            mono_line(kInkQuiet, "graph:    ", display);
+        }
+    }
+    if (!run.deployment().empty()) {
+        if (node_.find_deployment(run.deployment())) {
+            link_line("deploy:   ", entity_short_id(run.deployment()),
+                      View::Deploy, run.deployment());
+        } else {
+            mono_line(kInkQuiet, "deploy:   ", entity_short_id(run.deployment()));
+        }
+    }
     mono_line(kInkQuiet, "created:  ", run.created());
     if (run.updated() != run.created()) {
         mono_line(kInkQuiet, "updated:  ", run.updated());
+    }
+
+    // The compute jobs this run spawned — resolved by the job's back-ref
+    // (ComputeJob::run() == this run's id), each a one-click hop to Jobs.
+    std::vector<std::shared_ptr<zetta::compute::ComputeJob>> run_jobs;
+    for (const std::shared_ptr<zetta::compute::ComputeJob>& job : node_.jobs()) {
+        if (job && job->run() == run.id()) run_jobs.push_back(job);
+    }
+    if (!run_jobs.empty()) {
+        ImGui::SeparatorText("Compute jobs");
+        for (const std::shared_ptr<zetta::compute::ComputeJob>& job : run_jobs) {
+            ImGui::PushID(job->id().c_str());
+            entity_link(entity_short_id(job->id()).c_str(), View::Jobs,
+                        job->id());
+            ImGui::SameLine();
+            ImGui::TextDisabled("%s · %s",
+                                std::string(to_string(job->kind())).c_str(),
+                                std::string(to_string(job->status())).c_str());
+            ImGui::PopID();
+        }
     }
 
     const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
@@ -71,7 +123,16 @@ void render_run_detail(const zetta::pipeline::Run& run,
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(output.name.c_str());
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(output.ref.c_str());
+            // A model ref that resolves to a real Model is one click from its
+            // panel; unresolvable refs (the default executor's logical
+            // handles) stay plain — the same rule as the graph-run overlay.
+            if (output.kind == "model" && node_.find_model(output.ref)) {
+                ImGui::PushID(output.ref.c_str());
+                entity_link(output.ref.c_str(), View::Models, output.ref);
+                ImGui::PopID();
+            } else {
+                ImGui::TextUnformatted(output.ref.c_str());
+            }
         }
         if (g_mono_font) ImGui::PopFont();
         ImGui::EndTable();
@@ -81,12 +142,17 @@ void render_run_detail(const zetta::pipeline::Run& run,
     // ranked drivers (the FEAT-5 "surface the trained Model + metrics + ranked
     // drivers" slice). Linked by the Model's producing-run ref (Model::run() ==
     // this run's id), the durable edge — the executor's logical model output ref
-    // is just a placeholder handle in R1.
-    if (!models.empty()) {
+    // is just a placeholder handle in R1. Each card links into the Models view.
+    std::vector<std::shared_ptr<zetta::ml::Model>> run_models;
+    for (const std::shared_ptr<zetta::ml::Model>& model : node_.models()) {
+        if (model && model->run() == run.id()) run_models.push_back(model);
+    }
+    if (!run_models.empty()) {
         ImGui::SeparatorText("Trained models");
-        for (const std::shared_ptr<zetta::ml::Model>& model : models) {
+        for (const std::shared_ptr<zetta::ml::Model>& model : run_models) {
             ImGui::PushID(model->id().c_str());
             render_model_card(*model);
+            entity_link("open in models", View::Models, model->id());
             ImGui::PopID();
         }
     }
@@ -116,8 +182,6 @@ void render_run_detail(const zetta::pipeline::Run& run,
     ImGui::SameLine();
     ImGui::ProgressBar(static_cast<float>(lineage.confidence), ImVec2(-FLT_MIN, 0));
 }
-
-}  // namespace
 
 void App::draw_runs() {
     page_header("Runs",
@@ -149,16 +213,7 @@ void App::draw_runs() {
         "Select a run to view its status, logs, outputs, models, and lineage.",
         [&](const MasterRow& row) {
             const auto run = node_.find_run(row.id);
-            if (!run) return;
-            // Resolve the trained model(s) this run produced via the durable
-            // reverse link (Model::run() == run id), so the detail pane can
-            // surface their metrics + ranked drivers alongside the run's
-            // outputs.
-            std::vector<std::shared_ptr<zetta::ml::Model>> run_models;
-            for (const std::shared_ptr<zetta::ml::Model>& model : node_.models()) {
-                if (model->run() == run->id()) run_models.push_back(model);
-            }
-            render_run_detail(*run, run_models);
+            if (run) draw_run_detail(*run);
         });
 }
 

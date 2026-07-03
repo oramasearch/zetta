@@ -323,11 +323,26 @@ void App::draw_models() {
             render_model_card(*model);
             ImGui::Spacing();
             mono_line(kInkQuiet, "created:  ", model->created());
+            // Lineage refs as one-click hops (#633): the owning project and
+            // the run that produced this model. A ref that no longer resolves
+            // stays plain mono — a link never fakes a destination.
             if (!model->project().empty()) {
-                mono_line(kInkQuiet, "project:  ", model->project());
+                const std::string project_name =
+                    project_name_for(model->project());
+                if (project_name.empty()) {
+                    mono_line(kInkQuiet, "project:  ", model->project());
+                } else {
+                    link_line("project:  ", project_name, View::Explorer,
+                              project_name);
+                }
             }
             if (!model->run().empty()) {
-                mono_line(kInkQuiet, "run:      ", model->run());
+                if (node_.find_run(model->run())) {
+                    link_line("run:      ", model->run(), View::Runs,
+                              model->run());
+                } else {
+                    mono_line(kInkQuiet, "run:      ", model->run());
+                }
             }
         });
 }

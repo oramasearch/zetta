@@ -97,11 +97,19 @@ void render_principal_detail(const zetta::governance::Principal& principal) {
     }
 }
 
+}  // namespace
+
 // Render the immutable audit trail as a scrolling table: each governed action
 // (graph change / deploy / data access) with its time, actor, target, the
 // allow/deny outcome (color-coded), and the human-readable detail. Chronological,
-// matching Node::audit_events(); a pure view over already-validated events.
-void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::AuditEvent>>& events) {
+// matching Node::audit_events(); a read-only view over already-validated events.
+// An App member so each target can render as an entity_link routed by its
+// action (#633): job events carry the job id, graph events the graph name,
+// deploys the deployed graph's name — the same routing the activity feed
+// derives (zetta::observability::entry_for). Key / data-access targets stay
+// plain text: they already live on this panel.
+void App::draw_audit_log(
+    const std::vector<std::shared_ptr<zetta::governance::AuditEvent>>& events) {
     ImGui::TextDisabled("%zu event(s)", events.size());
     if (events.empty()) {
         ImGui::TextDisabled("(no audit events)");
@@ -131,8 +139,36 @@ void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::Audit
             ImGui::TextUnformatted(
                 event->actor().empty() ? "—" : event->actor().c_str());
             ImGui::TableSetColumnIndex(3);
-            ImGui::TextUnformatted(
-                event->target().empty() ? "—" : event->target().c_str());
+            if (event->target().empty()) {
+                ImGui::TextUnformatted("—");
+            } else {
+                using zetta::governance::AuditAction;
+                ImGui::PushID(event->id().c_str());
+                switch (event->action()) {
+                    case AuditAction::JobCreated:
+                    case AuditAction::JobFinished:
+                        // The target is the job id.
+                        entity_link(event->target().c_str(), View::Jobs,
+                                    event->target());
+                        break;
+                    case AuditAction::GraphCreated:
+                    case AuditAction::GraphDropped:
+                        // The target is the graph's saved name.
+                        entity_link(event->target().c_str(), View::Graph,
+                                    event->target());
+                        break;
+                    case AuditAction::GraphDeployed:
+                        // The target is the deployed graph's name — the
+                        // deployments table matches it for the highlight.
+                        entity_link(event->target().c_str(), View::Deploy,
+                                    event->target());
+                        break;
+                    default:
+                        ImGui::TextUnformatted(event->target().c_str());
+                        break;
+                }
+                ImGui::PopID();
+            }
             ImGui::TableSetColumnIndex(4);
             if (event->allowed()) {
                 status_label(Tone::Ok, "allow");
@@ -146,8 +182,6 @@ void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::Audit
         ImGui::EndTable();
     }
 }
-
-}  // namespace
 
 void App::draw_admin() {
     page_header("Admin & audit",
@@ -195,7 +229,7 @@ void App::draw_admin() {
     // --- Audit log (the immutable, append-only trail) -----------------------
     ImGui::SeparatorText("Audit log");
     if (mono_font_) ImGui::PushFont(mono_font_);
-    render_audit_log(node_.audit_events());
+    draw_audit_log(node_.audit_events());
     if (mono_font_) ImGui::PopFont();
 }
 

@@ -13,6 +13,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/project.hpp"
 
 namespace zetta::gui {
 
@@ -83,6 +84,43 @@ void App::entity_link(const char* label, View view,
             ImGui::GetColorU32(kInkSecondary));
     }
     if (ImGui::IsItemClicked()) navigate_to(view, entity_id);
+}
+
+// A detail pane's "label: ref" line where the ref is reachable: the quiet mono
+// label, then the ref as an entity_link (#633). Callers verify reachability
+// first and fall back to a plain mono_line — a link never fakes a destination.
+void App::link_line(const char* label, const std::string& display, View view,
+                    const std::string& entity_id) {
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkQuiet, "%s", label);
+    if (g_mono_font) ImGui::PopFont();
+    ImGui::SameLine(0.0f, 0.0f);
+    entity_link(display.c_str(), view, entity_id);
+}
+
+std::string App::project_name_for(const std::string& project_ref) const {
+    if (project_ref.empty()) return {};
+    // Some records carry the name itself (the explorer's selection key).
+    if (node_.find_project(project_ref)) return project_ref;
+    // Others (runs, models, jobs) carry the project uuid — resolve it through
+    // the public name list.
+    for (const std::string& project_name : node_.project_names()) {
+        const auto project = node_.find_project(project_name);
+        if (project && project->id() == project_ref) return project_name;
+    }
+    return {};
+}
+
+bool App::graph_is_stored(const std::string& graph_ref) const {
+    if (graph_ref.empty()) return false;
+    for (const std::string& project_name : node_.project_names()) {
+        const auto project = node_.find_project(project_name);
+        if (project && (project->find_graph_by_id(graph_ref) ||
+                        project->find_graph(graph_ref))) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::string App::jobs_badge() const {

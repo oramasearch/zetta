@@ -123,3 +123,5 @@ previewing its evaluation.
   `evaluate()` the controls preview.
 - [runs.md](../pipeline/runs.md#trained-models--metrics--ranked-drivers) — the sibling FEAT-5
   slice: the trained Model + metrics + ranked drivers in the Runs panel.
+- [cross-entity-links.md](cross-entity-links.md) — the detail pane's `run:` /
+  `graph:` / `project:` refs are one-click entity links (#633).

@@ -203,14 +203,37 @@ void App::draw_jobs() {
             }
 
             // Id references — the job's place in the pipeline (project / graph
-            // / run / scaling-policy reward). Shown only when set.
-            const auto ref_line = [](const char* label, const std::string& value) {
-                if (!value.empty()) mono_line(kInkQuiet, label, value);
-            };
-            ref_line("project:  ", job->project());
-            ref_line("graph:    ", job->graph());
-            ref_line("run:      ", job->run());
-            ref_line("policy:   ", job->scaling_policy());
+            // / run / scaling-policy reward). Shown only when set; a ref that
+            // resolves to a live entity is a one-click hop to its panel
+            // (#633), an unresolvable one stays plain mono.
+            if (!job->project().empty()) {
+                const std::string project_name =
+                    project_name_for(job->project());
+                if (project_name.empty()) {
+                    mono_line(kInkQuiet, "project:  ", job->project());
+                } else {
+                    link_line("project:  ", project_name, View::Explorer,
+                              project_name);
+                }
+            }
+            if (!job->graph().empty()) {
+                if (graph_is_stored(job->graph())) {
+                    link_line("graph:    ", job->graph(), View::Graph,
+                              job->graph());
+                } else {
+                    mono_line(kInkQuiet, "graph:    ", job->graph());
+                }
+            }
+            if (!job->run().empty()) {
+                if (node_.find_run(job->run())) {
+                    link_line("run:      ", job->run(), View::Runs, job->run());
+                } else {
+                    mono_line(kInkQuiet, "run:      ", job->run());
+                }
+            }
+            if (!job->scaling_policy().empty()) {
+                mono_line(kInkQuiet, "policy:   ", job->scaling_policy());
+            }
 
             draw_job_scaling_controls();
         });
