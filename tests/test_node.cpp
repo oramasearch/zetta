@@ -109,6 +109,9 @@ TEST(Node, RenamePreservesTableData) {
 TEST(NodeOwnerGate, RunsInlineOnTheOwnerThread) {
     TempDir tmp;
     Node node(config_for(tmp));
+    // The owner is adopted lazily at the first tick — a fresh node has none.
+    EXPECT_FALSE(node.on_owner_thread());
+    node.tick();
     EXPECT_TRUE(node.on_owner_thread());
     bool ran = false;
     node.run_on_owner([&] { ran = true; });
@@ -138,6 +141,9 @@ TEST(NodeOwnerGate, GatesWorkerWorkOntoTheTickingThread) {
     TempDir tmp;
     Node node(config_for(tmp));
     node.start();
+    // Adopt this thread as the owner BEFORE the worker exists — an unadopted
+    // node is ungated (the worker would run inline instead of queueing).
+    node.tick();
 
     std::atomic<bool> worker_done{false};
     std::thread::id ran_on{};
