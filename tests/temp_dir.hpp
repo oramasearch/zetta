@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <system_error>
 
-#include "zetta/uuid.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace zetta::test {
 
@@ -14,7 +14,7 @@ class TempDir {
 public:
     TempDir()
         : path_(std::filesystem::temp_directory_path() /
-                ("zetta-test-" + new_uuid())) {
+                ("zetta-test-" + zetta::util::new_uuid())) {
         std::filesystem::create_directories(path_);
     }
 

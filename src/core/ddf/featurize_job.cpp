@@ -40,7 +40,7 @@ std::string default_round_tag(const FeaturizeSpec& spec) {
 // entity key rides as an exact-integer double (<= 2^53), the same precision bound the
 // whole double-based collective plane carries.
 DataFrameResult joined_to_frame(const JoinedRows& joined, compute::ComputeDevice& device) {
-    JsonStore store;
+    zetta::storage::JsonStore store;
     const std::size_t width = joined.width();
     for (std::size_t row = 0; row < joined.row_count(); ++row) {
         nlohmann::json doc;
@@ -92,7 +92,7 @@ DataFrameResult window_filter(const DataFrame& frame, const FeaturizeSpec& spec,
 }  // namespace
 
 DistributedFeaturizeResult run_featurize_job(compute::JobCoordinator& coordinator,
-                                             ComputeJob& job, const DataFrame& events,
+                                             zetta::compute::ComputeJob& job, const DataFrame& events,
                                              const DataFrame& accounts,
                                              const FeaturizeSpec& spec,
                                              const std::string& round_tag,

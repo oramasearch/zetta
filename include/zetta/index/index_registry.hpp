@@ -17,8 +17,8 @@
 //
 // The Node owns one (`Node::index_registry()`, with the reference backends
 // registered) and the IndexStepExecutor (index/index_step_executor.hpp, #528)
-// resolves + builds a deployed `index` step through it — see docs/index-step-executor.md.
-namespace zetta {
+// resolves + builds a deployed `index` step through it — see docs/indexing/index-step-executor.md.
+namespace zetta::index {
 
 // Extract an IndexSpec from an IR `index` step's free-form `attributes` bag,
 // validating at the boundary. The attributes carry the index definition:
@@ -72,4 +72,4 @@ private:
     std::vector<std::shared_ptr<IndexBackend>> backends_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

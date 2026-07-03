@@ -13,40 +13,40 @@
 #include "../base64.hpp"  // zetta::detail::base64_decode_to_string
 #include "cases.hpp"
 #include "parquet_fixture_data.hpp"
-#include "zetta/access_key.hpp"
-#include "zetta/add_nodes.hpp"
-#include "zetta/audit_event.hpp"
-#include "zetta/capability.hpp"
-#include "zetta/cluster.hpp"
+#include "zetta/governance/access_key.hpp"
+#include "zetta/cloud/add_nodes.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/database.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/ddf/data_frame.hpp"
-#include "zetta/gate.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/input/cluster_bindings.hpp"
 #include "zetta/input/datasets_bindings.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
-#include "zetta/local_provisioner.hpp"
+#include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/gbdt_score.hpp"
 #include "zetta/ml/local_train_job.hpp"
-#include "zetta/model.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
-#include "zetta/node_capability.hpp"
+#include "zetta/cloud/node_capability.hpp"
 #include "zetta/parquet/reader.hpp"
-#include "zetta/partition_writer.hpp"
-#include "zetta/partitioner.hpp"
-#include "zetta/principal.hpp"
-#include "zetta/provisioner.hpp"
-#include "zetta/scope.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/partition_writer.hpp"
+#include "zetta/data/partitioner.hpp"
+#include "zetta/governance/principal.hpp"
+#include "zetta/cloud/provisioner.hpp"
+#include "zetta/governance/scope.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/testkit/harness.hpp"
 #include "zetta/testkit/test_suite.hpp"
-#include "zetta/validation.hpp"
+#include "zetta/pipeline/validation.hpp"
 
 // The UC-1-at-scale end-to-end case (TC-12, #531/#502): the capstone scale test.
 // One canonical sim-Python program drives the whole distributed pipeline over a
@@ -62,7 +62,7 @@
 // canonical usage example, and it is the program an operator runs for real in the
 // headed app (start a node, add cloud nodes behind the consent gate, launch the case)
 // — here the cloud provisioner is replaced by an injected LocalProvisioner so the
-// case is hermetic and runs headless. See docs/uc1-at-scale-e2e.md.
+// case is hermetic and runs headless. See docs/use-cases/uc1-at-scale-e2e.md.
 namespace zetta::testkit {
 namespace {
 
@@ -232,11 +232,11 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
                  std::to_string(graph.edge_count()) + " edges");
 
     // ---- 2) Gate it (RULE-1 — no run without a passing correctness gate) --------
-    const ValidationReport gate = default_gate().run(graph);
+    const zetta::pipeline::ValidationReport gate = zetta::pipeline::default_gate().run(graph);
     if (!gate.passed() || gate.block_deploy) {
         std::string reason = "gate blocked deploy";
-        for (const CheckResult& check : gate.checks) {
-            if (check.status == CheckStatus::Fail) reason = check.name + ": " + check.reason;
+        for (const zetta::pipeline::CheckResult& check : gate.checks) {
+            if (check.status == zetta::pipeline::CheckStatus::Fail) reason = check.name + ": " + check.reason;
         }
         return TestResult::fail("the correctness gate blocked the pipeline: " + reason);
     }
@@ -299,15 +299,15 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
     for (std::size_t i = 0; i < nodes; ++i) {
         members[i].device = std::make_unique<CpuDevice>();
         Node& node = cluster.node(i);
-        std::shared_ptr<Database> database = node.create_database("data");
+        std::shared_ptr<zetta::data::Database> database = node.create_database("data");
         if (!database) return TestResult::fail("create_database failed on node " + std::to_string(i));
-        std::shared_ptr<Table> table = database->create_table("conversations");
+        std::shared_ptr<zetta::data::Table> table = database->create_table("conversations");
         if (!table) return TestResult::fail("create_table failed on node " + std::to_string(i));
-        table->set_partitioner(std::make_shared<RoundRobinPartitioner>(4));
+        table->set_partitioner(std::make_shared<zetta::data::RoundRobinPartitioner>(4));
         for (std::size_t r = 0; r < dataset.rows.size(); ++r) {
             if (r % nodes == i) table->add_row(dataset.rows[r]);
         }
-        const PartitionWriteResult written = write_partitioned(node, *database, *table);
+        const zetta::data::PartitionWriteResult written = write_partitioned(node, *database, *table);
         if (!written.ok()) {
             return TestResult::fail("write_partitioned failed on node " + std::to_string(i) +
                                     ": " + written.error);
@@ -319,16 +319,16 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
     // The provider= is provenance only; the Provisioner is INJECTED (cloud stays
     // consent-gated). Here a LocalProvisioner over the live cluster fleet stands in for
     // the Azure burst, so the control path runs hermetically.
-    LocalProvisioner provisioner([&cluster]() {
-        std::vector<ProvisionedNode> fleet;
+    zetta::cloud::LocalProvisioner provisioner([&cluster]() {
+        std::vector<zetta::cloud::ProvisionedNode> fleet;
         for (std::size_t i = 0; i < cluster.size(); ++i) {
-            fleet.push_back(ProvisionedNode{.node_id = cluster.node_id(i),
+            fleet.push_back(zetta::cloud::ProvisionedNode{.node_id = cluster.node_id(i),
                                             .address = cluster.cluster(i).listen_address(),
-                                            .capability = NodeCapability{}});
+                                            .capability = zetta::cloud::NodeCapability{}});
         }
         return fleet;
     });
-    const AddNodesResult added = input::run_add_nodes_step(*add_step, provisioner);
+    const zetta::cloud::AddNodesResult added = input::run_add_nodes_step(*add_step, provisioner);
     if (added.members.empty()) {
         return TestResult::fail("cluster.add_nodes provisioned no nodes");
     }
@@ -338,30 +338,30 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
 
     // ---- 7) Governance: a scoped key authorizes the run; the trail is audited ---
     Node& driver = cluster.node(0);
-    std::shared_ptr<Principal> principal =
-        driver.create_principal("uc1-pipeline", PrincipalKind::Service);
+    std::shared_ptr<zetta::governance::Principal> principal =
+        driver.create_principal("uc1-pipeline", zetta::governance::PrincipalKind::Service);
     if (!principal) return TestResult::fail("create_principal failed");
-    Scope scope;
-    scope.grant(ResourceKind::Project, "uc1").grant(ResourceKind::Database, "data");
-    CapabilitySet capabilities;
-    capabilities.grant(CapabilityDomain::Orchestration, "start_run")
-        .grant(CapabilityDomain::Data, "read");
-    std::shared_ptr<AccessKey> key = principal->create_key(scope, capabilities);
+    zetta::governance::Scope scope;
+    scope.grant(zetta::governance::ResourceKind::Project, "uc1").grant(zetta::governance::ResourceKind::Database, "data");
+    zetta::governance::CapabilitySet capabilities;
+    capabilities.grant(zetta::governance::CapabilityDomain::Orchestration, "start_run")
+        .grant(zetta::governance::CapabilityDomain::Data, "read");
+    std::shared_ptr<zetta::governance::AccessKey> key = principal->create_key(scope, capabilities);
     if (!key) return TestResult::fail("create_key failed");
     // The key may start the run + read the project's data; it may not reach elsewhere.
-    if (!driver.authorize(key->id(), Operation{CapabilityDomain::Orchestration, "start_run"})) {
+    if (!driver.authorize(key->id(), zetta::governance::Operation{zetta::governance::CapabilityDomain::Orchestration, "start_run"})) {
         return TestResult::fail("the scoped key was denied orchestration:start_run");
     }
-    if (!driver.authorize(key->id(), Resource{ResourceKind::Database, "data"})) {
+    if (!driver.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Database, "data"})) {
         return TestResult::fail("the scoped key was denied access to its own database");
     }
-    if (driver.authorize(key->id(), Resource{ResourceKind::Project, "unrelated"})) {
+    if (driver.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "unrelated"})) {
         return TestResult::fail("the scoped key reached a project outside its scope");
     }
 
     // ---- 8) SPMD near-data train -> explain -> rank across the cluster ----------
     context.emit("training on '" + label + "' compute-near-data over the partitions");
-    std::vector<std::shared_ptr<ComputeJob>> jobs(nodes);
+    std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs(nodes);
     std::vector<NearDataTrainResult> results(nodes);
     for (std::size_t i = 0; i < nodes; ++i) {
         members[i].coordinator =
@@ -371,7 +371,7 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
     {
         std::vector<std::thread> threads;
         for (std::size_t i = 0; i < nodes; ++i) {
-            jobs[i] = cluster.node(i).create_job(JobKind::Train);
+            jobs[i] = cluster.node(i).create_job(zetta::compute::JobKind::Train);
             threads.emplace_back([&, i] {
                 results[i] = ml::run_near_data_train_job(
                     *members[i].coordinator, cluster.node(i), *jobs[i], members[i].table_id,
@@ -390,7 +390,7 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
     std::size_t total_explanations = 0;
     for (std::size_t i = 0; i < nodes; ++i) {
         const NearDataTrainResult& result = results[i];
-        if (result.status != JobStatus::Succeeded) {
+        if (result.status != zetta::compute::JobStatus::Succeeded) {
             return TestResult::fail("node " + std::to_string(i) +
                                     " near-data train did not succeed: " + jobs[i]->detail());
         }
@@ -476,11 +476,11 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
 
     // ---- 10) Governance: the run was audited -----------------------------------
     int data_access = 0, job_created = 0, job_finished = 0;
-    for (const std::shared_ptr<AuditEvent>& event : driver.audit_events()) {
+    for (const std::shared_ptr<zetta::governance::AuditEvent>& event : driver.audit_events()) {
         switch (event->action()) {
-            case AuditAction::DataAccess: ++data_access; break;
-            case AuditAction::JobCreated: ++job_created; break;
-            case AuditAction::JobFinished: ++job_finished; break;
+            case zetta::governance::AuditAction::DataAccess: ++data_access; break;
+            case zetta::governance::AuditAction::JobCreated: ++job_created; break;
+            case zetta::governance::AuditAction::JobFinished: ++job_finished; break;
             default: break;
         }
     }

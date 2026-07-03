@@ -522,3 +522,11 @@ Do **not** build your own scheduler, timer wheel, or I/O reactor from scratch in
 - **P2300 / stdexec**: voted into C++26 working draft (June 2024); stdexec reference impl is experimental.[55][51]
 - **Lewis Baker's Asymmetric Transfer blog**: posts from 2017–2022; targets C++20 final standard as of the 2022 "Compiler Transform" post.[65][2][5][1]
 - **cppcoro**: targets Coroutines TS (pre-C++20); compile with modifications for C++20. Use as a reference, not a dependency.[56][12]
+
+
+## 2026-07 addendum — HTTP rides the same stack
+
+The HTTP layer for the API surface (#615) extends this decision: **Beast2**
+(C++ Alliance HTTP/1 + WebSocket server on capy/corosio) rather than a
+second, non-coroutine HTTP stack. Findings + API shape + vendoring notes:
+[beast2-http.md](beast2-http.md).

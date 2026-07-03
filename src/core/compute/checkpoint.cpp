@@ -11,8 +11,8 @@
 
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/sha256.hpp"
-#include "zetta/timestamp.hpp"
+#include "zetta/util/sha256.hpp"
+#include "zetta/util/timestamp.hpp"
 
 #include "../base64.hpp"
 
@@ -74,7 +74,7 @@ public:
 // A filesystem-safe, collision-free directory name for an arbitrary job key: its
 // SHA-256 hex. The original key round-trips inside each checkpoint's `job_id` field,
 // so job_ids() recovers it without trusting the (opaque) folder name.
-std::string job_dir_name(const std::string& job_id) { return sha256_hex(job_id); }
+std::string job_dir_name(const std::string& job_id) { return zetta::util::sha256_hex(job_id); }
 
 // Zero-pad a sequence to 20 digits (uint64 max) so a lexical filename sort matches
 // the numeric order — though latest() parses the value back to be robust.
@@ -116,13 +116,13 @@ JobCheckpoint JobCheckpoint::make(std::string job_id, JobKind kind,
                                   std::uint64_t sequence, std::uint64_t total,
                                   std::string state) {
     JobCheckpoint checkpoint;
-    checkpoint.state_sha256 = sha256_hex(state);
+    checkpoint.state_sha256 = zetta::util::sha256_hex(state);
     checkpoint.job_id = std::move(job_id);
     checkpoint.kind = kind;
     checkpoint.sequence = sequence;
     checkpoint.total = total;
     checkpoint.state = std::move(state);
-    checkpoint.created = now_iso8601();
+    checkpoint.created = zetta::util::now_iso8601();
     return checkpoint;
 }
 
@@ -168,7 +168,7 @@ std::optional<JobCheckpoint> parse_job_checkpoint(const nlohmann::json& value,
     // Cross-field integrity: the recorded hash must match the decoded body, so a
     // torn / corrupt checkpoint is rejected at the boundary (a large-object body is
     // verified the same way before it is trusted).
-    const std::string actual = sha256_hex(checkpoint.state);
+    const std::string actual = zetta::util::sha256_hex(checkpoint.state);
     if (actual != checkpoint.state_sha256) {
         if (error) {
             *error = "/state_sha256: body hash mismatch (recorded " +

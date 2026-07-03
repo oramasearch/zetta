@@ -5,7 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
-namespace zetta {
+namespace zetta::storage {
 
 // Interface for a node's storage engine.
 //
@@ -41,4 +41,4 @@ public:
     virtual const std::string& id_at(std::size_t i) const = 0;
 };
 
-}  // namespace zetta
+}  // namespace zetta::storage

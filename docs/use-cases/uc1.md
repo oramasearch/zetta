@@ -39,7 +39,7 @@ UC-1 only makes sense inside Orama Zetta's product thesis. Five framing decision
 
 5. **Correct by construction.** Generating a workflow is easy; generating a *correct* one is the product. Every execution graph is validated (schema, leakage, point-in-time) and must pass a **correctness gate** before it can deploy. That gate is the line between Orama Zetta and "n8n with an LLM bolted on." (Blueprint: [FEAT-3 / #134](https://github.com/oramasearch/zetta/issues/134).)
 
-Product framing in depth: [`docs/projects/orama-platform-2/one-pager.md`](projects/orama-platform-2/one-pager.md) and [`vision-and-strategy.md`](projects/orama-platform-2/vision-and-strategy.md).
+Product framing in depth: [`docs/projects/orama-platform-2/one-pager.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/one-pager.md) and [`vision-and-strategy.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/projects/orama-platform-2/vision-and-strategy.md).
 
 ---
 
@@ -126,7 +126,7 @@ Batching (N accounts per call) + forced JSON keeps it fast and cheap at book sca
 
 The division of labor is the whole point: **the model and the math do the quantitative work (probability, drivers, priority); the LLM does only language and play-selection.** That is what makes the output trustworthy.
 
-> **Built natively (#397).** This playbook step is implemented in zetta-core as `zetta::ml::generate_playbook` — the deterministic driver→action→owner dictionary (`PlaybookPolicy`), the frozen expected-retained-value priority, the constrained-narrator seam (`PlaybookNarrator`; the default-Claude `ConstrainedNarrator` over an injected completion, validated at the strict `playbook_entry` JSON-Schema boundary so it never invents numbers), the deterministic `RulesEngineNarrator` fallback, and the outcome log. See [`../playbook.md`](../playbook.md).
+> **Built natively (#397).** This playbook step is implemented in zetta-core as `zetta::ml::generate_playbook` — the deterministic driver→action→owner dictionary (`PlaybookPolicy`), the frozen expected-retained-value priority, the constrained-narrator seam (`PlaybookNarrator`; the default-Claude `ConstrainedNarrator` over an injected completion, validated at the strict `playbook_entry` JSON-Schema boundary so it never invents numbers), the deterministic `RulesEngineNarrator` fallback, and the outcome log. See [`../playbook.md`](playbook.md).
 
 ### 4.7 The outcome log (the feedback loop)
 
@@ -186,7 +186,7 @@ The first customer-shaped instance of UC-1 is **Motive** (a large fleet-manageme
 - **Data + governance:** Snowflake (communications), Salesforce (accounts), Postgres (working store); access is **key-scoped** ([RULE-3 / #211](https://github.com/oramasearch/zetta/issues/211)); production eventually runs in Motive's own AWS/Kubernetes behind Okta. Data access during the PoC is via a contractor engagement (NDA signed; SOC 2 observation complete).
 - **The deal:** ~$40K contingent proof-of-concept (free if it fails the eval gates) → ~$20K/month → earned annual. A **~2–3 week downloadable churn beta** is the evaluation, run head-to-head against the internal Retool churn app.
 
-Detail: [`motive-problem-definition`](projects/motive-problem-definition/) · [`motive-delivery`](projects/motive-delivery/) · [`motive-one-proposal`](projects/motive-one-proposal/). Source meetings: [2026-06-24](meetings/2026-06-24-casey-issac-steve/) · [2026-06-10 (Charles)](meetings/2026-06-10-casey-charles-issac-matt-steve/) · [2026-06-03 (the n8n workflows)](meetings/2026-06-03-casey-charles-issac-juan-matt-nathanael-steve/).
+Detail: [`motive-problem-definition`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-problem-definition/) · [`motive-delivery`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-delivery/) · [`motive-one-proposal`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/motive-one-proposal/). Source meetings: [2026-06-24](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-24-casey-issac-steve/) · [2026-06-10 (Charles)](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-10-casey-charles-issac-matt-steve/) · [2026-06-03 (the n8n workflows)](https://github.com/oramasearch/amaro-bridge/tree/main/docs/meetings/2026-06-03-casey-charles-issac-juan-matt-nathanael-steve/).
 
 **Important framing:** Charles is the *first instance*, not the spec. UC-1 is the generic churn type; Motive is where we prove it. Don't let Motive-specific detail collapse the use case into a bespoke build.
 
@@ -240,7 +240,7 @@ The **run loop** (being polished in [`homer6/worktree-manager#10`](https://githu
 
 ## 12. UC-1 as the catalog exemplar
 
-Churn is the template for the entire catalog. The next use case — fraud/anomaly, demand forecasting, lead scoring, ticket triage, credit risk, predictive maintenance, next-best-action — is the **same generic shape** (featurize → train → explain → rank + optional action/playbook) with a different label and driver→action map. Add one with the **`add-use-case`** skill + the [`adding-a-use-case` runbook](runbooks/adding-a-use-case.md): it generates a tailored **Perplexity Deep Research prompt** to gather the domain knowledge, which lands a new `UC-N` artifact in the blueprint and gets its own worktree plan. Each addition reuses the engine and grows the menu.
+Churn is the template for the entire catalog. The next use case — fraud/anomaly, demand forecasting, lead scoring, ticket triage, credit risk, predictive maintenance, next-best-action — is the **same generic shape** (featurize → train → explain → rank + optional action/playbook) with a different label and driver→action map. Add one with the **`add-use-case`** skill + the [`adding-a-use-case` runbook](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md): it generates a tailored **Perplexity Deep Research prompt** to gather the domain knowledge, which lands a new `UC-N` artifact in the blueprint and gets its own worktree plan. Each addition reuses the engine and grows the menu.
 
 ---
 
@@ -248,7 +248,7 @@ Churn is the template for the entire catalog. The next use case — fraud/anomal
 
 - **Blueprint / issue:** [`oramasearch/zetta#264`](https://github.com/oramasearch/zetta/issues/264) (UC-1) · grooming epic [#279](https://github.com/oramasearch/zetta/issues/279) · the consolidated context comment on #264.
 - **Framing decisions:** [ADR-23 use-case-driven](https://github.com/oramasearch/zetta/issues/290) · [ADR-25 AI-projects-central / data-project-management](https://github.com/oramasearch/zetta/issues/292) · [ADR-26 generic AI-project types](https://github.com/oramasearch/zetta/issues/293) · [GLO-14 AI project](https://github.com/oramasearch/zetta/issues/294).
-- **Product docs:** [`projects/orama-platform-2/`](projects/orama-platform-2/) (one-pager, vision-and-strategy) · the zetta module conventions [`modules/zetta/docs/orama-zetta.md`](https://github.com/oramasearch/zetta/blob/main/docs/orama-zetta.md).
-- **Catalog growth:** [`runbooks/adding-a-use-case.md`](runbooks/adding-a-use-case.md) + the `add-use-case` skill.
+- **Product docs:** [`projects/orama-platform-2/`](https://github.com/oramasearch/amaro-bridge/tree/main/docs/projects/orama-platform-2/) (one-pager, vision-and-strategy) · the zetta module conventions [`modules/zetta/docs/product/orama-zetta.md`](https://github.com/oramasearch/zetta/blob/main/docs/product/orama-zetta.md).
+- **Catalog growth:** [`runbooks/adding-a-use-case.md`](https://github.com/oramasearch/amaro-bridge/blob/main/docs/runbooks/adding-a-use-case.md) + the `add-use-case` skill.
 - **Build infra:** worktree plan #11 · the run-loop ticket [`homer6/worktree-manager#10`](https://github.com/homer6/worktree-manager/issues/10).
 - **Reference implementation:** `churn_features.sql`, `train_churn_xgb.py`, `churn_playbook.py`, `churn_env_design.md` (incl. §8 the deferred Retention Investigation Agent) — to be committed into the build.

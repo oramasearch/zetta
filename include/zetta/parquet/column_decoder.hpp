@@ -33,14 +33,14 @@
 // decoder yet (zstd / gzip), or an out-of-range dictionary index — fails the
 // decode with a clear reason rather than producing wrong values, the binary
 // analog of schema-at-the-boundary. Projecting these typed columns into
-// [DDF](../../docs/ddf.md) columns is the next slice (#508).
+// [DDF](../../docs/ddf/ddf.md) columns is the next slice (#508).
 //
 // The page bytes arrive from disk or a peer, so they are a **trust boundary**:
 // zetta-core is compiled `-fexperimental-library` (no exceptions across the
 // seam), so every entry point is **non-throwing** and every read is
 // bounds-checked. The JSON projection `to_json` emits has a schema
 // (`parquet_columns_schema`) validated where it re-enters the program
-// (`validate_parquet_columns_json`). See docs/parquet-column-decoders.md.
+// (`validate_parquet_columns_json`). See docs/data/parquet-column-decoders.md.
 namespace zetta::parquet {
 
 // The dense, present-only decoded values of a column. Exactly one vector is

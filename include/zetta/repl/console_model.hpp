@@ -12,7 +12,7 @@
 // outcome. It carries **no UI dependency** (no SDL/ImGui) and lives in
 // zetta-core, so the same class backs the headed `zetta::gui::ReplConsole`
 // component today and a future CLI REPL (each is a thin renderer over this
-// model — the testkit pattern). See docs/repl-console.md.
+// model — the testkit pattern). See docs/gui/repl-console.md.
 //
 // The model owns no engine: running a statement is a *callback* (the "run
 // event" the console emits). The host wires the handler to the real engine —

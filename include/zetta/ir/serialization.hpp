@@ -26,7 +26,7 @@
 // `to_json` then `from_json` round-trips a graph **unchanged** (same nodes,
 // edges, attributes, and insertion order). Deserialization is the trust
 // boundary: it validates the document against the schema above (see
-// docs/execution-graph.md) and the IR's own structural rules (unique node ids,
+// docs/pipeline/execution-graph.md) and the IR's own structural rules (unique node ids,
 // no dangling or duplicate edges) and rejects anything that doesn't fit.
 //
 // `from_json` is **non-throwing** — it returns std::nullopt (with a

@@ -20,7 +20,7 @@
 // matching the loader and the no-exceptions convention of zetta-core. The input
 // frame(s) are read, never mutated — each op produces a fresh, move-only frame.
 //
-// See docs/ddf-ops.md.
+// See docs/ddf/ddf-ops.md.
 namespace zetta::ddf {
 
 // Sort `frame` by the `key_column` column, ascending by default. Returns a new

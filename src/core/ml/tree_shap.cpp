@@ -8,7 +8,7 @@
 // Exact path-dependent TreeSHAP (Lundberg, Erion, Lee 2018, Algorithm 2), matching
 // the reference `shap` C extension (cext/tree_shap.h). The overview + the efficiency
 // invariant live in the header; this file is the polynomial-time recursion. See
-// docs/tree-shap.md.
+// docs/ml/tree-shap.md.
 namespace zetta::ml {
 
 namespace {

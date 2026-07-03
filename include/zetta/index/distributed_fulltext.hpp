@@ -15,7 +15,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/index/index_backend.hpp"
-#include "zetta/signal.hpp"
+#include "zetta/cluster/signal.hpp"
 
 // Per-partition distributed full-text search (ENT-39 / ENT-40, ADR-34, #529 — the
 // engine half of TC-13 #503). Where the [index step executor](index_step_executor.hpp)
@@ -50,13 +50,12 @@
 // message), so a malformed message fails fast with a path-qualified reason.
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry point
-// returns a status alongside its result. See docs/distributed-fulltext.md.
-namespace zetta {
+// returns a status alongside its result. See docs/indexing/distributed-fulltext.md.
+namespace zetta::cluster { class Cluster; }
+namespace zetta { class Node; }
 
-class Cluster;
-class Node;
+namespace zetta::index {
 
-// One scored hit: a row id (the row's stable `_zid`) and its relevance score
 // (higher = better). The unit the scatter-gather merges across partitions / nodes.
 struct FulltextHit {
     std::string row_id;
@@ -127,7 +126,7 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(
 
 // --- the per-node distributed full-text index --------------------------------
 
-class DistributedFulltextIndex : public SignalHandler {
+class DistributedFulltextIndex : public zetta::cluster::SignalHandler {
 public:
     // The RPC method a coordinator scatters a query to peers with.
     static constexpr std::string_view kQueryMethod = "fulltext.query";
@@ -164,7 +163,7 @@ public:
     // backend holds the per-partition sub-indexes. Registers this as the cluster's
     // signal handler, chained over `delegate` (which receives every non-fulltext
     // signal); restores `delegate` on destruction. `cluster` must outlive this.
-    explicit DistributedFulltextIndex(Cluster& cluster,
+    explicit DistributedFulltextIndex(zetta::cluster::Cluster& cluster,
                                       std::shared_ptr<IndexBackend> backend = nullptr,
                                       SignalHandler* delegate = nullptr);
     ~DistributedFulltextIndex() override;
@@ -209,12 +208,12 @@ public:
     std::vector<std::string> participants() const;
 
     // --- SignalHandler (runs on the cluster network thread) ------------------
-    SignalResponse on_request(const Signal& request) override;
-    void on_event(const Signal& event) override;
-    void on_task(const Signal& task) override;
+    zetta::cluster::SignalResponse on_request(const zetta::cluster::Signal& request) override;
+    void on_event(const zetta::cluster::Signal& event) override;
+    void on_task(const zetta::cluster::Signal& task) override;
 
 private:
-    Cluster& cluster_;
+    zetta::cluster::Cluster& cluster_;
     std::shared_ptr<IndexBackend> backend_;
     SignalHandler* delegate_ = nullptr;
 
@@ -227,4 +226,4 @@ private:
     std::map<std::string, std::vector<IndexSpec>> sub_specs_;
 };
 
-}  // namespace zetta
+}  // namespace zetta::index

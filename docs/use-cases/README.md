@@ -11,13 +11,30 @@ This folder is the **use-case catalog** for Orama Zetta and the guide for adding
 | **UC-1 — Churn intelligence** | [`uc1.md`](uc1.md) | exemplar; building — platform skeleton (plan #11) + native distributed-compute full pass (plan #14) |
 | Fraud / anomaly · demand forecasting · lead / opportunity scoring · ticket triage + routing · collections / credit risk · predictive maintenance · next-best-action | _to research_ | candidates |
 
+## Pages in this directory
+
+The UC-1 (churn) implementation pages live here alongside the catalog — read `uc1.md` first, then
+the slices in pipeline order (data → resolution → execution → train-at-scale → playbook → the
+end-to-end proofs):
+
+- [uc1.md](uc1.md) — **the worked exemplar**: the full UC-1 churn solution end to end — what it is, the pipeline, the business case, what's deferred, the blueprint mapping, the build plan.
+- [churn-dataset.md](churn-dataset.md) — the synthetic UC-1 churn fixture + loader: committed accounts + events, the FedEx entity-resolution case, schema-validated, no foreign runtime (#402).
+- [entity-resolution.md](entity-resolution.md) — entity resolution in featurization: resolve raw comms mentions to CRM accounts division-correct; resolver produces, gate verifies (`EntityResolver`, TC-4 / #394).
+- [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval: fails the gate when a graph conflates separate accounts (the FedEx-Freight case) (`EntityResolutionCheck`, TC-4).
+- [churn-step-executor.md](churn-step-executor.md) — the real churn `StepExecutor`: each pipeline stage as actual distributed compute behind the same seam, each heavy step a recorded `ComputeJob` (#396).
+- [churn-solution.md](churn-solution.md) — wiring the catalog churn blueprint to the real engine; interactive runs go over the node's live `JobCoordinator` (`run_churn_solution`, #398/#580).
+- [uc1-train-over-partitions.md](uc1-train-over-partitions.md) — train GBDT(outcome) compute-near-data over a partitioned feature table: train → explain → rank, near-data instrumented (`run_near_data_train_job`, #533).
+- [playbook.md](playbook.md) — the UC-1 retention playbook: deterministic driver→action→owner + frozen expected-retained-value priority + a constrained narrator that never invents numbers (#397).
+- [uc1-end-to-end.md](uc1-end-to-end.md) — the UC-1 end-to-end integration test: synthetic data → featurize → train → explain → rank → playbook, gated + governed (#399, TP-1).
+- [uc1-at-scale-e2e.md](uc1-at-scale-e2e.md) — the UC-1-at-scale sim-Python E2E: one canonical script drives the whole pipeline over a real, manually-sized loopback cluster (TC-12 / #531).
+
 ## What every use case is
 
 The reusable shape, shared by all of them:
 
 **featurize (point-in-time) → train (XGBoost) → explain (SHAP) → rank at-risk + per-entity drivers**
 
-plus *optional, user-managed* components — a **recommended-action** layer (driver → action → owner) and a constrained **LLM playbook** (writes the narrative + picks the play, never invents numbers). The engine is **general AI** (gradient-boosted trees, RL, LLM — any model), not one method. Crucially, these methods are **re-implemented natively as distributed C++** over zetta's accelerator interface (CPU + GPU when available) and run **cluster-parallel** — zetta does **not** run Python / XGBoost or any foreign runtime in the database (see [ADR-17](https://github.com/oramasearch/zetta/issues/17) · the [engine docs](../execution.md)). Framing: [`../orama-zetta.md`](../orama-zetta.md) (decision 5).
+plus *optional, user-managed* components — a **recommended-action** layer (driver → action → owner) and a constrained **LLM playbook** (writes the narrative + picks the play, never invents numbers). The engine is **general AI** (gradient-boosted trees, RL, LLM — any model), not one method. Crucially, these methods are **re-implemented natively as distributed C++** over zetta's accelerator interface (CPU + GPU when available) and run **cluster-parallel** — zetta does **not** run Python / XGBoost or any foreign runtime in the database (see [ADR-17](https://github.com/oramasearch/zetta/issues/17) · the [engine docs](../pipeline/execution.md)). Framing: [`../orama-zetta.md`](../product/orama-zetta.md) (decision 5).
 
 ## Principles (don't skip — these are why use cases ship vs. stall)
 
@@ -36,11 +53,11 @@ Adding a use case is a **repeatable pipeline**, not a one-off creative act. It p
 
 Churn ([`uc1.md`](uc1.md)) is the worked exemplar; **read it end-to-end and copy its structure.** The steps below are deliberately verbose — do them in order, because each step's output feeds the next.
 
-> **The principle that governs everything below:** a use case is a *generic AI-project type*, and **the engine is shared**. zetta's native, distributed, accelerator-backed compute engine — the [DDF](../execution.md), the `ComputeJob` coordinator + work-stealing scheduler, the native histogram-GBDT / TreeSHAP / `Model`, the [correctness gate](../gate.md), [deploy](../deployments.md), [run](../runs.md), and [governance](../access-control.md) — is **built once and reused by every use case.** A new use case contributes only its **skin**: the *entity*, the *label*, the *point-in-time features*, and the *driver → action → owner* map. It does **not** bring a new engine, and it does **not** introduce Python or any foreign runtime — every algorithm is re-implemented as **native distributed C++** over the accelerator interface (CPU + GPU when available; see [ADR-17](https://github.com/oramasearch/zetta/issues/17)). If you find yourself special-casing one customer's exact tables, stop: that's *bespoke creep*, the most common way a use case dies.
+> **The principle that governs everything below:** a use case is a *generic AI-project type*, and **the engine is shared**. zetta's native, distributed, accelerator-backed compute engine — the [DDF](../pipeline/execution.md), the `ComputeJob` coordinator + work-stealing scheduler, the native histogram-GBDT / TreeSHAP / `Model`, the [correctness gate](../pipeline/gate.md), [deploy](../pipeline/deployments.md), [run](../pipeline/runs.md), and [governance](../governance/access-control.md) — is **built once and reused by every use case.** A new use case contributes only its **skin**: the *entity*, the *label*, the *point-in-time features*, and the *driver → action → owner* map. It does **not** bring a new engine, and it does **not** introduce Python or any foreign runtime — every algorithm is re-implemented as **native distributed C++** over the accelerator interface (CPU + GPU when available; see [ADR-17](https://github.com/oramasearch/zetta/issues/17)). If you find yourself special-casing one customer's exact tables, stop: that's *bespoke creep*, the most common way a use case dies.
 
 ### Pre-flight — orient before you type
 
-- Read [`../orama-zetta.md`](../orama-zetta.md) (product framing + the locked working decisions) and **[`uc1.md`](uc1.md)** (the fully-worked exemplar you will mirror).
+- Read [`../orama-zetta.md`](../product/orama-zetta.md) (product framing + the locked working decisions) and **[`uc1.md`](uc1.md)** (the fully-worked exemplar you will mirror).
 - Skim the root [`CLAUDE.md`](../../CLAUDE.md) **Architecture** section so you know **what already exists to reuse** — the ExecutionGraph IR, the gate + its checks (schema/leakage/point-in-time, entity resolution), the DDF, the ComputeJob / compute engine, deployments, runs, principals/keys/audit. The honest expectation: **most of what a new use case needs is already built.** Your work is the skin plus the wiring, not a green-field system.
 - Confirm the use case is *generic*: phrase it so **any** team could run it on **its own** data. If it only makes sense for one company, it isn't a use-case type yet.
 
@@ -68,7 +85,7 @@ You don't invent the feature set or the model from memory — you research how t
 From the dossier, write down the concrete shape, and **tag every piece as reused engine vs. new skin**:
 
 - **Label definition** *(skin)* — the exact target / horizon / censoring from step 1.
-- **Point-in-time features** *(skin)* — the canonical feature list, each tagged with its source table + the as-of rule. These become a [DDF](../execution.md) featurization graph (join → groupby-aggregate → as-of window), built on the engine's existing DDF ops.
+- **Point-in-time features** *(skin)* — the canonical feature list, each tagged with its source table + the as-of rule. These become a [DDF](../pipeline/execution.md) featurization graph (join → groupby-aggregate → as-of window), built on the engine's existing DDF ops.
 - **Model** *(engine)* — default to the native distributed **histogram-GBDT** already in the engine; note an alternative only if the dossier shows the default is wrong for this domain.
 - **Explanation** *(engine)* — native **TreeSHAP** → per-entity drivers; reused as-is.
 - **Driver → action → owner map** *(skin)* — the deterministic mapping from a dominant driver to a recommended action and its owner. This and the label are the *only* genuinely use-case-specific logic.
@@ -98,7 +115,7 @@ Re-run [`zetta-sync`](https://github.com/oramasearch/amaro-bridge/blob/main/.cla
 ### 7. Prune + prioritize the backlog
 
 - Close any **non-artifact** tracking issues (kept + linked, never deleted) — a tracking issue that produces no software / doc / report is noise. See [`prune-backlog`](https://github.com/oramasearch/amaro-bridge/blob/main/.claude/skills/prune-backlog/SKILL.md).
-- Set `p1`–`p4` by the use case's **dependency order**, not abstract release order — priorities trace from `UC-N`'s closure (decision 3 in [`../orama-zetta.md`](../orama-zetta.md)).
+- Set `p1`–`p4` by the use case's **dependency order**, not abstract release order — priorities trace from `UC-N`'s closure (decision 3 in [`../orama-zetta.md`](../product/orama-zetta.md)).
 
 ### 8. Build it via a worktree plan — *you* build the graph, not the LLM
 
@@ -126,3 +143,5 @@ This is where the use case actually gets built: as an **execution graph over its
 - **Overpromising** — a use case that "automates everything" instead of a specific, measurable win.
 - **Bespoke creep** — building it for one customer's exact tables instead of a generic type any team instantiates.
 - **Model in the hot path** — a stochastic model wired into a critical workflow with no correctness gate.
+
+- [creating-a-use-case.md](creating-a-use-case.md) — **the engine recipe for UC-N**: the invariant shape (compose, don't invent math), the fixture-with-traps rule, the nine-step checklist, and what done means.

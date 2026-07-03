@@ -13,23 +13,23 @@
 #include <variant>
 #include <vector>
 
-#include "zetta/cloud_inspector.hpp"
-#include "zetta/cloud_provider.hpp"
-#include "zetta/cluster.hpp"
+#include "zetta/cloud/cloud_inspector.hpp"
+#include "zetta/cloud/cloud_provider.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/pipeline_instrumentation.hpp"
-#include "zetta/database.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/compute/pipeline_instrumentation.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
-#include "zetta/deployment.hpp"
+#include "zetta/pipeline/deployment.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
-#include "zetta/table.hpp"
+#include "zetta/data/table.hpp"
 
 namespace zetta::query {
 namespace {
@@ -134,10 +134,10 @@ QueryResult error(std::string message) {
 
 // One JSON row per node for the zetta_nodes system table. Unknown replication
 // fields (e.g. a peer that hasn't reported yet, or self's sync state) are null.
-std::vector<nlohmann::json> cluster_node_rows(const Cluster& cluster) {
+std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& cluster) {
     std::vector<nlohmann::json> rows;
-    for (const NodeStatus& node : cluster.nodes()) {
-        const NodeReplication& replication = node.replication;
+    for (const zetta::cluster::NodeStatus& node : cluster.nodes()) {
+        const zetta::cluster::NodeReplication& replication = node.replication;
         nlohmann::json row;
         row["node_id"] = node.node_id;
         row["address"] = node.address;
@@ -165,7 +165,7 @@ std::vector<nlohmann::json> cluster_node_rows(const Cluster& cluster) {
 std::vector<nlohmann::json> deployment_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const auto& deployment : node.deployments()) {
-        const DeploymentTarget& target = deployment->target();
+        const zetta::pipeline::DeploymentTarget& target = deployment->target();
         nlohmann::json row;
         row["deployment_id"] = deployment->id();
         row["graph_name"] = deployment->graph_name();
@@ -328,10 +328,10 @@ std::string join_comma(const std::vector<std::string>& items) {
 // whether inspecting requires consent / can run here (RULE-7).
 std::vector<nlohmann::json> cloud_provider_rows() {
     std::vector<nlohmann::json> rows;
-    for (const CloudProvider& provider :
-         CloudProviderCatalog::builtin().providers()) {
+    for (const zetta::cloud::CloudProvider& provider :
+         zetta::cloud::CloudProviderCatalog::builtin().providers()) {
         std::vector<std::string> commands;
-        for (const InspectCommand& command : provider.inspect_commands) {
+        for (const zetta::cloud::InspectCommand& command : provider.inspect_commands) {
             commands.push_back(command.display);
         }
         nlohmann::json row;
@@ -354,9 +354,9 @@ std::vector<nlohmann::json> cloud_provider_rows() {
 // ran (and consented to) in the Cloud Inspector, so it is empty until then.
 std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
-    for (const CloudInspectReport& report : node.cloud_inspections()) {
+    for (const zetta::cloud::CloudInspectReport& report : node.cloud_inspections()) {
         std::size_t commands_ok = 0;
-        for (const CloudInspectCommand& command : report.commands) {
+        for (const zetta::cloud::CloudInspectCommand& command : report.commands) {
             if (command.ok) ++commands_ok;
         }
         nlohmann::json row;
@@ -384,7 +384,7 @@ std::vector<nlohmann::json> cloud_status_rows(const Node& node) {
 // from the provider's validated config JSON. Empty until detection wires a target.
 std::vector<nlohmann::json> provisioner_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
-    for (const ProvisionerConfig& provisioner : node.provisioner_configs()) {
+    for (const zetta::cloud::ProvisionerConfig& provisioner : node.provisioner_configs()) {
         const nlohmann::json& config = provisioner.config;
         nlohmann::json row;
         row["target"] = provisioner.target;
@@ -459,17 +459,17 @@ std::vector<nlohmann::json> access_key_rows(const Node& node) {
     for (const auto& principal : node.principals()) {
         for (const auto& key : principal->keys()) {
             std::vector<std::string> scope_parts;
-            const Scope& scope = key->scope();
+            const zetta::governance::Scope& scope = key->scope();
             if (scope.unrestricted) {
                 scope_parts.push_back("*");
             } else {
-                for (const Resource& resource : scope.grants) {
+                for (const zetta::governance::Resource& resource : scope.grants) {
                     scope_parts.push_back(std::string(to_string(resource.kind)) +
                                           ":" + resource.name);
                 }
             }
             std::vector<std::string> capability_parts;
-            for (const Capability& capability : key->capabilities().grants) {
+            for (const zetta::governance::Capability& capability : key->capabilities().grants) {
                 std::string text = std::string(to_string(capability.domain)) + ":" +
                                    capability.action;
                 if (!capability.expires_at.empty()) text += "@" + capability.expires_at;
@@ -518,7 +518,7 @@ std::vector<nlohmann::json> audit_rows(const Node& node) {
 std::vector<nlohmann::json> partition_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const auto& partition : node.dataset_partitions()) {
-        const PartitionRowRange& range = partition->row_range();
+        const zetta::data::PartitionRowRange& range = partition->row_range();
         nlohmann::json row;
         row["partition_id"] = partition->id();
         row["table"] = partition->table();
@@ -548,13 +548,13 @@ std::vector<nlohmann::json> partition_rows(const Node& node) {
 // DatasetSummary values, so it adds no new JSON boundary.
 std::vector<nlohmann::json> dataset_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
-    for (const DatasetSummary& dataset : node.datasets()) {
+    for (const zetta::data::DatasetSummary& dataset : node.datasets()) {
         // Flatten the per-partition placement into a readable per-slice string plus
         // the de-duplicated union of owner nodes (in first-seen order).
         std::vector<std::string> owner_union;
         std::unordered_set<std::string> owner_seen;
         std::vector<std::string> placement_parts;
-        for (const DatasetPlacement& placement : dataset.partitions) {
+        for (const zetta::data::DatasetPlacement& placement : dataset.partitions) {
             std::string owners;
             for (const std::string& owner : placement.owner_nodes) {
                 if (!owners.empty()) owners += "|";
@@ -597,7 +597,7 @@ std::vector<nlohmann::json> checkpoint_rows(const Node& node) {
     for (const zetta::compute::JobCheckpoint& checkpoint : node.checkpoints()) {
         nlohmann::json row;
         row["job_id"] = checkpoint.job_id;
-        row["kind"] = std::string(zetta::to_string(checkpoint.kind));
+        row["kind"] = std::string(zetta::compute::to_string(checkpoint.kind));
         row["sequence"] = checkpoint.sequence;
         row["total"] = checkpoint.total;
         row["progress"] = checkpoint.progress();
@@ -615,7 +615,7 @@ std::vector<nlohmann::json> checkpoint_rows(const Node& node) {
 // counters a host can't report are emitted as null (graceful degradation — the
 // GPU group is absent in a CPU-only core build). Percentages are 0..100.
 std::vector<nlohmann::json> node_metrics_rows(Node& node) {
-    const NodeMetrics metrics = node.sample_node_metrics();
+    const zetta::cluster::NodeMetrics metrics = node.sample_node_metrics();
     auto number_or_null = [](bool available, auto value) {
         return available ? nlohmann::json(value) : nlohmann::json();
     };
@@ -672,7 +672,7 @@ std::vector<nlohmann::json> node_metrics_rows(Node& node) {
 // can confirm bytes-moved ≈ partials, not ≈ dataset.
 std::vector<nlohmann::json> pipeline_job_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
-    for (const PipelineJobInstrumentation& job : node.pipeline_jobs()) {
+    for (const zetta::compute::PipelineJobInstrumentation& job : node.pipeline_jobs()) {
         nlohmann::json row;
         row["job_id"] = job.job_id;
         row["kind"] = std::string(to_string(job.kind));
@@ -702,7 +702,7 @@ std::vector<nlohmann::json> collective_round_rows(Node& node) {
     row["node"] = node.node_id();
     compute::JobCoordinator* coordinator = node.job_coordinator();
     if (coordinator) {
-        const Collectives& collectives = coordinator->collectives();
+        const zetta::cluster::Collectives& collectives = coordinator->collectives();
         row["attached"] = true;
         row["participants"] =
             static_cast<int>(collectives.participants().size());
@@ -813,7 +813,7 @@ struct OutputColumn {
     std::string column;                     // the aggregated source column
 };
 
-QueryResult execute_grouped(const SelectStmt& s, Table& table) {
+QueryResult execute_grouped(const SelectStmt& s, zetta::data::Table& table) {
     // The DDF engine groups by exactly one numeric key column.
     if (s.group_by.size() != 1) {
         return error("GROUP BY supports exactly one key column");
@@ -868,7 +868,7 @@ QueryResult execute_grouped(const SelectStmt& s, Table& table) {
 
     // An empty table aggregates to no rows (Postgres-compatible) — short-circuit
     // before touching the DDF engine.
-    const StorageEngine& store = table.store();
+    const zetta::storage::StorageEngine& store = table.store();
     if (store.size() == 0) {
         result.message = "SELECT 0";
         return result;
@@ -965,7 +965,7 @@ QueryResult Executor::execute(const Statement& stmt,
                               const std::string& current_database) {
     // Resolve a TableRef's database to a handle, or produce a clear error.
     const auto resolve_db =
-        [&](const TableRef& ref) -> std::shared_ptr<Database> {
+        [&](const TableRef& ref) -> std::shared_ptr<zetta::data::Database> {
         const std::string& name =
             ref.database.empty() ? current_database : ref.database;
         if (name.empty()) return nullptr;  // no qualifier and no current db
@@ -1158,7 +1158,7 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (s.grouped()) return execute_grouped(s, *table);
                 QueryResult r;
                 if (!s.all) r.columns = s.columns;
-                const StorageEngine& store = table->store();
+                const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const nlohmann::json& row = store.at(i);
                     if (!row_matches(row, s.where)) continue;

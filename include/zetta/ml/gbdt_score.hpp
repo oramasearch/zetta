@@ -35,9 +35,9 @@
 // behind this same API.
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry
-// point returns a `compute::ComputeStatus`. See docs/gbdt-score.md.
+// point returns a `compute::ComputeStatus`. See docs/ml/gbdt-score.md.
 namespace zetta {
-class Model;
+namespace ml { class Model; }
 }
 
 namespace zetta::ml {

@@ -3,7 +3,7 @@
 #include <utility>
 #include <vector>
 
-#include "zetta/uuid.hpp"
+#include "zetta/util/uuid.hpp"
 
 namespace zetta::ir {
 
@@ -11,7 +11,7 @@ std::shared_ptr<Node> ExecutionGraph::add_node(StepKind kind, std::string name,
                                                nlohmann::json attributes,
                                                NodeId id) {
     if (id.empty()) {
-        id = new_uuid();
+        id = zetta::util::new_uuid();
     } else if (index_.contains(id)) {
         return {};  // id already taken — never overwrite an existing node
     }

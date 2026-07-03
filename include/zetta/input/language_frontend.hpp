@@ -17,7 +17,7 @@
 // describes a data/AI pipeline — Python, a config, an API shape — goes through a
 // LanguageFrontend, lowering to the same IR a stored graph uses. The first
 // implementation is `zetta::input::PythonFrontend` (simulated Python; see
-// python_frontend.hpp + docs/python-frontend.md).
+// python_frontend.hpp + docs/pipeline/python-frontend.md).
 namespace zetta::input {
 
 // The result of compiling a source snippet to the IR. Mirrors

@@ -12,7 +12,7 @@
 
 // Probability calibration (Platt scaling + isotonic regression) for the histogram
 // GBDT. The design + the why live in the header; this file is the numerical
-// reference. See docs/calibration.md.
+// reference. See docs/ml/calibration.md.
 namespace zetta::ml {
 
 namespace {

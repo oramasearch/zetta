@@ -11,7 +11,7 @@
 // (parse -> IR -> gate -> run) by run_example_script. The example programs ARE the
 // integration tests — a green script doubles as a canonical usage example; a
 // negative script proves a failure surfaces with the offending statement. See
-// docs/example-scripts.md.
+// docs/testing/example-scripts.md.
 namespace zetta::testkit {
 namespace {
 
@@ -137,7 +137,7 @@ ExampleScript no_pipeline_steps() {
 // its source with the real cluster.uc1_at_scale case (one canonical program); here
 // the standard example harness compiles + gates it and runs it single-node, so this
 // asserts the lowered shape + that it runs to Succeeded. The at-scale, real-cluster,
-// near-data, governed run is the cluster.uc1_at_scale case. See docs/uc1-at-scale-e2e.md.
+// near-data, governed run is the cluster.uc1_at_scale case. See docs/use-cases/uc1-at-scale-e2e.md.
 ExampleScript uc1_at_scale() {
     ExampleScript script;
     script.id = "examples.uc1_at_scale";

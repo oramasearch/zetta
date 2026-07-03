@@ -8,7 +8,7 @@
 
 #include "zetta/compute/compute_device.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/local_partitions.hpp"
 #include "zetta/ml/gbdt.hpp"
@@ -72,8 +72,8 @@
 // partition-body lines; the training histograms / metrics, the SHAP partials, and the
 // score pairs all ride the schema-validated `CollectiveMessage`; the GBDT weights body
 // carries its own validated `GbdtModel` boundary; the job + model records are validated
-// at their own boundaries. See docs/uc1-train-over-partitions.md, docs/gbdt.md, and
-// docs/compute-near-data.md.
+// at their own boundaries. See docs/use-cases/uc1-train-over-partitions.md, docs/ml/gbdt.md, and
+// docs/compute/compute-near-data.md.
 namespace zetta {
 class Node;
 }
@@ -132,7 +132,7 @@ struct NearDataTrainResult {
     // The pipeline's terminal status (Succeeded only when train AND explain AND rank
     // all succeeded; Failed on a local-shard load error, a bad column / single-class
     // labels / a device error, or a collective timeout in any phase).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
 
@@ -144,7 +144,7 @@ struct NearDataTrainResult {
     std::uint64_t wire_bytes_moved = 0;   // collective-plane bytes this node moved
                                           //   across all three phases (the partials)
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Train a histogram GBDT on `label_column` over this node's owned partitions of
@@ -173,7 +173,7 @@ struct NearDataTrainResult {
 // over the nodes that hold data). A local-shard load failure fails this node's train
 // job cleanly and is recorded.
 NearDataTrainResult run_near_data_train_job(
-    compute::JobCoordinator& coordinator, Node& node, ComputeJob& job,
+    compute::JobCoordinator& coordinator, Node& node, zetta::compute::ComputeJob& job,
     const std::string& table, const ddf::DataFrameSchema& schema,
     const std::vector<std::string>& feature_columns,
     const std::string& label_column, const GbdtParams& params,

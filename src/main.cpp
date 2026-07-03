@@ -1,20 +1,20 @@
 // zetta — entry point.
 //
-// Parses arguments, builds a zetta::Node + a zetta::Cluster, and dispatches to
+// Parses arguments, builds a zetta::Node + a zetta::cluster::Cluster, and dispatches to
 // one of two run modes. Headed (the default) renders the node in an SDL3 + Dear
 // ImGui window; headless runs the same node with no UI, for servers with no
-// display. All the real work lives behind zetta::Node / zetta::Cluster — main
+// display. All the real work lives behind zetta::Node / zetta::cluster::Cluster — main
 // only picks how to drive them.
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/headless.hpp"
-#include "zetta/local_provisioner.hpp"
+#include "zetta/cloud/local_provisioner.hpp"
 #include "zetta/node.hpp"
-#include "zetta/provisioner.hpp"
-#include "zetta/provisioner_detect.hpp"
-#include "zetta/replicated_blob_store.hpp"
-#include "zetta/replication.hpp"
-#include "zetta/uuid.hpp"
+#include "zetta/cloud/provisioner.hpp"
+#include "zetta/cloud/provisioner_detect.hpp"
+#include "zetta/data/replicated_blob_store.hpp"
+#include "zetta/cluster/replication.hpp"
+#include "zetta/util/uuid.hpp"
 #include "zetta/version.hpp"
 
 #include "gui/app.hpp"
@@ -38,7 +38,7 @@ enum class Mode { Headed, Headless };
 struct Options {
     Mode mode = Mode::Headed;  // headed by default
     zetta::NodeConfig node;
-    zetta::ClusterConfig cluster;
+    zetta::cluster::ClusterConfig cluster;
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -56,7 +56,7 @@ bool parse_uint16(const std::string& text, std::uint16_t& out) {
 }
 
 void print_usage(const char* argv0) {
-    const zetta::ClusterConfig defaults;
+    const zetta::cluster::ClusterConfig defaults;
     std::printf(
         "zetta %s — a database node\n\n"
         "Usage: %s [options]\n\n"
@@ -156,7 +156,7 @@ std::string load_or_create_node_id(const std::string& data_dir) {
         }
         if (!id.empty()) return id;
     }
-    const std::string id = zetta::new_uuid();
+    const std::string id = zetta::util::new_uuid();
     std::ofstream(path, std::ios::trunc) << id << '\n';
     return id;
 }
@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
     // source of truth for data; it must outlive the Node (which captures into and
     // reconciles from it) and the Cluster (whose thread gossips it).
     const std::string node_id = load_or_create_node_id(opts.node.data_dir);
-    zetta::ReplicationManager replication(node_id);
+    zetta::cluster::ReplicationManager replication(node_id);
 
     zetta::Node node(opts.node, &replication);
     if (!node.start()) {
@@ -190,8 +190,8 @@ int main(int argc, char** argv) {
     }
 
     // Large-object bodies transfer peer-to-peer (their metadata is in the CRDT).
-    zetta::ReplicatedBlobStore blobs(opts.node.data_dir, replication);
-    zetta::Cluster cluster(node_id, opts.cluster, &replication, &blobs);
+    zetta::data::ReplicatedBlobStore blobs(opts.node.data_dir, replication);
+    zetta::cluster::Cluster cluster(node_id, opts.cluster, &replication, &blobs);
     cluster.start();
 
     // Seed this node's membership entry now that its reachable address is known;
@@ -222,7 +222,7 @@ int main(int argc, char** argv) {
     // too. No credentials are stored: the CLI keeps its own auth, and the control
     // plane uses that same CLI to act. The headed App then wires a Provisioner per
     // detected target into its consent-gated Add-nodes control (below).
-    for (zetta::ProvisionerConfig& detected : zetta::detect_provisioner_configs()) {
+    for (zetta::cloud::ProvisionerConfig& detected : zetta::cloud::detect_provisioner_configs()) {
         std::printf("zetta: detected cloud provisioner: %s — %s\n",
                     detected.target.c_str(), detected.summary.c_str());
         node.record_provisioner_config(std::move(detected));
@@ -240,9 +240,9 @@ int main(int argc, char** argv) {
         // in the cluster (best-effort — it brings up no new machines and touches no
         // cloud), reading the live fleet from Cluster::nodes() on each call so it
         // tracks self-healing membership.
-        zetta::LocalProvisioner local_provisioner([&cluster] {
-            std::vector<zetta::ProvisionedNode> fleet;
-            for (const zetta::NodeStatus& peer : cluster.nodes()) {
+        zetta::cloud::LocalProvisioner local_provisioner([&cluster] {
+            std::vector<zetta::cloud::ProvisionedNode> fleet;
+            for (const zetta::cluster::NodeStatus& peer : cluster.nodes()) {
                 fleet.push_back({peer.node_id, peer.address, {}});
             }
             return fleet;

@@ -43,29 +43,29 @@ CloudProvisioners::Wiring wire_one(const char* id, const nlohmann::json& root,
 }  // namespace
 
 std::vector<CloudProvisioners::Wiring> CloudProvisioners::wire(
-    App& app, const std::vector<ProvisionerConfig>& configs,
+    App& app, const std::vector<zetta::cloud::ProvisionerConfig>& configs,
     const std::string& default_seed_peer) {
     // Index the detected configs by catalog id (latest wins, like the node's own
     // per-target store), so wire_one can look each provider up by name. A provider
     // with no detected config is absent from the object and reported skipped.
     nlohmann::json root = nlohmann::json::object();
-    for (const ProvisionerConfig& detected : configs) {
+    for (const zetta::cloud::ProvisionerConfig& detected : configs) {
         root[detected.target] = detected.config;
     }
 
     std::vector<Wiring> wirings;
-    wirings.push_back(wire_one<AzureConfig, AzCliControlPlane, AzureProvisioner>(
+    wirings.push_back(wire_one<zetta::cloud::AzureConfig, zetta::cloud::AzCliControlPlane, zetta::cloud::AzureProvisioner>(
         "azure", root, default_seed_peer, app, azure_cp_, azure_));
-    wirings.push_back(wire_one<AwsConfig, AwsCliControlPlane, AwsProvisioner>(
+    wirings.push_back(wire_one<zetta::cloud::AwsConfig, zetta::cloud::AwsCliControlPlane, zetta::cloud::AwsProvisioner>(
         "aws", root, default_seed_peer, app, aws_cp_, aws_));
-    wirings.push_back(wire_one<GcpConfig, GcpCliControlPlane, GcpProvisioner>(
+    wirings.push_back(wire_one<zetta::cloud::GcpConfig, zetta::cloud::GcpCliControlPlane, zetta::cloud::GcpProvisioner>(
         "gcp", root, default_seed_peer, app, gcp_cp_, gcp_));
-    wirings.push_back(wire_one<OciConfig, OciCliControlPlane, OciProvisioner>(
+    wirings.push_back(wire_one<zetta::cloud::OciConfig, zetta::cloud::OciCliControlPlane, zetta::cloud::OciProvisioner>(
         "oci", root, default_seed_peer, app, oci_cp_, oci_));
-    wirings.push_back(wire_one<K8sConfig, K8sCliControlPlane, K8sProvisioner>(
+    wirings.push_back(wire_one<zetta::cloud::K8sConfig, zetta::cloud::K8sCliControlPlane, zetta::cloud::K8sProvisioner>(
         "kubernetes", root, default_seed_peer, app, k8s_cp_, k8s_));
     wirings.push_back(
-        wire_one<BareMetalConfig, BareMetalCliControlPlane, BareMetalProvisioner>(
+        wire_one<zetta::cloud::BareMetalConfig, zetta::cloud::BareMetalCliControlPlane, zetta::cloud::BareMetalProvisioner>(
             "bare-metal", root, default_seed_peer, app, bare_metal_cp_,
             bare_metal_));
     return wirings;

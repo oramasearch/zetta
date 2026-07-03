@@ -2,18 +2,18 @@
 
 #include <utility>
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 
 namespace zetta::compute {
 
-JobCoordinator::JobCoordinator(Cluster& cluster, unsigned worker_count,
-                               SignalHandler* fallback)
+JobCoordinator::JobCoordinator(zetta::cluster::Cluster& cluster, unsigned worker_count,
+                               zetta::cluster::SignalHandler* fallback)
     : JobCoordinator(cluster, worker_count, DistributedScheduler::Config{},
                      fallback) {}
 
-JobCoordinator::JobCoordinator(Cluster& cluster, unsigned worker_count,
+JobCoordinator::JobCoordinator(zetta::cluster::Cluster& cluster, unsigned worker_count,
                                DistributedScheduler::Config config,
-                               SignalHandler* fallback)
+                               zetta::cluster::SignalHandler* fallback)
     : cluster_(cluster),
       // collectives_ registers itself as the cluster handler, forwarding every
       // non-collective signal to the application `fallback` (its delegate).

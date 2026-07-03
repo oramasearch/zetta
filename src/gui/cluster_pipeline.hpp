@@ -7,7 +7,7 @@
 // short-lived eased "flows" needed to ANIMATE what the read views report.
 //
 // The data sources are the three live, ephemeral read views the prior slices
-// landed (no CRDT, no invented numbers — see docs/pipeline-instrumentation.md):
+// landed (no CRDT, no invented numbers — see docs/compute/pipeline-instrumentation.md):
 //   - system.dataset_partitions  (Node::dataset_partitions())  → placement + rebalance
 //   - system.pipeline_jobs        (Node::pipeline_jobs())        → near-data vs wire bytes
 //   - system.collective_rounds    (coordinator->collectives())  → scatter/gather rounds

@@ -49,7 +49,7 @@ std::optional<std::size_t> add_nodes_count(const ir::Node& step) {
     return std::nullopt;
 }
 
-AddNodesResult run_add_nodes_step(const ir::Node& step, Provisioner& provider) {
+zetta::cloud::AddNodesResult run_add_nodes_step(const ir::Node& step, zetta::cloud::Provisioner& provider) {
     // A missing / zero count is a satisfied no-op, exactly like add_nodes(provider, 0).
     const std::size_t count = add_nodes_count(step).value_or(0);
     return add_nodes(provider, count);

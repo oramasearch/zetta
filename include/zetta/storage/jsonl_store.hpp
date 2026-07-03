@@ -10,7 +10,7 @@
 
 #include "zetta/storage/engine.hpp"
 
-namespace zetta {
+namespace zetta::storage {
 
 // A storage engine that persists rows as JSON Lines, chunked at kRecordsPerChunk
 // rows per file (000000.jsonl, 000001.jsonl, ...) inside a directory, and caches
@@ -52,4 +52,4 @@ private:
     std::unordered_set<std::string> id_index_;  // for contains()
 };
 
-}  // namespace zetta
+}  // namespace zetta::storage

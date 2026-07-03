@@ -41,7 +41,7 @@
 //
 // Wiring this into a top-level input dispatch (so the GUI query box / new-project
 // import auto-detects Python vs SQL) is a later slice. See
-// docs/python-frontend.md.
+// docs/pipeline/python-frontend.md.
 namespace zetta::input {
 
 // Map a Python call's function/method name to its ExecutionGraph `StepKind`. The

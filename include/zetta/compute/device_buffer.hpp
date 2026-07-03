@@ -24,9 +24,9 @@
 // Only a ComputeDevice can construct a non-empty buffer (via its allocate /
 // make_buffer members) — the private constructor enforces that minting and
 // freeing both go through the device.
-namespace zetta::compute {
+namespace zetta::compute { class ComputeDevice; }
 
-class ComputeDevice;
+namespace zetta::compute {
 
 class DeviceBuffer {
 public:

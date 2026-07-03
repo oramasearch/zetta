@@ -7,23 +7,23 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/audit_event.hpp"
-#include "zetta/cloud_inspector.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/compute/checkpoint.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/dataset_partition.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/golden_oracle.hpp"
 #include "zetta/ml/playbook.hpp"
 #include "zetta/ddf/parquet_reader.hpp"
-#include "zetta/model.hpp"
-#include "zetta/node_telemetry.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/parquet/column_decoder.hpp"
 #include "zetta/parquet/metadata.hpp"
-#include "zetta/run.hpp"
-#include "zetta/solution_catalog.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/pipeline/solution_catalog.hpp"
 
 // Schema-as-code (#464): the C++ type is the **single source of truth** for its JSON
 // Schema. Each validated entity exposes its draft-07 schema as a `*_schema()`
@@ -53,16 +53,16 @@ struct SchemaEntry {
 // a new pboettch-validated entity adds its accessor here + a regenerated file.
 const std::vector<SchemaEntry>& schema_registry() {
     static const std::vector<SchemaEntry> registry = {
-        {"run.schema.json", &zetta::run_value_schema},
-        {"model.schema.json", &zetta::model_value_schema},
-        {"index.schema.json", &zetta::index_value_schema},
-        {"compute_job.schema.json", &zetta::compute_job_value_schema},
+        {"run.schema.json", &zetta::pipeline::run_value_schema},
+        {"model.schema.json", &zetta::ml::model_value_schema},
+        {"index.schema.json", &zetta::index::index_value_schema},
+        {"compute_job.schema.json", &zetta::compute::compute_job_value_schema},
         {"job_checkpoint.schema.json", &zetta::compute::job_checkpoint_schema},
         {"dataset_partition.schema.json",
-         &zetta::dataset_partition_value_schema},
-        {"audit_event.schema.json", &zetta::audit_event_value_schema},
-        {"cloud_inspect_report.schema.json", &zetta::cloud_inspect_report_schema},
-        {"solution_catalog.schema.json", &zetta::solution_catalog_schema},
+         &zetta::data::dataset_partition_value_schema},
+        {"audit_event.schema.json", &zetta::governance::audit_event_value_schema},
+        {"cloud_inspect_report.schema.json", &zetta::cloud::cloud_inspect_report_schema},
+        {"solution_catalog.schema.json", &zetta::pipeline::solution_catalog_schema},
         {"calibration.schema.json", &zetta::ml::calibration_schema},
         {"gbdt_model.schema.json", &zetta::ml::gbdt_model_schema},
         {"golden_oracle.schema.json", &zetta::ml::golden_oracle_schema},
@@ -70,7 +70,7 @@ const std::vector<SchemaEntry>& schema_registry() {
         {"parquet_metadata.schema.json", &zetta::parquet::parquet_metadata_schema},
         {"parquet_columns.schema.json", &zetta::parquet::parquet_columns_schema},
         {"parquet_data_frame.schema.json", &zetta::ddf::parquet_data_frame_schema},
-        {"node_metrics.schema.json", &zetta::node_metrics_wire_schema},
+        {"node_metrics.schema.json", &zetta::cluster::node_metrics_wire_schema},
     };
     return registry;
 }

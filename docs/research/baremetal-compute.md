@@ -8,8 +8,8 @@
 >
 > **Status:** reference / background. It is the cited basis for the command shapes
 > the **bare-metal cloud-burst provisioner** uses — `BareMetalCliControlPlane`
-> (`src/core/bare_metal_cli_control_plane.cpp`); see
-> [bare-metal-provisioner.md](../bare-metal-provisioner.md). zetta's burst backend
+> (`src/core/cloud/bare_metal_cli_control_plane.cpp`); see
+> [bare-metal-provisioner.md](../cloud/bare-metal-provisioner.md). zetta's burst backend
 > uses only the **local container** slice (§7 Containers on bare metal — `docker` /
 > `podman run -d` / `ps` / `rm -f`, the cross-OS synchronous-launch mechanism — and
 > §8 `--gpus all` for local GPUs); the rest (processes, systemd/launchd/Windows

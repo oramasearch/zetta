@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ml/gbdt.hpp"
 #include "zetta/ml/tree_shap.hpp"
@@ -42,7 +42,7 @@
 // at its own boundary; TreeSHAP reads the already-validated `GbdtModel`. Persisting the
 // per-entity scores as a dataset / a Run output, and writing the SHAP driver ranking
 // onto the [`Model`](../model.hpp)'s `feature_schema.drivers`, are later slices. See
-// docs/tree-shap.md.
+// docs/ml/tree-shap.md.
 namespace zetta::ml {
 
 // The default per-collective timeout for an explain round (matches the train job).
@@ -79,11 +79,11 @@ struct DistributedExplainResult {
     std::size_t global_entity_count = 0;
     // The job's terminal status (Succeeded when the round completed; Failed on a bad
     // column / a device error / a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Explain `model`'s predictions over this node's shard `features` as an `explain`
@@ -100,7 +100,7 @@ struct DistributedExplainResult {
 // identical on every participating node**; it defaults to a deterministic,
 // model-derived tag.
 DistributedExplainResult run_explain_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job, const GbdtModel& model,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job, const GbdtModel& model,
     const ddf::DataFrame& features, const std::string& entity_column = {},
     const std::string& round_tag = {},
     std::chrono::milliseconds timeout = kDefaultExplainTimeout);

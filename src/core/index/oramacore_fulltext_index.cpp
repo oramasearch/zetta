@@ -11,7 +11,7 @@
 #include "oramacore/index.hpp"
 #endif
 
-namespace zetta {
+namespace zetta::index {
 
 #if defined(ZETTA_WITH_ORAMACORE) && ZETTA_WITH_ORAMACORE
 
@@ -204,4 +204,4 @@ std::size_t OramaCoreFulltextIndex::built_count() const { return 0; }
 
 #endif  // ZETTA_WITH_ORAMACORE
 
-}  // namespace zetta
+}  // namespace zetta::index

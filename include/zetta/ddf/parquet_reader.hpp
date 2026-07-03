@@ -34,7 +34,7 @@
 // Non-throwing (zetta-core is `-fexperimental-library`): a malformed file, a
 // missing / non-numeric / null / out-of-range column, or a device error returns a
 // failing `ComputeStatus` (and an empty frame) rather than throwing across the
-// seam. See docs/parquet-reader.md.
+// seam. See docs/data/parquet-reader.md.
 namespace zetta::ddf {
 
 // Load a projected subset of `file_bytes` (a whole Parquet file) into a typed,

@@ -9,9 +9,9 @@
 
 #include <nlohmann/json.hpp>
 
-#include "zetta/collectives.hpp"
+#include "zetta/cluster/collectives.hpp"
 #include "zetta/compute/compute_status.hpp"
-#include "zetta/model.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 
 #include "feature_columns.hpp"
@@ -104,19 +104,19 @@ std::optional<GbdtCheckpointPayload> decode_gbdt_checkpoint(
 }
 
 // Map a GBDT reduction onto the collective-plane op.
-CollectiveOp to_collective_op(GbdtReduce op) {
+zetta::cluster::CollectiveOp to_collective_op(GbdtReduce op) {
     switch (op) {
-        case GbdtReduce::Sum: return CollectiveOp::Sum;
-        case GbdtReduce::Min: return CollectiveOp::Minimum;
-        case GbdtReduce::Max: return CollectiveOp::Maximum;
+        case GbdtReduce::Sum: return zetta::cluster::CollectiveOp::Sum;
+        case GbdtReduce::Min: return zetta::cluster::CollectiveOp::Minimum;
+        case GbdtReduce::Max: return zetta::cluster::CollectiveOp::Maximum;
     }
-    return CollectiveOp::Sum;
+    return zetta::cluster::CollectiveOp::Sum;
 }
 
 }  // namespace
 
 DistributedTrainResult run_train_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job,
     const ddf::DataFrame& features,
     const std::vector<std::string>& feature_columns,
     const std::string& label_column, const GbdtParams& params, Node* node,
@@ -206,7 +206,7 @@ DistributedTrainResult run_train_job(
             const std::optional<std::vector<double>> agreed =
                 round.allreduce(tag + ".resume",
                                 {static_cast<double>(local_round)},
-                                CollectiveOp::Minimum, timeout);
+                                zetta::cluster::CollectiveOp::Minimum, timeout);
             if (!agreed || agreed->empty()) {
                 return {.ok = false, .detail = "gbdt resume: agreement failed"};
             }
@@ -239,7 +239,7 @@ DistributedTrainResult run_train_job(
                 const bool last = trees_built >= total_trees;
                 if (last || (trees_built % static_cast<int>(every) == 0)) {
                     checkpoint.store->save(compute::JobCheckpoint::make(
-                        tag, JobKind::Train,
+                        tag, zetta::compute::JobKind::Train,
                         static_cast<std::uint64_t>(trees_built),
                         static_cast<std::uint64_t>(total_trees),
                         encode_gbdt_checkpoint(partial, importances)));
@@ -361,7 +361,7 @@ DistributedTrainResult run_train_job(
 
     // Produce the Model: one logical record, registered by the root (it replicates
     // to peers). Each node still ran its own ComputeJob (recorded above).
-    if (out.status == JobStatus::Succeeded && out.is_root && node != nullptr) {
+    if (out.status == zetta::compute::JobStatus::Succeeded && out.is_root && node != nullptr) {
         ModelValue value;
         value.name = model_name.empty() ? "gbdt-binary-logistic" : model_name;
         value.kind = "classifier";
@@ -387,7 +387,7 @@ DistributedTrainResult run_train_job(
 
     // Training fully completed — the model is durable as a Model entity, so the
     // resume checkpoints are no longer needed (each node clears its own store).
-    if (out.status == JobStatus::Succeeded && checkpoint.store != nullptr &&
+    if (out.status == zetta::compute::JobStatus::Succeeded && checkpoint.store != nullptr &&
         checkpoint.clear_on_success) {
         checkpoint.store->clear(tag);
     }

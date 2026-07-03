@@ -38,12 +38,12 @@ namespace zetta::ddf {
 // Read `store`'s rows into a typed, chunked DataFrame on `device`, inferring the
 // schema (infer_schema) — "just scan the table". Thin, vocabulary-establishing
 // wrapper over load_data_frame.
-DataFrameResult scan(const StorageEngine& store, compute::ComputeDevice& device,
+DataFrameResult scan(const zetta::storage::StorageEngine& store, compute::ComputeDevice& device,
                      std::size_t chunk_rows = kDefaultChunkRows);
 
 // Read `store`'s rows into a DataFrame using the explicit `schema`. Delegates to
 // load_data_frame; present so scan/filter/project read as one op vocabulary.
-DataFrameResult scan(const StorageEngine& store, const DataFrameSchema& schema,
+DataFrameResult scan(const zetta::storage::StorageEngine& store, const DataFrameSchema& schema,
                      compute::ComputeDevice& device,
                      std::size_t chunk_rows = kDefaultChunkRows);
 

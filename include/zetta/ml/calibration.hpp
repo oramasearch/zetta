@@ -37,7 +37,7 @@
 // Host-side + non-throwing (zetta-core's no-exceptions convention): the entry points
 // return a `compute::ComputeStatus` / `std::optional`. The JSON boundary mirrors
 // `schemas/calibration.schema.json` (validated with the pboettch draft-07 validator,
-// like the GBDT model body it rides inside). See docs/calibration.md.
+// like the GBDT model body it rides inside). See docs/ml/calibration.md.
 namespace zetta::ml {
 
 // Which calibration map to fit.

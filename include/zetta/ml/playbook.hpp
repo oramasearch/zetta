@@ -40,7 +40,7 @@
 //     API key, and is fully testable.
 //
 // **Numbers are computed; the narrator does only language + play selection.** That
-// is what makes the output trustworthy. See docs/playbook.md and
+// is what makes the output trustworthy. See docs/use-cases/playbook.md and
 // docs/use-cases/uc1.md (4.4-4.7).
 //
 // Pure + deterministic (given a deterministic narrator) + non-throwing. It adds two

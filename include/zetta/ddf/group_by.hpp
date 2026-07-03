@@ -33,7 +33,7 @@
 // be finite numbers (a NaN key is rejected at the boundary).
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry
-// point returns a ComputeStatus alongside its result. See docs/ddf-groupby.md.
+// point returns a ComputeStatus alongside its result. See docs/ddf/ddf-groupby.md.
 namespace zetta::ddf {
 
 // --- Aggregate operators -----------------------------------------------------
@@ -171,7 +171,7 @@ inline constexpr std::chrono::milliseconds kDefaultGroupByTimeout{10000};
 
 // Distributed groupby-aggregate: combine every participant's local partial into a
 // single result identical on every node. `Collective` is any type exposing the
-// signal-plane collectives gather + broadcast (zetta::Collectives and
+// signal-plane collectives gather + broadcast (zetta::cluster::Collectives and
 // zetta::compute::JobRound both do), so a job body can call this directly with its
 // JobRound. SPMD: every node calls it with the same `spec` and `tag` over its own
 // shard.

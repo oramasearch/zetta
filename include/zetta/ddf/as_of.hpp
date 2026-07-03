@@ -39,7 +39,7 @@
 // side reference implementation (correctness over throughput, like CpuDevice is
 // the reference for CudaDevice); pushing the group-by onto the device's
 // sort_by_key + segmented-scan operators is a later optimization behind the same
-// API. See docs/ddf-as-of.md.
+// API. See docs/ddf/ddf-as-of.md.
 namespace zetta::ddf {
 
 // One as-of / windowed aggregation request over a (numeric) DataFrame.

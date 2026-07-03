@@ -7,7 +7,7 @@
 
 #include "zetta/compute/checkpoint.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ml/gbdt.hpp"
 
@@ -33,7 +33,7 @@
 // weighted-histogram kernel is a later optimization behind the same API).
 //
 // **Produces a Model.** When `node` is provided, the deterministic collective root
-// registers the trained model as a `zetta::Model` (kind `classifier`): the GBDT
+// registers the trained model as a `zetta::ml::Model` (kind `classifier`): the GBDT
 // weights body (the JSON the `GbdtModel` serializes to, schema-validated) is
 // attached via `set_weights` (fingerprinted + replicated p2p like any large-object
 // body), with the evaluation metrics in `metrics` and the per-feature gains as the
@@ -44,7 +44,7 @@
 // **No new wire format.** The histograms ride the schema-validated
 // `CollectiveMessage` (via `JobRound::allreduce`), the weights body carries its own
 // validated `GbdtModel` boundary, and the job + model records are schema-validated
-// at their own boundaries. See docs/gbdt.md.
+// at their own boundaries. See docs/ml/gbdt.md.
 namespace zetta {
 class Node;
 }
@@ -64,7 +64,7 @@ inline constexpr std::chrono::milliseconds kDefaultGbdtTimeout{10000};
 // rows). The model trains on the train rows only; the held-out `(raw score, label)`
 // pairs are gathered to the root, the calibrator is fit there and broadcast back, so
 // every node attaches an identical calibrator to its model. Disabled by default —
-// the produced model is then uncalibrated, exactly as before. See docs/calibration.md.
+// the produced model is then uncalibrated, exactly as before. See docs/ml/calibration.md.
 struct CalibrationConfig {
     bool enabled = false;
     CalibrationMethod method = CalibrationMethod::Platt;
@@ -81,7 +81,7 @@ struct CalibrationConfig {
 // a checkpoint simply forces a fresh start rather than desyncing the lock-step
 // histogram rounds). The config must be **uniform across participants** (like
 // `round_tag` / calibration). Disabled by default (`store == nullptr`) — the loop is
-// then exactly the unchanged trainer. See docs/job-checkpoint.md.
+// then exactly the unchanged trainer. See docs/compute/job-checkpoint.md.
 struct TrainCheckpointConfig {
     compute::CheckpointStore* store = nullptr;  // null = checkpointing off (default)
     std::uint32_t checkpoint_every = 1;   // checkpoint after every N boosting rounds
@@ -106,14 +106,14 @@ struct DistributedTrainResult {
     std::string model_id;
     // The job's terminal status (Succeeded when the rounds completed; Failed on a
     // bad column / single-class labels / a device error / a collective timeout).
-    JobStatus status = JobStatus::Failed;
+    zetta::compute::JobStatus status = zetta::compute::JobStatus::Failed;
     // Whether this node was the deterministic collective root (lowest node id).
     bool is_root = false;
     // The boosting round training resumed from (0 = trained from scratch). Non-zero
     // only when a TrainCheckpointConfig store held a checkpoint for this job.
     std::uint64_t resumed_from_round = 0;
 
-    bool ok() const noexcept { return status == JobStatus::Succeeded; }
+    bool ok() const noexcept { return status == zetta::compute::JobStatus::Succeeded; }
 };
 
 // Train a histogram GBDT across the cluster as a `train` ComputeJob, with
@@ -134,7 +134,7 @@ struct DistributedTrainResult {
 // When `checkpoint.store` is set, training checkpoints per round and resumes from
 // the latest checkpoint (eviction tolerance, RULE-5 / #468); disabled by default.
 DistributedTrainResult run_train_job(
-    compute::JobCoordinator& coordinator, ComputeJob& job,
+    compute::JobCoordinator& coordinator, zetta::compute::ComputeJob& job,
     const ddf::DataFrame& features,
     const std::vector<std::string>& feature_columns,
     const std::string& label_column, const GbdtParams& params,

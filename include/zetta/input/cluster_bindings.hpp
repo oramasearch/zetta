@@ -3,9 +3,9 @@
 #include <cstddef>
 #include <optional>
 
-#include "zetta/add_nodes.hpp"            // AddNodesResult, add_nodes
+#include "zetta/cloud/add_nodes.hpp"            // AddNodesResult, add_nodes
 #include "zetta/ir/execution_graph.hpp"  // ir::Node
-#include "zetta/provisioner.hpp"         // Provisioner
+#include "zetta/cloud/provisioner.hpp"         // Provisioner
 
 // Sim-Python **cluster control bindings** (#522). The
 // [Python frontend](python_frontend.hpp) lowers `cluster.add_nodes(n, provider=)`
@@ -13,7 +13,7 @@
 // recording the call's arguments under the node's namespaced `python` provenance
 // bag. This is the matching *execution* binding: take that lowered IR node and run
 // it against the engine's permanent-add control action,
-// [`zetta::add_nodes`](../add_nodes.hpp).
+// [`zetta::cloud::add_nodes`](../add_nodes.hpp).
 //
 // The split — frontend lowers, this binding executes — keeps the frontend a pure,
 // non-throwing parser (it never touches the engine) while the verb still runs
@@ -33,7 +33,7 @@
 // ([`ir::from_json`](../ir/serialization.hpp)); the AddNodesRequest it drives has its
 // own validated boundary. This binding parses no new format of its own.
 //
-// See docs/python-frontend.md.
+// See docs/pipeline/python-frontend.md.
 namespace zetta::input {
 
 // Read the requested node count from a lowered sim-Python `cluster.add_nodes(...)`
@@ -44,9 +44,9 @@ namespace zetta::input {
 std::optional<std::size_t> add_nodes_count(const ir::Node& step);
 
 // Execute a lowered sim-Python `cluster.add_nodes(n, provider=)` IR step against the
-// permanent-add control action (`zetta::add_nodes`) over the injected `provider`.
+// permanent-add control action (`zetta::cloud::add_nodes`) over the injected `provider`.
 // Reads the count via `add_nodes_count`; a missing / zero count is a satisfied no-op
 // (like `add_nodes(provider, 0)`). `provider` must outlive the call.
-AddNodesResult run_add_nodes_step(const ir::Node& step, Provisioner& provider);
+zetta::cloud::AddNodesResult run_add_nodes_step(const ir::Node& step, zetta::cloud::Provisioner& provider);
 
 }  // namespace zetta::input

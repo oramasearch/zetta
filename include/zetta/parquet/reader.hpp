@@ -31,7 +31,7 @@
 // seam), so this entry point is **non-throwing** and every read is bounds-checked
 // (it inherits the bounds checks of the footer parser + decoders). A malformed /
 // truncated / unsupported file returns a failing result with a reason instead of
-// reading out of bounds. See docs/parquet-reader.md.
+// reading out of bounds. See docs/data/parquet-reader.md.
 namespace zetta::parquet {
 
 // The outcome of reading a Parquet file's rows: on success `error` is empty and

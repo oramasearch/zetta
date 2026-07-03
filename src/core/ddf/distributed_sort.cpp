@@ -9,7 +9,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/ddf/data_frame_ops.hpp"
 #include "data_frame_internal.hpp"
 
@@ -305,7 +305,7 @@ std::optional<PartitionMessage> decode_partition_message(std::string_view payloa
 
 // --- DistributedSorter -------------------------------------------------------
 
-DistributedSorter::DistributedSorter(Cluster& cluster, compute::ComputeDevice& device,
+DistributedSorter::DistributedSorter(zetta::cluster::Cluster& cluster, compute::ComputeDevice& device,
                                      SignalHandler* delegate)
     : cluster_(cluster),
       device_(device),
@@ -322,28 +322,28 @@ DistributedSorter::~DistributedSorter() {
     cluster_.set_signal_handler(&collectives_);
 }
 
-SignalResponse DistributedSorter::on_request(const Signal& request) {
+zetta::cluster::SignalResponse DistributedSorter::on_request(const zetta::cluster::Signal& request) {
     if (request.method == kShuffleMethod) {
         std::string error;
         const std::optional<PartitionMessage> message =
             decode_partition_message(request.payload, &error);
         if (!message) {
-            return SignalResponse{.ok = false, .error = "ddf.shuffle: " + error};
+            return zetta::cluster::SignalResponse{.ok = false, .error = "ddf.shuffle: " + error};
         }
         {
             const std::lock_guard<std::mutex> lock(mutex_);
             inbox_[message->tag].push_back(*message);
         }
-        return SignalResponse{.ok = true};
+        return zetta::cluster::SignalResponse{.ok = true};
     }
     return collectives_.on_request(request);
 }
 
-void DistributedSorter::on_event(const Signal& event) {
+void DistributedSorter::on_event(const zetta::cluster::Signal& event) {
     collectives_.on_event(event);
 }
 
-void DistributedSorter::on_task(const Signal& task) {
+void DistributedSorter::on_task(const zetta::cluster::Signal& task) {
     collectives_.on_task(task);
 }
 
@@ -427,7 +427,7 @@ DistributedSorter::Result DistributedSorter::sort(const DataFrame& local_shard,
         if (bucket == rank) continue;
         const PartitionMessage message =
             to_message(shuffle_tag, self, buckets[bucket]);
-        const SignalResponse response = cluster_.request(
+        const zetta::cluster::SignalResponse response = cluster_.request(
             members[bucket], std::string{kShuffleMethod},
             encode_partition_message(message), timeout);
         if (!response.ok) {

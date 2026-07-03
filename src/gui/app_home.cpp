@@ -1,9 +1,9 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
 
-#include "zetta/cluster.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
-#include "zetta/project.hpp"
+#include "zetta/pipeline/project.hpp"
 #include "zetta/version.hpp"
 
 #include <imgui.h>

@@ -42,7 +42,7 @@
 // `parallel_map`; see gbdt_explain_job.hpp) and reproducible. It introduces no new JSON
 // boundary: it reads the already-schema-validated `GbdtModel` and returns plain data.
 //
-// See docs/tree-shap.md.
+// See docs/ml/tree-shap.md.
 namespace zetta::ml {
 
 // One entity's exact SHAP explanation, in the model's raw-score (margin / logit) space.

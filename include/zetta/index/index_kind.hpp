@@ -15,7 +15,7 @@
 //
 // This is a header-only enum + name conversions, the same foundational shape as
 // ir::StepKind (ir/step_kind.hpp) and compute::DataType (compute/data_type.hpp).
-namespace zetta {
+namespace zetta::index {
 
 // The type of an index — *what* it accelerates, independent of *which* backend
 // builds it. Declaration order is stable (append new kinds, never reorder); the
@@ -54,4 +54,4 @@ constexpr std::optional<IndexKind> index_kind_from_name(std::string_view name) {
     return std::nullopt;
 }
 
-}  // namespace zetta
+}  // namespace zetta::index

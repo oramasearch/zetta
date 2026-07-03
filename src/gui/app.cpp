@@ -2,45 +2,45 @@
 #include "gui/app_internal.hpp"
 #include "gui/repl_console.hpp"
 
-#include "zetta/access_key.hpp"
-#include "zetta/add_dataset.hpp"
-#include "zetta/audit_event.hpp"
-#include "zetta/bytes.hpp"
-#include "zetta/capability.hpp"
-#include "zetta/churn_solution.hpp"
-#include "zetta/cloud_inspector.hpp"
-#include "zetta/cloud_provider.hpp"
-#include "zetta/cluster.hpp"
+#include "zetta/governance/access_key.hpp"
+#include "zetta/data/add_dataset.hpp"
+#include "zetta/governance/audit_event.hpp"
+#include "zetta/util/bytes.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
+#include "zetta/cloud/cloud_inspector.hpp"
+#include "zetta/cloud/cloud_provider.hpp"
+#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
 #include "zetta/compute/job_coordinator.hpp"
-#include "zetta/compute_job.hpp"
-#include "zetta/database.hpp"
-#include "zetta/deployment.hpp"
-#include "zetta/deployment_target.hpp"
-#include "zetta/duration.hpp"
-#include "zetta/gate.hpp"
-#include "zetta/import.hpp"
+#include "zetta/compute/compute_job.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/pipeline/deployment.hpp"
+#include "zetta/pipeline/deployment_target.hpp"
+#include "zetta/util/duration.hpp"
+#include "zetta/pipeline/gate.hpp"
+#include "zetta/data/import.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/ir/step_kind.hpp"
-#include "zetta/large_object.hpp"
-#include "zetta/model.hpp"
-#include "zetta/n8n_import.hpp"
+#include "zetta/data/large_object.hpp"
+#include "zetta/ml/model.hpp"
+#include "zetta/pipeline/n8n_import.hpp"
 #include "zetta/node.hpp"
-#include "zetta/principal.hpp"
-#include "zetta/project.hpp"
-#include "zetta/project_graph.hpp"
+#include "zetta/governance/principal.hpp"
+#include "zetta/pipeline/project.hpp"
+#include "zetta/pipeline/project_graph.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/repl/governed_console.hpp"
-#include "zetta/run.hpp"
-#include "zetta/scaling_policy.hpp"
-#include "zetta/scope.hpp"
+#include "zetta/pipeline/run.hpp"
+#include "zetta/compute/scaling_policy.hpp"
+#include "zetta/governance/scope.hpp"
 #include "zetta/signals.hpp"
-#include "zetta/solution_catalog.hpp"
-#include "zetta/table.hpp"
+#include "zetta/pipeline/solution_catalog.hpp"
+#include "zetta/data/table.hpp"
 #include "zetta/testkit/test_suite.hpp"
-#include "zetta/timestamp.hpp"
-#include "zetta/validation.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/pipeline/validation.hpp"
 #include "zetta/version.hpp"
 
 #include <SDL3/SDL.h>
@@ -165,7 +165,7 @@ void apply_orama_theme(ImGuiStyle& style) {
 // top of render_frame()). Null until the first font-atlas build.
 ImFont* g_mono_font = nullptr;
 
-App::App(Node& node, Cluster& cluster)
+App::App(Node& node, zetta::cluster::Cluster& cluster)
     : node_(node),
       cluster_(cluster),
       query_(std::make_unique<query::QueryService>(node, &cluster)),
@@ -203,14 +203,14 @@ App::App(Node& node, Cluster& cluster)
     // capability check, correctness gate, and audit record (in GovernedConsole) wrap
     // this identically either way, so the run stays gated + governed.
     governed_console_->set_graph_runner(
-        [this](const ir::ExecutionGraph& graph) -> ExecutionResult {
-            if (!is_churn_graph(graph)) return node_.run_graph(graph);
+        [this](const ir::ExecutionGraph& graph) -> zetta::pipeline::ExecutionResult {
+            if (!zetta::usecases::churn::is_churn_graph(graph)) return node_.run_graph(graph);
             compute::CpuDevice device;
-            ChurnSolutionOptions options;
+            zetta::usecases::churn::ChurnSolutionOptions options;
             options.project = "console";
             options.graph = "console-churn";
             return run_churn_solution_on_node(node_, device, graph,
-                                              demo_churn_dataset(), options)
+                                              zetta::usecases::churn::demo_churn_dataset(), options)
                 .execution;
         });
 }
@@ -537,9 +537,9 @@ void App::handle_incoming_files() {
         // placed across the cluster. The add runs on this (main) thread, which
         // owns the node, like the other ingestion paths.
         if (intent == FileIntent::Dataset) {
-            AddDatasetOptions options;
+            zetta::data::AddDatasetOptions options;
             options.members = node_.cluster_members();
-            const AddDatasetResult loaded = add_dataset_file(node_, path, options);
+            const zetta::data::AddDatasetResult loaded = add_dataset_file(node_, path, options);
             if (loaded.ok()) {
                 io_status_ = "Added dataset " + loaded.table->name() + " (" +
                              std::to_string(loaded.rows) + " row(s), " +
@@ -569,7 +569,7 @@ void App::handle_incoming_files() {
                              path.filename().string() + ")";
                 continue;
             }
-            const ImportResult r = import_records(*table, path);
+            const zetta::data::ImportResult r = import_records(*table, path);
             io_status_ = r.ok() ? "Imported " + std::to_string(r.added) +
                                       " record(s) into " + table->name()
                                 : "Import failed: " + r.error;
@@ -582,7 +582,7 @@ void App::handle_incoming_files() {
             }
             const auto lo = db->large_objects().import_file(path);
             io_status_ = lo ? "Stored " + lo->name + " (" +
-                                  format_bytes(lo->size) + ") as a large object"
+                                  zetta::util::format_bytes(lo->size) + ") as a large object"
                             : "Store failed: " + path.string();
         }
     }
@@ -607,7 +607,7 @@ void App::stage_n8n_artifact(const std::string& path) {
     // the real storage boundary on Create. (No new format is introduced — this
     // reuses the existing n8n_workflow_schema.)
     std::string error;
-    if (!validate_n8n_workflow(content, &error)) {
+    if (!zetta::pipeline::validate_n8n_workflow(content, &error)) {
         new_project_artifact_valid_ = false;
         new_project_artifact_status_ = error;
         return;

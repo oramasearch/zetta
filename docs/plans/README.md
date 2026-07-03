@@ -12,3 +12,7 @@ plan.
   provisioning, SKU fallback, editable placement — built on PR
   [#608](https://github.com/oramasearch/zetta/pull/608)) and the next slice that
   makes them **join the equal-peer cluster** (cloud-init + a routable/overlay seed).
+- [mcp-service.md](mcp-service.md) — the **MCP + REST control surface**:
+  one registry of governed, schema-validated tools over the existing engine
+  entry points (read parity → action parity → REST/OpenAPI → simulated user
+  tests → GUI activity surfacing), embedded in headed + headless nodes.

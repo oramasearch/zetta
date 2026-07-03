@@ -6,7 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <nlohmann/json-schema.hpp>
 
-namespace zetta {
+namespace zetta::index {
 namespace fs = std::filesystem;
 
 namespace {
@@ -112,7 +112,7 @@ std::optional<IndexValue> parse_index_value(const nlohmann::json& value,
 // ----- Index -----------------------------------------------------------------
 
 Index::Index(std::string id, IndexValue value, fs::path dir,
-             ReplicationManager* replication)
+             zetta::cluster::ReplicationManager* replication)
     : id_(std::move(id)),
       value_(std::move(value)),
       dir_(std::move(dir)),
@@ -132,4 +132,4 @@ void Index::persist_meta() const {
     out << meta.dump(2) << '\n';
 }
 
-}  // namespace zetta
+}  // namespace zetta::index

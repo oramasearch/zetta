@@ -10,8 +10,7 @@
 namespace zetta {
 
 class Node;
-class Cluster;
-
+namespace cluster { class Cluster; }
 namespace query {
 
 // Outcome of executing one statement.
@@ -32,14 +31,14 @@ struct QueryResult {
 // + replication status); without one, querying it returns a clear error.
 class Executor {
 public:
-    explicit Executor(Node& node, const Cluster* cluster = nullptr)
+    explicit Executor(Node& node, const zetta::cluster::Cluster* cluster = nullptr)
         : node_(node), cluster_(cluster) {}
 
     QueryResult execute(const Statement& stmt, const std::string& current_database);
 
 private:
     Node& node_;
-    const Cluster* cluster_;
+    const zetta::cluster::Cluster* cluster_;
 };
 
 }  // namespace query

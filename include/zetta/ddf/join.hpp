@@ -48,9 +48,11 @@
 // Scope of this slice: **inner equi-join** only (left / right / full outer are
 // later), the local hash + sort-merge algorithms, and the collective repartition.
 // No Node CRUD / SQL surface / ComputeJob `ddf`-kind wiring — the integration test
-// drives it through an existing `Ddf` job. See docs/ddf-join.md.
+// drives it through an existing `Ddf` job. See docs/ddf/ddf-join.md.
+namespace zetta::compute { class JobRound; }
+
 namespace zetta::compute {
-class JobRound;  // include/zetta/compute/job_coordinator.hpp — forward-declared so
+
                  // this header stays light; the .cpp pulls in the definition.
 }
 

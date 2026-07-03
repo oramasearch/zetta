@@ -3,9 +3,9 @@
 #include <functional>
 #include <string>
 
-#include "zetta/capability.hpp"
-#include "zetta/executor.hpp"
-#include "zetta/gate.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/pipeline/executor.hpp"
+#include "zetta/pipeline/gate.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/repl/console_model.hpp"
 
@@ -23,7 +23,7 @@
 // CLI REPL, `tests/test_governed_console.cpp`) and under the GUI screen, which is
 // a thin renderer that only sets the acting key + database and forwards each run.
 //
-// Two frontends, governed two ways (see docs/governed-console.md):
+// Two frontends, governed two ways (see docs/governance/governed-console.md):
 //
 //   - **SQL** runs through the dialect-agnostic [query service](../query/service.hpp)
 //     — its own validated executor — so it is governed by the **capability check +
@@ -56,7 +56,7 @@ namespace repl {
 // operation the acting key is checked against (ENT-22). SQL is an `api`/`query`
 // right; simulated-Python runs a graph, an `orchestration`/`start_run` right.
 // Exposed so the GUI selector + tests can name the rights a key must hold.
-Operation required_operation(Frontend frontend);
+zetta::governance::Operation required_operation(Frontend frontend);
 
 // The governance pipeline for one REPL/console session. Holds the engine seams a
 // statement needs (the Node for run/audit/key lookup, the query service for SQL)
@@ -68,7 +68,7 @@ public:
     // `gate` defaults to the baseline `default_gate()`; an injected gate lets a
     // test exercise the gate-block path deterministically.
     GovernedConsole(Node& node, query::QueryService& query,
-                    CorrectnessGate gate = default_gate());
+                    zetta::pipeline::CorrectnessGate gate = zetta::pipeline::default_gate());
 
     // The acting key id ("" = an unauthenticated local session). When set, every
     // statement is capability-checked against this key before it runs and a denied
@@ -91,7 +91,7 @@ public:
     // (DefaultStepExecutor). A host injects one to route a churn-shaped graph through
     // the real churn engine on the node's live JobCoordinator (#580) — see
     // `run_churn_solution_on_node` / `is_churn_graph` in churn_solution.hpp.
-    using GraphRunner = std::function<ExecutionResult(const ir::ExecutionGraph&)>;
+    using GraphRunner = std::function<pipeline::ExecutionResult(const ir::ExecutionGraph&)>;
     void set_graph_runner(GraphRunner runner) {
         graph_runner_ = std::move(runner);
     }
@@ -106,7 +106,7 @@ private:
     Node& node_;
     query::QueryService& query_;
     input::PythonFrontend python_;
-    CorrectnessGate gate_;
+    zetta::pipeline::CorrectnessGate gate_;
     GraphRunner graph_runner_;  // how a gate-passed sim-Python graph runs (default: run_graph)
     std::string session_key_;  // "" = unauthenticated local session
     std::string database_;     // current database for unqualified SQL names
