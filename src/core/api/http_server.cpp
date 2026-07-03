@@ -19,6 +19,7 @@
 #include <boost/http/server/router.hpp>
 #include <boost/json.hpp>
 
+#include "zetta/api/background.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
@@ -77,6 +78,9 @@ struct ApiServer::Impl {
 
     Registry capability_registry;
     MainThreadBridge bridge;
+    // Owns the worker handles the kind:job capabilities launch (#617); pruned
+    // each drain() on the owner thread, where their destructors may join.
+    BackgroundActions background;
 
     boost::corosio::io_context io_context;
     std::unique_ptr<boost::beast2::http_server> server;
@@ -142,7 +146,7 @@ struct ApiServer::Impl {
             // io coroutine is suspended on the bridge until it completes.
             auto work = [&] {
                 ApiContext context{node, cluster, acting_key, trace,
-                                   &node.span_recorder()};
+                                   &node.span_recorder(), &background};
                 call_result =
                     capability_registry.call(tool_name, arguments, context);
             };
@@ -392,7 +396,10 @@ void ApiServer::stop() {
 bool ApiServer::running() const { return impl_->is_running.load(); }
 unsigned short ApiServer::port() const { return impl_->bound_port; }
 const std::string& ApiServer::reason() const { return impl_->failure_reason; }
-void ApiServer::drain() { impl_->bridge.drain(); }
+void ApiServer::drain() {
+    impl_->bridge.drain();
+    impl_->background.prune();  // finished job workers join + free here
+}
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
     return impl_->node.span_recorder();

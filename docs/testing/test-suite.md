@@ -49,6 +49,17 @@ same context threads a whole sweep into ONE trace. The GUI's Test-suite panel
 records into the live node's ring, so in-app runs surface like any other
 operation. Null recorder (the default) = spans no-op.
 
+**Running a case in the background with a durable handle (#617):**
+`testkit::AsyncCaseRun` (`include/zetta/testkit/async_case_run.hpp`) runs one
+case on a worker with a live **Run record** as the handle — created on the
+owner thread at `start()` (project label `testkit`, graph label = the case
+id) so the `run:<uuid>` id is known at submit; the case's log lines, metrics,
+and verdict flush to the Run with the terminal status (Pass/Skipped →
+Succeeded, Fail/Error → Failed). This is the engine entry point behind the
+MCP `testkit_run` capability
+([../api/governed-actions.md](../api/governed-actions.md)); the GUI panel
+keeps its own worker + live-streamed panel log.
+
 ## The cases
 
 | Category | Cases | What they check |

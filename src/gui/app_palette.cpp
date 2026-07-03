@@ -36,6 +36,7 @@
 #include "gui/app_internal.hpp"
 #include "gui/app_operations_internal.hpp"
 #include "gui/tones.hpp"
+#include "zetta/api/background.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
@@ -161,11 +162,18 @@ void App::run_palette_capability(const std::string& capability_name) {
     // handler path every other rendering takes. The palette acts as the
     // audited "unauthenticated local" session (the governed-console
     // precedent), and the span lands in the node's ring beside MCP calls.
+    // The lazily-built background owner lets the kind:job entries (run /
+    // testkit_run, #617) launch from the palette too; poll_background_ops()
+    // prunes finished workers each frame.
+    if (!palette_background_) {
+        palette_background_ = std::make_unique<api::BackgroundActions>();
+    }
     api::ApiContext context{.node = node_,
                             .cluster = &cluster_,
                             .acting_key = {},
                             .trace = zetta::observability::make_root_trace(),
-                            .recorder = &node_.span_recorder()};
+                            .recorder = &node_.span_recorder(),
+                            .background = palette_background_.get()};
     const api::ApiResult result =
         capability_registry_->call(capability_name, input, context);
 

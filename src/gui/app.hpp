@@ -45,6 +45,7 @@ namespace zetta::testkit { struct TestCase; }
 namespace zetta::gui { struct AddNodesOp; }
 namespace zetta::gui { struct VmSizesOp; }
 namespace zetta::api { class Registry; }
+namespace zetta::api { class BackgroundActions; }
 namespace zetta::gui { struct CloudInspectOp; }
 namespace zetta::usecases::churn { class AsyncChurnRun; }
 namespace zetta::data { class AsyncDatasetAdd; }
@@ -501,6 +502,10 @@ private:
     // entry list itself is rebuilt from live sources every frame.
     zetta::api::Registry* capability_registry_ = nullptr;
     std::unique_ptr<zetta::api::Registry> owned_capability_registry_;
+    // Owner for the worker handles the kind:job capabilities launch when
+    // executed from the palette (run / testkit_run, #617); pruned each frame
+    // in poll_background_ops() — the owner thread, like churn_run_.
+    std::unique_ptr<zetta::api::BackgroundActions> palette_background_;
     bool palette_requested_ = false;  // Cmd+K / menu asks to open next frame
     std::string palette_query_;
     int palette_selected_ = 0;
