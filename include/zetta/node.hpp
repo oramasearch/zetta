@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,6 +23,7 @@
 #include "zetta/pipeline/deployment_controller.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_registry.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/cluster/node_metrics.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
@@ -263,6 +265,46 @@ public:
     // `index_registry().resolve(spec)->query(spec, q)`. See docs/indexing/index-step-executor.md.
     zetta::index::IndexRegistry& index_registry() { return index_registry_; }
     const zetta::index::IndexRegistry& index_registry() const { return index_registry_; }
+
+    // THE canonical search entry point (#641) — what every surface (GUI, MCP,
+    // tests) calls; there is no second query path. Resolves `request.target` to a
+    // registered Search index (by id, else the newest over that table), routes it
+    // through the per-partition distributed path when the table has placed
+    // partitions on a clustered node (the distributed-first default; consolidated
+    // registry backend otherwise — the degraded path), and returns the global
+    // ranking with per-node provenance. With a recorder, the whole search is ONE
+    // trace (a root `search` span + per-node children). Main-thread only. See
+    // index/search.hpp / docs/indexing/node-search.md.
+    zetta::index::SearchResult search(
+        const zetta::index::SearchRequest& request,
+        zetta::observability::SpanRecorder* recorder = nullptr,
+        const zetta::observability::TraceContext* parent = nullptr);
+
+    // The per-partition distributed full-text machinery over the attached
+    // cluster (#529/#641), or nullptr when no cluster is attached (standalone /
+    // before attach_cluster) — like job_coordinator(). Owned by the node: wired
+    // in start_coordinator() chained over the compute plane's signal handler,
+    // torn down in stop_coordinator(). Search goes through search(), not this.
+    zetta::index::DistributedFulltextIndex* distributed_fulltext() {
+        return distributed_fulltext_.get();
+    }
+
+    // The IndexBackend the distributed fulltext machinery builds its
+    // per-partition sub-indexes into. Set BEFORE attach_cluster to override the
+    // default (OramaCoreFulltextIndex when compiled in, else the exact-match
+    // InMemoryIndexBackend) — the seam tests inject a reference scorer through.
+    void set_search_backend(std::shared_ptr<zetta::index::IndexBackend> backend) {
+        search_backend_ = std::move(backend);
+    }
+
+    // Keep this node's per-partition search sub-indexes current: for every
+    // Search-kind Index entity, (re)build the local sub-indexes over the
+    // partitions this node OWNS whenever that input set changed (a fingerprint
+    // guards rebuilds, so the steady-state tick cost is a cheap comparison).
+    // Runs from tick() on every node — which is what lets ANY node answer a
+    // peer's scatter — and from search() before it queries. Main-thread only.
+    // No-op until a cluster is attached.
+    void reconcile_search_indexes();
 
     // CRUD for compute jobs (one unit of native distributed accelerated compute —
     // ARC-11 / ENT-31; see compute_job.hpp / docs/compute/compute-jobs.md). Like runs,
@@ -683,6 +725,18 @@ private:
     std::unique_ptr<zetta::cluster::NodeTelemetryExchange> telemetry_;
     std::chrono::steady_clock::time_point last_telemetry_sample_{};
     std::unique_ptr<compute::JobCoordinator> coordinator_;
+    // The distributed search plane (#641): the per-partition fulltext machinery
+    // over the attached cluster, chained over the coordinator's signal handler —
+    // so EVERY clustered node serves `fulltext.query` scatters. Declared after
+    // coordinator_ (destroyed first: its handler unwind restores the compute
+    // plane's handler); created in start_coordinator(), reset in
+    // stop_coordinator(). `search_backend_` optionally overrides the sub-index
+    // backend (set_search_backend, before attach); `search_build_fingerprints_`
+    // guards reconcile_search_indexes() rebuilds (spec key -> the input
+    // fingerprint last built).
+    std::shared_ptr<zetta::index::IndexBackend> search_backend_;
+    std::unique_ptr<zetta::index::DistributedFulltextIndex> distributed_fulltext_;
+    std::map<std::string, std::string> search_build_fingerprints_;
 };
 
 }  // namespace zetta

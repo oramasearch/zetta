@@ -5,6 +5,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/index/search.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/feedback.hpp"
 #include "zetta/query/service.hpp"
@@ -72,6 +73,74 @@ ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
     output["messages"] = outcome.messages;
     output["columns"] = outcome.columns;
     output["rows"] = outcome.rows;
+    return ApiResult::success(std::move(output));
+}
+
+// --- search --------------------------------------------------------------------
+
+const nlohmann::json& search_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"target", "query"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"target",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "an index id, or a table name with a Search index over it"}}},
+          {"query",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the free-text query"}}},
+          {"field",
+           {{"type", "string"},
+            {"description",
+             "restrict matching to one indexed field (optional)"}}},
+          {"top_k",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 1000},
+            {"description", "cap on the global ranking (default 10)"}}}}}};
+    return schema;
+}
+
+// The thin caller of THE search entry point (Node::search, #641) — the same
+// path the GUI drives, so MCP/REST and the GUI can never diverge.
+ApiResult handle_search(const nlohmann::json& input, ApiContext& context) {
+    zetta::index::SearchRequest request;
+    request.target = input.at("target").get<std::string>();
+    request.query = input.at("query").get<std::string>();
+    request.field = input.value("field", std::string{});
+    request.top_k = input.value("top_k", 10);
+
+    const zetta::index::SearchResult result =
+        context.node.search(request, context.recorder, &context.trace);
+    if (!result.ok()) {
+        return ApiResult::failure("engine_error", result.status.message);
+    }
+
+    nlohmann::json hits = nlohmann::json::array();
+    for (const zetta::index::SearchHit& hit : result.hits) {
+        hits.push_back({{"id", hit.row_id}, {"score", hit.score}});
+    }
+    // Per-node provenance: which node answered, and at what cost (#641).
+    nlohmann::json nodes = nlohmann::json::array();
+    for (const zetta::index::NodeContribution& contribution : result.nodes) {
+        nodes.push_back({{"node_id", contribution.node_id},
+                         {"local", contribution.local},
+                         {"hits", contribution.hits},
+                         {"latency_ms", contribution.latency_ms},
+                         {"wire_bytes", contribution.wire_bytes}});
+    }
+    nlohmann::json output;
+    output["index_id"] = result.index_id;
+    output["table"] = result.spec.table;
+    output["path"] = zetta::index::to_string(result.path);
+    output["hits"] = std::move(hits);
+    output["nodes"] = std::move(nodes);
+    output["wire_bytes_moved"] = result.wire_bytes_moved;
+    output["duration_ms"] = result.duration_ms;
     return ApiResult::success(std::move(output));
 }
 
@@ -294,6 +363,19 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_sql});
+
+    registry.add(Capability{
+        "search",
+        "Search",
+        "Search a registered index by free text — distributed scatter-gather "
+        "across the cluster when the table is partitioned — returning ranked "
+        "hits with per-node provenance and a trace id. No side effects.",
+        search_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_search});
 
     registry.add(Capability{
         "list_projects",

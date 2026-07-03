@@ -11,3 +11,4 @@ Vector / semantic / feature backends are additive behind the same seam.
 - [oramacore-fulltext-index.md](oramacore-fulltext-index.md) — the first real backend: full-text BM25F over the native oramacore-cpp engine, `ZETTA_WITH_ORAMACORE`-guarded (#527).
 - [index-step-executor.md](index-step-executor.md) — run-path wiring: an IR `index` step resolves a backend, builds a real queryable index, records the entity (`IndexStepExecutor`, #528).
 - [distributed-fulltext.md](distributed-fulltext.md) — per-partition distributed full-text: sub-index per owned partition, scatter-gather + merge/rank matching a consolidated oracle (#529, TC-13).
+- [node-search.md](node-search.md) — THE canonical search entry point: `Node::search` routes distributed-first with per-node provenance + one trace; GUI/MCP call it, no second path (#641).

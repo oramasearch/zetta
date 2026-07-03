@@ -13,6 +13,7 @@ Orama tokens, typography, copy rules, and component grammar it defines are enfor
 - [status-tones.md](status-tones.md) — one status visual language: `Tone` + `tone_of(...)` in the single mapping site `tones.hpp`, rendered by `status_label` (rows) / `status_pill` (headers) (#636).
 - [new-project-screen.md](new-project-screen.md) — the New Project screen (SCR-2): name a project, paste an NL intent, import/drop an n8n workflow artifact in one atomic create (FEAT-1).
 - [datasets-panel.md](datasets-panel.md) — the Datasets view: the GUI form of [`system.datasets`](../data/system-datasets.md), with partition placement as a node-box overlay (#586).
+- [search-view.md](search-view.md) — the Search view: the GUI rendering of [`Node::search`](../indexing/node-search.md) — ranked hits + per-node provenance, the same path as the `search` MCP tool (#641).
 - [jobs-panel.md](jobs-panel.md) — the Compute Jobs panel: live `system.jobs` + per-job objective/scaling controls previewing `ScalingPolicy::evaluate()` (FEAT-5).
 - [models-panel.md](models-panel.md) — the standalone Models view: the GUI form of `system.models` — metrics, ranked drivers, weights fingerprint + an inline Add model affordance (#575).
 - [repl-console.md](repl-console.md) — the REPL console component (CMP-6 / #524): `repl::ConsoleModel` in zetta-core + the thin `gui::ReplConsole` renderer behind Data → Console.

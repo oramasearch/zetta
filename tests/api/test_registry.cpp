@@ -9,10 +9,15 @@
 #include <chrono>
 #include <thread>
 
+#include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/registry.hpp"
+#include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/index/index.hpp"
+#include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
@@ -49,10 +54,11 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 7u);
+    EXPECT_EQ(registry.size(), 8u);
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("sql"));
     EXPECT_TRUE(registry.find("submit_feedback"));
+    EXPECT_TRUE(registry.find("search"));
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
 
@@ -109,6 +115,62 @@ TEST_F(RegistryFixture, SqlReadsTheSystemViews) {
         call("sql", nlohmann::json{{"statement", "SELECT * FROM system.datasets;"}});
     ASSERT_TRUE(result.ok) << result.error.message;
     EXPECT_TRUE(result.value.contains("rows"));
+}
+
+// Journey: seed a table + Search index, then `search` — the capability is a
+// thin caller of THE entry point (Node::search, #641), so the ranked hits come
+// back with per-node provenance and the search's own trace id; malformed input
+// is rejected at the schema boundary with the path-qualified reason.
+TEST_F(RegistryFixture, JourneySearchReturnsRankedHitsWithProvenance) {
+    node.index_registry().add(
+        std::make_shared<zetta::test::TermFrequencyBackend>());
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("articles");
+    ASSERT_TRUE(table);
+    table->add_row({{"title", "Postgres deep dive"},
+                    {"body", "postgres postgres postgres tuning"}});
+    table->add_row({{"title", "Cooking pasta"}, {"body", "boil water"}});
+
+    zetta::index::IndexValue value;
+    value.table = "articles";
+    value.kind = zetta::index::IndexKind::Search;
+    value.backend = "tf_reference";
+    value.fields = {"title", "body"};
+    const auto index = node.create_index(std::move(value));
+    ASSERT_TRUE(index);
+    const zetta::index::IndexSpec spec = index->spec();
+    ASSERT_TRUE(node.index_registry()
+                    .resolve(spec)
+                    ->build(spec, zetta::index::read_index_partitions(
+                                      table->store()))
+                    .ok());
+
+    // Schema boundary: a missing required field fails as invalid_input.
+    auto missing = call("search", nlohmann::json{{"target", "articles"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.error.code, "invalid_input");
+
+    auto result = call("search", nlohmann::json{{"target", "articles"},
+                                                {"query", "postgres"}});
+    ASSERT_TRUE(result.ok) << result.error.message;
+    EXPECT_EQ(result.value.at("index_id"), index->id());
+    EXPECT_EQ(result.value.at("path"), "consolidated");  // nothing partitioned
+    ASSERT_EQ(result.value.at("hits").size(), 1u);
+    EXPECT_GT(result.value.at("hits")[0].at("score").get<double>(), 0.0);
+    // Per-node provenance: exactly this node answered, marked local.
+    ASSERT_EQ(result.value.at("nodes").size(), 1u);
+    EXPECT_EQ(result.value.at("nodes")[0].at("node_id"), node.node_id());
+    EXPECT_TRUE(result.value.at("nodes")[0].at("local").get<bool>());
+    // The call rode the fixture's trace (threaded back on the ApiResult).
+    EXPECT_EQ(result.trace_id, trace.trace_id);
+
+    // An unknown target is a domain failure carrying the engine's reason.
+    auto unknown = call("search", nlohmann::json{{"target", "nonexistent"},
+                                                 {"query", "postgres"}});
+    EXPECT_FALSE(unknown.ok);
+    EXPECT_EQ(unknown.error.code, "engine_error");
+    EXPECT_NE(unknown.error.message.find("nonexistent"), std::string::npos);
 }
 
 // Journey: create_project -> read back through list_projects AND sql. Every

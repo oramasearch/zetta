@@ -33,6 +33,7 @@ frame) via the bridge — the loops drain it beside `Node::tick()`.
 |---|---|---|---|
 | `server_info` | read | api:query | node identity, version, entity counts, membership |
 | `sql` | read | api:query | one governed SQL statement — every `system.*` view |
+| `search` | read | api:query | ranked fulltext search via [`Node::search`](../indexing/node-search.md) · distributed when partitioned · per-node provenance |
 | `list_projects` | read | api:query | project names |
 | `list_traces` | read | api:query | recent observability spans |
 | `get_trace` | read | api:query | every span of one trace id |

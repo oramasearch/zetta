@@ -426,6 +426,7 @@ add_library(zetta-core STATIC
   src/core/index/in_memory_index_backend.cpp
   src/core/index/oramacore_fulltext_index.cpp
   src/core/index/distributed_fulltext.cpp
+  src/core/index/search.cpp
   src/core/compute/compute_job.cpp
   src/core/data/dataset_partition.cpp
   src/core/data/rendezvous_placement.cpp
@@ -593,6 +594,7 @@ add_executable(zetta
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
   src/gui/app_datasets.cpp
+  src/gui/app_search.cpp
   src/gui/app_jobs.cpp
   src/gui/app_cluster.cpp
   src/gui/app_cloud.cpp

@@ -32,7 +32,9 @@ namespace zetta::pipeline { class ProjectGraph; }
 namespace zetta::pipeline { struct ClusterPlan; }
 namespace zetta::pipeline { class Run; }
 namespace zetta::pipeline { struct RunProgress; }
+namespace zetta::index { struct SearchResult; }
 namespace zetta::ir { class ExecutionGraph; }
+namespace zetta::observability { class SpanRecorder; }
 namespace zetta::query { class QueryService; }
 namespace zetta::repl { class ConsoleModel; }
 namespace zetta::repl { class GovernedConsole; }
@@ -95,6 +97,14 @@ public:
     // embedded API server's bridge drains through (docs/api/registry-design.md).
     void set_tick_hook(std::function<void()> hook) { tick_hook_ = std::move(hook); }
 
+    // The node's span ring (the API server's recorder today) — lets GUI-driven
+    // searches record their trace into the same ring MCP calls do, so
+    // list_traces / the trace pane show one history. Null (the default) = GUI
+    // searches record no spans. Non-owning; must outlive the App.
+    void set_span_recorder(zetta::observability::SpanRecorder* recorder) {
+        span_recorder_ = recorder;
+    }
+
     void set_provisioner(const std::string& target_id, zetta::cloud::Provisioner& provisioner);
 
 private:
@@ -106,6 +116,7 @@ private:
         Home,      // project-first landing (the default)
         Explorer,  // Projects | Databases | Tables | Rows | Large Objects
         Datasets,  // datasets (system.datasets): schema/size/format + placement
+        Search,    // fulltext search over registered indexes (Node::search, #641)
         Query,     // the SQL console
         Console,   // the SQL / simulated-Python REPL console (CMP-6)
         Graph,     // the execution-graph workspace
@@ -208,6 +219,7 @@ private:
     // which nodes own a partition of the selected dataset.
     void draw_dataset_placement(const zetta::data::DatasetSummary& dataset);
     void draw_query();       // the SQL text area + results
+    void draw_search();      // fulltext search over registered indexes (#641)
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
@@ -557,6 +569,17 @@ private:
     std::string query_status_;
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
+
+    // Search panel (#641): the query being composed and the last search's
+    // outcome, held verbatim (an action-outcome snapshot, like the query
+    // panel's last result — presentation state, not a synced engine copy). The
+    // engine result is behind a unique_ptr so this header stays light.
+    std::string search_target_;   // index id or table name (combo-selected)
+    std::string search_query_;    // the free-text query being composed
+    int search_top_k_ = 10;       // result cap the panel requests
+    std::unique_ptr<zetta::index::SearchResult> search_result_;
+    std::string search_error_;    // the engine's reason when the last search failed
+    zetta::observability::SpanRecorder* span_recorder_ = nullptr;  // may be null
 
     // Console panel — the governed Console/REPL screen (SCR-8 / #525), hosting the
     // reusable CMP-6 component (#524). The model (zetta-core, no ImGui) holds the
