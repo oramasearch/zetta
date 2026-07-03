@@ -125,7 +125,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   deep-linking via `navigate_to`; palette self-calls suppressed; refresh +
   animations needed zero wiring (live reads each frame)
   ([docs/gui/external-activity.md](gui/external-activity.md)).
-- **In flight (this branch)**: [#619](https://github.com/oramasearch/zetta/issues/619)
+- **Merged to `dev` 2026-07-03 (PR #711)**: [#619](https://github.com/oramasearch/zetta/issues/619)
   — journeys as DATA: the shared `JourneyStep{tool, input, expect}` driver
   (`tests/api/journey.hpp`) + the three canonical journey tables
   (`tests/api/journeys_canonical.hpp` — UC-1 happy path with the near-data
@@ -133,6 +133,17 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   layer 1 (`test_action_journeys.cpp`) and replayed unchanged over real
   JSON-RPC at layer 2 (`test_mcp_server.cpp`); failures name the offending
   step + assertion ([testing/mcp-journeys.md](testing/mcp-journeys.md)).
+- **In flight (this branch)**: [#618](https://github.com/oramasearch/zetta/issues/618)
+  — the REST rendering + OpenAPI generation: the registry as plain HTTP
+  (reads → `GET /v1/<name>` with schema-coerced query input, actions/jobs →
+  `POST /v1/<name>`, same bearer → AccessKey auth + audit, error codes →
+  HTTP statuses), `Capability.output_schema` on all 35 entries (entity reads
+  compose theirs from the entity `*_value_schema()`; also rendered as the MCP
+  `outputSchema`), and `GET /v1/openapi.json` generated from the registry —
+  drift-checked into `schemas/openapi.json`
+  (`ZETTA_WRITE_SCHEMAS=1 ctest -R OpenApi`); loopback-HTTP journeys in
+  `tests/api/test_rest_server.cpp` + generator/drift tests in
+  `tests/api/test_openapi.cpp` ([docs/api/rest-openapi.md](api/rest-openapi.md)).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.

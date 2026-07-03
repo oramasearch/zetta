@@ -145,13 +145,17 @@ using ConsentDescriber = std::function<std::optional<governance::ConsentAction>(
 
 // One entry on the control surface. `input_schema` is draft-07 JSON Schema
 // (schema-as-code — declared next to the handler, validated at the boundary
-// with the same validator discipline as the Run record). `description` must
-// be one agent-actionable sentence that states side effects.
+// with the same validator discipline as the Run record). `output_schema`
+// documents the success value's shape (draft-07 too): it renders as the MCP
+// tool's outputSchema and as the REST/OpenAPI 200 response (#618) — asserted
+// in journeys/tests, not enforced at runtime. `description` must be one
+// agent-actionable sentence that states side effects.
 struct Capability {
     std::string name;         // snake_case: verb-first actions, noun reads
     std::string title;
     std::string description;
     nlohmann::json input_schema;
+    nlohmann::json output_schema;
     CapabilityKind kind = CapabilityKind::Read;
     zetta::governance::Operation required_operation;  // api:query / orchestration:<name>
     bool mutates = false;           // fires the activity hook on success

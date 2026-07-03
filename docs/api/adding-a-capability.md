@@ -14,9 +14,12 @@ one PR-sized unit.
    noun reads (`list_runs`). `kind`: `read` (no state change), `action`
    (mutates, completes within a tick), `job` (returns a `run_id`/`job_id`
    handle immediately — never blocks the request on engine work).
-3. **Input schema** — a `*_schema()` accessor (schema-as-code), validated at
-   the boundary with the pboettch validator. Reject with the path-qualified
-   reason. Document the output shape in the entry's `output_schema`.
+3. **Input + output schemas** — `*_schema()` / `*_output_schema()` accessors
+   (schema-as-code). The input schema is validated at the boundary with the
+   pboettch validator — reject with the path-qualified reason. The output
+   schema documents the success value (asserted in journeys, rendered as the
+   MCP `outputSchema` and the OpenAPI 200 response); entity reads compose it
+   from the entity's own `*_value_schema()` so the two cannot drift.
 4. **Governance.** `required_operation`: reads → `api:query`; actions →
    `orchestration:<name>`. The handler receives an already-authorized context;
    anything reaching gate/deploy/run seams inherits their enforcement too.
@@ -33,9 +36,13 @@ one PR-sized unit.
    journey suite (call → read-back assertion) and, for protocol-visible
    behavior, the HTTP loopback test. See
    [../testing/mcp-journeys.md](../testing/mcp-journeys.md).
-8. **Docs, same commit:** the tool table in [README.md](README.md), this
+8. **Regenerate the OpenAPI artifact** — the entry appears in the REST routes
+   and the OpenAPI document automatically ([rest-openapi.md](rest-openapi.md)),
+   but `schemas/openapi.json` is drift-checked:
+   `ZETTA_WRITE_SCHEMAS=1 ctest --test-dir build -R OpenApi`, commit the file.
+9. **Docs, same commit:** the tool table in [README.md](README.md), this
    domain's page if behavior is subtle, `docs/architecture/code-map.md` for
-   new files. Update the OpenAPI expectations when #618 lands.
+   new files.
 
 ## Review self-check
 

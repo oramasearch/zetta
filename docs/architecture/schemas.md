@@ -62,3 +62,10 @@ records). The **hand-written `from_json` value types** (`NodeCapability`,
 `schemas/*.json` by hand; folding them into the same generator — by giving each a
 C++ schema builder — is a tracked follow-on (#469). Until then their schema file is
 the reference their `from_json` mirrors.
+
+The same discipline covers **`schemas/openapi.json`** (#618): the generator is
+`zetta::api::openapi_document` over the core capability registry, the drift
+check lives in `tests/api/test_openapi.cpp` (same `ZETTA_WRITE_SCHEMAS=1`
+write mode, filter `-R OpenApi`), and the served `GET /v1/openapi.json` comes
+from the same generator — see
+[../api/rest-openapi.md](../api/rest-openapi.md).

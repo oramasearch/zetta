@@ -137,6 +137,23 @@ nlohmann::json cloud_inspect_schema() {
                  "inventory commands)"}}}}}};
 }
 
+const nlohmann::json& cloud_inspect_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"status", "provider", "read_back"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"status",
+           {{"type", "string"},
+            {"description",
+             "'inspecting' — the CLI reads run on a background worker"}}},
+          {"provider", {{"type", "string"}}},
+          {"read_back",
+           {{"type", "string"},
+            {"description", "where the result lands (system.cloud_status)"}}}}}};
+    return schema;
+}
+
 std::optional<zetta::governance::ConsentAction> describe_cloud_inspect(
     const nlohmann::json& input, ApiContext&) {
     const auto* provider = zetta::cloud::CloudProviderCatalog::builtin().find(
@@ -198,6 +215,22 @@ nlohmann::json detect_provisioners_schema() {
     return {{"type", "object"},
             {"additionalProperties", false},
             {"properties", nlohmann::json::object()}};
+}
+
+const nlohmann::json& detect_provisioners_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"status", "read_back"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"status",
+           {{"type", "string"},
+            {"description",
+             "'detecting' — the CLI queries run on a background worker"}}},
+          {"read_back",
+           {{"type", "string"},
+            {"description", "where the result lands (system.provisioners)"}}}}}};
+    return schema;
 }
 
 std::optional<zetta::governance::ConsentAction> describe_detect_provisioners(
@@ -272,6 +305,25 @@ nlohmann::json add_nodes_schema() {
                {{"type", "string"},
                 {"description",
                  "Optional VM size / instance type for the next provision"}}}}}};
+}
+
+const nlohmann::json& add_nodes_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"status", "target", "count", "read_back"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"status",
+           {{"type", "string"},
+            {"description",
+             "'provisioning' — the provision runs on a background worker"}}},
+          {"target", {{"type", "string"}}},
+          {"count", {{"type", "integer"}}},
+          {"read_back",
+           {{"type", "string"},
+            {"description",
+             "where the result lands (system.nodes for membership)"}}}}}};
+    return schema;
 }
 
 std::optional<zetta::governance::ConsentAction> describe_add_nodes(
@@ -370,6 +422,18 @@ nlohmann::json list_consent_requests_schema() {
             {"properties", nlohmann::json::object()}};
 }
 
+const nlohmann::json& list_consent_requests_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"consent_requests"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"consent_requests",
+           {{"type", "array"},
+            {"items", zetta::governance::consent_challenge_schema()}}}}}};
+    return schema;
+}
+
 ApiResult handle_list_consent_requests(const nlohmann::json&,
                                        ApiContext& context) {
     nlohmann::json rows = nlohmann::json::array();
@@ -395,6 +459,40 @@ nlohmann::json consent_decision_schema(bool with_reason) {
             {"properties", std::move(properties)}};
 }
 
+const nlohmann::json& approve_consent_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"challenge_id", "capability", "status", "result"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"challenge_id", {{"type", "string"}}},
+          {"capability",
+           {{"type", "string"},
+            {"description", "the capability the approved challenge names"}}},
+          {"status",
+           {{"type", "string"},
+            {"enum", {"executing", "executed"}},
+            {"description",
+             "'executing' when the named action continues on a background "
+             "worker (read back via list_consent_requests)"}}},
+          {"result",
+           {{"description",
+             "the executed capability's own success value (its output "
+             "schema)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& deny_consent_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"challenge_id", "status"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"challenge_id", {{"type", "string"}}},
+          {"status", {{"type", "string"}, {"enum", {"denied"}}}}}}};
+    return schema;
+}
+
 }  // namespace
 
 void register_cloud_capabilities(Registry& registry) {
@@ -405,6 +503,7 @@ void register_cloud_capabilities(Registry& registry) {
         "own CLI (read-only). First call returns a consent challenge; only a "
         "distinctly-privileged approval executes it.",
         cloud_inspect_schema(),
+        cloud_inspect_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "cloud_inspect"},
         /*mutates=*/true,
@@ -419,6 +518,7 @@ void register_cloud_capabilities(Registry& registry) {
         "querying the local CLIs' deployment context (read-only). First call "
         "returns a consent challenge.",
         detect_provisioners_schema(),
+        detect_provisioners_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "detect_provisioners"},
         /*mutates=*/true,
@@ -433,6 +533,7 @@ void register_cloud_capabilities(Registry& registry) {
         "targets are consent-gated (billable): the first call returns a "
         "consent challenge; 'local' executes directly and touches no cloud.",
         add_nodes_schema(),
+        add_nodes_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "add_nodes"},
         /*mutates=*/true,
@@ -446,6 +547,7 @@ void register_cloud_capabilities(Registry& registry) {
         "Read every consent challenge on this node's ledger — pending, "
         "decided, and executed (with results). No side effects.",
         list_consent_requests_schema(),
+        list_consent_requests_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -459,6 +561,7 @@ void register_cloud_capabilities(Registry& registry) {
         "action once. Requires a named approver key of a DIFFERENT principal "
         "than the requester — a key can never approve its own cloud action.",
         consent_decision_schema(/*with_reason=*/false),
+        approve_consent_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "approve_consent"},
         /*mutates=*/true,
@@ -475,6 +578,7 @@ void register_cloud_capabilities(Registry& registry) {
         "Refuse one pending consent challenge; the named action never runs. "
         "The requesting key may withdraw its own challenge.",
         consent_decision_schema(/*with_reason=*/true),
+        deny_consent_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "deny_consent"},
         /*mutates=*/true,

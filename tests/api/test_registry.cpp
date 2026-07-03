@@ -88,12 +88,14 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
 }
 
 TEST_F(RegistryFixture, RejectsDuplicateAndHandlerlessEntries) {
-    EXPECT_FALSE(registry.add(Capability{"server_info", "", "", {}, CapabilityKind::Read,
+    EXPECT_FALSE(registry.add(Capability{"server_info", "", "", {}, {},
+                                         CapabilityKind::Read,
                                          {}, false, false,
                                          [](const nlohmann::json&, ApiContext&) {
                                              return ApiResult::success({});
                                          }}));
-    EXPECT_FALSE(registry.add(Capability{"handlerless", "", "", {}, CapabilityKind::Read,
+    EXPECT_FALSE(registry.add(Capability{"handlerless", "", "", {}, {},
+                                         CapabilityKind::Read,
                                          {}, false, false, nullptr}));
 }
 
