@@ -8,21 +8,22 @@ the recipe is at the end.
 
 ## The view registry — one list, four consumers
 
-`zetta::gui::ViewInfo` declares each view exactly once:
+`App::ViewInfo` (app.hpp) declares each view exactly once:
 
 ```
-ViewInfo {
-  View id;                  // the existing enum
-  Section section;          // Home · Data · Pipeline · Operations · Governance
-  std::string_view name;    // sentence case, product language
-  void (App::*draw)();      // the panel body
-  BadgeFn badge;            // optional: cheap live count (running jobs,
-                            // failed runs, out-of-sync nodes) — reads the
-                            // same live sources as the panel, never stores
-}
+struct ViewInfo {
+  View id;                          // the existing enum
+  const char* section;              // "" (Home) · Data · Pipeline · Operations · Governance
+  const char* name;                 // sentence case, product language
+  void (App::*draw)();              // the panel body
+  std::string (App::*badge)() const;// optional: cheap live count (running
+                                    // jobs, member count) — reads the same
+                                    // live sources as the panel, never stores;
+                                    // nullptr = none, "" = hidden this frame
+};
 ```
 
-The registry (a function-local static table in `app_views.cpp`) is consumed
+The registry (`App::view_registry()`, a static table in `app_views.cpp`) is consumed
 by: (1) the **sidebar** (#628), (2) the **view switcher/menus**, (3) the
 **command palette** (#625 — navigation entries come from here; action entries
 come from the API capability registry, its programmatic twin), (4)

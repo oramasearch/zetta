@@ -359,19 +359,12 @@ void App::apply_display_scale() {
     style.ScaleAllSizes(scale);
 }
 
+// File · View · Help only — navigation lives in the sidebar (#628), so the
+// menus carry commands, not wayfinding.
 void App::draw_menu_bar() {
     if (!ImGui::BeginMenuBar()) return;
 
-    // A menu entry that selects a view: a checkmark marks the live one, and
-    // choosing it makes that view the content area's sole panel.
-    const auto view_item = [&](const char* label, View view) {
-        if (ImGui::MenuItem(label, nullptr, active_view_ == view)) {
-            active_view_ = view;
-        }
-    };
-
     if (ImGui::BeginMenu("File")) {
-        view_item("Home", View::Home);
         if (ImGui::MenuItem("New project…")) {
             new_project_modal_requested_ = true;
         }
@@ -379,7 +372,7 @@ void App::draw_menu_bar() {
         // picker and switch to the Datasets view, where the loaded dataset (and the
         // add status) surfaces; the dialog callback enqueues a FileIntent::Dataset.
         if (ImGui::MenuItem("Add dataset…")) {
-            active_view_ = View::Datasets;
+            navigate_to(View::Datasets);
             static const SDL_DialogFileFilter filters[] = {
                 {"Datasets (parquet, jsonl, json, csv)",
                  "parquet;pq;jsonl;ndjson;json;csv"},
@@ -389,34 +382,6 @@ void App::draw_menu_bar() {
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Quit", "Cmd+Q")) running_ = false;
-        ImGui::EndMenu();
-    }
-    // The views, grouped along the product flow: your data → architect the
-    // pipeline → operate it → govern it.
-    if (ImGui::BeginMenu("Data")) {
-        view_item("Explorer", View::Explorer);
-        view_item("Datasets", View::Datasets);
-        view_item("SQL query", View::Query);
-        view_item("Console", View::Console);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Pipeline")) {
-        view_item("Graph workspace", View::Graph);
-        view_item("Correctness gate", View::Gate);
-        view_item("Deploy", View::Deploy);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Operations")) {
-        view_item("Runs", View::Runs);
-        view_item("Models", View::Models);
-        view_item("Compute jobs", View::Jobs);
-        view_item("Cluster", View::Cluster);
-        view_item("Cloud inspector", View::Cloud);
-        view_item("Test suite", View::Tests);
-        ImGui::EndMenu();
-    }
-    if (ImGui::BeginMenu("Governance")) {
-        view_item("Admin & audit", View::Admin);
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
@@ -451,26 +416,21 @@ void App::draw_menu_bar() {
     ImGui::EndMenuBar();
 }
 
-// The content-area switcher: render whichever view the menu bar selected. Each
-// draw_* leads with a SeparatorText title, so the active panel is self-labelled.
+// The layout shell: the sidebar rail on the left, then the active view's panel
+// in a padded content child. Dispatch walks the view registry (app_views.cpp),
+// so this function never learns about individual views.
 void App::draw_active_view() {
-    switch (active_view_) {
-        case View::Home:     draw_home();            break;
-        case View::Explorer: draw_explorer();        break;
-        case View::Datasets: draw_datasets();        break;
-        case View::Query:    draw_query();           break;
-        case View::Console:  draw_console();          break;
-        case View::Graph:    draw_graph_workspace(); break;
-        case View::Gate:     draw_gate();            break;
-        case View::Deploy:   draw_deploy();          break;
-        case View::Runs:     draw_runs();            break;
-        case View::Models:   draw_models();          break;
-        case View::Jobs:     draw_jobs();            break;
-        case View::Cluster:  draw_cluster();         break;
-        case View::Cloud:    draw_cloud();           break;
-        case View::Admin:    draw_admin();           break;
-        case View::Tests:    draw_test_suite();      break;
+    draw_sidebar();
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::BeginChild("##content", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_AlwaysUseWindowPadding);
+    for (const ViewInfo& view : view_registry()) {
+        if (view.id == active_view_) {
+            (this->*view.draw)();
+            break;
+        }
     }
+    ImGui::EndChild();
 }
 
 void App::enqueue_file(std::string path, FileIntent intent) {
@@ -551,8 +511,8 @@ void App::handle_incoming_files() {
                              std::to_string(loaded.partitions.size()) +
                              " partition(s))";
                 // Surface it: switch to the Datasets view and select it.
-                if (loaded.table) selected_dataset_ = loaded.table->id();
-                active_view_ = View::Datasets;
+                navigate_to(View::Datasets,
+                            loaded.table ? loaded.table->id() : std::string());
             } else {
                 io_status_ = "Add dataset failed: " + loaded.error;
             }

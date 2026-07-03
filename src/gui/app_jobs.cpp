@@ -148,6 +148,10 @@ void App::draw_job_scaling_controls() {
 }
 
 void App::draw_jobs() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Jobs)) {
+        selected_job_ = *pending_entity;
+    }
     ImGui::SeparatorText("Compute jobs");
 
     // The GUI form of system.zetta_jobs: the live compute-job registry (one row

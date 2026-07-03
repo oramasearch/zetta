@@ -23,6 +23,10 @@
 namespace zetta::gui {
 
 void App::draw_datasets() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Datasets)) {
+        selected_dataset_ = *pending_entity;
+    }
     ImGui::SeparatorText("Datasets");
 
     // The GUI form of system.datasets (#585; the area-3 dataset view of epic

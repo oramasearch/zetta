@@ -133,7 +133,7 @@ void App::draw_home() {
         ImGui::PushID(name.c_str());
         if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
             selected_project_ = name;
-            active_view_ = View::Graph;  // open it in the workspace
+            navigate_to(View::Graph);  // open it in the workspace
         }
         const std::string short_id =
             project->id().substr(0, project->id().find('-'));

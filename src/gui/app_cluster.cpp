@@ -668,6 +668,10 @@ void draw_pipeline_flow(ImDrawList* draw, ImFont* mono, float font,
 }  // namespace
 
 void App::draw_cluster() {
+    // Consume a navigate_to(entity) deep link aimed at this view.
+    if (auto pending_entity = take_pending_selection(View::Cluster)) {
+        selected_cluster_node_ = *pending_entity;
+    }
     ImGui::SeparatorText("Cluster");
     if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::TextColored(kInkSecondary, "node       %s", cluster_.node_id().c_str());
