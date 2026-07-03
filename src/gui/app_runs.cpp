@@ -12,7 +12,9 @@
 
 #include <cfloat>
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace zetta::gui {
@@ -193,6 +195,16 @@ void App::draw_runs() {
     // API, tests, or replication from a peer (executing a graph — StartRun — is
     // a later slice). Held by id and re-resolved each frame, like the explorer.
     const std::vector<std::shared_ptr<zetta::pipeline::Run>> runs = node_.runs();
+    std::optional<std::string> pending = take_pending_selection(View::Runs);
+    if (runs.empty()) {
+        if (empty_state("No runs yet",
+                        "A run records one execution of a deployed graph: "
+                        "status, logs, outputs, and lineage.",
+                        "Open deploy")) {
+            navigate_to(View::Deploy);
+        }
+        return;
+    }
     ImGui::TextDisabled("%zu run(s)", runs.size());
 
     // Runs have no human name, so each row's title is the UUID's first segment
@@ -208,8 +220,7 @@ void App::draw_runs() {
     }
 
     master_detail(
-        "runs", rows, selected_run_, take_pending_selection(View::Runs),
-        "(no runs)",
+        "runs", rows, selected_run_, std::move(pending), "(no runs)",
         "Select a run to view its status, logs, outputs, models, and lineage.",
         [&](const MasterRow& row) {
             const auto run = node_.find_run(row.id);

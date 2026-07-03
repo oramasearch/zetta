@@ -82,8 +82,11 @@ void ReplConsole::draw_transcript(const repl::ConsoleModel& model,
     if (ImGui::BeginChild("##repl_transcript", ImVec2(0, 0),
                           ImGuiChildFlags_Borders)) {
         if (model.empty()) {
-            ImGui::TextDisabled(
-                "No statements yet. Pick a frontend, write a statement, and Run.");
+            // The next action is the editor + Run directly above (#631).
+            empty_state("No statements yet",
+                        "Pick a frontend, write a statement, and run it; the "
+                        "transcript keeps every statement and its result.",
+                        "");
         }
         int index = 0;
         for (const repl::Entry& entry : model.transcript()) {

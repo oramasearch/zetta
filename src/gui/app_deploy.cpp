@@ -301,7 +301,12 @@ void App::draw_deploy() {
     const std::vector<std::shared_ptr<zetta::pipeline::Deployment>> deployments =
         node_.deployments();
     if (deployments.empty()) {
-        ImGui::TextDisabled("(none yet)");
+        // The next action is the picker directly above, so the empty state
+        // carries no button of its own (#631).
+        empty_state("No deployments yet",
+                    "Pick an AI solution above, choose where to run it, and "
+                    "deploy: the recorded placement lands here.",
+                    "");
         return;
     }
     const std::vector<std::shared_ptr<zetta::pipeline::Run>> runs = node_.runs();

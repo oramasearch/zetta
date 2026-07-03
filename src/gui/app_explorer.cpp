@@ -84,7 +84,15 @@ void App::draw_projects() {
 
     ImGui::Separator();
 
-    for (const std::string& name : node_.project_names()) {
+    const std::vector<std::string> project_names = node_.project_names();
+    if (project_names.empty()) {
+        // The next action is the New project… button directly above (#631).
+        empty_state("No projects yet",
+                    "A project holds intents, artifacts, and execution "
+                    "graphs.",
+                    "");
+    }
+    for (const std::string& name : project_names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
             project_status_.clear();
@@ -164,7 +172,14 @@ void App::draw_databases() {
 
     ImGui::Separator();
 
-    for (const std::string& name : node_.database_names()) {
+    const std::vector<std::string> database_names = node_.database_names();
+    if (database_names.empty()) {
+        // The next action is the create field directly above (#631).
+        empty_state("No databases yet",
+                    "Create one above to hold tables and large objects.",
+                    "");
+    }
+    for (const std::string& name : database_names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
             if (node_.drop_database(name)) {
@@ -257,7 +272,15 @@ void App::draw_tables() {
 
     ImGui::Separator();
 
-    for (const std::string& name : db->table_names()) {
+    const std::vector<std::string> table_names = db->table_names();
+    if (table_names.empty()) {
+        // The next action is the create field directly above (#631).
+        empty_state("No tables yet",
+                    "Create one above, or add a dataset and it arrives as a "
+                    "partitioned table.",
+                    "");
+    }
+    for (const std::string& name : table_names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
             if (db->drop_table(name)) {
@@ -344,7 +367,10 @@ void App::draw_rows() {
     ImGui::Spacing();
     const zetta::storage::StorageEngine& store = table->store();
     if (store.size() == 0) {
-        ImGui::TextDisabled("(empty)");
+        // The next actions are the add/import affordances directly above (#631).
+        empty_state("No rows yet",
+                    "Add a JSON object above, or import a JSON/JSONL file.",
+                    "");
     }
     // Cap how many rows we render — a persisted table can hold far more than is
     // useful to draw every frame.
@@ -407,6 +433,15 @@ void App::draw_query() {
 
     if (ImGui::BeginChild("##query_results", ImVec2(0, 160),
                           ImGuiChildFlags_Borders)) {
+        // Nothing run yet this session: say what belongs here (#631). The next
+        // action is the Run button directly above.
+        if (query_result_columns_.empty() && query_result_rows_.empty() &&
+            query_status_.empty() && query_error_.empty()) {
+            empty_state("No results yet",
+                        "Write a statement above and run it; rows, columns, "
+                        "and timing land here.",
+                        "");
+        }
         // Results are data: mono.
         if (mono_font_) ImGui::PushFont(mono_font_);
         if (!query_result_columns_.empty()) {
@@ -518,7 +553,13 @@ void App::draw_large_objects() {
     ImGui::Separator();
 
     const std::vector<zetta::data::LargeObject> objects = db->large_objects().list();
-    if (objects.empty()) ImGui::TextDisabled("(none)");
+    if (objects.empty()) {
+        // The next action is the Store file… button directly above (#631).
+        empty_state("No large objects yet",
+                    "Store a file above, or drop one on the window; bodies "
+                    "sync to peers in the background.",
+                    "");
+    }
     for (const zetta::data::LargeObject& lo : objects) {
         ImGui::PushID(lo.id.c_str());
         if (ImGui::SmallButton("x")) {

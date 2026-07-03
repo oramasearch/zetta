@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -289,6 +290,20 @@ void App::draw_models() {
     // plus the inline "Add model" affordance to register/import one. Held by id and
     // re-resolved each frame, like the Runs panel.
     const std::vector<std::shared_ptr<zetta::ml::Model>> models = node_.models();
+    std::optional<std::string> pending = take_pending_selection(View::Models);
+    if (models.empty()) {
+        // The collapsed register/import affordance stays available, so a user
+        // whose first model already exists elsewhere can bring it in.
+        draw_add_model_form();
+        if (empty_state("No models yet",
+                        "A training run registers its model here with metrics "
+                        "and ranked drivers; Add a model imports one you "
+                        "already have.",
+                        "Open deploy")) {
+            navigate_to(View::Deploy);
+        }
+        return;
+    }
     ImGui::TextDisabled("%zu model(s)", models.size());
 
     draw_add_model_form();
@@ -310,8 +325,7 @@ void App::draw_models() {
     }
 
     master_detail(
-        "models", rows, selected_model_, take_pending_selection(View::Models),
-        "(no models)",
+        "models", rows, selected_model_, std::move(pending), "(no models)",
         "Select a model to view its metrics, ranked drivers, and weights "
         "fingerprint.",
         [&](const MasterRow& row) {

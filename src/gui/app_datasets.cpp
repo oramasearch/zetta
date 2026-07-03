@@ -15,9 +15,11 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace zetta::gui {
@@ -34,20 +36,39 @@ void App::draw_datasets() {
     // each frame via Node::datasets(), so it never drifts from the truth; the only
     // UI state is the selected dataset's table id (re-resolved each frame).
     const std::vector<zetta::data::DatasetSummary> datasets = node_.datasets();
+    std::optional<std::string> pending = take_pending_selection(View::Datasets);
 
     // Add-dataset affordance (#587): pick a parquet/jsonl/json/csv file and load
     // it as a *partitioned* table, so it joins the list below with its partitions
     // placed across the cluster. A file dropped onto this view does the same (see
     // the SDL_EVENT_DROP_FILE routing in run()). The dialog filter mirrors
     // dataset_file::dialog_extensions().
-    if (primary_button("Add dataset...")) {
+    const auto open_add_dataset_dialog = [this] {
         static const SDL_DialogFileFilter filters[] = {
             {"Datasets (parquet, jsonl, json, csv)",
              "parquet;pq;jsonl;ndjson;json;csv"},
             {"All files", "*"}};
         SDL_ShowOpenFileDialog(&App::on_open_dataset, this, window_, filters, 2,
                                nullptr, false);
+    };
+
+    // The nothing-yet case (#631): the empty state carries the one next action
+    // itself, so the header button row isn't duplicated beside it.
+    if (datasets.empty()) {
+        if (empty_state("No datasets yet",
+                        "Add a parquet, jsonl, json, or csv file (or drop one "
+                        "on the window) and it becomes a partitioned table "
+                        "across the cluster.",
+                        "Add dataset...")) {
+            open_add_dataset_dialog();
+        }
+        if (!io_status_.empty()) {
+            ImGui::TextColored(kInkSecondary, "%s", io_status_.c_str());
+        }
+        return;
     }
+
+    if (primary_button("Add dataset...")) open_add_dataset_dialog();
     ImGui::SameLine();
     ImGui::TextDisabled("or drop a file here · %zu dataset(s)", datasets.size());
     // The shared ingestion outcome (e.g. "Added dataset … (N rows, M
@@ -69,8 +90,8 @@ void App::draw_datasets() {
     }
 
     master_detail(
-        "datasets", rows, selected_dataset_,
-        take_pending_selection(View::Datasets), "(no datasets)",
+        "datasets", rows, selected_dataset_, std::move(pending),
+        "(no datasets)",
         "Select a dataset to view its schema, size, and partition placement "
         "across the cluster.",
         [&](const MasterRow& row) {
