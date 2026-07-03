@@ -218,6 +218,20 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   #533 train so the GBDT trains on the feature table, and `cluster.uc1_at_scale`
   now featurizes before training — see
   [use-cases/uc1-featurize-train-over-partitions.md](use-cases/uc1-featurize-train-over-partitions.md).
+- **TC-12 composed (#502): the cost-capped burst lifecycle.** The sim-Python
+  `cluster.add_nodes` gained a `cost_cap=` kwarg; the Node-aware
+  `run_add_nodes_step` wraps the injected provisioner in the `BurstApprovalGate`
+  (over-cap blocked deny-by-default + audited) and rebalances partitions onto
+  the joined members. `cluster.uc1_at_scale` now runs the whole UC-4 lifecycle
+  over a **replicated** loopback cluster (the testkit harness's opt-in
+  replicated mode): one partitioned saas table across the permanent members →
+  gated burst → rebalance on (bodies follow) → burst identities minted → SPMD
+  featurize→train→explain→rank across the grown cluster → teardown (partitions
+  drain back, identities revoked, model still serving) — see
+  [use-cases/uc1-at-scale-e2e.md](use-cases/uc1-at-scale-e2e.md). Still later:
+  the real Azure run (needs the
+  [cluster-join slice](plans/cloud-provisioning.md)) and the real HF-hub
+  dataset.
 - **#645 llms.txt endpoints built**: the MCP server also answers plain
   `GET /llms.txt` / `/llms/<topic>.txt` / `/llms-full.txt` — agent docs
   generated live from the registry + node state, no second prose source

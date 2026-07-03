@@ -43,6 +43,17 @@ private:
     std::filesystem::path path_;
 };
 
+// How a LoopbackCluster wires its nodes.
+struct LoopbackOptions {
+    // When true, each node is wired the way `main()` wires a live process: a
+    // ReplicationManager (the CRDT document gossips over the cluster link) + a
+    // ReplicatedBlobStore (large-object bodies transfer peer-to-peer, partition
+    // bodies placed by ownership) behind the Node and the Cluster. The default
+    // (false) is the membership-only substrate: real TCP + collectives, no
+    // replicated catalog — the cheaper shape most distributed cases need.
+    bool replicated = false;
+};
+
 // A real, fully-connected loopback cluster of N nodes on the local host — each a
 // Node + a Cluster over TCP (127.0.0.1), brought up sequentially so every node
 // dials the actual bound addresses of the earlier ones (robust to busy ports), then
@@ -53,7 +64,7 @@ class LoopbackCluster {
 public:
     // Stand up `node_count` connected nodes. `connected()` reports whether
     // membership converged within the bring-up window.
-    explicit LoopbackCluster(std::size_t node_count);
+    explicit LoopbackCluster(std::size_t node_count, const LoopbackOptions& options = {});
     ~LoopbackCluster();
     LoopbackCluster(const LoopbackCluster&) = delete;
     LoopbackCluster& operator=(const LoopbackCluster&) = delete;
@@ -64,6 +75,13 @@ public:
     Node& node(std::size_t index);
     zetta::cluster::Cluster& cluster(std::size_t index);
     const std::string& node_id(std::size_t index) const;
+
+    // Announce node `index` as a **replicated cluster member**: set its
+    // `node:<id>` membership key (id + dial address) in its own document, exactly
+    // the way a live process announces itself on start. Replicated mode only (a
+    // no-op otherwise). A case that models a burst announces only its permanent
+    // members and lets `apply_added_nodes` announce the burst ones.
+    void announce_member(std::size_t index);
 
 private:
     struct Entry;

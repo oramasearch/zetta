@@ -89,7 +89,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   input/
     language_frontend.hpp   zetta::input::LanguageFrontend/FrontendResult — interface: lower a source language to the ExecutionGraph IR (the IR-targeting analogue of query::Dialect); non-throwing (ENT-38/ADR-33; #520)
     python_frontend.hpp     zetta::input::PythonFrontend/python_step_kind — simulated-Python frontend: parse a Python subset (assignments/calls/attribute+method chaining/literals) → IR (calls→typed steps via the engine-faithful verb table — train→model, score/predict/rank→index, explain→serve, add_nodes→act; refs/receivers→data-flow edges); not a Python runtime (#520/#522)
-    cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::cloud::add_nodes (provider injected, cloud consent-gated) (#522)
+    cluster_bindings.hpp    zetta::input::run_add_nodes_step/add_nodes_count/add_nodes_cost_cap — execute a lowered sim-Python cluster.add_nodes IR node against the permanent-add control action zetta::cloud::add_nodes (provider injected, cloud consent-gated); the Node-aware overload composes the BurstApprovalGate when the script names a cost_cap= and rebalances partitions onto the new members (#522, #502)
     datasets_bindings.hpp   zetta::input::run_load_dataset_step/DatasetStepExecutor/dataset_load_spec/DatasetResolver — the `datasets` library shim: execute a lowered sim-Python load_dataset("<path>", columns=…) IR node by decoding the parquet via the native reader (read_parquet_rows) into a (partitioned) table; file/network IO behind the injectable DatasetResolver seam (offline default = local path); HF datasets is the fidelity reference only (#521)
   pipeline/                 AI projects: inputs → compiled execution graphs → correctness gate → deploy → runs (+ the solution catalog)
     project.hpp             zetta::pipeline::Project — an AI project; owns inputs + execution graphs
@@ -208,7 +208,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   testkit/                  zetta::testkit — the in-app test-suite catalog (headless-runnable; #462)
     test_suite.hpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin() — the catalog model the GUI renders
     async_case_run.hpp      AsyncCaseRun — run one case on a worker with a live Run record as the durable handle (run id at submit, logs + verdict flushed at completion); the MCP testkit_run entry point (#617)
-    harness.hpp             ScratchDir + LoopbackCluster (a real N-node loopback cluster) + the in-code synthetic churn dataset + numeric encoding
+    harness.hpp             ScratchDir + LoopbackCluster (a real N-node loopback cluster; opt-in replicated mode wires ReplicationManager + ReplicatedBlobStore per node, announce_member publishes a node:<id> key) + the in-code synthetic churn dataset + numeric encoding
     example_script.hpp      zetta::testkit::ExampleScript/ExampleExpectations/ExampleRunReport + run_example_script + example_scripts() — the sim-Python example-script harness: run a script end to end (parse->IR->gate->run) + assert on outputs, surfacing the offending statement on failure (the example programs ARE the integration tests; #523)
   util/                     small shared utilities
     uuid.hpp                zetta::util::new_uuid() — v4 UUID for folder names
@@ -262,7 +262,7 @@ src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + b
     serialization.cpp       ExecutionGraph IR ↔ JSON (+ boundary validation)
   input/
     python_frontend.cpp     zetta::input::PythonFrontend — non-throwing tokenizer + recursive-descent parser (Python subset) + AST→IR lowering + the engine-faithful python_step_kind verb table (#520/#522)
-    cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count — read the count from a lowered cluster.add_nodes IR node + drive zetta::cloud::add_nodes (#522)
+    cluster_bindings.cpp    zetta::input::run_add_nodes_step/add_nodes_count/add_nodes_cost_cap — read the count + cost cap from a lowered cluster.add_nodes IR node + drive zetta::cloud::add_nodes (cost-cap-gated + Node-aware when given a Node) (#522, #502)
     datasets_bindings.cpp   zetta::input::run_load_dataset_step/DatasetStepExecutor — read the source + column projection from a lowered load_dataset IR node, resolve bytes via the DatasetResolver seam, decode with the native parquet reader, project, and populate a (partitioned) table (#521)
   pipeline/
     project.cpp             zetta::pipeline::Project — persist/rename project.json + input/graph CRUD
@@ -374,7 +374,7 @@ src/core/                   zetta-core impl (api/: registry.cpp + bridge.cpp + b
     governed_console.cpp    zetta::repl::GovernedConsole — the governance pipeline (capability check → sim-Python lower+gate → execute via the injectable graph runner → data_access audit) + required_operation + the SQL Outcome→Result grid mapping (SCR-8; #525/#580)
   testkit/                  zetta::testkit — the in-app test-suite catalog (no SDL; #462)
     test_suite.cpp          TestCase/TestOption/TestOptions/TestResult/TestSuite + run_test_case + builtin()
-    harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback) + sample_churn_dataset + numeric encoding
+    harness.cpp             ScratchDir + LoopbackCluster (real N-node loopback; optional replicated wiring + announce_member) + sample_churn_dataset + numeric encoding
     cases.hpp               internal: the per-category register_*_cases registrars TestSuite::builtin() assembles (one TU per category keeps includes local)
     cases_*.cpp             the canned cases per category (compute/ddf/parquet/ml/distributed/fulltext/governance/pipeline/uc1_scale/examples; cases_fulltext.cpp = the TC-13 cluster.fulltext_index distributed case, #503)
     parquet_fixture_data.hpp  GENERATED by scripts/gen-parquet-fixture.py — the embedded (base64) pyarrow saas_sample.parquet fixture + its golden DataFrame projection, so the in-app TC-9 Parquet parity case is self-contained (same golden as tests/data/test_parquet_reader.cpp; #462)
