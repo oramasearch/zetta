@@ -412,7 +412,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   app_jobs.cpp              the Compute-jobs view (draw_jobs + the objective/scaling preview draw_job_scaling_controls)
   app_cluster.cpp           the Cluster view: the spatial node-box canvas (draw_cluster; #582), the animated per-node resource gauges + sparklines (#584) over the telemetry snapshot, the distributed-algorithm-at-work overlay (update_cluster_pipeline + draw_pipeline_activity; #590 — the flow drawing itself is shared via app_operations_internal.hpp) over the live instrumentation read views, the node detail pane, and the consent-gated Add-nodes control (draw_add_nodes_control + run/poll_add_nodes; #583)
   app_cloud.cpp             the Cloud Inspector view (draw_cloud + draw_cloud_inspect_result + the consent-gated run_cloud_inspect — async CLI via CloudInspectOp spawn/poll, #624)
-  app_test_suite.cpp        the in-app Test-suite panel (draw_test_suite + start_test; #462) — a thin renderer over the headless zetta::testkit catalog
+  app_test_suite.cpp        the in-app Test-suite panel (draw_test_suite + draw_test_detail + start_test; #462, master-detail #630) — a thin renderer over the headless zetta::testkit catalog
   repl_console.hpp/.cpp     zetta::gui::ReplConsole — the thin Dear ImGui renderer over repl::ConsoleModel: frontend selector, multiline editor, run/clear, scrollback transcript, result grid (CMP-6; #524). draw_console (in app_explorer.cpp) hosts it over the live node
 src/main.cpp                arg parsing + mode dispatch
 schemas/                    generated, drift-checked JSON schemas (the C++ embedded schema is the source of truth)

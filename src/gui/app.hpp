@@ -397,6 +397,9 @@ private:
     // workspace's deep-link consumer resolves the same two forms.
     bool graph_is_stored(const std::string& graph_ref) const;
     void draw_test_suite();  // the in-app test suite: canned cases + options + run
+    // The detail pane of the test-suite master-detail scaffold: description,
+    // options, the run action, and the last result + live log (#630).
+    void draw_test_detail(const testkit::TestCase& test_case);
     // Start the selected case on a worker thread (so distributed cases, which stand
     // up a real loopback cluster, don't block the UI). Snapshots the current options
     // + custom-data path; the worker writes the result + live log under test_mutex_.

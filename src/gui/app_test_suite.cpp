@@ -38,7 +38,12 @@ std::string test_outcome_label(testkit::TestOutcome outcome) {
 // reports a structured pass/fail with metrics + a log. The run happens on a worker
 // thread so the UI stays responsive. See docs/testing/test-suite.md.
 void App::draw_test_suite() {
-    ImGui::SeparatorText("Test suite");
+    const testkit::TestSuite& suite = testkit::TestSuite::builtin();
+    const std::string subtitle =
+        std::to_string(suite.size()) +
+        " canned cases over the real engine. Distributed cases stand up a "
+        "real loopback cluster; runs execute off the UI thread.";
+    page_header("Test suite", subtitle.c_str());
 
     // Reap a finished worker (the run flag flips false as its last act).
     if (test_worker_ && !test_running_.load()) {
@@ -46,11 +51,12 @@ void App::draw_test_suite() {
         test_worker_.reset();
     }
 
-    const testkit::TestSuite& suite = testkit::TestSuite::builtin();
-    ImGui::TextDisabled(
-        "%zu canned cases over the real engine. Distributed cases stand up a real "
-        "loopback cluster; runs execute off the UI thread.",
-        suite.size());
+    // A run pins the selection to the case in flight: the worker owns the
+    // live log + result until it finishes, so the catalog can't switch state
+    // mid-run (the pre-scaffold list disabled itself for the same reason).
+    if (test_running_.load() && !test_running_id_.empty()) {
+        selected_test_ = test_running_id_;
+    }
 
     // Keep the editable options in sync with the selected case.
     const testkit::TestCase* selected = suite.find(selected_test_);
@@ -62,46 +68,54 @@ void App::draw_test_suite() {
         test_log_.clear();
     }
 
-    const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
-    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 24.0f;
-
-    // Left: the catalog, grouped by category.
-    ImGui::BeginChild("##test_list", ImVec2(list_w, panel_h),
-                      ImGuiChildFlags_Borders);
-    ImGui::BeginDisabled(test_running_.load());  // don't switch cases mid-run
+    // The catalog as master-detail rows (#634), grouped by category via the
+    // scaffold's section eyebrows; the case in flight reads Active.
     const testkit::TestCategory categories[] = {
         testkit::TestCategory::Compute,     testkit::TestCategory::Ddf,
         testkit::TestCategory::Ml,          testkit::TestCategory::Distributed,
         testkit::TestCategory::Governance,  testkit::TestCategory::Pipeline,
         testkit::TestCategory::Examples};
+    std::vector<MasterRow> rows;
     for (const testkit::TestCategory category : categories) {
-        const std::vector<const testkit::TestCase*> cases = suite.in_category(category);
-        if (cases.empty()) continue;
-        ImGui::Spacing();
-        eyebrow(mono_font_, std::string(testkit::category_title(category)).c_str());
-        for (const testkit::TestCase* test_case : cases) {
-            ImGui::PushID(test_case->id.c_str());
-            if (ImGui::Selectable(test_case->name.c_str(),
-                                  selected_test_ == test_case->id)) {
-                selected_test_ = test_case->id;
-            }
-            ImGui::PopID();
+        for (const testkit::TestCase* test_case : suite.in_category(category)) {
+            MasterRow row;
+            row.id = test_case->id;
+            row.title = test_case->name;
+            row.section = std::string(testkit::category_title(category));
+            row.tone = (test_running_.load() && test_running_id_ == test_case->id)
+                           ? Tone::Active
+                           : Tone::Muted;
+            rows.push_back(std::move(row));
         }
     }
-    ImGui::EndDisabled();
-    ImGui::EndChild();
 
-    // Right: the selected case — description, options, run, and the last result.
-    ImGui::SameLine();
-    ImGui::BeginChild("##test_detail", ImVec2(0, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (!selected) {
-        ImGui::TextDisabled("Select a case to configure and run it.");
-        ImGui::EndChild();
-        return;
+    master_detail("##test_suite", rows, selected_test_,
+                  take_pending_selection(View::Tests),
+                  "No test cases in this build.",
+                  "Select a case to configure and run it.",
+                  [&](const MasterRow& row) {
+                      if (const testkit::TestCase* current = suite.find(row.id)) {
+                          draw_test_detail(*current);
+                      }
+                  });
+}
+
+// The detail pane: description, options, the run action, and the last result +
+// live log for the selected case.
+void App::draw_test_detail(const testkit::TestCase& test_case) {
+    const testkit::TestCase* selected = &test_case;
+
+    // The standard detail opener (#634): mono title + the headline state.
+    Tone header_tone = Tone::Muted;
+    std::string header_status;
+    if (test_running_.load()) {
+        header_tone = Tone::Active;
+        header_status = "running";
+    } else if (test_result_) {
+        header_tone = tone_of(test_result_->outcome);
+        header_status = test_outcome_label(test_result_->outcome);
     }
-
-    ImGui::TextColored(kInkPrimary, "%s", selected->name.c_str());
+    detail_header(selected->name, header_tone, header_status);
     if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::TextColored(kInkQuiet, "%s", selected->id.c_str());
     if (mono_font_) ImGui::PopFont();
@@ -203,29 +217,24 @@ void App::draw_test_suite() {
             "built-in synthetic one. Leave empty to use the built-in dataset.");
     ImGui::EndDisabled();
 
-    // Run.
+    // Run — the pane's one focal action (the design system's primary button).
     ImGui::Spacing();
     ImGui::BeginDisabled(test_running_.load());
-    ImGui::PushStyleColor(ImGuiCol_Button, kInkPrimary);
-    ImGui::PushStyleColor(ImGuiCol_Text, kWhite);
-    if (ImGui::Button(test_running_.load() ? "Running…" : "Run test")) {
+    if (primary_button(test_running_.load() ? "Running…" : "Run test")) {
         start_test(*selected);
     }
-    ImGui::PopStyleColor(2);
     ImGui::EndDisabled();
 
     ImGui::Separator();
 
-    // Result / progress.
+    // Result / progress. The headline outcome is the detail_header's pill; the
+    // body carries the timing, the banner, and the metrics.
     if (test_running_.load()) {
         ImGui::TextColored(kInkMuted, "running %s…", test_running_id_.c_str());
     } else if (test_result_) {
         const testkit::TestResult& result = *test_result_;
-        status_label(tone_of(result.outcome),
-                     test_outcome_label(result.outcome).c_str());
-        ImGui::SameLine();
         if (mono_font_) ImGui::PushFont(mono_font_);
-        ImGui::TextColored(kInkQuiet, "· %.3fs", result.elapsed_seconds);
+        ImGui::TextColored(kInkQuiet, "%.3fs", result.elapsed_seconds);
         if (mono_font_) ImGui::PopFont();
         // The run's outcome as the per-panel banner (#632): the case's summary,
         // or its failure reason verbatim, toned by the outcome.
@@ -268,8 +277,6 @@ void App::draw_test_suite() {
         }
         if (mono_font_) ImGui::PopFont();
     }
-
-    ImGui::EndChild();
 }
 
 void App::start_test(const testkit::TestCase& test_case) {

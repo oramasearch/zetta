@@ -120,15 +120,17 @@ already-validated engine boundaries.
 
 ## The headed panel
 
-**Operations → Test suite** (`App::draw_test_suite`) renders the catalog grouped by
-category (left), and a detail pane (right) with the selected case's description, its
-options rendered as widgets, the custom-data field, a **Run test** button, and the
-last result — an outcome badge (semantic dot + word), the summary, a mono metrics
-table, and the log. A case runs on a **worker thread** (so the distributed cases'
-blocking convergence waits never freeze the UI); the result + live log are written
-under a mutex and rendered as they arrive. Following the Orama design system: sentence
-case, mono for ids / counts / metrics, semantic green/amber/red for status, a charcoal
-primary Run button.
+**Operations → Test suite** (`App::draw_test_suite`) renders through the
+master-detail scaffold (#630): the catalog grouped by category as the list
+(section eyebrows; the case in flight reads the Active tone and pins the
+selection), and `App::draw_test_detail` as the detail pane — `detail_header`
+with the last outcome as its status pill, the case's description, its options
+rendered as widgets, the custom-data field, a **Run test** `primary_button`,
+and the last result: the elapsed time, the outcome banner (#632, summary or
+failure reason verbatim), a mono metrics table, and the log. A case runs on a
+**worker thread** (so the distributed cases' blocking convergence waits never
+freeze the UI); the result + live log are written under a mutex and rendered
+as they arrive.
 
 ## Adding a case
 

@@ -43,9 +43,9 @@ Refresh is the standard thin-renderer rule made structural: panels rebuild
 
 ## The sweep (#634)
 
-Runs, Models, Compute jobs, Datasets, Cloud inspector, and Admin & audit all
-render through the scaffold (and open with the grammar's `page_header`).
-Notable per-panel facts:
+Runs, Models, Compute jobs, Datasets, Cloud inspector, Admin & audit, and the
+Test suite (#630) all render through the scaffold (and open with the grammar's
+`page_header`). Notable per-panel facts:
 
 - **Runs / Jobs** — UUID-segment titles (`entity_short_id`, now shared from
   `app_operations_internal.hpp`), lifecycle tone dots.
@@ -57,6 +57,11 @@ Notable per-panel facts:
   on Local, which reads nothing and needs no consent.
 - **Admin** — passes an explicit height so the audit log keeps its place
   below the scaffold.
+- **Test suite** (#630) — rows grouped by testkit category via `section`; a
+  run in flight pins the selection to the running case (the worker owns the
+  live log + result until it finishes) and its row reads `Tone::Active`; the
+  detail pane (`draw_test_detail`) opens with `detail_header` carrying the
+  last outcome as its pill.
 - **Explorer** keeps its multi-column browser (its own pattern by design);
   its rows are plain title Selectables, the same selection style the
   scaffold's rows use.
