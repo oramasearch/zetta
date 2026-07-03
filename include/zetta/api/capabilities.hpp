@@ -20,8 +20,13 @@
 //   submit_feedback  action  snapshot a feedback bundle as a large object (#640)
 //   create_project   action  the action template: mutates, audited, replicated
 //
-// Each is a thin caller of an existing engine entry point; the wider parity
-// sets land with #616/#617 following docs/api/adding-a-capability.md.
+// The #616 slice adds the typed detail reads + list_* siblings; the #617 slice
+// adds governed action parity — the rest of the product loop as thin callers
+// of the same engine entry points the GUI drives (capture_intent · import_n8n
+// · compile_intent/n8n/python · gate · deploy · run · add_dataset ·
+// testkit_run; run/testkit_run are `kind: job` and return the engine's durable
+// Run id immediately). See docs/api/governed-actions.md +
+// docs/api/adding-a-capability.md.
 namespace zetta::api {
 
 void register_core_capabilities(Registry& registry);

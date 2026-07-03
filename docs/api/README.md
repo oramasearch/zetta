@@ -14,6 +14,9 @@ MCP/HTTP work.
   the error mapping, the consent challenge.
 - [adding-a-capability.md](adding-a-capability.md) — the recipe + review
   self-check for every new tool/route.
+- [governed-actions.md](governed-actions.md) — action parity (#617): the
+  product loop's mutating tools, the kind:job handle semantics
+  (BackgroundActions, run-id-at-submit), gate parity, boundaries.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
   pages (#645): plain-GET agent docs generated live from the registry + node
   state, no second prose source.
@@ -58,6 +61,16 @@ node state, so a no-MCP agent orients with one GET
 | `get_trace` | read | api:query | every span of one trace id |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
+| `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
+| `compile_intent` | action | orchestration:compile_intent | compile a captured intent into a stored, editable graph (audited graph change) |
+| `compile_n8n` | action | orchestration:compile_n8n | compile a stored n8n workflow into a stored, editable graph |
+| `compile_python` | action | orchestration:compile_python | lower sim-Python source to a stored, editable graph (never runs Python) |
+| `gate` | action | orchestration:gate | run the correctness gate; returns the full ValidationReport (no state change) |
+| `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
+| `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
+| `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
+| `testkit_run` | job | orchestration:testkit_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
 
 All accept the reserved optional `intent` field (recorded to the span,
 stripped before schema validation).
@@ -70,4 +83,10 @@ schema and partition placement kept structured (the SQL view flattens them for
 tabular reading). Every handler is a thin caller of the same live engine
 source its `system.*` view computes from (`Node::…()`), so MCP, SQL, and the
 GUI cannot drift (RULE-7). Arbitrary reads beyond these go through `sql`.
-Action parity: #617.
+
+**Action parity (#617).** The mutating half of the loop — each a thin caller
+of the same engine entry point the GUI drives, `orchestration:<name>`-scoped,
+audited under the acting key, `mutates` firing the activity hook; `run` and
+`testkit_run` are `kind: job` and return the engine's durable Run id
+immediately (poll `get_run` / `system.runs`). Details + handle-ownership
+design: [governed-actions.md](governed-actions.md).

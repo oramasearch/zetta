@@ -38,7 +38,10 @@ Canonical first three: **UC-1 happy path** (create project → intent → compil
 → gate → deploy → run → ranked at-risk list + drivers read back), **blocked
 deploy** (leakage-annotated graph → gate refuses over MCP exactly as in the
 GUI), **dataset ingest** (add_dataset → placement visible in
-`dataset_partitions` read-back).
+`dataset_partitions` read-back). All three shipped with #617 as layer-1
+journeys in `tests/api/test_action_journeys.cpp` (plus n8n import+compile,
+sim-Python compile, testkit_run submit-then-poll, and the denied-key
+negative); see [../api/governed-actions.md](../api/governed-actions.md).
 
 ## Rules
 

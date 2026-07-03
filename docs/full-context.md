@@ -94,12 +94,21 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   strip + the cluster strip replaying the scatter-gather as #590 flows,
   master-detail hits with source-row fields and entity_links
   ([docs/gui/search-view.md](gui/search-view.md)).
-- **In flight (this branch)**: [#642](https://github.com/oramasearch/zetta/issues/642)
-  — the search capability rounded out: `list_indexes` (the index registry as
-  a tool — discover what `search` can target) and the layer-1 distributed
-  search journey (3-node loopback cluster: list_indexes → search → ranked
-  hits + per-node provenance → get_trace per-peer spans;
-  `tests/api/test_search_journey.cpp`).
+- **Merged to `dev` (search capability rounded out)**: [#642](https://github.com/oramasearch/zetta/issues/642)
+  — `list_indexes` (the index registry as a tool — discover what `search` can
+  target) and the layer-1 distributed search journey (3-node loopback
+  cluster: list_indexes → search → ranked hits + per-node provenance →
+  get_trace per-peer spans; `tests/api/test_search_journey.cpp`).
+- **In flight (this branch)**: [#617](https://github.com/oramasearch/zetta/issues/617)
+  — governed action parity: the mutating product loop over MCP
+  (capture_intent · import_n8n · compile_intent/n8n/python · gate · deploy ·
+  run · add_dataset · testkit_run), each `orchestration:<name>`-scoped +
+  audited under the acting key; `run`/`testkit_run` are kind:job over the
+  engine's durable Run handles (`api::BackgroundActions` owns the workers,
+  `testkit::AsyncCaseRun` is the new testkit entry point); UC-1 +
+  gate-blocked + denied-key journeys in
+  `tests/api/test_action_journeys.cpp`
+  ([docs/api/governed-actions.md](api/governed-actions.md)).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.

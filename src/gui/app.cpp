@@ -3,6 +3,7 @@
 #include "gui/repl_console.hpp"
 
 #include "zetta/governance/access_key.hpp"
+#include "zetta/api/background.hpp"  // complete api::BackgroundActions for ~App's unique_ptr + prune
 #include "zetta/api/registry.hpp"  // complete api::Registry for ~App's unique_ptr
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/governance/audit_event.hpp"
@@ -582,6 +583,11 @@ void App::poll_background_ops() {
     // Runs once per frame on the UI thread (the node's owner). Each block is a
     // cheap no-op when its action is idle.
     poll_cloud_inspect();
+
+    // Palette-launched job capabilities (run / testkit_run, #617): drop the
+    // worker handles once done — their runs stay observable through the same
+    // live Run records every surface reads.
+    if (palette_background_) palette_background_->prune();
 
     // Churn run (#624): while in flight the Deploy panel / run overlay render
     // live from the Run + jobs records; here we only apply the outcome once

@@ -75,6 +75,8 @@ enum class CapabilityKind { Read, Action, Job };
 
 std::string_view to_string(CapabilityKind kind);
 
+class BackgroundActions;
+
 // What a handler sees. `acting_key` is the AccessKey id the bearer token
 // mapped to (empty = the audited "unauthenticated local" session — the
 // governed-console precedent). The context is only ever constructed on the
@@ -90,6 +92,12 @@ struct ApiContext {
     // spans become no-ops (bare library use).
     zetta::observability::TraceContext trace;
     zetta::observability::SpanRecorder* recorder = nullptr;
+
+    // Owner for the worker handles `kind: job` capabilities launch (#617,
+    // background.hpp). Null = job capabilities fail with a clear reason (an
+    // embedding that offers them must prune this each tick, beside the bridge
+    // drain).
+    BackgroundActions* background = nullptr;
 };
 
 using CapabilityHandler =

@@ -57,7 +57,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 19u);
+    EXPECT_EQ(registry.size(), 29u);
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("sql"));
     EXPECT_TRUE(registry.find("submit_feedback"));
@@ -69,6 +69,21 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
           "list_indexes", "list_datasets"}) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
+    // The #617 action-parity slice: the rest of the governed product loop,
+    // each requiring orchestration:<name>; run/testkit_run are kind:job.
+    for (const char* name :
+         {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
+          "compile_python", "gate", "deploy", "run", "add_dataset",
+          "testkit_run"}) {
+        const auto entry = registry.find(name);
+        ASSERT_TRUE(entry) << name;
+        EXPECT_EQ(entry->required_operation.domain,
+                  zetta::governance::CapabilityDomain::Orchestration)
+            << name;
+        EXPECT_EQ(entry->required_operation.action, name);
+    }
+    EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("testkit_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
 

@@ -381,6 +381,7 @@ add_library(zetta-core STATIC
   src/core/observability/trace.cpp
   src/core/observability/crash.cpp
   src/core/observability/feedback.cpp
+  src/core/api/background.cpp
   src/core/api/bridge.cpp
   src/core/api/capabilities.cpp
   src/core/api/llms.cpp
@@ -525,6 +526,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_uc1_scale.cpp
   src/core/testkit/cases_examples.cpp
   src/core/testkit/example_script.cpp
+  src/core/testkit/async_case_run.cpp
   src/core/runtime.cpp
   src/core/repl/console_model.cpp
   src/core/repl/governed_console.cpp
