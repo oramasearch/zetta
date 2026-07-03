@@ -5,10 +5,11 @@
 The capstone scale test. One canonical sim-Python program drives the whole UC-1
 pipeline over a real, manually-sized loopback cluster: **load the
 saas-sales-conversations parquet as a partitioned table → add permanent nodes →
-train a calibrated GBDT on `outcome` compute-near-data over the partitions →
-explain (per-row TreeSHAP drivers) → rank (the at-risk list)** — gated (RULE-1) and
-governed (key-scoped access + an audit trail). It proves the at-scale pipeline runs
-end to end and produces a real model identical on every node.
+featurize the engineered columns compute-near-data over the partitions → train a
+calibrated GBDT on `outcome` over the resulting feature table → explain (per-row
+TreeSHAP drivers) → rank (the at-risk list)** — gated (RULE-1) and governed
+(key-scoped access + an audit trail). It proves the at-scale pipeline runs end to
+end and produces a real model identical on every node.
 
 ## What it does
 
@@ -29,10 +30,12 @@ end to end and produces a real model identical on every node.
    burst stays consent-gated and the case is hermetic.
 4. **Governs.** A scoped, capability-bearing key authorizes the run (in-scope
    allowed, out-of-scope denied — [key-scoped access](../../../governance/access-control.md)).
-5. **Trains near data, SPMD.** Every node concurrently runs
-   [`run_near_data_train_job`](../../../use-cases/uc1-train-over-partitions.md) on `outcome` over
-   its owned partitions: train (+ calibrate) → explain (TreeSHAP) → rank, each a
-   recorded [`ComputeJob`](../../../compute/compute-jobs.md).
+5. **Featurizes + trains near data, SPMD.** Every node concurrently runs
+   [`run_near_data_featurize_train_job`](../../../use-cases/uc1-featurize-train-over-partitions.md)
+   (#530) over its owned partitions: featurize (the broadcast feature table,
+   identical on every node) → train (+ calibrate) **over the feature table** →
+   explain (TreeSHAP) → rank, each a recorded
+   [`ComputeJob`](../../../compute/compute-jobs.md).
 
 ## How to run
 
@@ -62,6 +65,8 @@ is sized by `nodes`, with requested-vs-provisioned counts in the result metrics.
 
 ## What it asserts (pass criteria)
 
+- The broadcast **feature table covers every conversation** with the script's
+  columns, identical on every node, its `featurize` job recorded.
 - A real calibrated [`Model`](../../../ml/models.md) registered on the root, **identical
   model + ranking on every node** (single-node == multi-node), AUC > 0.6.
 - Per-row TreeSHAP drivers (in feature order, non-empty top driver) + a ranked
@@ -76,6 +81,7 @@ is sized by `nodes`, with requested-vs-provisioned counts in the result metrics.
 ## Related
 
 - Engine: [uc1-at-scale-e2e.md](../../../use-cases/uc1-at-scale-e2e.md) ·
+  [uc1-featurize-train-over-partitions.md](../../../use-cases/uc1-featurize-train-over-partitions.md) ·
   [uc1-train-over-partitions.md](../../../use-cases/uc1-train-over-partitions.md) ·
   [compute-near-data.md](../../../compute/compute-near-data.md) ·
   [add-nodes.md](../../../cloud/add-nodes.md)

@@ -167,6 +167,12 @@ cluster (no leakage; matches the oracle); the in-app **Distributed →
 Featurize over partitions == single-node** test-suite case
 (`cluster.featurize_partitions`) runs it interactively.
 
+Downstream, [`zetta::ml::run_near_data_featurize_train_job`](../use-cases/uc1-featurize-train-over-partitions.md)
+(#530) composes this featurize with the [near-data GBDT train](../use-cases/uc1-train-over-partitions.md)
+(#533): one shard load, featurize, then train → explain → rank **over the broadcast
+feature table** (each node training on its own slice of it) — the UC-1
+featurize → train pipeline.
+
 ## Scope / later slices
 
 - **Group-by + featurize are wired end to end**; `scan`/`filter` reuse the loader as

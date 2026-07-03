@@ -494,6 +494,7 @@ add_library(zetta-core STATIC
   src/core/ml/gbdt_score.cpp
   src/core/ml/gbdt_score_job.cpp
   src/core/ml/local_train_job.cpp
+  src/core/ml/local_featurize_train_job.cpp
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
   src/core/compute/cpu_device.cpp

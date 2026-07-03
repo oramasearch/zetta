@@ -24,6 +24,7 @@ end-to-end proofs):
 - [churn-step-executor.md](churn-step-executor.md) — the real churn `StepExecutor`: each pipeline stage as actual distributed compute behind the same seam, each heavy step a recorded `ComputeJob` (#396).
 - [churn-solution.md](churn-solution.md) — wiring the catalog churn blueprint to the real engine via the ONE public runner over the node's live `JobCoordinator` (`run_churn_solution_on_node`, #398/#580/#637).
 - [uc1-train-over-partitions.md](uc1-train-over-partitions.md) — train GBDT(outcome) compute-near-data over a partitioned feature table: train → explain → rank, near-data instrumented (`run_near_data_train_job`, #533).
+- [uc1-featurize-train-over-partitions.md](uc1-featurize-train-over-partitions.md) — the featurize → train composition: point-in-time featurize the engineered columns near data and train the GBDT on the resulting feature table (`run_near_data_featurize_train_job`, #530).
 - [playbook.md](playbook.md) — the UC-1 retention playbook: deterministic driver→action→owner + frozen expected-retained-value priority + a constrained narrator that never invents numbers (#397).
 - [uc1-end-to-end.md](uc1-end-to-end.md) — the UC-1 end-to-end integration test: synthetic data → featurize → train → explain → rank → playbook, gated + governed (#399, TP-1).
 - [uc1-at-scale-e2e.md](uc1-at-scale-e2e.md) — the UC-1-at-scale sim-Python E2E: one canonical script drives the whole pipeline over a real, manually-sized loopback cluster (TC-12 / #531).
