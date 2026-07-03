@@ -18,10 +18,13 @@
 #include "zetta/data/table.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
+#include "zetta/compute/compute_job.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
+#include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/version.hpp"
 
@@ -54,11 +57,18 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 8u);
+    EXPECT_EQ(registry.size(), 19u);
     EXPECT_TRUE(registry.find("server_info"));
     EXPECT_TRUE(registry.find("sql"));
     EXPECT_TRUE(registry.find("submit_feedback"));
     EXPECT_TRUE(registry.find("search"));
+    // The #616 read-parity slice: typed detail reads + list_* siblings.
+    for (const char* name :
+         {"get_project", "get_run", "get_model", "get_job", "get_index",
+          "get_dataset", "list_runs", "list_models", "list_jobs",
+          "list_indexes", "list_datasets"}) {
+        EXPECT_TRUE(registry.find(name)) << name;
+    }
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
 
@@ -199,6 +209,190 @@ TEST_F(RegistryFixture, JourneyCreateProjectThenReadBack) {
     EXPECT_FALSE(duplicate.ok);
     EXPECT_EQ(duplicate.error.code, "engine_error");
     EXPECT_EQ(activity_count.load(), 1);  // no hook on failure
+}
+
+// Journey (#616): create a project, capture an intent input and a graph, then
+// get_project reads the full detail back — by name AND by uuid (the handle a
+// run/job/model carries) — inputs and graphs included; a miss is not_found.
+TEST_F(RegistryFixture, JourneyGetProjectReturnsFullDetail) {
+    auto created = call("create_project", nlohmann::json{{"name", "churn-q3"}});
+    ASSERT_TRUE(created.ok) << created.error.message;
+    auto project = node.find_project("churn-q3");
+    ASSERT_TRUE(project);
+    auto input = project->capture_intent("predict churn for Q3", "tester");
+    ASSERT_TRUE(input);
+    auto graph = project->create_graph("skeleton", zetta::ir::ExecutionGraph{});
+    ASSERT_TRUE(graph);
+
+    auto by_name = call("get_project", nlohmann::json{{"name", "churn-q3"}});
+    ASSERT_TRUE(by_name.ok) << by_name.error.message;
+    EXPECT_EQ(by_name.value.at("id"), project->id());
+    EXPECT_EQ(by_name.value.at("name"), "churn-q3");
+    EXPECT_FALSE(by_name.value.at("created").get<std::string>().empty());
+    ASSERT_EQ(by_name.value.at("inputs").size(), 1u);
+    EXPECT_EQ(by_name.value.at("inputs")[0].at("id"), input->id());
+    EXPECT_EQ(by_name.value.at("inputs")[0].at("kind"), "intent");
+    ASSERT_EQ(by_name.value.at("graphs").size(), 1u);
+    EXPECT_EQ(by_name.value.at("graphs")[0].at("name"), "skeleton");
+
+    // The uuid other entities reference resolves to the same project.
+    auto by_id = call("get_project", nlohmann::json{{"name", project->id()}});
+    ASSERT_TRUE(by_id.ok) << by_id.error.message;
+    EXPECT_EQ(by_id.value.at("id"), project->id());
+
+    auto missing = call("get_project", nlohmann::json{{"name", "nonexistent"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.error.code, "not_found");
+}
+
+// Journey (#616): each typed detail read returns the entity's already-validated
+// value JSON (exactly metadata()) plus the id, and misses are not_found — so an
+// agent reads the same record the CRDT/on-disk projection holds (RULE-7).
+TEST_F(RegistryFixture, JourneyTypedDetailReadsReturnTheEntityJson) {
+    auto run = node.create_run("proj-uuid", "graph-1");
+    ASSERT_TRUE(run);
+    run->set_status(zetta::pipeline::RunStatus::Running);
+    run->add_log({"2026-07-03T00:00:00Z", "info", "step one"});
+
+    zetta::ml::ModelValue model_value;
+    model_value.kind = "classifier";
+    model_value.name = "churn-gbdt";
+    model_value.metrics = {{"auc", 0.91}};
+    auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+
+    auto job = node.create_job(zetta::compute::JobKind::Featurize, "proj-uuid");
+    ASSERT_TRUE(job);
+
+    zetta::index::IndexValue index_value;
+    index_value.table = "events";
+    index_value.kind = zetta::index::IndexKind::Search;
+    index_value.backend = "tf_reference";
+    index_value.fields = {"body"};
+    auto index = node.create_index(std::move(index_value));
+    ASSERT_TRUE(index);
+
+    struct DetailCase {
+        const char* capability;
+        const char* id_field;
+        std::string id;
+        nlohmann::json expected;  // metadata() — the validated value shape
+    };
+    const DetailCase cases[] = {
+        {"get_run", "run_id", run->id(), run->metadata()},
+        {"get_model", "model_id", model->id(), model->metadata()},
+        {"get_job", "job_id", job->id(), job->metadata()},
+        {"get_index", "index_id", index->id(), index->metadata()},
+    };
+    for (const DetailCase& detail : cases) {
+        auto fetched =
+            call(detail.capability, nlohmann::json{{detail.id_field, detail.id}});
+        ASSERT_TRUE(fetched.ok) << detail.capability << ": "
+                                << fetched.error.message;
+        nlohmann::json value = fetched.value;
+        EXPECT_EQ(value.at("id"), detail.id) << detail.capability;
+        value.erase("id");
+        EXPECT_EQ(value, detail.expected) << detail.capability;
+
+        auto missing = call(detail.capability,
+                            nlohmann::json{{detail.id_field, "no-such-id"}});
+        EXPECT_FALSE(missing.ok) << detail.capability;
+        EXPECT_EQ(missing.error.code, "not_found") << detail.capability;
+    }
+    // The run detail carries the mutated state, not just creation defaults.
+    auto fetched_run = call("get_run", nlohmann::json{{"run_id", run->id()}});
+    ASSERT_TRUE(fetched_run.ok);
+    EXPECT_EQ(fetched_run.value.at("status"), "running");
+    ASSERT_EQ(fetched_run.value.at("logs").size(), 1u);
+    EXPECT_EQ(fetched_run.value.at("logs")[0].at("message"), "step one");
+}
+
+// Journey (#616): the list_* siblings return compact structured rows over the
+// same live registries the system.* views compute from, with the ids feeding
+// the get_* detail reads.
+TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
+    auto run = node.create_run();
+    ASSERT_TRUE(run);
+    zetta::ml::ModelValue model_value;
+    model_value.kind = "classifier";
+    auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+    auto job = node.create_job(zetta::compute::JobKind::Train);
+    ASSERT_TRUE(job);
+    zetta::index::IndexValue index_value;
+    index_value.table = "events";
+    index_value.backend = "tf_reference";
+    index_value.fields = {"body"};
+    auto index = node.create_index(std::move(index_value));
+    ASSERT_TRUE(index);
+
+    auto runs = call("list_runs", nlohmann::json::object());
+    ASSERT_TRUE(runs.ok) << runs.error.message;
+    ASSERT_EQ(runs.value.at("runs").size(), 1u);
+    EXPECT_EQ(runs.value.at("runs")[0].at("id"), run->id());
+    EXPECT_EQ(runs.value.at("runs")[0].at("status"), "pending");
+
+    auto models = call("list_models", nlohmann::json::object());
+    ASSERT_TRUE(models.ok) << models.error.message;
+    ASSERT_EQ(models.value.at("models").size(), 1u);
+    EXPECT_EQ(models.value.at("models")[0].at("id"), model->id());
+    EXPECT_FALSE(models.value.at("models")[0].at("has_weights").get<bool>());
+
+    auto jobs = call("list_jobs", nlohmann::json::object());
+    ASSERT_TRUE(jobs.ok) << jobs.error.message;
+    ASSERT_EQ(jobs.value.at("jobs").size(), 1u);
+    EXPECT_EQ(jobs.value.at("jobs")[0].at("id"), job->id());
+    EXPECT_EQ(jobs.value.at("jobs")[0].at("kind"), "train");
+
+    auto indexes = call("list_indexes", nlohmann::json::object());
+    ASSERT_TRUE(indexes.ok) << indexes.error.message;
+    ASSERT_EQ(indexes.value.at("indexes").size(), 1u);
+    EXPECT_EQ(indexes.value.at("indexes")[0].at("id"), index->id());
+    EXPECT_EQ(indexes.value.at("indexes")[0].at("fields"),
+              nlohmann::json::array({"body"}));
+}
+
+// Journey (#616): seed a table with rows, then get_dataset / list_datasets read
+// the computed summary — the same live source as system.datasets (RULE-7) but
+// with the schema and placement kept structured; the same name in two databases
+// is refused until "database" disambiguates.
+TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("events");
+    ASSERT_TRUE(table);
+    table->add_row({{"user", "u1"}, {"action", "login"}});
+    table->add_row({{"user", "u2"}, {"action", "churn"}});
+
+    auto fetched = call("get_dataset", nlohmann::json{{"dataset", "events"}});
+    ASSERT_TRUE(fetched.ok) << fetched.error.message;
+    EXPECT_EQ(fetched.value.at("name"), "events");
+    EXPECT_EQ(fetched.value.at("database"), "data");
+    EXPECT_EQ(fetched.value.at("rows"), 2u);
+    EXPECT_EQ(fetched.value.at("columns"),
+              nlohmann::json::array({"action", "user"}));
+    EXPECT_TRUE(fetched.value.at("partitions").empty());
+
+    auto listed = call("list_datasets", nlohmann::json::object());
+    ASSERT_TRUE(listed.ok) << listed.error.message;
+    ASSERT_EQ(listed.value.at("datasets").size(), 1u);
+    EXPECT_EQ(listed.value.at("datasets")[0].at("name"), "events");
+
+    auto missing = call("get_dataset", nlohmann::json{{"dataset", "nonexistent"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.error.code, "not_found");
+
+    // The same dataset name in a second database: ambiguous until qualified.
+    auto other = node.create_database("staging");
+    ASSERT_TRUE(other);
+    ASSERT_TRUE(other->create_table("events"));
+    auto ambiguous = call("get_dataset", nlohmann::json{{"dataset", "events"}});
+    EXPECT_FALSE(ambiguous.ok);
+    EXPECT_NE(ambiguous.error.message.find("staging"), std::string::npos);
+    auto qualified = call("get_dataset", nlohmann::json{{"dataset", "events"},
+                                                        {"database", "data"}});
+    ASSERT_TRUE(qualified.ok) << qualified.error.message;
+    EXPECT_EQ(qualified.value.at("rows"), 2u);
 }
 
 // Every call is a span with intent + result shape, and the result carries the
