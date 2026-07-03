@@ -279,11 +279,8 @@ void App::draw_add_model_form() {
 }
 
 void App::draw_models() {
-    // Consume a navigate_to(entity) deep link aimed at this view.
-    if (auto pending_entity = take_pending_selection(View::Models)) {
-        selected_model_ = *pending_entity;
-    }
-    ImGui::SeparatorText("Models");
+    page_header("Models",
+                "Trained models: metrics, ranked drivers, and weights");
 
     // The GUI form of system.zetta_models: the trained-model registry (ENT-14 /
     // FEAT-6). A thin, read-only viewer over the replicated, already-validated
@@ -295,54 +292,40 @@ void App::draw_models() {
 
     draw_add_model_form();
 
-    const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
-    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 18.0f;
-
-    // Left: the model list. Models have no lifecycle status, so each row is its
-    // kind tag plus the name (or the first UUID segment when unnamed) — enough to
-    // tell them apart.
-    ImGui::BeginChild("##model_list", ImVec2(list_w, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (models.empty()) ImGui::TextDisabled("(no models)");
+    // Models have no lifecycle status (muted dot); each row's title is the
+    // name (or the UUID's first segment when unnamed) with the kind as meta.
+    std::vector<MasterRow> rows;
+    rows.reserve(models.size());
     for (const std::shared_ptr<zetta::ml::Model>& model : models) {
-        ImGui::PushID(model->id().c_str());
-        ImGui::TextColored(kInkQuiet, "%-11s", model->kind().c_str());
-        ImGui::SameLine();
-        const std::string short_id =
-            model->id().substr(0, model->id().find('-'));
-        const std::string label =
-            model->name().empty() ? short_id : model->name();
-        if (mono_font_) ImGui::PushFont(mono_font_);
-        if (ImGui::Selectable(label.c_str(), selected_model_ == model->id())) {
-            selected_model_ = model->id();
-        }
-        if (mono_font_) ImGui::PopFont();
-        ImGui::PopID();
+        rows.push_back({.id = model->id(),
+                        .title = model->name().empty()
+                                     ? entity_short_id(model->id())
+                                     : model->name(),
+                        .meta = model->kind(),
+                        .id_title = model->name().empty()});
     }
-    ImGui::EndChild();
 
-    // Right: the selected model's detail — metrics, ranked drivers, and weights
-    // fingerprint (render_model_card, reused from the Runs panel), plus its
-    // creation stamp and lineage refs.
-    ImGui::SameLine();
-    ImGui::BeginChild("##model_detail", ImVec2(0, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (const std::shared_ptr<zetta::ml::Model> model = node_.find_model(selected_model_)) {
-        render_model_card(*model);
-        ImGui::Spacing();
-        mono_line(kInkQuiet, "created:  ", model->created());
-        if (!model->project().empty()) {
-            mono_line(kInkQuiet, "project:  ", model->project());
-        }
-        if (!model->run().empty()) {
-            mono_line(kInkQuiet, "run:      ", model->run());
-        }
-    } else {
-        ImGui::TextDisabled(
-            "Select a model to view its metrics, ranked drivers, and weights "
-            "fingerprint.");
-    }
-    ImGui::EndChild();
+    master_detail(
+        "models", rows, selected_model_, take_pending_selection(View::Models),
+        "(no models)",
+        "Select a model to view its metrics, ranked drivers, and weights "
+        "fingerprint.",
+        [&](const MasterRow& row) {
+            // The selected model's detail — metrics, ranked drivers, and
+            // weights fingerprint (render_model_card, reused from the Runs
+            // panel), plus its creation stamp and lineage refs.
+            const std::shared_ptr<zetta::ml::Model> model = node_.find_model(row.id);
+            if (!model) return;
+            render_model_card(*model);
+            ImGui::Spacing();
+            mono_line(kInkQuiet, "created:  ", model->created());
+            if (!model->project().empty()) {
+                mono_line(kInkQuiet, "project:  ", model->project());
+            }
+            if (!model->run().empty()) {
+                mono_line(kInkQuiet, "run:      ", model->run());
+            }
+        });
 }
 
 }  // namespace zetta::gui

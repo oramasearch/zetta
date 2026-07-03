@@ -11,7 +11,11 @@
 #include <imgui.h>
 
 #include <cctype>
+#include <cfloat>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace zetta::gui {
 
@@ -261,6 +265,165 @@ inline bool empty_state(const char* headline, const char* body,
         ImGui::Spacing();
     }
     return clicked;
+}
+
+// ── The master-detail scaffold (#634) ──────────────────────────────────────
+// The ONE way a list+detail panel lays itself out: a resizable split with the
+// list left and the detail right, identical rows (status dot + title + a
+// right-aligned mono meta), and one selection model. Panels rebuild `rows`
+// from their live engine source every frame (the standard refresh — nothing is
+// cached) and draw only the detail body; the scaffold owns everything else.
+
+// One list row. `id` is the stable entity id the selection tracks (also the
+// ImGui id); `title` is the row's primary label — set `id_title` when the
+// title IS an identifier (a UUID segment, a table name) so it renders in the
+// mono face per the design system's "numbers/ids/paths in Geist Mono" rule.
+// `meta` is the muted mono annotation right-aligned on the row ("" = none);
+// `section` groups consecutive rows under a mono eyebrow ("" = ungrouped).
+struct MasterRow {
+    std::string id;
+    std::string title;
+    std::string meta;
+    std::string section;
+    Tone tone = Tone::Muted;
+    bool id_title = false;
+};
+
+// The standard first line of a detail pane: the entity's title in mono ink +
+// an optional tone-coloured status tag. Every master-detail panel opens its
+// detail with this, so "what am I looking at + what state is it in" reads
+// identically everywhere.
+inline void detail_header(const std::string& title, Tone tone,
+                          const std::string& status) {
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(kInkPrimary, "%s", title.c_str());
+    if (g_mono_font) ImGui::PopFont();
+    if (!status.empty()) {
+        ImGui::SameLine();
+        ImGui::TextColored(tone_color(tone), "[%s]", status.c_str());
+    }
+}
+
+// The list pane's share of the width when a panel first opens; the user can
+// drag the splitter between 0.15 and 0.60 (persisted in the window's ImGui
+// state storage, keyed by the scaffold id).
+inline constexpr float kMasterListDefaultRatio = 0.30f;
+
+// The split container + selection model. `selected_id` is the panel's
+// selection member (held by id, re-resolved here each frame);
+// `pending_selection` is the panel's take_pending_selection(View::…) result —
+// a consumed deep link wins the selection and scrolls its row into view.
+// When the selection matches no row it falls back to the first row, so the
+// detail pane always shows a real entity while any exist. `draw_detail` is
+// called with the selected row inside the detail child; `select_hint` renders
+// there instead when nothing is selectable, and `empty_label` renders in an
+// empty list. `height` = 0 fills the remaining content region (the default);
+// a panel with content below the scaffold passes an explicit height.
+template <typename DrawDetail>
+inline void master_detail(const char* scaffold_id,
+                          const std::vector<MasterRow>& rows,
+                          std::string& selected_id,
+                          std::optional<std::string> pending_selection,
+                          const char* empty_label, const char* select_hint,
+                          DrawDetail&& draw_detail, float height = 0.0f) {
+    ImGui::PushID(scaffold_id);
+
+    // Selection model: a deep link wins; else keep the current selection while
+    // its row still exists; else fall back to the first row.
+    bool scroll_to_selection = false;
+    if (pending_selection) {
+        selected_id = *pending_selection;
+        scroll_to_selection = true;
+    }
+    const auto find_row = [&rows](const std::string& id) -> const MasterRow* {
+        for (const MasterRow& row : rows)
+            if (row.id == id) return &row;
+        return nullptr;
+    };
+    if (!find_row(selected_id) && !rows.empty()) selected_id = rows.front().id;
+
+    const float minimum_height = ImGui::GetTextLineHeightWithSpacing() * 8.0f;
+    float region_height =
+        height > 0.0f ? height : ImGui::GetContentRegionAvail().y;
+    if (region_height < minimum_height) region_height = minimum_height;
+    const float region_width = ImGui::GetContentRegionAvail().x;
+    const float splitter_width = ImGui::GetFontSize() * 0.45f;
+
+    // The list/detail ratio, persisted so a resize survives view switches.
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    const ImGuiID ratio_key = ImGui::GetID("##md_ratio");
+    float ratio = storage->GetFloat(ratio_key, kMasterListDefaultRatio);
+    const float list_width = (region_width - splitter_width) * ratio;
+
+    // Left: the list. Identical rows — status dot, title, right-aligned meta —
+    // grouped under mono eyebrows when rows carry a section.
+    ImGui::BeginChild("##md_list", ImVec2(list_width, region_height),
+                      ImGuiChildFlags_Borders);
+    if (rows.empty()) ImGui::TextDisabled("%s", empty_label);
+    std::string_view current_section;
+    bool first_row = true;
+    for (const MasterRow& row : rows) {
+        if (!row.section.empty() && row.section != current_section) {
+            if (!first_row) ImGui::Spacing();
+            current_section = row.section;
+            eyebrow(g_mono_font, to_upper(row.section).c_str());
+        }
+        first_row = false;
+        ImGui::PushID(row.id.c_str());
+        status_dot(tone_color(row.tone));
+        const bool is_selected = row.id == selected_id;
+        if (row.id_title && g_mono_font) ImGui::PushFont(g_mono_font);
+        if (ImGui::Selectable(row.title.c_str(), is_selected)) {
+            selected_id = row.id;
+        }
+        if (row.id_title && g_mono_font) ImGui::PopFont();
+        if (is_selected && scroll_to_selection) ImGui::SetScrollHereY(0.35f);
+        if (!row.meta.empty()) {
+            // Right-aligned mono meta drawn over the row (the sidebar-badge
+            // pattern), muted so the title stays the row's voice.
+            ImFont* meta_font = g_mono_font ? g_mono_font : ImGui::GetFont();
+            const float meta_font_size = meta_font->FontSize;
+            const ImVec2 meta_size = meta_font->CalcTextSizeA(
+                meta_font_size, FLT_MAX, 0.0f, row.meta.c_str());
+            const ImVec2 row_min = ImGui::GetItemRectMin();
+            const ImVec2 row_max = ImGui::GetItemRectMax();
+            const ImVec2 meta_pos(
+                row_max.x - meta_size.x - ImGui::GetStyle().FramePadding.x,
+                row_min.y + (row_max.y - row_min.y - meta_size.y) * 0.5f);
+            ImGui::GetWindowDrawList()->AddText(
+                meta_font, meta_font_size, meta_pos,
+                ImGui::GetColorU32(kInkQuiet), row.meta.c_str());
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // The splitter: an invisible drag handle between the panes.
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::InvisibleButton("##md_splitter",
+                           ImVec2(splitter_width, region_height));
+    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    }
+    if (ImGui::IsItemActive() && region_width > splitter_width) {
+        ratio += ImGui::GetIO().MouseDelta.x / (region_width - splitter_width);
+        if (ratio < 0.15f) ratio = 0.15f;
+        if (ratio > 0.60f) ratio = 0.60f;
+    }
+    storage->SetFloat(ratio_key, ratio);
+
+    // Right: the detail pane — the panel's body for the selected entity
+    // (re-resolved after the list so a click renders its detail this frame).
+    ImGui::SameLine(0.0f, 0.0f);
+    ImGui::BeginChild("##md_detail", ImVec2(0.0f, region_height),
+                      ImGuiChildFlags_Borders);
+    if (const MasterRow* selected_row = find_row(selected_id)) {
+        draw_detail(*selected_row);
+    } else {
+        ImGui::TextDisabled("%s", select_hint);
+    }
+    ImGui::EndChild();
+    ImGui::PopID();
 }
 
 // Per-panel action feedback (#632): a tinted strip with a status dot and the

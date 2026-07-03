@@ -23,11 +23,8 @@
 namespace zetta::gui {
 
 void App::draw_datasets() {
-    // Consume a navigate_to(entity) deep link aimed at this view.
-    if (auto pending_entity = take_pending_selection(View::Datasets)) {
-        selected_dataset_ = *pending_entity;
-    }
-    ImGui::SeparatorText("Datasets");
+    page_header("Datasets",
+                "Every dataset: schema, size, format, and partition placement");
 
     // The GUI form of system.datasets (#585; the area-3 dataset view of epic
     // #575): one dataset == one table, summarized live from the node tree + the
@@ -61,84 +58,66 @@ void App::draw_datasets() {
     }
     ImGui::Spacing();
 
-    // Re-resolve the selection against the live datasets: if the selected table is
-    // gone (or nothing is selected yet), fall back to the first dataset so the
-    // detail pane always shows a real one.
-    const auto find_selected = [&]() -> const zetta::data::DatasetSummary* {
-        for (const zetta::data::DatasetSummary& dataset : datasets)
-            if (dataset.table_id == selected_dataset_) return &dataset;
-        return nullptr;
-    };
-    if (!find_selected() && !datasets.empty()) {
-        selected_dataset_ = datasets.front().table_id;
-    }
-
-    const float list_w = ImGui::GetContentRegionAvail().x * 0.30f;
-    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 20.0f;
-
-    // Left: the dataset list. Each row is the on-disk format tag plus the dataset
-    // name (the table name); the owning database is a muted sub-line so same-named
-    // tables across databases stay distinguishable.
-    ImGui::BeginChild("##dataset_list", ImVec2(list_w, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (datasets.empty()) ImGui::TextDisabled("(no datasets)");
+    // Each row's title is the dataset name (the table name) with the on-disk
+    // format and the owning database as meta, so same-named tables across
+    // databases stay distinguishable. Datasets have no lifecycle (muted dot).
+    std::vector<MasterRow> rows;
+    rows.reserve(datasets.size());
     for (const zetta::data::DatasetSummary& dataset : datasets) {
-        ImGui::PushID(dataset.table_id.c_str());
-        ImGui::TextColored(kInkQuiet, "%-6s", dataset.format.c_str());
-        ImGui::SameLine();
-        if (mono_font_) ImGui::PushFont(mono_font_);
-        if (ImGui::Selectable(dataset.name.c_str(),
-                              selected_dataset_ == dataset.table_id)) {
-            selected_dataset_ = dataset.table_id;
-        }
-        if (mono_font_) ImGui::PopFont();
-        ImGui::TextColored(kInkQuiet, "      %s", dataset.database.c_str());
-        ImGui::PopID();
+        rows.push_back({.id = dataset.table_id,
+                        .title = dataset.name,
+                        .meta = dataset.format + " · " + dataset.database,
+                        .id_title = true});
     }
-    ImGui::EndChild();
 
-    // Right: the selected dataset's detail — identity, shape (format / replication
-    // / rows / size), schema, and the partition-placement overlay.
-    ImGui::SameLine();
-    ImGui::BeginChild("##dataset_detail", ImVec2(0, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (const zetta::data::DatasetSummary* dataset = find_selected()) {
-        eyebrow(mono_font_, "DATASET");
-        mono_line(kInkPrimary, "name        ", dataset->name);
-        mono_line(kInkSecondary, "database    ", dataset->database);
-        mono_line(kInkQuiet, "table id    ", dataset->table_id);
+    master_detail(
+        "datasets", rows, selected_dataset_,
+        take_pending_selection(View::Datasets), "(no datasets)",
+        "Select a dataset to view its schema, size, and partition placement "
+        "across the cluster.",
+        [&](const MasterRow& row) {
+            const zetta::data::DatasetSummary* dataset = nullptr;
+            for (const zetta::data::DatasetSummary& candidate : datasets) {
+                if (candidate.table_id == row.id) {
+                    dataset = &candidate;
+                    break;
+                }
+            }
+            if (!dataset) return;
 
-        ImGui::Spacing();
-        eyebrow(mono_font_, "SHAPE");
-        mono_line(kInkSecondary, "format      ", dataset->format);
-        mono_line(kInkSecondary, "replication ", dataset->replication);
-        mono_line(kInkSecondary, "rows        ", std::to_string(dataset->rows));
-        mono_line(kInkSecondary, "size        ", zetta::util::format_bytes(dataset->size_bytes));
-        mono_line(kInkSecondary, "columns     ",
-                  std::to_string(dataset->columns.size()));
+            // The selected dataset's detail — identity, shape (format /
+            // replication / rows / size), schema, and the placement overlay.
+            eyebrow(mono_font_, "DATASET");
+            mono_line(kInkPrimary, "name        ", dataset->name);
+            mono_line(kInkSecondary, "database    ", dataset->database);
+            mono_line(kInkQuiet, "table id    ", dataset->table_id);
 
-        ImGui::Spacing();
-        eyebrow(mono_font_, "SCHEMA");
-        if (dataset->columns.empty()) {
-            ImGui::TextDisabled("(no columns — the dataset is empty)");
-        } else {
-            // The inferred field names (first-seen order), wrapped in mono.
-            if (g_mono_font) ImGui::PushFont(g_mono_font);
-            ImGui::PushStyleColor(ImGuiCol_Text, kInkSecondary);
-            ImGui::TextWrapped("%s", join_refs(dataset->columns).c_str());
-            ImGui::PopStyleColor();
-            if (g_mono_font) ImGui::PopFont();
-        }
+            ImGui::Spacing();
+            eyebrow(mono_font_, "SHAPE");
+            mono_line(kInkSecondary, "format      ", dataset->format);
+            mono_line(kInkSecondary, "replication ", dataset->replication);
+            mono_line(kInkSecondary, "rows        ", std::to_string(dataset->rows));
+            mono_line(kInkSecondary, "size        ", zetta::util::format_bytes(dataset->size_bytes));
+            mono_line(kInkSecondary, "columns     ",
+                      std::to_string(dataset->columns.size()));
 
-        ImGui::Spacing();
-        eyebrow(mono_font_, "PARTITION PLACEMENT ACROSS THE CLUSTER");
-        draw_dataset_placement(*dataset);
-    } else {
-        ImGui::TextDisabled(
-            "Select a dataset to view its schema, size, and partition placement "
-            "across the cluster.");
-    }
-    ImGui::EndChild();
+            ImGui::Spacing();
+            eyebrow(mono_font_, "SCHEMA");
+            if (dataset->columns.empty()) {
+                ImGui::TextDisabled("(no columns — the dataset is empty)");
+            } else {
+                // The inferred field names (first-seen order), wrapped in mono.
+                if (g_mono_font) ImGui::PushFont(g_mono_font);
+                ImGui::PushStyleColor(ImGuiCol_Text, kInkSecondary);
+                ImGui::TextWrapped("%s", join_refs(dataset->columns).c_str());
+                ImGui::PopStyleColor();
+                if (g_mono_font) ImGui::PopFont();
+            }
+
+            ImGui::Spacing();
+            eyebrow(mono_font_, "PARTITION PLACEMENT ACROSS THE CLUSTER");
+            draw_dataset_placement(*dataset);
+        });
 }
 
 void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
@@ -225,7 +204,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             draw->PushClipRect(top_left, bottom_right, true);
             const bool is_self = node_id == self_id;
             const bool departed = is_member.find(node_id) == is_member.end();
-            std::string id = cluster_node_short_id(node_id);
+            std::string id = entity_short_id(node_id);
             if (is_self) id += " (self)";
             else if (departed) id += " (gone)";
             const ImVec2 id_pos(top_left.x + pad, top_left.y + pad);
@@ -290,7 +269,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             ImGui::TableNextColumn();
             if (g_mono_font) ImGui::PushFont(g_mono_font);
             ImGui::TextColored(kInkSecondary, "%s",
-                               cluster_node_short_id(placement.partition_id).c_str());
+                               entity_short_id(placement.partition_id).c_str());
             ImGui::TableNextColumn();
             char range[64];
             std::snprintf(range, sizeof(range), "[%llu, %llu)",
@@ -301,7 +280,7 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
             std::vector<std::string> owners;
             owners.reserve(placement.owner_nodes.size());
             for (const std::string& owner : placement.owner_nodes) {
-                owners.push_back(cluster_node_short_id(owner));
+                owners.push_back(entity_short_id(owner));
             }
             ImGui::TextColored(kInkSecondary, "%s",
                                owners.empty() ? "(unplaced)"

@@ -23,12 +23,8 @@ namespace {
 // the node's models whose producing-run ref is this run (resolved by the caller).
 void render_run_detail(const zetta::pipeline::Run& run,
                        const std::vector<std::shared_ptr<zetta::ml::Model>>& models) {
-    if (g_mono_font) ImGui::PushFont(g_mono_font);
-    ImGui::TextColored(kInkPrimary, "run %s", run.id().c_str());
-    if (g_mono_font) ImGui::PopFont();
-    ImGui::SameLine();
-    ImGui::TextColored(tone_color(tone_of(run.status())), "[%s]",
-                       std::string(to_string(run.status())).c_str());
+    detail_header("run " + run.id(), tone_of(run.status()),
+                  std::string(to_string(run.status())));
     if (!run.project().empty()) mono_line(kInkQuiet, "project:  ", run.project());
     if (!run.graph().empty()) mono_line(kInkQuiet, "graph:    ", run.graph());
     mono_line(kInkQuiet, "created:  ", run.created());
@@ -124,11 +120,9 @@ void render_run_detail(const zetta::pipeline::Run& run,
 }  // namespace
 
 void App::draw_runs() {
-    // Consume a navigate_to(entity) deep link aimed at this view.
-    if (auto pending_entity = take_pending_selection(View::Runs)) {
-        selected_run_ = *pending_entity;
-    }
-    ImGui::SeparatorText("Runs / outputs / lineage");
+    page_header("Runs",
+                "Status, logs, outputs, and lineage for each execution of a "
+                "deployed graph");
 
     // A run is the record of one execution of a deployed graph (status / logs /
     // outputs / lineage). This panel is a read-only viewer: runs arrive via the
@@ -137,48 +131,35 @@ void App::draw_runs() {
     const std::vector<std::shared_ptr<zetta::pipeline::Run>> runs = node_.runs();
     ImGui::TextDisabled("%zu run(s)", runs.size());
 
-    const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
-    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 14.0f;
-
-    // Left: the run list. Runs have no human name, so each row is a status badge
-    // plus the first segment of the UUID — enough to tell them apart.
-    ImGui::BeginChild("##run_list", ImVec2(list_w, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (runs.empty()) ImGui::TextDisabled("(no runs)");
+    // Runs have no human name, so each row's title is the UUID's first segment
+    // with the lifecycle status as the dot + meta.
+    std::vector<MasterRow> rows;
+    rows.reserve(runs.size());
     for (const std::shared_ptr<zetta::pipeline::Run>& run : runs) {
-        ImGui::PushID(run->id().c_str());
-        ImGui::TextColored(tone_color(tone_of(run->status())), "%-9s",
-                           std::string(to_string(run->status())).c_str());
-        ImGui::SameLine();
-        const std::string short_id = run->id().substr(0, run->id().find('-'));
-        if (mono_font_) ImGui::PushFont(mono_font_);
-        if (ImGui::Selectable(short_id.c_str(), selected_run_ == run->id())) {
-            selected_run_ = run->id();
-        }
-        if (mono_font_) ImGui::PopFont();
-        ImGui::PopID();
+        rows.push_back({.id = run->id(),
+                        .title = entity_short_id(run->id()),
+                        .meta = std::string(to_string(run->status())),
+                        .tone = tone_of(run->status()),
+                        .id_title = true});
     }
-    ImGui::EndChild();
 
-    // Right: the selected run's status / logs / outputs / lineage.
-    ImGui::SameLine();
-    ImGui::BeginChild("##run_detail", ImVec2(0, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (const auto run = node_.find_run(selected_run_)) {
-        // Resolve the trained model(s) this run produced via the durable reverse
-        // link (Model::run() == run id), so the detail pane can surface their
-        // metrics + ranked drivers alongside the run's outputs.
-        std::vector<std::shared_ptr<zetta::ml::Model>> run_models;
-        for (const std::shared_ptr<zetta::ml::Model>& model : node_.models()) {
-            if (model->run() == run->id()) run_models.push_back(model);
-        }
-        render_run_detail(*run, run_models);
-    } else {
-        ImGui::TextDisabled(
-            "Select a run to view its status, logs, outputs, models, and "
-            "lineage.");
-    }
-    ImGui::EndChild();
+    master_detail(
+        "runs", rows, selected_run_, take_pending_selection(View::Runs),
+        "(no runs)",
+        "Select a run to view its status, logs, outputs, models, and lineage.",
+        [&](const MasterRow& row) {
+            const auto run = node_.find_run(row.id);
+            if (!run) return;
+            // Resolve the trained model(s) this run produced via the durable
+            // reverse link (Model::run() == run id), so the detail pane can
+            // surface their metrics + ranked drivers alongside the run's
+            // outputs.
+            std::vector<std::shared_ptr<zetta::ml::Model>> run_models;
+            for (const std::shared_ptr<zetta::ml::Model>& model : node_.models()) {
+                if (model->run() == run->id()) run_models.push_back(model);
+            }
+            render_run_detail(*run, run_models);
+        });
 }
 
 }  // namespace zetta::gui

@@ -63,6 +63,13 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
   (`tone_background`) with the engine's path-qualified reason verbatim;
   renders nothing on an empty message; no modal alerts.
 - `entity_link(label, view, id)` — renders as a link, calls `navigate_to`.
+- **The master-detail scaffold (#634)**: `master_detail(id, rows, selected,
+  pending, …)` — the ONE way a list+detail panel lays itself out: a resizable
+  split (ratio persisted per scaffold), identical `MasterRow` rows (status dot
+  + title + right-aligned mono meta, optional section eyebrows), one selection
+  model (pending navigation wins → keep while present → fall back to the first
+  row), and `detail_header(title, tone, status)` opening the detail pane. See
+  [master-detail.md](master-detail.md).
 - **Status tones (#636)**: `enum class Tone { Ok, Active, Warn, Error, Muted }`
   with `tone_color(Tone)` / `tone_background(Tone)` in `app_internal.hpp`, and
   the per-enum mapping overloads in **`src/gui/tones.hpp`** — the ONE mapping
@@ -74,8 +81,8 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
 Rules: a panel may compose grammar widgets and plain ImGui primitives
 (tables, plots) but may not define local colors, paddings, or one-off buttons
 — if a panel needs a new visual, it becomes a grammar widget first (with a
-design-system check), then gets used. The master-detail scaffold (#634) is the
-next grammar addition after the foundation.
+design-system check), then gets used. A list+detail panel never hand-rolls its
+split: it renders through the master-detail scaffold.
 
 ## Layout shell
 

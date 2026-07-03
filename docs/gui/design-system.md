@@ -98,6 +98,11 @@ Hover/selected washes and ghost-button fills are black at low alpha
   Cloud inspector consent gate (amber wash when locked, green when granted).
 - **Cards.** Child panes are white on canvas with a hairline border (the list /
   detail panes throughout).
+- **Master-detail.** A list+detail panel renders through the
+  [master-detail scaffold](master-detail.md) (`master_detail` in
+  `app_internal.hpp`, #634): one resizable split, identical rows (status dot +
+  title + right-aligned mono meta), one selection model — never a hand-rolled
+  split.
 
 ## Self-check before adding GUI
 

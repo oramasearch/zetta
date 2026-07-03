@@ -18,15 +18,16 @@ identical wherever a model appears.
 
 ## Layout
 
-A list + detail in the same "select on the left, inspect on the right" shape the
-[Runs](../pipeline/runs.md#gui-panel) and [Jobs](jobs-panel.md) panels use, with an inline
+Rendered through the [master-detail scaffold](master-detail.md) (#634), like the
+[Runs](../pipeline/runs.md#gui-panel) and [Jobs](jobs-panel.md) panels, with an inline
 **Add a model** affordance above it.
 
 ### Model list (left)
 
-One row per `node_.models()` entry. Models have **no lifecycle status** (unlike a
-run or job), so each row is the model **kind** tag (`classifier` / `regressor` / …)
-plus its **name** — or the first segment of its UUID when unnamed. Selecting a row
+One row per `node_.models()` entry — a standard `MasterRow`: a muted dot
+(models have **no lifecycle status**, unlike a run or job), the model's **name**
+— or the first segment of its UUID when unnamed — as the title, and the **kind**
+(`classifier` / `regressor` / …) as the mono meta. Selecting a row
 sets the active model (held by id and re-resolved each frame via `node_.find_model`,
 like the rest of the UI, so a dropped/replaced model can't leave a dangling
 handle). A fresh standalone node shows "(no models)" until something registers one.

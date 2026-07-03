@@ -149,11 +149,8 @@ void render_audit_log(const std::vector<std::shared_ptr<zetta::governance::Audit
 }  // namespace
 
 void App::draw_admin() {
-    // Consume a navigate_to(entity) deep link aimed at this view.
-    if (auto pending_entity = take_pending_selection(View::Admin)) {
-        selected_principal_ = *pending_entity;
-    }
-    ImGui::SeparatorText("Admin & audit");
+    page_header("Admin & audit",
+                "Principals, access keys, and the immutable audit trail");
 
     // The governance surface (SCR-7 / CMP-5, the GUI slice of FEAT-9): a
     // **read-only** viewer over the node's already-validated governance state —
@@ -163,45 +160,36 @@ void App::draw_admin() {
     // events" acceptance. Reads in-memory handles validated when they entered
     // from disk / the CRDT, so it introduces no new JSON boundary.
 
-    // --- Principals & access keys (list + detail, like the Runs panel) ------
+    // --- Principals & access keys (the master-detail scaffold) --------------
     ImGui::SeparatorText("Principals & access keys");
     const std::vector<std::string> principal_names = node_.principal_names();
     ImGui::TextDisabled("%zu principal(s)", principal_names.size());
 
-    const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
-    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 12.0f;
-
-    // Left: the principals. Each row is a kind badge plus the principal's name;
-    // selecting one (held by name, re-resolved each frame) inspects its keys.
-    ImGui::BeginChild("##principal_list", ImVec2(list_w, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (principal_names.empty()) ImGui::TextDisabled("(no principals)");
+    // Each row's title is the principal's name (held by name, re-resolved each
+    // frame) with its kind as meta; principals have no lifecycle (muted dot).
+    std::vector<MasterRow> rows;
+    rows.reserve(principal_names.size());
     for (const std::string& name : principal_names) {
         const std::shared_ptr<zetta::governance::Principal> principal = node_.find_principal(name);
         if (!principal) continue;
-        ImGui::PushID(name.c_str());
-        ImGui::TextDisabled("%-7s",
-                            std::string(to_string(principal->kind())).c_str());
-        ImGui::SameLine();
-        if (ImGui::Selectable(name.c_str(), selected_principal_ == name)) {
-            selected_principal_ = name;
-        }
-        ImGui::PopID();
+        rows.push_back({.id = name,
+                        .title = name,
+                        .meta = std::string(to_string(principal->kind()))});
     }
-    ImGui::EndChild();
 
-    // Right: the selected principal's keys (each with its scope + grants).
-    ImGui::SameLine();
-    ImGui::BeginChild("##principal_detail", ImVec2(0, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (const std::shared_ptr<zetta::governance::Principal> principal =
-            node_.find_principal(selected_principal_)) {
-        render_principal_detail(*principal);
-    } else {
-        ImGui::TextDisabled(
-            "Select a principal to view its keys, scope, and capability grants.");
-    }
-    ImGui::EndChild();
+    // A fixed height (rather than the fill-remaining default) leaves room for
+    // the audit log below.
+    master_detail(
+        "principals", rows, selected_principal_,
+        take_pending_selection(View::Admin), "(no principals)",
+        "Select a principal to view its keys, scope, and capability grants.",
+        [&](const MasterRow& row) {
+            const std::shared_ptr<zetta::governance::Principal> principal =
+                node_.find_principal(row.id);
+            if (!principal) return;
+            render_principal_detail(*principal);
+        },
+        ImGui::GetTextLineHeightWithSpacing() * 12.0f);
 
     // --- Audit log (the immutable, append-only trail) -----------------------
     ImGui::SeparatorText("Audit log");

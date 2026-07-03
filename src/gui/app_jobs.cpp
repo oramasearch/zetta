@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/app_operations_internal.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/compute/compute_job.hpp"
@@ -148,11 +149,9 @@ void App::draw_job_scaling_controls() {
 }
 
 void App::draw_jobs() {
-    // Consume a navigate_to(entity) deep link aimed at this view.
-    if (auto pending_entity = take_pending_selection(View::Jobs)) {
-        selected_job_ = *pending_entity;
-    }
-    ImGui::SeparatorText("Compute jobs");
+    page_header("Compute jobs",
+                "Native distributed compute: lifecycle, references, and the "
+                "scaling preview");
 
     // The GUI form of system.zetta_jobs: the live compute-job registry (one row
     // per unit of native distributed accelerated compute — featurize / train /
@@ -163,75 +162,58 @@ void App::draw_jobs() {
     const std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs = node_.jobs();
     ImGui::TextDisabled("%zu job(s)", jobs.size());
 
-    const float list_w = ImGui::GetContentRegionAvail().x * 0.28f;
-    const float panel_h = ImGui::GetTextLineHeightWithSpacing() * 22.0f;
-
-    // Left: the job list. Jobs have no human name, so each row is a color-coded
-    // status badge plus the kind and the first UUID segment.
-    ImGui::BeginChild("##job_list", ImVec2(list_w, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (jobs.empty()) ImGui::TextDisabled("(no jobs)");
+    // Jobs have no human name, so each row's title is the UUID's first segment
+    // with the lifecycle status as the dot and `kind · status` as meta (the
+    // status word rides along — meaning never rides on colour alone).
+    std::vector<MasterRow> rows;
+    rows.reserve(jobs.size());
     for (const std::shared_ptr<zetta::compute::ComputeJob>& job : jobs) {
-        ImGui::PushID(job->id().c_str());
-        ImGui::TextColored(tone_color(tone_of(job->status())), "%-9s",
-                           std::string(to_string(job->status())).c_str());
-        ImGui::SameLine();
-        const std::string short_id = job->id().substr(0, job->id().find('-'));
-        const std::string label =
-            std::string(to_string(job->kind())) + " · " + short_id;
-        if (mono_font_) ImGui::PushFont(mono_font_);
-        if (ImGui::Selectable(label.c_str(), selected_job_ == job->id())) {
-            selected_job_ = job->id();
-        }
-        if (mono_font_) ImGui::PopFont();
-        ImGui::PopID();
+        rows.push_back({.id = job->id(),
+                        .title = entity_short_id(job->id()),
+                        .meta = std::string(to_string(job->kind())) + " · " +
+                                std::string(to_string(job->status())),
+                        .tone = tone_of(job->status()),
+                        .id_title = true});
     }
-    ImGui::EndChild();
 
-    // Right: the selected job's detail + the objective/scaling preview.
-    ImGui::SameLine();
-    ImGui::BeginChild("##job_detail", ImVec2(0, panel_h),
-                      ImGuiChildFlags_Borders);
-    if (const std::shared_ptr<zetta::compute::ComputeJob> job = node_.find_job(selected_job_)) {
-        // Reset the scaling controls whenever the selection changes, so they
-        // start from sensible defaults per job rather than leaking the previous
-        // job's edits.
-        if (scaling_loaded_job_ != job->id()) {
-            reset_scaling_controls();
-            scaling_loaded_job_ = job->id();
-        }
+    master_detail(
+        "jobs", rows, selected_job_, take_pending_selection(View::Jobs),
+        "(no jobs)",
+        "Select a job to view its status, references, and scaling controls.",
+        [&](const MasterRow& row) {
+            const std::shared_ptr<zetta::compute::ComputeJob> job = node_.find_job(row.id);
+            if (!job) return;
+            // Reset the scaling controls whenever the selection changes, so
+            // they start from sensible defaults per job rather than leaking
+            // the previous job's edits.
+            if (scaling_loaded_job_ != job->id()) {
+                reset_scaling_controls();
+                scaling_loaded_job_ = job->id();
+            }
 
-        if (g_mono_font) ImGui::PushFont(g_mono_font);
-        ImGui::TextColored(kInkPrimary, "job %s", job->id().c_str());
-        if (g_mono_font) ImGui::PopFont();
-        ImGui::SameLine();
-        ImGui::TextColored(tone_color(tone_of(job->status())), "[%s]",
-                           std::string(to_string(job->status())).c_str());
-        mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
-        mono_line(kInkQuiet, "created:  ", job->created());
-        if (job->updated() != job->created()) {
-            mono_line(kInkQuiet, "updated:  ", job->updated());
-        }
-        if (!job->detail().empty()) {
-            ImGui::TextWrapped("detail: %s", job->detail().c_str());
-        }
+            detail_header("job " + job->id(), tone_of(job->status()),
+                          std::string(to_string(job->status())));
+            mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
+            mono_line(kInkQuiet, "created:  ", job->created());
+            if (job->updated() != job->created()) {
+                mono_line(kInkQuiet, "updated:  ", job->updated());
+            }
+            if (!job->detail().empty()) {
+                ImGui::TextWrapped("detail: %s", job->detail().c_str());
+            }
 
-        // Id references — the job's place in the pipeline (project / graph / run /
-        // scaling-policy reward). Shown only when set.
-        const auto ref_line = [](const char* label, const std::string& value) {
-            if (!value.empty()) mono_line(kInkQuiet, label, value);
-        };
-        ref_line("project:  ", job->project());
-        ref_line("graph:    ", job->graph());
-        ref_line("run:      ", job->run());
-        ref_line("policy:   ", job->scaling_policy());
+            // Id references — the job's place in the pipeline (project / graph
+            // / run / scaling-policy reward). Shown only when set.
+            const auto ref_line = [](const char* label, const std::string& value) {
+                if (!value.empty()) mono_line(kInkQuiet, label, value);
+            };
+            ref_line("project:  ", job->project());
+            ref_line("graph:    ", job->graph());
+            ref_line("run:      ", job->run());
+            ref_line("policy:   ", job->scaling_policy());
 
-        draw_job_scaling_controls();
-    } else {
-        ImGui::TextDisabled(
-            "Select a job to view its status, references, and scaling controls.");
-    }
-    ImGui::EndChild();
+            draw_job_scaling_controls();
+        });
 }
 
 }  // namespace zetta::gui
