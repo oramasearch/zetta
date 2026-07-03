@@ -577,15 +577,15 @@ void App::draw_cluster() {
     if (auto pending_entity = take_pending_selection(View::Cluster)) {
         selected_cluster_node_ = *pending_entity;
     }
-    ImGui::SeparatorText("Cluster");
+    page_header("Cluster",
+                "All nodes are equal (no leader): membership, sync state, and "
+                "per-node resources, live.");
     if (mono_font_) ImGui::PushFont(mono_font_);
     ImGui::TextColored(kInkSecondary, "node       %s", cluster_.node_id().c_str());
     for (const std::string& address : cluster_.listen_addresses()) {
         ImGui::TextColored(kInkSecondary, "listening  %s", address.c_str());
     }
     if (mono_font_) ImGui::PopFont();
-    ImGui::TextDisabled(
-        "All nodes are equal; leader election and failover are planned.");
 
     ImGui::TextUnformatted("Add another node with:");
     std::string command = cluster_.peer_command();
@@ -1166,41 +1166,38 @@ void App::draw_add_nodes_control() {
             "Dropdowns of what your subscription can deploy. The backend also falls "
             "back across sizes on a capacity shortage at create time.");
 
-        // The consent gate — a tinted (amber) callout so the permission boundary
-        // reads as a deliberate, deny-by-default stop. The Allow button IS the
-        // per-action consent: there is no remembered grant, so a cloud add asks
-        // every time. Nothing runs until it is clicked.
+        // The consent gate — the grammar's callout (amber) so the permission
+        // boundary reads as a deliberate, deny-by-default stop. The Allow
+        // button IS the per-action consent: there is no remembered grant, so a
+        // cloud add asks every time. Nothing runs until it is clicked.
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, tone_background(Tone::Warn));
-        ImGui::BeginChild("##add_nodes_consent", ImVec2(0, 0),
-                          ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-        status_label(Tone::Warn, "Permission required");
-        ImGui::TextColored(kInkSecondary,
-            "Adding nodes here runs the %s CLI to create %d billable %s on %s. This "
-            "is a write and it incurs cost. Nothing runs until you allow it; consent "
-            "applies to this one action and is not remembered.",
-            target->cli.c_str(), add_nodes_count_,
-            add_nodes_count_ == 1 ? "node" : "nodes", target->name.c_str());
-        ImGui::Spacing();
-        if (wired) {
-            const std::string allow = "Allow adding " +
-                                      std::to_string(add_nodes_count_) + plural +
-                                      " via " + target->name;
-            ImGui::BeginDisabled(add_nodes_op_ != nullptr);
-            if (primary_button(allow.c_str())) run_add_nodes(*target);
-            ImGui::EndDisabled();
-        } else {
-            // Honest about the seam: the control + consent gate are real, but a
-            // configured cloud provisioner for this target hasn't been injected in
-            // this build (constructing one needs subscription / region / creds —
-            // a separate slice). Injecting it lights this up with no UI change.
-            ImGui::TextColored(kInkQuiet,
-                "No provisioner is wired for %s in this build. Inject a configured "
-                "%s provisioner to enable adding nodes here.",
-                target->name.c_str(), target->name.c_str());
-        }
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
+        callout(Tone::Warn, "##add_nodes_consent", [&] {
+            status_label(Tone::Warn, "Permission required");
+            ImGui::TextColored(kInkSecondary,
+                "Adding nodes here runs the %s CLI to create %d billable %s on %s. This "
+                "is a write and it incurs cost. Nothing runs until you allow it; consent "
+                "applies to this one action and is not remembered.",
+                target->cli.c_str(), add_nodes_count_,
+                add_nodes_count_ == 1 ? "node" : "nodes", target->name.c_str());
+            ImGui::Spacing();
+            if (wired) {
+                const std::string allow = "Allow adding " +
+                                          std::to_string(add_nodes_count_) + plural +
+                                          " via " + target->name;
+                ImGui::BeginDisabled(add_nodes_op_ != nullptr);
+                if (primary_button(allow.c_str())) run_add_nodes(*target);
+                ImGui::EndDisabled();
+            } else {
+                // Honest about the seam: the control + consent gate are real, but a
+                // configured cloud provisioner for this target hasn't been injected in
+                // this build (constructing one needs subscription / region / creds —
+                // a separate slice). Injecting it lights this up with no UI change.
+                ImGui::TextColored(kInkQuiet,
+                    "No provisioner is wired for %s in this build. Inject a configured "
+                    "%s provisioner to enable adding nodes here.",
+                    target->name.c_str(), target->name.c_str());
+            }
+        });
     }
 
     // An add is running: show a live progress bar (elapsed vs the ETA baseline for
@@ -1230,7 +1227,7 @@ void App::draw_add_nodes_control() {
                            ImVec2(ImGui::GetContentRegionAvail().x, 0.0f),
                            overlay.c_str());
         ImGui::TextColored(kInkSecondary,
-                           "Adding via %s on a background coroutine — the UI "
+                           "Adding via %s on a background coroutine: the UI "
                            "stays responsive.",
                            add_nodes_op_->target_name.c_str());
     } else if (!add_nodes_status_.empty()) {
