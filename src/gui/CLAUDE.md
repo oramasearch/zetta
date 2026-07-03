@@ -53,6 +53,15 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   (`ok ? Tone::Ok : Tone::Error`).
   See [docs/gui/architecture.md](../../docs/gui/architecture.md) and
   [docs/gui/status-tones.md](../../docs/gui/status-tones.md).
+- **Action outcomes render through the feedback grammar (#632)** — every
+  mutating affordance surfaces its outcome as the panel's `banner(tone,
+  message)` (errors carry the engine's reason **verbatim**, never "operation
+  failed"), inline field validation banners at the form, and long work follows
+  the job pattern (#624: progress in flight, banner on completion). No modal
+  alerts; no silent failures — check a mutating call's returned status and
+  surface it. Success belongs in the panel where the action was taken, not
+  another view's status line. See
+  [docs/gui/feedback-grammar.md](../../docs/gui/feedback-grammar.md).
 - **List+detail panels render through `master_detail(...)`** (#634) — never a
   hand-rolled split. The panel builds `MasterRow`s from its live source each
   frame, passes its `take_pending_selection(View::…)` result and its

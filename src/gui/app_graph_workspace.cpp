@@ -77,6 +77,7 @@ void App::open_graph(const zetta::pipeline::ProjectGraph& stored) {
     graph_dirty_ = false;
     selected_node_id_.clear();
     graph_error_.clear();
+    graph_status_.clear();
     rename_graph_input_ = stored.name();
     rename_node_input_.clear();
     add_node_name_input_.clear();
@@ -136,8 +137,9 @@ void App::draw_graph_workspace() {
     for (const std::string& name : names) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            project->drop_graph(name);
-            if (selected_graph_ == name) {
+            if (!project->drop_graph(name)) {
+                graph_error_ = "could not drop graph '" + name + "'";
+            } else if (selected_graph_ == name) {
                 editing_graph_.reset();
                 selected_graph_.clear();
                 graph_loaded_id_.clear();
@@ -159,9 +161,7 @@ void App::draw_graph_workspace() {
     }
 
     if (!editing_graph_) {
-        if (!graph_error_.empty()) {
-            ImGui::TextColored(tone_color(Tone::Error), "%s", graph_error_.c_str());
-        }
+        banner(Tone::Error, graph_error_);
         ImGui::TextDisabled("Select or create a graph to view and edit it.");
         return;
     }
@@ -891,12 +891,15 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
             rename_graph_input_ = updated->name();
             graph_dirty_ = false;
             graph_error_.clear();
-            io_status_ = "Saved graph '" + updated->name() + "' (" +
-                         std::to_string(updated->graph().node_count()) +
-                         " steps, " +
-                         std::to_string(updated->graph().edge_count()) +
-                         " edges)";
+            // The save outcome surfaces HERE, in the workspace (#632) — not
+            // on another view's status line.
+            graph_status_ = "Saved graph '" + updated->name() + "' (" +
+                            std::to_string(updated->graph().node_count()) +
+                            " steps, " +
+                            std::to_string(updated->graph().edge_count()) +
+                            " edges)";
         } else {
+            graph_status_.clear();
             graph_error_ = "save failed: name empty or already taken";
         }
     }
@@ -910,9 +913,8 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
             graph_loaded_id_.clear();
         }
     }
-    if (!graph_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", graph_error_.c_str());
-    }
+    banner(Tone::Error, graph_error_);
+    if (graph_error_.empty()) banner(Tone::Ok, graph_status_);
     if (!editing_graph_) return;  // Revert may have closed the graph
 
     // --- add a step --------------------------------------------------------

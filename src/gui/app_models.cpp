@@ -189,12 +189,11 @@ void App::draw_add_model_form() {
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (!add_model_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", add_model_error_.c_str());
-    }
+    banner(Tone::Error, add_model_error_);
 
     if (primary_button("Register model")) {
         add_model_error_.clear();
+        add_model_status_.clear();
 
         // Inline JSON-object parser for the optional metrics / feature_schema
         // fields: blank → an empty object; otherwise the text must parse to an
@@ -267,7 +266,9 @@ void App::draw_add_model_form() {
                     }
                 }
                 selected_model_ = model->id();
-                io_status_ = summary;
+                // The register outcome surfaces HERE, in the Models panel
+                // (#632) — not on some other view's status line.
+                add_model_status_ = summary;
                 reset_add_model_form();
             } else {
                 add_model_error_ = "could not create the model";
@@ -291,6 +292,9 @@ void App::draw_models() {
     ImGui::TextDisabled("%zu model(s)", models.size());
 
     draw_add_model_form();
+    // The last register's success summary — shown outside the collapsible form
+    // so the outcome stays visible after the form resets and folds away.
+    banner(Tone::Ok, add_model_status_);
 
     // Models have no lifecycle status (muted dot); each row's title is the
     // name (or the UUID's first segment when unnamed) with the kind as meta.

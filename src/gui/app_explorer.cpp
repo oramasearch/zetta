@@ -77,17 +77,23 @@ void App::draw_projects() {
     if (ImGui::Button("New project…")) {
         new_project_modal_requested_ = true;
     }
-    if (!project_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", project_error_.c_str());
-    }
+    // The column's action outcome (#632): the last failure's reason, or the
+    // New Project modal's create summary, as a banner where the action landed.
+    banner(Tone::Error, project_error_);
+    if (project_error_.empty()) banner(Tone::Ok, project_status_);
 
     ImGui::Separator();
 
     for (const std::string& name : node_.project_names()) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            node_.drop_project(name);
-            if (selected_project_ == name) selected_project_.clear();
+            project_status_.clear();
+            if (node_.drop_project(name)) {
+                project_error_.clear();
+                if (selected_project_ == name) selected_project_.clear();
+            } else {
+                project_error_ = "could not drop project '" + name + "'";
+            }
         }
         ImGui::SameLine();
         if (ImGui::Selectable(name.c_str(), selected_project_ == name)) {
@@ -121,6 +127,7 @@ void App::draw_projects() {
         "##renproject", "new name", &rename_project_input_,
         ImGuiInputTextFlags_EnterReturnsTrue);
     if (ImGui::Button("Rename") || rename) {
+        project_status_.clear();
         if (rename_project_input_.empty()) {
             project_error_ = "name required";
         } else if (!node_.rename_project(selected_project_,
@@ -153,19 +160,21 @@ void App::draw_databases() {
             db_error_.clear();
         }
     }
-    if (!db_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", db_error_.c_str());
-    }
+    banner(Tone::Error, db_error_);
 
     ImGui::Separator();
 
     for (const std::string& name : node_.database_names()) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            node_.drop_database(name);
-            if (selected_db_ == name) {
-                selected_db_.clear();
-                selected_table_.clear();
+            if (node_.drop_database(name)) {
+                db_error_.clear();
+                if (selected_db_ == name) {
+                    selected_db_.clear();
+                    selected_table_.clear();
+                }
+            } else {
+                db_error_ = "could not drop database '" + name + "'";
             }
         }
         ImGui::SameLine();
@@ -244,17 +253,19 @@ void App::draw_tables() {
             table_error_.clear();
         }
     }
-    if (!table_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", table_error_.c_str());
-    }
+    banner(Tone::Error, table_error_);
 
     ImGui::Separator();
 
     for (const std::string& name : db->table_names()) {
         ImGui::PushID(name.c_str());
         if (ImGui::SmallButton("x")) {
-            db->drop_table(name);
-            if (selected_table_ == name) selected_table_.clear();
+            if (db->drop_table(name)) {
+                table_error_.clear();
+                if (selected_table_ == name) selected_table_.clear();
+            } else {
+                table_error_ = "could not drop table '" + name + "'";
+            }
         }
         ImGui::SameLine();
         const auto table = db->find_table(name);
@@ -279,7 +290,7 @@ void App::draw_rows() {
         const query::QueryService::Outcome outcome = query_->run(
             "SELECT * FROM system." + selected_table_ + ";", selected_db_);
         if (!outcome.ok()) {
-            ImGui::TextColored(tone_color(Tone::Error), "%s", outcome.error.c_str());
+            banner(Tone::Error, outcome.error);
             return;
         }
         ImGui::TextDisabled("system.%s  (%zu rows)", selected_table_.c_str(),
@@ -328,10 +339,7 @@ void App::draw_rows() {
             row_error_.clear();
         }
     }
-    if (!row_error_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextColored(tone_color(Tone::Error), "%s", row_error_.c_str());
-    }
+    banner(Tone::Error, row_error_);
 
     ImGui::Spacing();
     const zetta::storage::StorageEngine& store = table->store();
@@ -387,14 +395,14 @@ void App::draw_query() {
         }
     }
 
+    // The run's outcome as a banner (#632): the dialect's error verbatim, or
+    // the engine's per-statement messages, with the elapsed time folded in.
+    const std::string query_suffix =
+        query_time_.empty() ? std::string{} : " (" + query_time_ + ")";
     if (!query_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", query_error_.c_str());
+        banner(Tone::Error, query_error_ + query_suffix);
     } else if (!query_status_.empty()) {
-        ImGui::TextDisabled("%s", query_status_.c_str());
-    }
-    if (!query_time_.empty()) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("(%s)", query_time_.c_str());
+        banner(Tone::Ok, query_status_ + query_suffix);
     }
 
     if (ImGui::BeginChild("##query_results", ImVec2(0, 160),
@@ -506,13 +514,20 @@ void App::draw_large_objects() {
                                nullptr, 0, nullptr, false);
     }
     ImGui::TextDisabled("or drop any file on the window");
+    banner(Tone::Error, large_object_error_);
     ImGui::Separator();
 
     const std::vector<zetta::data::LargeObject> objects = db->large_objects().list();
     if (objects.empty()) ImGui::TextDisabled("(none)");
     for (const zetta::data::LargeObject& lo : objects) {
         ImGui::PushID(lo.id.c_str());
-        if (ImGui::SmallButton("x")) db->large_objects().unlink(lo.id);
+        if (ImGui::SmallButton("x")) {
+            if (db->large_objects().unlink(lo.id)) {
+                large_object_error_.clear();
+            } else {
+                large_object_error_ = "could not unlink '" + lo.name + "'";
+            }
+        }
         ImGui::SameLine();
         ImGui::TextWrapped("%s  (%s)", lo.name.c_str(),
                            zetta::util::format_bytes(lo.size).c_str());
@@ -597,19 +612,18 @@ void App::draw_new_project_modal() {
             new_project_artifact_status_.clear();
             new_project_artifact_valid_ = false;
         }
-        if (!new_project_artifact_status_.empty()) {
-            ImGui::TextColored(
-                tone_color(new_project_artifact_valid_ ? Tone::Ok : Tone::Error),
-                "%s", new_project_artifact_status_.c_str());
-        }
     }
     ImGui::EndChild();
+    // The staging/validation result for the dropped file — the n8n schema's
+    // reason verbatim when it fails validation.
+    if (!new_project_artifact_path_.empty()) {
+        banner(new_project_artifact_valid_ ? Tone::Ok : Tone::Error,
+               new_project_artifact_status_);
+    }
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (!new_project_error_.empty()) {
-        ImGui::TextColored(tone_color(Tone::Error), "%s", new_project_error_.c_str());
-    }
+    banner(Tone::Error, new_project_error_);
 
     // Create runs the whole flow atomically. A staged-but-invalid artifact
     // blocks the create so the project is never built with a broken artifact.
@@ -636,7 +650,12 @@ void App::draw_new_project_modal() {
                                      ")";
             }
             selected_project_ = project->name();
-            io_status_ = summary;
+            // Surface the outcome where it landed (#632): banner in the
+            // Projects column and jump there (the Added-dataset precedent),
+            // so a create started from Home/File menu is still visible.
+            project_error_.clear();
+            project_status_ = summary;
+            navigate_to(View::Explorer, project->name());
             reset_new_project_form();
             ImGui::CloseCurrentPopup();
         } else {

@@ -50,12 +50,10 @@ void App::draw_datasets() {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("or drop a file here · %zu dataset(s)", datasets.size());
-    // The shared ingestion status line (e.g. "Added dataset … (N rows, M
+    // The shared ingestion outcome (e.g. "Added dataset … (N rows, M
     // partitions)") — also shown on Home, surfaced here so an add gives feedback
-    // in place.
-    if (!io_status_.empty()) {
-        ImGui::TextColored(kInkSecondary, "%s", io_status_.c_str());
-    }
+    // in place, toned by whether the ingest failed (#632).
+    banner(io_status_error_ ? Tone::Error : Tone::Ok, io_status_);
     ImGui::Spacing();
 
     // Each row's title is the dataset name (the table name) with the on-disk

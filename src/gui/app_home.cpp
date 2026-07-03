@@ -214,9 +214,7 @@ void App::draw_dashboard() {
     ImGui::TextColored(kInkQuiet, "· %s", node_.config().data_dir.c_str());
     if (mono_font_) ImGui::PopFont();
 
-    if (!io_status_.empty()) {
-        ImGui::TextColored(kInkSecondary, "%s", io_status_.c_str());
-    }
+    banner(io_status_error_ ? Tone::Error : Tone::Ok, io_status_);
     ImGui::Spacing();
 }
 

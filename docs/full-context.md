@@ -111,7 +111,10 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   #637 · #611 · #466 · #538 · #641 · #634 · #626;
   #616/#625/#645 also unblocked. **#636 adoption swept**: every panel status
   renders via tone_of + status_label/status_pill
-  ([status-tones.md](gui/status-tones.md)). **#622 activity feed shipped**
+  ([status-tones.md](gui/status-tones.md)). **#632 feedback grammar swept**:
+  every mutating affordance reports through the per-panel `banner` (engine
+  reason verbatim, silent failures surfaced, async outcomes land as banners)
+  ([feedback-grammar.md](gui/feedback-grammar.md)). **#622 activity feed shipped**
   from layer-0: `system.activity` + the Operations → Activity view + the Home
   recent-activity strip ([docs/gui/activity-feed.md](gui/activity-feed.md)).
   **#625 command palette shipped**: Cmd+K fuzzy view navigation + entity jump
