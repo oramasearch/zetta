@@ -158,10 +158,14 @@ void App::draw_activity() {
                 entity_link(short_target(entry->target).c_str(), View::Jobs,
                             entry->ref_id);
             } else if (entry->ref_kind == "graph") {
-                // The workspace takes no entity deep link yet — navigate only.
-                entity_link(entry->target.c_str(), View::Graph, {});
+                // The graph name — the workspace resolves it to the stored
+                // graph and opens it (#633).
+                entity_link(entry->target.c_str(), View::Graph, entry->ref_id);
             } else if (entry->ref_kind == "deployment") {
-                entity_link(entry->target.c_str(), View::Deploy, {});
+                // The deployed graph's name — the deployments table matches
+                // it for the row highlight (#633).
+                entity_link(entry->target.c_str(), View::Deploy,
+                            entry->ref_id);
             } else {
                 entity_link(entry->target.c_str(), View::Admin, {});
             }

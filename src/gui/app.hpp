@@ -24,6 +24,7 @@ struct ImFont;
 
 namespace zetta { class Node; }
 namespace zetta::cluster { class Cluster; }
+namespace zetta::governance { class AuditEvent; }
 namespace zetta::cluster { struct NodeStatus; }
 namespace zetta::data { struct DatasetSummary; }
 namespace zetta::pipeline { struct ValidationReport; }
@@ -172,6 +173,13 @@ private:
     // Render `label` as an inline link that navigates to `view` selecting
     // `entity_id` — the grammar's cross-entity reference (#633).
     void entity_link(const char* label, View view, const std::string& entity_id);
+    // A detail-pane reference line — a quiet mono `label` followed by
+    // `display` as an entity_link. The standard way a detail pane renders
+    // "project: <name>" / "run: <id>" when the referenced entity is
+    // reachable; unreachable refs stay plain mono_line (a link never fakes a
+    // destination).
+    void link_line(const char* label, const std::string& display, View view,
+                   const std::string& entity_id);
     // The sectioned left navigation rail (#628), grammar-rendered from the
     // registry; coral marks the active row (the design system's "you are here").
     void draw_sidebar();
@@ -321,6 +329,11 @@ private:
     // per-span drill-down (plan, result shape, error verbatim).
     void draw_traces();
     void draw_runs();        // run status/logs + outputs + lineage + model/metrics/drivers
+    // The selected run's detail pane body: identity + status, its cross-entity
+    // links (project / graph / deployment / jobs, #633), logs, outputs, the
+    // trained model(s) it produced, and lineage. An App member (not a
+    // file-local render_*) because the links go through entity_link.
+    void draw_run_detail(const zetta::pipeline::Run& run);
     void draw_models();      // standalone models (system.models): list + detail + add
     // The inline "Add model" affordance inside draw_models: register/import a model
     // via Node::create_model (+ optional Model::set_weights). The assembled value is
@@ -332,6 +345,20 @@ private:
     void reset_add_model_form();
     void draw_jobs();        // compute jobs (system.jobs) + per-job objective/scaling
     void draw_admin();       // principals + keys (scope + grants) + the audit log
+    // The audit-log table inside draw_admin. An App member so each event's
+    // target can render as an entity_link routed by its action (#633): job
+    // events → Jobs, graph events → Graph, deploys → Deploy; key / data-access
+    // targets stay plain text (they already live on this panel).
+    void draw_audit_log(
+        const std::vector<std::shared_ptr<zetta::governance::AuditEvent>>& events);
+    // Resolve a project reference (uuid or name — runs/models carry the uuid,
+    // the explorer selects by name) to the project's name; empty when the
+    // project no longer exists, so callers fall back to a plain line.
+    std::string project_name_for(const std::string& project_ref) const;
+    // Whether some project stores a graph matching `graph_ref` (a stored-graph
+    // id or saved name) — the reachability check behind a "graph:" link; the
+    // workspace's deep-link consumer resolves the same two forms.
+    bool graph_is_stored(const std::string& graph_ref) const;
     void draw_test_suite();  // the in-app test suite: canned cases + options + run
     // Start the selected case on a worker thread (so distributed cases, which stand
     // up a real loopback cluster, don't block the UI). Snapshots the current options
@@ -670,8 +697,11 @@ private:
 
     // Deploy panel: the selected AI Solution Library blueprint (by id), the
     // chosen placement on the dial (R1: only Local is functional), and the last
-    // deploy action's result line.
+    // deploy action's result line. `selected_deployment_` highlights a row in
+    // the deployments table — set by a navigate_to deep link (a run's
+    // "deployment:" link, #633); presentation state only.
     std::string selected_solution_;  // catalog solution id, empty = none
+    std::string selected_deployment_;  // highlighted deployment id ("" = none)
     int deploy_placement_ = 0;       // DeploymentKind index; 0 = Local
     std::string deploy_status_;      // last deploy result (success or error)
     bool deploy_failed_ = false;     // colour deploy_status_ red vs. green

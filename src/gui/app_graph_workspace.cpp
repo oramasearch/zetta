@@ -86,6 +86,27 @@ void App::open_graph(const zetta::pipeline::ProjectGraph& stored) {
 }
 
 void App::draw_graph_workspace() {
+    // Consume a navigate_to(entity) deep link aimed at this view (#633): the
+    // entity is a stored graph, referenced by id (a run's `graph`) or by saved
+    // name (a deployment's `graph_name`, an audit target). Resolve it across
+    // every project — the link's sender doesn't know which project owns it —
+    // then select that project and open the graph. An unresolvable ref (the
+    // default executor's free-form labels) just lands on the workspace.
+    if (auto pending_entity = take_pending_selection(View::Graph)) {
+        for (const std::string& project_name : node_.project_names()) {
+            const auto owner = node_.find_project(project_name);
+            if (!owner) continue;
+            auto stored = owner->find_graph_by_id(*pending_entity);
+            if (!stored) stored = owner->find_graph(*pending_entity);
+            if (!stored) continue;
+            selected_project_ = project_name;
+            // Pre-empt the project-changed reset below so the open survives.
+            graph_panel_project_ = owner->id();
+            open_graph(*stored);
+            break;
+        }
+    }
+
     ImGui::SeparatorText("Graph workspace");
 
     // The workspace edits the *currently selected* project's graphs (the same
@@ -111,6 +132,10 @@ void App::draw_graph_workspace() {
         graph_dirty_ = false;
         graph_error_.clear();
     }
+
+    // The owning project, linked back to its home (Explorer) — the graph →
+    // project hop of the object graph (#633).
+    link_line("project:  ", project->name(), View::Explorer, project->name());
 
     // --- graph list + create ----------------------------------------------
     ImGui::SetNextItemWidth(ImGui::GetFontSize() * 14.0f);

@@ -111,3 +111,5 @@ yet: replacing weights / updating metrics on an existing model (`set_weights` /
   the same `render_model_card` inside a run's detail pane.
 - [jobs-panel.md](jobs-panel.md) — the sibling read-only Operations panel this
   mirrors in shape.
+- [cross-entity-links.md](cross-entity-links.md) — the detail pane's `run:` /
+  `project:` refs are one-click entity links (#633).

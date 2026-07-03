@@ -275,14 +275,26 @@ void App::draw_dataset_placement(const zetta::data::DatasetSummary& dataset) {
                           static_cast<unsigned long long>(placement.row_end));
             ImGui::TextColored(kInkSecondary, "%s", range);
             ImGui::TableNextColumn();
-            std::vector<std::string> owners;
-            owners.reserve(placement.owner_nodes.size());
-            for (const std::string& owner : placement.owner_nodes) {
-                owners.push_back(entity_short_id(owner));
+            // Each owner is a one-click hop to the Cluster view with that
+            // node's box selected (#633) — the dataset → cluster edge.
+            if (placement.owner_nodes.empty()) {
+                ImGui::TextColored(kInkSecondary, "(unplaced)");
+            } else {
+                for (std::size_t owner_index = 0;
+                     owner_index < placement.owner_nodes.size(); ++owner_index) {
+                    const std::string& owner =
+                        placement.owner_nodes[owner_index];
+                    if (owner_index != 0) {
+                        ImGui::SameLine(0.0f, 0.0f);
+                        ImGui::TextColored(kInkSecondary, ", ");
+                        ImGui::SameLine(0.0f, 0.0f);
+                    }
+                    ImGui::PushID(static_cast<int>(owner_index));
+                    entity_link(entity_short_id(owner).c_str(), View::Cluster,
+                                owner);
+                    ImGui::PopID();
+                }
             }
-            ImGui::TextColored(kInkSecondary, "%s",
-                               owners.empty() ? "(unplaced)"
-                                              : join_refs(owners).c_str());
             if (g_mono_font) ImGui::PopFont();
         }
         ImGui::EndTable();

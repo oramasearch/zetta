@@ -55,7 +55,8 @@ the detail pane renders.
 
 ### Audit log
 
-A scrolling, header-pinned table over `node_.audit_events()` (`render_audit_log`),
+A scrolling, header-pinned table over `node_.audit_events()`
+(`App::draw_audit_log`, an App member so targets can render as entity links),
 in chronological order (matching the API's contract), with one row per event:
 
 | Column | Source | Notes |
@@ -63,7 +64,7 @@ in chronological order (matching the API's contract), with one row per event:
 | Time | `event.time()` | ISO-8601 UTC stamp. |
 | Action | `event.action()` | `graph_created` / `graph_dropped` / `graph_deployed` / `data_access`. |
 | Actor | `event.actor()` | The login key id / principal, or `—`. |
-| Target | `event.target()` | The graph name / deployment id / resource, or `—`. |
+| Target | `event.target()` | The graph name / deployed graph / job id / resource, or `—`. Job / graph / deploy targets render as [entity links](cross-entity-links.md) into their owning panel (#633); key + data-access targets stay plain text. |
 | Outcome | `event.allowed()` | `allow` (green) or `deny` (red). |
 | Detail | `event.detail()` | Human-readable reason / summary, or `—`. |
 
@@ -87,8 +88,8 @@ queryable **`system.audit`** SQL table.
 
 ## Pointers
 
-- `src/gui/app.cpp` — `App::draw_admin` + the file-local `render_access_key` /
-  `render_principal_detail` / `render_audit_log` view helpers.
+- `src/gui/app_governance.cpp` — `App::draw_admin` + `App::draw_audit_log` +
+  the file-local `render_access_key` / `render_principal_detail` view helpers.
 - [access-control.md](../governance/access-control.md) — the `Principal` + `AccessKey` + `Scope`
   + `Capability` model the principals/keys/grants section renders.
 - [audit-trail.md](../governance/audit-trail.md) — the immutable `AuditEvent` trail the audit-log
