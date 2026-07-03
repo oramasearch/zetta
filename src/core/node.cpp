@@ -321,6 +321,17 @@ void Node::run_on_owner(const std::function<void()>& work) {
         work();
         return;
     }
+    // A node NO loop has ever ticked has no owner to drain the queue — run
+    // inline, the pre-gate contract: a harness driving nodes from its own
+    // threads (the testkit's per-node SPMD threads, the acceptance tests)
+    // arranges exclusive access itself, and queueing here would deadlock
+    // against an owner that will never exist. Both apps tick from their first
+    // loop iteration, so a real owner is always adopted before any background
+    // action can launch.
+    if (owner_thread_.load(std::memory_order_acquire) == std::thread::id{}) {
+        work();
+        return;
+    }
     auto completed = std::make_shared<zetta::runtime::async_event>();
     {
         std::lock_guard<std::mutex> lock(owner_work_mutex_);

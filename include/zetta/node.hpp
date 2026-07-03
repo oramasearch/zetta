@@ -143,9 +143,13 @@ public:
     // so engine runners can be driven from a worker.
     //
     // `work` must be quick (it executes inside a tick) and must not throw.
-    // Calling from a non-owner thread requires a live owner loop (a node
-    // nobody ticks never drains the queue). The wait rides the runtime seam
-    // (async_event + block_on) — no caller-facing condition variables.
+    // Calling from a non-owner thread requires a live owner loop — EXCEPT on
+    // a node no loop has ever ticked: with no owner to drain the queue the
+    // work runs inline (the pre-gate contract — a harness driving nodes from
+    // its own threads arranges exclusive access itself; both apps adopt an
+    // owner on their first loop pass, before any background action exists).
+    // The wait rides the runtime seam (async_event + block_on) — no
+    // caller-facing condition variables.
     void run_on_owner(const std::function<void()>& work);
 
     // True when the calling thread is the node's owner thread (the thread

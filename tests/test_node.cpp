@@ -115,6 +115,25 @@ TEST(NodeOwnerGate, RunsInlineOnTheOwnerThread) {
     EXPECT_TRUE(ran) << "owner-thread calls run inline, with no queueing";
 }
 
+TEST(NodeOwnerGate, RunsInlineWhenNoLoopHasAdoptedTheNode) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    // NO tick anywhere: nobody has adopted the node, so there is no owner
+    // loop to drain the queue. A cross-thread caller must run inline (the
+    // pre-gate contract of harnesses that drive nodes from their own threads
+    // — the testkit's per-node SPMD threads); queueing would deadlock.
+    std::thread::id ran_on{};
+    std::thread::id worker_id{};
+    std::thread worker([&] {
+        worker_id = std::this_thread::get_id();
+        EXPECT_FALSE(node.on_owner_thread());
+        node.run_on_owner([&] { ran_on = std::this_thread::get_id(); });
+    });
+    worker.join();
+    EXPECT_EQ(ran_on, worker_id)
+        << "with no adopted owner, gated work runs inline on the caller";
+}
+
 TEST(NodeOwnerGate, GatesWorkerWorkOntoTheTickingThread) {
     TempDir tmp;
     Node node(config_for(tmp));

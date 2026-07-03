@@ -46,7 +46,13 @@ node.run_on_owner([&] { job = node.create_job(...); });
   waiting on the owner).
 
 `work` must be quick (it executes inside a tick) and must not throw. Calling
-from a non-owner thread requires a live owner loop.
+from a non-owner thread requires a live owner loop — **except on a node no
+loop has ever ticked**: with no owner to drain the queue, the work runs
+**inline** (the pre-gate contract). A harness that drives nodes from its own
+threads without ticking them (the testkit's per-node SPMD threads, the
+acceptance tests) arranges exclusive access itself, exactly as it did before
+the gate existed; both apps adopt an owner on their first loop pass, before
+any background action can launch, so interactive runs always gate.
 
 ## The gated write sites (the churn-run path)
 
