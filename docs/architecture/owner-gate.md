@@ -46,13 +46,17 @@ node.run_on_owner([&] { job = node.create_job(...); });
   waiting on the owner).
 
 `work` must be quick (it executes inside a tick) and must not throw. Calling
-from a non-owner thread requires a live owner loop — **except on a node no
-loop has ever ticked**: with no owner to drain the queue, the work runs
-**inline** (the pre-gate contract). A harness that drives nodes from its own
-threads without ticking them (the testkit's per-node SPMD threads, the
-acceptance tests) arranges exclusive access itself, exactly as it did before
-the gate existed; both apps adopt an owner on their first loop pass, before
-any background action can launch, so interactive runs always gate.
+from a non-owner thread requires a live owner loop — and the owner is adopted
+**lazily, at the first `tick()`**, never at construction. A node no loop has
+ever ticked is **ungated**: the work runs inline on the caller (the pre-gate
+contract). A harness that drives nodes from its own threads without ticking
+them (the testkit's per-node SPMD threads, the acceptance tests) arranges
+exclusive access itself, exactly as it did before the gate existed; both apps
+tick from their first loop pass, before any background action can launch, so
+interactive runs always gate. The flip side: once a loop **has** adopted a
+node, it must keep ticking (or pump `drain_owner_work()`) while gated workers
+are in flight — an adopted owner parked in a blind `join()` deadlocks them
+(the `~AsyncChurnRun` teardown pump exists for exactly that join).
 
 ## The gated write sites (the churn-run path)
 
