@@ -115,9 +115,11 @@ The UI thread owns the `Node`; panels read live engine state each frame
 (`system.*` sources, `Node::…()`) and keep **no synced copies** — GUI-owned
 state is presentation only (selection, animation, pending navigation).
 Long-running work never blocks the frame (#624: worker thread or a recorded
-job polled from its `system` view). The API server's activity hook marks
-panels dirty and appends to the activity feed — arriving on another thread, it
-only touches atomics/queues drained in the frame loop.
+job polled from its `system` view). The API server's activity hook (#620,
+[external-activity.md](external-activity.md)) only appends to a mutex-guarded
+queue drained in the frame loop; the strip line it powers deep-links via
+`navigate_to` — panels need no dirty flags because they read live sources
+each frame anyway.
 
 ## Adding a view — the recipe
 

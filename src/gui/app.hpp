@@ -123,6 +123,17 @@ public:
         capability_registry_ = registry;
     }
 
+    // The GUI half of live external-action surfacing (#620,
+    // docs/gui/external-activity.md): main wires the API server's activity
+    // hook here, so every successful mutating capability call an agent (MCP)
+    // or integration makes lands in the headed app. Thread-safe by design —
+    // it only appends to a mutex-guarded queue the frame loop drains
+    // (poll_background_ops) — though today the hook fires on this (owning)
+    // thread, inside the bridge drain. Palette-launched calls are suppressed
+    // (palette_call_in_flight_): the strip reports external actors only.
+    void notify_external_activity(const std::string& capability,
+                                  const std::string& actor);
+
 private:
     // The single active view shown in the content area. The menu bar selects
     // which one is live, so the window shows one focused panel at a time instead
@@ -798,6 +809,31 @@ private:
     // fresh each frame (zetta::observability::activity_entries; no stored copy).
     int activity_window_ = 0;   // 0 = last hour, 1 = last 24 hours, 2 = all time
     int activity_surface_ = 0;  // 0 = all surfaces, 1 = GUI, 2 = console, 3 = MCP
+
+    // External activity surfacing (#620) — the strip's presentation state.
+    // notify_external_activity appends to `pending_external_activity_` under
+    // the mutex; poll_background_ops drains it into
+    // `recent_external_activity_` (stamped with the ImGui clock, capped,
+    // pruned after a short linger) which draw_dashboard renders as a
+    // click-through line. No engine state lives here: the durable record is
+    // the call's audit event, already in the activity feed — this is only the
+    // "it just happened" affordance.
+    struct ExternalActivity {
+        std::string capability;   // the registry entry's name
+        std::string actor;        // acting key id, or "local"
+        double seen_seconds = 0.0;  // ImGui clock at drain time
+    };
+    // The owning panel an external capability call deep-links to (the strip's
+    // navigate_to target). Defined beside draw_dashboard in app_home.cpp.
+    View view_for_external_capability(const std::string& capability) const;
+    std::mutex external_activity_mutex_;
+    std::vector<ExternalActivity> pending_external_activity_;
+    std::vector<ExternalActivity> recent_external_activity_;  // newest last
+    // True while run_palette_capability is inside Registry::call — the
+    // palette shares the registry (one list, many renderings), so its own
+    // synchronous calls must not surface as "external". Atomic only as a
+    // belt against a future transport firing the hook off the owning loop.
+    std::atomic<bool> palette_call_in_flight_{false};
 
     // File ingestion (drag-and-drop + native dialog) and its last status line,
     // rendered as a banner on Home and Datasets; `io_status_error_` picks the

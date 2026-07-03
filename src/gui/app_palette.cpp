@@ -174,8 +174,14 @@ void App::run_palette_capability(const std::string& capability_name) {
                             .trace = zetta::observability::make_root_trace(),
                             .recorder = &node_.span_recorder(),
                             .background = palette_background_.get()};
+    // The registry is shared with the MCP server, whose activity hook feeds
+    // the external-activity strip (#620) — a palette call is self-initiated,
+    // so suppress it for the synchronous duration of the call (the hook fires
+    // on this thread, inside call; Registry::call is non-throwing).
+    palette_call_in_flight_ = true;
     const api::ApiResult result =
         capability_registry_->call(capability_name, input, context);
+    palette_call_in_flight_ = false;
 
     palette_trace_ = result.trace_id;
     if (result.ok) {

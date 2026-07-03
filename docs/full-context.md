@@ -99,7 +99,7 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   target) and the layer-1 distributed search journey (3-node loopback
   cluster: list_indexes → search → ranked hits + per-node provenance →
   get_trace per-peer spans; `tests/api/test_search_journey.cpp`).
-- **In flight (this branch)**: [#617](https://github.com/oramasearch/zetta/issues/617)
+- **Merged to `dev` 2026-07-03 (action parity)**: [#617](https://github.com/oramasearch/zetta/issues/617)
   — governed action parity: the mutating product loop over MCP
   (capture_intent · import_n8n · compile_intent/n8n/python · gate · deploy ·
   run · add_dataset · testkit_run), each `orchestration:<name>`-scoped +
@@ -109,6 +109,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   gate-blocked + denied-key journeys in
   `tests/api/test_action_journeys.cpp`
   ([docs/api/governed-actions.md](api/governed-actions.md)).
+- **In flight (this branch)**: [#620](https://github.com/oramasearch/zetta/issues/620)
+  — GUI live surfacing of externally-initiated actions: the registry's
+  activity hook wired into the headed app (thread-safe queue drained in the
+  frame loop), surfaced as a click-through "MCP · action · actor" strip line
+  deep-linking via `navigate_to`; palette self-calls suppressed; refresh +
+  animations needed zero wiring (live reads each frame)
+  ([docs/gui/external-activity.md](gui/external-activity.md)).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.
