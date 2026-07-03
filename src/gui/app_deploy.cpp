@@ -166,10 +166,9 @@ void App::draw_deploy() {
     if (auto pending_entity = take_pending_selection(View::Deploy)) {
         selected_deployment_ = *pending_entity;
     }
-    ImGui::SeparatorText("Deploy");
-    ImGui::TextDisabled(
-        "Pick an AI solution, choose where to run it, and deploy. The "
-        "correctness gate must pass first; no deploy without it.");
+    page_header("Deploy",
+                "Pick an AI solution, choose where to run it, and deploy. The "
+                "correctness gate must pass first; no deploy without it.");
 
     const zetta::pipeline::SolutionCatalog& catalog = zetta::pipeline::SolutionCatalog::builtin();
 
@@ -319,10 +318,7 @@ void App::draw_deploy() {
         return;
     }
     const std::vector<std::shared_ptr<zetta::pipeline::Run>> runs = node_.runs();
-    const ImGuiTableFlags table_flags =
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("deployments", 7, table_flags)) {
+    if (ImGui::BeginTable("deployments", 7, kDataTableFlags)) {
         ImGui::TableSetupColumn("Deployment");
         ImGui::TableSetupColumn("Graph");
         ImGui::TableSetupColumn("Target");
@@ -351,9 +347,9 @@ void App::draw_deploy() {
             ImGui::TableSetColumnIndex(2);
             ImGui::TextUnformatted(to_string(deployment->target().kind).c_str());
             ImGui::TableSetColumnIndex(3);
-            ImGui::Text("%zu", deployment->node_count());
+            table_numeric(std::to_string(deployment->node_count()));
             ImGui::TableSetColumnIndex(4);
-            ImGui::Text("%zu", deployment->edge_count());
+            table_numeric(std::to_string(deployment->edge_count()));
             ImGui::TableSetColumnIndex(5);
             // The newest run this deployment's controller started (a run ties
             // itself back through run.deployment) — the deployment → run hop.
