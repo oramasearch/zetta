@@ -112,7 +112,14 @@ functionality lands with its testkit case, and both land observable.
    per-`step:` spans. Scope note: SPMD siblings that each create their OWN
    job record trace separately until an orchestrated fan-out shares one job
    record (first-stamper-wins on the CRDT).
-5. GUI: trace pane + activity feed integration; feedback bundle affordance.
+5. **Shipped (core)** — GUI: the Traces view
+   ([../gui/traces.md](../gui/traces.md)) renders the trace pane (recent
+   traces → per-span four-capture detail) over the same ring; the sibling
+   Activity view ([../gui/activity-feed.md](../gui/activity-feed.md), #622)
+   is the chronological who-asked feed over the audit trail + runs, so agent
+   capability calls surface there (one source, no GUI-kept feed). The in-GUI
+   feedback affordance and per-entity "what happened" links from Runs/Jobs
+   are later slices.
 6. **Shipped** — `submit_feedback` capability: the bundle (description +
    attached traces with spans + recent error spans + crash reports +
    version/platform/node id) is built by

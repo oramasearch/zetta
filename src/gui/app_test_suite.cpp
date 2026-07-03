@@ -2,6 +2,7 @@
 #include "gui/app_internal.hpp"
 #include "gui/tones.hpp"
 
+#include "zetta/node.hpp"
 #include "zetta/testkit/test_suite.hpp"
 
 #include <imgui.h>

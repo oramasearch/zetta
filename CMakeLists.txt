@@ -585,10 +585,11 @@ add_executable(zetta
   src/gui/app.cpp
   src/gui/app_home.cpp
   src/gui/app_views.cpp
+  src/gui/app_activity.cpp
   src/gui/app_explorer.cpp
   src/gui/app_graph_workspace.cpp
   src/gui/app_deploy.cpp
-  src/gui/app_activity.cpp
+  src/gui/app_traces.cpp
   src/gui/app_runs.cpp
   src/gui/app_models.cpp
   src/gui/app_datasets.cpp
