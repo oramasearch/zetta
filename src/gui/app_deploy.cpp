@@ -3,9 +3,7 @@
 #include "gui/tones.hpp"
 
 #include "zetta/usecases/churn/churn_solution.hpp"
-#include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
-#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/serialization.hpp"
 #include "zetta/node.hpp"
@@ -349,31 +347,16 @@ void App::run_churn_demo() {
     options.graph = "churn-prediction";
 
     // Run over the node's **live** JobCoordinator — the long-lived compute spine the
-    // running node owns over its real Cluster (#579/#580). The featurize / train /
-    // explain / rank jobs combine over the real cluster membership (single-node here
-    // in the common headed deployment), and the produced Model + jobs + Run register
-    // on the App's node_ (so the Runs / Models / Jobs / Admin panels reflect them).
-    // Synchronous on the UI thread that owns the node — the same deliberate per-click
-    // pattern as run_cloud_inspect.
-    zetta::usecases::churn::ChurnSolutionResult result = run_churn_solution_on_node(
+    // running node owns over its real Cluster (#579/#580), the ONE churn run entry
+    // point (#637). The featurize / train / explain / rank jobs combine over the real
+    // cluster membership (single-node here in the common headed deployment), and the
+    // produced Model + jobs + Run register on the App's node_ (so the Runs / Models /
+    // Jobs / Admin panels reflect them). Synchronous on the UI thread that owns the
+    // node — the same deliberate per-click pattern as run_cloud_inspect. The headed
+    // app always attaches a cluster; if none is attached the runner fails with a
+    // clear reason, surfaced below like any failed run.
+    const zetta::usecases::churn::ChurnSolutionResult result = run_churn_solution_on_node(
         node_, device, selected->graph, zetta::usecases::churn::demo_churn_dataset(), options);
-
-    // Defensive fallback: a node with no compute plane attached (no cluster) can't run
-    // over the live spine. The headed app always attaches a cluster, so this is just a
-    // safety net — bring up a throwaway single-node loopback so the demo still works.
-    if (node_.job_coordinator() == nullptr) {
-        zetta::cluster::ClusterConfig compute_cfg;
-        compute_cfg.listen_host = "127.0.0.1";
-        compute_cfg.listen_port = 47000;
-        compute_cfg.port_range = 64;  // bind the first free port (repeat clicks reuse)
-        zetta::cluster::Cluster compute_cluster("churn-run", compute_cfg);
-        compute_cluster.start();
-        compute::JobCoordinator coordinator(compute_cluster, /*worker_count=*/2);
-        coordinator.start();
-        result = run_churn_solution(node_, coordinator, device, selected->graph,
-                                    zetta::usecases::churn::demo_churn_dataset(), options);
-        coordinator.stop();
-    }
 
     if (!result.ok()) {
         churn_run_failed_ = true;

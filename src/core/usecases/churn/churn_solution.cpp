@@ -85,6 +85,51 @@ zetta::storage::JsonStore make_store(const std::vector<Json>& rows) {
     return store;
 }
 
+// The isolated-coordinator wiring (#637): the shared body every churn run goes
+// through, over an explicitly-supplied coordinator. Deliberately NOT public — the
+// one public entry is run_churn_solution_on_node, which resolves the node-owned
+// spine and delegates here. Kept as a named internal detail so a standalone
+// harness inside this module could still drive it against a coordinator that is
+// not the node's own.
+ChurnSolutionResult run_churn_solution_with_coordinator(
+    Node& node, compute::JobCoordinator& coordinator,
+    compute::ComputeDevice& device, const ir::ExecutionGraph& graph,
+    const ChurnDataset& dataset, const ChurnSolutionOptions& options) {
+    const ChurnNumericShards shards = encode_churn_dataset(dataset);
+
+    // The encoded shards must outlive execute() (the connect/clean steps load them
+    // into DDF eagerly); local stores on this frame are exactly that lifetime.
+    const zetta::storage::JsonStore events = make_store(shards.events);
+    const zetta::storage::JsonStore accounts = make_store(shards.accounts);
+
+    ChurnPipelineConfig pipeline;
+    pipeline.events_store = &events;
+    pipeline.events_schema = churn_events_schema();
+    pipeline.accounts_store = &accounts;
+    pipeline.accounts_schema = churn_accounts_schema();
+    pipeline.featurize = churn_featurize_spec(shards.as_of);
+    pipeline.params = options.params;
+    pipeline.calibration = options.calibration;
+    pipeline.entity_column = "entity";
+    pipeline.top_k = options.top_k;
+    pipeline.model_name = options.model_name;
+    pipeline.project = options.project;
+    pipeline.graph = options.graph;
+
+    auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device,
+                                                     std::move(pipeline));
+    zetta::pipeline::GraphExecutor executor{churn};
+
+    ChurnSolutionResult result;
+    result.execution = executor.execute(node, graph, options.project, options.graph);
+    result.model_id = churn->model_id();
+    result.ranked = churn->ranked();
+    result.drivers = churn->driver_ranking();
+    result.top_driver = churn->top_driver();
+    result.playbook = churn->playbook();
+    return result;
+}
+
 }  // namespace
 
 ml::GbdtParams default_churn_gbdt_params() {
@@ -172,54 +217,13 @@ ChurnNumericShards encode_churn_dataset(const ChurnDataset& dataset) {
     return shards;
 }
 
-ChurnSolutionResult run_churn_solution(Node& node,
-                                       compute::JobCoordinator& coordinator,
-                                       compute::ComputeDevice& device,
-                                       const ir::ExecutionGraph& graph,
-                                       const ChurnDataset& dataset,
-                                       const ChurnSolutionOptions& options) {
-    const ChurnNumericShards shards = encode_churn_dataset(dataset);
-
-    // The encoded shards must outlive execute() (the connect/clean steps load them
-    // into DDF eagerly); local stores on this frame are exactly that lifetime.
-    const zetta::storage::JsonStore events = make_store(shards.events);
-    const zetta::storage::JsonStore accounts = make_store(shards.accounts);
-
-    ChurnPipelineConfig pipeline;
-    pipeline.events_store = &events;
-    pipeline.events_schema = churn_events_schema();
-    pipeline.accounts_store = &accounts;
-    pipeline.accounts_schema = churn_accounts_schema();
-    pipeline.featurize = churn_featurize_spec(shards.as_of);
-    pipeline.params = options.params;
-    pipeline.calibration = options.calibration;
-    pipeline.entity_column = "entity";
-    pipeline.top_k = options.top_k;
-    pipeline.model_name = options.model_name;
-    pipeline.project = options.project;
-    pipeline.graph = options.graph;
-
-    auto churn = std::make_shared<ChurnStepExecutor>(node, coordinator, device,
-                                                     std::move(pipeline));
-    zetta::pipeline::GraphExecutor executor{churn};
-
-    ChurnSolutionResult result;
-    result.execution = executor.execute(node, graph, options.project, options.graph);
-    result.model_id = churn->model_id();
-    result.ranked = churn->ranked();
-    result.drivers = churn->driver_ranking();
-    result.top_driver = churn->top_driver();
-    result.playbook = churn->playbook();
-    return result;
-}
-
 ChurnSolutionResult run_churn_solution_on_node(
     Node& node, compute::ComputeDevice& device,
     const ir::ExecutionGraph& graph, const ChurnDataset& dataset,
     const ChurnSolutionOptions& options) {
     // Resolve the node's live compute spine (#579). A node that has not been
     // attach_cluster'd has none — fail clearly rather than silently no-op, so the
-    // caller can surface the reason or fall back to its own coordinator.
+    // caller can surface the reason.
     compute::JobCoordinator* coordinator = node.job_coordinator();
     if (coordinator == nullptr) {
         ChurnSolutionResult result;
@@ -229,7 +233,8 @@ ChurnSolutionResult run_churn_solution_on_node(
             "cannot run over the live cluster";
         return result;
     }
-    return run_churn_solution(node, *coordinator, device, graph, dataset, options);
+    return run_churn_solution_with_coordinator(node, *coordinator, device, graph,
+                                               dataset, options);
 }
 
 bool is_churn_graph(const ir::ExecutionGraph& graph) {

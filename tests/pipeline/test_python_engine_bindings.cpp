@@ -10,7 +10,6 @@
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
-#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/input/cluster_bindings.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ir/execution_graph.hpp"
@@ -29,8 +28,8 @@
 //   cluster.add_nodes(n, provider=…)  -> act step    -> zetta::cloud::add_nodes (permanent-add)
 //
 // The three ML verbs need no new execution code: lowering them to model/index/serve
-// makes the existing ChurnStepExecutor (via run_churn_solution) run them. The cluster
-// control verb runs through the dedicated binding run_add_nodes_step.
+// makes the existing ChurnStepExecutor (via run_churn_solution_on_node) run them. The
+// cluster control verb runs through the dedicated binding run_add_nodes_step.
 namespace {
 
 using zetta::cloud::AddNodesResult;
@@ -46,23 +45,22 @@ using zetta::cloud::ProvisionResult;
 using zetta::cloud::Provisioner;
 using zetta::pipeline::RunStatus;
 using zetta::compute::CpuDevice;
-using zetta::compute::JobCoordinator;
 using zetta::input::PythonFrontend;
 using zetta::input::run_add_nodes_step;
 using zetta::ir::StepKind;
 
-// A single-node loopback compute node (the harness the per-op job + churn-solution
-// suites use): Node + a one-node Cluster + a started JobCoordinator over it.
+// A single-node loopback node with its OWN long-lived coordinator over its cluster
+// (node.attach_cluster, the #579 spine) — so the churn run goes through the one
+// public runner, run_churn_solution_on_node (#637).
 struct ComputeNode {
     explicit ComputeNode(std::uint16_t port)
         : node(node_config(temp_dir)),
-          cluster("python-bindings-node", cluster_config(port)),
-          coordinator(cluster, /*worker_count=*/2) {
+          cluster("python-bindings-node", cluster_config(port)) {
         node.start();
         cluster.start();
-        coordinator.start();
+        node.attach_cluster(cluster, /*worker_count=*/2);
     }
-    ~ComputeNode() { coordinator.stop(); }
+    ~ComputeNode() { node.stop(); }  // tears the coordinator down while cluster alive
     static NodeConfig node_config(const zetta::test::TempDir& dir) {
         NodeConfig cfg;
         cfg.data_dir = dir.path().string();
@@ -78,7 +76,6 @@ struct ComputeNode {
     zetta::test::TempDir temp_dir;  // declared first so it outlives `node`
     Node node;
     Cluster cluster;
-    JobCoordinator coordinator;
 };
 
 // A fake burst-pool Provisioner at the seam (the add_nodes control action programs
@@ -118,9 +115,10 @@ public:
 // =====================================================================
 
 // A churn pipeline written as a sim-Python script lowers to a connect x2 -> clean ->
-// model -> index -> serve -> act graph and runs through run_churn_solution exactly
-// like the catalog blueprint — producing a real Model, the ranked at-risk list, and
-// the churn drivers. This is the train/rank/explain half of the #522 acceptance.
+// model -> index -> serve -> act graph and runs through run_churn_solution_on_node
+// exactly like the catalog blueprint — producing a real Model, the ranked at-risk
+// list, and the churn drivers. This is the train/rank/explain half of the #522
+// acceptance.
 TEST(PythonEngineBindings, ChurnScriptTrainsRanksAndExplainsEndToEnd) {
     const auto lowered = PythonFrontend{}.compile(
         "events   = read_csv('events.csv')\n"
@@ -142,8 +140,8 @@ TEST(PythonEngineBindings, ChurnScriptTrainsRanksAndExplainsEndToEnd) {
     const zetta::usecases::churn::ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
     ASSERT_FALSE(demo.accounts.empty());
 
-    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
-        host.node, host.coordinator, device, lowered.graph, demo);
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, lowered.graph, demo);
 
     // The lowered graph executed end to end on the real engine.
     ASSERT_TRUE(result.ok()) << result.execution.error;

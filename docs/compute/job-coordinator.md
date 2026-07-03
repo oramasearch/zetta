@@ -124,10 +124,13 @@ zetta::compute::JobCoordinator* coordinator = node.job_coordinator();  // or nul
   the scheduler's steal loop, a cheap ~25 ms poll (a no-op until a `map` executor
   is registered) that fits inside the node's tick cadence.
 
-The GUI's churn demo (`App::run_churn_demo`) still spins up its **own** isolated
-single-node loopback coordinator on purpose, so its SPMD collectives never block on
-this node's real peers; routing that (and other in-process job submitters) through
-the node-owned coordinator is follow-up work this spine enables.
+All in-process churn submitters route through this node-owned coordinator (#637):
+the GUI's churn demo (`App::run_churn_demo`), the governed console's churn-shaped
+path, the testkit UC-1 cases (`pipeline.uc1_end_to_end` attaches its loopback
+cluster to the node; `cluster.uc1_at_scale` attaches per member), and the churn
+acceptance tests — all via the one public runner,
+[`run_churn_solution_on_node`](../use-cases/churn-solution.md). No in-process
+submitter spins up its own isolated coordinator anymore.
 
 ### The job body (`Algorithm`) and `Outcome`
 

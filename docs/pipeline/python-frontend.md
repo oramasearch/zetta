@@ -166,7 +166,7 @@ seams that already exist:
 The three ML verbs need **no new execution code**: because they lower to the
 `model` / `index` / `serve` steps the `ChurnStepExecutor` already interprets, a
 lowered sim-Python churn script runs end-to-end through
-[`run_churn_solution`](../use-cases/churn-solution.md) exactly like the catalog blueprint —
+[`run_churn_solution_on_node`](../use-cases/churn-solution.md) exactly like the catalog blueprint —
 producing a real trained `Model`, the ranked at-risk list, and the churn drivers.
 
 `cluster.add_nodes` is the one verb that is **not** a data-pipeline step — it is a

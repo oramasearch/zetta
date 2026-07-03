@@ -15,7 +15,8 @@ blueprint rules here when they change so the codebase has one place that says
 > **Decisions taken** (recorded inline below): schema source-of-truth moves into
 > the C++ types (a `schema()` method generates the JSON; a build step keeps
 > `schemas/*.json` in sync); add the four missing `system.*` tables; collapse
-> the churn-pipeline duplication onto one shared encoding header + `run_churn_solution`;
+> the churn-pipeline duplication onto one shared encoding header + the churn runner
+> (now `run_churn_solution_on_node`, #637);
 > keep `testkit/` in `zetta-core` for now.
 
 ---
@@ -119,7 +120,9 @@ projections of CRDT state) but inconsistent and undocumented.
 **Decision on R1:** promote one `churn_numeric_encoding.hpp` (encode + schemas + spec
 + `make_store`) into the churn fixture; have `churn_solution`, the testkit harness, and
 every test include it — and standardize on the general `days_from_civil` encoding so
-the two variants converge.
+the two variants converge. (Partially done by #637: the testkit harness now reuses the
+canonical `churn_solution.hpp` encoding and no longer carries its own `make_store`;
+the remaining copies are in `tests/`.)
 
 ---
 
@@ -133,13 +136,12 @@ the two variants converge.
   repeats an identical `scan → drop-locals-absent-from-doc → materialize-new` block ~11
   times, once per entity type. Extract one `reconcile_<entity>(snapshot)` helper per
   type; the body becomes ~11 calls.
-- **Three inline re-wirings of the churn pipeline.** The orchestration itself lives in
-  one place (`ChurnStepExecutor`, good), and the GUI's `run_churn_demo` correctly
-  delegates to `run_churn_solution` — but the **testkit UC-1 case** and **two tests**
-  re-assemble the `config → ChurnStepExecutor → GraphExecutor → execute → pull results`
-  shape inline instead of calling `run_churn_solution`. **Decision:** route them through
-  a shared `run_churn_pipeline(config)` core (or `run_churn_solution`), wrapping it with
-  their own gate/governance/assert layers.
+- ~~**Three inline re-wirings of the churn pipeline.**~~ **Resolved (#637):** every
+  in-process churn submitter — the GUI's `run_churn_demo`, the governed console's
+  churn-shaped path, the testkit UC-1 cases, and the acceptance tests — now routes
+  through the one public runner, `run_churn_solution_on_node`, over the node-owned
+  `JobCoordinator`; the isolated-coordinator wiring survives only as a file-local
+  detail of `churn_solution.cpp`.
 - **`testkit/` + `churn_solution.cpp` are compiled into production `zetta-core`** (the
   GUI panel links them). **Decision: keep in `zetta-core` for now** (a CPU-only build
   carries little cost) — revisit if core bloat becomes a concern; the clean exit is a

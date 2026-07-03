@@ -15,7 +15,6 @@
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/featurize.hpp"
 #include "zetta/ml/gbdt.hpp"
-#include "zetta/storage/json_store.hpp"
 
 // Shared harness for the testkit catalog (`zetta::testkit`) — the reusable pieces a
 // case body builds on: an auto-cleaned scratch directory, a **real multi-node
@@ -92,9 +91,6 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset();
 // no-argument default.
 ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
                                  double learning_rate);
-
-// Build an in-memory JsonStore from a set of numeric rows (the connect-step input).
-zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows);
 
 }  // namespace testkit
 }  // namespace zetta

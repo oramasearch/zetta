@@ -43,10 +43,11 @@ straight into `ConsoleModel::submit`. Each statement runs the same chain:
    persisted [Run](../pipeline/runs.md) (so an ad-hoc Python statement shows up in the Runs
    panel). The graph runner is an **injectable seam** (`set_graph_runner`): by default
    `Node::run_graph` (the structural `DefaultStepExecutor`), but a host may inject one
-   that routes a **churn-shaped** graph through the **real** churn engine on the node's
-   live `JobCoordinator` (#580 — the headed app does this, so an interactive churn
+   that routes a **churn-shaped** graph through the **real** churn engine — the one
+   public runner `run_churn_solution_on_node` (#637) on the node's live
+   `JobCoordinator` (#580 — the headed app does this, so an interactive churn
    program trains a real `Model` over the live cluster; see
-   [run over the live cluster](../use-cases/churn-solution.md#run-over-the-live-cluster-580)). The
+   [one runner, over the live cluster](../use-cases/churn-solution.md#one-runner-over-the-live-cluster-580-637)). The
    runner runs **after** the capability check + gate and **before** the audit record,
    so governance is identical whichever executor runs.
 4. **Audit.** Exactly one **`data_access`** [audit event](audit-trail.md) is
