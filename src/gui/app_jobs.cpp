@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/tones.hpp"
 
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/compute/scaling_policy.hpp"
@@ -16,28 +17,6 @@
 namespace zetta::gui {
 namespace {
 
-// A compute job's status, color-coded along its lifecycle: queued (neutral) →
-// running (amber) → succeeded (green) | failed (red). Same palette as runs.
-ImVec4 job_status_color(zetta::compute::JobStatus status) {
-    switch (status) {
-        case zetta::compute::JobStatus::Queued:    return kInkQuiet;
-        case zetta::compute::JobStatus::Running:   return kWarnColor;
-        case zetta::compute::JobStatus::Succeeded: return kSuccessColor;
-        case zetta::compute::JobStatus::Failed:    return kErrorColor;
-    }
-    return kInkQuiet;
-}
-
-// A scaling action's color: scale-up green (more capacity), hold neutral,
-// scale-down amber (shedding nodes). A quick read of the autoscaler's intent.
-ImVec4 scaling_action_color(zetta::compute::ScalingAction action) {
-    switch (action) {
-        case zetta::compute::ScalingAction::ScaleUp:   return kSuccessColor;
-        case zetta::compute::ScalingAction::Hold:      return kInkQuiet;
-        case zetta::compute::ScalingAction::ScaleDown: return kWarnColor;
-    }
-    return kInkQuiet;
-}
 
 }  // namespace
 
@@ -158,7 +137,7 @@ void App::draw_job_scaling_controls() {
     ImGui::SeparatorText("Decision");
     ImGui::Text("recommended nodes: %u", decision.recommended_nodes);
     ImGui::SameLine();
-    ImGui::TextColored(scaling_action_color(decision.action), "(%s)",
+    ImGui::TextColored(tone_color(tone_of(decision.action)), "(%s)",
                        std::string(to_string(decision.action)).c_str());
     ImGui::Text("reward: %.4g", decision.reward);
     if (!decision.within_cost_cap) {
@@ -190,7 +169,7 @@ void App::draw_jobs() {
     if (jobs.empty()) ImGui::TextDisabled("(no jobs)");
     for (const std::shared_ptr<zetta::compute::ComputeJob>& job : jobs) {
         ImGui::PushID(job->id().c_str());
-        ImGui::TextColored(job_status_color(job->status()), "%-9s",
+        ImGui::TextColored(tone_color(tone_of(job->status())), "%-9s",
                            std::string(to_string(job->status())).c_str());
         ImGui::SameLine();
         const std::string short_id = job->id().substr(0, job->id().find('-'));
@@ -222,7 +201,7 @@ void App::draw_jobs() {
         ImGui::TextColored(kInkPrimary, "job %s", job->id().c_str());
         if (g_mono_font) ImGui::PopFont();
         ImGui::SameLine();
-        ImGui::TextColored(job_status_color(job->status()), "[%s]",
+        ImGui::TextColored(tone_color(tone_of(job->status())), "[%s]",
                            std::string(to_string(job->status())).c_str());
         mono_line(kInkQuiet, "kind:     ", std::string(to_string(job->kind())));
         mono_line(kInkQuiet, "created:  ", job->created());

@@ -26,11 +26,18 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   operations-view helpers shared across TUs live in
   `app_operations_internal.hpp`.
 - **Orama design system, always:** light surfaces, ink text, Geist + Geist
-  Mono (`g_mono_font` for labels/counts/metrics), coral used surgically,
-  semantic green/amber/red for status, **sentence case**, **no em-dashes** in
-  product copy (use `·`/colons). Tokens + component grammar live in
-  `app_internal.hpp` (`apply_orama_theme`, `eyebrow`/`status_dot`/`wash`).
+  Mono (`g_mono_font` for labels/counts/metrics; `g_heading_font` only via
+  `page_header`), coral used surgically, semantic green/amber/red for status,
+  **sentence case**, **no em-dashes** in product copy (use `·`/colons).
   Run the design-system self-check before shipping.
+- **Compose the widget grammar — never hand-roll visuals.** Panels build from
+  `page_header`/`header_action`/`section_card`/`stat_tile`/`empty_state`/
+  `banner` (+ the older `eyebrow`/`status_dot`/`mono_line`/`primary_button`)
+  in `app_internal.hpp`, plus plain ImGui tables/plots. No local colors,
+  paddings, or one-off buttons — a new visual becomes a grammar widget first.
+  **Status colors come ONLY from `tone_of(...)` in `tones.hpp`** (#636); a new
+  status-bearing enum adds one overload there, never a panel-local switch.
+  See [docs/gui/architecture.md](../../docs/gui/architecture.md).
 - **Text fields bind `std::string`** via the `imgui_stdlib` overloads — never
   `char[]` buffers.
 

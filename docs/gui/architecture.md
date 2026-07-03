@@ -43,23 +43,32 @@ no shared selection state. External actions use it too: the API activity hook
 ## The widget grammar — panels stop hand-rolling ImGui
 
 All shared widgets live in `app_internal.hpp` (GUI-only, never in
-`include/zetta`). The grammar (existing: `wash`, `eyebrow`, `status_dot`,
-`mono_line`, `primary_button`; foundation adds):
+`include/zetta`), alongside the pre-existing `wash`, `eyebrow`, `status_dot`,
+`mono_line`, `primary_button`. The built grammar:
 
 - `page_header(title, subtitle)` — one per view, identical geometry
-  everywhere; actions render to its right via `header_action(label)`.
-- `section_card(id, title, fn)` — the bordered content unit; cards never nest.
-- `stat_tile(label, value, tone)` — dashboard/summary numbers, mono value.
+  everywhere; title renders in the Geist heading face (`g_heading_font`,
+  rasterized beside the mono face in `apply_display_scale`); actions render
+  to its right via `header_action(label)` (call it directly after the header;
+  multiple actions stack right-to-left).
+- `section_card(id, title, fn)` — the bordered white content unit with an
+  eyebrow title; cards never nest.
+- `stat_tile(label, value, tone)` — dashboard/summary numbers, mono value
+  colored by tone (`Tone::Muted` renders plain ink); lay out with `SameLine`.
 - `empty_state(headline, body, action_label) -> bool` — the ONLY way a panel
   renders "nothing here" (#631): one sentence + the single next action;
-  returns true when clicked.
-- `banner(tone, message)` — per-panel action feedback (#632); success/info/
-  error with the engine's path-qualified reason verbatim; no modal alerts.
+  returns true when clicked (pass `""` for no action).
+- `banner(tone, message)` — per-panel action feedback (#632); a tinted strip
+  (`tone_background`) with the engine's path-qualified reason verbatim;
+  renders nothing on an empty message; no modal alerts.
 - `entity_link(label, view, id)` — renders as a link, calls `navigate_to`.
-- **Status tones**: `enum class Tone { ok, active, warn, error, muted }` with
-  `tone_color(Tone)` — and per-enum mapping helpers (`tone_of(RunStatus)`,
-  `tone_of(JobStatus)`, `tone_of(NodeSync)`, …) in ONE header so the same
-  state always looks the same (#636). Panels never pick status colors ad hoc.
+- **Status tones (#636)**: `enum class Tone { Ok, Active, Warn, Error, Muted }`
+  with `tone_color(Tone)` / `tone_background(Tone)` in `app_internal.hpp`, and
+  the per-enum mapping overloads in **`src/gui/tones.hpp`** — the ONE mapping
+  site: `tone_of(RunStatus)`, `tone_of(JobStatus)`, `tone_of(ScalingAction)`,
+  `tone_of(CheckStatus)`, `tone_of(TestOutcome)`, `tone_of_log_level(level)`.
+  Panels never pick status colors ad hoc; a new status-bearing enum adds one
+  overload there.
 
 Rules: a panel may compose grammar widgets and plain ImGui primitives
 (tables, plots) but may not define local colors, paddings, or one-off buttons

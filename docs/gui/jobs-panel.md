@@ -112,9 +112,9 @@ previewing its evaluation.
 
 ## Pointers
 
-- `src/gui/app.cpp` — `App::draw_jobs` + `App::draw_job_scaling_controls` +
-  `App::reset_scaling_controls`, and the file-local `job_status_color` /
-  `scaling_action_color` view helpers.
+- `src/gui/app_jobs.cpp` — `App::draw_jobs` + `App::draw_job_scaling_controls` +
+  `App::reset_scaling_controls`; status/action colours come from
+  `tone_of(...)` in `src/gui/tones.hpp` (#636).
 - [compute-jobs.md](../compute/compute-jobs.md) — the `ComputeJob` entity + `system.zetta_jobs`
   registry the job list renders.
 - [scaling-policy.md](../compute/scaling-policy.md) — the `ScalingPolicy` reward model + the

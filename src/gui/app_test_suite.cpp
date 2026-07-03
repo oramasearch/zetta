@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/tones.hpp"
 
 #include "zetta/testkit/test_suite.hpp"
 
@@ -19,16 +20,6 @@ namespace {
 // Map a test outcome to the design system's semantic colour (green pass, red
 // fail, amber error, quiet skip) — status rides on a dot AND the word, never colour
 // alone.
-ImVec4 test_outcome_color(testkit::TestOutcome outcome) {
-    switch (outcome) {
-        case testkit::TestOutcome::Pass:    return kSuccessColor;
-        case testkit::TestOutcome::Fail:    return kErrorColor;
-        case testkit::TestOutcome::Skipped: return kInkQuiet;
-        case testkit::TestOutcome::Error:   return kWarnColor;
-    }
-    return kInkQuiet;
-}
-
 std::string test_outcome_label(testkit::TestOutcome outcome) {
     std::string label(testkit::to_string(outcome));
     for (char& character : label) {
@@ -229,7 +220,7 @@ void App::draw_test_suite() {
         ImGui::TextColored(kInkMuted, "running %s…", test_running_id_.c_str());
     } else if (test_result_) {
         const testkit::TestResult& result = *test_result_;
-        const ImVec4 color = test_outcome_color(result.outcome);
+        const ImVec4 color = tone_color(tone_of(result.outcome));
         status_dot(color);
         ImGui::TextColored(color, "%s", test_outcome_label(result.outcome).c_str());
         ImGui::SameLine();

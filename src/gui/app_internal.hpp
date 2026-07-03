@@ -47,6 +47,36 @@ inline constexpr ImVec4 kUnsavedColor = kWarnColor;
 // and ghost-button fills (rgba(0,0,0,a)), which blend over whatever is behind.
 inline constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alpha); }
 
+// ── Status tones (#636) ────────────────────────────────────────────────────
+// The closed set of visual states a status can render as. Panels obtain a Tone
+// via the `tone_of(...)` overloads in tones.hpp (the ONE mapping site) and
+// colour with tone_color / tone_background — never with ad-hoc palette picks.
+enum class Tone { Ok, Active, Warn, Error, Muted };
+
+inline constexpr ImVec4 tone_color(Tone tone) {
+    switch (tone) {
+        case Tone::Ok:     return kSuccessColor;
+        case Tone::Active: return kDotActive;
+        case Tone::Warn:   return kWarnColor;
+        case Tone::Error:  return kErrorColor;
+        case Tone::Muted:  return kInkQuiet;
+    }
+    return kInkQuiet;
+}
+
+// The light tint behind a banner/badge of the given tone (the design system's
+// fresh/stale/error background tints; muted rides the sidebar surface).
+inline constexpr ImVec4 tone_background(Tone tone) {
+    switch (tone) {
+        case Tone::Ok:     return ImVec4(0.902f, 0.957f, 0.937f, 1.0f);  // #E6F4EF
+        case Tone::Active: return ImVec4(0.902f, 0.957f, 0.937f, 1.0f);  // #E6F4EF
+        case Tone::Warn:   return ImVec4(0.984f, 0.949f, 0.890f, 1.0f);  // #FBF2E3
+        case Tone::Error:  return ImVec4(0.984f, 0.918f, 0.910f, 1.0f);  // #FBEAE8
+        case Tone::Muted:  return kSidebar;
+    }
+    return kSidebar;
+}
+
 // A small, valid execution graph (the IR's canonical JSON form) prefilled into
 // the gate panel so the passing path is one click away — a churn-flavoured
 // connect→clean→model→serve pipeline. (Also the App ctor's default gate input.)
@@ -127,6 +157,131 @@ inline bool primary_button(const char* label) {
     const bool clicked = ImGui::Button(label);
     ImGui::PopStyleColor(4);
     return clicked;
+}
+
+// ── The widget grammar (#630) ──────────────────────────────────────────────
+// Panels compose these (plus plain ImGui tables/plots) instead of hand-rolling
+// visuals. A panel may NOT define local colours, paddings, or one-off buttons —
+// a new visual becomes a grammar widget here first, then gets used. See
+// docs/gui/architecture.md.
+
+// Ambient Geist heading face (a larger Geist cut) for page_header titles. Set
+// once per frame beside g_mono_font; null until the first atlas build.
+// Declared here, defined once in app.cpp.
+extern ImFont* g_heading_font;
+
+// The title row page_header drew this frame — header_action right-aligns onto
+// it. {0,0} outside a page_header. (Per-frame ambient, like g_mono_font.)
+// g_page_header_action_right walks leftward as actions are placed.
+inline ImVec2 g_page_header_title_min{};
+inline float g_page_header_action_right = 0.0f;
+
+// One per view, first thing in the panel: the view's name (heading face) and a
+// one-line muted subtitle. Identical geometry everywhere. Actions belonging to
+// the header render to its right via header_action(...) immediately after.
+inline void page_header(const char* title, const char* subtitle) {
+    ImGui::Spacing();
+    g_page_header_title_min = ImGui::GetCursorScreenPos();
+    g_page_header_action_right =
+        g_page_header_title_min.x + ImGui::GetContentRegionAvail().x;
+    if (g_heading_font) ImGui::PushFont(g_heading_font);
+    ImGui::TextColored(kInkPrimary, "%s", title);
+    if (g_heading_font) ImGui::PopFont();
+    if (subtitle && subtitle[0] != '\0') {
+        ImGui::TextColored(kInkMuted, "%s", subtitle);
+    }
+    ImGui::Spacing();
+}
+
+// A ghost button right-aligned on the page_header title row. Call directly
+// after page_header; multiple actions stack right-to-left. Returns clicked.
+inline bool header_action(const char* label) {
+    const ImVec2 resume = ImGui::GetCursorScreenPos();
+    const float width = ImGui::CalcTextSize(label).x +
+                        ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetCursorScreenPos(
+        ImVec2(g_page_header_action_right - width, g_page_header_title_min.y));
+    const bool clicked = ImGui::Button(label);
+    g_page_header_action_right -=
+        width + ImGui::GetStyle().ItemSpacing.x;  // next action lands left
+    ImGui::SetCursorScreenPos(resume);
+    return clicked;
+}
+
+// The bordered content unit: an eyebrow title + the caller-drawn body on a
+// white card. Cards never nest. `card_id` must be unique within the view.
+template <typename DrawContents>
+inline void section_card(const char* card_id, const char* title,
+                         DrawContents&& draw_contents) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, kWhite);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::BeginChild(card_id, ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY |
+                          ImGuiChildFlags_AlwaysUseWindowPadding);
+    if (title && title[0] != '\0') {
+        eyebrow(g_mono_font, to_upper(title).c_str());
+        ImGui::Spacing();
+    }
+    draw_contents();
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+}
+
+// A dashboard/summary number: mono value coloured by tone (Muted renders ink —
+// a plain number, not a status), eyebrow label beneath. Callers lay tiles out
+// horizontally with SameLine.
+inline void stat_tile(const char* label, const std::string& value,
+                      Tone tone = Tone::Muted) {
+    ImGui::BeginGroup();
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    ImGui::TextColored(tone == Tone::Muted ? kInkPrimary : tone_color(tone),
+                       "%s", value.c_str());
+    if (g_mono_font) ImGui::PopFont();
+    eyebrow(g_mono_font, label);
+    ImGui::EndGroup();
+}
+
+// The ONLY way a panel renders "nothing here" (#631): one headline, one
+// sentence of muted body, and the single next action. Returns true when the
+// action is clicked; pass "" to render no action.
+inline bool empty_state(const char* headline, const char* body,
+                        const char* action_label) {
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::TextColored(kInkPrimary, "%s", headline);
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(kInkMuted, "%s", body);
+    ImGui::PopTextWrapPos();
+    ImGui::Spacing();
+    bool clicked = false;
+    if (action_label && action_label[0] != '\0') {
+        clicked = primary_button(action_label);
+        ImGui::Spacing();
+    }
+    return clicked;
+}
+
+// Per-panel action feedback (#632): a tinted strip with a status dot and the
+// message — for errors, the engine's path-qualified reason verbatim. Renders
+// nothing for an empty message, so callers can pass their status line as-is.
+// No modal alerts, ever.
+inline void banner(Tone tone, const std::string& message) {
+    if (message.empty()) return;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, tone_background(tone));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 6.0f);
+    ImGui::BeginChild("##banner", ImVec2(0.0f, 0.0f),
+                      ImGuiChildFlags_AutoResizeY |
+                          ImGuiChildFlags_AlwaysUseWindowPadding);
+    status_dot(tone_color(tone));
+    ImGui::PushTextWrapPos(0.0f);
+    ImGui::TextColored(kInkPrimary, "%s", message.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
 }
 
 }  // namespace zetta::gui

@@ -306,6 +306,8 @@ private:
     // mono role). Non-owning — the ImGui font atlas owns it; re-captured whenever
     // the atlas is rebuilt in apply_display_scale().
     ImFont* mono_font_ = nullptr;
+    // Geist heading face for page_header titles — same atlas/ownership rules.
+    ImFont* heading_font_ = nullptr;
     bool initialized_ = false;
     bool show_demo_ = false;
 

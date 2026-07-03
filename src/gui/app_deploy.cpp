@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/tones.hpp"
 
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/cluster/cluster.hpp"
@@ -41,15 +42,6 @@ std::string status_badge(zetta::pipeline::CheckStatus status) {
     return text;
 }
 
-// The text colour for a check status.
-ImVec4 status_color(zetta::pipeline::CheckStatus status) {
-    switch (status) {
-        case zetta::pipeline::CheckStatus::Pass: return kPassColor;
-        case zetta::pipeline::CheckStatus::Warn: return kWarnColor;
-        case zetta::pipeline::CheckStatus::Fail: return kFailColor;
-    }
-    return kFailColor;
-}
 
 }  // namespace
 
@@ -156,7 +148,7 @@ void App::draw_gate() {
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(check.name.c_str());
             ImGui::TableSetColumnIndex(1);
-            ImGui::TextColored(status_color(check.status), "%s",
+            ImGui::TextColored(tone_color(tone_of(check.status)), "%s",
                                status_badge(check.status).c_str());
             ImGui::TableSetColumnIndex(2);
             ImGui::TextWrapped("%s", check.reason.c_str());

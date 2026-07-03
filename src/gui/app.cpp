@@ -81,6 +81,8 @@ namespace {
 // (kMonoScale) for the design system's label / count / metric role.
 constexpr float kBaseFontPixels = 17.0f;
 constexpr float kMonoScale = 0.86f;
+// Larger Geist cut for page_header titles (the heading role).
+constexpr float kHeadingScale = 1.35f;
 
 float ui_content_scale(SDL_Window* window) {
     const SDL_DisplayID display = SDL_GetDisplayForWindow(window);
@@ -164,6 +166,7 @@ void apply_orama_theme(ImGuiStyle& style) {
 // extern in app_internal.hpp, defined here (and assigned once per frame at the
 // top of render_frame()). Null until the first font-atlas build.
 ImFont* g_mono_font = nullptr;
+ImFont* g_heading_font = nullptr;
 
 App::App(Node& node, zetta::cluster::Cluster& cluster)
     : node_(node),
@@ -344,6 +347,8 @@ void App::apply_display_scale() {
     add_font(kGeistSans, kGeistSans_len, kBaseFontPixels * scale);
     mono_font_ = add_font(kGeistMono, kGeistMono_len,
                           kBaseFontPixels * kMonoScale * scale);
+    heading_font_ = add_font(kGeistSans, kGeistSans_len,
+                             kBaseFontPixels * kHeadingScale * scale);
 
     io.Fonts->Build();
     ImGui_ImplSDLRenderer3_DestroyFontsTexture();
@@ -639,7 +644,8 @@ void App::render_frame() {
     // rendering (it runs synchronously inside SDL's pump). One frame at a time.
     if (rendering_) return;
     rendering_ = true;
-    g_mono_font = mono_font_;  // ambient mono for the file-local render_* helpers
+    g_mono_font = mono_font_;  // ambient fonts for the shared render helpers
+    g_heading_font = heading_font_;
 
     ImGuiIO& io = ImGui::GetIO();
     ImGui_ImplSDLRenderer3_NewFrame();

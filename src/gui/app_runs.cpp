@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/tones.hpp"
 #include "gui/app_operations_internal.hpp"
 
 #include "zetta/ml/model.hpp"
@@ -16,25 +17,6 @@
 namespace zetta::gui {
 namespace {
 
-// A run's status, color-coded along its lifecycle: pending (neutral) → running
-// (amber) → succeeded (green) | failed (red). Same palette as the cluster panel.
-ImVec4 run_status_color(zetta::pipeline::RunStatus status) {
-    switch (status) {
-        case zetta::pipeline::RunStatus::Pending:   return kInkQuiet;
-        case zetta::pipeline::RunStatus::Running:   return kWarnColor;
-        case zetta::pipeline::RunStatus::Succeeded: return kSuccessColor;
-        case zetta::pipeline::RunStatus::Failed:    return kErrorColor;
-    }
-    return kInkQuiet;
-}
-
-// A log line's severity color — error red, warn amber, anything else neutral.
-ImVec4 log_level_color(const std::string& level) {
-    if (level == "error") return kErrorColor;
-    if (level == "warn")  return kWarnColor;
-    return kInkQuiet;
-}
-
 // Render the full detail of one run: identity + status, logs, outputs, the
 // trained model(s) it produced (metrics + ranked drivers), and lineage. A pure
 // view over the (already schema-validated) Run handle — no mutation. `models` are
@@ -45,7 +27,7 @@ void render_run_detail(const zetta::pipeline::Run& run,
     ImGui::TextColored(kInkPrimary, "run %s", run.id().c_str());
     if (g_mono_font) ImGui::PopFont();
     ImGui::SameLine();
-    ImGui::TextColored(run_status_color(run.status()), "[%s]",
+    ImGui::TextColored(tone_color(tone_of(run.status())), "[%s]",
                        std::string(to_string(run.status())).c_str());
     if (!run.project().empty()) mono_line(kInkQuiet, "project:  ", run.project());
     if (!run.graph().empty()) mono_line(kInkQuiet, "graph:    ", run.graph());
@@ -68,7 +50,7 @@ void render_run_detail(const zetta::pipeline::Run& run,
             if (g_mono_font) ImGui::PushFont(g_mono_font);
             ImGui::TextColored(kInkQuiet, "%s", entry.time.c_str());
             ImGui::SameLine();
-            ImGui::TextColored(log_level_color(entry.level), "%-5s",
+            ImGui::TextColored(tone_color(tone_of_log_level(entry.level)), "%-5s",
                                entry.level.c_str());
             if (g_mono_font) ImGui::PopFont();
             ImGui::SameLine();
@@ -161,7 +143,7 @@ void App::draw_runs() {
     if (runs.empty()) ImGui::TextDisabled("(no runs)");
     for (const std::shared_ptr<zetta::pipeline::Run>& run : runs) {
         ImGui::PushID(run->id().c_str());
-        ImGui::TextColored(run_status_color(run->status()), "%-9s",
+        ImGui::TextColored(tone_color(tone_of(run->status())), "%-9s",
                            std::string(to_string(run->status())).c_str());
         ImGui::SameLine();
         const std::string short_id = run->id().substr(0, run->id().find('-'));
