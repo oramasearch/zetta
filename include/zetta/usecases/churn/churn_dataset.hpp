@@ -101,6 +101,20 @@ std::string_view to_string(ChurnDataFormat format);
 ChurnDatasetResult load_churn_dataset(const std::filesystem::path& dir,
                                       ChurnDataFormat format = ChurnDataFormat::Jsonl);
 
+// Write a churn dataset to `dir` in the canonical JSONL form — dataset.json (the
+// manifest) plus accounts.jsonl + events.jsonl, exactly the files
+// load_churn_dataset(dir) reads back. The inverse of the loader, sharing its one
+// boundary: every record is serialized to the schema shape and validated against
+// the same embedded draft-07 schemas BEFORE anything is written, so an invalid
+// dataset fails fast with a path-qualified reason and no partial files land.
+// Creates `dir` (and parents) when absent; overwrites existing files. Returns ""
+// on success, else the reason. Never throws. The headed first-run guided demo
+// (#623) uses this to materialize demo_churn_dataset() on disk so the same files
+// load as a real partitioned dataset (data::add_dataset_file) with no file
+// dialog; it is equally the export path for any in-memory ChurnDataset.
+std::string write_churn_dataset(const ChurnDataset& dataset,
+                                const std::filesystem::path& dir);
+
 // Build the `entity_resolution` attribute payload by **actually resolving** the
 // dataset's comms-event mentions against the account directory:
 //

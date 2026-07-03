@@ -258,6 +258,14 @@ private:
     void draw_about_modal();  // the Help → About Orama Zetta dialog
     void draw_home();         // the dashboard landing (SCR-1, #629): health strip,
                               // needs-attention, recent runs, projects, activity
+    // First-run onboarding (#623, app_onboarding.cpp): the guided UC-1 churn
+    // demo grown out of Home's guided-start card — load the built-in demo
+    // dataset, create the churn project (pre-filled intent), watch the gate
+    // pass (and deploy), run over the live cluster, land on the ranked at-risk
+    // accounts + drivers. Step progress is derived from live engine state each
+    // frame; each step names + links the panel it exercised; Help · Guided demo
+    // replays it. Drawn by draw_home while the demo applies.
+    void draw_guided_demo_card();
     void draw_dashboard();
     void draw_explorer();    // Projects | Databases | Tables | Rows | Large Objects columns
     void draw_projects();    // top-level AI projects (create/select/rename/delete)
@@ -656,6 +664,9 @@ private:
     // draw_churn_run_progress() (app_deploy.cpp).
     std::shared_ptr<zetta::usecases::churn::AsyncChurnRun> churn_run_;
     bool churn_run_from_deploy_ = false;
+    // The guided demo (#623) launched churn_run_ — poll_background_ops applies
+    // the outcome to the onboarding summary below instead of the Deploy line.
+    bool churn_run_from_onboarding_ = false;
     // The async dataset add (null = idle): decode runs on a runtime worker;
     // poll_background_ops() pumps the owner-thread materialize slices.
     std::shared_ptr<zetta::data::AsyncDatasetAdd> dataset_add_;
@@ -786,6 +797,30 @@ private:
     // "Run on real engine" (churn) result line + its colour. Set by run_churn_demo().
     std::string churn_run_status_;
     bool churn_run_failed_ = false;
+
+    // First-run guided demo (#623, app_onboarding.cpp) — presentation state
+    // only. Step progress is DERIVED from live engine state each frame (the
+    // demo tables in system.datasets, a project with a captured intent, a
+    // deployment of the compiled graph, a succeeded run), never stored.
+    // `onboarding_active_` keeps the card on Home while the demo is mid-flight
+    // this session (its own steps create the state that would otherwise flip
+    // Home to the dashboard) and is how Help · Guided demo replays it;
+    // `onboarding_dismissed_` hides it (session-only — a node with any project
+    // never auto-shows the card, the issue's "never again" rule, so nothing
+    // needs persisting). The run summary below is the finished guided run's
+    // outcome (an action result, like deploy_status_): the ranked at-risk
+    // accounts + each one's dominant driver, applied by poll_background_ops.
+    bool onboarding_active_ = false;
+    bool onboarding_dismissed_ = false;
+    std::string onboarding_status_;   // last step action's outcome line (#632)
+    bool onboarding_failed_ = false;  // tones onboarding_status_
+    std::string onboarding_run_id_;   // the guided run ("" until it finishes)
+    struct OnboardingAtRisk {
+        std::string account;  // demo account name
+        double risk = 0.0;    // calibrated churn risk [0, 1]
+        std::string driver;   // its dominant churn driver
+    };
+    std::vector<OnboardingAtRisk> onboarding_at_risk_;  // top of the ranked list
 
     // Jobs panel — per-job objective/scaling controls (a live preview over the
     // built ScalingPolicy::evaluate(); see draw_job_scaling_controls). These hold

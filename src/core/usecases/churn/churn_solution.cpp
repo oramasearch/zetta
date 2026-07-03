@@ -654,6 +654,9 @@ ChurnDataset demo_churn_dataset() {
             event.account_id = account_id;
             event.event_ts = "2026-" + two_digit(month) + "-15T12:00:00Z";
             event.event_type = (occurrence == 0) ? "login" : "feature_use";
+            // The schema requires a non-empty channel (the demo dataset must be
+            // schema-valid: write_churn_dataset round-trips it, #623).
+            event.channel = "app";
             event.value = 1.0;
             dataset.events.push_back(event);
         }
@@ -668,6 +671,7 @@ ChurnDataset demo_churn_dataset() {
             event.account_id = account_id;
             event.event_ts = "2026-" + two_digit(month) + "-10T09:00:00Z";
             event.event_type = "payment_failed";
+            event.channel = "billing";
             event.value = 1.0;
             dataset.events.push_back(event);
         }

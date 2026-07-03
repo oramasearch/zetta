@@ -410,6 +410,7 @@ void App::run_churn_demo() {
     churn_run_status_.clear();
     churn_run_failed_ = false;
     churn_run_from_deploy_ = true;
+    churn_run_from_onboarding_ = false;
     churn_run_ = zetta::usecases::churn::AsyncChurnRun::start(
         node_, selected->graph, zetta::usecases::churn::demo_churn_dataset(),
         options);
