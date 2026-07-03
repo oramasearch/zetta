@@ -42,7 +42,7 @@
 // at its own boundary; TreeSHAP reads the already-validated `GbdtModel`. Persisting the
 // per-entity scores as a dataset / a Run output, and writing the SHAP driver ranking
 // onto the [`Model`](../model.hpp)'s `feature_schema.drivers`, are later slices. See
-// docs/tree-shap.md.
+// docs/ml/tree-shap.md.
 namespace zetta::ml {
 
 // The default per-collective timeout for an explain round (matches the train job).

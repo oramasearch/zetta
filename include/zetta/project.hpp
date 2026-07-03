@@ -18,7 +18,7 @@ namespace zetta {
 class ReplicationManager;
 
 // An AI project — the central, user-managed artifact in Orama Zetta (a project
-// is instantiated from a use-case type on a team's data; see docs/projects.md).
+// is instantiated from a use-case type on a team's data; see docs/pipeline/projects.md).
 // This is the data-model root only: id + name + lifecycle stamps + owner key.
 // Its inputs / execution graphs / runs attach in later slices (FEAT-1/FEAT-2).
 //
@@ -35,7 +35,7 @@ class ReplicationManager;
 // A Project owns its **inputs** (zetta::ProjectInput) the same way a Database
 // owns its tables: input create/drop are captured into the replicated CRDT and
 // `materialize_input` is the reverse path used by reconciliation. Inputs live in
-// the project's `inputs/` subfolder (see project_input.hpp / docs/project-inputs.md).
+// the project's `inputs/` subfolder (see project_input.hpp / docs/pipeline/project-inputs.md).
 class Project {
 public:
     Project(std::string id, std::string name, std::string created,

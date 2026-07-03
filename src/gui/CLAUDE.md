@@ -1,0 +1,44 @@
+# src/gui — headed app rules
+
+The GUI is a **thin renderer over a `Node` + `Cluster`** — no engine logic
+lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)**
+(the Orama design system) and the **load-bearing rendering notes** in
+[docs/gui/README.md](../../docs/gui/README.md) before touching anything.
+
+## Hard rules
+
+- **Engine logic belongs in zetta-core, not here.** A panel reads live engine
+  state each frame (`Node::…()`, `Cluster::nodes()`, the `system.<table>`
+  sources) and keeps **no separately-synced copy** — GUI-owned state is
+  presentation/animation only (`cluster_telemetry.hpp`, `cluster_pipeline.hpp`
+  are pure-data, no ImGui). If a panel needs new observable state, add a
+  `system.<table>` read view in zetta-core first (RULE-7), then render it.
+- **Cloud providers are permission-gated. No exceptions, ever.** Any control
+  that would read provider config/credentials or run a provider CLI is
+  deny-by-default, ask-every-time, never-remembered consent, naming exactly
+  what would be read/called before anything happens (the Cloud Inspector /
+  Add-nodes consent grammar). This binds Claude while building, too.
+- **Heavy headers stay in `app.cpp`.** `app.hpp` forward-declares SDL/ImGui
+  types; only `app.cpp` includes them. Panels are `App` member TUs split by
+  area (`app_home` / `app_explorer` / `app_pipeline` / `app_operations` /
+  `app_governance`).
+- **Orama design system, always:** light surfaces, ink text, Geist + Geist
+  Mono (`g_mono_font` for labels/counts/metrics), coral used surgically,
+  semantic green/amber/red for status, **sentence case**, **no em-dashes** in
+  product copy (use `·`/colons). Tokens + component grammar live in
+  `app_internal.hpp` (`apply_orama_theme`, `eyebrow`/`status_dot`/`wash`).
+  Run the design-system self-check before shipping.
+- **Text fields bind `std::string`** via the `imgui_stdlib` overloads — never
+  `char[]` buffers.
+
+## Rendering gotchas (easy to break — details in docs/gui/README.md)
+
+- `App::apply_display_scale` uses `SDL_GetDisplayContentScale` (content factor
+  only) — `SDL_GetWindowDisplayScale` would double-scale on Retina.
+- `SDL_SetRenderScale` before clearing: the high-pixel-density framebuffer is
+  larger than the logical window; without it the UI paints into one quadrant.
+- The idle loop is `SDL_WaitEventTimeout` (~30 fps idle cap); keep per-frame
+  background work cheap. `render_frame()` is re-entrancy-guarded and driven by
+  an event watch during live resize — it does **not** tick the node.
+- Font-atlas rebuilds (text size / DPI change) happen **between** frames in
+  `run()`, never mid-frame.

@@ -17,7 +17,7 @@
 // Signals are **ephemeral**: they are NOT routed through the replicated CRDT
 // document — they exist only for the lifetime of the message. This is the
 // substrate that collectives, the work-stealing scheduler, and the job
-// coordinator build on (see docs/signal-plane.md). The transport lives in
+// coordinator build on (see docs/cluster/signal-plane.md). The transport lives in
 // `zetta::Cluster` (src/core/cluster.cpp); the envelope format + its
 // boundary validation live here (src/core/signal.cpp).
 namespace zetta {
@@ -59,7 +59,7 @@ struct SignalResponse {
 // **network thread** — so implementations must be cheap and thread-safe; heavy
 // work should be handed off to another executor (e.g. the work-stealing
 // scheduler, whose handlers only hand out / store task descriptors and run the
-// actual compute on its own pool — see docs/work-stealing-scheduler.md). Each
+// actual compute on its own pool — see docs/compute/work-stealing-scheduler.md). Each
 // method has a safe default, so a handler overrides only the kinds it cares about.
 class SignalHandler {
 public:

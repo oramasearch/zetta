@@ -45,7 +45,7 @@
 // ([`ir::from_json`](../ir/serialization.hpp)); the Parquet bytes are decoded by the
 // native reader, which is itself bounds-checked at the binary boundary; the rows it
 // produces are stored as ordinary free-form table rows. This binding parses no new
-// format of its own. See docs/datasets-shim.md.
+// format of its own. See docs/pipeline/datasets-shim.md.
 namespace zetta {
 
 class Node;

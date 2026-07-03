@@ -43,7 +43,7 @@ class ComputeJob;  // include/zetta/compute_job.hpp — the running job we steer
 // This slice introduces no new replicated state: the policy is passed in by value
 // (a `ComputeJob` still references it by id only; persisting policies as their own
 // entity is a later slice), and the only JSON boundary is the AutoscalerConfig DTO
-// below. See docs/job-autoscaler.md.
+// below. See docs/compute/job-autoscaler.md.
 
 // One observation of the running job — the live signals the policy is scored
 // against. The current node count is deliberately NOT here: the loop reads that

@@ -329,7 +329,7 @@ GoldenOracle generate_oracle() {
     oracle.dataset = "synthetic-churn-uc1";
     oracle.description =
         "Golden featurize/train/TreeSHAP outputs over tests/fixtures/churn, generated "
-        "by zetta's native engine (no foreign runtime). See docs/native-oracle.md.";
+        "by zetta's native engine (no foreign runtime). See docs/ml/native-oracle.md.";
 
     // Featurize.
     oracle.featurize.entities = table.entities;

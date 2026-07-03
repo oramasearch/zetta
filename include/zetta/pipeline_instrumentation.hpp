@@ -25,7 +25,7 @@
 // typed result fields — no JSON is parsed at any boundary — so there is nothing to
 // schema-validate (the same as the other ephemeral read views).
 //
-// See docs/pipeline-instrumentation.md.
+// See docs/compute/pipeline-instrumentation.md.
 namespace zetta {
 
 // The near-data op a recorded job ran — mirrors the near-data runners. Kept as its

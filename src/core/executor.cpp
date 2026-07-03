@@ -190,7 +190,7 @@ ExecutionResult GraphExecutor::execute(Node& node,
     lineage.freshness = now_iso8601();
     // A deterministic local orchestration that completed is fully trusted; a
     // partial (failed) run carries no confidence. Real model-derived confidence
-    // is later work — see docs/execution.md.
+    // is later work — see docs/pipeline/execution.md.
     result.ok = result.failed_step.empty();
     lineage.confidence = result.ok ? 1.0 : 0.0;
 

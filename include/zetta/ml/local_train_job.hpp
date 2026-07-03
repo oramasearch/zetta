@@ -72,8 +72,8 @@
 // partition-body lines; the training histograms / metrics, the SHAP partials, and the
 // score pairs all ride the schema-validated `CollectiveMessage`; the GBDT weights body
 // carries its own validated `GbdtModel` boundary; the job + model records are validated
-// at their own boundaries. See docs/uc1-train-over-partitions.md, docs/gbdt.md, and
-// docs/compute-near-data.md.
+// at their own boundaries. See docs/use-cases/uc1-train-over-partitions.md, docs/ml/gbdt.md, and
+// docs/compute/compute-near-data.md.
 namespace zetta {
 class Node;
 }

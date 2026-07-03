@@ -39,7 +39,7 @@
 // schema (`parquet_metadata_schema`) validated where it re-enters the program
 // (`validate_parquet_metadata_json`), the binary-format analog of the
 // schema-at-the-boundary rule (Thrift is binary, so there is no JSON schema for
-// the file itself). See docs/parquet-metadata.md.
+// the file itself). See docs/data/parquet-metadata.md.
 namespace zetta::parquet {
 
 // The Parquet physical column type (parquet.thrift `Type`). `Unknown` is a

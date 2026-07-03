@@ -62,7 +62,7 @@
 // canonical usage example, and it is the program an operator runs for real in the
 // headed app (start a node, add cloud nodes behind the consent gate, launch the case)
 // — here the cloud provisioner is replaced by an injected LocalProvisioner so the
-// case is hermetic and runs headless. See docs/uc1-at-scale-e2e.md.
+// case is hermetic and runs headless. See docs/use-cases/uc1-at-scale-e2e.md.
 namespace zetta::testkit {
 namespace {
 

@@ -15,7 +15,7 @@ namespace zetta {
 // **scopes** a principal's reach. This is the V1 access model (RULE-3 / PERM-1 /
 // ADR-6): a request authenticates with a key and thereby inherits exactly the
 // key's scope — no bespoke permission model; team/partner/per-dataset tiers are
-// deferred (see docs/access-control.md).
+// deferred (see docs/governance/access-control.md).
 //
 // An AccessKey is **replicated state** owned by a Principal, the same way a
 // ProjectInput is owned by a Project: the metadata (the owning principal id, the

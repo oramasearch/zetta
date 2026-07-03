@@ -16,7 +16,7 @@
 
 // The histogram GBDT trainer + the binary-logistic model. The algorithm overview
 // and the distributed-by-allreduce design live in the header; this file is the
-// numerical reference. See docs/gbdt.md.
+// numerical reference. See docs/ml/gbdt.md.
 namespace zetta::ml {
 
 namespace {

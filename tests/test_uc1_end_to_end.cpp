@@ -294,7 +294,7 @@ TEST(Uc1EndToEnd, GatedGovernedRunProducesCalibratedRankedListAndDrivers) {
 
     // (2) A CALIBRATED, RANKED at-risk list — one per account, highest risk first,
     // every risk a probability in [0, 1] (the binary-logistic predict_proba is the
-    // calibrated churn risk; see docs/gbdt-score.md).
+    // calibrated churn risk; see docs/ml/gbdt-score.md).
     const std::vector<EntityScore>& ranked = churn->ranked();
     ASSERT_FALSE(ranked.empty());
     EXPECT_EQ(ranked.size(), dataset.accounts.size());

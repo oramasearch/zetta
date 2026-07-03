@@ -24,7 +24,7 @@
 // Pure + deterministic + non-throwing. It reads only already-validated inputs (the
 // IR — validated by ir::from_json — and the partition-owner sets, derived from the
 // schema-validated dataset_partition catalog), so it adds NO new JSON boundary. See
-// docs/graph-plan.md.
+// docs/pipeline/graph-plan.md.
 namespace zetta {
 
 namespace ir {

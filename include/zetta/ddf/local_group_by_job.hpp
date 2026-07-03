@@ -31,7 +31,7 @@
 // **No new JSON / wire format.** The shard is read from the existing JsonlStore
 // partition-body lines; the partials ride the schema-validated `CollectiveMessage`;
 // the op spec carries its own `GroupBySpec` boundary; the job record is validated
-// at its own boundary. See docs/compute-near-data.md.
+// at its own boundary. See docs/compute/compute-near-data.md.
 namespace zetta::ddf {
 
 // The outcome of a compute-near-data distributed group-by ComputeJob. Extends the

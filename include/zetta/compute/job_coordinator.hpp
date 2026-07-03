@@ -49,7 +49,7 @@
 // schema-validated `CollectiveMessage`, and the job record is schema-validated at
 // its own boundary — so malformed data still fails fast at each existing seam.
 //
-// See docs/job-coordinator.md.
+// See docs/compute/job-coordinator.md.
 namespace zetta {
 class Cluster;
 }

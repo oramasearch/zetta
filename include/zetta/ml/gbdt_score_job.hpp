@@ -37,7 +37,7 @@
 // `CollectiveMessage` (via `JobRound::gather` / `broadcast`, values as doubles —
 // entity keys are exact as doubles for ids <= 2^53, the documented bound of the
 // double-based collective plane), and the job record is schema-validated at its own
-// boundary. See docs/gbdt-score.md.
+// boundary. See docs/ml/gbdt-score.md.
 namespace zetta::ml {
 
 // The default per-collective timeout for a scoring round (mirrors

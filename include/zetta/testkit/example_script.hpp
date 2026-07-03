@@ -28,7 +28,7 @@
 // only JSON it touches is the already-schema-validated IR JSON form (the
 // `ir::from_json` trust boundary the frontend lowers through) and the Run record
 // (validated at its own boundary). The expectations below are in-code structs, the
-// same shape as `TestOption` / `TestCase`. See docs/example-scripts.md.
+// same shape as `TestOption` / `TestCase`. See docs/testing/example-scripts.md.
 namespace zetta::testkit {
 
 // One expected data-flow edge in the lowered IR (a `from -> to` DataFlow edge).
@@ -115,7 +115,7 @@ ExampleRunReport run_example_script(const ExampleScript& script);
 // minimal sample + method-chaining, plus negative examples that prove a failing
 // script surfaces the offending statement. The catalog grows as the cluster/ML
 // sim-Python bindings (#522) and the at-scale scripts (TC-9/10/11/13, UC-1-at-scale
-// #531) land — see docs/example-scripts.md.
+// #531) land — see docs/testing/example-scripts.md.
 const std::vector<ExampleScript>& example_scripts();
 
 }  // namespace zetta::testkit

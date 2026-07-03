@@ -102,7 +102,7 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
 // rewrite model.json. Reconciliation uses apply_value(), which updates the
 // metadata projection from the document with NO capture (and never touches the
 // weights body). Lookups hand back shared_ptr handles, like Run / Project. See
-// docs/models.md.
+// docs/ml/models.md.
 class Model {
 public:
     Model(std::string id, ModelValue value, std::filesystem::path dir,

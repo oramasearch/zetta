@@ -28,7 +28,7 @@ struct DatasetPlacement {
 // replicated partition catalog on every call — so it never drifts from the truth
 // (the "compute from the live source, never store/hand-sync" rule). The same
 // summary backs both the SQL view and a future GUI dataset panel, so the two can't
-// diverge. See docs/system-datasets.md.
+// diverge. See docs/data/system-datasets.md.
 struct DatasetSummary {
     std::string name;       // dataset name (= the table name)
     std::string database;   // owning database name

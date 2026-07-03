@@ -13,7 +13,7 @@ namespace zetta {
 // scopes keys to the **coarse, top-level** resources — databases and projects.
 // Finer tiers (per-table, per-dataset, per-row) layer on later by extending this
 // enum without changing the Scope shape; team/partner/per-dataset tiers are
-// deliberately deferred (see docs/access-control.md).
+// deliberately deferred (see docs/governance/access-control.md).
 enum class ResourceKind { Database, Project };
 
 // Canonical lowercase name of a resource kind ("database" / "project"). This is
@@ -71,7 +71,7 @@ void to_json(nlohmann::json& document, const Scope& scope);
 
 // Parse from JSON, validating the shape at the boundary so a malformed scope
 // fails fast instead of silently widening or narrowing access (a
-// security-sensitive boundary — see docs/access-control.md). Each returns
+// security-sensitive boundary — see docs/governance/access-control.md). Each returns
 // std::nullopt on anything malformed: not an object, a missing or wrong-typed
 // field, an unknown resource kind, or a non-array / malformed `grants`. Mirrors
 // schemas/access_key.schema.json ($defs) — keep them in sync.

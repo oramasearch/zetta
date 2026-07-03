@@ -23,7 +23,7 @@ namespace zetta {
 // A ComputeJob carries a ScalingPolicy by id (`scaling_policy`); persisting /
 // replicating policies as their own entity and wiring `evaluate()` into the live
 // autoscaler / job coordinator are separate, later slices. See
-// docs/scaling-policy.md.
+// docs/compute/scaling-policy.md.
 
 // What an autoscaler optimizes for a job. A closed enum; the lowercase name is
 // BOTH the display label AND the stored JSON representation, so it is a durable

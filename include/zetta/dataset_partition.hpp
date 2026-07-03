@@ -74,7 +74,7 @@ std::optional<DatasetPartitionValue> parse_dataset_partition_value(
 // Reconciliation uses apply_value(), which updates the projection from the document
 // with NO capture (a peer's change arrives over the gossip, never written back).
 // Lookups hand back shared_ptr handles, never raw pointers. See
-// docs/dataset-partitions.md.
+// docs/data/dataset-partitions.md.
 class DatasetPartition {
 public:
     DatasetPartition(std::string id, DatasetPartitionValue value,

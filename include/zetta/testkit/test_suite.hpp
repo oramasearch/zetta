@@ -23,7 +23,7 @@
 // renders) and a `run(TestOptions, TestContext) -> TestResult` body that calls the
 // real engine and reports a structured result (outcome + summary + metrics + log).
 // `run_test_case` times the body and converts any thrown exception into a clean
-// `Error` result, so a case can never take the app down. See docs/test-suite.md.
+// `Error` result, so a case can never take the app down. See docs/testing/test-suite.md.
 namespace zetta::testkit {
 
 // The category a case belongs to — used to group the catalog in the panel and to

@@ -45,7 +45,7 @@ struct Operation {
 // API / data / orchestration action — optionally **time-bounded** (TTL'd, the
 // distinguishing property of a capability vs. a Scope grant). It is the unit of
 // authority for orchestration + the sandbox; the audit trail is a separate
-// FEAT-9 slice (see docs/access-control.md).
+// FEAT-9 slice (see docs/governance/access-control.md).
 //
 // `expires_at` is an optional ISO-8601 UTC stamp in the SAME fixed-width format
 // as zetta::now_iso8601() (millisecond precision, trailing 'Z'), so chronology
@@ -106,7 +106,7 @@ void to_json(nlohmann::json& document, const CapabilitySet& capabilities);
 
 // Parse from JSON, validating the shape at the boundary so a malformed capability
 // fails fast instead of silently widening or narrowing access (a
-// security-sensitive boundary — see docs/access-control.md). Each returns
+// security-sensitive boundary — see docs/governance/access-control.md). Each returns
 // std::nullopt on anything malformed: not an object/array, a missing or
 // wrong-typed field, or an unknown domain. Mirrors the `capability` $def in
 // schemas/access_key.schema.json — keep them in sync.

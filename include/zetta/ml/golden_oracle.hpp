@@ -34,7 +34,7 @@
 // the pboettch validator embedded in src/core/ml/golden_oracle.cpp), then enforces the
 // cross-field structural rules the schema can't express (array lengths agree across
 // entities / feature_names). A malformed fixture fails the load with a path-qualified
-// reason instead of silently passing a vacuous test. See docs/native-oracle.md.
+// reason instead of silently passing a vacuous test. See docs/ml/native-oracle.md.
 namespace zetta::ml {
 
 // The expected leakage-free feature table: one row per account in the entity universe,

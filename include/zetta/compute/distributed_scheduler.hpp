@@ -25,7 +25,7 @@
 // that finishes its own work (or has none) pulls pending tasks from a peer,
 // runs them across its local pool, and ships the results back — so a faster
 // node (e.g. one with a GPU) naturally processes more, with no fixed
-// per-node capability model. See docs/work-stealing-scheduler.md.
+// per-node capability model. See docs/compute/work-stealing-scheduler.md.
 namespace zetta {
 class Cluster;
 }

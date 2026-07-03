@@ -47,8 +47,8 @@
 // **No new JSON / wire format.** The shard is read from the existing JsonlStore
 // partition-body lines; the featurization partials ride the schema-validated
 // `CollectiveMessage`; the spec carries its own `FeaturizeSpec` boundary; the job
-// record is validated at its own boundary. See docs/compute-near-data.md and
-// docs/ddf-featurize.md.
+// record is validated at its own boundary. See docs/compute/compute-near-data.md and
+// docs/ddf/ddf-featurize.md.
 namespace zetta::ddf {
 
 // The outcome of a compute-near-data featurization ComputeJob. Extends the distributed

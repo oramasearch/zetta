@@ -8,11 +8,11 @@
 > **Status:** reference / background. It is the cited basis for the `az vmss`
 > command shapes the **reference Azure provisioner** uses — `AzCliControlPlane`
 > (`src/core/azure_cli_control_plane.cpp`); see
-> [azure-provisioner.md](../azure-provisioner.md). zetta's burst backend uses
+> [azure-provisioner.md](../cloud/azure-provisioner.md). zetta's burst backend uses
 > only the **VMSS + Spot** slice (§2.6–2.7); the rest (VMs, ACI, AKS, Batch,
 > Container Apps, Functions, GPU/HPC) is background for choosing primitives and
 > for the AWS/GCP equivalents in
-> [cloud-provisioner-pattern.md](../cloud-provisioner-pattern.md). Examples are
+> [cloud-provisioner-pattern.md](../cloud/cloud-provisioner-pattern.md). Examples are
 > illustrative — replace names, regions, VM sizes, and images with values your
 > subscription allows.
 

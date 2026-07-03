@@ -17,7 +17,7 @@
 // The distributed `explain` ComputeJob: exact per-entity TreeSHAP over a shard of a
 // feature table, plus a globally-allreduced mean-|φ| driver ranking. The math is in
 // tree_shap.cpp; this file is the job wrapper (mirrors gbdt_train_job.cpp). See
-// docs/tree-shap.md.
+// docs/ml/tree-shap.md.
 namespace zetta::ml {
 
 namespace {

@@ -17,7 +17,7 @@
 //
 // The Node owns one (`Node::index_registry()`, with the reference backends
 // registered) and the IndexStepExecutor (index/index_step_executor.hpp, #528)
-// resolves + builds a deployed `index` step through it — see docs/index-step-executor.md.
+// resolves + builds a deployed `index` step through it — see docs/indexing/index-step-executor.md.
 namespace zetta {
 
 // Extract an IndexSpec from an IR `index` step's free-form `attributes` bag,

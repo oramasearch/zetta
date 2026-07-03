@@ -32,15 +32,15 @@ ds = load_dataset("DeepMostInnovations/saas-sales-conversations")
   the data ourselves through a clear IO seam; we do not import the Python
   library).
 - **Status: built** (#521) — `load_dataset(...)` lowers to an IR connect/load
-  step (the [Python frontend](../../../docs/python-frontend.md)) and
+  step (the [Python frontend](../../../docs/pipeline/python-frontend.md)) and
   `zetta::input::run_load_dataset_step` executes it by decoding the parquet via
   zetta's native reader into a (partitioned) table, with file/network IO behind
   the injectable `DatasetResolver` seam. This *is* the canonical worked example of
-  this skill — see [docs/datasets-shim.md](../../../docs/datasets-shim.md).
+  this skill — see [docs/pipeline/datasets-shim.md](../../../docs/pipeline/datasets-shim.md).
 
 ## Follow the dialect-agnostic pattern
 
-zetta already separates frontends from execution (see `docs/query.md`):
+zetta already separates frontends from execution (see `docs/data/query.md`):
 
 ```
 input text → detect language → Frontend.parse() → generic ops → Executor(Node)

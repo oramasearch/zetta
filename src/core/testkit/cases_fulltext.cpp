@@ -42,8 +42,8 @@
 // term-frequency reference scorer — proving the same build-over-partitions +
 // scatter-gather + merge-vs-oracle plumbing end to end while staying green. The
 // corpus is tf-dominated so the global ranking is unambiguous either way (exact for
-// the global top-k; the same robustness the gtest relies on). See docs/test-suite.md
-// and docs/distributed-fulltext.md.
+// the global top-k; the same robustness the gtest relies on). See docs/testing/test-suite.md
+// and docs/indexing/distributed-fulltext.md.
 namespace zetta::testkit {
 namespace {
 

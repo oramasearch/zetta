@@ -22,7 +22,7 @@
 // loopback cluster** (the same shape the distributed test suites stand up), and a
 // self-contained synthetic churn dataset + its numeric encoding (so the ML /
 // pipeline cases need no on-disk fixture and run from any binary). See
-// docs/test-suite.md.
+// docs/testing/test-suite.md.
 namespace zetta {
 
 class Node;
@@ -86,7 +86,7 @@ ChurnDataset sample_churn_dataset();
 // `zetta/churn_solution.hpp` (`zetta::encode_churn_dataset` -> `ChurnNumericShards`,
 // `zetta::churn_events_schema` / `churn_accounts_schema` / `churn_featurize_spec`).
 // The testkit reuses those directly rather than carrying its own copy — see
-// docs/test-suite.md. Only the testkit-specific extras live here:
+// docs/testing/test-suite.md. Only the testkit-specific extras live here:
 
 // A GBDT param set with the testkit's tunable knobs (the cases expose trees / depth
 // / bins / learning-rate options); `zetta::default_churn_gbdt_params()` is the

@@ -58,7 +58,7 @@ public:
     // ADR-31 / ENT-37). null = not partitioned (the default). This is in-memory
     // configuration only in this slice; persisting/replicating the selection and
     // the partition placements is the partition catalog (#510) and the
-    // partitioned write path (#511). See docs/partitioner.md.
+    // partitioned write path (#511). See docs/data/partitioner.md.
     void set_partitioner(std::shared_ptr<Partitioner> partitioner);
 
     // The configured partitioner, or an empty handle when the table is not

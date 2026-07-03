@@ -103,7 +103,7 @@ std::optional<ComputeJobValue> parse_compute_job_value(
 // side is emitted by Node::create_job). Reconciliation uses apply_value(), which
 // updates the projection from the document with NO capture and NO audit (a peer's
 // action arrives already-audited as its own replicated `audit:` event). Lookups
-// hand back shared_ptr handles, never raw pointers. See docs/compute-jobs.md.
+// hand back shared_ptr handles, never raw pointers. See docs/compute/compute-jobs.md.
 class ComputeJob {
 public:
     ComputeJob(std::string id, ComputeJobValue value, std::filesystem::path dir,

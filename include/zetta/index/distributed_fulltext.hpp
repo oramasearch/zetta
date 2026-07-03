@@ -50,7 +50,7 @@
 // message), so a malformed message fails fast with a path-qualified reason.
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry point
-// returns a status alongside its result. See docs/distributed-fulltext.md.
+// returns a status alongside its result. See docs/indexing/distributed-fulltext.md.
 namespace zetta {
 
 class Cluster;

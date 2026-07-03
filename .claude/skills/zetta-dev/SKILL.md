@@ -1,14 +1,20 @@
 ---
 name: zetta-dev
-description: zetta's project coding conventions and architecture. Use whenever writing, reviewing, or committing code for the zetta database — C++/CMake, storage, the query layer, the cluster, replication/CRDT, large objects, the SDL3+ImGui GUI, tests, or docs. Covers C++ style (C++26, Core Guidelines, smart pointers, std::string, full-word names), the bridge/modules layout (Capy/Corosio/automerge-cpp), the zetta-core/no-SDL rule, the data model, the "EVERYTHING is replicated" CRDT rule (document = source of truth, disk = projection), the equal-peer self-healing cluster, the runtime/net seams, build/test commands, commit+push, the no-memory rule, and the docs-after-change rule. Pairs with reference.md (a codebase map + how-to recipes).
+description: zetta's project coding conventions and architecture. Use whenever writing, reviewing, or committing code for the zetta database — C++/CMake, storage, the query layer, the cluster, replication/CRDT, large objects, the SDL3+ImGui GUI, tests, or docs. Covers C++ style (C++26, Core Guidelines, smart pointers, std::string, full-word names), the bridge/modules layout (Capy/Corosio/automerge-cpp), the zetta-core/no-SDL rule, the data model, the "EVERYTHING is replicated" CRDT rule (document = source of truth, disk = projection), the equal-peer self-healing cluster, the runtime/net seams, build/test commands, the feature-branch+PR flow, the no-memory rule, and the docs-after-change rule. Pairs with reference.md (a codebase map + how-to recipes).
 ---
 
 # zetta-dev — coding conventions & architecture checklist
 
 zetta is a C++26 database. A *node* runs **headed** (SDL3 + Dear ImGui UI) or
-**headless** (no UI). Apply these to all zetta work. **CLAUDE.md and `docs/` are
-authoritative and detailed; this is the working checklist.** For a file-by-file
-codebase map, how-to recipes, and gotchas, see **[reference.md](reference.md)**.
+**headless** (no UI). Apply these to all zetta work. **The root CLAUDE.md holds
+the repo-wide rules; directory CLAUDE.md rule-cards** (`src/core/`, `src/gui/`,
+`include/zetta/`, `tests/`, `docs/`, `schemas/`) **carry tree-scoped rules; and
+`docs/` is domain-organized for progressive disclosure** (`docs/README.md` →
+`docs/<domain>/README.md` → the page) — **read a domain's README before working
+in it**, and keep every level current in the same commit as the change. This is
+the working checklist. For the annotated file-by-file codebase map see
+`docs/architecture/code-map.md`; for how-to recipes and gotchas, see
+**[reference.md](reference.md)**.
 
 ## C++ style
 
@@ -39,7 +45,7 @@ codebase map, how-to recipes, and gotchas, see **[reference.md](reference.md)**.
   on-disk store + in-memory `Node` tree are a **projection** of it. Never keep a
   parallel copy synced by hand. New shared state = a new key/shape in the
   document; new *kind* of agreement = a new `ReplicationPolicy` — never a bespoke
-  sync path. (See `docs/replication.md`.)
+  sync path. (See `docs/cluster/replication.md`.)
 - **Capture / gossip / apply (the replication flow):** local mutations are
   **captured** into the CRDT at the *data-model layer* (`Node`/`Database`/`Table`/
   `LargeObjectStore` hold a `ReplicationManager*`), so *every* write path (query
@@ -54,7 +60,7 @@ codebase map, how-to recipes, and gotchas, see **[reference.md](reference.md)**.
 - **Multi-leader by default; leadership is a scoped exception.** No global leader
   or election (equal peers). Per-(node, resource) leadership for *exclusive*
   structures (locks) is **documented design only**, not built. Don't add a global
-  leader. (See `docs/replication.md` → Consistency model.)
+  leader. (See `docs/cluster/replication.md` → Consistency model.)
 - **Pluggable seams — extend, don't special-case:** storage formats implement
   `StorageEngine`; query inputs are dialect-agnostic (parse to the generic
   `zetta::query` AST; the `Executor` is dialect-neutral — the virtual read-only
@@ -106,11 +112,16 @@ loops **patient** (poll seconds, not a fixed tiny count) — they're timing-boun
   `-F <file>` message file (shell quoting mangles inline multi-line messages).
 - **Never mention Claude/AI** and **never add Claude as author or co-author**
   (no `Co-Authored-By`, no "Generated with…" footer). The author is the user.
-- **Always commit AND push to `origin/main`** after a major, verified unit of
-  work — don't leave finished work unpushed.
+- **All work goes on a feature branch and lands via a PR targeting `dev`**
+  (`<type>/<short-slug>`, e.g. `docs/domain-restructure`) — never push directly
+  to `main` or `dev` (`dev` integrates, then promotes to `main`). Commit and
+  push the branch after a major, verified unit of work — don't leave finished
+  work unpushed.
 - **After any system change, update ALL relevant docs in the same commit** —
-  CLAUDE.md, README.md, `docs/*.md` (+ `docs/README.md` index), `modules/README.md`,
-  and the affected skill. Grep for stale terms before committing. Not just `docs/`.
+  the matching `docs/<domain>/<page>.md` **and its domain `README.md` index**,
+  `docs/architecture/code-map.md` (on file adds/moves/renames), CLAUDE.md
+  (rules/layout only), README.md, `modules/README.md`, and the affected skill.
+  Grep for stale terms before committing. Not just `docs/`.
 - **Do NOT use the agent memory store.** It's outside git and not reproducible.
   Durable knowledge goes in git-tracked files (CLAUDE.md, docs, README, skills).
 
@@ -128,5 +139,5 @@ src/gui/         App — links SDL3 + ImGui
 src/main.cpp     arg parsing + run-mode dispatch + wiring
 modules/         vendored submodules: capy, corosio, automerge-cpp
 tests/           GoogleTest (link zetta-core); listed in tests/CMakeLists.txt
-docs/            markdown system docs (+ docs/research/ background)
+docs/            domain-organized system docs (docs/README.md → docs/<domain>/)
 ```

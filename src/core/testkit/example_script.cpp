@@ -18,7 +18,7 @@
 
 // The sim-Python example-script harness (issue #523): run a script end to end
 // (parse -> IR -> gate -> run) and check its declared expectations, surfacing the
-// offending statement on any failure. See docs/example-scripts.md.
+// offending statement on any failure. See docs/testing/example-scripts.md.
 namespace zetta::testkit {
 namespace {
 

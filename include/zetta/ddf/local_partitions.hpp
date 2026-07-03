@@ -34,7 +34,7 @@
 // not a JSON object — a silent drop would diverge from the single-node oracle.
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry
-// point returns a ComputeStatus alongside its result. See docs/compute-near-data.md.
+// point returns a ComputeStatus alongside its result. See docs/compute/compute-near-data.md.
 namespace zetta {
 class Node;
 }

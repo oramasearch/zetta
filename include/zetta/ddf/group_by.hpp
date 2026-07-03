@@ -33,7 +33,7 @@
 // be finite numbers (a NaN key is rejected at the boundary).
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry
-// point returns a ComputeStatus alongside its result. See docs/ddf-groupby.md.
+// point returns a ComputeStatus alongside its result. See docs/ddf/ddf-groupby.md.
 namespace zetta::ddf {
 
 // --- Aggregate operators -----------------------------------------------------

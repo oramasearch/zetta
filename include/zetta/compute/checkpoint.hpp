@@ -28,7 +28,7 @@
 // checkpoint** after a restart, so the rounds already completed are never
 // recomputed. It is a standalone seam (no Node / SQL / cluster wiring of its own,
 // like `Provisioner` / `DeviceRegistry`): the long-running job bodies and the
-// restart trigger compose it. See docs/job-checkpoint.md.
+// restart trigger compose it. See docs/compute/job-checkpoint.md.
 namespace zetta::compute {
 
 // ---- CheckpointStatus -------------------------------------------------------

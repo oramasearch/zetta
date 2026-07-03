@@ -41,7 +41,7 @@
 // (schemas/ddf_partition.schema.json, the same `pboettch` validator as the
 // collective message), so a malformed partition fails fast.
 //
-// See docs/ddf-distributed-sort.md.
+// See docs/ddf/ddf-distributed-sort.md.
 namespace zetta::ddf {
 
 // One shard of a DataFrame shipped over the signal plane during the shuffle. `tag`

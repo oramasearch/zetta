@@ -33,7 +33,7 @@
 // ([`ir::from_json`](../ir/serialization.hpp)); the AddNodesRequest it drives has its
 // own validated boundary. This binding parses no new format of its own.
 //
-// See docs/python-frontend.md.
+// See docs/pipeline/python-frontend.md.
 namespace zetta::input {
 
 // Read the requested node count from a lowered sim-Python `cluster.add_nodes(...)`

@@ -11,7 +11,7 @@
 namespace zetta {
 
 // What a project input represents. The first ingestion slice of FEAT-1 captures
-// two kinds (see docs/project-inputs.md):
+// two kinds (see docs/pipeline/project-inputs.md):
 //   - Intent   — natural-language description of what the project should do
 //                ("score every active account for churn risk and tell me why").
 //   - Artifact — something the team already has (R1: an n8n workflow JSON;

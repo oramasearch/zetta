@@ -100,7 +100,7 @@ std::optional<RunValue> parse_run_value(const nlohmann::json& value,
 // replicated), bump `updated`, and rewrite run.json. Reconciliation uses
 // apply_value(), which updates the projection from the document with NO capture
 // (so there is no feedback loop). Lookups hand back shared_ptr handles, never
-// raw pointers, exactly like Database / Project. See docs/runs.md.
+// raw pointers, exactly like Database / Project. See docs/pipeline/runs.md.
 class Run {
 public:
     Run(std::string id, RunValue value, std::filesystem::path dir,

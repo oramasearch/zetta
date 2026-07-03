@@ -53,7 +53,7 @@
 // multi-node equivalence is proven in the per-op job suites; this bridge does not
 // re-prove it.
 //
-// See docs/churn-solution.md.
+// See docs/use-cases/churn-solution.md.
 namespace zetta {
 
 class Node;
