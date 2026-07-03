@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "properties": {
+    "field": {
+      "description": "restrict matching to one indexed field (optional)",
+      "type": "string"
+    },
+    "query": {
+      "description": "the free-text query",
+      "minLength": 1,
+      "type": "string"
+    },
+    "top_k": {
+      "description": "cap on the global ranking (default 10)",
+      "maximum": 1000,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "query"
+  ],
+  "title": "zetta.ServeSearchRequest",
+  "type": "object"
+}

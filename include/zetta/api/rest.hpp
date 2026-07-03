@@ -31,6 +31,11 @@ std::string rest_method(const Capability& capability);  // "GET" | "POST"
 nlohmann::json rest_input_from_query(
     const Capability& capability,
     const std::vector<std::pair<std::string, std::string>>& query_parameters);
+// The same coercion against a bare input schema — for routes that are not
+// registry entries (the served index-search endpoint, #648).
+nlohmann::json rest_input_from_query(
+    const nlohmann::json& input_schema,
+    const std::vector<std::pair<std::string, std::string>>& query_parameters);
 
 // The HTTP status for a finished call: 200 on ok; error codes map to
 // invalid_input -> 400, unauthorized/consent_required -> 403,

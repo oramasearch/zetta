@@ -46,6 +46,11 @@ Read first: **[docs/api/registry-design.md](../../../docs/api/registry-design.md
 - Default bind loopback; non-loopback requires a bearer token (an AccessKey
   id). Every call goes through `Node::authorize` (capability check + audit in
   one motion); loopback-no-token = the audited "unauthenticated local".
+- Non-registry routes are a sanctioned exception ONLY for non-capability
+  surfaces: llms.txt pages and the #648 served entity endpoints
+  (docs/api/serving.md — per-entity data-plane routes gated on the entity's
+  replicated `exposed` flag, `data:predict`/`data:search` scoped, logic in
+  the HTTP-free serving.cpp). A control capability is NEVER a bespoke route.
 
 ## Before shipping
 

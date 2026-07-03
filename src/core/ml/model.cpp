@@ -51,7 +51,8 @@ const nlohmann::json& schema_document() {
           },
           "required": ["size", "sha256"],
           "additionalProperties": false
-        }
+        },
+        "exposed": { "type": "boolean" }
       },
       "required": ["kind"],
       "additionalProperties": false
@@ -100,6 +101,9 @@ nlohmann::json to_json(const ModelValue& value) {
         document["weights"] = {{"size", value.weights->size},
                                {"sha256", value.weights->sha256}};
     }
+    // Emitted only when set, so records written before serving existed (#648)
+    // and never-exposed models keep byte-identical metadata.
+    if (value.exposed) document["exposed"] = true;
     return document;
 }
 
@@ -139,6 +143,7 @@ std::optional<ModelValue> parse_model_value(const nlohmann::json& value,
         weights.sha256 = it->value("sha256", std::string{});
         parsed.weights = weights;
     }
+    parsed.exposed = value.value("exposed", false);
     return parsed;
 }
 
@@ -190,6 +195,12 @@ bool Model::set_weights(std::string_view bytes) {
 
 void Model::set_metrics(nlohmann::json metrics) {
     value_.metrics = std::move(metrics);
+    capture_and_persist();
+}
+
+void Model::set_exposed(bool exposed) {
+    if (value_.exposed == exposed) return;  // idempotent: no capture, no churn
+    value_.exposed = exposed;
     capture_and_persist();
 }
 

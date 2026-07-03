@@ -376,6 +376,15 @@ TEST(IndexValue, SchemaRejectsMalformedValuesAtTheBoundary) {
     // parse_index_value rejects the same and returns nullopt with a reason.
     EXPECT_FALSE(zetta::index::parse_index_value(json{{"table", "t"}}, &error));
     EXPECT_FALSE(error.empty());
+
+    // A non-boolean `exposed` (#648) fails at the boundary too.
+    EXPECT_FALSE(zetta::index::validate_index_value(
+        json{{"table", "t"},
+             {"kind", "search"},
+             {"backend", "b"},
+             {"fields", {"f"}},
+             {"exposed", "yes"}},
+        &error));
 }
 
 TEST(IndexValue, RoundTripsThroughJson) {
@@ -386,6 +395,48 @@ TEST(IndexValue, RoundTripsThroughJson) {
     EXPECT_EQ(parsed->kind, IndexKind::Search);
     EXPECT_EQ(parsed->backend, "memory_search");
     EXPECT_EQ(parsed->fields, (std::vector<std::string>{"plan", "region"}));
+    EXPECT_FALSE(parsed->exposed);  // default: cluster-internal (#648)
+}
+
+// The governed serving flag (#648): defaults to false (absent on legacy
+// records), emitted only when set, round-trips, and Index::set_exposed
+// captures into the CRDT so a restarted node still refuses/serves the route
+// consistently.
+TEST(IndexValue, ExposedFlagRoundTripsAndPersistsViaCRDT) {
+    IndexValue value = sample_value();
+    EXPECT_FALSE(zetta::index::to_json(value).contains("exposed"));
+    value.exposed = true;
+    const nlohmann::json exposed_json = zetta::index::to_json(value);
+    EXPECT_TRUE(exposed_json.at("exposed").get<bool>());
+    const auto parsed = zetta::index::parse_index_value(exposed_json);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_TRUE(parsed->exposed);
+
+    TempDir tmp;
+    const std::string node_id = zetta::util::new_uuid();
+    std::string id;
+    {
+        ReplicationManager replication{node_id};
+        Node node{config_for(tmp), &replication};
+        node.start();
+        auto index = node.create_index(sample_value());
+        ASSERT_TRUE(index);
+        EXPECT_FALSE(index->exposed());
+        index->set_exposed(true);
+        EXPECT_TRUE(index->exposed());
+        id = index->id();
+        node.tick();  // persist the CRDT document
+        node.stop();
+    }
+    ReplicationManager replication{node_id};
+    Node node{config_for(tmp), &replication};
+    node.start();
+    auto index = node.find_index(id);
+    ASSERT_TRUE(index);
+    EXPECT_TRUE(index->exposed());
+    index->set_exposed(false);  // un-expose is the same one action
+    EXPECT_FALSE(index->exposed());
+    node.stop();
 }
 
 // ----- Node CRUD -------------------------------------------------------------

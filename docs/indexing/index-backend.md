@@ -225,7 +225,14 @@ SELECT index_id, kind FROM system.indexes WHERE kind = 'search';
 ```
 
 Columns: `index_id`, `table`, `kind`, `backend`, `fields` (a JSON array, like
-`system.models`' `feature_schema`), `field_count`, `created`.
+`system.models`' `feature_schema`), `field_count`, `created`, `exposed`,
+`endpoint`. The last two surface the governed serving state
+([../api/serving.md](../api/serving.md), #648): whether the index's HTTP
+search route (`/v1/indexes/{name}/search`) is published, and at which path
+(`endpoint` is null while unexposed). The `IndexValue` carries the replicated
+`exposed` flag (default false, emitted only when set; `Index::set_exposed`
+captures into the CRDT so every node serves or refuses the route
+consistently).
 
 ## Running an index step
 

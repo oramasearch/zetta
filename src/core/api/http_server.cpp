@@ -24,6 +24,7 @@
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
 #include "zetta/api/rest.hpp"
+#include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
@@ -437,6 +438,89 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // Serve one governed entity endpoint (#648, docs/api/serving.md): the
+    // exposed-model predict route (POST, JSON body) or the exposed-index
+    // search route (GET, query string). Same bearer policy as every route;
+    // everything else — authorize + audit, the exposure check, the schema
+    // boundary, the engine call, the serve:* span — is the HTTP-free serving
+    // layer (serving.cpp) on the owning loop, and the response is the same
+    // envelope + status mapping as the REST rendering.
+    boost::http::route_task serve_entity_endpoint(
+        boost::http::route_params& route, bool predict) {
+        namespace http = boost::http;
+
+        std::string response_body;
+        http::status status = http::status::ok;
+
+        const std::string bearer = bearer_of(route);
+        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
+            status = http::status::unauthorized;
+            response_body = transport_error_body(
+                "unauthorized", "missing or invalid bearer token");
+        }
+
+        std::string target;
+        for (const auto& [parameter, value] : route.params) {
+            if (parameter == "name") target = value;
+        }
+
+        nlohmann::json input = nlohmann::json::object();
+        if (response_body.empty()) {
+            if (route.req.method() == http::method::get) {
+                std::vector<std::pair<std::string, std::string>> query;
+                for (const auto& parameter : route.url.params()) {
+                    query.emplace_back(parameter.key, parameter.value);
+                }
+                input = rest_input_from_query(serve_search_request_schema(),
+                                              query);
+            } else {
+                http::json_sink body_sink;
+                auto [read_error, bytes_read] =
+                    co_await boost::capy::push_to(route.req_body, body_sink);
+                if (read_error) {
+                    status = http::status::bad_request;
+                    response_body = transport_error_body(
+                        "invalid_input",
+                        "could not read the request body as JSON");
+                } else if (bytes_read > 0) {
+                    input = to_nlohmann(body_sink.release());
+                    if (input.is_discarded()) {
+                        status = http::status::bad_request;
+                        response_body = transport_error_body(
+                            "invalid_input",
+                            "the request body is not valid JSON");
+                    }
+                }
+            }
+        }
+
+        if (response_body.empty()) {
+            std::string traceparent;
+            if (route.req.count("traceparent") != 0) {
+                traceparent = std::string(route.req.at("traceparent"));
+            }
+            const auto trace =
+                zetta::observability::parse_traceparent(traceparent)
+                    .value_or(zetta::observability::make_root_trace());
+            ApiResult serve_result;
+            co_await bridge.run_on_owner([&] {
+                ServeRequest request{target, input, bearer, trace,
+                                     &node.span_recorder()};
+                serve_result = predict ? serve_predict(node, request)
+                                       : serve_search(node, request);
+            });
+            status = http_status_of(rest_status(serve_result));
+            response_body = rest_envelope(serve_result).dump();
+        }
+
+        route.status(status);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, response_body);
+        auto [send_error] = co_await route.send(response_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // GET /v1/openapi.json — the OpenAPI rendering, same bearer policy.
     boost::http::route_task serve_openapi(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -607,6 +691,20 @@ bool ApiServer::start() {
                        return impl.serve_rest_capability(route, capability);
                    });
     }
+
+    // The governed serving routes (#648, docs/api/serving.md): per-entity
+    // endpoints for EXPOSED models and indexes. Registered unconditionally —
+    // whether a given entity's route answers is decided per request from its
+    // replicated `exposed` flag (serving.cpp), so un-exposing kills the route
+    // on every node with no route table to rebuild.
+    router.add(http::method::post, "/v1/models/:name/predict",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_entity_endpoint(route, /*predict=*/true);
+               });
+    router.add(http::method::get, "/v1/indexes/:name/search",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_entity_endpoint(route, /*predict=*/false);
+               });
 
     impl.server = std::make_unique<beast2::http_server>(
         impl.io_context, impl.options.worker_coroutines, std::move(router),

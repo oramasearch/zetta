@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -32,6 +33,8 @@
 namespace zetta { class Node; }
 
 namespace zetta::index {
+
+class Index;
 
 // What the caller asked for, verbatim — the search's *intent*.
 struct SearchRequest {
@@ -97,5 +100,13 @@ struct SearchResult {
 SearchResult search(Node& node, const SearchRequest& request,
                     zetta::observability::SpanRecorder* recorder = nullptr,
                     const zetta::observability::TraceContext* parent = nullptr);
+
+// THE target-resolution rule search() applies, exposed for callers that must
+// identify the Index entity a target names before querying it (the governed
+// serving surface's exposure check, expose_index — #648): an exact index id
+// wins; otherwise the most recently created Search-kind index over the table
+// named `target`. Empty handle when nothing matches.
+std::shared_ptr<Index> resolve_search_target(Node& node,
+                                             const std::string& target);
 
 }  // namespace zetta::index

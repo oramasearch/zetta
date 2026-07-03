@@ -165,9 +165,11 @@ SELECT model_id, kind FROM system.models WHERE kind = 'classifier';
 
 Columns: `model_id`, `name`, `kind`, `project`, `run`, `feature_schema`,
 `metrics`, `created`, `has_weights`, `weights_size`, `weights_sha256`,
-`weights_present`. The serialized weights body itself isn't in the registry (it's
-a large binary on the body seam); its fingerprint and local presence are.
-Qualified name only (no bare alias), like `system.deployments`.
+`weights_present`, `exposed`, `endpoint`. The serialized weights body itself
+isn't in the registry (it's a large binary on the body seam); its fingerprint
+and local presence are. `exposed` / `endpoint` are the governed serving state
+([../api/serving.md](../api/serving.md), #648). Qualified name only (no bare
+alias), like `system.deployments`.
 
 A fourth table is **`jobs`** — the [compute-job registry](../compute/compute-jobs.md)
 (no cluster needed; sourced from `Node::jobs()`): one row per unit of native

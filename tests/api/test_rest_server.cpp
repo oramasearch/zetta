@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 
+#include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/api/server.hpp"
@@ -21,6 +22,13 @@
 #include "zetta/schemas/registry.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/governance/principal.hpp"
+#include "zetta/governance/scope.hpp"
+#include "zetta/index/index.hpp"
+#include "zetta/index/index_step_executor.hpp"  // read_index_partitions
+#include "zetta/ml/gbdt.hpp"
+#include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
 #include "zetta/version.hpp"
 
@@ -97,11 +105,13 @@ struct RestServerFixture : ::testing::Test {
 
     // Issue a request from a helper thread while this (owning) thread drains.
     HttpResponse request(const std::string& method, const std::string& target,
-                         const std::string& body = {}) {
+                         const std::string& body = {},
+                         const std::string& bearer = {}) {
         HttpResponse response;
         std::atomic<bool> finished{false};
         std::thread client([&] {
-            response = http_request(server->port(), method, target, body);
+            response =
+                http_request(server->port(), method, target, body, bearer);
             finished = true;
         });
         const auto deadline =
@@ -292,6 +302,142 @@ TEST(RestServerAuth, ConfiguredTokenIsRequired) {
 
     server.stop();
     node.stop();
+}
+
+// The #648 acceptance over the wire — the curl surface: expose a trained
+// model, POST /v1/models/{name}/predict with a key -> 200 with the ranked
+// list; a key without data:predict -> 403; un-expose -> the route answers
+// 404. Same for an index over GET /v1/indexes/{name}/search. (The full
+// allow/deny/read-back journeys live in test_serving.cpp; this is the
+// protocol layer.)
+TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
+    // A trained model, registered + exposed.
+    std::vector<std::vector<double>> columns(2);
+    std::vector<double> labels;
+    for (std::size_t i = 0; i < 30; ++i) {
+        const bool positive = i >= 15;
+        columns[0].push_back(positive ? 0.9 : 0.1);
+        columns[1].push_back(0.5);
+        labels.push_back(positive ? 1.0 : 0.0);
+    }
+    zetta::ml::GbdtParams params;
+    params.num_trees = 5;
+    params.max_depth = 2;
+    const auto trained =
+        zetta::ml::train_gbdt(columns, {"tenure", "plan"}, labels, params);
+    ASSERT_TRUE(trained.ok()) << trained.status.message;
+    zetta::ml::ModelValue model_value;
+    model_value.kind = "classifier";
+    model_value.name = "churn";
+    auto model = node.create_model(std::move(model_value));
+    ASSERT_TRUE(model);
+    ASSERT_TRUE(model->set_weights(trained.model.to_json().dump()));
+
+    // A serving key holding exactly data:predict + data:search, and a
+    // read-only key holding neither (the deny half).
+    auto principal = node.create_principal(
+        "customer", zetta::governance::PrincipalKind::Service);
+    ASSERT_TRUE(principal);
+    zetta::governance::CapabilitySet serving_rights;
+    serving_rights.grant(zetta::governance::CapabilityDomain::Data, "predict");
+    serving_rights.grant(zetta::governance::CapabilityDomain::Data, "search");
+    auto serving_key = principal->create_key(
+        zetta::governance::unrestricted_scope(), serving_rights);
+    ASSERT_TRUE(serving_key);
+    zetta::governance::CapabilitySet read_rights;
+    read_rights.grant(zetta::governance::CapabilityDomain::Api, "query");
+    auto reader_key = principal->create_key(
+        zetta::governance::unrestricted_scope(), read_rights);
+    ASSERT_TRUE(reader_key);
+
+    const std::string predict_target = "/v1/models/churn/predict";
+    const std::string predict_body =
+        nlohmann::json{{"rows",
+                        {{{"tenure", 0.95}, {"plan", 0.5}},
+                         {{"tenure", 0.05}, {"plan", 0.5}}}}}
+            .dump();
+
+    // Not exposed yet: the route answers 404.
+    auto before = request("POST", predict_target, predict_body,
+                          serving_key->id());
+    EXPECT_EQ(before.status, 404);
+
+    // Expose over the same wire (the control plane), then predict.
+    auto exposed = request("POST", "/v1/expose_model",
+                           nlohmann::json{{"model", "churn"}}.dump());
+    ASSERT_EQ(exposed.status, 200) << exposed.body;
+    auto served = request("POST", predict_target, predict_body,
+                          serving_key->id());
+    ASSERT_EQ(served.status, 200) << served.body;
+    auto served_body = json_of(served);
+    ASSERT_TRUE(served_body.at("ok").get<bool>()) << served.body;
+    ASSERT_EQ(served_body.at("value").at("ranked").size(), 2u);
+    EXPECT_EQ(served_body.at("value").at("ranked")[0].at("entity"), 0);
+    EXPECT_EQ(served_body.at("trace_id").get<std::string>().size(), 32u);
+
+    // Deny: a key without data:predict gets 403 (unauthorized).
+    auto denied = request("POST", predict_target, predict_body,
+                          reader_key->id());
+    EXPECT_EQ(denied.status, 403) << denied.body;
+
+    // Un-expose kills the route.
+    auto unexposed = request("POST", "/v1/unexpose_model",
+                             nlohmann::json{{"model", "churn"}}.dump());
+    ASSERT_EQ(unexposed.status, 200) << unexposed.body;
+    auto after = request("POST", predict_target, predict_body,
+                         serving_key->id());
+    EXPECT_EQ(after.status, 404) << after.body;
+
+    // Same for an index: seed a searchable table, expose, GET the served
+    // search route, then un-expose.
+    node.index_registry().add(
+        std::make_shared<zetta::test::TermFrequencyBackend>());
+    auto database = node.create_database("data");
+    ASSERT_TRUE(database);
+    auto table = database->create_table("articles");
+    ASSERT_TRUE(table);
+    table->add_row({{"title", "Postgres deep dive"},
+                    {"body", "postgres postgres tuning"}});
+    table->add_row({{"title", "Cooking pasta"}, {"body", "boil water"}});
+    zetta::index::IndexValue index_value;
+    index_value.table = "articles";
+    index_value.kind = zetta::index::IndexKind::Search;
+    index_value.backend = "tf_reference";
+    index_value.fields = {"title", "body"};
+    auto index = node.create_index(std::move(index_value));
+    ASSERT_TRUE(index);
+    const zetta::index::IndexSpec spec = index->spec();
+    ASSERT_TRUE(node.index_registry()
+                    .resolve(spec)
+                    ->build(spec, zetta::index::read_index_partitions(
+                                      table->store()))
+                    .ok());
+
+    const std::string search_target =
+        "/v1/indexes/articles/search?query=postgres";
+    auto search_before = request("GET", search_target, "",
+                                 serving_key->id());
+    EXPECT_EQ(search_before.status, 404);
+
+    auto index_exposed = request("POST", "/v1/expose_index",
+                                 nlohmann::json{{"index", "articles"}}.dump());
+    ASSERT_EQ(index_exposed.status, 200) << index_exposed.body;
+    auto search_served = request("GET", search_target, "",
+                                 serving_key->id());
+    ASSERT_EQ(search_served.status, 200) << search_served.body;
+    auto search_body = json_of(search_served);
+    ASSERT_TRUE(search_body.at("ok").get<bool>()) << search_served.body;
+    ASSERT_GE(search_body.at("value").at("hits").size(), 1u);
+
+    auto search_denied = request("GET", search_target, "", reader_key->id());
+    EXPECT_EQ(search_denied.status, 403) << search_denied.body;
+
+    auto index_unexposed =
+        request("POST", "/v1/unexpose_index",
+                nlohmann::json{{"index", "articles"}}.dump());
+    ASSERT_EQ(index_unexposed.status, 200) << index_unexposed.body;
+    auto search_after = request("GET", search_target, "", serving_key->id());
+    EXPECT_EQ(search_after.status, 404) << search_after.body;
 }
 
 }  // namespace

@@ -14,6 +14,7 @@
 
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/rest.hpp"
+#include "zetta/api/serving.hpp"
 #include "zetta/version.hpp"
 
 namespace {
@@ -130,7 +131,9 @@ TEST(OpenApi, DocumentMatchesTheRegistry) {
         document.at("components").at("securitySchemes").contains("bearer_token"));
 
     const nlohmann::json& paths = document.at("paths");
-    EXPECT_EQ(paths.size(), registry.size());
+    // One path per registry entry, plus the two path-templated serving routes
+    // (#648) the registry rendering cannot express.
+    EXPECT_EQ(paths.size(), registry.size() + 2);
     for (const auto& capability : registry.list()) {
         const std::string path = zetta::api::rest_path(*capability);
         ASSERT_TRUE(paths.contains(path)) << path;
@@ -182,6 +185,44 @@ TEST(OpenApi, DocumentMatchesTheRegistry) {
                       .at("application/json").at("schema").at("$ref"),
                   "#/components/schemas/error_envelope");
     }
+
+    // The serving routes (#648): declared from the same serving schemas the
+    // boundary validates — a path-templated POST for predict (JSON body from
+    // predict_request_schema) and GET for search (query parameters from
+    // serve_search_request_schema), each with the `name` path parameter and
+    // the envelope-wrapped serving response schema.
+    ASSERT_TRUE(paths.contains("/v1/models/{name}/predict"));
+    const nlohmann::json& predict =
+        paths.at("/v1/models/{name}/predict").at("post");
+    EXPECT_EQ(predict.at("operationId"), "predict");
+    EXPECT_EQ(predict.at("parameters").at(0).at("in"), "path");
+    EXPECT_EQ(predict.at("parameters").at(0).at("name"), "name");
+    EXPECT_EQ(predict.at("requestBody").at("content").at("application/json")
+                  .at("schema").at("properties").at("rows"),
+              zetta::api::predict_request_schema().at("properties").at("rows"));
+    EXPECT_EQ(predict.at("responses").at("200").at("content")
+                  .at("application/json").at("schema").at("properties")
+                  .at("value"),
+              zetta::api::predict_response_schema());
+
+    ASSERT_TRUE(paths.contains("/v1/indexes/{name}/search"));
+    const nlohmann::json& serve_search =
+        paths.at("/v1/indexes/{name}/search").at("get");
+    EXPECT_EQ(serve_search.at("operationId"), "serve_search");
+    EXPECT_EQ(serve_search.at("parameters").at(0).at("in"), "path");
+    bool saw_query_parameter = false;
+    for (const auto& parameter : serve_search.at("parameters")) {
+        if (parameter.at("name") == "query") {
+            saw_query_parameter = true;
+            EXPECT_EQ(parameter.at("in"), "query");
+            EXPECT_TRUE(parameter.at("required").get<bool>());
+        }
+    }
+    EXPECT_TRUE(saw_query_parameter);
+    EXPECT_EQ(serve_search.at("responses").at("200").at("content")
+                  .at("application/json").at("schema").at("properties")
+                  .at("value"),
+              zetta::api::search_response_schema());
 }
 
 // The acceptance rule (#618): a registry entry added once appears in the REST

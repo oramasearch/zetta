@@ -31,10 +31,15 @@ std::string resolve_table_id(Node& node, const std::string& table) {
     return table;
 }
 
+}  // namespace
+
 // Resolve `target` to a registered Index entity: an exact index id wins;
 // otherwise the most recently created Search-kind index over the table named
 // `target` (indexes() is sorted (created, id), so the last match is the newest).
-std::shared_ptr<Index> resolve_target(Node& node, const std::string& target) {
+// Public (search.hpp) so the governed serving surface and expose_index apply
+// THE same rule as search() itself — no second resolution path (#648).
+std::shared_ptr<Index> resolve_search_target(Node& node,
+                                             const std::string& target) {
     if (std::shared_ptr<Index> by_id = node.find_index(target)) return by_id;
     std::shared_ptr<Index> newest;
     for (const std::shared_ptr<Index>& index : node.indexes()) {
@@ -45,6 +50,8 @@ std::shared_ptr<Index> resolve_target(Node& node, const std::string& target) {
     }
     return newest;
 }
+
+namespace {
 
 // Does the table have at least one PLACED partition (a body some node owns)?
 // Placed partitions make the per-partition distributed path authoritative; a
@@ -97,7 +104,8 @@ SearchResult search(Node& node, const SearchRequest& request,
     }
 
     // (1) Resolve the registered Index entity.
-    const std::shared_ptr<Index> index = resolve_target(node, request.target);
+    const std::shared_ptr<Index> index =
+        resolve_search_target(node, request.target);
     if (!index) {
         return fail(IndexStatus::not_found(
             "search: no index id or Search-kind index over a table named '" +

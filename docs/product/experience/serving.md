@@ -16,3 +16,8 @@ per-entity choice ([#648](https://github.com/oramasearch/zetta/issues/648)):
 This is the `serve` step's full meaning: the pipeline doesn't just produce
 artifacts — it stands them up as endpoints the customer's own systems call,
 with the data and the model never leaving the cluster.
+
+**Shipped** (#648): [../../api/serving.md](../../api/serving.md) — replicated
+exposure state, `data:predict` / `data:search` key scoping, `serve:*` spans,
+`exposed`/`endpoint` in `system.models` / `system.indexes`, allow + deny
+journeys in-process and over loopback HTTP.
