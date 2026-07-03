@@ -47,7 +47,9 @@ span ring. Agent capability calls are NOT duplicated here as a feed — the
 audit-derived [Activity view](activity-feed.md) already surfaces every
 capability call with its actor and surface, so the once-planned agent-action
 strip (the `ApiServer` activity hook rendered directly) was dropped in favor
-of that one source. Later slices (#674): crash reports surfaced in the GUI
-(`system.crashes` rows as a banner), a feedback-bundle affordance
-(`submit_feedback` — the capability shipped, #640), and per-entity "what
-happened" links from the Runs/Jobs panels.
+of that one source. Later slices (tracked in
+[#674](https://github.com/oramasearch/zetta/issues/674), coordinated with
+#622): crash reports surfaced in the GUI (`system.crashes` rows as a
+banner), a feedback-bundle affordance (`submit_feedback` — the capability
+shipped, #640), and per-entity "what happened" links from the Runs/Jobs
+panels.

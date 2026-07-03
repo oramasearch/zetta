@@ -96,8 +96,9 @@ functionality lands with its testkit case, and both land observable.
    schema-validated on read-back (`schemas/crash_report.schema.json`);
    `system.crashes` surfaces valid AND malformed files (valid=false + reason);
    start-up prints a pointer when prior reports exist. Capturing truly
-   in-flight ("active") spans at crash time is a deliberate later slice — the
-   report carries the ring's most recent finished spans.
+   in-flight ("active") spans at crash time is a deliberate later slice
+   ([#673](https://github.com/oramasearch/zetta/issues/673)) — the report
+   carries the ring's most recent finished spans.
 4. **Shipped** — cross-node propagation: the signal envelope carries an
    optional `traceparent` (validated, all kinds); `Run` and `ComputeJob`
    records carry a replicated `trace_id` — the trace's anchor is the
@@ -111,15 +112,17 @@ functionality lands with its testkit case, and both land observable.
    trace); `GraphExecutor` stamps every run's trace and records `run:` +
    per-`step:` spans. Scope note: SPMD siblings that each create their OWN
    job record trace separately until an orchestrated fan-out shares one job
-   record (first-stamper-wins on the CRDT).
+   record (first-stamper-wins on the CRDT) —
+   [#672](https://github.com/oramasearch/zetta/issues/672).
 5. **Shipped (core)** — GUI: the Traces view
    ([../gui/traces.md](../gui/traces.md)) renders the trace pane (recent
    traces → per-span four-capture detail) over the same ring; the sibling
    Activity view ([../gui/activity-feed.md](../gui/activity-feed.md), #622)
    is the chronological who-asked feed over the audit trail + runs, so agent
    capability calls surface there (one source, no GUI-kept feed). The in-GUI
-   feedback affordance and per-entity "what happened" links from Runs/Jobs
-   are later slices.
+   feedback affordance, crash surfacing, and per-entity "what happened" links
+   from Runs/Jobs are later slices
+   ([#674](https://github.com/oramasearch/zetta/issues/674)).
 6. **Shipped** — `submit_feedback` capability: the bundle (description +
    attached traces with spans + recent error spans + crash reports +
    version/platform/node id) is built by
