@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "zetta/api/background.hpp"
+#include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
@@ -185,50 +186,9 @@ const nlohmann::json& search_schema() {
     return schema;
 }
 
-const nlohmann::json& search_output_schema() {
-    static const nlohmann::json schema = {
-        {"type", "object"},
-        {"required",
-         {"index_id", "table", "path", "hits", "nodes", "wire_bytes_moved",
-          "duration_ms"}},
-        {"additionalProperties", false},
-        {"properties",
-         {{"index_id", {{"type", "string"}}},
-          {"table", {{"type", "string"}}},
-          {"path",
-           {{"type", "string"},
-            {"description", "how the query executed: consolidated or "
-                            "per-partition scatter-gather"}}},
-          {"hits",
-           {{"type", "array"},
-            {"items",
-             {{"type", "object"},
-              {"required", {"id", "score"}},
-              {"additionalProperties", false},
-              {"properties",
-               {{"id", {{"type", "string"}}},
-                {"score", {{"type", "number"}}}}}}}}},
-          {"nodes",
-           {{"type", "array"},
-            {"description", "per-node provenance: which member answered, at "
-                            "what cost (#641)"},
-            {"items",
-             {{"type", "object"},
-              {"required",
-               {"node_id", "local", "hits", "sub_indexes", "latency_ms",
-                "wire_bytes"}},
-              {"additionalProperties", false},
-              {"properties",
-               {{"node_id", {{"type", "string"}}},
-                {"local", {{"type", "boolean"}}},
-                {"hits", {{"type", "integer"}}},
-                {"sub_indexes", {{"type", "integer"}}},
-                {"latency_ms", {{"type", "number"}}},
-                {"wire_bytes", {{"type", "integer"}}}}}}}}},
-          {"wire_bytes_moved", {{"type", "integer"}}},
-          {"duration_ms", {{"type", "number"}}}}}};
-    return schema;
-}
+// The search success value's shape is declared ONCE, beside the served
+// route's rendering (serving.hpp, #648): search_response_schema() /
+// search_result_to_json() are shared by this capability and serve_search.
 
 // The thin caller of THE search entry point (Node::search, #641) — the same
 // path the GUI drives, so MCP/REST and the GUI can never diverge.
@@ -244,30 +204,7 @@ ApiResult handle_search(const nlohmann::json& input, ApiContext& context) {
     if (!result.ok()) {
         return ApiResult::failure("engine_error", result.status.message);
     }
-
-    nlohmann::json hits = nlohmann::json::array();
-    for (const zetta::index::SearchHit& hit : result.hits) {
-        hits.push_back({{"id", hit.row_id}, {"score", hit.score}});
-    }
-    // Per-node provenance: which node answered, and at what cost (#641).
-    nlohmann::json nodes = nlohmann::json::array();
-    for (const zetta::index::NodeContribution& contribution : result.nodes) {
-        nodes.push_back({{"node_id", contribution.node_id},
-                         {"local", contribution.local},
-                         {"hits", contribution.hits},
-                         {"sub_indexes", contribution.sub_indexes},
-                         {"latency_ms", contribution.latency_ms},
-                         {"wire_bytes", contribution.wire_bytes}});
-    }
-    nlohmann::json output;
-    output["index_id"] = result.index_id;
-    output["table"] = result.spec.table;
-    output["path"] = zetta::index::to_string(result.path);
-    output["hits"] = std::move(hits);
-    output["nodes"] = std::move(nodes);
-    output["wire_bytes_moved"] = result.wire_bytes_moved;
-    output["duration_ms"] = result.duration_ms;
-    return ApiResult::success(std::move(output));
+    return ApiResult::success(search_result_to_json(result));
 }
 
 // --- list_projects -----------------------------------------------------------
@@ -849,6 +786,117 @@ ApiResult handle_create_project(const nlohmann::json& input, ApiContext& context
     output["name"] = name;
     output["owner"] = owner;
     return ApiResult::success(std::move(output));
+}
+
+// --- expose_model / expose_index (#648, docs/api/serving.md) ------------------
+//
+// Exposure flips the entity's REPLICATED `exposed` flag (Model::set_exposed /
+// Index::set_exposed): the CRDT value is the source of truth, so every node of
+// the cluster converges on serving — or refusing — the entity's HTTP endpoint.
+// Idempotent both ways; un-exposing is the same one action with `false`.
+
+const nlohmann::json& expose_model_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "model",
+        "the model's uuid (system.models.model_id), or its display name");
+    return schema;
+}
+
+const nlohmann::json& expose_model_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"model_id", "exposed", "endpoint"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"model_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"exposed", {{"type", "boolean"}}},
+          {"endpoint",
+           {{"type", "string"},
+            {"description",
+             "the served route (by id — the unambiguous spelling; the display "
+             "name also resolves)"}}}}}};
+    return schema;
+}
+
+ApiResult set_model_exposure(const nlohmann::json& input, ApiContext& context,
+                             bool exposed) {
+    const std::string target = input.at("model").get<std::string>();
+    const auto model = resolve_served_model(context.node, target);
+    if (!model) {
+        return ApiResult::failure("not_found",
+                                  "no model named '" + target + "'");
+    }
+    model->set_exposed(exposed);
+    nlohmann::json output;
+    output["model_id"] = model->id();
+    output["name"] = model->name();
+    output["exposed"] = model->exposed();
+    output["endpoint"] = model_endpoint_path(model->id());
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_expose_model(const nlohmann::json& input,
+                              ApiContext& context) {
+    return set_model_exposure(input, context, /*exposed=*/true);
+}
+
+ApiResult handle_unexpose_model(const nlohmann::json& input,
+                                ApiContext& context) {
+    return set_model_exposure(input, context, /*exposed=*/false);
+}
+
+const nlohmann::json& expose_index_schema() {
+    static const nlohmann::json schema = id_input_schema(
+        "index",
+        "the index's uuid (system.indexes.index_id), or an indexed table's "
+        "name (resolves like `search`: the newest Search-kind index over it)");
+    return schema;
+}
+
+const nlohmann::json& expose_index_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"index_id", "table", "exposed", "endpoint"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"index_id", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"exposed", {{"type", "boolean"}}},
+          {"endpoint",
+           {{"type", "string"},
+            {"description",
+             "the served route (by id — the unambiguous spelling; the table "
+             "name also resolves)"}}}}}};
+    return schema;
+}
+
+ApiResult set_index_exposure(const nlohmann::json& input, ApiContext& context,
+                             bool exposed) {
+    const std::string target = input.at("index").get<std::string>();
+    const auto index =
+        zetta::index::resolve_search_target(context.node, target);
+    if (!index) {
+        return ApiResult::failure("not_found",
+                                  "no index named '" + target + "'");
+    }
+    index->set_exposed(exposed);
+    nlohmann::json output;
+    output["index_id"] = index->id();
+    output["table"] = index->table();
+    output["exposed"] = index->exposed();
+    output["endpoint"] = index_endpoint_path(index->id());
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_expose_index(const nlohmann::json& input,
+                              ApiContext& context) {
+    return set_index_exposure(input, context, /*exposed=*/true);
+}
+
+ApiResult handle_unexpose_index(const nlohmann::json& input,
+                                ApiContext& context) {
+    return set_index_exposure(input, context, /*exposed=*/false);
 }
 
 // --- list_traces / get_trace ---------------------------------------------
@@ -2127,7 +2175,7 @@ void register_core_capabilities(Registry& registry) {
         "across the cluster when the table is partitioned — returning ranked "
         "hits with per-node provenance and a trace id. No side effects.",
         search_schema(),
-        search_output_schema(),
+        search_response_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -2344,6 +2392,65 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_create_project});
+
+    // --- governed serving (#648, docs/api/serving.md) -------------------------
+
+    registry.add(Capability{
+        "expose_model",
+        "Expose model",
+        "Publish a model's HTTP predict endpoint (/v1/models/{name}/predict) "
+        "on every node of the cluster; endpoint access then requires the "
+        "data:predict capability. Idempotent; undo with unexpose_model.",
+        expose_model_schema(),
+        expose_model_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "expose_model"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_expose_model});
+
+    registry.add(Capability{
+        "unexpose_model",
+        "Un-expose model",
+        "Withdraw a model's HTTP predict endpoint everywhere in one action — "
+        "the replicated exposure flag flips and every node refuses the route. "
+        "Idempotent.",
+        expose_model_schema(),
+        expose_model_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "unexpose_model"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_unexpose_model});
+
+    registry.add(Capability{
+        "expose_index",
+        "Expose index",
+        "Publish an index's HTTP search endpoint (/v1/indexes/{name}/search — "
+        "the distributed scatter-gather path underneath) on every node; "
+        "endpoint access then requires the data:search capability. "
+        "Idempotent; undo with unexpose_index.",
+        expose_index_schema(),
+        expose_index_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "expose_index"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_expose_index});
+
+    registry.add(Capability{
+        "unexpose_index",
+        "Un-expose index",
+        "Withdraw an index's HTTP search endpoint everywhere in one action — "
+        "the replicated exposure flag flips and every node refuses the route. "
+        "Idempotent.",
+        expose_index_schema(),
+        expose_index_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "unexpose_index"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_unexpose_index});
 
     // --- governed action parity (#617): the rest of the product loop ---------
 

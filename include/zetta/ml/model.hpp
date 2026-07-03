@@ -52,6 +52,10 @@ struct ModelWeights {
 // optional lineage refs to what produced the model. `weights` is present once a
 // body has been attached (set_weights); absent on a freshly-created, body-less
 // model — and present-but-not-yet-on-disk on a peer awaiting body transfer.
+// `exposed` is the governed serving state (#648): true publishes the model's
+// HTTP predict endpoint on EVERY node (the flag replicates, so the whole
+// cluster serves — or refuses — the route consistently); false (the default)
+// keeps the model cluster-internal.
 struct ModelValue {
     std::string name;     // optional human display label
     std::string kind;     // e.g. "classifier" / "regressor" (required, non-empty)
@@ -61,6 +65,7 @@ struct ModelValue {
     nlohmann::json metrics = nlohmann::json::object();         // free-form (name→number)
     std::string created;  // ISO-8601 UTC stamp at creation
     std::optional<ModelWeights> weights;  // set once a weights body is attached
+    bool exposed = false;  // serve over HTTP? (docs/api/serving.md, #648)
 };
 
 // Serialize a model value to its JSON shape (no id). The inverse of
@@ -125,6 +130,13 @@ public:
     const std::optional<ModelWeights>& weights() const { return value_.weights; }
     const ModelValue& value() const { return value_; }
     const std::filesystem::path& dir() const { return dir_; }
+
+    // Whether this model is exposed as an HTTP endpoint (#648). The flag is
+    // replicated state, so every node agrees which routes to serve or refuse.
+    bool exposed() const { return value_.exposed; }
+    // Publish (or withdraw) the model's HTTP predict endpoint, then capture +
+    // persist. Un-exposing is the same one action with `exposed = false`.
+    void set_exposed(bool exposed);
 
     // Whether weights metadata has been attached to this model (independent of
     // whether the body is on disk here yet — see has_weights_body()).

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 
+#include "zetta/api/serving.hpp"
 #include "zetta/cloud/add_nodes.hpp"
 #include "zetta/cloud/aws_provisioner.hpp"
 #include "zetta/cloud/azure_provisioner.hpp"
@@ -190,6 +191,11 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::usecases::churn::churn_event_schema},
         {"entity_resolution", "entity_resolution.schema.json",
          &zetta::usecases::churn::entity_resolution_schema},
+        // api (governed HTTP serving, #648)
+        {"predict_request", "predict_request.schema.json",
+         &zetta::api::predict_request_schema},
+        {"serve_search_request", "serve_search_request.schema.json",
+         &zetta::api::serve_search_request_schema},
     };
     return registry;
 }

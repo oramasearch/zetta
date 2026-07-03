@@ -9,6 +9,9 @@
     "created": {
       "type": "string"
     },
+    "exposed": {
+      "type": "boolean"
+    },
     "fields": {
       "items": {
         "minLength": 1,

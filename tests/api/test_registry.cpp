@@ -57,7 +57,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 37u);
+    EXPECT_EQ(registry.size(), 41u);
     EXPECT_TRUE(registry.find("server_info"));
     // The #646 spec-index slice.
     EXPECT_TRUE(registry.find("list_specs"));
@@ -74,10 +74,13 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     }
     // The #617 action-parity slice: the rest of the governed product loop,
     // each requiring orchestration:<name>; run/testkit_run are kind:job.
+    // ...and the governed serving slice (#648): exposure is an
+    // orchestration:<name> action like every other mutation.
     for (const char* name :
          {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
           "compile_python", "gate", "deploy", "run", "add_dataset",
-          "testkit_run"}) {
+          "testkit_run", "expose_model", "unexpose_model", "expose_index",
+          "unexpose_index"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
         EXPECT_EQ(entry->required_operation.domain,

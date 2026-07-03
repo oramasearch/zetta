@@ -15,6 +15,7 @@
 #include <variant>
 #include <vector>
 
+#include "zetta/api/serving.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/cloud_provider.hpp"
 #include "zetta/cluster/cluster.hpp"
@@ -372,6 +373,14 @@ std::vector<nlohmann::json> model_rows(const Node& node) {
             has_weights ? nlohmann::json(model->weights()->sha256)
                         : nlohmann::json();
         row["weights_present"] = model->has_weights_body();
+        // Governed serving (#648): is the model's HTTP predict endpoint
+        // published, and at which route (the flag is replicated state, so
+        // every node reports the same answer).
+        row["exposed"] = model->exposed();
+        row["endpoint"] = model->exposed()
+                              ? nlohmann::json(zetta::api::model_endpoint_path(
+                                    model->id()))
+                              : nlohmann::json();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -395,6 +404,13 @@ std::vector<nlohmann::json> index_rows(const Node& node) {
         row["fields"] = index->fields();
         row["field_count"] = static_cast<int>(index->fields().size());
         row["created"] = index->created();
+        // Governed serving (#648): is the index's HTTP search endpoint
+        // published, and at which route.
+        row["exposed"] = index->exposed();
+        row["endpoint"] = index->exposed()
+                              ? nlohmann::json(zetta::api::index_endpoint_path(
+                                    index->id()))
+                              : nlohmann::json();
         rows.push_back(std::move(row));
     }
     return rows;

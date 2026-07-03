@@ -1598,6 +1598,233 @@
         ]
       }
     },
+    "/v1/expose_index": {
+      "post": {
+        "description": "Publish an index's HTTP search endpoint (/v1/indexes/{name}/search — the distributed scatter-gather path underneath) on every node; endpoint access then requires the data:search capability. Idempotent; undo with unexpose_index. Requires orchestration:expose_index.",
+        "operationId": "expose_index",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "index": {
+                    "description": "the index's uuid (system.indexes.index_id), or an indexed table's name (resolves like `search`: the newest Search-kind index over it)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "index"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served route (by id — the unambiguous spelling; the table name also resolves)",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "table",
+                        "exposed",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Expose index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/expose_model": {
+      "post": {
+        "description": "Publish a model's HTTP predict endpoint (/v1/models/{name}/predict) on every node of the cluster; endpoint access then requires the data:predict capability. Idempotent; undo with unexpose_model. Requires orchestration:expose_model.",
+        "operationId": "expose_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model": {
+                    "description": "the model's uuid (system.models.model_id), or its display name",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served route (by id — the unambiguous spelling; the display name also resolves)",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "exposed",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Expose model",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/gate": {
       "post": {
         "description": "Run the correctness gate over a stored project graph and return the full validation report (per-check status + reason, verdict, block_deploy). Evaluates only — no state change. Requires orchestration:gate.",
@@ -1977,6 +2204,9 @@
                         "created": {
                           "type": "string"
                         },
+                        "exposed": {
+                          "type": "boolean"
+                        },
                         "fields": {
                           "items": {
                             "minLength": 1,
@@ -2251,6 +2481,9 @@
                       "properties": {
                         "created": {
                           "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
                         },
                         "feature_schema": {
                           "type": "object"
@@ -3081,6 +3314,209 @@
         "summary": "Import n8n workflow",
         "tags": [
           "action"
+        ]
+      }
+    },
+    "/v1/indexes/{name}/search": {
+      "get": {
+        "description": "Free-text search over an EXPOSED index — the distributed scatter-gather path underneath, with per-node provenance. The route exists only while the index is exposed (expose_index / unexpose_index); access requires data:search. Every request is a serve:search trace span and is audited.",
+        "operationId": "serve_search",
+        "parameters": [
+          {
+            "description": "the index's uuid, or an indexed table's name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "restrict matching to one indexed field (optional)",
+            "in": "query",
+            "name": "field",
+            "required": false,
+            "schema": {
+              "description": "restrict matching to one indexed field (optional)",
+              "type": "string"
+            }
+          },
+          {
+            "description": "the free-text query",
+            "in": "query",
+            "name": "query",
+            "required": true,
+            "schema": {
+              "description": "the free-text query",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "cap on the global ranking (default 10)",
+            "in": "query",
+            "name": "top_k",
+            "required": false,
+            "schema": {
+              "description": "cap on the global ranking (default 10)",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "duration_ms": {
+                          "type": "number"
+                        },
+                        "hits": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "id": {
+                                "type": "string"
+                              },
+                              "score": {
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "score"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "nodes": {
+                          "description": "per-node provenance: which member answered, at what cost (#641)",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "hits": {
+                                "type": "integer"
+                              },
+                              "latency_ms": {
+                                "type": "number"
+                              },
+                              "local": {
+                                "type": "boolean"
+                              },
+                              "node_id": {
+                                "type": "string"
+                              },
+                              "sub_indexes": {
+                                "type": "integer"
+                              },
+                              "wire_bytes": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "node_id",
+                              "local",
+                              "hits",
+                              "sub_indexes",
+                              "latency_ms",
+                              "wire_bytes"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "path": {
+                          "description": "how the query executed: consolidated or per-partition scatter-gather",
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        },
+                        "wire_bytes_moved": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "table",
+                        "path",
+                        "hits",
+                        "nodes",
+                        "wire_bytes_moved",
+                        "duration_ms"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the request was served"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the key lacks the serving capability, the entity does not exist or is not exposed, or the input is at fault"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Search (served index endpoint)",
+        "tags": [
+          "serving"
         ]
       }
     },
@@ -4284,6 +4720,168 @@
         ]
       }
     },
+    "/v1/models/{name}/predict": {
+      "post": {
+        "description": "Batch-score rows through an EXPOSED model and return the ranked at-risk list. The route exists only while the model is exposed (expose_model / unexpose_model); access requires data:predict. Every request is a serve:predict trace span and is audited.",
+        "operationId": "predict",
+        "parameters": [
+          {
+            "description": "the model's uuid, or its display name",
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "additionalProperties": false,
+                "properties": {
+                  "entities": {
+                    "description": "optional entity key per row (defaults to the row index); must match rows in length",
+                    "items": {
+                      "type": "integer"
+                    },
+                    "type": "array"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "rows": {
+                    "description": "the batch to score: one object per entity mapping feature name to its numeric value; every feature the model was trained on must be present (extra features are ignored)",
+                    "items": {
+                      "additionalProperties": {
+                        "type": "number"
+                      },
+                      "type": "object"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "top_k": {
+                    "description": "cap the ranked at-risk list to the k highest-risk entities (absent = all rows)",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "rows"
+                ],
+                "title": "zetta.PredictRequest",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "ranked": {
+                          "description": "the scored entities, highest calibrated risk first (ties break by entity ascending — deterministic)",
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "entity": {
+                                "type": "integer"
+                              },
+                              "risk": {
+                                "description": "the model's calibrated probability in [0, 1]",
+                                "type": "number"
+                              }
+                            },
+                            "required": [
+                              "entity",
+                              "risk"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "rows": {
+                          "description": "how many rows were scored",
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "rows",
+                        "ranked"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the request was served"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the key lacks the serving capability, the entity does not exist or is not exposed, or the input is at fault"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Predict (served model endpoint)",
+        "tags": [
+          "serving"
+        ]
+      }
+    },
     "/v1/run": {
       "post": {
         "description": "Execute a stored, gate-passing project graph: a churn-shaped graph runs the real engine over the live cluster and returns its run id immediately (poll get_run / system.runs); other graphs run structurally within the call. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
@@ -5146,6 +5744,233 @@
         "summary": "Run a testkit case",
         "tags": [
           "job"
+        ]
+      }
+    },
+    "/v1/unexpose_index": {
+      "post": {
+        "description": "Withdraw an index's HTTP search endpoint everywhere in one action — the replicated exposure flag flips and every node refuses the route. Idempotent. Requires orchestration:unexpose_index.",
+        "operationId": "unexpose_index",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "index": {
+                    "description": "the index's uuid (system.indexes.index_id), or an indexed table's name (resolves like `search`: the newest Search-kind index over it)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "index"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served route (by id — the unambiguous spelling; the table name also resolves)",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "table",
+                        "exposed",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Un-expose index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/unexpose_model": {
+      "post": {
+        "description": "Withdraw a model's HTTP predict endpoint everywhere in one action — the replicated exposure flag flips and every node refuses the route. Idempotent. Requires orchestration:unexpose_model.",
+        "operationId": "unexpose_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "model": {
+                    "description": "the model's uuid (system.models.model_id), or its display name",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "model"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "endpoint": {
+                          "description": "the served route (by id — the unambiguous spelling; the display name also resolves)",
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "model_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "model_id",
+                        "exposed",
+                        "endpoint"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Un-expose model",
+        "tags": [
+          "action"
         ]
       }
     }

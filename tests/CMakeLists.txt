@@ -23,6 +23,7 @@ add_executable(zetta-tests
   api/test_specs.cpp
   api/test_search_journey.cpp
   api/test_action_journeys.cpp
+  api/test_serving.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   util/test_fuzzy.cpp

@@ -20,14 +20,18 @@ namespace zetta::index {
 // The four fields ENT-39 / ENT-40 name: the source `table` the index is over, its
 // `kind` (search / vector / feature), the `backend` that builds it (an
 // IndexBackend name — see index/index_backend.hpp), and the `fields` it indexes
-// (>= 1). `created` is the creation stamp every entity carries. `spec()` hands the
-// IndexBackend seam its view of this index.
+// (>= 1). `created` is the creation stamp every entity carries. `exposed` is the
+// governed serving state (#648): true publishes the index's HTTP search endpoint
+// on EVERY node (the flag replicates, so the whole cluster serves — or refuses —
+// the route consistently); false (the default) keeps the index cluster-internal.
+// `spec()` hands the IndexBackend seam its view of this index.
 struct IndexValue {
     std::string table;                 // the source table (required, non-empty)
     IndexKind kind = IndexKind::Search;  // what the index accelerates
     std::string backend;               // the backend that builds it (non-empty)
     std::vector<std::string> fields;   // the indexed fields (>= 1, unique)
     std::string created;               // ISO-8601 UTC stamp at creation
+    bool exposed = false;              // serve over HTTP? (docs/api/serving.md, #648)
 
     // This value's IndexBackend view (table + kind + backend + fields). The bridge
     // from the durable entity to the seam: registry.resolve(value.spec()).
@@ -87,6 +91,13 @@ public:
     const std::string& created() const { return value_.created; }
     const IndexValue& value() const { return value_; }
     const std::filesystem::path& dir() const { return dir_; }
+
+    // Whether this index is exposed as an HTTP endpoint (#648). The flag is
+    // replicated state, so every node agrees which routes to serve or refuse.
+    bool exposed() const { return value_.exposed; }
+    // Publish (or withdraw) the index's HTTP search endpoint, then capture +
+    // persist. Un-exposing is the same one action with `exposed = false`.
+    void set_exposed(bool exposed);
 
     // This index's IndexBackend view — resolve(index->spec()) finds its backend.
     IndexSpec spec() const { return value_.spec(); }

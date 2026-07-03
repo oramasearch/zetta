@@ -95,6 +95,12 @@ machinery:
   [docs/gui/search-view.md](../gui/search-view.md)) — target picker over the
   registered Search indexes, the provenance strip + scatter-gather replay,
   master-detail ranked hits, and the per-node provenance table (#643).
+- **Served HTTP endpoint (#648):** `GET /v1/indexes/{name}/search` — the
+  governed per-entity ingress ([../api/serving.md](../api/serving.md)) — calls
+  the same `Node::search` once the index's replicated `exposed` flag is set.
+  The resolution rule is exported as `resolve_search_target` (search.hpp) so
+  the serving layer and `expose_index` identify exactly the index a target
+  names — still no second path.
 
 ## Boundaries
 

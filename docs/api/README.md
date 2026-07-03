@@ -31,6 +31,10 @@ MCP/HTTP work.
   `list_specs`/`get_spec` serving the OpenAPI document + every capability and
   boundary schema from their C++ accessors, drift-checked through one shared
   table.
+- [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
+  expose_index publish per-entity /v1/models/{name}/predict and
+  /v1/indexes/{name}/search routes on every node (replicated exposure state,
+  data:predict / data:search key scoping, every request a span + audited).
 
 ## The endpoints (shipped with #615, REST with #618)
 
@@ -59,6 +63,12 @@ node state, so a no-MCP agent orients with one GET
 `/v1/specs/<name>`, the spec index over every schema in the system
 ([specs-index.md](specs-index.md), #646).
 
+The same server serves the **exposed-entity endpoints** ([serving.md](serving.md),
+#648): `POST /v1/models/{name}/predict` and `GET /v1/indexes/{name}/search`
+answer only while the entity's replicated `exposed` flag is set
+(expose_model / expose_index below); access requires a key holding
+`data:predict` / `data:search`.
+
 ## Capabilities (v1)
 
 | Name | Kind | Requires | Does |
@@ -84,6 +94,10 @@ node state, so a no-MCP agent orients with one GET
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
+| `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
+| `unexpose_model` | action | orchestration:unexpose_model | withdraw the model's predict endpoint everywhere in one action |
+| `expose_index` | action | orchestration:expose_index | publish an index's /v1/indexes/{name}/search endpoint (distributed scatter-gather underneath); endpoint access needs data:search |
+| `unexpose_index` | action | orchestration:unexpose_index | withdraw the index's search endpoint everywhere in one action |
 | `capture_intent` | action | orchestration:capture_intent | capture NL intent as a replicated project input with provenance |
 | `import_n8n` | action | orchestration:import_n8n | schema-validate + store an n8n workflow byte-for-byte as a project artifact |
 | `compile_intent` | action | orchestration:compile_intent | compile a captured intent into a stored, editable graph (audited graph change) |

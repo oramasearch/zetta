@@ -63,7 +63,16 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
-- **In flight 2026-07-03 (remote consent)**: [#621](https://github.com/oramasearch/zetta/issues/621)
+- **In flight 2026-07-03 (governed serving)**: [#648](https://github.com/oramasearch/zetta/issues/648)
+  — models and indexes exposed as governed HTTP endpoints: `expose_model` /
+  `expose_index` flip a replicated `exposed` flag on the entity value, the
+  Beast2 adapter serves `POST /v1/models/{name}/predict` (batch scoring) and
+  `GET /v1/indexes/{name}/search` (the #641 scatter-gather) only while the
+  flag is set; endpoint access is key-scoped to `data:predict` /
+  `data:search`, every request a `serve:*` span + audited; `exposed` +
+  `endpoint` in `system.models` / `system.indexes`
+  ([docs/api/serving.md](api/serving.md)).
+- **Shipped 2026-07-03 (remote consent)**: [#621](https://github.com/oramasearch/zetta/issues/621)
   — the consent challenge protocol for cloud-touching MCP tools: a
   `requires_consent` capability never executes on first call (structured
   challenge naming exactly what would be read/run), approval only by a

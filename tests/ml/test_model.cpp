@@ -221,6 +221,65 @@ TEST(Model, SchemaRejectsMalformedValuesAtTheBoundary) {
     // parse_model_value rejects the same and returns nullopt with a reason.
     EXPECT_FALSE(zetta::ml::parse_model_value(json{{"name", "x"}}, &error));
     EXPECT_FALSE(error.empty());
+
+    // A non-boolean `exposed` (#648) fails at the boundary too.
+    EXPECT_FALSE(zetta::ml::validate_model_value(
+        json{{"kind", "classifier"}, {"exposed", "yes"}}, &error));
+}
+
+// The governed serving flag (#648): defaults to false, absent on legacy
+// records (which parse as not exposed), round-trips through the value JSON,
+// and set_exposed captures into the CRDT so it survives a restart — the
+// replicated flag is what lets every node serve or refuse a route
+// consistently.
+TEST(Model, ExposedFlagRoundTripsAndPersistsViaCRDT) {
+    // Value-level: default false, emitted only when set, parsed back.
+    zetta::ml::ModelValue value = sample_value();
+    EXPECT_FALSE(value.exposed);
+    EXPECT_FALSE(zetta::ml::to_json(value).contains("exposed"));
+    value.exposed = true;
+    const nlohmann::json exposed_json = zetta::ml::to_json(value);
+    EXPECT_TRUE(exposed_json.at("exposed").get<bool>());
+    const auto parsed = zetta::ml::parse_model_value(exposed_json);
+    ASSERT_TRUE(parsed);
+    EXPECT_TRUE(parsed->exposed);
+    // A legacy record without the field parses as not exposed.
+    nlohmann::json legacy = exposed_json;
+    legacy.erase("exposed");
+    const auto legacy_parsed = zetta::ml::parse_model_value(legacy);
+    ASSERT_TRUE(legacy_parsed);
+    EXPECT_FALSE(legacy_parsed->exposed);
+
+    // Node-level: set_exposed captures + persists; a restarted node rebuilt
+    // from the persisted CRDT document sees the exposure.
+    TempDir tmp;
+    const std::string node_id = zetta::util::new_uuid();
+    std::string id;
+    {
+        ReplicationManager replication{node_id};
+        Node node{config_for(tmp), &replication};
+        node.start();
+        auto model = node.create_model(sample_value());
+        ASSERT_TRUE(model);
+        EXPECT_FALSE(model->exposed());
+        model->set_exposed(true);
+        EXPECT_TRUE(model->exposed());
+        id = model->id();
+        node.tick();  // persist the CRDT document
+        node.stop();
+    }
+    ReplicationManager replication{node_id};
+    Node node{config_for(tmp), &replication};
+    node.start();
+    auto model = node.find_model(id);
+    ASSERT_TRUE(model);
+    EXPECT_TRUE(model->exposed());
+    // Un-exposing is the same one action; idempotent re-sets don't churn.
+    model->set_exposed(false);
+    EXPECT_FALSE(model->exposed());
+    model->set_exposed(false);
+    EXPECT_FALSE(model->exposed());
+    node.stop();
 }
 
 TEST(Model, InvalidModelJsonOnDiskIsSkipped) {
