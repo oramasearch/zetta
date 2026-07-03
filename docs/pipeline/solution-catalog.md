@@ -139,11 +139,12 @@ real pipeline today) and runs **synchronously on the UI thread** that owns the n
 — the same deliberate per-click pattern as the [Cloud Inspector](../cloud/cloud-inspector.md).
 It runs over the node's **live `JobCoordinator`** — the long-lived
 [#579 compute spine](../compute/job-coordinator.md) over the real cluster
-(`run_churn_solution_on_node`, #580), not an isolated loopback — so the produced
-Model + Run land on the live node; a throwaway single-node loopback is used only as a
-fallback when no cluster is attached. The wiring it calls — `zetta::usecases::churn::run_churn_solution`
-/ `run_churn_solution_on_node` — is a reusable core surface; see
-[churn-solution.md](../use-cases/churn-solution.md#run-over-the-live-cluster-580).
+(`run_churn_solution_on_node`, #580/#637), not an isolated loopback — so the
+produced Model + Run land on the live node (the headed app always attaches a
+cluster; if none is attached the runner's clear failure reason is shown as the run
+status). The wiring it calls — `zetta::usecases::churn::run_churn_solution_on_node`,
+the ONE public churn runner — is a reusable core surface; see
+[churn-solution.md](../use-cases/churn-solution.md#one-runner-over-the-live-cluster-580-637).
 
 ## What's deferred (later slices)
 

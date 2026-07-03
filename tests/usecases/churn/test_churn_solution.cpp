@@ -12,7 +12,6 @@
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
-#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
@@ -27,9 +26,11 @@
 // #398 acceptance: the catalog churn SolutionCatalog blueprint deploys + runs on the
 // REAL engine (featurize -> train -> explain -> rank -> playbook), producing a real
 // trained Model + ranked drivers — not the stubbed DefaultStepExecutor. The wiring
-// under test is zetta::usecases::churn::run_churn_solution (churn_solution.hpp), driven by the catalog
-// "churn-prediction" graph. Single-node here; the single-node == multi-node
-// equivalence of the underlying jobs is proven in the per-op suites.
+// under test is zetta::usecases::churn::run_churn_solution_on_node (churn_solution.hpp) —
+// the ONE public churn runner (#637), over the node's live JobCoordinator (the #579
+// spine, #580) — driven by the catalog "churn-prediction" graph. Single-node here;
+// the single-node == multi-node equivalence of the underlying jobs is proven in the
+// per-op suites.
 namespace {
 
 namespace fs = std::filesystem;
@@ -52,21 +53,21 @@ using zetta::pipeline::RunStatus;
 using zetta::pipeline::Solution;
 using zetta::pipeline::SolutionCatalog;
 using zetta::compute::CpuDevice;
-using zetta::compute::JobCoordinator;
 using zetta::ml::EntityScore;
 
-// A single-node loopback compute node: Node + a one-node Cluster + a started
-// JobCoordinator over it (the harness the per-op job suites use).
-struct ComputeNode {
-    explicit ComputeNode(std::uint16_t port)
+// A single-node loopback node with its OWN long-lived coordinator over its cluster —
+// the #579 spine, the way main wires a running node (node.attach_cluster after
+// cluster.start()). Every churn run in this suite goes through the one public
+// runner, run_churn_solution_on_node, over this node-owned coordinator (#637).
+struct AttachedNode {
+    explicit AttachedNode(std::uint16_t port)
         : node(node_config(temp_dir)),
-          cluster("churn-solution-node", cluster_config(port)),
-          coordinator(cluster, /*worker_count=*/2) {
+          cluster("churn-attached-node", cluster_config(port)) {
         node.start();
         cluster.start();
-        coordinator.start();
+        node.attach_cluster(cluster, /*worker_count=*/2);  // brings up node.job_coordinator()
     }
-    ~ComputeNode() { coordinator.stop(); }
+    ~AttachedNode() { node.stop(); }  // tears the coordinator down while cluster alive
     static NodeConfig node_config(const zetta::test::TempDir& dir) {
         NodeConfig cfg;
         cfg.data_dir = dir.path().string();
@@ -82,7 +83,6 @@ struct ComputeNode {
     zetta::test::TempDir temp_dir;  // declared first so it outlives `node`
     Node node;
     Cluster cluster;
-    JobCoordinator coordinator;
 };
 
 // =====================================================================
@@ -102,7 +102,7 @@ TEST(ChurnSolution, DeployCatalogChurnAndRunProducesRealModelAndDrivers) {
     const auto loaded = zetta::usecases::churn::load_churn_dataset(churn_dir);
     ASSERT_TRUE(loaded.ok()) << loaded.error;
 
-    ComputeNode host(24500);
+    AttachedNode host(24500);
 
     // (0) Deploy: the gate passes (RULE-1) and the placement is recorded — the
     // "deploy" half of the acceptance.
@@ -113,13 +113,13 @@ TEST(ChurnSolution, DeployCatalogChurnAndRunProducesRealModelAndDrivers) {
         host.node.deploy_graph(graph, target, solution->name);
     ASSERT_TRUE(deployment) << "deploy_graph rejected the catalog churn blueprint";
 
-    // (1) Run it on the real engine.
+    // (1) Run it on the real engine, over the node's live coordinator.
     CpuDevice device;
     ChurnSolutionOptions options;
     options.project = "churn-project";
     options.graph = "churn-graph-1";
-    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
-        host.node, host.coordinator, device, graph, loaded.dataset, options);
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, graph, loaded.dataset, options);
 
     // The run succeeded end to end and is schema-valid.
     ASSERT_TRUE(result.ok()) << result.execution.error;
@@ -195,13 +195,13 @@ TEST(ChurnSolution, DemoDatasetRunsEndToEnd) {
         SolutionCatalog::builtin().find("churn-prediction");
     ASSERT_NE(solution, nullptr);
 
-    ComputeNode host(24510);
+    AttachedNode host(24510);
     CpuDevice device;
     const zetta::usecases::churn::ChurnDataset demo = zetta::usecases::churn::demo_churn_dataset();
     ASSERT_FALSE(demo.accounts.empty());
 
-    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution(
-        host.node, host.coordinator, device, solution->graph, demo);
+    const ChurnSolutionResult result = zetta::usecases::churn::run_churn_solution_on_node(
+        host.node, device, solution->graph, demo);
 
     ASSERT_TRUE(result.ok()) << result.execution.error;
     EXPECT_EQ(result.ranked.size(), demo.accounts.size());
@@ -216,22 +216,6 @@ TEST(ChurnSolution, DemoDatasetRunsEndToEnd) {
 // isolated loopback. A node that has been attach_cluster'd owns a coordinator;
 // run_churn_solution_on_node resolves it and runs the real pipeline there.
 // =====================================================================
-
-// A node with its OWN long-lived coordinator over its cluster — the #579 spine,
-// the way main wires a running node (node.attach_cluster after cluster.start()).
-struct AttachedNode {
-    explicit AttachedNode(std::uint16_t port)
-        : node(ComputeNode::node_config(temp_dir)),
-          cluster("churn-attached-node", ComputeNode::cluster_config(port)) {
-        node.start();
-        cluster.start();
-        node.attach_cluster(cluster);  // brings up node.job_coordinator()
-    }
-    ~AttachedNode() { node.stop(); }  // tears the coordinator down while cluster alive
-    zetta::test::TempDir temp_dir;    // declared first so it outlives `node`
-    Node node;
-    Cluster cluster;
-};
 
 TEST(ChurnSolution, RunOnNodeOverLiveCoordinatorProducesRealModel) {
     const Solution* solution =
@@ -270,7 +254,7 @@ TEST(ChurnSolution, RunOnNodeWithoutClusterFailsClearly) {
 
     // A standalone node — never attach_cluster'd — has no live coordinator.
     zetta::test::TempDir tmp;
-    Node node(ComputeNode::node_config(tmp));
+    Node node(AttachedNode::node_config(tmp));
     node.start();
     ASSERT_EQ(node.job_coordinator(), nullptr);
 

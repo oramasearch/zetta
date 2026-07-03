@@ -27,8 +27,7 @@
 // can't supply on its own: a started JobCoordinator, a ComputeDevice, and this
 // node's NUMERIC input shards (the churn pipeline operates purely on numeric DDF
 // columns). This module is that glue, factored out of the test harness so the
-// wiring is a first-class, reusable engine surface (the headed Deploy panel's
-// "Run on real engine" action and the acceptance test both call it):
+// wiring is a first-class, reusable engine surface:
 //
 //   1. encode_churn_dataset  — map a ChurnDataset's string ids / ISO timestamps /
 //      categorical event types into the numeric columns the DDF ops require (the
@@ -36,20 +35,23 @@
 //   2. churn_events_schema / churn_accounts_schema / churn_featurize_spec /
 //      default_churn_gbdt_params — the standard, leakage-free churn pipeline config
 //      over those encoded shards;
-//   3. run_churn_solution — build a ChurnStepExecutor over (1)+(2), inject it into a
-//      GraphExecutor, and execute the churn graph, returning the Run plus the real
-//      artifacts (the registered Model id, the ranked list, the drivers, the
-//      playbook).
+//   3. run_churn_solution_on_node — THE one public runner (#637): build a
+//      ChurnStepExecutor over (1)+(2), inject it into a GraphExecutor, and execute
+//      the churn graph on the node's live JobCoordinator (the #579 spine), returning
+//      the Run plus the real artifacts (the registered Model id, the ranked list,
+//      the drivers, the playbook). Every in-process churn submitter — the headed
+//      Deploy panel, the governed console's churn-shaped path, the testkit cases,
+//      the acceptance tests — routes through it.
 //
 // **No new JSON format.** Everything rides an existing validated boundary — the
 // ChurnDataset is loaded/validated by load_churn_dataset, the catalog blueprint
 // graph by parse_solution_catalog, and the Run / ComputeJob / GBDT-weights records
 // at their own schema boundaries. This module adds no parser of its own.
 //
-// **Single node here, SPMD elsewhere.** run_churn_solution runs the dataset it is
-// handed on *this* node (the whole dataset on a single-node compute harness). On a
-// real multi-node cluster each node runs the same graph against its own shard and
-// the underlying jobs combine partials over the collectives — the single-node ==
+// **Single node here, SPMD elsewhere.** run_churn_solution_on_node runs the dataset
+// it is handed on *this* node (the whole dataset, this node's shard). On a real
+// multi-node cluster each node runs the same graph against its own shard and the
+// underlying jobs combine partials over the collectives — the single-node ==
 // multi-node equivalence is proven in the per-op job suites; this bridge does not
 // re-prove it.
 //
@@ -57,7 +59,6 @@
 namespace zetta::storage { class StorageEngine; }
 namespace zetta { class Node; }
 namespace zetta::compute { class ComputeDevice; }
-namespace zetta::compute { class JobCoordinator; }
 namespace zetta::ir { class ExecutionGraph; }
 
 namespace zetta::usecases::churn {
@@ -115,39 +116,33 @@ struct ChurnSolutionResult {
     bool ok() const { return execution.ok; }
 };
 
-// Run a churn ExecutionGraph (the catalog "churn-prediction" blueprint, or any
-// connect x2 -> clean -> model -> index -> serve -> act churn graph) through the
-// REAL engine on `dataset`. Encodes the dataset to numeric DDF shards, builds the
+// THE canonical churn runner (#637): run a churn ExecutionGraph (the catalog
+// "churn-prediction" blueprint, or any connect x2 -> clean -> model -> index ->
+// serve -> act churn graph) through the REAL engine on `dataset`, over the node's
+// **live** JobCoordinator — the long-lived SPMD compute "spine" a running node owns
+// over its real Cluster (#579, Node::attach_cluster / Node::job_coordinator; the
+// interactive "run over the cluster" front door, #580). It resolves
+// node.job_coordinator(), encodes the dataset to numeric DDF shards, builds the
 // standard featurize spec + GBDT params (from `options`), injects a
-// ChurnStepExecutor over a started `coordinator` + `device`, and executes `graph`
-// on `node` — so the produced Run references a real trained Model, the score job
-// yields the ranked at-risk list, and TreeSHAP yields the churn drivers. The
+// ChurnStepExecutor over that coordinator + `device`, and executes `graph` on
+// `node` — so the featurize / train / explain / rank jobs combine their partials
+// over the node's real cluster membership through the existing collectives (which
+// ride the signal plane), the produced Run references a real trained Model, the
+// score job yields the ranked at-risk list, TreeSHAP yields the churn drivers, and
+// everything lands on the live node (visible in system.runs / system.models). The
 // dataset must be non-empty (an empty dataset fails the run at featurize/train,
-// like any empty input).
-ChurnSolutionResult run_churn_solution(Node& node,
-                                       compute::JobCoordinator& coordinator,
-                                       compute::ComputeDevice& device,
-                                       const ir::ExecutionGraph& graph,
-                                       const ChurnDataset& dataset,
-                                       const ChurnSolutionOptions& options = {});
-
-// Run a churn graph through the REAL engine on the node's **live** JobCoordinator —
-// the long-lived SPMD compute "spine" a running node owns over its real Cluster
-// (#579, Node::attach_cluster / Node::job_coordinator). This is the **interactive
-// "run over the cluster"** front door (#580): unlike run_churn_solution, which takes
-// a coordinator by reference (the test suites + the Deploy panel demo used to spin up
-// an *isolated single-node loopback* one), this resolves node.job_coordinator() and
-// runs there — so the featurize / train / explain / rank jobs combine their partials
-// over the node's real cluster membership through the existing collectives (which ride
-// the signal plane), and the produced Run + Model + ranked list land on the live node
-// (visible in system.runs / system.models). It is otherwise identical to
-// run_churn_solution — same encoding, specs, gated/governed surfaces wrap it the same
-// way, **no new JSON format**.
+// like any empty input). **No new JSON format.**
+//
+// This is the ONE public run entry point: the headed Deploy panel, the governed
+// console's churn-shaped path, the testkit cases, and the acceptance tests all call
+// it. The isolated-coordinator wiring it used to share the header with survives only
+// as a clearly-named internal detail of churn_solution.cpp
+// (run_churn_solution_with_coordinator).
 //
 // A node with no compute plane attached (a standalone node, or one not yet
 // attach_cluster'd) has no live coordinator: this returns a failed ChurnSolutionResult
-// with execution.error set (it provisions nothing — the caller surfaces the reason or
-// falls back to its own coordinator), so it never silently no-ops.
+// with execution.error set (it provisions nothing — the caller surfaces the reason),
+// so it never silently no-ops.
 //
 // **Single-node-or-coordinated membership.** The underlying jobs are SPMD: every
 // collective round waits for *all* connected peers (a bounded timeout). A single node

@@ -9,10 +9,9 @@
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
-#include "zetta/usecases/churn/churn_step_executor.hpp"
+#include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/cpu_device.hpp"
-#include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/pipeline/deployment_target.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -34,13 +33,14 @@
 // The flagship case: the whole UC-1 churn pipeline, gated + governed (the #399
 // end-to-end made interactive). synthetic data -> featurize (point-in-time,
 // entity-resolved) -> train (GBDT) -> explain (TreeSHAP) -> ranked at-risk +
-// drivers -> playbook, behind the real ChurnStepExecutor, with the correctness gate
-// passing first and the run governed under key-scoped access + the audit trail.
+// drivers -> playbook, through the ONE public churn runner
+// (zetta::usecases::churn::run_churn_solution_on_node, #637) over the node-owned
+// JobCoordinator (the #579 spine), with the correctness gate passing first and the
+// run governed under key-scoped access + the audit trail.
 namespace zetta::testkit {
 namespace {
 
 using compute::CpuDevice;
-using compute::JobCoordinator;
 
 std::string number(double value) {
     char buffer[64];
@@ -96,73 +96,65 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
         return TestResult::fail("the gate blocked a division-correct graph");
     }
 
-    // The governed node + a scoped, capability-bearing pipeline key.
+    // The governed node + a scoped, capability-bearing pipeline key. The node owns
+    // its compute plane (attach_cluster brings up node.job_coordinator(), the #579
+    // spine) so the run goes through the ONE public churn runner (#637).
     LoopbackCluster cluster(1);
     Node& node = cluster.node(0);
-    JobCoordinator coordinator(cluster.cluster(0), /*worker_count=*/2);
-    coordinator.start();
+    node.attach_cluster(cluster.cluster(0), /*worker_count=*/2);
 
     auto principal = node.create_principal("retention-pipeline", zetta::governance::PrincipalKind::Service);
-    if (!principal) { coordinator.stop(); return TestResult::fail("no principal"); }
+    if (!principal) return TestResult::fail("no principal");
     zetta::governance::Scope scope;
     scope.grant(zetta::governance::ResourceKind::Project, "churn").grant(zetta::governance::ResourceKind::Database, "churn");
     zetta::governance::CapabilitySet capabilities;
     capabilities.grant(zetta::governance::CapabilityDomain::Orchestration, "start_run")
         .grant(zetta::governance::CapabilityDomain::Data, "read");
     auto key = principal->create_key(scope, capabilities);
-    if (!key) { coordinator.stop(); return TestResult::fail("no key"); }
+    if (!key) return TestResult::fail("no key");
 
     const bool in_scope = node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "churn"}).allowed;
     const bool out_of_scope = node.authorize(key->id(), zetta::governance::Resource{zetta::governance::ResourceKind::Project, "fraud"}).allowed;
     const bool can_run = node.authorize(key->id(), zetta::governance::Operation{zetta::governance::CapabilityDomain::Orchestration, "start_run"}).allowed;
     if (!in_scope || out_of_scope || !can_run) {
-        coordinator.stop();
         return TestResult::fail("the key-scoped access decisions were wrong");
     }
     node.deploy_graph(graph, zetta::pipeline::DeploymentTarget::local(), "churn");  // governed deploy
 
-    // Run the real pipeline behind the StepExecutor seam.
+    // Run the real pipeline through the canonical runner over the node's live
+    // coordinator (encode + stores + featurize spec are built inside it).
     context.emit("running featurize -> train -> explain -> rank -> playbook");
-    const zetta::usecases::churn::ChurnNumericShards numeric = encode_churn_dataset(dataset);
-    const zetta::storage::JsonStore events = make_store(numeric.events);
-    const zetta::storage::JsonStore accounts = make_store(numeric.accounts);
     CpuDevice device;
 
-    zetta::usecases::churn::ChurnPipelineConfig config;
-    config.events_store = &events;
-    config.events_schema = zetta::usecases::churn::churn_events_schema();
-    config.accounts_store = &accounts;
-    config.accounts_schema = zetta::usecases::churn::churn_accounts_schema();
-    config.featurize = zetta::usecases::churn::churn_featurize_spec(numeric.as_of);
-    config.params = churn_gbdt_params(static_cast<int>(options.get_int("trees", 30)),
-                                      static_cast<int>(options.get_int("depth", 3)), 16, 0.3);
-    config.calibration.enabled = options.get_bool("calibrate", false);
-    config.calibration.method = ml::CalibrationMethod::Platt;
-    config.entity_column = "entity";
-    config.top_k = static_cast<std::size_t>(std::max<long>(0, options.get_int("top_k", 0)));
-    config.model_name = "churn_model";
-    config.project = "churn";
-    config.graph = "churn-graph";
+    zetta::usecases::churn::ChurnSolutionOptions solution_options;
+    solution_options.params = churn_gbdt_params(static_cast<int>(options.get_int("trees", 30)),
+                                                static_cast<int>(options.get_int("depth", 3)), 16, 0.3);
+    solution_options.calibration.enabled = options.get_bool("calibrate", false);
+    solution_options.calibration.method = ml::CalibrationMethod::Platt;
+    solution_options.top_k = static_cast<std::size_t>(std::max<long>(0, options.get_int("top_k", 0)));
+    solution_options.model_name = "churn_model";
+    solution_options.project = "churn";
+    solution_options.graph = "churn-graph";
 
-    auto churn = std::make_shared<zetta::usecases::churn::ChurnStepExecutor>(node, coordinator, device, config);
-    zetta::pipeline::GraphExecutor executor{churn};
-    const zetta::pipeline::ExecutionResult run = executor.execute(node, graph, "churn", "churn-graph");
+    const zetta::usecases::churn::ChurnSolutionResult run =
+        zetta::usecases::churn::run_churn_solution_on_node(node, device, graph, dataset,
+                                                           solution_options);
 
     TestResult outcome = TestResult::fail("");  // filled below
     do {
-        if (!run.ok || !run.run) { outcome = TestResult::fail("the run failed: " + run.error); break; }
-        if (run.run->status() != zetta::pipeline::RunStatus::Succeeded) { outcome = TestResult::fail("run did not succeed"); break; }
+        if (!run.ok() || !run.execution.run) { outcome = TestResult::fail("the run failed: " + run.execution.error); break; }
+        if (run.execution.run->status() != zetta::pipeline::RunStatus::Succeeded) { outcome = TestResult::fail("run did not succeed"); break; }
         std::string schema_error;
-        if (!zetta::pipeline::validate_run_value(run.run->metadata(), &schema_error)) {
+        if (!zetta::pipeline::validate_run_value(run.execution.run->metadata(), &schema_error)) {
             outcome = TestResult::fail("run is not schema-valid: " + schema_error); break;
         }
-        if (churn->model_id().empty() || !node.find_model(churn->model_id())) {
+        if (run.model_id.empty() || !node.find_model(run.model_id)) {
             outcome = TestResult::fail("no real Model was registered"); break;
         }
-        const std::vector<ml::EntityScore>& ranked = churn->ranked();
-        const std::size_t expected = config.top_k == 0
+        const std::vector<ml::EntityScore>& ranked = run.ranked;
+        const std::size_t expected = solution_options.top_k == 0
                                          ? dataset.accounts.size()
-                                         : std::min(config.top_k, dataset.accounts.size());
+                                         : std::min(solution_options.top_k, dataset.accounts.size());
         if (ranked.size() != expected) { outcome = TestResult::fail("ranked list has the wrong size"); break; }
         bool ranked_ok = !ranked.empty();
         for (std::size_t i = 0; i < ranked.size(); ++i) {
@@ -170,10 +162,10 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
             if (i > 0 && ranked[i - 1].risk < ranked[i].risk) ranked_ok = false;
         }
         if (!ranked_ok) { outcome = TestResult::fail("the at-risk list is not a calibrated descending ranking"); break; }
-        if (churn->top_driver().empty() || churn->driver_ranking().empty()) {
+        if (run.top_driver.empty() || run.drivers.empty()) {
             outcome = TestResult::fail("no churn drivers were produced"); break;
         }
-        if (churn->playbook().size() != ranked.size()) { outcome = TestResult::fail("the playbook does not cover the at-risk list"); break; }
+        if (run.playbook.size() != ranked.size()) { outcome = TestResult::fail("the playbook does not cover the at-risk list"); break; }
 
         int succeeded = 0, jobs = 0, job_created = 0, job_finished = 0, data_access = 0, deployed = 0;
         for (const auto& job : node.jobs()) {
@@ -199,14 +191,13 @@ TestResult run_uc1(const TestOptions& options, TestContext& context) {
             "drivers, and a playbook");
         outcome.metric("accounts", std::to_string(ranked.size()))
             .metric("top risk", number(ranked.front().risk))
-            .metric("top driver", churn->top_driver())
+            .metric("top driver", run.top_driver)
             .metric("compute jobs", std::to_string(succeeded) + "/" + std::to_string(jobs) + " succeeded")
             .metric("audit events", std::to_string(node.audit_event_count()))
-            .metric("calibrated", config.calibration.enabled ? "yes" : "predict_proba");
+            .metric("calibrated", solution_options.calibration.enabled ? "yes" : "predict_proba");
         for (const std::string& line : result.log) outcome.note(line);  // carry custom-data note
     } while (false);
 
-    coordinator.stop();
     return outcome;
 }
 
@@ -220,7 +211,8 @@ void register_pipeline_cases(TestSuite& suite) {
         .description =
             "The whole UC-1 pipeline: synthetic data -> featurize (point-in-time, "
             "entity-resolved) -> train GBDT -> explain (TreeSHAP) -> ranked at-risk "
-            "+ drivers -> playbook, behind the real ChurnStepExecutor, with the "
+            "+ drivers -> playbook, through the canonical churn runner over the "
+            "node-owned coordinator, with the "
             "correctness gate passing first and the run governed under key-scoped "
             "access + the audit trail. Choose the Brand resolver to watch the gate "
             "block the run (RULE-1). Distributed equivalence is in the Distributed "

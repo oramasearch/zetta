@@ -252,7 +252,7 @@ zetta::usecases::churn::ChurnDataset sample_churn_dataset() {
 // The churn numeric encoding + the standard pipeline schemas / featurize spec are
 // the canonical ones in churn_solution.cpp (zetta::usecases::churn::encode_churn_dataset /
 // churn_events_schema / churn_accounts_schema / churn_featurize_spec), reused here
-// rather than copied. Only the tunable GBDT params + make_store live in the testkit.
+// rather than copied. Only the tunable GBDT params live in the testkit.
 
 ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
                                  double learning_rate) {
@@ -263,14 +263,6 @@ ml::GbdtParams churn_gbdt_params(int num_trees, int max_depth, int max_bins,
     params.learning_rate = learning_rate;
     params.min_child_hessian = 1e-3;
     return params;
-}
-
-zetta::storage::JsonStore make_store(const std::vector<nlohmann::json>& rows) {
-    zetta::storage::JsonStore store;
-    for (std::size_t index = 0; index < rows.size(); ++index) {
-        store.add("row-" + std::to_string(index), rows[index]);
-    }
-    return store;
 }
 
 }  // namespace zetta::testkit

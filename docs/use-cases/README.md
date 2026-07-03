@@ -22,7 +22,7 @@ end-to-end proofs):
 - [entity-resolution.md](entity-resolution.md) — entity resolution in featurization: resolve raw comms mentions to CRM accounts division-correct; resolver produces, gate verifies (`EntityResolver`, TC-4 / #394).
 - [entity-resolution-check.md](entity-resolution-check.md) — the entity-resolution correctness eval: fails the gate when a graph conflates separate accounts (the FedEx-Freight case) (`EntityResolutionCheck`, TC-4).
 - [churn-step-executor.md](churn-step-executor.md) — the real churn `StepExecutor`: each pipeline stage as actual distributed compute behind the same seam, each heavy step a recorded `ComputeJob` (#396).
-- [churn-solution.md](churn-solution.md) — wiring the catalog churn blueprint to the real engine; interactive runs go over the node's live `JobCoordinator` (`run_churn_solution`, #398/#580).
+- [churn-solution.md](churn-solution.md) — wiring the catalog churn blueprint to the real engine via the ONE public runner over the node's live `JobCoordinator` (`run_churn_solution_on_node`, #398/#580/#637).
 - [uc1-train-over-partitions.md](uc1-train-over-partitions.md) — train GBDT(outcome) compute-near-data over a partitioned feature table: train → explain → rank, near-data instrumented (`run_near_data_train_job`, #533).
 - [playbook.md](playbook.md) — the UC-1 retention playbook: deterministic driver→action→owner + frozen expected-retained-value priority + a constrained narrator that never invents numbers (#397).
 - [uc1-end-to-end.md](uc1-end-to-end.md) — the UC-1 end-to-end integration test: synthetic data → featurize → train → explain → rank → playbook, gated + governed (#399, TP-1).

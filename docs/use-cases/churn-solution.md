@@ -1,18 +1,26 @@
-# Wiring the churn solution to the real engine (`zetta::usecases::churn::run_churn_solution`)
+# Wiring the churn solution to the real engine (`zetta::usecases::churn::run_churn_solution_on_node`)
 
-`zetta::usecases::churn::run_churn_solution` (`include/zetta/usecases/churn/churn_solution.hpp`) is the bridge from
-the catalog **churn-prediction** blueprint — the one a user picks in the
-[Deploy panel](../pipeline/solution-catalog.md) — to a **real trained [Model](../ml/models.md) +
-ranked at-risk list + churn drivers**, running the actual
-featurize → train → explain → rank → playbook pipeline instead of the stubbed
-[`DefaultStepExecutor`](../pipeline/execution.md). It realizes **FEAT-4 / UC-1** (#398) and is
-part of the native distributed accelerated-compute pass (#264).
+`zetta::usecases::churn::run_churn_solution_on_node`
+(`include/zetta/usecases/churn/churn_solution.hpp`) is **the ONE public churn
+runner** (#637) — the bridge from the catalog **churn-prediction** blueprint — the
+one a user picks in the [Deploy panel](../pipeline/solution-catalog.md) — to a
+**real trained [Model](../ml/models.md) + ranked at-risk list + churn drivers**,
+running the actual featurize → train → explain → rank → playbook pipeline instead
+of the stubbed [`DefaultStepExecutor`](../pipeline/execution.md), over the node's
+live [`JobCoordinator`](../compute/job-coordinator.md) (the #579 spine). It
+realizes **FEAT-4 / UC-1** (#398/#580) and is part of the native distributed
+accelerated-compute pass (#264). Every in-process churn submitter — the headed
+Deploy panel, the governed console's churn-shaped path, the testkit cases, the
+acceptance tests — routes through it; there is no second runner to wire a
+coordinator for.
 
 ```
-include/zetta/usecases/churn/churn_solution.hpp   run_churn_solution, ChurnSolutionOptions/Result,
-                                   encode_churn_dataset, the standard churn config,
-                                   demo_churn_dataset
+include/zetta/usecases/churn/churn_solution.hpp   run_churn_solution_on_node (the one runner),
+                                   ChurnSolutionOptions/Result, encode_churn_dataset,
+                                   the standard churn config, demo_churn_dataset
 src/core/usecases/churn/churn_solution.cpp        the encoder + config builders + the runner
+                                   (+ run_churn_solution_with_coordinator, the
+                                   file-local isolated-coordinator detail)
 ```
 
 ## Why a bridge was needed
@@ -49,10 +57,10 @@ Two things also had to line up for *the catalog blueprint* specifically:
 | `churn_events_schema()` / `churn_accounts_schema()` | The DDF schema of those encoded shards — the encoder's output contract (events: `entity`/`ts`/`value`/`type`; accounts: `entity`/`mrr`/`seats`/`tenure_days`/`churned`). |
 | `churn_featurize_spec(as_of)` | The standard leakage-free [featurization](../ddf/ddf-featurize.md) graph over the encoded shards (the `churn_features.sql` shape): windowed `failed_payments` / `support_severity` / `total_events` at or before `as_of`, the carried static account features, the `churned` label. |
 | `default_churn_gbdt_params()` | The proven, fast [GBDT](../ml/gbdt.md) config (30 trees / depth 3 / 16 bins / lr 0.3) — light enough to run on a click. |
-| `run_churn_solution(node, coordinator, device, graph, dataset, options)` | The runner: encode → build the pipeline config → inject a `ChurnStepExecutor` into a `GraphExecutor` → execute `graph`. Returns the Run plus the real artifacts. |
+| `run_churn_solution_on_node(node, device, graph, dataset, options)` | THE runner: resolve `node.job_coordinator()` → encode → build the pipeline config → inject a `ChurnStepExecutor` into a `GraphExecutor` → execute `graph`. Returns the Run plus the real artifacts. |
 | `demo_churn_dataset()` | A small, deterministic, in-memory churn dataset (no files) with a clean failed-payments churn signal — the data the headed "Run over the cluster" action trains on. |
 
-`run_churn_solution` returns a `ChurnSolutionResult`:
+`run_churn_solution_on_node` returns a `ChurnSolutionResult`:
 
 ```cpp
 struct ChurnSolutionResult {
@@ -78,24 +86,22 @@ JSON.
 
 ## Single node here, SPMD elsewhere
 
-`run_churn_solution` runs the dataset it is handed on **this** node (the whole
-dataset on a single-node compute harness). On a real multi-node cluster each node
+`run_churn_solution_on_node` runs the dataset it is handed on **this** node (the
+whole dataset, this node's shard). On a real multi-node cluster each node
 runs the same graph against its own shard and the underlying jobs combine partials
 over the [collectives](../cluster/collectives.md) — the single-node == multi-node equivalence is
 proven in the per-op job suites and the [native oracle](../ml/native-oracle.md); this
 bridge does not re-prove it.
 
-## Run over the live cluster (#580)
+## One runner, over the live cluster (#580, #637)
 
-`run_churn_solution` takes a `JobCoordinator&` — originally an **isolated single-node
-loopback** one, spun up just for the run so its SPMD collectives never block on this
-node's real peers. Now that a running node owns a **long-lived `JobCoordinator` over
-its real `Cluster`** (the [#579 spine](../compute/job-coordinator.md), `Node::attach_cluster` /
-`Node::job_coordinator`), an *interactive* run should go through **that** — so the
-featurize / train / explain / rank jobs combine their partials over the node's **real
-cluster membership** (the [collectives](../cluster/collectives.md) ride the
-[signal plane](../cluster/signal-plane.md)) and the produced Run + Model + ranked list land on
-the live node:
+The runner goes through the node's **long-lived `JobCoordinator` over its real
+`Cluster`** (the [#579 spine](../compute/job-coordinator.md), `Node::attach_cluster`
+/ `Node::job_coordinator`) — so the featurize / train / explain / rank jobs combine
+their partials over the node's **real cluster membership** (the
+[collectives](../cluster/collectives.md) ride the
+[signal plane](../cluster/signal-plane.md)) and the produced Run + Model + ranked
+list land on the live node:
 
 ```cpp
 ChurnSolutionResult run_churn_solution_on_node(
@@ -104,12 +110,17 @@ ChurnSolutionResult run_churn_solution_on_node(
     const ChurnSolutionOptions& options = {});
 ```
 
-It resolves `node.job_coordinator()` and delegates to `run_churn_solution` — same
-encoding, specs, and artifacts, **no new JSON format**. A node with **no compute
-plane attached** (a standalone node, or one not yet `attach_cluster`'d) has no live
-coordinator: it returns a failed `ChurnSolutionResult` with `execution.error` set (it
-runs nothing — the caller surfaces the reason or falls back to its own coordinator),
-so it never silently no-ops.
+Historically there was a second public runner (`run_churn_solution`) that took an
+explicitly-supplied — usually isolated single-node loopback — coordinator, and six
+parallel ways to wire a churn run; #637 consolidated them. The
+isolated-coordinator wiring survives only as a clearly-named internal detail of
+`churn_solution.cpp` (`run_churn_solution_with_coordinator`, the shared body the
+public runner delegates to); no caller outside the module wires its own
+coordinator. A node with **no compute plane attached** (a standalone node, or one
+not yet `attach_cluster`'d) has no live coordinator: the runner returns a failed
+`ChurnSolutionResult` with `execution.error` set (it runs nothing — the caller
+surfaces the reason), so it never silently no-ops. This one entry point is what
+the MCP `run` tool (#617) and the cross-process SPMD co-launch (#601) build on.
 
 **Single-node-or-coordinated membership.** The underlying jobs are SPMD: every
 collective round waits for *all* connected peers (a bounded timeout). A single node
@@ -133,9 +144,9 @@ Two interactive surfaces route through the live coordinator (#580):
   the cluster"** action for the churn blueprint (`App::run_churn_demo`) calls
   `run_churn_solution_on_node` over a `CpuDevice` + the `demo_churn_dataset()` —
   synchronous on the UI thread, the same per-click pattern as the
-  [Cloud Inspector](../cloud/cloud-inspector.md). (It falls back to a throwaway loopback only
-  if no cluster is attached — a safety net the headed app, which always attaches a
-  cluster, never hits.)
+  [Cloud Inspector](../cloud/cloud-inspector.md). The headed app always attaches a
+  cluster; if none is attached the runner's clear failure reason is surfaced as the
+  run status (no throwaway loopback fallback, #637).
 - The [governed Console](../governance/governed-console.md) routes a **churn-shaped sim-Python
   program** (`is_churn_graph`) through the real engine on the live coordinator via the
   console's injectable **graph runner** seam — still capability-scoped + gate-checked +
@@ -147,12 +158,14 @@ reflect the run.
 
 ## Tests
 
-`tests/usecases/churn/test_churn_solution.cpp` is the #398 acceptance:
+`tests/usecases/churn/test_churn_solution.cpp` is the #398/#580 acceptance — every
+run in it goes through `run_churn_solution_on_node` over an `attach_cluster`'d
+node (#637):
 
 - **Deploy + run the catalog churn solution.** It takes
   `SolutionCatalog::builtin().find("churn-prediction")`, deploys it (the gate passes
-  and `deploy_graph` records the placement), then runs it through
-  `run_churn_solution` over the committed [churn fixture](churn-dataset.md). It
+  and `deploy_graph` records the placement), then runs it over the committed
+  [churn fixture](churn-dataset.md). It
   asserts the Run is `Succeeded` and schema-valid, a `model` output resolves to a
   **real registered `Model`** (kind `classifier`), an `index` output backs a ranked
   at-risk list (one per account, descending), `failed_payments` is the top driver,
@@ -160,13 +173,11 @@ reflect the run.
   featurize/train/score/explain `ComputeJob` ran and `Succeeded`.
 - **The demo dataset runs end to end** on the same catalog graph, with
   `failed_payments` as its only class-separating signal.
-- **Run over the node's live coordinator (#580).** A node that has been
-  `attach_cluster`'d is run via `run_churn_solution_on_node` (no coordinator
-  argument) — it asserts the Run succeeds and the trained `Model` registers on the
-  **live** node (`find_model` resolves it, `runs()` is non-empty), the #580
-  acceptance. A standalone node (no coordinator) fails clearly and registers no
-  Model; `is_churn_graph` recognizes the catalog backbone and rejects a graph missing
-  the featurize step.
+- **The Model + Run land on the live node (#580).** The trained `Model` registers
+  on the node that ran (`find_model` resolves it, `runs()` is non-empty).
+  A standalone node (never `attach_cluster`'d, so no coordinator) fails clearly and
+  registers no Model; `is_churn_graph` recognizes the catalog backbone and rejects a
+  graph missing the featurize step.
 
 See also [churn-step-executor.md](churn-step-executor.md) (the real per-step
 compute), [solution-catalog.md](../pipeline/solution-catalog.md) (the catalog + Deploy panel),

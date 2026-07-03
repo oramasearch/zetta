@@ -109,6 +109,14 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   / peer-cert pinning / revocation,
   [#670](https://github.com/oramasearch/zetta/issues/670) provisioner
   join-token plumbing.
+- **Churn-run consolidation shipped
+  ([#637](https://github.com/oramasearch/zetta/issues/637), PR
+  [#661](https://github.com/oramasearch/zetta/pull/661))**: ONE public churn
+  runner — `run_churn_solution_on_node` over the node-owned `JobCoordinator`
+  (#579 spine); GUI demo (loopback fallback removed), console graph runner,
+  testkit UC-1 cases, and the acceptance tests all route through it. Unblocks
+  the MCP `run` tool (#617) and the SPMD co-launch (#601); harness-dedup tail
+  filed as [#681](https://github.com/oramasearch/zetta/issues/681).
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next

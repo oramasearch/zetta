@@ -221,7 +221,7 @@ needs a test fake exposed to the testkit.
 - `query.ddl_dml` — CREATE / DROP DATABASE + TABLE, INSERT, SELECT with a `WHERE` comparison (node)
 - `query.system_tables` — `system.nodes` / `deployments` / `models` / `jobs` computed at query time (node / cluster)
 - `solution.catalog` — the built-in AI Solution Library blueprints parse + schema-validate + id-uniqueness (pure)
-- `solution.churn` — `run_churn_solution`: the catalog churn blueprint on the real engine → a real `Model` + ranked list + drivers (coordinator)
+- `solution.churn` — `run_churn_solution_on_node`: the catalog churn blueprint on the real engine → a real `Model` + ranked list + drivers (coordinator)
 
 Most **(pure)** and **(node)** cases are drop-in (same shape as the existing ones).
 The **(fake seam)** provisioning cases need a small refactor to expose a fake control

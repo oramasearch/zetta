@@ -175,11 +175,12 @@ DatasetBuild build_saas_dataset(const std::vector<std::string>& columns,
     return out;
 }
 
-// One member of the running cluster: the device + coordinator + table id the SPMD
-// near-data train runs against (the Node + Cluster are owned by the LoopbackCluster).
+// One member of the running cluster: the device + table id the SPMD near-data
+// train runs against. The Node + Cluster are owned by the LoopbackCluster, and the
+// coordinator is the NODE'S own (attach_cluster, the #579 spine — #637: no ad-hoc
+// per-member coordinators).
 struct Member {
     std::unique_ptr<CpuDevice> device;
-    std::unique_ptr<compute::JobCoordinator> coordinator;
     std::string table_id;
 };
 
@@ -363,10 +364,10 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
     context.emit("training on '" + label + "' compute-near-data over the partitions");
     std::vector<std::shared_ptr<zetta::compute::ComputeJob>> jobs(nodes);
     std::vector<NearDataTrainResult> results(nodes);
+    // Every node submits through ITS OWN long-lived coordinator (the #579 spine,
+    // #637) — attach_cluster brings it up over that node's real cluster membership.
     for (std::size_t i = 0; i < nodes; ++i) {
-        members[i].coordinator =
-            std::make_unique<compute::JobCoordinator>(cluster.cluster(i), /*workers=*/2);
-        members[i].coordinator->start();
+        cluster.node(i).attach_cluster(cluster.cluster(i), /*worker_count=*/2);
     }
     {
         std::vector<std::thread> threads;
@@ -374,10 +375,11 @@ TestResult run_uc1_at_scale(const TestOptions& options, TestContext& context) {
             jobs[i] = cluster.node(i).create_job(zetta::compute::JobKind::Train);
             threads.emplace_back([&, i] {
                 results[i] = ml::run_near_data_train_job(
-                    *members[i].coordinator, cluster.node(i), *jobs[i], members[i].table_id,
-                    schema, feature_columns, label, gbdt_params(), *members[i].device,
-                    "conversation_id", calibration_config(calibrate), "uc1-outcome-gbdt",
-                    /*top_k=*/0, /*round_tag=*/"uc1.at_scale", std::chrono::seconds(20));
+                    *cluster.node(i).job_coordinator(), cluster.node(i), *jobs[i],
+                    members[i].table_id, schema, feature_columns, label, gbdt_params(),
+                    *members[i].device, "conversation_id", calibration_config(calibrate),
+                    "uc1-outcome-gbdt", /*top_k=*/0, /*round_tag=*/"uc1.at_scale",
+                    std::chrono::seconds(20));
             });
         }
         for (std::thread& thread : threads) thread.join();
