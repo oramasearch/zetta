@@ -86,9 +86,7 @@ void App::draw_run_detail(const zetta::pipeline::Run& run) {
         }
     }
 
-    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
-                                        ImGuiTableFlags_RowBg |
-                                        ImGuiTableFlags_SizingStretchProp;
+    const ImGuiTableFlags table_flags = kDataTableFlags;
 
     // Logs — time + level (color-coded) + message; the failing step + reason of
     // a failed run live here.
