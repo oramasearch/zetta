@@ -40,7 +40,9 @@ void App::draw_explorer() {
     if (auto pending_entity = take_pending_selection(View::Explorer)) {
         selected_project_ = *pending_entity;
     }
-    ImGui::SeparatorText("Explorer");
+    page_header("Explorer",
+                "Browse projects, databases, tables, rows, and large objects "
+                "on this node.");
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float col_w =
         (ImGui::GetContentRegionAvail().x - 4.0f * spacing) / 5.0f;
