@@ -257,6 +257,14 @@ no-op.
   remaining, later slice; today the coordinator runs against whatever cluster is
   present.
 
+- **Job entity writes gate through the node's owner thread (#624).**
+  `set_owner_gate` (wired by `Node::start_coordinator` over `Node::run_on_owner`)
+  routes `run()`'s trace stamp + Running/terminal `set_status` onto the node's
+  owner loop, so a job driven from a background-action worker mutates the
+  node-owned record safely; unset (per-op suites, no node behind the
+  coordinator) the writes run inline. See
+  [../architecture/owner-gate.md](../architecture/owner-gate.md).
+
 ## See also
 
 - [ddf-ops.md](../ddf/ddf-ops.md) — the first consumer: the DDF groupby-aggregation op

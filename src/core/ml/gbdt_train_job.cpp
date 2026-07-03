@@ -378,11 +378,14 @@ DistributedTrainResult run_train_job(
                                 {"features", feature_columns},
                                 {"drivers", std::move(drivers)}};
         value.metrics = out.metrics.to_json();
-        std::shared_ptr<Model> model = node->create_model(std::move(value));
-        if (model) {
-            model->set_weights(out.model.to_json().dump());
-            out.model_id = model->id();
-        }
+        // Node-tree write: gated onto the owner thread (#624), so a train job
+        // driven from a background-action worker registers the Model safely.
+        std::shared_ptr<Model> model;
+        node->run_on_owner([&] {
+            model = node->create_model(std::move(value));
+            if (model) model->set_weights(out.model.to_json().dump());
+        });
+        if (model) out.model_id = model->id();
     }
 
     // Training fully completed — the model is durable as a Model entity, so the

@@ -1,10 +1,12 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "temp_dir.hpp"
@@ -283,6 +285,85 @@ TEST(ChurnSolution, IsChurnGraphRecognizesBackbone) {
     EXPECT_FALSE(zetta::usecases::churn::is_churn_graph(load_then_train));
 
     EXPECT_FALSE(zetta::usecases::churn::is_churn_graph(zetta::ir::ExecutionGraph{}));
+}
+
+// =====================================================================
+// #624: the async run — off the caller's thread, node writes gated
+// =====================================================================
+
+TEST(ChurnSolution, AsyncRunCompletesWhileTheOwnerLoopTicks) {
+    const Solution* solution =
+        SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    AttachedNode host(24530);
+    ASSERT_NE(host.node.job_coordinator(), nullptr);
+
+    ChurnSolutionOptions options;
+    options.project = "async-churn";
+    options.graph = "churn-prediction";
+    const std::shared_ptr<zetta::usecases::churn::AsyncChurnRun> run =
+        zetta::usecases::churn::AsyncChurnRun::start(
+            host.node, solution->graph,
+            zetta::usecases::churn::demo_churn_dataset(), options);
+
+    // This thread is the node's owner: keep ticking — tick() is the drain
+    // point for the worker's gated node writes — until the worker finishes.
+    // Patient, like the multi-node convergence loops.
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::minutes(2);
+    while (!run->done() && std::chrono::steady_clock::now() < deadline) {
+        host.node.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(run->done()) << "the async churn run must finish";
+
+    const ChurnSolutionResult& result = run->result();
+    ASSERT_TRUE(result.ok()) << result.execution.error;
+    EXPECT_FALSE(result.model_id.empty());
+    // The records the panels / MCP poll for live progress landed on the node.
+    ASSERT_TRUE(result.execution.run);
+    EXPECT_EQ(result.execution.run->status(), RunStatus::Succeeded);
+    EXPECT_EQ(result.execution.run->project(), "async-churn");
+    EXPECT_TRUE(host.node.find_model(result.model_id));
+    EXPECT_FALSE(host.node.jobs().empty());
+}
+
+TEST(ChurnSolution, AsyncRunCancelEndsTheRunFailed) {
+    const Solution* solution =
+        SolutionCatalog::builtin().find("churn-prediction");
+    ASSERT_NE(solution, nullptr);
+
+    AttachedNode host(24540);
+    ChurnSolutionOptions options;
+    options.project = "async-churn-cancel";
+    options.graph = "churn-prediction";
+    const std::shared_ptr<zetta::usecases::churn::AsyncChurnRun> run =
+        zetta::usecases::churn::AsyncChurnRun::start(
+            host.node, solution->graph,
+            zetta::usecases::churn::demo_churn_dataset(), options);
+
+    // Cancel BEFORE the first tick: the worker's first gated node write has
+    // not drained yet, so the flag is set before the first between-steps
+    // check — the cancel path is deterministic, not a race.
+    run->request_cancel();
+    EXPECT_TRUE(run->cancel_requested());
+
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::minutes(2);
+    while (!run->done() && std::chrono::steady_clock::now() < deadline) {
+        host.node.tick();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(run->done());
+
+    const ChurnSolutionResult& result = run->result();
+    EXPECT_FALSE(result.ok());
+    EXPECT_EQ(result.execution.error, "run cancelled by user");
+    ASSERT_TRUE(result.execution.run);
+    EXPECT_EQ(result.execution.run->status(), RunStatus::Failed);
+    EXPECT_TRUE(host.node.models().empty())
+        << "no step ran, so no Model registers";
 }
 
 }  // namespace

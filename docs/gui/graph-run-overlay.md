@@ -71,9 +71,11 @@ than something wrong.
   with the project + stored-graph id — the workspace's own run-initiating
   action, so the overlay has GUI-initiated runs to show. A churn-shaped graph
   routes through the real churn engine over the node's live `JobCoordinator`
-  (the governed-console wiring, #580); anything else runs the structural
-  `DefaultStepExecutor`. Synchronous on the UI thread that owns the node (the
-  `run_churn_demo` per-click pattern).
+  (the governed-console wiring, #580) — OFF the UI thread via `AsyncChurnRun`
+  (#624, shared with the Deploy panel, one churn run at a time), so the
+  overlay animates the run as it executes; anything else runs the structural
+  `DefaultStepExecutor` synchronously (quick). See
+  [long-running-actions.md](long-running-actions.md).
 
 Status colours come only from `tone_of(...)` — `StepRunStatus` adds one
 overload in `src/gui/tones.hpp` (#636), deliberately identical to

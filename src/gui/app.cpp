@@ -220,6 +220,17 @@ App::App(Node& node, zetta::cluster::Cluster& cluster)
 }
 
 App::~App() {
+    // Wind down in-flight background actions (#624) before anything else is
+    // torn down. The churn handle's destructor requests cancel and joins its
+    // worker, pumping the node's owner gate so a blocked node write completes
+    // (the node outlives the App). The dataset add + cloud inspect workers own
+    // their state by shared_ptr, so dropping the handles is enough.
+    if (churn_run_) churn_run_.reset();
+    if (dataset_add_) {
+        dataset_add_->request_cancel();
+        dataset_add_.reset();
+    }
+    cloud_inspect_op_.reset();
     // Wait out any in-flight test run (the worker borrows `this`).
     if (test_worker_ && test_worker_->joinable()) test_worker_->join();
     if (initialized_) {
@@ -507,25 +518,25 @@ void App::handle_incoming_files() {
         }
         // A dataset file (parquet/jsonl/json/csv) is loaded as a *partitioned*
         // table (#587) so it appears in the Datasets view with its partitions
-        // placed across the cluster. The add runs on this (main) thread, which
-        // owns the node, like the other ingestion paths.
+        // placed across the cluster. OFF the UI thread (#624): the decode runs
+        // on a runtime worker and poll_background_ops() pumps the owner-thread
+        // materialize in bounded slices, so a large file no longer freezes the
+        // window. The Datasets view shows the live progress (+ cancel); one
+        // add at a time — a second drop waits in the queue until it finishes.
         if (intent == FileIntent::Dataset) {
+            if (dataset_add_) {
+                const std::lock_guard<std::mutex> lock(incoming_mutex_);
+                incoming_files_.push_back(f);  // retry once the current add ends
+                continue;
+            }
             zetta::data::AddDatasetOptions options;
             options.members = node_.cluster_members();
-            const zetta::data::AddDatasetResult loaded = add_dataset_file(node_, path, options);
-            if (loaded.ok()) {
-                io_status_ = "Added dataset " + loaded.table->name() + " (" +
-                             std::to_string(loaded.rows) + " row(s), " +
-                             std::to_string(loaded.partitions.size()) +
-                             " partition(s))";
-                io_status_error_ = false;
-                // Surface it: switch to the Datasets view and select it.
-                navigate_to(View::Datasets,
-                            loaded.table ? loaded.table->id() : std::string());
-            } else {
-                io_status_ = "Add dataset failed: " + loaded.error;
-                io_status_error_ = true;
-            }
+            dataset_add_ =
+                zetta::data::AsyncDatasetAdd::start(node_, path, options);
+            io_status_ =
+                "Adding dataset from " + path.filename().string() + "…";
+            // Surface the progress where it lives: the Datasets view.
+            navigate_to(View::Datasets);
             continue;
         }
         if (intent == FileIntent::Auto) {
@@ -563,6 +574,65 @@ void App::handle_incoming_files() {
                                   zetta::util::format_bytes(lo->size) + ") as a large object"
                             : "Store failed: " + path.string();
             io_status_error_ = !lo.has_value();
+        }
+    }
+}
+
+void App::poll_background_ops() {
+    // Runs once per frame on the UI thread (the node's owner). Each block is a
+    // cheap no-op when its action is idle.
+    poll_cloud_inspect();
+
+    // Churn run (#624): while in flight the Deploy panel / run overlay render
+    // live from the Run + jobs records; here we only apply the outcome once
+    // the worker has finished. The status line belongs to the Deploy panel —
+    // a workspace-launched run's feedback is the overlay itself.
+    if (churn_run_ && churn_run_->done()) {
+        const zetta::usecases::churn::ChurnSolutionResult& result =
+            churn_run_->result();
+        if (churn_run_from_deploy_) {
+            if (!result.ok()) {
+                churn_run_failed_ = true;
+                churn_run_status_ =
+                    "Run failed: " +
+                    (result.execution.error.empty()
+                         ? std::string("the churn pipeline did not complete")
+                         : result.execution.error);
+            } else {
+                churn_run_failed_ = false;
+                std::string line = "Trained model " +
+                                   result.model_id.substr(0, 8) + " · " +
+                                   std::to_string(result.ranked.size()) +
+                                   " accounts ranked";
+                if (!result.top_driver.empty()) {
+                    line += " · top driver: " + result.top_driver;
+                }
+                churn_run_status_ = line;
+            }
+        }
+        churn_run_.reset();  // the worker already finished: the join is immediate
+    }
+
+    // Dataset add (#624): pump one bounded owner-thread slice per frame (the
+    // decode runs on its own worker), then apply the outcome when it lands.
+    if (dataset_add_) {
+        dataset_add_->pump();
+        if (dataset_add_->done()) {
+            const zetta::data::AddDatasetResult& loaded = dataset_add_->result();
+            if (loaded.ok() && loaded.table) {
+                io_status_ = "Added dataset " + loaded.table->name() + " (" +
+                             std::to_string(loaded.rows) + " row(s), " +
+                             std::to_string(loaded.partitions.size()) +
+                             " partition(s))";
+                // Select the new table if the user is still on Datasets; never
+                // yank the view for a background completion.
+                if (active_view_ == View::Datasets) {
+                    navigate_to(View::Datasets, loaded.table->id());
+                }
+            } else {
+                io_status_ = "Add dataset failed: " + loaded.error;
+            }
+            dataset_add_.reset();
         }
     }
 }
@@ -700,6 +770,10 @@ void App::run() {
         // the active view so a background provision completes even if the user
         // navigated away from the Cluster panel.
         poll_add_nodes();
+        // Same for the other background actions (#624): apply a finished cloud
+        // inspect, surface a finished churn run, pump the dataset add's
+        // owner-thread slices.
+        poll_background_ops();
 
         // A user text-size change (View → Text size) rebuilds the font atlas
         // here, between frames — never mid-frame, while the atlas is in use.

@@ -1,13 +1,17 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "zetta/governance/access_key.hpp"
@@ -123,6 +127,42 @@ public:
     // Advance background work, including reconciling the local projection with
     // the replicated document when it has changed. Cheap and non-blocking.
     void tick();
+
+    // --- The owner-thread gate (#624) -------------------------------------
+    //
+    // The Node tree is owned by ONE thread: the thread that constructed the
+    // node and drives tick() (the headed frame loop, or the headless tick
+    // loop). run_on_owner is how work running on ANOTHER thread — a
+    // background-action worker driving a long engine run off the UI thread —
+    // touches the tree safely: called on the owner thread it runs `work`
+    // inline (zero cost for every existing synchronous caller); called
+    // anywhere else it queues `work` and blocks the calling thread until the
+    // owner loop has executed it (tick() drains the queue right where
+    // reconcile already runs). The same decision as the API surface's
+    // MainThreadBridge (docs/api/registry-design.md), moved down to the Node
+    // so engine runners can be driven from a worker.
+    //
+    // `work` must be quick (it executes inside a tick) and must not throw.
+    // Calling from a non-owner thread requires a live owner loop — EXCEPT on
+    // a node no loop has ever ticked: with no owner to drain the queue the
+    // work runs inline (the pre-gate contract — a harness driving nodes from
+    // its own threads arranges exclusive access itself; both apps adopt an
+    // owner on their first loop pass, before any background action exists).
+    // The wait rides the runtime seam (async_event + block_on) — no
+    // caller-facing condition variables.
+    void run_on_owner(const std::function<void()>& work);
+
+    // True when the calling thread is the node's owner thread (the thread
+    // that constructed it, refreshed by tick() so a node handed to another
+    // loop follows its ticker).
+    bool on_owner_thread() const;
+
+    // The owner loop's drain point: execute every queued run_on_owner work
+    // item on the calling thread. tick() calls it every pass; call it directly
+    // ONLY from the owner thread, and only where a loop must pump the gate
+    // without a full tick (e.g. a teardown path joining a gated background
+    // worker — see AsyncChurnRun's destructor).
+    void drain_owner_work();
 
     // Bring the node down cleanly (flush, close). Safe to call when stopped.
     void stop();
@@ -712,6 +752,18 @@ private:
     // The node's span ring (#640): bounded, internally mutex-guarded, ephemeral /
     // observed; NOT replicated. See span_recorder() above.
     zetta::observability::SpanRecorder span_recorder_;
+    // The owner-thread gate (#624, see run_on_owner above). The mutex is the
+    // contained cross-thread handoff of the queue itself (the cluster-outbox
+    // pattern the coroutines-first convention sanctions) — never exposed.
+    // `signal_completed` type-erases the waiter's runtime::async_event so this
+    // header stays free of the runtime seam's backend headers.
+    struct OwnerWork {
+        std::function<void()> work;
+        std::function<void()> signal_completed;
+    };
+    std::atomic<std::thread::id> owner_thread_;
+    mutable std::mutex owner_work_mutex_;
+    std::deque<OwnerWork> owner_work_queue_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)

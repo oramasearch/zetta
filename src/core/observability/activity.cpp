@@ -45,6 +45,8 @@ std::string_view action_label(zetta::governance::AuditAction action) {
         case AuditAction::KeyIssued:          return "key issued";
         case AuditAction::KeyRevoked:         return "key revoked";
         case AuditAction::ProvisionRequested: return "provision requested";
+        case AuditAction::CloudInspected:     return "cloud inspected";
+        case AuditAction::DatasetAdded:       return "dataset added";
     }
     return "data access";
 }
@@ -91,6 +93,14 @@ ActivityEntry entry_for(const zetta::governance::AuditEvent& event) {
             break;
         case AuditAction::GraphDeployed:
             entry.ref_kind = "deployment";  // target is the deployed graph name
+            entry.ref_id = event.target();
+            break;
+        case AuditAction::DatasetAdded:
+            entry.ref_kind = "dataset";  // the audit target is the table id
+            entry.ref_id = event.target();
+            break;
+        case AuditAction::CloudInspected:
+            entry.ref_kind = "cloud";  // the audit target is the provider id
             entry.ref_id = event.target();
             break;
         default:

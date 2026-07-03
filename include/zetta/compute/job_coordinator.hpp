@@ -259,6 +259,16 @@ public:
         scheduler_.set_span_recorder(recorder);
     }
 
+    // Wire the node's owner-thread gate (#624): run() then routes its ComputeJob
+    // entity writes (the Running / terminal status transitions) through it, so a
+    // job driven from a background-action worker mutates the node-owned record
+    // on the owner thread. Unset = writes run inline (the synchronous callers,
+    // and the per-op job suites that drive a coordinator with no node behind
+    // it). Wired by Node::start_coordinator over Node::run_on_owner.
+    void set_owner_gate(std::function<void(const std::function<void()>&)> gate) {
+        owner_gate_ = std::move(gate);
+    }
+
     // Register as the cluster's signal handler and start the cross-node steal
     // loop. Required before running jobs that use map(); harmless (recommended
     // for uniformity) for SPMD jobs, whose collectives route through the chain.
@@ -288,6 +298,8 @@ private:
     zetta::cluster::Collectives collectives_;
     DistributedScheduler scheduler_;
     zetta::observability::SpanRecorder* recorder_ = nullptr;  // null = no-op spans
+    // The owner-thread gate for job entity writes (#624); empty = inline.
+    std::function<void(const std::function<void()>&)> owner_gate_;
 };
 
 }  // namespace zetta::compute

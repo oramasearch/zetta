@@ -99,9 +99,13 @@ Rendered through the [master-detail scaffold](../gui/master-detail.md)
       missing CLI) — plus **"Re-inspect"** and **"Revoke permission"** buttons.
       The inspect runs only on Allow / Re-inspect, never on a passive render.
 
-`App::run_cloud_inspect()` is the single place the GUI touches a cloud. It runs
-synchronously on the UI thread (which owns the node, so caching the result races
-with nothing) and records the report via `Node::record_cloud_inspection`.
+`App::run_cloud_inspect()` is the single place the GUI touches a cloud. The CLI
+shell-out runs OFF the UI thread (#624, a `runtime::spawn` coroutine — see
+[../gui/long-running-actions.md](../gui/long-running-actions.md)): the consent
+gate shows a live "Inspecting · Ns" affordance with the launch buttons disabled,
+and `App::poll_background_ops()` applies the report on the UI thread via
+`Node::record_cloud_inspection` — which also records a `cloud_inspected` audit
+event, so the inspect surfaces in the activity feed.
 
 ## The inspector (`zetta::cloud::CloudInspector`)
 
@@ -161,8 +165,8 @@ table by default*, the inspector is queryable through the
 The inspector now does the **real read-only inspect** behind the consent gate (the
 follow-up to the original scaffold). Out of scope, by design: **writes** (provision
 / deploy / teardown) stay out of the inspector entirely; bare-metal/on-prem is
-described but **not runnable** until a host is configured; and the inspect runs on
-the UI thread (a brief block on a user-initiated click) rather than off-thread.
+described but **not runnable** until a host is configured. The inspect runs
+off-thread since #624; cancelling an in-flight CLI subprocess is a later slice.
 
 ## Tests
 

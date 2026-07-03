@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -349,6 +352,154 @@ TEST(AddDataset, SecondLoadOfSameFileGetsUniqueName) {
     ASSERT_TRUE(second.ok()) << second.error;
     EXPECT_EQ(first.table->name(), "dupe");
     EXPECT_EQ(second.table->name(), "dupe_2");
+}
+
+
+// =====================================================================
+// The async add (#624): decode on a worker, materialize in owner slices
+// =====================================================================
+
+namespace {
+
+// Pump the add on this (owner) thread until it finishes or `seconds` elapse.
+void pump_until_done(zetta::Node& node, zetta::data::AsyncDatasetAdd& add,
+                     int seconds) {
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(seconds);
+    while (!add.done() && std::chrono::steady_clock::now() < deadline) {
+        node.tick();
+        add.pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+// A CSV big enough that the materialize spans several bounded pump slices
+// (> the per-pump chunk), so the tests exercise the sliced path.
+std::string big_csv(std::size_t rows) {
+    std::string content = "id,value\n";
+    for (std::size_t i = 0; i < rows; ++i) {
+        content += std::to_string(i) + "," + std::to_string(i * 2) + "\n";
+    }
+    return content;
+}
+
+}  // namespace
+
+TEST(AsyncDatasetAdd, DecodesOffThreadAndMaterializesInSlices) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    constexpr std::size_t kRows = 9000;  // > one materialize chunk
+    const fs::path csv = write_file(tmp.path(), "large.csv", big_csv(kRows));
+
+    const std::shared_ptr<zetta::data::AsyncDatasetAdd> add =
+        zetta::data::AsyncDatasetAdd::start(node, csv, {});
+    pump_until_done(node, *add, 60);
+    ASSERT_TRUE(add->done());
+
+    const AddDatasetResult& result = add->result();
+    ASSERT_TRUE(result.ok()) << result.error;
+    ASSERT_TRUE(result.table);
+    EXPECT_EQ(result.rows, kRows);
+    EXPECT_EQ(add->rows_total(), kRows);
+    EXPECT_EQ(add->rows_added(), kRows);
+    EXPECT_FALSE(result.partitions.empty());
+    EXPECT_EQ(result.table->row_count(), kRows);
+
+    // The completed add is audited — the activity feed's completion entry.
+    bool audited = false;
+    for (const auto& event : node.audit_events()) {
+        if (event &&
+            event->action() == zetta::governance::AuditAction::DatasetAdded &&
+            event->target() == result.table->id()) {
+            audited = true;
+        }
+    }
+    EXPECT_TRUE(audited);
+
+    node.stop();
+}
+
+TEST(AsyncDatasetAdd, CancelMidMaterializeDropsThePartialTable) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    const fs::path csv = write_file(tmp.path(), "big.csv", big_csv(9000));
+    const std::shared_ptr<zetta::data::AsyncDatasetAdd> add =
+        zetta::data::AsyncDatasetAdd::start(node, csv, {});
+
+    // Reach the materialize phase (decode finished, table created)…
+    using Phase = zetta::data::AsyncDatasetAdd::Phase;
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    while (add->phase() == Phase::Decoding && !add->done() &&
+           std::chrono::steady_clock::now() < deadline) {
+        node.tick();
+        add->pump();
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(add->phase(), Phase::Materializing);
+    add->pump();  // land at least one slice of rows
+
+    // …then cancel: the next pump drops the partial table.
+    add->request_cancel();
+    pump_until_done(node, *add, 60);
+    ASSERT_TRUE(add->done());
+    EXPECT_FALSE(add->result().ok());
+    EXPECT_EQ(add->result().error, "cancelled by user");
+    EXPECT_FALSE(add->result().table);
+
+    // Nothing durable survives: the table is gone from its database.
+    const std::shared_ptr<Database> database = node.find_database("datasets");
+    ASSERT_TRUE(database);
+    EXPECT_FALSE(database->find_table("big"));
+
+    node.stop();
+}
+
+TEST(AsyncDatasetAdd, CancelDuringDecodeTouchesNothing) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    const fs::path csv = write_file(tmp.path(), "rows.csv", big_csv(9000));
+    const std::shared_ptr<zetta::data::AsyncDatasetAdd> add =
+        zetta::data::AsyncDatasetAdd::start(node, csv, {});
+    // Cancel immediately — before pumping at all, so the decode (or the first
+    // pump) observes it and the node is never touched.
+    add->request_cancel();
+    pump_until_done(node, *add, 60);
+    ASSERT_TRUE(add->done());
+    EXPECT_FALSE(add->result().ok());
+    EXPECT_EQ(add->result().error, "cancelled by user");
+    EXPECT_FALSE(node.find_database("datasets"))
+        << "a cancel before materialize must not create the database";
+
+    node.stop();
+}
+
+TEST(AddDataset, SyncAddRecordsTheAuditEvent) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    const fs::path csv =
+        write_file(tmp.path(), "tiny.csv", "a,b\n1,2\n3,4\n");
+    const AddDatasetResult result = add_dataset_file(node, csv);
+    ASSERT_TRUE(result.ok()) << result.error;
+    bool audited = false;
+    for (const auto& event : node.audit_events()) {
+        if (event &&
+            event->action() == zetta::governance::AuditAction::DatasetAdded &&
+            event->target() == result.table->id()) {
+            audited = true;
+        }
+    }
+    EXPECT_TRUE(audited);
+
+    node.stop();
 }
 
 }  // namespace

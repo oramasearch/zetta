@@ -6,13 +6,53 @@
 #include "zetta/cloud/cloud_provider.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/node.hpp"
+#include "zetta/runtime.hpp"
 
 #include <imgui.h>
 
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace zetta::gui {
+
+// In-flight async cloud inspect (#624; the AddNodesOp spawn/poll pattern). The
+// consent-approved provider CLI runs OFF the UI thread in a runtime::spawn'd
+// coroutine — only the pure CLI work, no Node access — and writes its report
+// here; poll_background_ops() applies it on the UI thread
+// (record_cloud_inspection, which also records the audit event). Held by
+// shared_ptr so the coroutine frame + completion keep it alive; the provider is
+// snapshotted by value (never capture by reference).
+struct CloudInspectOp {
+    zetta::cloud::CloudProvider provider;
+    std::chrono::steady_clock::time_point started;
+
+    std::mutex mutex;  // guards `report`
+    std::optional<zetta::cloud::CloudInspectReport> report;
+    std::atomic<bool> done{false};
+};
+
+namespace {
+
+// The off-thread inspect: takes the op by value (shared_ptr) so the coroutine
+// frame owns its inputs. Touches no Node state.
+zetta::runtime::task<> inspect_task(std::shared_ptr<CloudInspectOp> op) {
+    zetta::cloud::CloudInspector inspector;
+    zetta::cloud::CloudInspectReport report = inspector.inspect(op->provider);
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        op->report = std::move(report);
+    }
+    co_return;
+}
+
+}  // namespace
 
 void App::draw_cloud() {
     page_header("Cloud inspector",
@@ -123,6 +163,12 @@ void App::draw_cloud() {
             ImGui::BeginChild("##consent", ImVec2(0, 0),
                               ImGuiChildFlags_Borders |
                                   ImGuiChildFlags_AutoResizeY);
+            // While an inspect is in flight the launch buttons are disabled
+            // (one at a time) — the CLI runs off the UI thread (#624), so the
+            // panel keeps rendering; the affordance below shows live elapsed.
+            const bool inspecting = cloud_inspect_op_ != nullptr;
+            const bool inspecting_here =
+                inspecting && cloud_inspect_op_->provider.id == provider->id;
             if (!consented) {
                 status_label(Tone::Warn, "Permission required");
                 ImGui::TextColored(kInkSecondary,
@@ -132,17 +178,33 @@ void App::draw_cloud() {
                 ImGui::Spacing();
                 const std::string allow_label =
                     "Allow inspection of " + provider->name;
+                ImGui::BeginDisabled(inspecting);
                 if (primary_button(allow_label.c_str())) {
                     cloud_consent_provider_ = provider->id;
                     run_cloud_inspect(*provider);  // the one cloud call, behind consent
                 }
+                ImGui::EndDisabled();
             } else {
                 status_label(Tone::Ok, "Permission granted for this inspection");
-                draw_cloud_inspect_result(*provider);
+                if (inspecting_here) {
+                    const double elapsed =
+                        std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() -
+                            cloud_inspect_op_->started)
+                            .count();
+                    char inspecting_line[64];
+                    std::snprintf(inspecting_line, sizeof(inspecting_line),
+                                  "Inspecting · %.0fs", elapsed);
+                    status_label(Tone::Active, inspecting_line);
+                } else {
+                    draw_cloud_inspect_result(*provider);
+                }
                 ImGui::Spacing();
+                ImGui::BeginDisabled(inspecting);
                 if (ImGui::Button("Re-inspect")) {
                     run_cloud_inspect(*provider);
                 }
+                ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::Button("Revoke permission")) {
                     cloud_consent_provider_.clear();
@@ -228,14 +290,41 @@ void App::draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider)
     }
 }
 
+void App::poll_cloud_inspect() {
+    if (!cloud_inspect_op_ ||
+        !cloud_inspect_op_->done.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::shared_ptr<CloudInspectOp> op = cloud_inspect_op_;
+    zetta::cloud::CloudInspectReport report;
+    {
+        std::lock_guard<std::mutex> lock(op->mutex);
+        if (op->report) report = std::move(*op->report);
+    }
+    // Applied on the UI thread (which owns the node): caches the report for
+    // the panel + system.cloud_status and records the cloud_inspected audit
+    // event — the activity feed's completion entry.
+    node_.record_cloud_inspection(std::move(report));
+    cloud_inspect_op_.reset();
+}
+
 void App::run_cloud_inspect(const zetta::cloud::CloudProvider& provider) {
     // The single point where the GUI touches a cloud — reached only from the
-    // consent gate's Allow / Re-inspect actions. Synchronous: the inspect runs on
-    // the UI thread (which owns the node), so recording the result races with
-    // nothing. The default CommandRunner shells out to the provider's CLI; the
-    // result is cached for the panel and for system.cloud_status.
-    zetta::cloud::CloudInspector inspector;
-    node_.record_cloud_inspection(inspector.inspect(provider));
+    // consent gate's Allow / Re-inspect actions. The CLI shell-out runs OFF the
+    // UI thread (#624) so a slow provider no longer freezes the window;
+    // poll_background_ops() applies the report on the UI thread (which owns
+    // the node) when it finishes — record_cloud_inspection caches it for the
+    // panel + system.cloud_status and records the cloud_inspected audit event.
+    if (cloud_inspect_op_) return;  // one inspect at a time (buttons disabled)
+    auto op = std::make_shared<CloudInspectOp>();
+    op->provider = provider;  // snapshot by value — the coroutine owns it
+    op->started = std::chrono::steady_clock::now();
+    cloud_inspect_op_ = op;
+    zetta::runtime::spawn(inspect_task(op), [op] {
+        // Completion runs on a pool worker: only flip the (atomic) flag the
+        // frame loop polls. The report is applied on the UI thread.
+        op->done.store(true, std::memory_order_release);
+    });
 }
 
 }  // namespace zetta::gui

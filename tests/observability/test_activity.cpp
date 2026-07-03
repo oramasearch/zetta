@@ -217,3 +217,42 @@ TEST(ActivityFeed, WireNamesAreStable) {
     EXPECT_EQ(to_string(ActivityOutcome::Failed), "failed");
     EXPECT_EQ(to_string(ActivityOutcome::Info), "info");
 }
+
+TEST(ActivityFeed, DatasetAddAndCloudInspectEnterTheFeed) {
+    // #624: the two backgrounded actions surface their completion here — a
+    // dataset add via its dataset_added audit event (deep-linkable to the
+    // Datasets view) and a consent-approved cloud inspect via cloud_inspected.
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    zetta::governance::AuditEventValue dataset_added;
+    dataset_added.action = AuditAction::DatasetAdded;
+    dataset_added.target = "table-uuid-1";
+    dataset_added.detail = "dataset 'events' added: 12 row(s), 8 partition(s), csv";
+    node.record_audit_event(dataset_added);
+
+    zetta::governance::AuditEventValue cloud_inspected;
+    cloud_inspected.action = AuditAction::CloudInspected;
+    cloud_inspected.target = "aws";
+    cloud_inspected.allowed = false;  // the inspect ran but never reached AWS
+    cloud_inspected.detail = "aws CLI not found";
+    node.record_audit_event(cloud_inspected);
+
+    const std::vector<ActivityEntry> entries = activity_entries(node);
+
+    const ActivityEntry* dataset = find_action(entries, "dataset added");
+    ASSERT_NE(dataset, nullptr);
+    EXPECT_EQ(dataset->ref_kind, "dataset");
+    EXPECT_EQ(dataset->ref_id, "table-uuid-1");
+    EXPECT_EQ(dataset->outcome, ActivityOutcome::Ok);
+
+    const ActivityEntry* inspect = find_action(entries, "cloud inspected");
+    ASSERT_NE(inspect, nullptr);
+    EXPECT_EQ(inspect->ref_kind, "cloud");
+    EXPECT_EQ(inspect->ref_id, "aws");
+    EXPECT_EQ(inspect->outcome, ActivityOutcome::Failed);
+    EXPECT_EQ(inspect->detail, "aws CLI not found");
+
+    node.stop();
+}

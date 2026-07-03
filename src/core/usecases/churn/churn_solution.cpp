@@ -1,11 +1,14 @@
 #include "zetta/usecases/churn/churn_solution.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -151,7 +154,8 @@ ChurnSolutionResult run_churn_solution_with_coordinator(
     zetta::pipeline::GraphExecutor executor{churn};
 
     ChurnSolutionResult result;
-    result.execution = executor.execute(node, graph, options.project, options.graph);
+    result.execution = executor.execute(node, graph, options.project,
+                                        options.graph, options.cancel);
     result.model_id = churn->model_id();
     result.ranked = churn->ranked();
     result.drivers = churn->driver_ranking();
@@ -534,6 +538,49 @@ void install_churn_launch_runner(compute::CoordinatedLaunchListener& listener,
             return run_coordinated_churn_launch(node, listener.node_id(),
                                                 request);
         });
+}
+
+std::shared_ptr<AsyncChurnRun> AsyncChurnRun::start(Node& node,
+                                                    ir::ExecutionGraph graph,
+                                                    ChurnDataset dataset,
+                                                    ChurnSolutionOptions options) {
+    // No make_shared: the constructor is private (start() is the one way in,
+    // so a handle always has its worker running).
+    return std::shared_ptr<AsyncChurnRun>(new AsyncChurnRun(
+        node, std::move(graph), std::move(dataset), std::move(options)));
+}
+
+AsyncChurnRun::AsyncChurnRun(Node& node, ir::ExecutionGraph graph,
+                             ChurnDataset dataset, ChurnSolutionOptions options)
+    : node_(node),
+      graph_(std::move(graph)),
+      dataset_(std::move(dataset)),
+      options_(std::move(options)),
+      project_(options_.project),
+      device_(std::make_unique<compute::CpuDevice>()),
+      started_(std::chrono::steady_clock::now()) {
+    // The worker's cancel flag is this handle's — wire it before launch.
+    options_.cancel = &cancel_;
+    worker_ = std::thread([this] {
+        // Everything the worker reads it owns (the by-value snapshots above);
+        // every node-tree write on this path gates through Node::run_on_owner.
+        result_ = run_churn_solution_on_node(node_, *device_, graph_, dataset_,
+                                             options_);
+        done_.store(true, std::memory_order_release);  // last act
+    });
+}
+
+AsyncChurnRun::~AsyncChurnRun() {
+    request_cancel();
+    // Pump the node's owner gate while the worker winds down: it may be
+    // blocked handing a node write to the owner loop (this thread), and
+    // joining without draining would deadlock. Cancel lands at the next
+    // between-steps check, so this waits at most one step.
+    while (!done_.load(std::memory_order_acquire)) {
+        node_.drain_owner_work();
+        std::this_thread::yield();
+    }
+    if (worker_.joinable()) worker_.join();
 }
 
 bool is_churn_graph(const ir::ExecutionGraph& graph) {

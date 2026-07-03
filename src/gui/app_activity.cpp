@@ -166,6 +166,11 @@ void App::draw_activity() {
                 // it for the row highlight (#633).
                 entity_link(entry->target.c_str(), View::Deploy,
                             entry->ref_id);
+            } else if (entry->ref_kind == "dataset") {
+                entity_link(short_target(entry->target).c_str(), View::Datasets,
+                            entry->ref_id);
+            } else if (entry->ref_kind == "cloud") {
+                entity_link(entry->target.c_str(), View::Cloud, {});
             } else {
                 entity_link(entry->target.c_str(), View::Admin, {});
             }

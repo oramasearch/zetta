@@ -16,8 +16,8 @@ split:
   `src/core/data/add_dataset.cpp`) — the reusable engine backend. No SDL, so it is
   headless-testable (`tests/data/test_add_dataset.cpp`).
 - The headed affordance (`src/gui/app.cpp` + `src/gui/app_datasets.cpp`) — a
-  button + drag-drop + a File-menu item that call `add_dataset_file` on the UI
-  thread.
+  button + drag-drop + a File-menu item that start an **`AsyncDatasetAdd`**
+  off the UI thread (#624; see "The headed affordance" below).
 
 ## `add_dataset_file`
 
@@ -123,14 +123,21 @@ main thread):
 3. **File → Add dataset…** — the menu item switches to the Datasets view and opens
    the same picker.
 
-`App::handle_incoming_files` handles `FileIntent::Dataset` by calling
-`add_dataset_file(node_, path, {.members = node_.cluster_members()})`, then sets the
-shared status line (`"Added dataset <name> (N row(s), M partition(s))"` or the
-error), selects the new dataset, and switches to the Datasets view — where it
-appears immediately, since the view recomputes from `Node::datasets()` every frame.
-The add runs on the main thread, which owns the node, like every other ingestion
-path. It follows the [Orama design system](../gui/design-system.md) (a charcoal primary
-button, a muted drop hint, sentence case).
+`App::handle_incoming_files` handles `FileIntent::Dataset` by starting an
+**`AsyncDatasetAdd`** (#624): the decode runs on a runtime worker and
+`App::poll_background_ops()` pumps the owner-thread materialize in bounded
+slices, so a large file never freezes the window. The Datasets view (navigated
+to at launch) shows the live progress — a marquee + row count while decoding, a
+real fraction while adding rows — with a **Cancel** that stops the add and
+drops the partial table. Completion sets the shared status line
+(`"Added dataset <name> (N row(s), M partition(s))"` or the error), selects the
+new dataset when the user is still on the view, and records a `dataset_added`
+audit event (the activity feed's completion entry). One add runs at a time; a
+second drop waits in the ingestion queue. The synchronous `add_dataset_file`
+remains the engine entry point for non-interactive callers, sharing the same
+decode + materialize + audit phases. It follows the
+[Orama design system](../gui/design-system.md) (a charcoal primary button, a
+muted drop hint, sentence case).
 
 ## No new JSON format / boundary
 

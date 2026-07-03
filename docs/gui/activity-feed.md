@@ -83,9 +83,10 @@ activity" link into the full view.
 ## Boundaries / later slices
 
 - **No new JSON format** — the feed is computed; nothing is stored or parsed.
-- **Dataset adds** are not in the feed yet: adding a dataset records no
-  audited, timestamped action today (partition `created` stamps exist but
-  carry no actor). They join when dataset adds are audited.
+- **Dataset adds + cloud inspects joined the feed in #624**: a completed add
+  records a `dataset_added` audit event (deep-links to the Datasets view) and
+  a consent-approved inspect records `cloud_inspected` (links to the Cloud
+  panel).
 - **Run provenance**: a run records no actor/surface of its own; an
   MCP-driven run today appears as the MCP-surfaced capability call adjacent
   to the run's own entries. When the run-submitting capabilities land

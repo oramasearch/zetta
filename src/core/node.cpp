@@ -16,6 +16,7 @@
 #include "zetta/data/partition_rebalance.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/runtime.hpp"
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
@@ -64,6 +65,9 @@ Node::Node(NodeConfig config, zetta::cluster::ReplicationManager* replication)
     : config_(std::move(config)),
       replication_(replication),
       checkpoint_store_(std::filesystem::path(config_.data_dir) / "checkpoints") {
+    // The constructing thread starts as the owner thread (#624); tick()
+    // refreshes it, so the node follows whichever loop drives it.
+    owner_thread_.store(std::this_thread::get_id(), std::memory_order_release);
     // Register the always-available index backends so an `index` step resolves
     // out of the box (the per-node container the run path builds + queries
     // through, #528). InMemoryIndexBackend ("memory_search") is the pure-host
@@ -245,6 +249,12 @@ bool Node::start() {
 }
 
 void Node::tick() {
+    // 0. The owner-thread gate (#624): the loop that ticks IS the owner —
+    //    adopt this thread, then execute any node-tree work queued by
+    //    background-action workers (run_on_owner). Runs even before start()
+    //    so a gated worker never waits on a loop that is ticking.
+    owner_thread_.store(std::this_thread::get_id(), std::memory_order_release);
+    drain_owner_work();
     if (!running_) return;
     ++ticks_;
     // 1. Pull: the CRDT is the source of truth; when it has advanced (a local
@@ -306,6 +316,57 @@ void Node::tick() {
     if (launch_listener_) launch_listener_->drain();
 }
 
+void Node::run_on_owner(const std::function<void()>& work) {
+    if (on_owner_thread()) {
+        work();
+        return;
+    }
+    // A node NO loop has ever ticked has no owner to drain the queue — run
+    // inline, the pre-gate contract: a harness driving nodes from its own
+    // threads (the testkit's per-node SPMD threads, the acceptance tests)
+    // arranges exclusive access itself, and queueing here would deadlock
+    // against an owner that will never exist. Both apps tick from their first
+    // loop iteration, so a real owner is always adopted before any background
+    // action can launch.
+    if (owner_thread_.load(std::memory_order_acquire) == std::thread::id{}) {
+        work();
+        return;
+    }
+    auto completed = std::make_shared<zetta::runtime::async_event>();
+    {
+        std::lock_guard<std::mutex> lock(owner_work_mutex_);
+        owner_work_queue_.push_back(
+            OwnerWork{work, [completed] { completed->set(); }});
+    }
+    // Block this worker until the owner loop has executed the work. The wait
+    // rides the runtime seam (the queued async_event awaited to completion) —
+    // the same completion signaling as the API MainThreadBridge, entered
+    // synchronously because a background-action worker is not a coroutine.
+    zetta::runtime::block_on(
+        [](std::shared_ptr<zetta::runtime::async_event> event)
+            -> zetta::runtime::task<> { co_await event->wait(); }(completed));
+}
+
+bool Node::on_owner_thread() const {
+    return owner_thread_.load(std::memory_order_acquire) ==
+           std::this_thread::get_id();
+}
+
+void Node::drain_owner_work() {
+    std::vector<OwnerWork> batch;
+    {
+        std::lock_guard<std::mutex> lock(owner_work_mutex_);
+        if (owner_work_queue_.empty()) return;
+        batch.assign(std::make_move_iterator(owner_work_queue_.begin()),
+                     std::make_move_iterator(owner_work_queue_.end()));
+        owner_work_queue_.clear();
+    }
+    for (OwnerWork& pending : batch) {
+        pending.work();
+        pending.signal_completed();
+    }
+}
+
 void Node::stop() {
     if (!running_) return;
     // Tear the coordinator down first, while the attached cluster is still alive
@@ -362,6 +423,10 @@ void Node::start_coordinator() {
     // Every job this coordinator runs (and every stolen task it executes for a
     // peer) records spans into this node's ring (#640).
     coordinator_->set_span_recorder(&span_recorder_);
+    // Job entity writes route through the owner-thread gate (#624), so a run
+    // driven from a background-action worker mutates node-owned records safely.
+    coordinator_->set_owner_gate(
+        [this](const std::function<void()>& work) { run_on_owner(work); });
     // Register on the cluster's signal plane + start the cross-node steal loop, so
     // a job submitted through job_coordinator() runs SPMD across live membership.
     coordinator_->start();
@@ -1432,6 +1497,23 @@ bool Node::materialize_drop_dataset_partition(const std::string& id) {
 // ----- cloud inspections (ephemeral; not replicated, not persisted) ----------
 
 void Node::record_cloud_inspection(zetta::cloud::CloudInspectReport report) {
+    // A consent-approved cloud read is a governed action: record it on the
+    // audit trail (#624), so it surfaces in the activity feed like every other
+    // completed action. `allowed` carries whether the inspect actually reached
+    // the provider; `detail` is the inspector's overall note verbatim.
+    {
+        zetta::governance::AuditEventValue event;
+        event.action = zetta::governance::AuditAction::CloudInspected;
+        event.target = report.provider_id;
+        event.allowed = report.ran && report.reachable;
+        event.detail = !report.detail.empty()
+                           ? report.detail
+                           : (report.authenticated
+                                  ? "authenticated as " + report.identity
+                                  : "not authenticated");
+        record_audit_event(std::move(event));
+    }
+
     // Latest report per provider wins, so the cache holds one current row per
     // provider for system.cloud_status. No CRDT capture, no disk write —
     // this is session-local observed state (RULE-7).

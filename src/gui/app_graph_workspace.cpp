@@ -3,7 +3,6 @@
 #include "gui/tones.hpp"
 
 #include "zetta/cluster/cluster.hpp"
-#include "zetta/compute/cpu_device.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/table.hpp"
@@ -234,11 +233,15 @@ void App::draw_graph_workspace() {
     ImGui::SameLine();
     ImGui::TextDisabled("overlay the latest run of this graph");
     ImGui::SameLine();
-    ImGui::BeginDisabled(graph_dirty_ || editing_graph_->empty());
+    ImGui::BeginDisabled(graph_dirty_ || editing_graph_->empty() ||
+                         churn_run_ != nullptr);
     if (ImGui::SmallButton("Run graph")) run_open_graph(*project);
     ImGui::EndDisabled();
     if (graph_dirty_ && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
         ImGui::SetTooltip("Save the graph first · a run executes the saved graph");
+    } else if (churn_run_ &&
+               ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        ImGui::SetTooltip("A churn run is in flight · the overlay tracks it live");
     }
 
     const std::shared_ptr<zetta::pipeline::Run> live_run =
@@ -303,23 +306,31 @@ void App::run_open_graph(zetta::pipeline::Project& project) {
     // A churn-shaped graph runs on the REAL churn engine over the node's live
     // JobCoordinator — the same routing the governed console applies (#580) —
     // so the overlay shows real featurize/train/index statuses and the model
-    // step's output ref is a real, resolvable Model id. Anything else (or a
-    // node with no compute plane attached) runs through the structural
-    // DefaultStepExecutor.
+    // step's output ref is a real, resolvable Model id. It runs OFF the UI
+    // thread (#624, AsyncChurnRun — one churn run at a time, shared with the
+    // Deploy panel), so the live-run overlay animates the run AS it executes
+    // instead of only seeing its terminal state. Anything else (or a node with
+    // no compute plane attached) runs through the structural
+    // DefaultStepExecutor — quick, so it stays synchronous.
     if (node_.job_coordinator() != nullptr &&
         zetta::usecases::churn::is_churn_graph(stored->graph())) {
-        compute::CpuDevice device;
+        if (churn_run_) {
+            graph_error_ = "a churn run is already in flight — wait for it to "
+                           "finish (or cancel it in the Deploy panel)";
+            return;
+        }
         zetta::usecases::churn::ChurnSolutionOptions options;
         options.project = project.id();
         options.graph = stored->id();
-        run_churn_solution_on_node(node_, device, stored->graph(),
-                                   zetta::usecases::churn::demo_churn_dataset(),
-                                   options);
+        churn_run_from_deploy_ = false;
+        churn_run_ = zetta::usecases::churn::AsyncChurnRun::start(
+            node_, stored->graph(),
+            zetta::usecases::churn::demo_churn_dataset(), options);
     } else {
         node_.run_graph(stored->graph(), project.id(), stored->id());
     }
     // No status line here: the run record itself is the feedback — the live-run
-    // overlay + strip below the canvas pick it up on this same frame.
+    // overlay + strip below the canvas pick it up as the run executes.
     show_run_overlay_ = true;
 }
 

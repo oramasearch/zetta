@@ -70,6 +70,14 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   `detail_header`). See [docs/gui/master-detail.md](../../docs/gui/master-detail.md).
 - **Text fields bind `std::string`** via the `imgui_stdlib` overloads — never
   `char[]` buffers.
+- **Long actions never block the frame (#624).** A slow engine action runs off
+  the UI thread behind an op handle polled by `App::poll_background_ops()`
+  each frame — pure work (a CLI, a file decode) via `runtime::spawn`
+  (`CloudInspectOp`), engine runs whose node writes gate through
+  `Node::run_on_owner` via a core async handle (`AsyncChurnRun`,
+  `AsyncDatasetAdd`). The owning panel shows progress (live engine records,
+  never a GUI copy) + cancel where supported; completion surfaces in the
+  activity feed. See [docs/gui/long-running-actions.md](../../docs/gui/long-running-actions.md).
 
 ## Rendering gotchas (easy to break — details in docs/gui/README.md)
 

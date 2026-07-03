@@ -53,7 +53,8 @@ std::string_view to_string(ActivityOutcome outcome);
 // One feed entry: who asked (actor + surface), what for (action + target),
 // how it went (outcome + the engine's detail verbatim), and when. `ref_kind` +
 // `ref_id` name the owning entity for click-through ("run" / "job" / "graph" /
-// "deployment" / "audit"), so a renderer can deep-link without re-deriving it.
+// "deployment" / "dataset" / "cloud" / "audit"), so a renderer can deep-link
+// without re-deriving it.
 struct ActivityEntry {
     std::string time;  // ISO-8601 UTC, fixed-width (sorts as plain text)
     ActivitySurface surface = ActivitySurface::Local;
@@ -69,10 +70,10 @@ struct ActivityEntry {
 // Compose the feed from the node's live sources, newest first. One entry per
 // audit event, plus per run: a "run created" entry at its created stamp and,
 // once terminal, a "run succeeded" / "run failed" entry at its updated stamp.
-// Jobs, deployments, key changes, and API calls enter through their audit
-// events (which carry the actor); dataset adds are a later slice (they record
-// no audited, timestamped action yet). Main-thread only, like the accessors
-// it reads.
+// Jobs, deployments, key changes, API calls, dataset adds (dataset_added),
+// and consent-approved cloud inspects (cloud_inspected, #624) enter through
+// their audit events (which carry the actor). Main-thread only, like the
+// accessors it reads.
 std::vector<ActivityEntry> activity_entries(const Node& node);
 
 }  // namespace zetta::observability

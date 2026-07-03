@@ -45,6 +45,9 @@ namespace zetta::testkit { struct TestCase; }
 namespace zetta::gui { struct AddNodesOp; }
 namespace zetta::gui { struct VmSizesOp; }
 namespace zetta::api { class Registry; }
+namespace zetta::gui { struct CloudInspectOp; }
+namespace zetta::usecases::churn { class AsyncChurnRun; }
+namespace zetta::data { class AsyncDatasetAdd; }
 
 namespace zetta::cloud { class Provisioner; }
 namespace zetta::cloud { struct CloudProvider; }
@@ -263,12 +266,15 @@ private:
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
-    // Run the churn solution on the REAL engine (featurize → train → explain →
-    // rank → playbook) over a built-in demo dataset, registering a real Model +
-    // jobs on the node (#398). Synchronous on the UI thread (like run_cloud_inspect):
-    // spins up an isolated single-node loopback JobCoordinator so the SPMD
-    // collectives never block on this node's real peers, runs, then tears it down.
-    // Called only from the Deploy panel's explicit "Run on real engine" action.
+    // Launch the churn solution on the REAL engine (featurize → train → explain →
+    // rank → playbook) over a built-in demo dataset, on the node's live
+    // JobCoordinator (#637). OFF the UI thread (#624): starts an
+    // AsyncChurnRun (a core worker whose node writes gate through
+    // Node::run_on_owner), so the panel stays interactive and renders live
+    // progress from the run's own records (the Run + its jobs — the same
+    // system.runs / system.jobs rows an MCP caller polls). Completion is
+    // applied by poll_background_ops(); a no-op while a churn run is already
+    // in flight. Called only from the Deploy panel's explicit action.
     void run_churn_demo();
     void draw_cluster();     // spatial selectable node-box canvas + per-node detail
     // The detail pane below the cluster canvas: full id, role, address,
@@ -309,12 +315,30 @@ private:
     // none is wired for that target.
     zetta::cloud::Provisioner* provisioner_for(const std::string& target_id) const;
     void draw_cloud();       // cloud provider inspector + deny-by-default consent gate
-    // Run a provider's read-only inspect (CloudInspector) and cache the result on
-    // the node. Called ONLY from the consent gate's Allow / Re-inspect actions,
-    // never on a passive render — this is the one place the GUI touches a cloud,
-    // and only after explicit consent. Synchronous (briefly blocks the UI thread,
-    // which owns the node, so no races); a deliberate per-click action.
+    // Launch a provider's read-only inspect (CloudInspector). Called ONLY from
+    // the consent gate's Allow / Re-inspect actions, never on a passive render —
+    // this is the one place the GUI touches a cloud, and only after explicit
+    // consent. The CLI shell-out runs OFF the UI thread (#624, the AddNodesOp
+    // spawn/poll pattern); poll_background_ops() applies the report on the UI
+    // thread (record_cloud_inspection, which also audits it). A no-op while an
+    // inspect is already in flight.
     void run_cloud_inspect(const zetta::cloud::CloudProvider& provider);
+    // Apply a finished async inspect on the UI thread (defined in
+    // app_cloud.cpp, where CloudInspectOp is complete); called by
+    // poll_background_ops(). Cheap no-op while idle or still running.
+    void poll_cloud_inspect();
+    // Poll every in-flight background action each frame (#624): apply a
+    // finished cloud inspect to the node, surface a finished churn run's
+    // outcome on the Deploy panel, and pump the dataset add's owner-thread
+    // phases (a bounded slice per frame). Cheap no-ops when idle; runs
+    // regardless of the active view so background work completes even if the
+    // user navigated away.
+    void poll_background_ops();
+    // The Deploy panel's live progress block for the in-flight churn run
+    // (#624): headline + elapsed, the run's latest log line, an entity link to
+    // the live Run, and the cooperative cancel. Call only while churn_run_ is
+    // set. Defined in app_deploy.cpp.
+    void draw_churn_run_progress();
     // Render the cached inspect result for `provider` (from the node). Read-only;
     // triggers no cloud call. Shown inside the granted consent gate.
     void draw_cloud_inspect_result(const zetta::cloud::CloudProvider& provider);
@@ -582,6 +606,28 @@ private:
     // commands; the result is cached on the node (system.cloud_status).
     std::string selected_cloud_provider_;
     std::string cloud_consent_provider_;
+
+    // --- In-flight background actions (#624) --------------------------------
+    // Long actions never block the frame: each holds an op/handle the frame
+    // loop polls via poll_background_ops(), with a progress affordance in the
+    // owning panel and cancel where the engine supports it.
+    //
+    // The async cloud inspect (null = idle): the provider CLI runs off the UI
+    // thread via runtime::spawn (the AddNodesOp pattern, defined in
+    // app_cloud.cpp); the poll applies record_cloud_inspection on this thread.
+    std::shared_ptr<CloudInspectOp> cloud_inspect_op_;
+    // The async churn run (null = idle) — ONE at a time, shared by the Deploy
+    // panel and the Graph Workspace's churn-shaped run. The core handle's node
+    // writes gate through Node::run_on_owner, so the live Run + jobs records
+    // are the progress source. `churn_run_from_deploy_` remembers which panel
+    // launched it (the Deploy panel owns the status line; the workspace's
+    // feedback is the live-run overlay itself). Rendered while in flight by
+    // draw_churn_run_progress() (app_deploy.cpp).
+    std::shared_ptr<zetta::usecases::churn::AsyncChurnRun> churn_run_;
+    bool churn_run_from_deploy_ = false;
+    // The async dataset add (null = idle): decode runs on a runtime worker;
+    // poll_background_ops() pumps the owner-thread materialize slices.
+    std::shared_ptr<zetta::data::AsyncDatasetAdd> dataset_add_;
 
     // Test suite panel (zetta::testkit). `selected_test_` is the case id selected in
     // the catalog list; `test_options_` holds its editable option values (rebuilt

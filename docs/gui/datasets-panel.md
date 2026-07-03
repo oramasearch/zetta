@@ -35,9 +35,13 @@ button at the top opens the native file picker filtered to
 `parquet`/`jsonl`/`json`/`csv`, and a file **dropped onto this view** does the same
 — both load the file as a **partitioned table** that joins the list with its
 partitions placed across the cluster. The same action is reachable from
-**File → Add dataset…**. The engine work is `zetta::data::add_dataset_file`; the add's
-status line ("Added dataset … (N rows, M partitions)") shows in place. See
-[add-dataset.md](../data/add-dataset.md).
+**File → Add dataset…**. The engine work is `zetta::data::AsyncDatasetAdd` (#624 —
+decode on a worker, materialize in owner-thread slices): the panel shows live
+progress (marquee + row count while decoding, a real fraction while adding
+rows) with a **Cancel**, and the completion status line ("Added dataset … (N
+rows, M partitions)") shows in place. See
+[add-dataset.md](../data/add-dataset.md) and
+[long-running-actions.md](long-running-actions.md).
 
 ## Layout
 
