@@ -89,6 +89,7 @@ TEST_F(LlmsRenderFixture, ContentUpdatesWhenCapabilitiesAndStateChange) {
         "Frobnicate widgets",
         "Frobnicate every widget on this node. No side effects.",
         nlohmann::json{{"type", "object"}, {"additionalProperties", false}},
+        nlohmann::json{{"type", "object"}},
         zetta::api::CapabilityKind::Read,
         zetta::governance::Operation{zetta::governance::CapabilityDomain::Api,
                                      "query"},

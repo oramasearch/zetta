@@ -160,6 +160,7 @@ bypass them entirely.
 Ships: registry + bridge + server + auth + audit + activity hook + first
 capabilities (`server_info`, `sql` — which alone exposes every `system.*`
 view, `list_projects`, `create_project` as the action template) + headless and
-headed embedding + real-HTTP tests. Defers: REST rendering (#618), the
-remaining parity tools (#616/#617), consent execution (#621), prompts,
-SSE, key-secret minting.
+headed embedding + real-HTTP tests. Defers: REST rendering (#618 — since
+shipped, [rest-openapi.md](rest-openapi.md)), the remaining parity tools
+(#616/#617 — since shipped), consent execution (#621), prompts, SSE,
+key-secret minting.

@@ -52,8 +52,11 @@ tree), and record an `llms:<page>` span (every operation is observable).
   only; nothing is parsed.
 - Rendering is read-only: no state change, no audit event, no consent surface.
 
-Later slices: the spec index (`/v1/specs`, #646) and the REST rendering of the
-registry (#618) — this page links agents at them once they exist.
+The pages point agents at the REST rendering (#618,
+[rest-openapi.md](rest-openapi.md)): the index names the `GET/POST /v1/<name>`
+convention and `/v1/openapi.json`, and each capability page carries its REST
+route and output schema — still generated from the registry, never a second
+prose source. Later slice: the spec index (`/v1/specs`, #646).
 
 Tests: `tests/api/test_llms.cpp` (renderer content + liveness, plain GET over
 a real socket, the bearer gate).

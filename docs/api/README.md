@@ -1,7 +1,7 @@
 # API docs
 
 The programmatic control surface: the capability registry rendered as **MCP
-tools** and (later) **REST routes** — drive the cluster without the GUI, with
+tools** and **REST routes** — drive the cluster without the GUI, with
 the same governance as every other surface. Product framing:
 [../product/control-surfaces.md](../product/control-surfaces.md); execution
 plan: [../plans/mcp-service.md](../plans/mcp-service.md) (epic
@@ -21,11 +21,14 @@ MCP/HTTP work.
   the challenge protocol (never executes on first call), the
   distinctly-privileged approval rule (approver key / headed surface), the
   consent ledger + `system.consent_requests`, audit + spans on both sides.
+- [rest-openapi.md](rest-openapi.md) — the REST rendering (#618): reads →
+  GET /v1/<name>, actions → POST /v1/<name>, output schemas, and the
+  drift-checked OpenAPI document generated from the registry.
 - [llms-endpoints.md](llms-endpoints.md) — the llms.txt progressive-disclosure
   pages (#645): plain-GET agent docs generated live from the registry + node
   state, no second prose source.
 
-## The endpoint (shipped with #615)
+## The endpoints (shipped with #615, REST with #618)
 
 `POST /mcp` — JSON-RPC 2.0 (`initialize`, `notifications/initialized`, `ping`,
 `tools/list`, `tools/call`), served by Beast2 on the vendored capy/corosio
@@ -33,9 +36,17 @@ stack, embedded in BOTH run modes. Defaults: `127.0.0.1:4800`, the audited
 unauthenticated-local session; flags: `--mcp-listen HOST:PORT`,
 `--mcp-token T` (the bearer token doubles as the acting AccessKey id),
 `--no-mcp`. Every `tools/call` result carries `structuredContent` with
-`ok/value|error`, `trace_id`, `span_id`, `duration_ms`; inbound `traceparent`
-is honored. The handlers marshal onto the owning loop (headless tick / headed
-frame) via the bridge — the loops drain it beside `Node::tick()`.
+`ok/value|error`, `trace_id`, `span_id`, `duration_ms` (`value` follows the
+tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal
+onto the owning loop (headless tick / headed frame) via the bridge — the loops
+drain it beside `Node::tick()`.
+
+The same server serves the registry as **plain REST** (#618,
+[rest-openapi.md](rest-openapi.md)): reads are `GET /v1/<name>` (query-string
+input), actions/jobs are `POST /v1/<name>` (JSON body), same bearer → same
+audit, responses are the same envelope with error codes mapped onto HTTP
+statuses; `GET /v1/openapi.json` is the OpenAPI document generated from the
+registered schemas (drift-checked into `schemas/openapi.json`).
 
 The same server also answers plain `GET /llms.txt` / `/llms/<topic>.txt` /
 `/llms-full.txt` — agent-readable pages generated live from the registry +

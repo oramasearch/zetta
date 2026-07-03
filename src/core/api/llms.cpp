@@ -7,6 +7,7 @@
 #include <string>
 
 #include "zetta/api/registry.hpp"
+#include "zetta/api/rest.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
@@ -28,7 +29,13 @@ void append_capability(std::string& out, const Capability& capability) {
     if (capability.requires_consent) out += " · consent-gated";
     out += ")\n\n";
     out += capability.description + "\n\n";
+    out += "REST: " + rest_method(capability) + " " + rest_path(capability) +
+           " (#618)\n\n";
     out += "Input schema: " + capability.input_schema.dump() + "\n\n";
+    if (capability.output_schema.is_object() &&
+        !capability.output_schema.empty()) {
+        out += "Output schema: " + capability.output_schema.dump() + "\n\n";
+    }
 }
 
 // One line per capability, pulled from the registry (used by topic pages that
@@ -245,9 +252,16 @@ std::string render_llms_index(const Node& node, const Registry& registry) {
     out += "    POST /mcp\n";
     out += "    {\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\","
            "\"params\":{\"name\":\"server_info\",\"arguments\":{}}}\n\n";
-    out += "`tools/list` returns every capability with its full input schema. "
-           "Every result carries a `trace_id` — read back what happened with "
-           "`get_trace`.\n";
+    out += "`tools/list` returns every capability with its full input and "
+           "output schemas. Every result carries a `trace_id` — read back "
+           "what happened with `get_trace`.\n";
+    out += "\nThe same registry is also plain REST (#618): reads are `GET "
+           "/v1/<name>` (input in the query string), actions are `POST "
+           "/v1/<name>` (input as the JSON body), and `GET /v1/openapi.json` "
+           "is the OpenAPI document generated from the same schemas. For "
+           "example:\n\n";
+    out += "    GET /v1/server_info\n";
+    out += "    GET /v1/sql?statement=SELECT%20*%20FROM%20system.datasets;\n";
 
     out += "\n## Topics\n\n";
     for (const auto& topic : llms_topics()) {

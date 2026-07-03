@@ -23,6 +23,7 @@
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
+#include "zetta/api/rest.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/version.hpp"
@@ -67,6 +68,38 @@ void stamp_response_headers(boost::http::route_params& route,
     route.res.erase(boost::http::field::etag);
     route.res.erase(boost::http::field::content_length);
     route.res.set_payload_size(body.size());
+}
+
+// The bearer presented on a request, or empty ("Bearer <token>" only).
+std::string bearer_of(const boost::http::route_params& route) {
+    if (route.req.count(boost::http::field::authorization) == 0) return {};
+    std::string_view header_value =
+        route.req.at(boost::http::field::authorization);
+    if (!header_value.starts_with("Bearer ")) return {};
+    return std::string(header_value.substr(7));
+}
+
+// A transport-level REST failure (bad bearer, unreadable body) in the same
+// envelope shape as a finished call, minus the trace ids (no call ran).
+std::string transport_error_body(std::string_view code,
+                                 std::string_view message) {
+    return nlohmann::json{
+        {"ok", false},
+        {"error",
+         {{"code", code}, {"message", message}, {"path", ""}}}}.dump();
+}
+
+// rest_status's integer mapped onto the wire enum.
+boost::http::status http_status_of(int status_code) {
+    switch (status_code) {
+        case 200: return boost::http::status::ok;
+        case 400: return boost::http::status::bad_request;
+        case 403: return boost::http::status::forbidden;
+        case 404: return boost::http::status::not_found;
+        case 422: return boost::http::status::unprocessable_entity;
+        case 503: return boost::http::status::service_unavailable;
+        default: return boost::http::status::internal_server_error;
+    }
 }
 
 }  // namespace
@@ -125,10 +158,17 @@ struct ApiServer::Impl {
         if (method == "tools/list") {
             nlohmann::json tools = nlohmann::json::array();
             for (const auto& capability : capability_registry.list()) {
-                tools.push_back({{"name", capability->name},
-                                 {"title", capability->title},
-                                 {"description", capability->description},
-                                 {"inputSchema", capability->input_schema}});
+                nlohmann::json tool = {{"name", capability->name},
+                                       {"title", capability->title},
+                                       {"description", capability->description},
+                                       {"inputSchema", capability->input_schema}};
+                // The documented success-value shape (#618) — structuredContent
+                // carries { ok, value, ... }, and `value` follows this schema.
+                if (capability->output_schema.is_object() &&
+                    !capability->output_schema.empty()) {
+                    tool["outputSchema"] = capability->output_schema;
+                }
+                tools.push_back(std::move(tool));
             }
             return jsonrpc_result(id, {{"tools", std::move(tools)}});
         }
@@ -196,14 +236,7 @@ struct ApiServer::Impl {
                                        std::string page) {
         namespace http = boost::http;
 
-        std::string bearer;
-        if (route.req.count(http::field::authorization) != 0) {
-            std::string_view header_value =
-                route.req.at(http::field::authorization);
-            if (header_value.starts_with("Bearer ")) {
-                bearer = std::string(header_value.substr(7));
-            }
-        }
+        const std::string bearer = bearer_of(route);
         if (!options.bearer_token.empty() && bearer != options.bearer_token) {
             route.status(http::status::unauthorized);
             stamp_response_headers(route, "missing or invalid bearer token");
@@ -255,6 +288,109 @@ struct ApiServer::Impl {
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
+
+    // The serialized OpenAPI document — generated from the registry once at
+    // start() (schema-as-code: the same generator output is drift-checked
+    // into schemas/openapi.json) and served at GET /v1/openapi.json.
+    std::string openapi_body;
+
+    // Serve one REST rendering of a capability (#618, docs/api/rest-openapi.md):
+    // GET for reads (input in the query string, coerced by the input schema),
+    // POST for actions/jobs (input as the JSON body). Same bearer policy as
+    // /mcp, and the call itself — validate, authorize + audit, handle, span —
+    // is Registry::call on the owning loop, exactly the MCP path.
+    boost::http::route_task serve_rest_capability(
+        boost::http::route_params& route,
+        std::shared_ptr<const Capability> capability) {
+        namespace http = boost::http;
+
+        std::string response_body;
+        http::status status = http::status::ok;
+
+        const std::string bearer = bearer_of(route);
+        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
+            status = http::status::unauthorized;
+            response_body = transport_error_body(
+                "unauthorized", "missing or invalid bearer token");
+        }
+
+        nlohmann::json input = nlohmann::json::object();
+        if (response_body.empty()) {
+            if (route.req.method() == http::method::get) {
+                std::vector<std::pair<std::string, std::string>> query;
+                for (const auto& parameter : route.url.params()) {
+                    query.emplace_back(parameter.key, parameter.value);
+                }
+                input = rest_input_from_query(*capability, query);
+            } else {
+                http::json_sink body_sink;
+                auto [read_error, bytes_read] =
+                    co_await boost::capy::push_to(route.req_body, body_sink);
+                if (read_error) {
+                    status = http::status::bad_request;
+                    response_body = transport_error_body(
+                        "invalid_input",
+                        "could not read the request body as JSON");
+                } else if (bytes_read > 0) {
+                    input = to_nlohmann(body_sink.release());
+                    if (input.is_discarded()) {
+                        status = http::status::bad_request;
+                        response_body = transport_error_body(
+                            "invalid_input",
+                            "the request body is not valid JSON");
+                    }
+                }
+            }
+        }
+
+        if (response_body.empty()) {
+            std::string traceparent;
+            if (route.req.count("traceparent") != 0) {
+                traceparent = std::string(route.req.at("traceparent"));
+            }
+            const auto trace =
+                zetta::observability::parse_traceparent(traceparent)
+                    .value_or(zetta::observability::make_root_trace());
+            ApiResult call_result;
+            co_await bridge.run_on_owner([&] {
+                ApiContext context{node, cluster, bearer, trace,
+                                   &node.span_recorder(), &background};
+                call_result =
+                    capability_registry.call(capability->name, input, context);
+            });
+            status = http_status_of(rest_status(call_result));
+            response_body = rest_envelope(call_result).dump();
+        }
+
+        route.status(status);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, response_body);
+        auto [send_error] = co_await route.send(response_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // GET /v1/openapi.json — the OpenAPI rendering, same bearer policy.
+    boost::http::route_task serve_openapi(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string bearer = bearer_of(route);
+        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
+            route.status(http::status::unauthorized);
+            const std::string body = transport_error_body(
+                "unauthorized", "missing or invalid bearer token");
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            (void)send_error;
+            co_return http::route_done;
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, openapi_body);
+        auto [send_error] = co_await route.send(openapi_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
 };
 
 ApiServer::ApiServer(Node& node, const zetta::cluster::Cluster* cluster,
@@ -286,14 +422,7 @@ bool ApiServer::start() {
         // the token doubles as the acting AccessKey id. Without one, the
         // acting key is whatever bearer the caller presented (may be empty =
         // the audited unauthenticated-local session on the loopback default).
-        std::string bearer;
-        if (route.req.count(http::field::authorization) != 0) {
-            std::string_view header_value =
-                route.req.at(http::field::authorization);
-            if (header_value.starts_with("Bearer ")) {
-                bearer = std::string(header_value.substr(7));
-            }
-        }
+        const std::string bearer = bearer_of(route);
         if (!impl.options.bearer_token.empty() &&
             bearer != impl.options.bearer_token) {
             route.status(http::status::unauthorized);
@@ -372,6 +501,28 @@ bool ApiServer::start() {
                    }
                    return impl.serve_llms(route, topic);
                });
+
+    // The REST rendering (#618, docs/api/rest-openapi.md): every registry
+    // entry mechanically becomes GET /v1/<name> (reads) or POST /v1/<name>
+    // (actions/jobs), and the OpenAPI document generated from the same
+    // schemas is served at GET /v1/openapi.json — one registry, two wire
+    // renderings, zero drift. Generated here, after any embedding-added
+    // entries (the registry is populated before start() and then only read).
+    impl.openapi_body = openapi_document(impl.capability_registry).dump(2);
+    router.add(http::method::get, "/v1/openapi.json",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_openapi(route);
+               });
+    for (const auto& capability : impl.capability_registry.list()) {
+        const auto method = rest_method(*capability) == "GET"
+                                ? http::method::get
+                                : http::method::post;
+        router.add(method, rest_path(*capability),
+                   [&impl, capability](http::route_params& route)
+                       -> http::route_task {
+                       return impl.serve_rest_capability(route, capability);
+                   });
+    }
 
     impl.server = std::make_unique<beast2::http_server>(
         impl.io_context, impl.options.worker_coroutines, std::move(router),

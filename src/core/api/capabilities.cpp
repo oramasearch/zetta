@@ -49,10 +49,46 @@ nlohmann::json empty_object_schema() {
     return nlohmann::json{{"type", "object"}, {"additionalProperties", false}};
 }
 
+// Output schemas (#618) are draft-07 like the input schemas (schema-as-code):
+// each documents its handler's success value — rendered as the MCP tool's
+// outputSchema and as the REST/OpenAPI 200 response body's `value`. The
+// handler stays the source of the value; journeys assert the two agree.
+
+// The typed detail reads return exactly the entity's already-validated value
+// JSON (its embedded *_value_schema()) plus the id — compose the output
+// schema from the SAME embedded schema so the two can never drift.
+nlohmann::json entity_value_with_id_schema(nlohmann::json schema) {
+    schema["properties"]["id"] = {{"type", "string"},
+                                  {"description", "the entity's uuid"}};
+    nlohmann::json required = schema.value("required", nlohmann::json::array());
+    required.push_back("id");
+    schema["required"] = std::move(required);
+    return schema;
+}
+
 // --- server_info -------------------------------------------------------------
 
 const nlohmann::json& server_info_schema() {
     static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& server_info_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"version", "node_id", "cluster_members", "databases", "projects",
+          "runs", "models", "jobs"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"version", {{"type", "string"}}},
+          {"node_id", {{"type", "string"}}},
+          {"cluster_members", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"databases", {{"type", "integer"}}},
+          {"projects", {{"type", "integer"}}},
+          {"runs", {{"type", "integer"}}},
+          {"models", {{"type", "integer"}}},
+          {"jobs", {{"type", "integer"}}}}}};
     return schema;
 }
 
@@ -86,6 +122,22 @@ const nlohmann::json& sql_schema() {
            {{"type", "string"},
             {"description",
              "default database for unqualified table names (optional)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& sql_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"messages", "columns", "rows"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"messages", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"rows",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"description", "one result row keyed by column name"}}}}}}}};
     return schema;
 }
 
@@ -129,6 +181,51 @@ const nlohmann::json& search_schema() {
             {"minimum", 1},
             {"maximum", 1000},
             {"description", "cap on the global ranking (default 10)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& search_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"index_id", "table", "path", "hits", "nodes", "wire_bytes_moved",
+          "duration_ms"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"index_id", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"path",
+           {{"type", "string"},
+            {"description", "how the query executed: consolidated or "
+                            "per-partition scatter-gather"}}},
+          {"hits",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "score"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"score", {{"type", "number"}}}}}}}}},
+          {"nodes",
+           {{"type", "array"},
+            {"description", "per-node provenance: which member answered, at "
+                            "what cost (#641)"},
+            {"items",
+             {{"type", "object"},
+              {"required",
+               {"node_id", "local", "hits", "sub_indexes", "latency_ms",
+                "wire_bytes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"node_id", {{"type", "string"}}},
+                {"local", {{"type", "boolean"}}},
+                {"hits", {{"type", "integer"}}},
+                {"sub_indexes", {{"type", "integer"}}},
+                {"latency_ms", {{"type", "number"}}},
+                {"wire_bytes", {{"type", "integer"}}}}}}}}},
+          {"wire_bytes_moved", {{"type", "integer"}}},
+          {"duration_ms", {{"type", "number"}}}}}};
     return schema;
 }
 
@@ -179,6 +276,16 @@ const nlohmann::json& list_projects_schema() {
     return schema;
 }
 
+const nlohmann::json& list_projects_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"projects"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"projects", {{"type", "array"}, {"items", {{"type", "string"}}}}}}}};
+    return schema;
+}
+
 ApiResult handle_list_projects(const nlohmann::json&, ApiContext& context) {
     nlohmann::json output;
     output["projects"] = context.node.project_names();
@@ -207,6 +314,40 @@ nlohmann::json id_input_schema(std::string_view field,
 const nlohmann::json& get_project_schema() {
     static const nlohmann::json schema =
         id_input_schema("name", "the project's name, or its uuid");
+    return schema;
+}
+
+const nlohmann::json& get_project_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"id", "name", "created", "updated", "owner", "inputs", "graphs"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"created", {{"type", "string"}}},
+          {"updated", {{"type", "string"}}},
+          {"owner", {{"type", "string"}}},
+          {"inputs",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"description",
+               "one project input's validated metadata plus its id"},
+              {"required", {"id", "kind"}},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"kind", {{"type", "string"}}}}}}}}},
+          {"graphs",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "name"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"name", {{"type", "string"}}}}}}}}}}}};
     return schema;
 }
 
@@ -251,6 +392,12 @@ const nlohmann::json& get_run_schema() {
     return schema;
 }
 
+const nlohmann::json& get_run_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(zetta::pipeline::run_value_schema());
+    return schema;
+}
+
 ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
     const std::string id = input.at("run_id").get<std::string>();
     const auto run = context.node.find_run(id);
@@ -265,6 +412,12 @@ ApiResult handle_get_run(const nlohmann::json& input, ApiContext& context) {
 const nlohmann::json& get_model_schema() {
     static const nlohmann::json schema =
         id_input_schema("model_id", "the model's uuid (system.models.model_id)");
+    return schema;
+}
+
+const nlohmann::json& get_model_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(zetta::ml::model_value_schema());
     return schema;
 }
 
@@ -285,6 +438,12 @@ const nlohmann::json& get_job_schema() {
     return schema;
 }
 
+const nlohmann::json& get_job_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(zetta::compute::compute_job_value_schema());
+    return schema;
+}
+
 ApiResult handle_get_job(const nlohmann::json& input, ApiContext& context) {
     const std::string id = input.at("job_id").get<std::string>();
     const auto job = context.node.find_job(id);
@@ -299,6 +458,12 @@ ApiResult handle_get_job(const nlohmann::json& input, ApiContext& context) {
 const nlohmann::json& get_index_schema() {
     static const nlohmann::json schema =
         id_input_schema("index_id", "the index's uuid (system.indexes.index_id)");
+    return schema;
+}
+
+const nlohmann::json& get_index_output_schema() {
+    static const nlohmann::json schema =
+        entity_value_with_id_schema(zetta::index::index_value_schema());
     return schema;
 }
 
@@ -336,6 +501,43 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"size_bytes", dataset.size_bytes},
                           {"columns", dataset.columns},
                           {"partitions", std::move(partitions)}};
+}
+
+// The schema of dataset_summary_json — shared by get_dataset (the value) and
+// list_datasets (the array items).
+const nlohmann::json& dataset_summary_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"name", "database", "table_id", "format", "replication", "rows",
+          "size_bytes", "columns", "partitions"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"database", {{"type", "string"}}},
+          {"table_id", {{"type", "string"}}},
+          {"format", {{"type", "string"}}},
+          {"replication", {{"type", "integer"}}},
+          {"rows", {{"type", "integer"}}},
+          {"size_bytes", {{"type", "integer"}}},
+          {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"partitions",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required",
+               {"partition_id", "blob_ref", "row_start", "row_end",
+                "owner_nodes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"partition_id", {{"type", "string"}}},
+                {"blob_ref", {{"type", "string"}}},
+                {"row_start", {{"type", "integer"}}},
+                {"row_end", {{"type", "integer"}}},
+                {"owner_nodes",
+                 {{"type", "array"},
+                  {"items", {{"type", "string"}}}}}}}}}}}}}};
+    return schema;
 }
 
 const nlohmann::json& get_dataset_schema() {
@@ -393,6 +595,33 @@ const nlohmann::json& list_runs_schema() {
     return schema;
 }
 
+const nlohmann::json& list_runs_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"runs"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"runs",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required",
+               {"id", "project", "graph", "deployment", "status", "created",
+                "updated", "log_count", "output_count"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"project", {{"type", "string"}}},
+                {"graph", {{"type", "string"}}},
+                {"deployment", {{"type", "string"}}},
+                {"status", {{"type", "string"}}},
+                {"created", {{"type", "string"}}},
+                {"updated", {{"type", "string"}}},
+                {"log_count", {{"type", "integer"}}},
+                {"output_count", {{"type", "integer"}}}}}}}}}}}};
+    return schema;
+}
+
 ApiResult handle_list_runs(const nlohmann::json&, ApiContext& context) {
     nlohmann::json runs = nlohmann::json::array();
     for (const auto& run : context.node.runs()) {
@@ -416,6 +645,31 @@ const nlohmann::json& list_models_schema() {
     return schema;
 }
 
+const nlohmann::json& list_models_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"models"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"models",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required",
+               {"id", "name", "kind", "project", "run", "created",
+                "has_weights"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"kind", {{"type", "string"}}},
+                {"project", {{"type", "string"}}},
+                {"run", {{"type", "string"}}},
+                {"created", {{"type", "string"}}},
+                {"has_weights", {{"type", "boolean"}}}}}}}}}}}};
+    return schema;
+}
+
 ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
     nlohmann::json models = nlohmann::json::array();
     for (const auto& model : context.node.models()) {
@@ -434,6 +688,33 @@ ApiResult handle_list_models(const nlohmann::json&, ApiContext& context) {
 
 const nlohmann::json& list_jobs_schema() {
     static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_jobs_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"jobs"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"jobs",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required",
+               {"id", "kind", "status", "project", "graph", "run", "created",
+                "updated", "detail"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"kind", {{"type", "string"}}},
+                {"status", {{"type", "string"}}},
+                {"project", {{"type", "string"}}},
+                {"graph", {{"type", "string"}}},
+                {"run", {{"type", "string"}}},
+                {"created", {{"type", "string"}}},
+                {"updated", {{"type", "string"}}},
+                {"detail", {{"type", "string"}}}}}}}}}}}};
     return schema;
 }
 
@@ -460,6 +741,29 @@ const nlohmann::json& list_indexes_schema() {
     return schema;
 }
 
+const nlohmann::json& list_indexes_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"indexes"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"indexes",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"id", "table", "kind", "backend", "fields",
+                            "created"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"table", {{"type", "string"}}},
+                {"kind", {{"type", "string"}}},
+                {"backend", {{"type", "string"}}},
+                {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"created", {{"type", "string"}}}}}}}}}}}};
+    return schema;
+}
+
 // The index registry as a tool (#642) — read from the same live source
 // (Node::indexes()) the system.indexes SQL view computes from (RULE-7), so an
 // agent can discover what `search` can target before searching.
@@ -480,6 +784,16 @@ ApiResult handle_list_indexes(const nlohmann::json&, ApiContext& context) {
 
 const nlohmann::json& list_datasets_schema() {
     static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+const nlohmann::json& list_datasets_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"datasets"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"datasets", {{"type", "array"}, {"items", dataset_summary_schema()}}}}}};
     return schema;
 }
 
@@ -505,6 +819,17 @@ const nlohmann::json& create_project_schema() {
           {"owner",
            {{"type", "string"},
             {"description", "owner key id recorded on the project (optional)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_project_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "owner"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"owner", {{"type", "string"}}}}}};
     return schema;
 }
 
@@ -538,6 +863,32 @@ const nlohmann::json& list_traces_schema() {
     return schema;
 }
 
+// One recorded span as observability::to_json renders it — the same shape the
+// system.spans view flattens. Kept open: spans carry free-form attributes.
+const nlohmann::json& span_json_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"trace_id", "span_id", "name", "ok", "duration_ms"}},
+        {"properties",
+         {{"trace_id", {{"type", "string"}}},
+          {"span_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"ok", {{"type", "boolean"}}},
+          {"duration_ms", {{"type", "number"}}},
+          {"attributes", {{"type", "object"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& list_traces_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"spans"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"spans", {{"type", "array"}, {"items", span_json_schema()}}}}}};
+    return schema;
+}
+
 ApiResult handle_list_traces(const nlohmann::json& input, ApiContext& context) {
     if (!context.recorder) {
         return ApiResult::failure("engine_error",
@@ -561,6 +912,17 @@ const nlohmann::json& get_trace_schema() {
         {"properties",
          {{"trace_id",
            {{"type", "string"}, {"minLength", 32}, {"maxLength", 32}}}}}};
+    return schema;
+}
+
+const nlohmann::json& get_trace_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"trace_id", "spans"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"trace_id", {{"type", "string"}}},
+          {"spans", {{"type", "array"}, {"items", span_json_schema()}}}}}};
     return schema;
 }
 
@@ -604,6 +966,30 @@ const nlohmann::json& submit_feedback_schema() {
              "local file path to ALSO write the bundle to — the explicit "
              "user export; nothing leaves the cluster on its own "
              "(optional)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& submit_feedback_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"feedback_id", "name", "database", "size", "sha256",
+          "traces_attached", "errors_attached", "crashes_attached"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"feedback_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"database", {{"type", "string"}}},
+          {"size", {{"type", "integer"}}},
+          {"sha256", {{"type", "string"}}},
+          {"traces_attached", {{"type", "integer"}}},
+          {"errors_attached", {{"type", "integer"}}},
+          {"crashes_attached", {{"type", "integer"}}},
+          {"exported_to",
+           {{"type", "string"},
+            {"description",
+             "present only when export_path was given and the export "
+             "succeeded"}}}}}};
     return schema;
 }
 
@@ -721,6 +1107,64 @@ nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
                           {"name", graph.name()},
                           {"steps", graph.graph().node_count()},
                           {"edges", graph.graph().edge_count()}};
+}
+
+// The schema of input_json + the owning project — the output of the two
+// input-producing actions (capture_intent, import_n8n).
+const nlohmann::json& project_input_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"input_id", "kind", "filename", "content_hash", "size", "project"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"input_id", {{"type", "string"}}},
+          {"kind", {{"type", "string"}}},
+          {"filename", {{"type", "string"}}},
+          {"content_hash", {{"type", "string"}}},
+          {"size", {{"type", "integer"}}},
+          {"project", {{"type", "string"}}}}}};
+    return schema;
+}
+
+// The schema of graph_json + the owning project — the output of the three
+// compilers (compile_intent, compile_n8n, compile_python).
+const nlohmann::json& project_graph_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"graph_id", "name", "steps", "edges", "project"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"graph_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"steps", {{"type", "integer"}}},
+          {"edges", {{"type", "integer"}}},
+          {"project", {{"type", "string"}}}}}};
+    return schema;
+}
+
+// A ValidationReport as its ADL to_json renders it (the shape mirrored by
+// schemas/validation_report.schema.json). Kept open at the report level: the
+// gate's checks evolve with the check catalog.
+const nlohmann::json& validation_report_json_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"checks", "block_deploy"}},
+        {"properties",
+         {{"checks",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"name", "status"}},
+              {"properties",
+               {{"name", {{"type", "string"}}},
+                {"status",
+                 {{"type", "string"}, {"enum", {"pass", "warn", "fail"}}}},
+                {"reason", {{"type", "string"}}}}}}}}},
+          {"verdict",
+           {{"type", "string"}, {"enum", {"pass", "warn", "fail"}}}},
+          {"block_deploy", {{"type", "boolean"}}}}}};
+    return schema;
 }
 
 // The first failing check's name + reason — the line the Deploy panel shows
@@ -997,6 +1441,18 @@ const nlohmann::json& gate_schema() {
     return schema;
 }
 
+const nlohmann::json& gate_output_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json report = validation_report_json_schema();
+        report["properties"]["project"] = {{"type", "string"}};
+        report["properties"]["graph"] = {{"type", "string"}};
+        report["required"].push_back("project");
+        report["required"].push_back("graph");
+        return report;
+    }();
+    return schema;
+}
+
 ApiResult handle_gate(const nlohmann::json& input, ApiContext& context) {
     const std::string name = input.at("project").get<std::string>();
     auto project = resolve_project(context, name);
@@ -1042,6 +1498,20 @@ const nlohmann::json& deploy_schema() {
             {"enum", {"local", "kubernetes", "vpc", "cloud"}},
             {"description", "the placement dial (default local; only local is "
                             "functional in R1)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& deploy_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"deployment_id", "graph", "target", "gate", "project"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"deployment_id", {{"type", "string"}}},
+          {"graph", {{"type", "string"}}},
+          {"target", {{"type", "string"}}},
+          {"gate", validation_report_json_schema()},
+          {"project", {{"type", "string"}}}}}};
     return schema;
 }
 
@@ -1130,6 +1600,30 @@ const nlohmann::json& run_schema() {
             {"description", "fan the run out to the live membership (default "
                             "true; false is only correct on a single-member "
                             "cluster)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& run_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id", "engine", "status"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id",
+           {{"type", "string"},
+            {"description",
+             "the durable engine handle — poll get_run / system.runs"}}},
+          {"engine", {{"type", "string"}, {"enum", {"churn", "structural"}}}},
+          {"status", {{"type", "string"}}},
+          {"failed_step",
+           {{"type", "string"},
+            {"description", "structural runs only, on failure"}}},
+          {"error",
+           {{"type", "string"},
+            {"description", "structural runs only, on failure"}}},
+          {"poll",
+           {{"type", "string"},
+            {"description", "churn runs: where to read progress"}}}}}};
     return schema;
 }
 
@@ -1300,6 +1794,30 @@ const nlohmann::json& add_dataset_schema() {
     return schema;
 }
 
+const nlohmann::json& add_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"database", "table", "format", "rows", "partitions"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"format", {{"type", "string"}}},
+          {"rows", {{"type", "integer"}}},
+          {"partitions",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"partition_id", "owner_nodes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"partition_id", {{"type", "string"}}},
+                {"owner_nodes",
+                 {{"type", "array"},
+                  {"items", {{"type", "string"}}}}}}}}}}}}}};
+    return schema;
+}
+
 ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     zetta::data::AddDatasetOptions options;
     options.database = input.value("database", options.database);
@@ -1352,6 +1870,22 @@ const nlohmann::json& testkit_run_schema() {
            {{"type", "string"},
             {"description", "a churn dataset directory for cases that accept "
                             "one (default: the built-in synthetic dataset)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& testkit_run_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"run_id", "case", "status", "poll"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"run_id",
+           {{"type", "string"},
+            {"description",
+             "the durable engine handle — poll get_run / system.runs"}}},
+          {"case", {{"type", "string"}}},
+          {"status", {{"type", "string"}}},
+          {"poll", {{"type", "string"}}}}}};
     return schema;
 }
 
@@ -1482,6 +2016,7 @@ void register_core_capabilities(Registry& registry) {
         "Read this node's identity, version, entity counts, and cluster "
         "membership. No side effects.",
         server_info_schema(),
+        server_info_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1494,6 +2029,7 @@ void register_core_capabilities(Registry& registry) {
         "Run one governed SQL statement (Postgres subset). Every system.* "
         "observability view is readable here. DDL/INSERT mutate the database.",
         sql_schema(),
+        sql_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1507,6 +2043,7 @@ void register_core_capabilities(Registry& registry) {
         "across the cluster when the table is partitioned — returning ranked "
         "hits with per-node provenance and a trace id. No side effects.",
         search_schema(),
+        search_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1518,6 +2055,7 @@ void register_core_capabilities(Registry& registry) {
         "List projects",
         "Read the names of every AI project on this node. No side effects.",
         list_projects_schema(),
+        list_projects_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1530,6 +2068,7 @@ void register_core_capabilities(Registry& registry) {
         "Read the most recent observability spans on this node (intent, "
         "timings, result shapes). No side effects.",
         list_traces_schema(),
+        list_traces_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1542,6 +2081,7 @@ void register_core_capabilities(Registry& registry) {
         "Read every recorded span of one trace by its 32-hex trace id. No "
         "side effects.",
         get_trace_schema(),
+        get_trace_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1554,6 +2094,7 @@ void register_core_capabilities(Registry& registry) {
         "Read one AI project's full detail — metadata plus its inputs and "
         "graphs — by name or uuid. No side effects.",
         get_project_schema(),
+        get_project_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1566,6 +2107,7 @@ void register_core_capabilities(Registry& registry) {
         "Read one run's full validated record — status, logs, outputs, "
         "lineage — by its uuid. No side effects.",
         get_run_schema(),
+        get_run_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1578,6 +2120,7 @@ void register_core_capabilities(Registry& registry) {
         "Read one model's full validated record — kind, lineage, feature "
         "schema, metrics, weights fingerprint — by its uuid. No side effects.",
         get_model_schema(),
+        get_model_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1590,6 +2133,7 @@ void register_core_capabilities(Registry& registry) {
         "Read one compute job's full validated record — kind, status, "
         "lineage refs, detail — by its uuid. No side effects.",
         get_job_schema(),
+        get_job_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1602,6 +2146,7 @@ void register_core_capabilities(Registry& registry) {
         "Read one registered index's full validated record — table, kind, "
         "backend, fields — by its uuid. No side effects.",
         get_index_schema(),
+        get_index_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1615,6 +2160,7 @@ void register_core_capabilities(Registry& registry) {
         "format, replication, partition placement — by name (plus database "
         "when ambiguous). No side effects.",
         get_dataset_schema(),
+        dataset_summary_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1627,6 +2173,7 @@ void register_core_capabilities(Registry& registry) {
         "Read a compact listing of every run — id, lineage refs, status, "
         "stamps, log/output counts. No side effects.",
         list_runs_schema(),
+        list_runs_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1639,6 +2186,7 @@ void register_core_capabilities(Registry& registry) {
         "Read a compact listing of every registered model — id, name, kind, "
         "lineage refs, weights presence. No side effects.",
         list_models_schema(),
+        list_models_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1651,6 +2199,7 @@ void register_core_capabilities(Registry& registry) {
         "Read a compact listing of every compute job — id, kind, status, "
         "lineage refs, stamps, detail. No side effects.",
         list_jobs_schema(),
+        list_jobs_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1664,6 +2213,7 @@ void register_core_capabilities(Registry& registry) {
         "backend, fields — to discover what `search` can target. No side "
         "effects.",
         list_indexes_schema(),
+        list_indexes_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1676,6 +2226,7 @@ void register_core_capabilities(Registry& registry) {
         "Read the computed summary of every dataset — schema, row count, "
         "size, format, replication, partition placement. No side effects.",
         list_datasets_schema(),
+        list_datasets_output_schema(),
         CapabilityKind::Read,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/false,
@@ -1690,6 +2241,7 @@ void register_core_capabilities(Registry& registry) {
         "large object you explicitly export; nothing leaves the cluster on "
         "its own.",
         submit_feedback_schema(),
+        submit_feedback_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Api, "query"},
         /*mutates=*/true,
@@ -1702,6 +2254,7 @@ void register_core_capabilities(Registry& registry) {
         "Create a new AI project (the central user-managed artifact); the "
         "project replicates to every node.",
         create_project_schema(),
+        create_project_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "create_project"},
         /*mutates=*/true,
@@ -1716,6 +2269,7 @@ void register_core_capabilities(Registry& registry) {
         "Capture a natural-language intent as a replicated project input with "
         "provenance; compile it into a graph with compile_intent.",
         capture_intent_schema(),
+        project_input_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "capture_intent"},
         /*mutates=*/true,
@@ -1729,6 +2283,7 @@ void register_core_capabilities(Registry& registry) {
         "byte-for-byte as a replicated project artifact input; compile it "
         "with compile_n8n.",
         import_n8n_schema(),
+        project_input_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "import_n8n"},
         /*mutates=*/true,
@@ -1741,6 +2296,7 @@ void register_core_capabilities(Registry& registry) {
         "Compile a captured intent input into a named, editable execution "
         "graph stored on the project (replicated; audited as a graph change).",
         compile_intent_schema(),
+        project_graph_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "compile_intent"},
         /*mutates=*/true,
@@ -1753,6 +2309,7 @@ void register_core_capabilities(Registry& registry) {
         "Compile a stored n8n workflow input into a named, editable execution "
         "graph stored on the project (replicated; audited as a graph change).",
         compile_n8n_schema(),
+        project_graph_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "compile_n8n"},
         /*mutates=*/true,
@@ -1767,6 +2324,7 @@ void register_core_capabilities(Registry& registry) {
         "graph change); zetta re-implements the pipeline — it never runs "
         "Python.",
         compile_python_schema(),
+        project_graph_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "compile_python"},
         /*mutates=*/true,
@@ -1780,6 +2338,7 @@ void register_core_capabilities(Registry& registry) {
         "full validation report (per-check status + reason, verdict, "
         "block_deploy). Evaluates only — no state change.",
         gate_schema(),
+        gate_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "gate"},
         /*mutates=*/false,
@@ -1793,6 +2352,7 @@ void register_core_capabilities(Registry& registry) {
         "gate (RULE-1: a failing gate blocks with the failing check's "
         "reason); the recorded deployment replicates and is audited.",
         deploy_schema(),
+        deploy_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "deploy"},
         /*mutates=*/true,
@@ -1807,6 +2367,7 @@ void register_core_capabilities(Registry& registry) {
         "immediately (poll get_run / system.runs); other graphs run "
         "structurally within the call.",
         run_schema(),
+        run_output_schema(),
         CapabilityKind::Job,
         Operation{CapabilityDomain::Orchestration, "run"},
         /*mutates=*/true,
@@ -1820,6 +2381,7 @@ void register_core_capabilities(Registry& registry) {
         "table placed across the cluster (audited as dataset_added; visible "
         "in system.datasets).",
         add_dataset_schema(),
+        add_dataset_output_schema(),
         CapabilityKind::Action,
         Operation{CapabilityDomain::Orchestration, "add_dataset"},
         /*mutates=*/true,
@@ -1833,6 +2395,7 @@ void register_core_capabilities(Registry& registry) {
         "run id immediately (poll get_run — the case's log lines land with "
         "the terminal status).",
         testkit_run_schema(),
+        testkit_run_output_schema(),
         CapabilityKind::Job,
         Operation{CapabilityDomain::Orchestration, "testkit_run"},
         /*mutates=*/true,

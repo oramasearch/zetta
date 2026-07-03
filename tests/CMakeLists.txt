@@ -17,6 +17,8 @@ add_executable(zetta-tests
   api/test_registry.cpp
   api/test_consent.cpp
   api/test_mcp_server.cpp
+  api/test_rest_server.cpp
+  api/test_openapi.cpp
   api/test_llms.cpp
   api/test_search_journey.cpp
   api/test_action_journeys.cpp
@@ -155,7 +157,10 @@ target_compile_definitions(zetta-tests PRIVATE
   ZETTA_TEST_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
   ZETTA_SCHEMAS_DIR="${CMAKE_SOURCE_DIR}/schemas")
 target_link_libraries(zetta-tests
-  PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main)
+  PRIVATE zetta-api PRIVATE zetta-core GTest::gtest_main
+  # The boundary validator, so schema-as-code tests can assert every
+  # registered input/output schema actually loads (test_openapi.cpp).
+  PRIVATE nlohmann_json_schema_validator)
 
 include(GoogleTest)
 gtest_discover_tests(zetta-tests)
