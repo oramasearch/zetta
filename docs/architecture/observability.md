@@ -66,11 +66,15 @@ no-egress posture is untouched.)
 ## The test suite is the flywheel
 
 The testkit remains the catalog of ALL cluster functionality — and every
-testkit case runs inside a trace. That gives iteration a memory: per-case
-timing and result-shape history, spans for every phase, and failures that
-arrive pre-annotated with intent + plan. MCP journeys assert on traces too
-(did the run actually go near-data? one trace answers it). New functionality
-lands with its testkit case, and both land observable.
+testkit case runs inside a trace (**shipped**, #640: `run_test_case` records a
+`testkit:<case.id>` span per case with the result shape; the GUI panel records
+into the live node's ring — see
+[../testing/test-suite.md](../testing/test-suite.md)). That gives iteration a
+memory: per-case timing and result-shape history, spans for every phase, and
+failures that arrive pre-annotated with intent + plan. MCP journeys assert on
+traces too (`JourneyRunToolThenReadTraceContent` in tests/api/test_registry.cpp
+reads a call's trace back through get_trace AND the SQL views). New
+functionality lands with its testkit case, and both land observable.
 
 ## Build-out (tracked in the product wave; #640)
 

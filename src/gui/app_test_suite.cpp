@@ -287,6 +287,10 @@ void App::start_test(const testkit::TestCase& test_case) {
     test_worker_ = std::make_unique<std::thread>([this, test_case_ptr, options, custom] {
         testkit::TestContext context;
         context.custom_data_path = custom;
+        // Every case runs inside a trace (#640): record into the live node's
+        // ring (mutex-guarded, safe from this worker thread) so the run shows
+        // up in system.traces / the trace pane like any other operation.
+        context.recorder = &node_.span_recorder();
         context.log = [this](std::string line) {
             std::lock_guard<std::mutex> lock(test_mutex_);
             test_log_.push_back(std::move(line));
