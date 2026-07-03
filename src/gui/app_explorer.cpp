@@ -102,7 +102,7 @@ void App::draw_projects() {
                 project_error_.clear();
                 if (selected_project_ == name) selected_project_.clear();
             } else {
-                project_error_ = "could not drop project '" + name + "'";
+                project_error_ = "could not delete project '" + name + "'";
             }
         }
         ImGui::SameLine();
@@ -393,7 +393,7 @@ void App::draw_rows() {
 }
 
 void App::draw_query() {
-    ImGui::SeparatorText("SQL query (postgres)");
+    ImGui::SeparatorText("SQL query (Postgres)");
     ImGui::TextDisabled(
         "Unqualified names use the selected database (%s); use db.table to "
         "target another.",
@@ -485,7 +485,7 @@ void App::draw_console() {
     ImGui::TextDisabled(
         "Run SQL or simulated-Python against this node, governed: every statement "
         "is capability-scoped against the acting key and recorded in the audit "
-        "trail; simulated-Python lowers to the execution-graph IR and must pass the "
+        "trail; simulated-Python lowers to an execution graph and must pass the "
         "correctness gate before it runs. Unqualified SQL names use the selected "
         "database (%s).",
         selected_db_.empty() ? "none" : selected_db_.c_str());
@@ -544,7 +544,7 @@ void App::draw_console() {
 }
 
 void App::draw_large_objects() {
-    ImGui::SeparatorText("Large objects");
+    ImGui::SeparatorText("Files");
     const auto db = node_.find_database(selected_db_);
     if (!db) {
         ImGui::TextDisabled("Select a database.");
@@ -561,9 +561,9 @@ void App::draw_large_objects() {
     const std::vector<zetta::data::LargeObject> objects = db->large_objects().list();
     if (objects.empty()) {
         // The next action is the Store file… button directly above (#631).
-        empty_state("No large objects yet",
-                    "Store a file above, or drop one on the window; bodies "
-                    "sync to peers in the background.",
+        empty_state("No files yet",
+                    "Store a file above, or drop one on the window; it syncs "
+                    "to the other nodes in the background.",
                     "");
     }
     for (const zetta::data::LargeObject& lo : objects) {
@@ -572,7 +572,7 @@ void App::draw_large_objects() {
             if (db->large_objects().unlink(lo.id)) {
                 large_object_error_.clear();
             } else {
-                large_object_error_ = "could not unlink '" + lo.name + "'";
+                large_object_error_ = "could not remove '" + lo.name + "'";
             }
         }
         ImGui::SameLine();
@@ -582,7 +582,7 @@ void App::draw_large_objects() {
         // so a freshly-replicated object may not have its bytes here yet.
         if (!lo.body_present) {
             ImGui::SameLine();
-            ImGui::TextColored(tone_color(Tone::Warn), "(syncing body)");
+            ImGui::TextColored(tone_color(Tone::Warn), "(syncing)");
         }
         ImGui::PopID();
     }

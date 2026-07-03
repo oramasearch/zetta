@@ -84,13 +84,13 @@ void App::draw_datasets() {
         switch (dataset_add_->phase()) {
             case Phase::Decoding:
                 std::snprintf(progress_line, sizeof(progress_line),
-                              "decoding %s · %zu row(s)",
+                              "Decoding %s · %zu row(s)",
                               dataset_add_->source_path().filename().c_str(),
                               dataset_add_->rows_decoded());
                 break;
             case Phase::Materializing:
                 std::snprintf(progress_line, sizeof(progress_line),
-                              "adding rows · %zu/%zu",
+                              "Adding rows · %zu/%zu",
                               dataset_add_->rows_added(), total);
                 fraction = total > 0 ? static_cast<float>(
                                            dataset_add_->rows_added()) /
@@ -99,7 +99,7 @@ void App::draw_datasets() {
                 break;
             case Phase::Partitioning:
                 std::snprintf(progress_line, sizeof(progress_line),
-                              "placing partitions across the cluster…");
+                              "Placing partitions across the cluster…");
                 fraction = 1.0f;
                 break;
             case Phase::Done:
@@ -175,7 +175,7 @@ void App::draw_datasets() {
             ImGui::Spacing();
             eyebrow(mono_font_, "SCHEMA");
             if (dataset->columns.empty()) {
-                ImGui::TextDisabled("(no columns — the dataset is empty)");
+                ImGui::TextDisabled("(no columns · the dataset is empty)");
             } else {
                 // The inferred field names (first-seen order), wrapped in mono.
                 if (g_mono_font) ImGui::PushFont(g_mono_font);

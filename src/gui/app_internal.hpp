@@ -119,7 +119,7 @@ inline const char* activity_surface_label(
     zetta::observability::ActivitySurface surface) {
     switch (surface) {
         case zetta::observability::ActivitySurface::Local:   return "GUI";
-        case zetta::observability::ActivitySurface::Console: return "console";
+        case zetta::observability::ActivitySurface::Console: return "Console";
         case zetta::observability::ActivitySurface::Api:     return "MCP";
     }
     return "GUI";
@@ -219,6 +219,17 @@ inline void eyebrow(ImFont* mono, const char* text) {
     if (mono) ImGui::PushFont(mono);
     ImGui::TextColored(kInkMuted, "%s", text);
     if (mono) ImGui::PopFont();
+}
+
+// A hover hint that names what a technical term means (#635): call directly
+// after rendering the item that shows the term ("partition", "allreduce",
+// "near data"). Where a concept must stay technical, this is how the panel
+// says what it means without cluttering the copy — one plain sentence, no
+// jargon in the explanation itself.
+inline void term_hint(const char* meaning) {
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+        ImGui::SetTooltip("%s", meaning);
+    }
 }
 
 // Render one line of mono data (an id, timestamp, or number) in the given

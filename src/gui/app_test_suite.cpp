@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/node.hpp"
@@ -17,17 +18,6 @@
 
 namespace zetta::gui {
 namespace {
-
-// Map a test outcome to the design system's semantic colour (green pass, red
-// fail, amber error, quiet skip) — status rides on a dot AND the word, never colour
-// alone.
-std::string test_outcome_label(testkit::TestOutcome outcome) {
-    std::string label(testkit::to_string(outcome));
-    for (char& character : label) {
-        if (character >= 'a' && character <= 'z') character -= 32;  // ASCII upper
-    }
-    return label;
-}
 
 }  // namespace
 
@@ -49,7 +39,7 @@ void App::draw_test_suite() {
     const testkit::TestSuite& suite = testkit::TestSuite::builtin();
     ImGui::TextDisabled(
         "%zu canned cases over the real engine. Distributed cases stand up a real "
-        "loopback cluster; runs execute off the UI thread.",
+        "local cluster; runs execute in the background.",
         suite.size());
 
     // Keep the editable options in sync with the selected case.
@@ -218,11 +208,11 @@ void App::draw_test_suite() {
 
     // Result / progress.
     if (test_running_.load()) {
-        ImGui::TextColored(kInkMuted, "running %s…", test_running_id_.c_str());
+        ImGui::TextColored(kInkMuted, "Running %s…", test_running_id_.c_str());
     } else if (test_result_) {
         const testkit::TestResult& result = *test_result_;
         status_label(tone_of(result.outcome),
-                     test_outcome_label(result.outcome).c_str());
+                     std::string(label_of(result.outcome)).c_str());
         ImGui::SameLine();
         if (mono_font_) ImGui::PushFont(mono_font_);
         ImGui::TextColored(kInkQuiet, "· %.3fs", result.elapsed_seconds);

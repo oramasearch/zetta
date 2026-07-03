@@ -195,6 +195,11 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   naming its panel, replayable from Help · Guided demo; new core surface
   `write_churn_dataset` (the loader's schema-validated inverse)
   ([docs/gui/onboarding.md](gui/onboarding.md)).
+  **#635 product-language pass swept**: every view audited, kind/status enums
+  render via `label_of`/`humanize_kind` in the one mapping site
+  `src/gui/labels.hpp` (SQL keeps raw wire values), `term_hint` hovers name
+  unavoidable technical terms, per-view sign-off recorded
+  ([docs/gui/copy-audit.md](gui/copy-audit.md)).
 - **Security**: CTL-2/TB-3 inter-node transport security is **built**
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every

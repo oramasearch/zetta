@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/usecases/churn/churn_solution.hpp"
@@ -32,23 +33,12 @@
 namespace zetta::gui {
 namespace {
 
-// The gate status as an uppercase badge ("PASS" / "WARN" / "FAIL").
-std::string status_badge(zetta::pipeline::CheckStatus status) {
-    std::string text = to_string(status);
-    for (char& character : text) {
-        character =
-            static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
-    }
-    return text;
-}
-
-
 }  // namespace
 
 void App::draw_gate() {
     ImGui::SeparatorText("Correctness gate");
     ImGui::TextDisabled(
-        "Validate an execution graph before deploy. RULE-1: no deploy without a "
+        "Validate an execution graph before you deploy. No deploy without a "
         "passing gate.");
 
     // Graph source. Fill a preset, load a stored graph from the selected
@@ -152,7 +142,7 @@ void App::draw_gate() {
             ImGui::TextUnformatted(check.name.c_str());
             ImGui::TableSetColumnIndex(1);
             status_label(tone_of(check.status),
-                         status_badge(check.status).c_str());
+                         std::string{label_of(check.status)}.c_str());
             ImGui::TableSetColumnIndex(2);
             ImGui::TextWrapped("%s", check.reason.c_str());
         }
@@ -214,8 +204,7 @@ void App::draw_deploy() {
         zetta::pipeline::DeploymentKind::Local, zetta::pipeline::DeploymentKind::Kubernetes, zetta::pipeline::DeploymentKind::Vpc,
         zetta::pipeline::DeploymentKind::Cloud};
     const auto dial_label = [](zetta::pipeline::DeploymentKind kind) -> std::string {
-        std::string label = to_string(kind);
-        if (!label.empty()) label[0] = static_cast<char>(std::toupper(label[0]));
+        const std::string label{label_of(kind)};
         return kind == zetta::pipeline::DeploymentKind::Local ? label : label + " (planned)";
     };
     ImGui::SetNextItemWidth(-FLT_MIN);
@@ -260,7 +249,8 @@ void App::draw_deploy() {
             if (deployment) {
                 deploy_failed_ = false;
                 deploy_status_ = "Deployed \"" + selected->name + "\" to " +
-                                 to_string(target.kind) + " (deployment " +
+                                 std::string{label_of(target.kind)} +
+                                 " (deployment " +
                                  deployment->id().substr(0, 8) + ")";
             } else {
                 deploy_failed_ = true;
@@ -269,7 +259,7 @@ void App::draw_deploy() {
                         ? "Deploy failed: the gate passed but placement was "
                           "rejected"
                         : "Deploy failed: only the local target is available "
-                          "in R1";
+                          "for now";
             }
         }
     }
@@ -353,7 +343,8 @@ void App::draw_deploy() {
             entity_link(deployment->graph_name().c_str(), View::Graph,
                         deployment->graph_name());
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(to_string(deployment->target().kind).c_str());
+            ImGui::TextUnformatted(
+                std::string{label_of(deployment->target().kind)}.c_str());
             ImGui::TableSetColumnIndex(3);
             ImGui::Text("%zu", deployment->node_count());
             ImGui::TableSetColumnIndex(4);
@@ -370,7 +361,7 @@ void App::draw_deploy() {
                 entity_link(latest->id().substr(0, latest->id().find('-')).c_str(),
                             View::Runs, latest->id());
             } else {
-                ImGui::TextDisabled("—");
+                ImGui::TextDisabled("·");
             }
             ImGui::TableSetColumnIndex(6);
             ImGui::TextUnformatted(deployment->created().c_str());

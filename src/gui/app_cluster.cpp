@@ -3,6 +3,7 @@
 #include "gui/app_operations_internal.hpp"
 #include "gui/cluster_pipeline.hpp"
 #include "gui/cluster_telemetry.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/cloud/add_nodes.hpp"
@@ -498,7 +499,8 @@ void update_cluster_pipeline(ClusterPipelineState& state, const PipelineInputs& 
             flow.to = job.node;
             flow.lifetime = 1.2f;
             flow.weight = byte_weight(job.local_bytes);
-            flow.label = job.kind + " · " + util::format_bytes(job.local_bytes);
+            flow.label =
+                humanize_kind(job.kind) + " · " + util::format_bytes(job.local_bytes);
             spawn(std::move(flow));
             --budget;
         }
@@ -846,7 +848,7 @@ void App::draw_pipeline_activity(const PipelineInputs& pipeline) {
     if (pipeline.attached) {
         ImGui::TextColored(
             kInkSecondary,
-            "rounds %llu  ·  wire moved %s  ·  near-data jobs %zu  ·  partitions %zu",
+            "sync rounds %llu  ·  moved over network %s  ·  near-data jobs %zu  ·  partitions %zu",
             static_cast<unsigned long long>(pipeline.rounds_completed),
             zetta::util::format_bytes(pipeline.wire_bytes).c_str(), pipeline.jobs.size(),
             pipeline.partitions.size());
@@ -858,7 +860,7 @@ void App::draw_pipeline_activity(const PipelineInputs& pipeline) {
                                cluster_pipeline_.moves_seen));
     } else {
         ImGui::TextColored(kInkQuiet,
-                           "no compute plane attached (a standalone node)");
+                           "not part of a compute cluster (running standalone)");
     }
     if (mono_font_) ImGui::PopFont();
 
@@ -878,7 +880,7 @@ void App::draw_pipeline_activity(const PipelineInputs& pipeline) {
     };
     swatch(kFlowLocal, "near data");
     ImGui::SameLine();
-    swatch(kFlowWire, "over the wire");
+    swatch(kFlowWire, "across the network");
     ImGui::SameLine();
     swatch(kFlowMove, "rebalance");
 }
@@ -896,27 +898,26 @@ void App::draw_cluster_node_detail(const std::vector<zetta::cluster::NodeStatus>
 
     eyebrow(mono_font_, "NODE");
     mono_line(kInkPrimary, "id        ", selected->node_id);
-    mono_line(kInkSecondary, "role      ", to_string(selected->role));
     mono_line(kInkSecondary, "address   ", selected->address);
     mono_line(kInkSecondary, "membership",
               std::string{"  "} +
                   (selected->is_self
                        ? "this node"
-                       : (selected->connected ? "connected peer" : "known")));
+                       : (selected->connected ? "connected node" : "known")));
 
     // Replication status — the same facts the old table column carried, now as a
     // colour-coded line per the node's sync state.
     ImGui::Spacing();
-    eyebrow(mono_font_, "REPLICATION");
+    eyebrow(mono_font_, "SYNC");
     if (selected->is_self) {
-        ImGui::TextDisabled("This node is the local replica.");
+        ImGui::TextDisabled("This node holds the live local copy.");
     } else if (!selected->replication.known) {
-        ImGui::TextDisabled("No replication status learned yet.");
+        ImGui::TextDisabled("No sync status yet.");
     } else {
         const zetta::cluster::NodeReplication& rep = selected->replication;
         mono_line(kInkSecondary, "entries   ", std::to_string(rep.entries));
         mono_line(kInkSecondary, "version   ",
-                  rep.version.empty() ? "—" : rep.version);
+                  rep.version.empty() ? "·" : rep.version);
         char sync[64];
         std::snprintf(sync, sizeof(sync), "%s (%.1fs)",
                       rep.in_sync ? "in sync" : "syncing",
@@ -954,8 +955,8 @@ void App::draw_cluster_node_detail(const std::vector<zetta::cluster::NodeStatus>
         }
     } else {
         ImGui::TextDisabled(
-            "Live telemetry pending (each node broadcasts its own resource "
-            "utilization over the signal plane about once a second).");
+            "Live telemetry pending (each node shares its own resource "
+            "usage about once a second).");
     }
 
     // For this node, surface its reachable listen addresses + the live peer
@@ -968,7 +969,7 @@ void App::draw_cluster_node_detail(const std::vector<zetta::cluster::NodeStatus>
         std::size_t peers = 0;
         for (const zetta::cluster::NodeStatus& node : nodes)
             if (!node.is_self) ++peers;
-        mono_line(kInkMuted, "peers     ", std::to_string(peers));
+        mono_line(kInkMuted, "other nodes ", std::to_string(peers));
     }
 }
 
@@ -1045,7 +1046,7 @@ void App::draw_add_nodes_control() {
         ImGui::EndDisabled();
         if (!wired) {
             ImGui::TextColored(kInkQuiet,
-                "No provisioner is wired for this target in this build.");
+                "Adding nodes on this target isn't available in this build yet.");
         }
     } else {
         // Cloud / Kubernetes / on-prem — permission-gated, deny-by-default. Name
@@ -1195,9 +1196,8 @@ void App::draw_add_nodes_control() {
             // this build (constructing one needs subscription / region / creds —
             // a separate slice). Injecting it lights this up with no UI change.
             ImGui::TextColored(kInkQuiet,
-                "No provisioner is wired for %s in this build. Inject a configured "
-                "%s provisioner to enable adding nodes here.",
-                target->name.c_str(), target->name.c_str());
+                "Adding nodes on %s isn't available in this build yet.",
+                target->name.c_str());
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -1230,8 +1230,8 @@ void App::draw_add_nodes_control() {
                            ImVec2(ImGui::GetContentRegionAvail().x, 0.0f),
                            overlay.c_str());
         ImGui::TextColored(kInkSecondary,
-                           "Adding via %s on a background coroutine — the UI "
-                           "stays responsive.",
+                           "Adding via %s. The app stays responsive while "
+                           "this runs.",
                            add_nodes_op_->target_name.c_str());
     } else if (!add_nodes_status_.empty()) {
         ImGui::Spacing();

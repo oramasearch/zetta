@@ -56,6 +56,12 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   `status_pill(tone, text)` (detail-pane headlines — `detail_header` renders
   one), or `status_dot(tone)`; booleans pick a `Tone` at the call site
   (`ok ? Tone::Ok : Tone::Error`).
+  **Enum/kind labels come ONLY from `label_of(...)` / `humanize_kind` in
+  `labels.hpp`** (#635) — no raw wire name ("ddf", "near_data",
+  "graph_deployed") as primary text; raw values live in labelled mono
+  metadata lines only, SQL/`system.*` output stays raw by design, and
+  unavoidable technical terms get a `term_hint("…")` hover. Rules + the
+  per-view sign-off: docs/gui/copy-audit.md.
   See [docs/gui/architecture.md](../../docs/gui/architecture.md) and
   [docs/gui/status-tones.md](../../docs/gui/status-tones.md).
 - **Action outcomes render through the feedback grammar (#632)** — every

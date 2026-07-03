@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 #include "gui/app_operations_internal.hpp"
 
@@ -27,8 +28,8 @@ namespace zetta::gui {
 // against the live node this frame, and a ref that resolves to nothing stays
 // plain mono — a link never fakes a destination.
 void App::draw_run_detail(const zetta::pipeline::Run& run) {
-    detail_header("run " + run.id(), tone_of(run.status()),
-                  std::string(to_string(run.status())));
+    detail_header("Run " + run.id(), tone_of(run.status()),
+                  std::string(label_of(run.status())));
     if (!run.project().empty()) {
         // Runs carry the project uuid; the explorer selects by name.
         const std::string project_name = project_name_for(run.project());
@@ -80,8 +81,8 @@ void App::draw_run_detail(const zetta::pipeline::Run& run) {
                         job->id());
             ImGui::SameLine();
             ImGui::TextDisabled("%s · %s",
-                                std::string(to_string(job->kind())).c_str(),
-                                std::string(to_string(job->status())).c_str());
+                                std::string(label_of(job->kind())).c_str(),
+                                std::string(label_of(job->status())).c_str());
             ImGui::PopID();
         }
     }
@@ -172,14 +173,14 @@ void App::draw_run_detail(const zetta::pipeline::Run& run) {
     ImGui::TextDisabled("sources:");
     ImGui::SameLine();
     ImGui::TextWrapped("%s", lineage.sources.empty()
-                                 ? "—"
+                                 ? "·"
                                  : join_refs(lineage.sources).c_str());
     ImGui::TextDisabled("steps:");
     ImGui::SameLine();
     ImGui::TextWrapped(
-        "%s", lineage.steps.empty() ? "—" : join_refs(lineage.steps).c_str());
+        "%s", lineage.steps.empty() ? "·" : join_refs(lineage.steps).c_str());
     ImGui::TextDisabled("freshness: %s",
-                        lineage.freshness.empty() ? "—" : lineage.freshness.c_str());
+                        lineage.freshness.empty() ? "·" : lineage.freshness.c_str());
     ImGui::TextDisabled("confidence:");
     ImGui::SameLine();
     ImGui::ProgressBar(static_cast<float>(lineage.confidence), ImVec2(-FLT_MIN, 0));
@@ -188,7 +189,7 @@ void App::draw_run_detail(const zetta::pipeline::Run& run) {
 void App::draw_runs() {
     page_header("Runs",
                 "Status, logs, outputs, and lineage for each execution of a "
-                "deployed graph");
+                "deployed pipeline");
 
     // A run is the record of one execution of a deployed graph (status / logs /
     // outputs / lineage). This panel is a read-only viewer: runs arrive via the
@@ -198,7 +199,7 @@ void App::draw_runs() {
     std::optional<std::string> pending = take_pending_selection(View::Runs);
     if (runs.empty()) {
         if (empty_state("No runs yet",
-                        "A run records one execution of a deployed graph: "
+                        "A run records one execution of a deployed pipeline: "
                         "status, logs, outputs, and lineage.",
                         "Open deploy")) {
             navigate_to(View::Deploy);
@@ -214,7 +215,7 @@ void App::draw_runs() {
     for (const std::shared_ptr<zetta::pipeline::Run>& run : runs) {
         rows.push_back({.id = run->id(),
                         .title = entity_short_id(run->id()),
-                        .meta = std::string(to_string(run->status())),
+                        .meta = std::string(label_of(run->status())),
                         .tone = tone_of(run->status()),
                         .id_title = true});
     }

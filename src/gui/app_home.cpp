@@ -8,6 +8,7 @@
 
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/labels.hpp"
 #include "gui/tones.hpp"
 
 #include "zetta/api/registry.hpp"
@@ -155,7 +156,7 @@ void App::draw_about_modal() {
     ImGui::Text("Orama Zetta");
     ImGui::SameLine();
     ImGui::TextDisabled("%s", kVersion);
-    ImGui::TextColored(kCoral, "Intelligence Velocity for big thinkers.");
+    ImGui::TextColored(kCoral, "Intelligence Velocity for Big Thinkers.");
     ImGui::Spacing();
     ImGui::TextColored(kInkSecondary,
         "Orama Zetta turns a question into running, deployed intelligence. "
@@ -260,7 +261,7 @@ void App::draw_home() {
         tile_gap();
         if (stat_tile_link("peak load",
                            peak_percent < 0.0f
-                               ? std::string("—")
+                               ? std::string("·")
                                : std::format("{:.0f}%", peak_percent),
                            peak_percent < 0.0f
                                ? Tone::Muted
@@ -455,7 +456,7 @@ void App::draw_home() {
             if (!run) continue;
             ImGui::PushID(run->id().c_str());
             status_label(tone_of(run->status()),
-                         std::string(to_string(run->status())).c_str());
+                         std::string(label_of(run->status())).c_str());
             ImGui::SameLine();
             std::string label = "run " + short_id(run->id());
             if (!run->graph().empty()) label += " · " + short_id(run->graph());
