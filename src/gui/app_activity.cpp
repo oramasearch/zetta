@@ -114,9 +114,7 @@ void App::draw_activity() {
         return;
     }
 
-    const ImGuiTableFlags table_flags =
-        ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-        ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_ScrollY;
+    const ImGuiTableFlags table_flags = kDataTableFlags | ImGuiTableFlags_ScrollY;
     if (mono_font_) ImGui::PushFont(mono_font_);
     if (ImGui::BeginTable("##activity_feed", 7, table_flags)) {
         ImGui::TableSetupScrollFreeze(0, 1);  // keep the header row pinned
