@@ -43,8 +43,13 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   in `app_internal.hpp`, plus plain ImGui tables/plots. No local colors,
   paddings, or one-off buttons — a new visual becomes a grammar widget first.
   **Status colors come ONLY from `tone_of(...)` in `tones.hpp`** (#636); a new
-  status-bearing enum adds one overload there, never a panel-local switch.
-  See [docs/gui/architecture.md](../../docs/gui/architecture.md).
+  status-bearing enum adds one overload there, never a panel-local switch. A
+  status renders via `status_label(tone, text)` (rows: dot + word),
+  `status_pill(tone, text)` (detail-pane headlines — `detail_header` renders
+  one), or `status_dot(tone)`; booleans pick a `Tone` at the call site
+  (`ok ? Tone::Ok : Tone::Error`).
+  See [docs/gui/architecture.md](../../docs/gui/architecture.md) and
+  [docs/gui/status-tones.md](../../docs/gui/status-tones.md).
 - **List+detail panels render through `master_detail(...)`** (#634) — never a
   hand-rolled split. The panel builds `MasterRow`s from its live source each
   frame, passes its `take_pending_selection(View::…)` result and its

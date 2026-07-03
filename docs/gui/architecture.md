@@ -71,12 +71,18 @@ All shared widgets live in `app_internal.hpp` (GUI-only, never in
   row), and `detail_header(title, tone, status)` opening the detail pane. See
   [master-detail.md](master-detail.md).
 - **Status tones (#636)**: `enum class Tone { Ok, Active, Warn, Error, Muted }`
-  with `tone_color(Tone)` / `tone_background(Tone)` in `app_internal.hpp`, and
-  the per-enum mapping overloads in **`src/gui/tones.hpp`** — the ONE mapping
-  site: `tone_of(RunStatus)`, `tone_of(JobStatus)`, `tone_of(ScalingAction)`,
-  `tone_of(CheckStatus)`, `tone_of(TestOutcome)`, `tone_of_log_level(level)`.
-  Panels never pick status colors ad hoc; a new status-bearing enum adds one
-  overload there.
+  with `tone_color(Tone)` / `tone_dot_color(Tone)` / `tone_background(Tone)`
+  in `app_internal.hpp`, and the per-enum mapping overloads in
+  **`src/gui/tones.hpp`** — the ONE mapping site: `tone_of(RunStatus)`,
+  `tone_of(JobStatus)`, `tone_of(ScalingAction)`, `tone_of(CheckStatus)`,
+  `tone_of(TestOutcome)`, `tone_of(cluster::NodeStatus)` (node sync),
+  `tone_of(StepPlacement)`, `tone_of_log_level(level)`, and
+  `tone_of_utilization(percent)` (the shared gauge thresholds). A status
+  renders through the two widget forms — `status_label(tone, text)` (dot +
+  word, rows) and `status_pill(tone, text)` (uppercase mono word on the tinted
+  pill, detail-pane headlines) — or the bare `status_dot(tone)`. Panels never
+  pick status colors ad hoc; a new status-bearing enum adds one overload
+  there. See [status-tones.md](status-tones.md).
 
 Rules: a panel may compose grammar widgets and plain ImGui primitives
 (tables, plots) but may not define local colors, paddings, or one-off buttons

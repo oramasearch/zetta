@@ -113,7 +113,7 @@ void ReplConsole::draw_result(const repl::Result& result, ImFont* mono_font) {
     // Errors display inline (red) and replace the grid — a failed statement
     // produced no rows.
     if (!result.error.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", result.error.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", result.error.c_str());
         return;
     }
     bool any_message = false;

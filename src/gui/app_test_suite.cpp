@@ -220,9 +220,8 @@ void App::draw_test_suite() {
         ImGui::TextColored(kInkMuted, "running %s…", test_running_id_.c_str());
     } else if (test_result_) {
         const testkit::TestResult& result = *test_result_;
-        const ImVec4 color = tone_color(tone_of(result.outcome));
-        status_dot(color);
-        ImGui::TextColored(color, "%s", test_outcome_label(result.outcome).c_str());
+        status_label(tone_of(result.outcome),
+                     test_outcome_label(result.outcome).c_str());
         ImGui::SameLine();
         if (mono_font_) ImGui::PushFont(mono_font_);
         ImGui::TextColored(kInkQuiet, "· %.3fs", result.elapsed_seconds);

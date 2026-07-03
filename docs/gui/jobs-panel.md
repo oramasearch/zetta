@@ -35,8 +35,9 @@ Runs panel.
 ### Job list (left)
 
 One row per `node_.jobs()` entry — a standard `MasterRow`: a **status-toned
-dot** (queued neutral, running amber, succeeded green, failed red — `tone_of`),
-the first segment of the job's UUID as the title, and `kind · status`
+dot** (queued neutral, running amber, succeeded green, failed red — `tone_of`,
+the shared tones, [status-tones.md](status-tones.md)), the first segment of
+the job's UUID as the title, and `kind · status`
 (`featurize` / `train` / `explain` / `score` / `ddf`; the status word rides
 along so meaning never sits on colour alone) as the mono meta.
 Selecting a row sets the active job (held by id and re-resolved each
@@ -47,7 +48,7 @@ dangling handle).
 
 For the selected job:
 
-- **identity + status** — the full id, the color-coded status, the `kind`,
+- **identity + status** — the full id, the status pill (`status_pill`), the `kind`,
   `created` / `updated` stamps, and the `detail` note (a failure reason surfaces
   here);
 - **references** — the job's place in the pipeline as id refs, each shown only when

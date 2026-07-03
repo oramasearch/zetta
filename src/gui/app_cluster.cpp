@@ -3,6 +3,7 @@
 #include "gui/app_operations_internal.hpp"
 #include "gui/cluster_pipeline.hpp"
 #include "gui/cluster_telemetry.hpp"
+#include "gui/tones.hpp"
 
 #include "zetta/cloud/add_nodes.hpp"
 #include "zetta/cloud/cloud_provider.hpp"
@@ -78,13 +79,10 @@ zetta::runtime::task<> fetch_vm_sizes_task(std::shared_ptr<VmSizesOp> op);
 
 namespace {
 
-// The health-dot colour for a node, matching the replication palette the table
-// used: green = self / in-sync, amber = syncing (known but behind), quiet = no
-// status learned yet.
+// The health-dot colour for a node: the shared node-sync tone (#636), so the
+// node boxes, the detail pane, and the graph workspace canvas all agree.
 ImVec4 cluster_node_color(const zetta::cluster::NodeStatus& node) {
-    if (node.is_self) return kDotActive;
-    if (!node.replication.known) return kInkQuiet;
-    return node.replication.in_sync ? kSuccessColor : kWarnColor;
+    return tone_color(tone_of(node));
 }
 
 // A short one-word sync state for the box caption.
@@ -103,13 +101,13 @@ const char* cluster_node_state(const zetta::cluster::NodeStatus& node) {
 constexpr ImU32 kGaugeTrack = IM_COL32(236, 236, 234, 255);  // light meter track
 constexpr ImU32 kGaugeSpark = IM_COL32(95, 95, 92, 140);     // faint ink trend line
 
-// A load gauge's fill, on the semantic status palette (never coral): green under
-// moderate load, amber as it climbs, red when saturated. Network throughput is a
-// flow, not a good/bad status, so it uses a neutral ink fill instead of this.
+// A load gauge's fill: the shared utilization thresholds (#636) on the
+// semantic status palette (never coral). The gauges keep their richer
+// treatment (eased bars, sparklines) but the colour breakpoints are the
+// system-wide ones. Network throughput is a flow, not a good/bad status, so
+// it uses a neutral ink fill instead of this.
 ImVec4 gauge_load_color(float percent) {
-    if (percent >= 85.0f) return kErrorColor;
-    if (percent >= 60.0f) return kWarnColor;
-    return kDotActive;
+    return tone_color(tone_of_utilization(percent));
 }
 
 // One gauge's derived display: the live value (0..100), whether it is available
@@ -1017,8 +1015,7 @@ void App::draw_cluster_node_detail(const std::vector<zetta::cluster::NodeStatus>
                       rep.in_sync ? "in sync" : "syncing",
                       rep.seconds_since_sync);
         if (g_mono_font) ImGui::PushFont(g_mono_font);
-        ImGui::TextColored(rep.in_sync ? kSuccessColor : kWarnColor, "sync      %s",
-                           sync);
+        ImGui::TextColored(tone_color(tone_of(*selected)), "sync      %s", sync);
         if (g_mono_font) ImGui::PopFont();
     }
 
@@ -1103,7 +1100,7 @@ void App::draw_add_nodes_control() {
     if (ImGui::BeginCombo("Target", target->name.c_str())) {
         for (const zetta::cloud::CloudProvider& provider : catalog.providers()) {
             ImGui::PushID(provider.id.c_str());
-            status_dot(provider.requires_consent() ? kWarnColor : kDotActive);
+            status_dot(provider.requires_consent() ? Tone::Warn : Tone::Active);
             const bool is_selected = provider.id == selected_add_target_;
             if (ImGui::Selectable(provider.name.c_str(), is_selected)) {
                 // Switching targets clears the last result line so a stale
@@ -1267,12 +1264,10 @@ void App::draw_add_nodes_control() {
         // per-action consent: there is no remembered grant, so a cloud add asks
         // every time. Nothing runs until it is clicked.
         ImGui::Spacing();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                              ImVec4(0.980f, 0.933f, 0.855f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, tone_background(Tone::Warn));
         ImGui::BeginChild("##add_nodes_consent", ImVec2(0, 0),
                           ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
-        status_dot(kWarnColor);
-        ImGui::TextColored(kWarnColor, "Permission required");
+        status_label(Tone::Warn, "Permission required");
         ImGui::TextColored(kInkSecondary,
             "Adding nodes here runs the %s CLI to create %d billable %s on %s. This "
             "is a write and it incurs cost. Nothing runs until you allow it; consent "
@@ -1342,7 +1337,7 @@ void App::draw_add_nodes_control() {
             if (ImGui::SmallButton("Copy error")) {
                 ImGui::SetClipboardText(add_nodes_status_.c_str());
             }
-            ImGui::PushStyleColor(ImGuiCol_Text, kWarnColor);
+            ImGui::PushStyleColor(ImGuiCol_Text, tone_color(Tone::Warn));
             ImGui::BeginChild(
                 "##add_nodes_error",
                 ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8.0f),
@@ -1353,7 +1348,8 @@ void App::draw_add_nodes_control() {
             ImGui::EndChild();
             ImGui::PopStyleColor();
         } else {
-            ImGui::TextColored(kSuccessColor, "%s", add_nodes_status_.c_str());
+            ImGui::TextColored(tone_color(Tone::Ok), "%s",
+                               add_nodes_status_.c_str());
         }
     }
 }

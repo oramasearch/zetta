@@ -16,8 +16,8 @@ only its rows and its detail body.
   section group under a mono eyebrow — the Cloud panel's provider categories),
   and `tone` (the status dot, `Tone::Muted` when the entity has no lifecycle).
 - **`detail_header(title, tone, status)`** — the standard first line of a
-  detail pane: the entity's title in mono ink plus an optional tone-coloured
-  status tag.
+  detail pane: the entity's title in mono ink plus an optional `status_pill`
+  carrying the tone ([status-tones.md](status-tones.md), #636).
 - **`master_detail(id, rows, selected_id, pending, empty_label, select_hint,
   draw_detail, height = 0)`** — the split container. Renders the list left,
   a draggable splitter (ratio 0.15–0.60, default 0.30, persisted in the

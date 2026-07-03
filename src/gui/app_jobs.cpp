@@ -143,7 +143,7 @@ void App::draw_job_scaling_controls() {
     ImGui::Text("reward: %.4g", decision.reward);
     if (!decision.within_cost_cap) {
         ImGui::SameLine();
-        ImGui::TextColored(kErrorColor, "  cost cap breached");
+        ImGui::TextColored(tone_color(Tone::Error), "  cost cap breached");
     }
     ImGui::TextWrapped("%s", decision.reason.c_str());
 }

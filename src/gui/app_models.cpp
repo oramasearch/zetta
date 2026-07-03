@@ -190,7 +190,7 @@ void App::draw_add_model_form() {
     ImGui::Spacing();
     ImGui::Separator();
     if (!add_model_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", add_model_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", add_model_error_.c_str());
     }
 
     if (primary_button("Register model")) {

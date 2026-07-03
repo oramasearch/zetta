@@ -89,8 +89,12 @@ Hover/selected washes and ghost-button fills are black at low alpha
   fill (there is no "send" here).
 - **Selection.** Soft black wash (`ImGuiCol_Header`), never coral or charcoal
   fill.
-- **Status dots.** `status_dot(colour)` draws the design system's small indicator
-  dot inline (green = active/open, amber = locked/attention) — meaning never
+- **Status dots + labels + pills.** `status_dot(tone)` draws the design
+  system's small indicator dot inline (green = active/open, amber =
+  locked/attention); `status_label(tone, text)` is the row form (dot + word)
+  and `status_pill(tone, text)` the header form (uppercase mono word on the
+  tone's tinted pill). Tones come only from `tone_of(...)` in
+  `src/gui/tones.hpp` (see [status-tones.md](status-tones.md)) — meaning never
   rides on colour alone, the label says it too.
 - **Metadata strips.** Mono, `·`-separated, tabular counts, no debug noise — see
   `draw_dashboard` (the always-visible node strip) and the project rows on Home.

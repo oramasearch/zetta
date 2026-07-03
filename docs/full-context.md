@@ -95,8 +95,10 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   navigate_to + sidebar, #628 closed). Plan 19 reconciled 2026-07-03: grammar
   edges inverted (it shipped, so #634 master-detail leads the panel sweeps,
   #631/#632/#633 follow it, #630 audit + #635 terminology close); layer-0 now
-  #637 · #611 · #466 · #538 · #530 · #641 · #634 · #622 · #626 · #636-adoption
-  · #640; #616/#625/#645 also unblocked.
+  #637 · #611 · #466 · #538 · #530 · #641 · #634 · #622 · #626 · #640;
+  #616/#625/#645 also unblocked. **#636 adoption swept**: every panel status
+  renders via tone_of + status_label/status_pill
+  ([status-tones.md](gui/status-tones.md)).
 - **Security**: CTL-2/TB-3 inter-node transport security is **built**
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every

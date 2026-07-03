@@ -40,13 +40,6 @@ inline constexpr ImVec4 kDotActive{0.114f, 0.620f, 0.459f, 1.0f};   // dot-activ
 inline constexpr ImVec4 kWarnColor{0.522f, 0.310f, 0.043f, 1.0f};   // stale-fg #854F0B
 inline constexpr ImVec4 kErrorColor{0.706f, 0.137f, 0.094f, 1.0f};  // error #B42318
 
-// Correctness-gate status colours: green pass, amber warn, red fail.
-inline constexpr ImVec4 kPassColor = kSuccessColor;
-inline constexpr ImVec4 kFailColor = kErrorColor;
-
-// "unsaved edits" / dirty marker colour (stale amber).
-inline constexpr ImVec4 kUnsavedColor = kWarnColor;
-
 // A black wash at the given alpha — the design system's hover/selected washes
 // and ghost-button fills (rgba(0,0,0,a)), which blend over whatever is behind.
 inline constexpr ImVec4 wash(float alpha) { return ImVec4(0.0f, 0.0f, 0.0f, alpha); }
@@ -66,6 +59,13 @@ inline constexpr ImVec4 tone_color(Tone tone) {
         case Tone::Muted:  return kInkQuiet;
     }
     return kInkQuiet;
+}
+
+// The dot variant of a tone: the design system gives the green state a brighter
+// dot (#1D9E75) than its text (#0F6E56); every other tone's dot matches its
+// text colour.
+inline constexpr ImVec4 tone_dot_color(Tone tone) {
+    return tone == Tone::Ok ? kDotActive : tone_color(tone);
 }
 
 // The light tint behind a banner/badge of the given tone (the design system's
@@ -132,6 +132,41 @@ inline void status_dot(ImVec4 color) {
                                                 ImGui::GetColorU32(color));
     ImGui::Dummy(ImVec2(radius * 2.0f, size));
     ImGui::SameLine(0.0f, 7.0f);
+}
+
+// The tone-routed dot (#636) — the form panels use. The raw-colour overload
+// above exists for the widgets themselves (banner, status_label).
+inline void status_dot(Tone tone) { status_dot(tone_dot_color(tone)); }
+
+// The row form of a status (#636): dot + word, both from the tone, so the same
+// state reads the same in every list and table. Meaning never rides on colour
+// alone — the word says it too.
+inline void status_label(Tone tone, const char* text) {
+    status_dot(tone_dot_color(tone));
+    ImGui::TextColored(tone_color(tone), "%s", text);
+}
+
+// The header form of a status (#636): an uppercase mono word on the tone's
+// tinted pill — for a detail pane's headline state (a run's status beside its
+// id, the gate verdict). Rows use status_label instead.
+inline void status_pill(Tone tone, const char* text) {
+    const std::string label = to_upper(text);
+    if (g_mono_font) ImGui::PushFont(g_mono_font);
+    const ImVec2 label_size = ImGui::CalcTextSize(label.c_str());
+    const float pad_x = ImGui::GetFontSize() * 0.45f;
+    const float pad_y = ImGui::GetFontSize() * 0.10f;
+    const ImVec2 top_left = ImGui::GetCursorScreenPos();
+    const ImVec2 bottom_right(top_left.x + label_size.x + pad_x * 2.0f,
+                              top_left.y + label_size.y + pad_y * 2.0f);
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        top_left, bottom_right, ImGui::GetColorU32(tone_background(tone)),
+        (bottom_right.y - top_left.y) * 0.5f);
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(top_left.x + pad_x, top_left.y + pad_y),
+        ImGui::GetColorU32(tone_color(tone)), label.c_str());
+    ImGui::Dummy(ImVec2(bottom_right.x - top_left.x,
+                        bottom_right.y - top_left.y));
+    if (g_mono_font) ImGui::PopFont();
 }
 
 // A mono uppercase eyebrow label (the design system's section-label role). Needs
@@ -290,9 +325,9 @@ struct MasterRow {
 };
 
 // The standard first line of a detail pane: the entity's title in mono ink +
-// an optional tone-coloured status tag. Every master-detail panel opens its
-// detail with this, so "what am I looking at + what state is it in" reads
-// identically everywhere.
+// an optional status_pill (#636) carrying the tone. Every master-detail panel
+// opens its detail with this, so "what am I looking at + what state is it in"
+// reads identically everywhere.
 inline void detail_header(const std::string& title, Tone tone,
                           const std::string& status) {
     if (g_mono_font) ImGui::PushFont(g_mono_font);
@@ -300,7 +335,7 @@ inline void detail_header(const std::string& title, Tone tone,
     if (g_mono_font) ImGui::PopFont();
     if (!status.empty()) {
         ImGui::SameLine();
-        ImGui::TextColored(tone_color(tone), "[%s]", status.c_str());
+        status_pill(tone, status.c_str());
     }
 }
 

@@ -95,11 +95,12 @@ graph shows the projection; uncheck it for a plain edit canvas). When on:
 - **Per-step table** — `Step · Stage · Placement · Runs on`, one row per step.
   Clicking a row selects that step; hovering it shows the projection's rationale.
 
-Placement colours follow the Orama [design system](../gui/design-system.md) — semantic,
+Placement colours are the shared status tones (`tone_of(StepPlacement)` in
+`src/gui/tones.hpp`, [status-tones.md](../gui/status-tones.md), #636) — semantic,
 never coral (coral stays the "you are here" / "runs here" accent): **green** for
-near-data (compute where the data lives — the efficient case), **ink** for fan-out
-(SPMD, distributed), **quiet** for an all-nodes load, **amber** for the coordinator
-(a single-node funnel point).
+near-data (compute where the data lives — the efficient case), **quiet** for
+fan-out (SPMD, distributed) and an all-nodes load (neutral, nothing to flag),
+**amber** for the coordinator (a single-node funnel point).
 
 ## Scope
 

@@ -1,5 +1,6 @@
 #include "gui/app.hpp"
 #include "gui/app_internal.hpp"
+#include "gui/tones.hpp"
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
@@ -42,20 +43,11 @@ constexpr ImU32 kNodeTextColor = IM_COL32(28, 28, 26, 255);         // ink-prima
 constexpr ImU32 kDataEdgeColor = IM_COL32(150, 150, 146, 220);      // gray line
 constexpr ImU32 kControlEdgeColor = IM_COL32(184, 134, 44, 220);    // amber
 
-// The colour a step's projected cluster placement is drawn in (#591) — semantic,
-// within the Orama palette (coral stays the "you are here" accent, never status):
-//   near-data  → green (compute runs where the data lives — the efficient case)
-//   fan-out    → ink   (SPMD across every node — neutral, distributed compute)
-//   all nodes  → quiet (a load whose result is replicated everywhere)
-//   coordinator→ amber (a single-node funnel point — attention, not distributed)
+// The colour a step's projected cluster placement is drawn in (#591): the
+// shared placement tone (#636) — coral stays the "you are here" accent, never
+// status.
 ImVec4 placement_color(zetta::pipeline::StepPlacement placement) {
-    switch (placement) {
-        case zetta::pipeline::StepPlacement::NearData:    return kDotActive;
-        case zetta::pipeline::StepPlacement::FanOut:      return kInkSecondary;
-        case zetta::pipeline::StepPlacement::AllNodes:    return kInkQuiet;
-        case zetta::pipeline::StepPlacement::Coordinator: return kWarnColor;
-    }
-    return kInkQuiet;
+    return tone_color(tone_of(placement));
 }
 
 }  // namespace
@@ -152,7 +144,7 @@ void App::draw_graph_workspace() {
 
     if (!editing_graph_) {
         if (!graph_error_.empty()) {
-            ImGui::TextColored(kErrorColor, "%s", graph_error_.c_str());
+            ImGui::TextColored(tone_color(Tone::Error), "%s", graph_error_.c_str());
         }
         ImGui::TextDisabled("Select or create a graph to view and edit it.");
         return;
@@ -445,10 +437,8 @@ void App::draw_graph_plan(const zetta::pipeline::ClusterPlan& plan) {
     const auto short_id = [](const std::string& id) {
         return id.substr(0, id.find('-'));
     };
-    const auto health_color = [](const zetta::cluster::NodeStatus& node) -> ImVec4 {
-        if (node.is_self) return kDotActive;
-        if (!node.replication.known) return kInkQuiet;
-        return node.replication.in_sync ? kSuccessColor : kWarnColor;
+    const auto health_color = [](const zetta::cluster::NodeStatus& node) {
+        return tone_color(tone_of(node));
     };
 
     ImGui::Spacing();
@@ -593,7 +583,7 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
                 graph.edge_count());
     if (graph_dirty_) {
         ImGui::SameLine();
-        ImGui::TextColored(kUnsavedColor, "● unsaved edits");
+        ImGui::TextColored(tone_color(Tone::Warn), "● unsaved edits");
     }
 
     ImGui::SetNextItemWidth(font * 12.0f);
@@ -632,7 +622,7 @@ void App::draw_graph_editor(zetta::pipeline::Project& project) {
         }
     }
     if (!graph_error_.empty()) {
-        ImGui::TextColored(kErrorColor, "%s", graph_error_.c_str());
+        ImGui::TextColored(tone_color(Tone::Error), "%s", graph_error_.c_str());
     }
     if (!editing_graph_) return;  // Revert may have closed the graph
 

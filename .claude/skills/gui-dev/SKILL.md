@@ -22,10 +22,12 @@ gotchas). The experience contract this work serves is
    nothing-yet case — one sentence + the single next action) · `banner`
    (mandatory for action outcomes — engine reason verbatim, never "failed") ·
    `entity_link` for EVERY cross-entity reference · status via `tone_of(...)`
-   only · a list+detail panel renders through `master_detail(...)` (rows +
-   detail body only — docs/gui/master-detail.md), never a hand-rolled split.
-   Need a new visual? Add it to the grammar (design-system check) before
-   using it.
+   only, rendered with `status_label` (rows: dot + word) / `status_pill`
+   (detail headlines) / `status_dot(tone)` — see
+   [docs/gui/status-tones.md](../../../docs/gui/status-tones.md) · a
+   list+detail panel renders through `master_detail(...)` (rows + detail body
+   only — docs/gui/master-detail.md), never a hand-rolled split. Need a new
+   visual? Add it to the grammar (design-system check) before using it.
 3. **Live sources only**: render from `system.*` / `Node::…()` each frame; no
    panel-owned copies of engine state (selection/animation only). New
    observable state = a `system.<table>` read view in zetta-core first
