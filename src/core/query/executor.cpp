@@ -1,5 +1,6 @@
 #include "zetta/query/executor.hpp"
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +40,11 @@ namespace {
 
 // The virtual `system` database holds read-only system tables (à la Postgres'
 // pg_catalog). Its tables are computed at query time, not stored/replicated.
+//  - `tables` — the catalog of these system tables themselves (#684): one row
+//    per table with its name + one-line description, sourced from
+//    kSystemTableCatalog below. "Which system tables exist" as a read view
+//    (RULE-7) — the same list system_table_names() exposes and the headed
+//    explorer renders.
 //  - `nodes` — cluster membership + replication status (Cluster::nodes()).
 //    `SELECT * FROM system.nodes` (bare `zetta_nodes` still works, back-compat).
 //  - `deployments` — recorded graph→target placements (Node::deployments()).
@@ -139,6 +145,104 @@ constexpr std::string_view kCollectiveRoundsTable = "collective_rounds";
 constexpr std::string_view kSpansTable = "spans";
 constexpr std::string_view kTracesTable = "traces";
 constexpr std::string_view kCrashesTable = "crashes";
+constexpr std::string_view kTablesTable = "tables";
+
+// The system-table catalog: every table the `system` database serves, with a
+// one-line description, alphabetical. THE single list (#684) — the
+// `system.tables` read view, the public system_table_names() accessor (which
+// the headed explorer renders), and the unknown-table error's suggestions all
+// derive from it, so a new system table registered here appears everywhere at
+// once. Adding a table = one entry here + its dispatch branch in execute().
+struct SystemTableInfo {
+    std::string_view name;
+    std::string_view description;
+};
+constexpr std::array kSystemTableCatalog = {
+    SystemTableInfo{kActivityTable,
+                    "the merged, newest-first activity feed: audit trail + "
+                    "runs composed chronologically"},
+    SystemTableInfo{kAuditTable, "the immutable, append-only audit trail"},
+    SystemTableInfo{kCheckpointsTable,
+                    "jobs with a durable resume checkpoint in this node's "
+                    "local store (ephemeral, not replicated)"},
+    SystemTableInfo{kCloudProvidersTable,
+                    "the deployment-target / provider catalog: pure metadata, "
+                    "reads nothing from any cloud"},
+    SystemTableInfo{kCloudStatusTable,
+                    "cached results of consent-gated cloud inspects; querying "
+                    "never triggers a cloud call"},
+    SystemTableInfo{kCollectiveRoundsTable,
+                    "this node's live collective-plane counters (ephemeral, "
+                    "not replicated)"},
+    SystemTableInfo{kCrashesTable,
+                    "crash reports found under this node's data_dir "
+                    "(ephemeral, local)"},
+    SystemTableInfo{kPartitionsTable,
+                    "the partition catalog: where each slice of a table's "
+                    "data lives"},
+    SystemTableInfo{kDatasetsTable,
+                    "datasets as a first-class primitive: schema, rows, size, "
+                    "format, partition placement"},
+    SystemTableInfo{kDeploymentsTable,
+                    "recorded graph-to-target placements"},
+    SystemTableInfo{kIndexesTable,
+                    "the index registry: one row per registered index over a "
+                    "table"},
+    SystemTableInfo{kJobsTable,
+                    "the compute-job registry: one row per unit of native "
+                    "distributed compute + its lifecycle"},
+    SystemTableInfo{kKeysTable,
+                    "the access keys the principals own: scope + capabilities, "
+                    "no secret material"},
+    SystemTableInfo{kModelsTable,
+                    "the model registry: trained models + their kind, "
+                    "metrics, weights fingerprint"},
+    SystemTableInfo{kNodeMetricsTable,
+                    "this node's live host resource utilization, sampled at "
+                    "query time"},
+    SystemTableInfo{kNodesTable,
+                    "cluster membership + replication status (needs a "
+                    "cluster)"},
+    SystemTableInfo{kPipelineJobsTable,
+                    "recorded near-data compute jobs (ephemeral, not "
+                    "replicated)"},
+    SystemTableInfo{kPrincipalsTable, "the authenticated actors"},
+    SystemTableInfo{kProvisionersTable,
+                    "cloud-burst provisioners detected from this node's local "
+                    "CLIs; carries no credentials"},
+    SystemTableInfo{kRunsTable,
+                    "the run registry: one row per graph execution + its "
+                    "lifecycle and lineage"},
+    SystemTableInfo{kSpansTable,
+                    "one row per span in this node's span ring: every traced "
+                    "operation's intent, plan, timing"},
+    SystemTableInfo{kTablesTable,
+                    "this catalog: every system table + what it holds"},
+    SystemTableInfo{kTracesTable,
+                    "one row per trace aggregated from the span ring: the "
+                    "what-happened summary"},
+};
+
+// One JSON row per system table for the system.tables catalog view (#684).
+std::vector<nlohmann::json> system_table_rows() {
+    std::vector<nlohmann::json> rows;
+    for (const SystemTableInfo& info : kSystemTableCatalog) {
+        nlohmann::json row;
+        row["table"] = std::string{info.name};
+        row["description"] = std::string{info.description};
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// The names alone, derived from the catalog for the public accessor.
+constexpr auto kSystemTableNames = [] {
+    std::array<std::string_view, kSystemTableCatalog.size()> names{};
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        names[i] = kSystemTableCatalog[i].name;
+    }
+    return names;
+}();
 
 // The pre-#538 table names: `system.zetta_<table>` still resolves to
 // `system.<table>` for the tables that shipped under the legacy prefix.
@@ -170,6 +274,14 @@ std::string system_table_of(const TableRef& ref) {
     }
     return {};
 }
+
+}  // namespace
+
+std::span<const std::string_view> system_table_names() {
+    return kSystemTableNames;
+}
+
+namespace {
 
 template <class... Ts>
 struct overloaded : Ts... {
@@ -1275,6 +1387,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (s.grouped()) {
                         return error("GROUP BY is not supported over system tables");
                     }
+                    if (sys == kTablesTable) {
+                        return select_over_rows(s, system_table_rows());
+                    }
                     if (sys == kDeploymentsTable) {
                         return select_over_rows(s, deployment_rows(node_));
                     }
@@ -1339,25 +1454,17 @@ QueryResult Executor::execute(const Statement& stmt,
                         return select_over_rows(s, crash_rows(node_));
                     }
                     if (sys != kNodesTable) {
+                        // Suggest the catalog itself (never drifts, unlike a
+                        // hand-kept list — the pre-#684 one already had).
+                        std::string available;
+                        for (const std::string_view name : kSystemTableNames) {
+                            if (!available.empty()) available += ", ";
+                            available += "system.";
+                            available += name;
+                        }
                         return error("no such system table \"" + sys +
-                                     "\" (try system.nodes, "
-                                     "system.deployments, "
-                                     "system.models, system.indexes, "
-                                     "system.jobs, "
-                                     "system.runs, system.principals, "
-                                     "system.keys, system.audit, "
-                                     "system.activity, "
-                                     "system.dataset_partitions, "
-                                     "system.datasets, "
-                                     "system.checkpoints, "
-                                     "system.node_metrics, "
-                                     "system.pipeline_jobs, "
-                                     "system.collective_rounds, "
-                                     "system.spans, system.traces, "
-                                     "system.crashes, "
-                                     "system.cloud_providers, "
-                                     "system.cloud_status, or "
-                                     "system.provisioners)");
+                                     "\" (see SELECT * FROM system.tables; "
+                                     "available: " + available + ")");
                     }
                     if (!cluster_) {
                         return error("system.nodes is unavailable here "

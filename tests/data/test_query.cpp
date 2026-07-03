@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <variant>
 
 #include <nlohmann/json.hpp>
@@ -11,6 +13,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
+#include "zetta/query/executor.hpp"
 #include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/cluster/replication.hpp"
@@ -247,6 +250,65 @@ TEST(QueryService, ClusterNodesNeedsACluster) {
     QueryService svc{node};  // no cluster wired in
     auto sel = svc.run("SELECT * FROM system.nodes;", "");
     EXPECT_FALSE(sel.ok());
+    node.stop();
+}
+
+// ---- system.tables catalog (#684) -------------------------------------------
+
+// The catalog view lists every system table (itself included), one row per
+// table with a non-empty description, in the same order as the public
+// system_table_names() accessor the headed explorer renders — one list, no
+// GUI-side copy (RULE-7).
+TEST(QueryService, SystemTablesCatalogListsEverySystemTable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    const std::span<const std::string_view> names =
+        zetta::query::system_table_names();
+    ASSERT_FALSE(names.empty());
+
+    auto sel = svc.run("SELECT * FROM system.tables;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), names.size());
+    bool lists_itself = false;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        EXPECT_EQ(sel.rows[i].at("table").get<std::string>(),
+                  std::string{names[i]});
+        EXPECT_FALSE(sel.rows[i].at("description").get<std::string>().empty());
+        if (names[i] == "tables") lists_itself = true;
+    }
+    EXPECT_TRUE(lists_itself);
+
+    // Projection + WHERE work over the catalog like any system table.
+    auto projected = svc.run(
+        "SELECT description FROM system.tables WHERE table = 'nodes';", "");
+    ASSERT_TRUE(projected.ok()) << projected.error;
+    ASSERT_EQ(projected.rows.size(), 1u);
+    EXPECT_FALSE(projected.rows[0].at("description").get<std::string>().empty());
+
+    // Read-only like the rest of the system database.
+    EXPECT_FALSE(svc.run("INSERT INTO system.tables (a) VALUES (1);", "").ok());
+
+    node.stop();
+}
+
+// Every cataloged name dispatches to a real row source — the list and the
+// executor's dispatch can't drift apart. system.nodes without a Cluster
+// returns the explicit no-cluster error, which still proves the name is known.
+TEST(QueryService, EveryCatalogedSystemTableIsSelectable) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+    for (const std::string_view name : zetta::query::system_table_names()) {
+        auto sel = svc.run("SELECT * FROM system." + std::string{name} + ";",
+                           "");
+        EXPECT_EQ(sel.error.find("no such system table"), std::string::npos)
+            << "system." << name << " is cataloged but not served: "
+            << sel.error;
+    }
     node.stop();
 }
 
