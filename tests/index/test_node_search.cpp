@@ -233,11 +233,13 @@ TEST(NodeSearch, UnpartitionedTableDegradesToConsolidatedWithSelfProvenance) {
         EXPECT_EQ(result.hits[i].row_id, oracle[i]) << "rank " << i;
     }
 
-    // Per-node provenance: exactly this node, marked local.
+    // Per-node provenance: exactly this node, marked local; the one
+    // consolidated index is the single "sub-index" consulted.
     ASSERT_EQ(result.nodes.size(), 1u);
     EXPECT_EQ(result.nodes[0].node_id, node.node_id());
     EXPECT_TRUE(result.nodes[0].local);
     EXPECT_EQ(result.nodes[0].hits, result.hits.size());
+    EXPECT_EQ(result.nodes[0].sub_indexes, 1u);
     EXPECT_EQ(result.wire_bytes_moved, 0u);
 
     // One trace: the root `search` span + the `search:local` child.
@@ -371,6 +373,9 @@ TEST(NodeSearch, DistributedSearchMatchesOracleWithProvenanceAndOneTrace) {
                 EXPECT_GT(contribution.wire_bytes, 0u);
             }
             EXPECT_GE(contribution.latency_ms, 0.0);
+            // Every node owns a shard of the partitioned table, so each
+            // answered from at least one per-partition sub-index (#643).
+            EXPECT_GE(contribution.sub_indexes, 1u) << contribution.node_id;
         }
         EXPECT_EQ(locals, 1u) << "node " << index;
         EXPECT_GT(result.wire_bytes_moved, 0u) << "node " << index;

@@ -79,6 +79,8 @@ struct NodeContribution {
     std::string node_id;
     bool local = false;           // true for the coordinating node itself
     std::size_t hits = 0;         // ranked hits this node contributed (pre-merge)
+    std::size_t sub_indexes = 0;  // per-partition sub-indexes the node queried
+                                  //   (1 on the consolidated path; 0 = none owned)
     double latency_ms = 0.0;      // coordinator-observed time to answer
     std::uint64_t wire_bytes = 0; // request + response payload bytes (0 = local)
 
@@ -134,6 +136,8 @@ std::optional<FulltextQueryRequest> decode_fulltext_query(
 struct FulltextQueryResponse {
     std::string from;               // the responding node id
     std::vector<FulltextHit> hits;  // ranked, capped to the request's top_k
+    std::size_t sub_indexes = 0;    // per-partition sub-indexes the node queried
+                                    //   (provenance for #643's "sub-indexes queried")
 };
 
 // Serialize a gather response to its compact JSON form.
@@ -230,10 +234,12 @@ public:
     // hits, capped to `query.top_k`. Used by query() for the local contribution and
     // by on_request to answer a peer. `status`, when non-null, receives the first
     // failing sub-query status (Ok when this node holds no partitions of the index —
-    // it simply contributes nothing).
+    // it simply contributes nothing). `sub_indexes`, when non-null, receives how
+    // many per-partition sub-indexes were consulted (the provenance surfaces show).
     std::vector<FulltextHit> query_local(const IndexSpec& spec,
                                          const IndexQuery& query,
-                                         IndexStatus* status = nullptr) const;
+                                         IndexStatus* status = nullptr,
+                                         std::size_t* sub_indexes = nullptr) const;
 
     // The participants of a scatter: this node + every connected peer, sorted by
     // node id (so the set is the same on every node).

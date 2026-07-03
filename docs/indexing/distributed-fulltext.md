@@ -105,7 +105,10 @@ reaches the index:
   plus the query (`field` / `term` / `top_k`). `encode_fulltext_query` /
   `decode_fulltext_query`.
 - **response** — `schemas/fulltext_hits.schema.json`: one node's ranked
-  `{ id, score }` hits. `encode_fulltext_hits` / `decode_fulltext_hits`.
+  `{ id, score }` hits, plus an optional `sub_indexes` count (how many
+  per-partition sub-indexes the node consulted — the provenance surfaces show,
+  [#643](https://github.com/oramasearch/zetta/issues/643); a payload without
+  it decodes to 0). `encode_fulltext_hits` / `decode_fulltext_hits`.
 
 These are hand-mirrored embedded schemas (like `collective_message.schema.json`), not
 the generated/drift-checked [schema-as-code](../architecture/schemas.md) set.
@@ -196,9 +199,9 @@ query path**: the Node owns one (wired in `attach_cluster`, chained over the com
 plane's signal handler via `Cluster::signal_handler()`), keeps its sub-indexes
 current from `tick()` (`Node::reconcile_search_indexes()`), and routes every
 [`Node::search`](node-search.md) over a placed-partition table through it —
-`QueryResult` now also carries per-node `contributions` (node id / hits / latency /
-wire bytes), and `query()` optionally records `search:local` / `search:peer` child
-spans under a caller trace. Wiring it into the deploy/run path as the default
+`QueryResult` now also carries per-node `contributions` (node id / hits /
+sub-indexes consulted / latency / wire bytes), and `query()` optionally records
+`search:local` / `search:peer` child spans under a caller trace. Wiring it into the deploy/run path as the default
 `index`-step behaviour, exact global-statistics scoring
 ([#657](https://github.com/oramasearch/zetta/issues/657)), a true point-to-point
 gather (vs. one RPC per peer), and the other index kinds (vector / semantic /

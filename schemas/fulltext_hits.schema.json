@@ -15,7 +15,8 @@
         "required": ["id", "score"],
         "additionalProperties": false
       }
-    }
+    },
+    "sub_indexes": { "type": "integer", "minimum": 0 }
   },
   "required": ["hits"],
   "additionalProperties": false

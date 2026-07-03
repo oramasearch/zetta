@@ -18,8 +18,10 @@
 // resize (the render_frame/SDL_WaitEventTimeout cadence constraint).
 //
 // Pure data — no ImGui/SDL here, so app.hpp may include it without pulling the GUI
-// toolkit into every translation unit. The diff (update_cluster_pipeline) and the
-// drawing both live in src/gui/app_operations.cpp.
+// toolkit into every translation unit. The diff (update_cluster_pipeline) lives in
+// src/gui/app_cluster.cpp; the drawing (draw_pipeline_flow + the flow palette) lives
+// in src/gui/app_operations_internal.hpp, shared with the Search view's cluster
+// strip (#643), which replays a search's per-node provenance through these flows.
 
 #include <cstddef>
 #include <cstdint>

@@ -136,6 +136,7 @@ ApiResult handle_search(const nlohmann::json& input, ApiContext& context) {
         nodes.push_back({{"node_id", contribution.node_id},
                          {"local", contribution.local},
                          {"hits", contribution.hits},
+                         {"sub_indexes", contribution.sub_indexes},
                          {"latency_ms", contribution.latency_ms},
                          {"wire_bytes", contribution.wire_bytes}});
     }

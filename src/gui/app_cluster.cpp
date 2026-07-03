@@ -354,39 +354,9 @@ constexpr std::array<const char*, kGaugeCount> kGaugeLabels{"CPU", "MEM", "GPU",
 // (scatter/gather) — so the canvas visibly animates a live run without inventing any
 // number. update_cluster_pipeline() diffs a per-frame snapshot into brief flows;
 // draw_pipeline_flow() glides them over the boxes. See docs/gui/cluster-pipeline-animation.md.
-//
-// Flow palette: near-data / local work reads GREEN (it stays home — the near-data
-// win the instrumentation makes checkable), wire / collective movement reads INK (it
-// crosses the network), so "wire-bytes-vs-local-bytes" is legible at a glance. Coral
-// stays reserved for the selection accent (Orama discipline); status green/amber/red
-// stays the gauges'.
-constexpr ImU32 kFlowLocal = IM_COL32(29, 158, 117, 235);  // kDotActive — near data / placed
-constexpr ImU32 kFlowWire = IM_COL32(95, 95, 92, 220);     // kInkMuted — over the wire
-constexpr ImU32 kFlowMove = IM_COL32(68, 68, 65, 235);     // kInkSecondary — rebalance move
-
-// Re-pack an ImU32 with a new alpha (0..1) — for fading a flow over its lifetime.
-ImU32 with_alpha(ImU32 color, float alpha) {
-    alpha = std::clamp(alpha, 0.0f, 1.0f);
-    const ImU32 a = static_cast<ImU32>(alpha * 255.0f + 0.5f);
-    return (color & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
-}
-
-// The flow's draw colour by kind (green = stays local, ink = crosses the wire).
-ImU32 flow_color(PipelineFlowKind kind) {
-    switch (kind) {
-        case PipelineFlowKind::PartitionPlaced:
-        case PipelineFlowKind::NearDataRead:
-        case PipelineFlowKind::LocalCompute:
-            return kFlowLocal;
-        case PipelineFlowKind::PartitionMoved:
-            return kFlowMove;
-        case PipelineFlowKind::CollectiveScatter:
-        case PipelineFlowKind::CollectiveGather:
-        case PipelineFlowKind::WireMoved:
-            return kFlowWire;
-    }
-    return kFlowWire;
-}
+// The flow palette (kFlowLocal / kFlowWire / kFlowMove) and the drawing itself
+// live in app_operations_internal.hpp, shared with the Search view's cluster
+// strip (#643).
 
 // Diff the live instrumentation snapshot against the last-seen baseline, spawning a
 // brief animated flow per change — a placed / moved partition, a near-data job's
@@ -598,69 +568,6 @@ void update_cluster_pipeline(ClusterPipelineState& state, const PipelineInputs& 
     state.last_rounds = in.rounds_completed;
     state.last_wire_bytes = in.wire_bytes;
     state.primed = true;
-}
-
-// Draw one in-flight flow over the node-box canvas. `centers` maps node id → box
-// centre (rebuilt each frame, so the animation tracks a live resize / reflow); a
-// flow whose endpoint has left the cluster is silently skipped. A travelling flow
-// (distinct from / to) eases a comet with a short trail along a faint connecting
-// line; a from-data / local flow (no source) pulses an expanding ring on the target
-// box. Pure draw on the window draw list — no ImGui layout.
-void draw_pipeline_flow(ImDrawList* draw, ImFont* mono, float font,
-                        const std::unordered_map<std::string, ImVec2>& centers,
-                        const PipelineFlow& flow, float box_h) {
-    if (flow.age < 0.0f) return;  // scheduled but not yet started
-    const float t = std::clamp(flow.age / flow.lifetime, 0.0f, 1.0f);
-    const float fade = 1.0f - t;
-    const ImU32 base = flow_color(flow.kind);
-    const auto find = [&](const std::string& id) -> const ImVec2* {
-        const auto it = centers.find(id);
-        return it == centers.end() ? nullptr : &it->second;
-    };
-
-    const bool travelling = !flow.from.empty() && flow.from != flow.to;
-    if (travelling) {
-        const ImVec2* a = find(flow.from);
-        const ImVec2* b = find(flow.to);
-        if (!a || !b) return;
-        const float line_alpha = 0.30f * std::sin(t * 3.14159265f);
-        draw->AddLine(*a, *b, with_alpha(kFlowWire, line_alpha), 1.4f);
-        const float ease = t * t * (3.0f - 2.0f * t);  // smoothstep
-        const float radius = font * 0.18f + flow.weight * font * 0.30f;
-        for (int trail = 0; trail < 4; ++trail) {
-            const float back = std::max(0.0f, ease - trail * 0.06f);
-            const ImVec2 p(a->x + (b->x - a->x) * back, a->y + (b->y - a->y) * back);
-            draw->AddCircleFilled(p, radius * (1.0f - trail * 0.16f),
-                                  with_alpha(base, fade * (1.0f - trail * 0.22f)));
-        }
-        if (t > 0.7f) {  // a soft landing ring as it arrives
-            const float ring = box_h * 0.18f * (t - 0.7f) / 0.3f;
-            draw->AddCircle(*b, ring + radius, with_alpha(base, fade * 0.7f), 0, 2.0f);
-        }
-        if (!flow.label.empty() && t < 0.6f && mono) {
-            const ImVec2 head(a->x + (b->x - a->x) * ease, a->y + (b->y - a->y) * ease);
-            const float ts = font * 0.78f;
-            draw->AddText(mono, ts, ImVec2(head.x + radius + 2.0f, head.y - ts * 0.5f),
-                          with_alpha(base, fade), flow.label.c_str());
-        }
-    } else {
-        const ImVec2* c = find(flow.to);
-        if (!c) return;
-        const float max_r = box_h * (0.30f + flow.weight * 0.22f);
-        for (int ring = 0; ring < 2; ++ring) {
-            const float rt = std::clamp(t + ring * 0.18f, 0.0f, 1.0f);
-            draw->AddCircle(*c, max_r * rt, with_alpha(base, (1.0f - rt) * 0.85f), 0,
-                            2.0f);
-        }
-        draw->AddCircleFilled(*c, font * 0.22f * fade + 1.0f, with_alpha(base, fade));
-        if (!flow.label.empty() && t < 0.55f && mono) {
-            const float ts = font * 0.78f;
-            const float tw =
-                mono->CalcTextSizeA(ts, FLT_MAX, 0.0f, flow.label.c_str()).x;
-            draw->AddText(mono, ts, ImVec2(c->x - tw * 0.5f, c->y - max_r - ts),
-                          with_alpha(base, fade), flow.label.c_str());
-        }
-    }
 }
 
 }  // namespace
