@@ -46,10 +46,9 @@ std::string status_badge(zetta::pipeline::CheckStatus status) {
 }  // namespace
 
 void App::draw_gate() {
-    ImGui::SeparatorText("Correctness gate");
-    ImGui::TextDisabled(
-        "Validate an execution graph before deploy. RULE-1: no deploy without a "
-        "passing gate.");
+    page_header("Correctness gate",
+                "Validate an execution graph before deploy: no deploy without "
+                "a passing gate.");
 
     // Graph source. Fill a preset, load a stored graph from the selected
     // project, or edit the IR JSON directly below. ir::from_json validates the
@@ -136,10 +135,7 @@ void App::draw_gate() {
 
     // Per-check results: the check, its pass/warn/fail status, and the
     // human-readable reason (never a stack trace).
-    const ImGuiTableFlags table_flags = ImGuiTableFlags_Borders |
-                                        ImGuiTableFlags_RowBg |
-                                        ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("gate_checks", 3, table_flags)) {
+    if (ImGui::BeginTable("gate_checks", 3, kDataTableFlags)) {
         ImGui::TableSetupColumn("Check", ImGuiTableColumnFlags_WidthStretch, 0.30f);
         ImGui::TableSetupColumn("Status", ImGuiTableColumnFlags_WidthStretch,
                                 0.15f);
