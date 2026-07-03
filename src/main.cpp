@@ -378,6 +378,18 @@ int main(int argc, char** argv) {
 
         zetta::gui::App app(node, cluster);
         app.set_tick_hook(drain_api);
+        // Live surfacing of externally-initiated actions (#620): every
+        // successful mutating capability call (an MCP agent, a future REST
+        // integration) lands in the headed app, which surfaces it above every
+        // view with a click-through into the owning panel. The hook fires on
+        // this (owning) loop inside drain_api; App buffers it thread-safely
+        // regardless. Cleared below before the App is destroyed.
+        if (api_server) {
+            api_server->set_activity_hook(
+                [&app](const zetta::api::ActivityEvent& event) {
+                    app.notify_external_activity(event.capability, event.actor);
+                });
+        }
         // GUI-driven searches record their trace into the same span ring MCP
         // calls use, so list_traces shows one history (no ring = no spans).
         if (api_server) app.set_span_recorder(&api_server->recorder());
@@ -405,6 +417,10 @@ int main(int argc, char** argv) {
         } else {
             rc = 1;
         }
+        // The App is about to be destroyed while the API server lives on a
+        // little longer — drop the hook so nothing can reach the dead App
+        // (no further drain runs, so no call should fire it; this is a belt).
+        if (api_server) api_server->set_activity_hook({});
     }
 
     cluster.stop();

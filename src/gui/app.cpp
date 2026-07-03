@@ -579,10 +579,50 @@ void App::handle_incoming_files() {
     }
 }
 
+void App::notify_external_activity(const std::string& capability,
+                                   const std::string& actor) {
+    // The palette's own Registry::call fires the hook synchronously on this
+    // thread — a self-initiated action is not "external", so don't surface it.
+    if (palette_call_in_flight_) return;
+    std::lock_guard<std::mutex> lock(external_activity_mutex_);
+    pending_external_activity_.push_back({capability, actor, 0.0});
+}
+
 void App::poll_background_ops() {
     // Runs once per frame on the UI thread (the node's owner). Each block is a
     // cheap no-op when its action is idle.
     poll_cloud_inspect();
+
+    // External activity (#620): drain the hook's queue into the strip's
+    // presentation state. The engine state an external call mutated is
+    // already visible — every panel reads live sources each frame — so this
+    // only powers the "an agent just did X" affordance draw_dashboard renders.
+    {
+        std::vector<ExternalActivity> arrived;
+        {
+            std::lock_guard<std::mutex> lock(external_activity_mutex_);
+            arrived.swap(pending_external_activity_);
+        }
+        const double now = ImGui::GetTime();
+        for (ExternalActivity& event : arrived) {
+            event.seen_seconds = now;
+            recent_external_activity_.push_back(std::move(event));
+        }
+        // Linger long enough to be noticed, short enough to stay quiet; the
+        // durable record is the activity feed. Cap the list so a chatty agent
+        // can't grow it — the strip shows the newest entry + a count anyway.
+        constexpr double kLingerSeconds = 15.0;
+        constexpr std::size_t kMaxRecent = 6;
+        std::erase_if(recent_external_activity_,
+                      [now](const ExternalActivity& event) {
+                          return now - event.seen_seconds > kLingerSeconds;
+                      });
+        if (recent_external_activity_.size() > kMaxRecent) {
+            recent_external_activity_.erase(
+                recent_external_activity_.begin(),
+                recent_external_activity_.end() - kMaxRecent);
+        }
+    }
 
     // Palette-launched job capabilities (run / testkit_run, #617): drop the
     // worker handles once done — their runs stay observable through the same

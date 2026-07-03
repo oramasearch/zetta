@@ -131,9 +131,11 @@ builds into a **`zetta-api`** static library on top of zetta-core — the same
 isolation SDL/CUDA get — consumed by `main` (headless + headed) and
 `tests/api`. Its `io_context` runs on its own thread(s), separate from the
 cluster's, and TLS later rides beast2's `https_server` (#466). The headed app
-additionally passes an **activity hook**: any `mutates` call fires it, and the
-GUI marks panels dirty + records the action for the activity feed
-(#620/#622).
+additionally passes an **activity hook**: any successful `mutates` call fires
+it on the owning loop, and the GUI surfaces the action live with a
+click-through deep link (#620,
+[../gui/external-activity.md](../gui/external-activity.md)); the activity
+feed (#622) needs nothing extra — the call's audit event is its record.
 
 ## Protocol scope (v1)
 

@@ -10,6 +10,7 @@
 #include "gui/app_internal.hpp"
 #include "gui/tones.hpp"
 
+#include "zetta/api/registry.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/compute_job.hpp"
@@ -540,6 +541,25 @@ void App::draw_home() {
     });
 }
 
+App::View App::view_for_external_capability(
+    const std::string& capability) const {
+    // The panel that owns what the capability mutated — the strip's
+    // click-through target (#620). New mutating capabilities without a more
+    // specific home land on the activity feed, which shows everything.
+    if (capability == "create_project" || capability == "capture_intent" ||
+        capability == "import_n8n") {
+        return View::Explorer;
+    }
+    if (capability == "compile_intent" || capability == "compile_n8n" ||
+        capability == "compile_python") {
+        return View::Graph;
+    }
+    if (capability == "deploy") return View::Deploy;
+    if (capability == "run" || capability == "testkit_run") return View::Runs;
+    if (capability == "add_dataset") return View::Datasets;
+    return View::Activity;
+}
+
 void App::draw_dashboard() {
     // A quiet, mono metadata strip in the design-system grammar: middle-dot
     // separators, tabular counts, no debug noise (uptime, not raw tick counts).
@@ -571,6 +591,42 @@ void App::draw_dashboard() {
     if (mono_font_) ImGui::PopFont();
 
     banner(io_status_error_ ? Tone::Error : Tone::Ok, io_status_);
+
+    // External activity (#620): the newest mutating call an agent (MCP) or
+    // integration just made, as a quiet click-through line above every view —
+    // the operator notices without being yanked anywhere (navigation is the
+    // click, never automatic). Entries fade after a short linger
+    // (poll_background_ops); the durable record is the activity feed.
+    if (!recent_external_activity_.empty()) {
+        const ExternalActivity& newest = recent_external_activity_.back();
+        // Product language when the registry knows the entry's title
+        // ("Deploy a graph"), the raw capability name as the fallback.
+        std::string action = newest.capability;
+        if (capability_registry_) {
+            if (const auto entry = capability_registry_->find(newest.capability)) {
+                action = entry->title;
+            }
+        }
+        const std::string actor = newest.actor == "local"
+                                      ? std::string("local")
+                                      : "key " + newest.actor.substr(0, 8);
+        const double age = ImGui::GetTime() - newest.seen_seconds;
+        const std::string when =
+            age < 2.0 ? "just now"
+                      : std::to_string(static_cast<int>(age)) + "s ago";
+        if (mono_font_) ImGui::PushFont(mono_font_);
+        status_dot(Tone::Active);
+        const std::string line = "MCP · " + action + " · " + actor + " · " + when;
+        entity_link(line.c_str(),
+                    view_for_external_capability(newest.capability), {});
+        if (recent_external_activity_.size() > 1) {
+            ImGui::SameLine();
+            ImGui::TextColored(kInkQuiet, "·");
+            ImGui::SameLine();
+            entity_link("View all activity", View::Activity, {});
+        }
+        if (mono_font_) ImGui::PopFont();
+    }
     ImGui::Spacing();
 }
 

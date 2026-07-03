@@ -93,6 +93,9 @@ activity" link into the full view.
   (#616/#617), their audited `api:` calls are the MCP-surfaced record.
 - **REST** renders under the `api` surface until #618 gives the server layer
   a way to tell the renderings apart.
-- The **activity hook** (#620) marking panels dirty / deep-linking on an
-  external mutation is a separate slice; this view polls the live sources
-  each frame like every other panel.
+- The **activity hook**'s GUI half (#620,
+  [external-activity.md](external-activity.md)) shipped as the strip line
+  above every view — a transient "an agent just did X" affordance with a
+  click-through deep link. It adds nothing to this feed: an external call's
+  durable record is its audit event, which this view already renders from
+  the live sources each frame like every other panel.
