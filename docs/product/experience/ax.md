@@ -1,7 +1,14 @@
 # AX — agent experience
 
 LLMs and programs driving the cluster. Agents are a first-class persona
-(PER-4); AX is designed, not incidental.
+(PER-4); AX is designed, not incidental. Its primary deployment is
+**human-through-agent**: a user operating zetta from Claude Code (or another
+coding agent) in their own words — the agent works the tools, the human's
+stated goal rides the `intent` field, the prompts onboard the agent
+progressively, and the traces + GUI live surfacing (#620) let the human see
+and audit everything their agent did. Good AX is therefore also UX: every
+tool description, error, and read-back is written for an agent that must
+relay it to a person.
 
 - **MCP with full parity**
   ([../api/registry-design.md](../../api/registry-design.md)): every capability a
