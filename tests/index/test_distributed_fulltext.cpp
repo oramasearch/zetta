@@ -261,6 +261,7 @@ TEST(DistributedFulltextWire, HitsResponseRoundTrips) {
     FulltextQueryResponse response;
     response.from = "node-a";
     response.hits = {{"r1", 12.5}, {"r3", 2.0}};
+    response.sub_indexes = 3;
     std::string error;
     const auto decoded =
         zetta::index::decode_fulltext_hits(zetta::index::encode_fulltext_hits(response), &error);
@@ -269,6 +270,13 @@ TEST(DistributedFulltextWire, HitsResponseRoundTrips) {
     ASSERT_EQ(decoded->hits.size(), 2u);
     EXPECT_EQ(decoded->hits[0].row_id, "r1");
     EXPECT_DOUBLE_EQ(decoded->hits[0].score, 12.5);
+    EXPECT_EQ(decoded->sub_indexes, 3u);
+
+    // A payload without the optional sub_indexes (an older peer) decodes to 0.
+    const auto legacy = zetta::index::decode_fulltext_hits(
+        R"({"from":"node-b","hits":[{"id":"r1","score":1.0}]})", &error);
+    ASSERT_TRUE(legacy) << error;
+    EXPECT_EQ(legacy->sub_indexes, 0u);
 }
 
 // ----- single node, many local partitions: merge == consolidated oracle -------

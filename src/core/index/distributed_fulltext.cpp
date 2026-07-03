@@ -94,7 +94,8 @@ const nlohmann::json& hits_schema_document() {
             "required": ["id", "score"],
             "additionalProperties": false
           }
-        }
+        },
+        "sub_indexes": { "type": "integer", "minimum": 0 }
       },
       "required": ["hits"],
       "additionalProperties": false
@@ -288,6 +289,7 @@ std::string encode_fulltext_hits(const FulltextQueryResponse& response) {
         hits.push_back({{"id", hit.row_id}, {"score", hit.score}});
     }
     document["hits"] = std::move(hits);
+    document["sub_indexes"] = response.sub_indexes;
     return document.dump();
 }
 
@@ -309,6 +311,8 @@ std::optional<FulltextQueryResponse> decode_fulltext_hits(std::string_view paylo
 
     FulltextQueryResponse response;
     response.from = document.value("from", std::string{});
+    response.sub_indexes =
+        static_cast<std::size_t>(document.value("sub_indexes", std::uint64_t{0}));
     for (const nlohmann::json& hit : document.at("hits")) {
         response.hits.push_back(
             FulltextHit{hit.at("id").get<std::string>(), hit.at("score").get<double>()});
@@ -416,15 +420,18 @@ DistributedFulltextIndex::BuildResult DistributedFulltextIndex::build_local(
 }
 
 std::vector<FulltextHit> DistributedFulltextIndex::query_local(
-    const IndexSpec& spec, const IndexQuery& query, IndexStatus* status) const {
+    const IndexSpec& spec, const IndexQuery& query, IndexStatus* status,
+    std::size_t* sub_indexes) const {
     const std::lock_guard<std::mutex> lock(mutex_);
 
+    if (sub_indexes) *sub_indexes = 0;
     const auto found = sub_specs_.find(spec.key());
     if (found == sub_specs_.end() || found->second.empty()) {
         // This node holds no partitions of the index — it contributes nothing (Ok).
         if (status) *status = IndexStatus::success();
         return {};
     }
+    if (sub_indexes) *sub_indexes = found->second.size();
 
     std::vector<std::vector<FulltextHit>> per_partition;
     per_partition.reserve(found->second.size());
@@ -463,17 +470,21 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
     zetta::observability::ScopedSpan local_span(recorder, trace, "search:local");
     local_span.set_attribute("node_id", cluster_.node_id());
     IndexStatus local_status;
-    std::vector<FulltextHit> local = query_local(spec, query, &local_status);
+    std::size_t local_sub_indexes = 0;
+    std::vector<FulltextHit> local =
+        query_local(spec, query, &local_status, &local_sub_indexes);
     if (!local_status.ok()) {
         local_span.finish(/*ok=*/false, local_status.message);
         out.status = local_status;
         return out;
     }
     local_span.set_attribute("hits", local.size());
+    local_span.set_attribute("sub_indexes", local_sub_indexes);
     NodeContribution local_contribution;
     local_contribution.node_id = cluster_.node_id();
     local_contribution.local = true;
     local_contribution.hits = local.size();
+    local_contribution.sub_indexes = local_sub_indexes;
     local_contribution.latency_ms = local_span.elapsed_ms();
     local_span.finish(/*ok=*/true);
     out.contributions.push_back(std::move(local_contribution));
@@ -523,9 +534,11 @@ DistributedFulltextIndex::QueryResult DistributedFulltextIndex::query(
         NodeContribution peer_contribution;
         peer_contribution.node_id = peer.node_id;
         peer_contribution.hits = hits->hits.size();
+        peer_contribution.sub_indexes = hits->sub_indexes;
         peer_contribution.latency_ms = peer_span.elapsed_ms();
         peer_contribution.wire_bytes = payload.size() + response.payload.size();
         peer_span.set_attribute("hits", hits->hits.size());
+        peer_span.set_attribute("sub_indexes", hits->sub_indexes);
         peer_span.set_attribute("wire_bytes", peer_contribution.wire_bytes);
         peer_span.finish(/*ok=*/true);
         out.contributions.push_back(std::move(peer_contribution));
@@ -558,8 +571,9 @@ zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta:
                                   .error = "fulltext.query: " + decode_error};
         }
         IndexStatus status;
+        std::size_t sub_indexes = 0;
         std::vector<FulltextHit> hits =
-            query_local(message->spec(), message->query(), &status);
+            query_local(message->spec(), message->query(), &status, &sub_indexes);
         if (!status.ok()) {
             return zetta::cluster::SignalResponse{.ok = false,
                                   .error = "fulltext.query local: " + status.message};
@@ -567,6 +581,7 @@ zetta::cluster::SignalResponse DistributedFulltextIndex::on_request(const zetta:
         FulltextQueryResponse response;
         response.from = cluster_.node_id();
         response.hits = std::move(hits);
+        response.sub_indexes = sub_indexes;
         return zetta::cluster::SignalResponse{.ok = true, .payload = encode_fulltext_hits(response)};
     }
     if (delegate_) return delegate_->on_request(request);

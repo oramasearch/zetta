@@ -38,10 +38,13 @@ zetta::index::SearchResult result = node.search(request, recorder, &trace);
      `IndexRegistry`-resolved backend answers from the consolidated index the
      [index step executor](index-step-executor.md) built. One-node provenance.
 3. **Provenance.** The result carries `nodes`: one `NodeContribution` per
-   answering node — node id, `local` flag, pre-merge hit count,
-   coordinator-observed latency, wire bytes moved (0 for the local
-   contribution) — the scatter-gather made visible, plus `wire_bytes_moved`
-   and which `path` answered.
+   answering node — node id, `local` flag, pre-merge hit count, how many
+   per-partition **sub-indexes** the node consulted
+   ([#643](https://github.com/oramasearch/zetta/issues/643); 1 on the
+   consolidated path, 0 for a node owning no shard), coordinator-observed
+   latency, wire bytes moved (0 for the local contribution) — the
+   scatter-gather made visible, plus `wire_bytes_moved` and which `path`
+   answered.
 
 ## One trace per search
 
@@ -82,11 +85,13 @@ machinery:
 
 - **MCP/REST:** the `search` capability (`src/core/api/capabilities.cpp`) —
   input schema `{target, query, field?, top_k?}` validated at the boundary;
-  output = ranked hits + per-node provenance + path + trace ids on the
+  output = ranked hits + per-node provenance (each node's `hits`,
+  `sub_indexes`, `latency_ms`, `wire_bytes`) + path + trace ids on the
   `ApiResult`. See [docs/api/README.md](../api/README.md).
 - **GUI:** the **Search** view (`src/gui/app_search.cpp`,
   [docs/gui/search-view.md](../gui/search-view.md)) — target picker over the
-  registered Search indexes, ranked hits, and the per-node provenance table.
+  registered Search indexes, the provenance strip + scatter-gather replay,
+  master-detail ranked hits, and the per-node provenance table (#643).
 
 ## Boundaries
 

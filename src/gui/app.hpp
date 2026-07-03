@@ -219,7 +219,10 @@ private:
     // which nodes own a partition of the selected dataset.
     void draw_dataset_placement(const zetta::data::DatasetSummary& dataset);
     void draw_query();       // the SQL text area + results
-    void draw_search();      // fulltext search over registered indexes (#641)
+    void draw_search();      // fulltext search over registered indexes (#641/#643)
+    // The Search view's cluster strip: node boxes for the last search's
+    // answering nodes with the scatter-gather replayed as #590 flows (#643).
+    void draw_search_cluster_strip(const zetta::index::SearchResult& result);
     void draw_console();     // the SQL / sim-Python REPL console (CMP-6 component)
     void draw_gate();        // correctness gate: run it over a graph, show the report
     void draw_deploy();      // AI Solution Library → gate → one-button deploy → status
@@ -570,7 +573,7 @@ private:
     std::string query_error_;
     std::string query_time_;  // formatted elapsed time of the last run
 
-    // Search panel (#641): the query being composed and the last search's
+    // Search panel (#641/#643): the query being composed and the last search's
     // outcome, held verbatim (an action-outcome snapshot, like the query
     // panel's last result — presentation state, not a synced engine copy). The
     // engine result is behind a unique_ptr so this header stays light.
@@ -579,6 +582,12 @@ private:
     int search_top_k_ = 10;       // result cap the panel requests
     std::unique_ptr<zetta::index::SearchResult> search_result_;
     std::string search_error_;    // the engine's reason when the last search failed
+    std::string search_selected_hit_;  // ranked-hit master-detail selection (row id)
+    // The Search view's cluster strip: a completed search's scatter-gather
+    // replayed as #590 flows over the answering nodes' boxes (#643). Only the
+    // flows / node_activity members are used — pure animation state, anchored
+    // to the last result's real per-node provenance.
+    ClusterPipelineState search_flows_;
     zetta::observability::SpanRecorder* span_recorder_ = nullptr;  // may be null
 
     // Console panel — the governed Console/REPL screen (SCR-8 / #525), hosting the

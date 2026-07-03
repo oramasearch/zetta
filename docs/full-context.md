@@ -81,12 +81,19 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ml-domain failures remain pre-existing on clean `dev` locally
   ([#664](https://github.com/oramasearch/zetta/issues/664), GBDT near-data
   histogram-allreduce).
-- **In flight (this branch)**: [#641](https://github.com/oramasearch/zetta/issues/641)
+- **Merged to `dev` 2026-07-02 (search)**: [#641](https://github.com/oramasearch/zetta/issues/641)
   — THE canonical search entry point: `Node::search` routes distributed-first
   (the node-owned `DistributedFulltextIndex`, sub-indexes reconciled from
   tick) with per-node provenance + one trace; surfaced as the `search` MCP
   capability and the GUI Search view
   ([docs/indexing/node-search.md](indexing/node-search.md)).
+- **In flight (this branch)**: [#643](https://github.com/oramasearch/zetta/issues/643)
+  — the Search view finished as a first-class distributed+observable surface:
+  sub-indexes-queried provenance end to end (`NodeContribution.sub_indexes`,
+  the `fulltext_hits` wire field, the `search` capability), the provenance
+  strip + the cluster strip replaying the scatter-gather as #590 flows,
+  master-detail hits with source-row fields and entity_links
+  ([docs/gui/search-view.md](gui/search-view.md)).
 - **Backlog**: triaged 2026-07-02 — 51 tracker issues closed with
   explanatory comments (shipped / duplicates / risk-register); all open
   issues are actionable.

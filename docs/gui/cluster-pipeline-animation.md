@@ -83,8 +83,9 @@ per-node gauges:
   read views **once per frame** in `draw_cluster`, **diffs** the snapshot against the
   baseline (a new partition id → placement; changed owners → a move; a new job id →
   a near-data read + wire flow; an advanced `rounds_completed` → a scatter/gather
-  set), and advances + culls the in-flight flows. `draw_pipeline_flow()` positions
-  each flow from the **live box centres** (rebuilt each frame, so the animation
+  set), and advances + culls the in-flight flows. `draw_pipeline_flow()` (in
+  `app_operations_internal.hpp`, shared with the Search view) positions each
+  flow from the **live box centres** (rebuilt each frame, so the animation
   tracks a window resize / reflow) and glides it over the boxes.
 
 ### Staying within the render cadence
@@ -122,10 +123,15 @@ introduces **no new format to validate** (see
   `PipelineInputs` (pure data).
 - `src/gui/app.hpp` — the `ClusterPipelineState cluster_pipeline_` member +
   `App::draw_pipeline_activity`.
-- `src/gui/app_cluster.cpp` — `update_cluster_pipeline()` (the diff),
-  `draw_pipeline_flow()` (one flow), the integration in `App::draw_cluster` (snapshot
-  → update → box-centre capture + activity halo → flow overlay), and
-  `App::draw_pipeline_activity()` (the live strip + legend).
+- `src/gui/app_operations_internal.hpp` — the flow palette (`kFlow*`),
+  `with_alpha`, `flow_color`, and `draw_pipeline_flow()` (one flow) — shared by
+  the Cluster view's overlay and the Search view's cluster strip
+  ([search-view.md](search-view.md), #643), which replays a completed search's
+  scatter-gather from its per-node provenance through the same grammar.
+- `src/gui/app_cluster.cpp` — `update_cluster_pipeline()` (the diff), the
+  integration in `App::draw_cluster` (snapshot → update → box-centre capture +
+  activity halo → flow overlay), and `App::draw_pipeline_activity()` (the live
+  strip + legend).
 
 ## See also
 

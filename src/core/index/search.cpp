@@ -169,6 +169,7 @@ SearchResult search(Node& node, const SearchRequest& request,
         self.node_id = node.node_id();
         self.local = true;
         self.hits = result.hits.size();
+        self.sub_indexes = 1;  // the one consolidated index answered
         self.latency_ms = local_span.elapsed_ms();
         local_span.set_attribute("hits", self.hits);
         local_span.finish(/*ok=*/true);
