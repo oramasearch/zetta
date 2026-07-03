@@ -81,10 +81,16 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 - **The wave**: umbrella [#639](https://github.com/oramasearch/zetta/issues/639);
   epics [#614](https://github.com/oramasearch/zetta/issues/614) (MCP/REST) +
   [#627](https://github.com/oramasearch/zetta/issues/627) (GUI usability);
-  **wtm plan 19** ("Product wave") — 36 nodes / 31 agent-analyzed edges
+  **wtm plan 19** ("Product wave") — 36 nodes / 32 agent-analyzed edges
   (don't run the wtm GUI generate buttons on it; they overwrite the analysis).
-  Layer-0: #615 MCP server MERGED + closed (PR #653 — Beast2-embedded POST /mcp in both run modes; #616/#625/#645 unblocked); remaining unlocks
-  #637 churn-runner consolidation, #638 app_operations TU split.
+  **Both foundations are MERGED**: #615 MCP server (PR #653 — Beast2-embedded
+  POST /mcp in both run modes) and the GUI foundation (PR #655 — per-view TUs
+  #638 closed · tones + widget grammar (#630/#636 cores) · view registry +
+  navigate_to + sidebar, #628 closed). Plan 19 reconciled 2026-07-03: grammar
+  edges inverted (it shipped, so #634 master-detail leads the panel sweeps,
+  #631/#632/#633 follow it, #630 audit + #635 terminology close); layer-0 now
+  #637 · #611 · #466 · #538 · #530 · #641 · #634 · #622 · #626 · #636-adoption
+  · #640; #616/#625/#645 also unblocked.
 - **Issue clusters**: MCP #615–#621 · GUI features #622–#626 · GUI design
   #628–#636 · prerequisites #637/#638 · observability #640 · distributed
   search #641–#643 · AX #645 llms.txt / #646 spec index · web #647 (next
