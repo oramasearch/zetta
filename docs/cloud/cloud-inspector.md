@@ -77,7 +77,8 @@ in the gate only so you see what the CLI itself may touch.
 `src/gui/app.cpp`, reached from **Operations → Cloud inspector**. Built in the
 [design-system](../gui/design-system.md) grammar.
 
-A list + detail layout (like the Runs / Admin panels):
+Rendered through the [master-detail scaffold](../gui/master-detail.md)
+(#634), like the Runs / Admin panels:
 
 - **Left** — providers grouped under mono category eyebrows (`LOCAL` / `ON-PREM`
   / `KUBERNETES` / `MANAGED CLOUD`), each row led by a status dot: **green** =

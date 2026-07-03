@@ -28,11 +28,12 @@ The panel is one collapsing header, **Admin & Settings**, with two sections.
 
 ### Principals & access keys
 
-A list + detail, mirroring the explorer's "select on the left, inspect on the
-right" shape (and the Runs panel):
+Rendered through the [master-detail scaffold](master-detail.md) (#634), at a
+fixed height so the audit log keeps its place below:
 
 - **Principal list** (left) — one row per `node_.principal_names()` entry: a
-  **kind badge** (`user` / `service` / `node`) plus the principal's name.
+  standard `MasterRow` with a muted dot, the principal's name as the title,
+  and the kind (`user` / `service` / `node`) as the mono meta.
   Selecting a row sets the active principal (held by name and re-resolved each
   frame via `node_.find_principal`, like the rest of the UI, so a dropped
   principal can't leave a dangling handle).

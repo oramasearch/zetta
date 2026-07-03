@@ -45,6 +45,11 @@ lives here. Read **[docs/gui/design-system.md](../../docs/gui/design-system.md)*
   **Status colors come ONLY from `tone_of(...)` in `tones.hpp`** (#636); a new
   status-bearing enum adds one overload there, never a panel-local switch.
   See [docs/gui/architecture.md](../../docs/gui/architecture.md).
+- **List+detail panels render through `master_detail(...)`** (#634) — never a
+  hand-rolled split. The panel builds `MasterRow`s from its live source each
+  frame, passes its `take_pending_selection(View::…)` result and its
+  selection member, and draws only the detail body (opened with
+  `detail_header`). See [docs/gui/master-detail.md](../../docs/gui/master-detail.md).
 - **Text fields bind `std::string`** via the `imgui_stdlib` overloads — never
   `char[]` buffers.
 

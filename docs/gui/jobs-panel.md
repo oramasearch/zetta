@@ -29,16 +29,17 @@ later slice.
 
 ## Layout
 
-One collapsing header, **Compute Jobs**, in the list + detail shape the Runs panel
-uses ("select on the left, inspect on the right").
+Rendered through the [master-detail scaffold](master-detail.md) (#634), like the
+Runs panel.
 
 ### Job list (left)
 
-One row per `node_.jobs()` entry. Jobs have **no human name**, so each row is a
-**color-coded status badge** (queued neutral, running amber, succeeded green,
-failed red — the same palette as the cluster + runs panels) plus the job **kind**
-(`featurize` / `train` / `explain` / `score` / `ddf`) and the first segment of the
-job's UUID. Selecting a row sets the active job (held by id and re-resolved each
+One row per `node_.jobs()` entry — a standard `MasterRow`: a **status-toned
+dot** (queued neutral, running amber, succeeded green, failed red — `tone_of`),
+the first segment of the job's UUID as the title, and `kind · status`
+(`featurize` / `train` / `explain` / `score` / `ddf`; the status word rides
+along so meaning never sits on colour alone) as the mono meta.
+Selecting a row sets the active job (held by id and re-resolved each
 frame via `node_.find_job`, like the rest of the UI, so a dropped job can't leave a
 dangling handle).
 

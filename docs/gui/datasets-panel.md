@@ -41,15 +41,15 @@ status line ("Added dataset … (N rows, M partitions)") shows in place. See
 
 ## Layout
 
-A list + detail in the same "select on the left, inspect on the right" shape the
+Rendered through the [master-detail scaffold](master-detail.md) (#634), like the
 [Runs](../pipeline/runs.md#gui-panel), [Models](models-panel.md), and [Jobs](jobs-panel.md)
-panels use.
+panels.
 
 ### Dataset list (left)
 
-One row per `node_.datasets()` entry. Each row is the on-disk **format** tag
-(`jsonl` today) plus the dataset **name** (= the table name), with the owning
-**database** as a muted sub-line so same-named tables across databases stay
+One row per `node_.datasets()` entry — a standard `MasterRow`: a muted dot (no
+lifecycle), the dataset **name** (= the table name) as the title, and
+`format · database` as the mono meta so same-named tables across databases stay
 distinguishable. Selecting a row sets the active dataset (held by its table id).
 A fresh node with no user tables shows "(no datasets)".
 
@@ -113,8 +113,8 @@ box to filter the partition table to that node's slices, surfacing
 ## Pointers
 
 - `src/gui/app_datasets.cpp` — `App::draw_datasets` + `App::draw_dataset_placement`,
-  reusing the file-local cluster node-box constants (`kClusterBox*`) and
-  `cluster_node_short_id` the [Cluster view](../cluster/cluster.md) defines, plus the
+  reusing the shared cluster node-box constants (`kClusterBox*`) and
+  `entity_short_id` from `app_operations_internal.hpp`, plus the
   "Add dataset…" button.
 - `src/gui/app.cpp` — the `Data → Datasets` menu item and the `View::Datasets`
   switch arm; the `File → Add dataset…` item, the `FileIntent::Dataset` ingestion

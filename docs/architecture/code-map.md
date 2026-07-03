@@ -376,7 +376,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   CLAUDE.md                 directory rule-card (tree-scoped rules)
   app.hpp                   zetta::gui::App — the one class declaring every panel method (forward-declares SDL/ImGui types)
   app.cpp                   lifecycle: ctor/dtor, init/run/render_frame, apply_display_scale, the menu bar + view switcher, file ingestion, the g_mono_font definition + the two load-bearing rendering bits
-  app_internal.hpp          shared GUI-only helpers: the Orama design tokens, Tone + tone_color/tone_background (#636), the widget grammar (page_header/header_action/section_card/stat_tile/empty_state/banner, #630), wash/status_dot/eyebrow/mono_line/primary_button, extern g_mono_font/g_heading_font (not in the public include/zetta surface)
+  app_internal.hpp          shared GUI-only helpers: the Orama design tokens, Tone + tone_color/tone_background (#636), the widget grammar (page_header/header_action/section_card/stat_tile/empty_state/banner, #630), the master-detail scaffold (MasterRow/detail_header/master_detail, #634), wash/status_dot/eyebrow/mono_line/primary_button, extern g_mono_font/g_heading_font (not in the public include/zetta surface)
   tones.hpp                 the ONE mapping site from engine statuses to visual tones: tone_of(RunStatus/JobStatus/ScalingAction/CheckStatus/TestOutcome) + tone_of_log_level (#636)
   app_views.cpp             the view registry (App::view_registry, one ViewInfo row per view) + navigate_to/take_pending_selection + entity_link + the sidebar rail (#628) + sidebar badges
   cloud_wiring.hpp/.cpp     zetta::gui::CloudProvisioners — wires the cloud-burst Provisioner backends (Azure/AWS/GCP/OCI/K8s/bare-metal) into the headed App's "Add nodes" control from the node's detected provisioner configs (detect_provisioner_configs → App::set_provisioner) and OWNS them for the App's lifetime (stable-address std::optional members, declared before the App); the consent gate stays deny-by-default — a provider with no detected config stays unwired, and every cloud add remains per-action consent-gated
@@ -385,7 +385,7 @@ src/gui/                    headed UI (links SDL3 + ImGui)
   app_home.cpp / app_explorer.cpp / app_governance.cpp
                             the home/data-flow, explorer, and admin+audit App::draw_* panels — each an App member TU over app.hpp + app_internal.hpp (#464)
   app_operations_internal.hpp
-                            helpers shared by the per-view operations TUs below (#638): the cluster node-box palette (kClusterBox*), cluster_node_short_id, join_refs, and the render_model_card declaration (defined in app_models.cpp; also used by the Runs detail) — internal to src/gui, not in the public include/zetta surface
+                            helpers shared by the per-view operations TUs below (#638): the cluster node-box palette (kClusterBox*), entity_short_id, join_refs, and the render_model_card declaration (defined in app_models.cpp; also used by the Runs detail) — internal to src/gui, not in the public include/zetta surface
   app_graph_workspace.cpp   the Graph Workspace view (open_graph + draw_graph_workspace + draw_graph_canvas + draw_graph_editor) and its graph-over-cluster plan view (draw_graph_plan + build_graph_plan + the canvas placement overlay; #591)
   app_deploy.cpp            the correctness gate (draw_gate) + Deploy panel (draw_deploy) + the live churn demo run (run_churn_demo)
   app_runs.cpp              the Runs / outputs / lineage view (draw_runs + render_run_detail)

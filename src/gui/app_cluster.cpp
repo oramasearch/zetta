@@ -847,7 +847,7 @@ void App::draw_cluster() {
                                     top_left.y + pad + font * 0.5f);
             draw->AddCircleFilled(dot_center, dot_radius,
                                   ImGui::GetColorU32(cluster_node_color(node)));
-            const std::string id = cluster_node_short_id(node.node_id) +
+            const std::string id = entity_short_id(node.node_id) +
                                    (node.is_self ? " (self)" : "");
             const ImVec2 id_pos(dot_center.x + dot_radius + font * 0.45f,
                                 top_left.y + pad);

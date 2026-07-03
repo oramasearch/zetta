@@ -32,10 +32,11 @@ inline constexpr ImU32 kClusterBoxBorderSelected = IM_COL32(226, 84, 90, 255);  
 inline constexpr ImU32 kClusterBoxText = IM_COL32(28, 28, 26, 255);             // ink-primary
 inline constexpr ImU32 kClusterBoxMuted = IM_COL32(95, 95, 92, 255);            // ink-muted
 
-// The node's first UUID segment — enough to tell nodes apart at a glance.
-// Shared by the Cluster view and the Datasets partition-placement overlay.
-inline std::string cluster_node_short_id(const std::string& node_id) {
-    return node_id.substr(0, node_id.find('-'));
+// An entity id's first UUID segment — enough to tell entities apart at a
+// glance. Shared by the Cluster view, the Datasets partition-placement
+// overlay, and the master-detail rows of the Runs / Models / Jobs views.
+inline std::string entity_short_id(const std::string& entity_id) {
+    return entity_id.substr(0, entity_id.find('-'));
 }
 
 // Join lineage refs (sources / steps) for a single wrapped line. Shared by the

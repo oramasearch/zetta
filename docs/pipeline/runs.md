@@ -140,13 +140,14 @@ holds (created via the API / tests, or replicated from a peer), so a fresh
 standalone node simply shows "(no runs)" until something creates one. It adds no
 mutators of its own — driving a run (StartRun) is a later slice.
 
-Layout is a list + detail, mirroring the explorer's "select on the left, inspect
-on the right" shape:
+Layout renders through the
+[master-detail scaffold](../gui/master-detail.md) (#634):
 
-- **Run list** (left) — one row per `node_.runs()` entry. Runs have no human
-  name, so each row is a **color-coded status badge** (pending neutral, running
-  amber, succeeded green, failed red — the same palette as the cluster panel)
-  plus the first segment of the run's UUID. Selecting a row sets the active run
+- **Run list** (left) — one row per `node_.runs()` entry, a standard
+  `MasterRow`. Runs have no human name, so the title is the first segment of
+  the run's UUID, with a **status-toned dot** (pending neutral, running amber,
+  succeeded green, failed red — `tone_of`) and the status text as the mono
+  meta. Selecting a row sets the active run
   (held by id and re-resolved each frame, like the rest of the UI, so a dropped
   run can't leave a dangling handle).
 - **Detail** (right) — for the selected run:
