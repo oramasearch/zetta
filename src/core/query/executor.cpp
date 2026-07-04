@@ -37,6 +37,7 @@
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/util/timestamp.hpp"
+#include "zetta/testkit/test_suite.hpp"
 
 namespace zetta::query {
 namespace {
@@ -162,6 +163,7 @@ constexpr std::string_view kSpansTable = "spans";
 constexpr std::string_view kTracesTable = "traces";
 constexpr std::string_view kCrashesTable = "crashes";
 constexpr std::string_view kTablesTable = "tables";
+constexpr std::string_view kTestCasesTable = "test_cases";
 
 // The system-table catalog: every table the `system` database serves, with a
 // one-line description, alphabetical. THE single list (#684) — the
@@ -243,6 +245,9 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kTokensTable,
                     "the token registry: bearer credentials per user — id, "
                     "type, created, revoked (NO secret material)"},
+    SystemTableInfo{kTestCasesTable,
+                    "the in-app test-suite catalog: one row per runnable case "
+                    "(id, category, name, description, option count)"},
     SystemTableInfo{kTracesTable,
                     "one row per trace aggregated from the span ring: the "
                     "what-happened summary"},
@@ -615,6 +620,27 @@ std::vector<nlohmann::json> cloud_provider_rows() {
         row["runnable"] = provider.runnable();
         row["config_paths"] = join_comma(provider.config_paths);
         row["inspect_commands"] = join_comma(commands);
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per case for the test_cases system table — the in-app test-suite
+// catalog (zetta::testkit::TestSuite::builtin()). Pure metadata, assembled once
+// + cached: it declares each runnable case (nothing is executed at query time).
+// The headed Test suite panel and the testsuite_list capability serve the same
+// live source (RULE-7).
+std::vector<nlohmann::json> test_case_rows() {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::testkit::TestCase& test_case :
+         zetta::testkit::TestSuite::builtin().cases()) {
+        nlohmann::json row;
+        row["id"] = test_case.id;
+        row["category"] =
+            std::string(zetta::testkit::to_string(test_case.category));
+        row["name"] = test_case.name;
+        row["description"] = test_case.description;
+        row["options"] = static_cast<long>(test_case.options.size());
         rows.push_back(std::move(row));
     }
     return rows;
@@ -2177,6 +2203,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kTablesTable) {
                         return select_over_rows(s, system_table_rows());
+                    }
+                    if (sys == kTestCasesTable) {
+                        return select_over_rows(s, test_case_rows());
                     }
                     if (sys == kDeploymentsTable) {
                         return select_over_rows(s, deployment_rows(node_));

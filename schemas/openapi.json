@@ -5625,10 +5625,145 @@
         ]
       }
     },
-    "/v1/testkit_run": {
+    "/v1/testsuite_list": {
+      "get": {
+        "description": "Read the whole in-app test-suite catalog — one entry per runnable case (id, category, name, description, tunable options). Feed a case id to testsuite_run. Also queryable as system.test_cases. No side effects. Requires api:query.",
+        "operationId": "testsuite_list",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "tests": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "category": {
+                                "type": "string"
+                              },
+                              "description": {
+                                "type": "string"
+                              },
+                              "id": {
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              },
+                              "options": {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "key": {
+                                      "type": "string"
+                                    },
+                                    "label": {
+                                      "type": "string"
+                                    },
+                                    "type": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "key",
+                                    "label",
+                                    "type"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "id",
+                              "category",
+                              "name",
+                              "description",
+                              "options"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "tests"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List test-suite cases",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/testsuite_run": {
       "post": {
-        "description": "Start one in-app test-suite case in the background and return its run id immediately (poll get_run — the case's log lines land with the terminal status). Requires orchestration:testkit_run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
-        "operationId": "testkit_run",
+        "description": "Start one in-app test-suite case in the background and return its run id immediately (poll get_run — the case's log lines land with the terminal status). List the cases with testsuite_list / system.test_cases. Requires orchestration:testsuite_run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
+        "operationId": "testsuite_run",
         "requestBody": {
           "content": {
             "application/json": {
@@ -5636,7 +5771,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "case": {
-                    "description": "a testkit case id (system.test_cases / the Test suite panel list them)",
+                    "description": "a test-suite case id (testsuite_list / system.test_cases / the Test suite panel list them)",
                     "minLength": 1,
                     "type": "string"
                   },
@@ -5741,7 +5876,7 @@
             "description": "the engine refused or the owning loop is saturated (busy)"
           }
         },
-        "summary": "Run a testkit case",
+        "summary": "Run a test-suite case",
         "tags": [
           "job"
         ]

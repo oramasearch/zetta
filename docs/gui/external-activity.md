@@ -56,7 +56,7 @@ the newest unexpired entry as one quiet mono line:
   to the panel that owns what changed — **click-through only, never
   auto-navigation** (the never-yank-the-view rule):
   `create_project`/`capture_intent`/`import_n8n` → Explorer · `compile_*` →
-  Graph workspace · `deploy` → Deploy · `run`/`testkit_run` → Runs ·
+  Graph workspace · `deploy` → Deploy · `run`/`testsuite_run` → Runs ·
   `add_dataset` → Datasets · anything else → Activity
   (`App::view_for_external_capability`, app_home.cpp).
 - With more than one unexpired entry, a `View all activity` link follows.
