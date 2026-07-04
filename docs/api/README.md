@@ -69,6 +69,46 @@ answer only while the entity's replicated `exposed` flag is set
 (expose_model / expose_index below); access requires a key holding
 `data:predict` / `data:search`.
 
+## Connect a client
+
+`POST /mcp` is the **Streamable HTTP** MCP transport, so any MCP client points
+straight at it — no adapter, no stdio shim. With a running node (default
+`127.0.0.1:4800`, no token unless started with `--mcp-token`):
+
+**Claude Code** — register the server for the current project:
+
+```sh
+claude mcp add --transport http zetta http://127.0.0.1:4800/mcp
+# with a token: append  --header "Authorization: Bearer <token>"
+# remove:  claude mcp remove zetta
+```
+
+**A JSON-config client** (Claude Desktop and similar) — an `mcpServers` entry:
+
+```json
+{
+  "mcpServers": {
+    "zetta": { "type": "http", "url": "http://127.0.0.1:4800/mcp" }
+  }
+}
+```
+
+**Any HTTP client** — the three calls the protocol needs (add
+`-H 'Authorization: Bearer <token>'` when the node requires one):
+
+```sh
+curl -sX POST http://127.0.0.1:4800/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+curl -sX POST http://127.0.0.1:4800/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+curl -sX POST http://127.0.0.1:4800/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"server_info","arguments":{}}}'
+```
+
+Prefer no MCP at all? A plain `GET /llms.txt` orients an agent in one request
+([llms-endpoints.md](llms-endpoints.md)), and the whole surface is plain REST
+under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
+
 ## Capabilities (v1)
 
 | Name | Kind | Requires | Does |
