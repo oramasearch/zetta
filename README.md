@@ -88,6 +88,14 @@ What's inside, by domain (each links to that domain's docs):
   (deny-by-default scopes + TTL'd capabilities), an immutable, append-only
   **audit trail**, and a **governed console** (every statement
   capability-scoped, gated, and audited).
+- **[The programmatic control surface](docs/api/README.md)** — one **capability
+  registry** where each entry renders three ways at once: an **MCP tool**, a
+  **REST route**, and a palette action. An embedded Beast2 server (both run
+  modes, default `127.0.0.1:4800`) answers **`POST /mcp`** (JSON-RPC 2.0), plain
+  **REST** (`GET/POST /v1/<name>`, `GET /v1/openapi.json`), the
+  **[llms.txt](docs/api/llms-endpoints.md)** progressive-disclosure pages, and a
+  **spec index** (`list_specs`/`get_spec`) — every call key-scoped,
+  consent-gated where it touches cloud, and threaded as an observability span.
 - **[The headed GUI](docs/gui/README.md)** — project-first Home, New Project,
   Graph Workspace (editable canvas + graph-over-cluster plan view), Deploy,
   Runs/Models/Jobs, a spatial **Cluster view** with live per-node gauges and a
