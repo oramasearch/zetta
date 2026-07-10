@@ -28,6 +28,7 @@ namespace zetta::governance {
 //   sql:write      — insert/update/delete rows via SQL
 //   sql:ddl        — create/drop databases + tables (schema changes)
 //   mcp:call       — invoke the MCP/REST capability surface (the API call right)
+//   blob:read      — read large-object (blob) bodies (object-scopable by prefix, #747)
 //   serving:read   — call the governed serving routes (predict + search)
 //   users:manage   — create/disable/drop users
 //   roles:manage   — create/edit/drop roles and assign them to users
@@ -41,6 +42,7 @@ namespace zetta::governance {
 //   sql:write      -> data:write
 //   sql:ddl        -> data:ddl
 //   mcp:call       -> api:query
+//   blob:read      -> data:blob_read
 //   serving:read   -> data:predict, data:search
 //   users:manage   -> api:manage_users
 //   roles:manage   -> api:manage_roles

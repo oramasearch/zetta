@@ -450,6 +450,7 @@ add_library(zetta-core STATIC
   src/core/governance/principal.cpp
   src/core/governance/access_key.cpp
   src/core/governance/scope.cpp
+  src/core/governance/grant.cpp
   src/core/governance/capability.cpp
   src/core/governance/permission.cpp
   src/core/governance/audit_event.cpp

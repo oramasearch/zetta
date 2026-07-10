@@ -94,17 +94,35 @@ struct DropRoleStmt {
     std::string name;
 };
 
-// GRANT <perm>[, <perm>]* TO ROLE <name> — add permissions from the vocabulary
-// (permission.hpp) to a role's rights (#746). roles:manage.
+// The optional `ON <object>` scope of a GRANT/REVOKE (#747). Dialect-neutral: the
+// executor translates it into a governance::Resource, keeping the AST free of the
+// governance types. `RoleWide` (the default, no ON clause) is the pre-#747 flat
+// grant — the permission on every object.
+enum class GrantObjectKind { RoleWide, Database, Table, Columns, Blob, Tool };
+
+struct GrantObject {
+    GrantObjectKind kind = GrantObjectKind::RoleWide;
+    std::string database;              // Database / Table / Columns
+    std::string table;                 // Table / Columns
+    std::vector<std::string> columns;  // Columns
+    std::string name;                  // Blob id-or-prefix / Tool name
+};
+
+// GRANT <perm>[, <perm>]* [ON <object>] TO ROLE <name> — add permissions from the
+// vocabulary (permission.hpp) to a role's rights (#746); an ON clause narrows
+// them to a specific object (#747). roles:manage.
 struct GrantPermissionStmt {
     std::string role;
     std::vector<std::string> permissions;  // e.g. {"sql:read", "roles:manage"}
+    GrantObject object;                     // RoleWide unless an ON clause is given
 };
 
-// REVOKE <perm>[, <perm>]* FROM ROLE <name> — remove permissions from a role (#746).
+// REVOKE <perm>[, <perm>]* [ON <object>] FROM ROLE <name> — remove permissions
+// from a role (#746/#747). roles:manage.
 struct RevokePermissionStmt {
     std::string role;
     std::vector<std::string> permissions;
+    GrantObject object;
 };
 
 // GRANT ROLE <role> TO <user> — assign a role to a user; the user's effective
@@ -174,9 +192,11 @@ Statement make_create_token_statement(std::string user, std::string type);
 Statement make_create_role_statement(std::string name);
 Statement make_drop_role_statement(std::string name);
 Statement make_grant_permission_statement(std::string role,
-                                          std::vector<std::string> permissions);
+                                          std::vector<std::string> permissions,
+                                          GrantObject object = {});
 Statement make_revoke_permission_statement(std::string role,
-                                           std::vector<std::string> permissions);
+                                           std::vector<std::string> permissions,
+                                           GrantObject object = {});
 Statement make_grant_role_statement(std::string role, std::string user);
 Statement make_revoke_role_statement(std::string role, std::string user);
 

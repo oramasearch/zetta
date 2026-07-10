@@ -21,6 +21,7 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"sql:write", {{CapabilityDomain::Data, "write"}}},
         {"sql:ddl", {{CapabilityDomain::Data, "ddl"}}},
         {"mcp:call", {{CapabilityDomain::Api, "query"}}},
+        {"blob:read", {{CapabilityDomain::Data, "blob_read"}}},
         {"serving:read",
          {{CapabilityDomain::Data, "predict"}, {CapabilityDomain::Data, "search"}}},
         {"users:manage", {{CapabilityDomain::Api, "manage_users"}}},

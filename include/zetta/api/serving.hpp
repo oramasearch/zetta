@@ -117,4 +117,13 @@ ApiResult serve_predict(Node& node, const ServeRequest& request);
 // only; non-throwing.
 ApiResult serve_search(Node& node, const ServeRequest& request);
 
+// Serve one large-object (blob) body over the object-scoped access model (#747).
+// `request.target` is the blob id. Order: authorize (`blob:read`, scoped by
+// id/prefix — a flat blob:read or a covering prefix grant admits it; the local
+// session + legacy keys follow the same bypass as predict/search), audited either
+// way -> resolve the object across the node's databases -> return { id, size,
+// body_base64 }. Non-throwing; `not_found` for an unknown / body-absent object,
+// `unauthorized` when no grant covers the id. Main-thread only (reads the tree).
+ApiResult serve_blob(Node& node, const ServeRequest& request);
+
 }  // namespace zetta::api

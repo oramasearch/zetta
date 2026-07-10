@@ -63,6 +63,9 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
               (std::vector<Operation>{{CapabilityDomain::Data, "ddl"}}));
     EXPECT_EQ(permission_operations("mcp:call"),
               (std::vector<Operation>{{CapabilityDomain::Api, "query"}}));
+    // blob:read — the object-scopable large-object read right (#747).
+    EXPECT_EQ(permission_operations("blob:read"),
+              (std::vector<Operation>{{CapabilityDomain::Data, "blob_read"}}));
     // serving:read expands to BOTH governed serving routes.
     EXPECT_EQ(permission_operations("serving:read"),
               (std::vector<Operation>{{CapabilityDomain::Data, "predict"},
@@ -78,8 +81,8 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
-    // The canonical list carries exactly the nine atoms the issue names.
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 9u);
+    // The canonical list carries the #746 atoms plus blob:read (#747).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 10u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {
