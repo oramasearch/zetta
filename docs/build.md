@@ -91,7 +91,8 @@ backend and its verification caveats.
 ./build/bin/zetta --data-dir /path/db   # override the database directory
 ./build/bin/zetta --listen 127.0.0.1:7777 # restrict to loopback (default is 0.0.0.0:7777, all interfaces)
 ./build/bin/zetta --port-range 16       # ports to try from --listen, for several nodes/host
-./build/bin/zetta --peer HOST:PORT      # join another node (repeatable; all peers equal)
+./build/bin/zetta --peer HOST:PORT      # join another node (repeatable; all peers equal; HOST:PORT,HOST:PORT lists one peer's candidate endpoints)
+./build/bin/zetta --advertise HOST:PORT # extra reachable endpoint(s) to advertise (a NAT'd/LB'd node's public address; repeatable)
 ./build/bin/zetta --log-cluster         # log gossip events to stderr (debugging)
 ./build/bin/zetta --no-preflight        # skip the startup integrity check
 ./build/bin/zetta --help

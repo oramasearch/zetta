@@ -78,7 +78,12 @@ void print_usage(const char* argv0) {
         "  --listen HOST:PORT  Cluster listen address (default: %s:%u)\n"
         "  --port-range N      Ports to try from --listen, for several nodes\n"
         "                      per host (default: %u)\n"
-        "  --peer HOST:PORT    A node to connect to (repeatable; all equal)\n"
+        "  --peer HOST:PORT    A node to connect to (repeatable; all equal).\n"
+        "                      HOST:PORT,HOST:PORT lists one peer's candidate\n"
+        "                      endpoints — the reachable one is used\n"
+        "  --advertise H:P[,..] Extra reachable endpoints to advertise to peers\n"
+        "                      (a NAT'd / load-balanced node's public/LB address,\n"
+        "                      beyond its bound listen address). Repeatable\n"
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
         "                      persisted in data-dir on first use\n"
         "  --cluster-plaintext Disable inter-node mTLS (debugging only —\n"
@@ -146,6 +151,23 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--peer");
             if (!v) break;
             o.cluster.seeds.emplace_back(v);
+        } else if (arg == "--advertise") {
+            const char* v = take_value(argc, argv, i, o, "--advertise");
+            if (!v) break;
+            // A comma-separated set — split so each becomes one advertised
+            // candidate endpoint (a NAT/LB node lists its public/LB address here).
+            const std::string list = v;
+            std::string::size_type start = 0;
+            while (start <= list.size()) {
+                const auto comma = list.find(',', start);
+                const auto end = comma == std::string::npos ? list.size() : comma;
+                std::string part = list.substr(start, end - start);
+                while (!part.empty() && part.front() == ' ') part.erase(0, 1);
+                while (!part.empty() && part.back() == ' ') part.pop_back();
+                if (!part.empty()) o.cluster.advertise.push_back(std::move(part));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
         } else if (arg == "--join-token") {
             const char* v = take_value(argc, argv, i, o, "--join-token");
             if (!v) break;

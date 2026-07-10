@@ -28,7 +28,15 @@ std::string to_string(ClusterRole role);
 // A peer this node is currently connected to.
 struct ClusterPeer {
     std::string node_id;
-    std::string address;  // host:port the peer reported it listens on
+    // The endpoint THIS node reached the peer on — the reachable path from this
+    // vantage point (a peer behind NAT/LB advertises several candidates; the one
+    // that connected differs per observer). Chosen from `endpoints` at dial time.
+    std::string address;
+    // The full candidate-endpoint SET the peer advertised in its HELLO (pod IP,
+    // LAN IP, LB/public address, …). One node can be reachable at several; `address`
+    // is the one that worked here. Empty for an old single-address HELLO peer only
+    // if it advertised nothing (never happens in practice). See #739 (routing table).
+    std::vector<std::string> endpoints;
 };
 
 // A node's replication state, as last learned over the gossip exchange. For the
@@ -63,15 +71,33 @@ struct ClusterConfig {
     std::string listen_host = "0.0.0.0";
     std::uint16_t listen_port = 7777;
     std::uint16_t port_range = 16;
-    // Other nodes (host:port) to dial. All peers are equal — a seed is just
-    // somewhere to start; the handshake is symmetric.
+    // Other nodes to dial. All peers are equal — a seed is just somewhere to
+    // start; the handshake is symmetric. Each entry is one peer, given as its
+    // candidate endpoint(s): a single `host:port`, or a comma-separated set
+    // `host:port,host:port,…` when one peer is reachable at several addresses —
+    // the dialer tries them in order and keeps the first that connects (the
+    // reachable path from this vantage point). See #739 (routing table).
     std::vector<std::string> seeds;
+    // Extra reachable endpoints to advertise beyond the bound listen address(es).
+    // A node behind NAT / a load balancer lists its public / LB address here
+    // (`--advertise HOST:PORT[,...]`), so peers learn the endpoint they can
+    // actually dial rather than only the (unreachable) bound pod IP — the root
+    // cause of the membership flap this addresses. Folded into the advertised
+    // HELLO candidate set alongside listen_addresses(). See #739.
+    std::vector<std::string> advertise;
     // Drop a peer that has sent nothing for this long (gossip flows every ~0.5s,
     // so silence means the link died — clears it so a fresh one can replace it).
     unsigned peer_idle_timeout_seconds = 6;
     // Re-dial seeds that aren't currently connected, this often, so a dropped
     // link re-establishes itself.
     unsigned reconnect_interval_seconds = 3;
+    // Membership hysteresis (#739): once a peer's live link drops, keep the node
+    // in the membership view (nodes() / system.nodes / the UI) for this long
+    // before dropping it, so a brief blip or reconnect doesn't flap it out. Live
+    // links reap immediately regardless — peers()/peer_count() and the signal
+    // plane reflect real connectivity with no delay; only the membership view is
+    // debounced. 0 disables (drop as soon as the link goes).
+    unsigned membership_grace_seconds = 10;
     // Log every cluster event (handshake, peer add/remove, STATUS sent/received,
     // body requests/transfers, keepalive, reconnect) to stderr — for debugging
     // gossip/convergence issues. Off by default; enable with `--log-cluster`.
@@ -134,9 +160,17 @@ public:
     // best reachable address — a non-loopback one when available).
     std::string peer_command() const;
 
-    // Snapshot of currently-connected peers (thread-safe).
+    // Snapshot of peers with a live link right now (thread-safe). A node kept in
+    // the membership view purely by hysteresis (its link has dropped but is within
+    // the grace window) is NOT listed here — this is the live-connectivity view.
     std::vector<ClusterPeer> peers() const;
     std::size_t peer_count() const;
+
+    // The endpoints this node advertises to peers in its HELLO — its reachable
+    // listen address(es) plus any ClusterConfig::advertise extras (deduped). The
+    // candidate set a peer stores and dials by. Non-loopback listen addresses come
+    // first; front() is what peer_command()/nodes() report as this node's address.
+    std::vector<std::string> advertised_endpoints() const;
 
     // Number of live peer connections held. At most one per peer node id: a value
     // above peer_count() would mean duplicate links are leaking (a reconnect race, a
@@ -145,9 +179,12 @@ public:
     std::size_t connection_count() const;
 
     // Every node and its replication status, for the "list of all nodes" view:
-    // this node first (is_self), then each connected peer with the replication
-    // state it last reported. Thread-safe. With no ReplicationManager wired in,
-    // the replication fields are left unknown.
+    // this node first (is_self), then each member with the replication state it
+    // last reported. This is the membership view — it applies hysteresis (#739): a
+    // peer whose link just dropped stays listed (with connected=false) through the
+    // grace window, so a brief blip doesn't flap it out; it drops only after a
+    // sustained absence. Thread-safe. With no ReplicationManager wired in, the
+    // replication fields are left unknown.
     std::vector<NodeStatus> nodes() const;
 
     // --- Signal plane (RPC / events / tasks) --------------------------------
