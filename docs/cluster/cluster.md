@@ -189,6 +189,34 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   it equals `peer_count()` in steady state; a higher value means links are leaking
   (#739).
 
+## Node reachability + the route table
+
+Not every node can accept inbound connections, so the mesh forms by having the
+unreachable nodes dial **outbound** to the reachable ones. Nodes are classified by
+reachability (a property of the node, added to the nodes table):
+
+- **wan-accessible** — the node has a routable address (a public/WAN IP, or a LAN IP
+  its peers can reach). It's advertised in the nodes table at that address and is a
+  **rendezvous**: other nodes dial **outbound** to it. It accepts inbound because it
+  genuinely can.
+- **ephemeral** — a transient node (burst / autoscaled capacity). It's expected to come
+  and go; its departure is normal, not a fault, so membership shouldn't flap it out on a
+  brief absence (hysteresis — #739).
+- otherwise **dial-out-only** — behind NAT or private cloud networking (a home node; a
+  cloud pod with only a private VNet IP). It opens **outbound** connections to
+  wan-accessible nodes and accepts **no inbound** — no load balancer, no exposed port.
+
+**The route table self-forms.** Add a wan-accessible node's address to the nodes table (a
+`--peer` / seed) and existing nodes reach out to it; gossip then relays transitively so
+every node reaches every other **through** the wan-accessible rendezvous(es), each node
+keeping a per-peer reachability/route table (#739). A dial-out-only node behind NAT never
+needs to be dialed — it is always the initiator.
+
+> **Anti-pattern:** exposing a dial-out-only node via an inbound LoadBalancer (worse,
+> source-locked to one peer's IP) to "make it reachable" **inverts the model** — it puts
+> an inbound surface on a node that should only dial out. Designate the genuinely
+> wan-accessible nodes instead, and let the private ones dial them.
+
 ## Signal plane (RPC / events / tasks)
 
 Beyond replication gossip and large-object transfer, the same peer connections
