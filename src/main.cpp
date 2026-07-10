@@ -10,6 +10,7 @@
 #include "zetta/api/server.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
+#include "zetta/cloud/node_bootstrap_env.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/cloud/provisioner_detect.hpp"
@@ -47,6 +48,7 @@ struct Options {
     std::string mcp_token;                      // --mcp-token (acting key id)
     std::string join_token;         // --join-token (join an existing cluster)
     bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
+    bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -85,7 +87,13 @@ void print_usage(const char* argv0) {
         "                      anyone who can reach the port can join)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
-        "  -h, --help          Show this help\n",
+        "  -h, --help          Show this help\n"
+        "\n"
+        "Environment (provisioning; applied as defaults, overridden by the\n"
+        "flags above — a provisioned node auto-joins with no manual flags):\n"
+        "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
+        "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
+        "  ZETTA_DATA_DIR      Database directory -> --data-dir\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -120,6 +128,7 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--data-dir");
             if (!v) break;
             o.node.data_dir = v;
+            o.data_dir_from_cli = true;
         } else if (arg == "--listen") {
             const char* v = take_value(argc, argv, i, o, "--listen");
             if (!v) break;
@@ -202,6 +211,55 @@ int main(int argc, char** argv) {
         print_usage(argv[0]);
         return 0;
     }
+
+    // Provisioning env (#749): a burst/provisioned node is handed its cluster
+    // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
+    // ZETTA_CLUSTER_TOKEN, ZETTA_DATA_DIR; docs/plans/cloud-provisioning.md Gap
+    // A). Fold them in as defaults beneath the flags already parsed — explicit
+    // flag > env > default — so a provisioned node auto-joins a secure (mTLS)
+    // cluster with no manual flags. A plaintext cluster stays plaintext (env
+    // never forces security on); the --join-token/--cluster-plaintext conflict
+    // check below still guards the result.
+    {
+        zetta::cloud::NodeBootstrap bootstrap;
+        bootstrap.seeds = opts.cluster.seeds;
+        bootstrap.join_token = opts.join_token;
+        bootstrap.data_dir = opts.node.data_dir;
+        bootstrap.cluster_plaintext = opts.cluster_plaintext;
+        bootstrap.peer_from_cli = !opts.cluster.seeds.empty();
+        bootstrap.join_token_from_cli = !opts.join_token.empty();
+        bootstrap.data_dir_from_cli = opts.data_dir_from_cli;
+
+        const zetta::cloud::BootstrapEnvApplied applied =
+            zetta::cloud::apply_bootstrap_env(bootstrap);
+
+        opts.cluster.seeds = std::move(bootstrap.seeds);
+        opts.join_token = std::move(bootstrap.join_token);
+        opts.node.data_dir = std::move(bootstrap.data_dir);
+
+        // One startup line naming what env contributed — token redacted.
+        if (applied.any()) {
+            std::string summary = "zetta: applied provisioning env:";
+            if (!applied.seeds.empty()) {
+                summary += " ZETTA_SEED_PEER=";
+                bool first = true;
+                for (const std::string& seed : applied.seeds) {
+                    if (!first) summary += ",";
+                    summary += seed;
+                    first = false;
+                }
+                summary += " (--peer)";
+            }
+            if (applied.join_token) {
+                summary += " ZETTA_CLUSTER_TOKEN=**** (--join-token)";
+            }
+            if (!applied.data_dir.empty()) {
+                summary += " ZETTA_DATA_DIR=" + applied.data_dir + " (--data-dir)";
+            }
+            std::printf("%s\n", summary.c_str());
+        }
+    }
+
     if (opts.cluster_plaintext && !opts.join_token.empty()) {
         std::fprintf(stderr,
                      "zetta: --cluster-plaintext and --join-token conflict\n");
