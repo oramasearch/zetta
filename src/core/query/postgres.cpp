@@ -258,9 +258,44 @@ private:
         if (accept_keyword("create")) return parse_create();
         if (accept_keyword("drop")) return parse_drop();
         if (accept_keyword("insert")) return parse_insert();
+        if (accept_keyword("update")) return parse_update();
+        if (accept_keyword("delete")) return parse_delete();
         if (accept_keyword("select")) return parse_select();
         throw ParseError{"unsupported statement, expected CREATE/DROP/INSERT/"
-                         "SELECT, got '" + peek().text + "'"};
+                         "UPDATE/DELETE/SELECT, got '" + peek().text + "'"};
+    }
+
+    // WHERE <column> <op> <value> — the single-predicate clause shared by SELECT,
+    // UPDATE, and DELETE.
+    WhereClause parse_where_clause() {
+        WhereClause where;
+        where.column = parse_ident();
+        where.op = parse_comparison();
+        where.value = parse_value();
+        return where;
+    }
+
+    Statement parse_update() {
+        UpdateStmt stmt;
+        stmt.table = parse_table_ref();
+        expect_keyword("set");
+        do {
+            Assignment assignment;
+            assignment.column = parse_ident();
+            expect_punct('=');
+            assignment.value = parse_value();
+            stmt.assignments.push_back(std::move(assignment));
+        } while (accept_punct(','));
+        if (accept_keyword("where")) stmt.where = parse_where_clause();
+        return stmt;
+    }
+
+    Statement parse_delete() {
+        expect_keyword("from");
+        DeleteStmt stmt;
+        stmt.table = parse_table_ref();
+        if (accept_keyword("where")) stmt.where = parse_where_clause();
+        return stmt;
     }
 
     Statement parse_create() {

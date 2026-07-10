@@ -1421,6 +1421,60 @@ QueryResult Executor::execute(const Statement& stmt,
                 }
                 return {.message = "INSERT 0 " + std::to_string(inserted)};
             },
+            [&](const UpdateStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto db = resolve_db(s.table);
+                if (!db) {
+                    return error("database \"" + db_name(s.table) +
+                                 "\" does not exist");
+                }
+                auto table = db->find_table(s.table.table);
+                if (!table) {
+                    return error("table \"" + s.table.table + "\" does not exist");
+                }
+                // Collect the matches (id + the updated row) BEFORE applying —
+                // update_row rewrites the store, which would invalidate indices.
+                std::vector<std::pair<std::string, nlohmann::json>> edits;
+                const zetta::storage::StorageEngine& store = table->store();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    const nlohmann::json& row = store.at(i);
+                    if (!row_matches(row, s.where)) continue;
+                    nlohmann::json updated = row;
+                    for (const Assignment& a : s.assignments) {
+                        updated[a.column] = a.value;
+                    }
+                    edits.emplace_back(store.id_at(i), std::move(updated));
+                }
+                for (auto& [id, doc] : edits) {
+                    table->update_row(id, std::move(doc));
+                }
+                return {.message = "UPDATE " + std::to_string(edits.size())};
+            },
+            [&](const DeleteStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto db = resolve_db(s.table);
+                if (!db) {
+                    return error("database \"" + db_name(s.table) +
+                                 "\" does not exist");
+                }
+                auto table = db->find_table(s.table.table);
+                if (!table) {
+                    return error("table \"" + s.table.table + "\" does not exist");
+                }
+                std::vector<std::string> ids;
+                const zetta::storage::StorageEngine& store = table->store();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    if (row_matches(store.at(i), s.where)) {
+                        ids.push_back(store.id_at(i));
+                    }
+                }
+                for (const std::string& id : ids) table->delete_row(id);
+                return {.message = "DELETE " + std::to_string(ids.size())};
+            },
             [&](const SelectStmt& s) -> QueryResult {
                 // Virtual `system` database (computed, read-only).
                 if (const std::string sys = system_table_of(s.table);
