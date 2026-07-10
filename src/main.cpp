@@ -47,6 +47,7 @@ struct Options {
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string mcp_token;                      // --mcp-token (acting key id)
+    bool require_auth = false;      // --require-auth / ZETTA_REQUIRE_AUTH (#745)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
@@ -76,7 +77,11 @@ void print_usage(const char* argv0) {
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
-        "  --mcp-token T       Require this bearer token (= acting key id)\n"
+        "  --mcp-token T       Legacy shared-secret bearer (= acting key id);\n"
+        "                      ignored when --require-auth is set\n"
+        "  --require-auth      Default-deny: every HTTP/MCP/REST path needs a\n"
+        "                      bearer that resolves to a user via the token\n"
+        "                      store, else 401 (or ZETTA_REQUIRE_AUTH); #745\n"
         "  --admin-token T     Seed the owner user's access token from this\n"
         "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
         "                      hashed at rest, never logged (#744)\n"
@@ -126,6 +131,8 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--mcp-token") {
             const char* v = take_value(argc, argv, i, o, "--mcp-token");
             if (v) o.mcp_token = v;
+        } else if (arg == "--require-auth") {
+            o.require_auth = true;
         } else if (arg == "--admin-token") {
             const char* v = take_value(argc, argv, i, o, "--admin-token");
             if (v) o.admin_token = v;
@@ -494,14 +501,35 @@ int main(int argc, char** argv) {
         api_options.listen_address = opts.mcp_listen.substr(0, colon);
         api_options.port = api_port;
         api_options.bearer_token = opts.mcp_token;
+        // The default-deny gate (#745): --require-auth or ZETTA_REQUIRE_AUTH
+        // closes every path unless the bearer resolves to a user via the token
+        // store. Secure-by-default when set; off keeps the loopback GUI's
+        // unauthenticated-local session working (back-compat).
+        bool require_auth = opts.require_auth;
+        if (!require_auth) {
+            if (const char* env = std::getenv("ZETTA_REQUIRE_AUTH")) {
+                const std::string value = env;
+                require_auth =
+                    !(value.empty() || value == "0" || value == "false");
+            }
+        }
+        api_options.require_auth = require_auth;
         api_server = std::make_unique<zetta::api::ApiServer>(node, &cluster,
                                                              api_options);
         if (api_server->start()) {
+            const char* auth_note =
+                require_auth ? " (auth required — token resolves to a user)"
+                : opts.mcp_token.empty() ? " (unauthenticated local)"
+                                         : " (bearer token required)";
             std::printf("zetta: MCP endpoint http://%s:%u/mcp%s\n",
                         api_options.listen_address.c_str(),
-                        static_cast<unsigned>(api_server->port()),
-                        opts.mcp_token.empty() ? " (unauthenticated local)"
-                                               : " (bearer token required)");
+                        static_cast<unsigned>(api_server->port()), auth_note);
+            if (require_auth && node.token_count() == 0) {
+                std::fprintf(stderr,
+                             "zetta: WARNING --require-auth is on but no tokens "
+                             "exist — every request will 401. Seed an owner with "
+                             "--admin-token <secret> (#745/#733).\n");
+            }
         } else {
             std::fprintf(stderr, "zetta: MCP server failed to start: %s\n",
                          api_server->reason().c_str());

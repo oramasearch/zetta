@@ -159,11 +159,22 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         return finish(ApiResult::failure("invalid_input", reason));
     }
 
-    // Authorization: an empty acting key is the audited "unauthenticated
-    // local" session (the governed-console precedent — the default loopback
-    // binding); any named key must hold the entry's required capability
-    // (deny-by-default). Either way the decision lands in the audit trail.
-    if (!context.acting_key.empty()) {
+    // Authorization (deny-by-default). Under the default-deny gate (#745) the
+    // acting identity is a TOKEN-resolved user: check the entry's required
+    // capability against that user's effective permissions (its roles') — there
+    // is no anonymous bypass. Otherwise the legacy key path holds: a named
+    // AccessKey must carry the capability, and an empty acting key is the
+    // audited "unauthenticated local" session (only reachable with the gate
+    // off — the loopback GUI default). Either way the decision is audited.
+    if (context.acting_is_user) {
+        auto decision = context.node.authorize_user(
+            context.acting_key, capability->required_operation);
+        if (!decision) {
+            audit_call(context.node, *capability, context.acting_key,
+                       /*allowed=*/false, decision.reason);
+            return finish(ApiResult::failure("unauthorized", decision.reason));
+        }
+    } else if (!context.acting_key.empty()) {
         auto decision =
             context.node.authorize(context.acting_key, capability->required_operation);
         if (!decision) {

@@ -82,6 +82,30 @@ std::string bearer_of(const boost::http::route_params& route) {
     return std::string(header_value.substr(7));
 }
 
+// The acting identity the ONE auth gate (#745) resolved for a request. Stashed
+// on the route's per-request datastore (the worker clears route_data each
+// request), so every downstream handler reads a single decision instead of
+// re-checking the bearer — the per-handler shared-secret checks are gone. When
+// `is_user` the gate resolved the bearer against the token store to a user, so
+// `acting_key` is that user's id (authorize against its effective permissions);
+// otherwise `acting_key` is the presented bearer (a legacy AccessKey id, or
+// empty for the audited unauthenticated-local session).
+struct RequestIdentity {
+    std::string acting_key;
+    bool is_user = false;
+};
+
+// The identity the gate stashed for this request, or an empty
+// (unauthenticated-local) identity if none was recorded — defensive, since the
+// gate is installed as global middleware and runs before every route.
+RequestIdentity identity_of(const boost::http::route_params& route) {
+    if (const RequestIdentity* identity =
+            route.route_data.find<RequestIdentity>()) {
+        return *identity;
+    }
+    return {};
+}
+
 // A transport-level REST failure (bad bearer, unreadable body) in the same
 // envelope shape as a finished call, minus the trace ids (no call ran).
 std::string transport_error_body(std::string_view code,
@@ -139,7 +163,7 @@ struct ApiServer::Impl {
     // Dispatch one JSON-RPC request document. Returns the response body, or
     // an empty string for notifications (no response required).
     std::string dispatch(const nlohmann::json& request,
-                         const std::string& acting_key,
+                         const std::string& acting_key, bool acting_is_user,
                          const std::string& traceparent_header) {
         if (!request.is_object() || request.value("jsonrpc", "") != "2.0") {
             return jsonrpc_error({}, -32600, "invalid JSON-RPC 2.0 request");
@@ -194,6 +218,7 @@ struct ApiServer::Impl {
                 ApiContext context{node, cluster, acting_key, trace,
                                    &node.span_recorder(), &background,
                                    provisioners};
+                context.acting_is_user = acting_is_user;
                 call_result =
                     capability_registry.call(tool_name, arguments, context);
             };
@@ -231,24 +256,16 @@ struct ApiServer::Impl {
     }
 
     // Serve one llms.txt page (#645): `page` is "index" (/llms.txt), "full"
-    // (/llms-full.txt), or a topic name (/llms/<topic>.txt). Same bearer
-    // policy as /mcp; rendering touches the Node, so it is marshaled onto the
-    // owning loop via the bridge, wrapped in a span (every operation is
-    // observable). Shared by the three GET routes registered in start().
+    // (/llms-full.txt), or a topic name (/llms/<topic>.txt). Auth is enforced
+    // at the router-seam gate (#745); rendering touches the Node, so it is
+    // marshaled onto the owning loop via the bridge, wrapped in a span (every
+    // operation is observable). Shared by the three GET routes in start().
     boost::http::route_task serve_llms(boost::http::route_params& route,
                                        std::string page) {
         namespace http = boost::http;
 
-        const std::string bearer = bearer_of(route);
-        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
-            route.status(http::status::unauthorized);
-            stamp_response_headers(route, "missing or invalid bearer token");
-            auto [send_error] =
-                co_await route.send("missing or invalid bearer token");
-            (void)send_error;
-            co_return http::route_done;
-        }
-
+        // Auth is enforced once, up front, by the router-seam gate (#745) —
+        // this route only runs for an already-authorized request.
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
             traceparent = std::string(route.req.at("traceparent"));
@@ -299,8 +316,9 @@ struct ApiServer::Impl {
 
     // Serve one REST rendering of a capability (#618, docs/api/rest-openapi.md):
     // GET for reads (input in the query string, coerced by the input schema),
-    // POST for actions/jobs (input as the JSON body). Same bearer policy as
-    // /mcp, and the call itself — validate, authorize + audit, handle, span —
+    // POST for actions/jobs (input as the JSON body). Auth is enforced at the
+    // router-seam gate (#745), and the call itself — validate, authorize +
+    // audit, handle, span —
     // is Registry::call on the owning loop, exactly the MCP path.
     boost::http::route_task serve_rest_capability(
         boost::http::route_params& route,
@@ -310,12 +328,10 @@ struct ApiServer::Impl {
         std::string response_body;
         http::status status = http::status::ok;
 
-        const std::string bearer = bearer_of(route);
-        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
-            status = http::status::unauthorized;
-            response_body = transport_error_body(
-                "unauthorized", "missing or invalid bearer token");
-        }
+        // Auth is enforced once, up front, by the router-seam gate (#745); this
+        // route only runs for an already-authorized request, and reads the
+        // acting identity the gate resolved.
+        const RequestIdentity identity = identity_of(route);
 
         nlohmann::json input = nlohmann::json::object();
         if (response_body.empty()) {
@@ -356,8 +372,9 @@ struct ApiServer::Impl {
                     .value_or(zetta::observability::make_root_trace());
             ApiResult call_result;
             co_await bridge.run_on_owner([&] {
-                ApiContext context{node, cluster, bearer, trace,
+                ApiContext context{node, cluster, identity.acting_key, trace,
                                    &node.span_recorder(), &background};
+                context.acting_is_user = identity.is_user;
                 call_result =
                     capability_registry.call(capability->name, input, context);
             });
@@ -376,26 +393,16 @@ struct ApiServer::Impl {
     // GET /v1/specs and /v1/specs/<name> (#646, docs/api/specs-index.md): the
     // spec index and each raw document — the OpenAPI document, capability
     // input/output schemas, boundary schemas — served from the C++ accessors,
-    // never from disk. Same bearer policy as /mcp; rendering only reads the
-    // (start-frozen) registry and static accessors, but is marshaled onto the
+    // never from disk. Auth is enforced at the router-seam gate (#745);
+    // rendering only reads the (start-frozen) registry and static accessors,
+    // but is marshaled onto the
     // owning loop so the span lands in the node's ring (every operation is
     // observable). `name` empty = the index.
     boost::http::route_task serve_specs(boost::http::route_params& route,
                                         std::string name) {
         namespace http = boost::http;
 
-        const std::string bearer = bearer_of(route);
-        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
-            route.status(http::status::unauthorized);
-            const std::string body = transport_error_body(
-                "unauthorized", "missing or invalid bearer token");
-            route.res.set(http::field::content_type, "application/json");
-            stamp_response_headers(route, body);
-            auto [send_error] = co_await route.send(body);
-            (void)send_error;
-            co_return http::route_done;
-        }
-
+        // Auth is enforced once, up front, by the router-seam gate (#745).
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
             traceparent = std::string(route.req.at("traceparent"));
@@ -441,8 +448,9 @@ struct ApiServer::Impl {
 
     // Serve one governed entity endpoint (#648, docs/api/serving.md): the
     // exposed-model predict route (POST, JSON body) or the exposed-index
-    // search route (GET, query string). Same bearer policy as every route;
-    // everything else — authorize + audit, the exposure check, the schema
+    // search route (GET, query string). Auth is enforced at the router-seam
+    // gate (#745); everything else — authorize + audit, the exposure check, the
+    // schema
     // boundary, the engine call, the serve:* span — is the HTTP-free serving
     // layer (serving.cpp) on the owning loop, and the response is the same
     // envelope + status mapping as the REST rendering.
@@ -453,12 +461,9 @@ struct ApiServer::Impl {
         std::string response_body;
         http::status status = http::status::ok;
 
-        const std::string bearer = bearer_of(route);
-        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
-            status = http::status::unauthorized;
-            response_body = transport_error_body(
-                "unauthorized", "missing or invalid bearer token");
-        }
+        // Auth is enforced once, up front, by the router-seam gate (#745); read
+        // the acting identity it resolved for the serving-layer authorize.
+        const RequestIdentity identity = identity_of(route);
 
         std::string target;
         for (const auto& [parameter, value] : route.params) {
@@ -505,8 +510,9 @@ struct ApiServer::Impl {
                     .value_or(zetta::observability::make_root_trace());
             ApiResult serve_result;
             co_await bridge.run_on_owner([&] {
-                ServeRequest request{target, input, bearer, trace,
+                ServeRequest request{target, input, identity.acting_key, trace,
                                      &node.span_recorder()};
+                request.acting_is_user = identity.is_user;
                 serve_result = predict ? serve_predict(node, request)
                                        : serve_search(node, request);
             });
@@ -522,20 +528,10 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
-    // GET /v1/openapi.json — the OpenAPI rendering, same bearer policy.
+    // GET /v1/openapi.json — the OpenAPI rendering. Auth is enforced once, up
+    // front, by the router-seam gate (#745).
     boost::http::route_task serve_openapi(boost::http::route_params& route) {
         namespace http = boost::http;
-        const std::string bearer = bearer_of(route);
-        if (!options.bearer_token.empty() && bearer != options.bearer_token) {
-            route.status(http::status::unauthorized);
-            const std::string body = transport_error_body(
-                "unauthorized", "missing or invalid bearer token");
-            route.res.set(http::field::content_type, "application/json");
-            stamp_response_headers(route, body);
-            auto [send_error] = co_await route.send(body);
-            (void)send_error;
-            co_return http::route_done;
-        }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "application/json");
         stamp_response_headers(route, openapi_body);
@@ -574,6 +570,75 @@ bool ApiServer::start() {
                    if (send_error) co_return http::route_error(send_error);
                    co_return http::route_done;
                });
+
+    // The ONE auth gate (#745, epic #743): a single middleware at the router
+    // seam that runs before EVERY route (cors handles the CORS preflight before
+    // it, so credential-less OPTIONS is not blocked). It resolves the acting
+    // identity once — no more per-handler shared-secret checks — and, on
+    // failure, short-circuits the whole request with 401. Three modes:
+    //
+    //   --require-auth (secure-by-default): the bearer MUST resolve, through the
+    //     token store (#744: salted-hash + constant-time compare, honoring
+    //     expiry/revocation and requiring an active user), to a user; anything
+    //     else is 401. The resolved USER is the acting identity, and downstream
+    //     capability checks run against its effective permissions. There is no
+    //     anonymous path and the legacy shared secret is not honored.
+    //   legacy --mcp-token (back-compat): the bearer must equal the configured
+    //     shared secret, which doubles as the acting AccessKey id.
+    //   unauthenticated-local (the loopback GUI default): no gate — the acting
+    //     key is whatever bearer was presented (may be empty = the audited
+    //     local session).
+    router.use([&impl](http::route_params& route) -> http::route_task {
+        const std::string bearer = bearer_of(route);
+        RequestIdentity identity;
+        bool authorized = true;
+
+        if (impl.options.require_auth) {
+            std::string resolved_user_id;
+            // authenticate_token touches the Node (token store) — main-thread
+            // only, so marshal it onto the owning loop, like every handler.
+            co_await impl.bridge.run_on_owner([&] {
+                if (auto user = impl.node.authenticate_token(bearer)) {
+                    resolved_user_id = user->id();
+                }
+            });
+            if (resolved_user_id.empty()) {
+                authorized = false;
+            } else {
+                identity.acting_key = std::move(resolved_user_id);
+                identity.is_user = true;
+            }
+        } else if (!impl.options.bearer_token.empty()) {
+            if (bearer != impl.options.bearer_token) {
+                authorized = false;
+            } else {
+                identity.acting_key = bearer;  // legacy: bearer IS the key id
+            }
+        } else {
+            identity.acting_key = bearer;  // unauthenticated-local (may be empty)
+        }
+
+        if (!authorized) {
+            route.status(http::status::unauthorized);
+            const std::string body = transport_error_body(
+                "unauthorized", "missing or invalid bearer token");
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            (void)send_error;
+            co_return http::route_done;
+        }
+
+        // Hand the resolved identity to the matched handler. route_data is
+        // cleared per request by the worker; overwrite defensively regardless.
+        if (RequestIdentity* slot = route.route_data.find<RequestIdentity>()) {
+            *slot = std::move(identity);
+        } else {
+            route.route_data.emplace<RequestIdentity>(std::move(identity));
+        }
+        co_return http::route_next;
+    });
+
     router.use("/mcp", [&impl](http::route_params& route) -> http::route_task {
         if (route.req.method() != http::method::post) {
             route.status(http::status::method_not_allowed);
@@ -583,21 +648,9 @@ bool ApiServer::start() {
             co_return http::route_done;
         }
 
-        // Bearer auth: with a configured token the header must match exactly;
-        // the token doubles as the acting AccessKey id. Without one, the
-        // acting key is whatever bearer the caller presented (may be empty =
-        // the audited unauthenticated-local session on the loopback default).
-        const std::string bearer = bearer_of(route);
-        if (!impl.options.bearer_token.empty() &&
-            bearer != impl.options.bearer_token) {
-            route.status(http::status::unauthorized);
-            stamp_response_headers(
-                route, "{\"error\":\"missing or invalid bearer token\"}");
-            auto [send_error] = co_await route.send(
-                "{\"error\":\"missing or invalid bearer token\"}");
-            (void)send_error;
-            co_return http::route_done;
-        }
+        // Auth already ran at the router-seam gate above; read the identity it
+        // resolved (a user id under --require-auth, else the presented bearer).
+        const RequestIdentity identity = identity_of(route);
 
         std::string traceparent;
         if (route.req.count("traceparent") != 0) {
@@ -620,8 +673,9 @@ bool ApiServer::start() {
                 // Marshal the whole dispatch onto the loop that owns the
                 // Node; this coroutine suspends until drain() has run it.
                 co_await impl.bridge.run_on_owner([&] {
-                    response_body =
-                        impl.dispatch(request, bearer, traceparent);
+                    response_body = impl.dispatch(
+                        request, identity.acting_key, identity.is_user,
+                        traceparent);
                 });
             }
         }

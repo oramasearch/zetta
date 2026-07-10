@@ -582,6 +582,17 @@ public:
     zetta::governance::AccessDecision authorize(const std::string& key_id,
                              const zetta::governance::Operation& operation) const;
 
+    // The capability decision for a USER (the default-deny gate, #745): the
+    // operation is allowed iff any role assigned to the user (via UserRole)
+    // holds a matching, unexpired capability. Deny-by-default — an unknown or
+    // disabled user, or no role granting the right, denies. This is the
+    // token-resolved counterpart to the AccessKey `authorize` above: the gate
+    // resolves a bearer to a user (authenticate_token), then this checks the
+    // user's *effective* permissions (the union of its roles' capabilities).
+    zetta::governance::AccessDecision authorize_user(
+        const std::string& user_id,
+        const zetta::governance::Operation& operation) const;
+
     // ----- Users / roles / tokens: the credential store (FEAT-9 / #744) -------
     // The foundation the rest of the identity model builds on. A User is an
     // authenticatable identity, a Role a named permission set, a Token a bearer

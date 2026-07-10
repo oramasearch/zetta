@@ -88,7 +88,8 @@ std::string index_endpoint_path(const std::string& index_id);
 
 // One served request, as the adapter hands it over: the raw path segment, the
 // (already JSON-parsed) input — the POST body for predict, the coerced query
-// parameters for search — the acting AccessKey id (empty = the audited
+// parameters for search — the acting identity (a user id when the default-deny
+// gate resolved a token, else an AccessKey id, empty = the audited
 // "unauthenticated local" session), and the trace to record into.
 struct ServeRequest {
     std::string target;    // the {name} path segment: an entity id, a model
@@ -97,6 +98,9 @@ struct ServeRequest {
     std::string acting_key;
     zetta::observability::TraceContext trace;
     zetta::observability::SpanRecorder* recorder = nullptr;
+    // The gate (#745) resolved a token to a user, so `acting_key` is a user id:
+    // authorize against the user's effective permissions, not an AccessKey.
+    bool acting_is_user = false;
 };
 
 // Serve one batch-predict request over an exposed model. Main-thread only
