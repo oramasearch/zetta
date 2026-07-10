@@ -161,6 +161,17 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   dropped link re-establishes itself. Between the two, a restarted or
   briefly-partitioned peer reconnects and the stale entry is replaced — no
   stuck `syncing`/`no status` ghost.
+- **One connection per peer (no leak).** A handshake is keyed by the peer's
+  **node id**: the moment both ends learn each other's id, a per-node-id registry
+  keeps exactly one link and closes any duplicate. This covers a mutual dial
+  (both sides seed each other, so each also accepts the other — the link
+  *initiated by the smaller node id* wins on both ends, so they converge on the
+  same physical connection) and a redial race where a seed's address never
+  matches the peer's advertised one (e.g. a `127.0.0.1` or load-balancer seed vs.
+  the peer's real LAN IP), which would otherwise pile up held sockets and burn CPU
+  servicing them. `Cluster::connection_count()` reports the links actually served —
+  it equals `peer_count()` in steady state; a higher value means links are leaking
+  (#739).
 
 ## Signal plane (RPC / events / tasks)
 
