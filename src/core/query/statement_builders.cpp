@@ -31,13 +31,17 @@ Statement make_drop_role_statement(std::string name) {
 }
 
 Statement make_grant_permission_statement(std::string role,
-                                          std::vector<std::string> permissions) {
-    return GrantPermissionStmt{std::move(role), std::move(permissions)};
+                                          std::vector<std::string> permissions,
+                                          GrantObject object) {
+    return GrantPermissionStmt{std::move(role), std::move(permissions),
+                               std::move(object)};
 }
 
 Statement make_revoke_permission_statement(
-    std::string role, std::vector<std::string> permissions) {
-    return RevokePermissionStmt{std::move(role), std::move(permissions)};
+    std::string role, std::vector<std::string> permissions,
+    GrantObject object) {
+    return RevokePermissionStmt{std::move(role), std::move(permissions),
+                                std::move(object)};
 }
 
 Statement make_grant_role_statement(std::string role, std::string user) {

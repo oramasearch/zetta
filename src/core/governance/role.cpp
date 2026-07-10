@@ -43,10 +43,16 @@ void Role::set_metadata(std::string name, RolePermissions permissions,
 }
 
 nlohmann::json Role::metadata() const {
-    return nlohmann::json{{"name", name_},
-                          {"scope", permissions_.scope},
-                          {"capabilities", permissions_.capabilities},
-                          {"created", created_}};
+    nlohmann::json meta{{"name", name_},
+                        {"scope", permissions_.scope},
+                        {"capabilities", permissions_.capabilities},
+                        {"created", created_}};
+    // Emit the object-scoped grants (#747) only when the role has any, so a role
+    // without fine-grained grants (every built-in) serializes exactly as before.
+    if (!permissions_.scoped_grants.empty()) {
+        meta["scoped_grants"] = permissions_.scoped_grants;
+    }
+    return meta;
 }
 
 void Role::persist_meta() const {
@@ -69,7 +75,19 @@ std::optional<RolePermissions> role_permissions_from_json(
         if (!parsed) return std::nullopt;
         capabilities = *parsed;
     }
-    return RolePermissions{*scope, std::move(capabilities)};
+    // Object-scoped grants (#747) are optional (an older shape / a role with only
+    // flat rights omits them); a present-yet-malformed entry fails fast.
+    std::vector<ScopedGrant> scoped_grants;
+    if (document.contains("scoped_grants")) {
+        if (!document["scoped_grants"].is_array()) return std::nullopt;
+        for (const auto& entry : document["scoped_grants"]) {
+            const auto grant = scoped_grant_from_json(entry);
+            if (!grant) return std::nullopt;
+            scoped_grants.push_back(*grant);
+        }
+    }
+    return RolePermissions{*scope, std::move(capabilities),
+                           std::move(scoped_grants)};
 }
 
 const nlohmann::json& role_schema() {
@@ -93,9 +111,14 @@ const nlohmann::json& role_schema() {
     },
     "scope": { "$ref": "#/$defs/scope" },
     "capabilities": {
-      "description": "The deny-by-default rights this role grants (ENT-22). Optional; absent means no rights.",
+      "description": "The deny-by-default FLAT (unscoped) rights this role grants (ENT-22) — granted on every object. Optional; absent means no flat rights.",
       "type": "array",
       "items": { "$ref": "#/$defs/capability" }
+    },
+    "scoped_grants": {
+      "description": "Object-scoped grants (#747): rights bound to a specific object (table / column-set / blob prefix / MCP tool / database). Optional; absent means no object-scoped rights. Each narrows a permission to exactly the objects it covers.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/scoped_grant" }
     },
     "created": {
       "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
@@ -103,6 +126,25 @@ const nlohmann::json& role_schema() {
     }
   },
   "$defs": {
+    "scoped_grant": {
+      "description": "A specific right (operation) bound to a specific object (#747).",
+      "type": "object",
+      "required": ["operation", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "description": "The right this grant confers on the object.",
+          "type": "object",
+          "required": ["domain", "action"],
+          "additionalProperties": false,
+          "properties": {
+            "domain": { "type": "string", "enum": ["api", "data", "orchestration"] },
+            "action": { "type": "string" }
+          }
+        },
+        "object": { "$ref": "#/$defs/resource" }
+      }
+    },
     "capability": {
       "description": "A deny-by-default grant of a specific API/data/orchestration right (ENT-22), optionally TTL'd.",
       "type": "object",
@@ -142,19 +184,28 @@ const nlohmann::json& role_schema() {
       }
     },
     "resource": {
-      "description": "A single node-owned resource a grant names (database or project).",
+      "description": "A single node-owned object a grant names. The coarse tiers are database/project; the fine-grained object tiers (#747) are table/column/blob/tool, which add the optional `database` (table/column) and `columns` (column) fields.",
       "type": "object",
       "required": ["kind", "name"],
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "description": "The kind of resource.",
+          "description": "The kind of object.",
           "type": "string",
-          "enum": ["database", "project"]
+          "enum": ["database", "project", "table", "column", "blob", "tool"]
         },
         "name": {
-          "description": "The resource's name (its human-facing handle).",
+          "description": "The object's handle: database/project name, table name (table/column), blob id-or-prefix, or MCP tool name.",
           "type": "string"
+        },
+        "database": {
+          "description": "The owning database, for the table/column kinds.",
+          "type": "string"
+        },
+        "columns": {
+          "description": "The granted column set, for the column kind.",
+          "type": "array",
+          "items": { "type": "string" }
         }
       }
     }

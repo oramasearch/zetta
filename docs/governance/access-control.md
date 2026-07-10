@@ -329,8 +329,8 @@ issued programmatically via `Node::create_token`.
 > **What's next.** The *store* above is the foundation; the **default-deny gate**
 > below (`--require-auth`, #745) consumes it, and **RBAC role management** (the
 > permission vocabulary, custom roles, user↔role assignment — #746) is the section
-> after it. Still ahead: scoped grants down to table/column/blob/MCP tool are #4;
-> row-level security is #5.
+> after it, and **fine-grained scoped grants** (table/column/blob/MCP tool — #4,
+> #747) the section after that. Still ahead: row-level security is #5.
 
 ## The default-deny gate (`--require-auth` — #745)
 
@@ -387,9 +387,9 @@ opens the gate and (as admin) satisfies the capability check.
 
 > **Scope note.** #745 centralizes enforcement + makes it mandatory; it does not
 > expand the *model*. Role management (custom roles, the permission vocabulary) is
-> #746, below; scope stays coarse (#4 adds table/column/blob grants). An admin
-> token therefore reaches every route but is still deny-by-default on rights its
-> role does not name.
+> #746, below; fine-grained object scoping (table/column/blob/MCP tool) is #747,
+> further below. An admin token therefore reaches every route but is still
+> deny-by-default on rights its role does not name.
 
 ## RBAC roles: the vocabulary, custom roles, assignment (FEAT-9 / #746)
 
@@ -469,6 +469,99 @@ operations are granted), alongside the raw `scope`/`capabilities`. `system.user_
 is the new (user, role) assignment view — the many-to-many that feeds each user's
 effective permissions. Neither exposes secret material.
 
+## Fine-grained scoped grants (FEAT-9 / #747)
+
+RBAC (#746) grouped rights into roles, but a granted right still reached **every**
+object of its kind. Scoped grants add the object tier: a permission can be bound to
+a **specific object** — a table, a **column set**, a **blob** (by id or prefix), or
+an **MCP tool** — and the enforcement layer narrows access to exactly what the
+object covers.
+
+### The object tiers
+
+`ResourceKind` (`include/zetta/governance/scope.hpp`) grows from the two coarse
+tiers (`database` / `project`) to include `table` / `column` / `blob` / `tool`. A
+`Resource` gains two optional fields the fine tiers use — `database` (the owning db
+of a table/column) and `columns` (a column set) — so a coarse resource still
+serializes exactly as before (backward compatible on disk + over the CRDT):
+
+```
+kind      name                database   columns
+database  db name             —          —
+table     table name          owning db  —
+column    table name          owning db  the column set
+blob      blob id / prefix    —          —
+tool      MCP tool name       —          —
+```
+
+`object_covers(granted, target)` is the deny-by-default covering decision: a
+**database** grant covers every table/column in it; a **table** grant covers the
+whole table; a **column-set** grant covers the table for reachability and exactly
+its columns; a **blob** grant is a **prefix** (covers every id that starts with it);
+a **tool** grant is exact.
+
+### The grant model
+
+A role carries flat `capabilities` (the coarse, **unscoped** rights it grants on
+every object — what the built-ins use) **plus** a `scoped_grants` list — each a
+`{operation, object}` pair (`include/zetta/governance/grant.hpp`). The two compose:
+
+- a **flat** right (`GRANT sql:read TO ROLE r`) reaches every object — unchanged;
+- a **scoped** right (`GRANT sql:read ON db.t(a,b) TO ROLE r`) reaches only the
+  object it covers.
+
+A user's effective scoped grants are the **union across its roles**. `blob:read`
+(`data:blob_read`) is added to the vocabulary as the object-scopable large-object
+read right.
+
+### The `ON` grammar
+
+`GRANT`/`REVOKE` take an optional `ON <object>` clause; without it, the grant is
+role-wide (flat), exactly as #746:
+
+```sql
+GRANT sql:read  ON sales.customers            TO ROLE reader;   -- a whole table
+GRANT sql:read  ON sales.customers(id, email) TO ROLE reader;   -- a column set
+GRANT sql:read  ON sales.*                    TO ROLE reader;   -- a whole database
+GRANT sql:write ON sales.customers(status)    TO ROLE editor;   -- writable columns
+GRANT mcp:call  ON TOOL search                TO ROLE reader;   -- one MCP tool
+GRANT blob:read ON BLOB 2026/                 TO ROLE archivist;-- a blob prefix
+REVOKE sql:read ON sales.customers(email)     FROM ROLE reader;
+```
+
+`ON DATABASE <db>` and `ON <db>.*` are equivalent; `TABLE` before `db.table` is
+optional. The object is dialect-neutral in the AST (`GrantObject`) and translated to
+a `governance::Resource` in the executor. Programmatically:
+`Node::grant_scoped_permissions` / `revoke_scoped_permissions`.
+
+### Enforcement (deny-by-default, admin/unrestricted bypasses)
+
+Every check bypasses object scoping for three identities: the trusted
+unauthenticated-local session (empty acting key), a legacy AccessKey (it carries
+only coarse scope/caps), and any user holding the operation as a **flat** right (so
+**admin — flat everything — reaches every object**). Only a user whose right is
+*exclusively* object-scoped is narrowed.
+
+- **SQL executor** (`src/core/query/executor.cpp`, the one choke point every
+  statement flows through): `Node::column_scope(identity, op, db, table)` returns the
+  identity's column access for a table. A `SELECT` on a table with **no** covering
+  grant is denied; columns the caller lacks `sql:read` on are **masked** to null in
+  the output (both `SELECT *` and a projected list), and a `WHERE`/`GROUP BY` over a
+  masked column is refused (no inference). An `INSERT` to a table or column with no
+  `sql:write` grant is **rejected**.
+- **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability
+  surface is `mcp:call`, now scopable per tool. `tools/call` (and the REST
+  `/v1/<capability>`, the same `Registry::call` choke point) checks
+  `Node::may_call_tool` — a deny is a clean `unauthorized` with no side effect. The
+  MCP `tools/list` (`src/core/api/http_server.cpp`) is **filtered** to the tools the
+  caller may invoke.
+- **Blobs** (`src/core/api/serving.cpp`, `serve_blob`): `Node::authorize_blob` gates
+  a large-object body read on `blob:read` covering the id (a flat right or a prefix
+  grant).
+
+`system.roles` gains a **`scoped_grants`** column rendering each grant as
+`<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
+
 ## Pointers
 
 - `include/zetta/governance/user.hpp` — `zetta::governance::User` + `UserStatus` (an authenticatable identity; #744).
@@ -477,6 +570,10 @@ effective permissions. Neither exposes secret material.
 - `include/zetta/node.hpp` — role management (#746): `Node::create_role` / `grant_permissions` / `revoke_permissions` / `drop_role` / `ensure_builtin_roles` (idempotent reconcile) / `assign_role` / `unassign_role`.
 - `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the SQL grammar (`CREATE/DROP ROLE`, `GRANT/REVOKE … TO/FROM ROLE`, `GRANT/REVOKE ROLE … TO/FROM <user>`) + its `roles:manage` gate and the `system.roles` / `system.user_roles` views (#746).
 - `tests/governance/test_roles.cpp` — the RBAC coverage (#746): the vocabulary mapping, built-ins seeded + reconciled, a custom subset grants exactly those, assignment/unassignment changes reach, `roles:manage` required, effective = union across roles, the read views.
+- `include/zetta/governance/grant.hpp` — scoped grants (#747): `ScopedGrant` (`{operation, object}`), `object_covers`, `column_access_for`, `object_permitted`, and `ColumnAccess`.
+- `include/zetta/node.hpp` — object decisions (#747): `Node::authorize_object` / `column_scope` / `may_call_tool` / `authorize_blob`, and `grant_scoped_permissions` / `revoke_scoped_permissions`.
+- `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
+- `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).

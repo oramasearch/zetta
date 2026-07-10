@@ -17,6 +17,7 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/grant.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
@@ -592,6 +593,52 @@ public:
     zetta::governance::AccessDecision authorize_user(
         const std::string& user_id,
         const zetta::governance::Operation& operation) const;
+
+    // ----- Object-scoped authorization (fine-grained grants, #747) -----------
+    // The object tier layered over roles (#746): the acting identity's grants
+    // decide access to a SPECIFIC object (table / column / blob / MCP tool), not
+    // just to a resource kind. Deny-by-default. Three identities BYPASS object
+    // scoping: an empty acting id (the trusted unauthenticated-local session), a
+    // legacy AccessKey (`acting_is_user` false, non-empty — it carries only coarse
+    // scope/caps), and any user that holds the operation as a FLAT, unscoped right
+    // (admin holds every one). Only a user whose right is exclusively object-scoped
+    // is narrowed.
+
+    // Whether the identity may perform `operation` on `object` — the general
+    // single-object decision (blob / MCP tool / any Resource).
+    bool authorize_object(const std::string& acting_id, bool acting_is_user,
+                          const zetta::governance::Operation& operation,
+                          const zetta::governance::Resource& object) const;
+
+    // The column-level access the identity has to `database.table` under
+    // `operation` ({data,read} / {data,write}) — drives the executor's table
+    // denial + column masking (SELECT) / write rejection (INSERT).
+    zetta::governance::ColumnAccess column_scope(
+        const std::string& acting_id, bool acting_is_user,
+        const zetta::governance::Operation& operation,
+        const std::string& database, const std::string& table) const;
+
+    // Whether the identity may invoke the MCP/REST tool `tool_name` — the per-tool
+    // `mcp:call` scope. Drives tools/call denial + tools/list filtering (#747).
+    bool may_call_tool(const std::string& acting_id, bool acting_is_user,
+                       const std::string& tool_name) const;
+
+    // Whether the identity may read the blob `blob_id` — `blob:read` scoped by
+    // id/prefix. Drives the blob serve path (#747).
+    bool authorize_blob(const std::string& acting_id, bool acting_is_user,
+                        const std::string& blob_id) const;
+
+    // Add / remove OBJECT-SCOPED grants on a role (#747): each named permission's
+    // operation(s) bound to `object`, idempotently (grant is a no-op for a grant
+    // already present, revoke for one absent). Unknown permission names are
+    // ignored (validate at the grammar boundary with governance::is_permission).
+    // false on an unknown role name. Rewrites role.json + captures into the CRDT.
+    bool grant_scoped_permissions(const std::string& role_name,
+                                  const std::vector<std::string>& permissions,
+                                  const zetta::governance::Resource& object);
+    bool revoke_scoped_permissions(const std::string& role_name,
+                                   const std::vector<std::string>& permissions,
+                                   const zetta::governance::Resource& object);
 
     // ----- Users / roles / tokens: the credential store (FEAT-9 / #744) -------
     // The foundation the rest of the identity model builds on. A User is an

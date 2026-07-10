@@ -102,19 +102,28 @@ const nlohmann::json& access_key_schema() {
       }
     },
     "resource": {
-      "description": "A single node-owned resource a grant names. V1 scopes to coarse, top-level resources (databases, projects); finer tiers extend the kind enum.",
+      "description": "A single node-owned object a grant names. The coarse tiers are databases/projects; the fine-grained object tiers (#747) are table/column/blob/tool, which add the optional `database` (table/column) and `columns` (column) fields.",
       "type": "object",
       "required": ["kind", "name"],
       "additionalProperties": false,
       "properties": {
         "kind": {
-          "description": "The kind of resource.",
+          "description": "The kind of object.",
           "type": "string",
-          "enum": ["database", "project"]
+          "enum": ["database", "project", "table", "column", "blob", "tool"]
         },
         "name": {
-          "description": "The resource's name (its human-facing handle).",
+          "description": "The object's handle: database/project name, table name (table/column), blob id-or-prefix, or MCP tool name.",
           "type": "string"
+        },
+        "database": {
+          "description": "The owning database, for the table/column kinds.",
+          "type": "string"
+        },
+        "columns": {
+          "description": "The granted column set, for the column kind.",
+          "type": "array",
+          "items": { "type": "string" }
         }
       }
     }

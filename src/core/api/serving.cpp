@@ -6,6 +6,8 @@
 
 #include <nlohmann/json-schema.hpp>
 
+#include "../base64.hpp"  // zetta::detail::base64_encode_bytes (src/core/base64.hpp)
+#include "zetta/data/database.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/index/index.hpp"
@@ -489,6 +491,55 @@ ApiResult serve_search(Node& node, const ServeRequest& request) {
         "result_shape", nlohmann::json{{"hits", result.hits.size()},
                                        {"nodes", result.nodes.size()}});
     return serve.finish(ApiResult::success(search_result_to_json(result)));
+}
+
+ApiResult serve_blob(Node& node, const ServeRequest& request) {
+    ServeSpan serve(request, "serve:blob");
+
+    // Object-scoped access (#747). A token-resolved user must hold `blob:read`
+    // covering this blob id — either a flat blob:read (admin/global) or a prefix
+    // grant whose prefix the id starts with (authorize_blob folds both). A legacy
+    // AccessKey checks the coarse blob:read right; the empty key is the audited
+    // "unauthenticated local" session. Deny-by-default.
+    bool allowed = true;
+    std::string reason;
+    if (request.acting_is_user) {
+        allowed = node.authorize_blob(request.acting_key, /*acting_is_user=*/true,
+                                      request.target);
+        if (!allowed) {
+            reason = "no blob:read grant for blob '" + request.target + "'";
+        }
+    } else if (!request.acting_key.empty()) {
+        const zetta::governance::Operation blob_op{
+            zetta::governance::CapabilityDomain::Data, "blob_read"};
+        auto decision = node.authorize(request.acting_key, blob_op);
+        allowed = static_cast<bool>(decision);
+        if (!allowed) reason = decision.reason;
+    }
+    if (!allowed) {
+        audit_serve(node, "blob", request.target, request.acting_key,
+                    /*allowed=*/false, reason);
+        return serve.finish(ApiResult::failure("unauthorized", reason));
+    }
+    audit_serve(node, "blob", request.target, request.acting_key,
+                /*allowed=*/true, "served blob request");
+
+    // Resolve the object across the node's databases (blob ids are globally
+    // unique) and read its body.
+    for (const std::string& db_name : node.database_names()) {
+        auto db = node.find_database(db_name);
+        if (!db) continue;
+        std::optional<std::string> body = db->large_objects().read(request.target);
+        if (!body) continue;
+        serve.span.set_attribute("blob_size", body->size());
+        return serve.finish(ApiResult::success(nlohmann::json{
+            {"id", request.target},
+            {"size", body->size()},
+            {"body_base64", zetta::detail::base64_encode_bytes(*body)}}));
+    }
+    return serve.finish(ApiResult::failure(
+        "not_found",
+        "no blob '" + request.target + "' with a local body on this node"));
 }
 
 }  // namespace zetta::api
