@@ -48,7 +48,10 @@ cost-cap burst is deliberately out of scope here; those drive the *same*
 ## "Join membership and persist as members"
 
 `add_nodes` does **not** maintain a separate roster — it doesn't need to. A node a
-provisioner brings up boots with a `ZETTA_SEED_PEER` so it **dials the cluster and
+provisioner brings up boots with a `ZETTA_SEED_PEER` (and, on a secure cluster, a
+`ZETTA_CLUSTER_TOKEN` — the join token, so it clears the inter-node mTLS handshake
+rather than being stuck on `--cluster-plaintext`; see
+[cluster security](../cluster/security.md) and #670) so it **dials the cluster and
 the symmetric handshake records it on both sides** (`Cluster::peers()` /
 `Cluster::nodes()`). Its UUID is its [CRDT actor id](../cluster/replication.md), so it owns a
 replicated `node:<id>` key in `replication.automerge` — which means the new member

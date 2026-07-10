@@ -205,11 +205,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
   cluster link, per-node Ed25519 identities, token-gated join (the token
   derives the cluster CA), secure by default with `--cluster-plaintext` the
-  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-ups
-  filed: [#669](https://github.com/oramasearch/zetta/issues/669) CSR enrollment
-  / peer-cert pinning / revocation,
-  [#670](https://github.com/oramasearch/zetta/issues/670) provisioner
-  join-token plumbing.
+  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-up
+  still open: [#669](https://github.com/oramasearch/zetta/issues/669) CSR
+  enrollment / peer-cert pinning / revocation.
+  [#670](https://github.com/oramasearch/zetta/issues/670) (provisioner
+  join-token plumbing) is **done** — burst nodes now get `ZETTA_CLUSTER_TOKEN`
+  alongside `ZETTA_SEED_PEER`, so a provisioned node joins the secure cluster
+  (PR [#742](https://github.com/oramasearch/zetta/pull/742)).
 - **Churn-run consolidation shipped
   ([#637](https://github.com/oramasearch/zetta/issues/637), PR
   [#661](https://github.com/oramasearch/zetta/pull/661))**: ONE public churn

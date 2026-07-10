@@ -35,6 +35,7 @@ struct OciConfig {
     std::string image_id;                     // image OCID; empty → the control plane / config default
     bool spot = false;                        // burst preemptible (cheaper, evictable) capacity
     std::string seed_peer;                    // cluster seed host:port injected into node cloud-init to auto-join
+    std::string join_token;                   // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst node joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
 
     bool operator==(const OciConfig&) const = default;
 

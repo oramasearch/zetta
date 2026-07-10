@@ -33,6 +33,7 @@ struct BareMetalConfig {
     std::string network;                   // container network (e.g. "host"); empty → runtime default
     bool gpus = false;                     // give workers the host GPUs (`--gpus all`)
     std::string seed_peer;                 // cluster seed host:port injected as ZETTA_SEED_PEER to auto-join
+    std::string join_token;                // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst worker joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
 
     bool operator==(const BareMetalConfig&) const = default;
 

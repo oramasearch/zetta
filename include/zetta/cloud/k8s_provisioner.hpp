@@ -34,6 +34,7 @@ struct K8sConfig {
     std::string service_account;                   // the pods' ServiceAccount; empty → the namespace default
     bool spot = false;                             // schedule onto spot/preemptible nodes (a nodeSelector)
     std::string seed_peer;                         // cluster seed host:port injected as ZETTA_SEED_PEER to auto-join
+    std::string join_token;                        // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst pod joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
 
     bool operator==(const K8sConfig&) const = default;
 

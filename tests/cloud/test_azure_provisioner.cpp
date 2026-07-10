@@ -102,6 +102,19 @@ bool has_token(const std::vector<std::string>& argv, const std::string& token) {
     return std::find(argv.begin(), argv.end(), token) != argv.end();
 }
 
+// Find an argv whose value at `name` contains `needle` (custom-data now carries
+// the seed peer AND the join token as KEY=VALUE lines in one blob — #670).
+bool flag_value_contains(const std::vector<std::string>& argv,
+                         const std::string& name, const std::string& needle) {
+    for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+        if (argv[index] == name &&
+            argv[index + 1].find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // The `az vmss create` call among captured calls (bring_up now also runs an
 // `az group create` first — the two share the "create" token, so match on "vmss").
 const std::vector<std::string>& vmss_create_call(
@@ -433,6 +446,10 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     config.spot = true;
     config.max_price = 1.25;
     config.seed_peer = "10.0.0.1:7777";
+    // On a secure cluster the join token rides alongside the seed peer (#670),
+    // both in the one cloud-init custom-data blob.
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
@@ -440,7 +457,10 @@ TEST(AzCliControlPlane, SpotConfigAddsSpotFlags) {
     EXPECT_TRUE(has_flag(create, "--priority", "Spot"));
     EXPECT_TRUE(has_token(create, "--eviction-policy"));
     EXPECT_TRUE(has_token(create, "--max-price"));
-    EXPECT_TRUE(has_flag(create, "--custom-data", "ZETTA_SEED_PEER=10.0.0.1:7777"));
+    EXPECT_TRUE(flag_value_contains(create, "--custom-data", "ZETTA_SEED_PEER=10.0.0.1:7777"));
+    EXPECT_TRUE(flag_value_contains(
+        create, "--custom-data",
+        "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
 }
 
 // A successful create is satisfied: the scale set placed the requested VMs, which

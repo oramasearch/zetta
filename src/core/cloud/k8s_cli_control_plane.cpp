@@ -74,10 +74,21 @@ ProvisionResult K8sCliControlPlane::bring_up(const K8sConfig& config,
 
     // 2) Apply the per-pod shape onto the Deployment's template. Each `kubectl set`
     //    / `patch` triggers a rollout, so the new pods carry it.
-    if (!config.seed_peer.empty()) {
-        // Hand each pod the cluster seed address as an env var so it auto-joins.
-        std::vector<std::string> env{"kubectl", "set", "env", deployment_ref(config),
-                                     "ZETTA_SEED_PEER=" + config.seed_peer};
+    if (!config.seed_peer.empty() || !config.join_token.empty()) {
+        // Hand each pod the cluster seed address as an env var so it auto-joins —
+        // and, on a secure cluster, the join token (#670) — so the pod comes up
+        // with the equivalent of `zetta --peer <seed> --join-token <token>`. (The
+        // join token is a secret; a production deployment would source it from a
+        // Kubernetes Secret via `--from`, not a literal — it rides the same
+        // set-env seam here to illustrate the plumbing.)
+        std::vector<std::string> env{"kubectl", "set", "env",
+                                     deployment_ref(config)};
+        if (!config.seed_peer.empty()) {
+            env.push_back("ZETTA_SEED_PEER=" + config.seed_peer);
+        }
+        if (!config.join_token.empty()) {
+            env.push_back("ZETTA_CLUSTER_TOKEN=" + config.join_token);
+        }
         append_scope(env, config);
         runner_(env);
     }

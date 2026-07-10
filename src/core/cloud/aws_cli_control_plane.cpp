@@ -96,13 +96,25 @@ ProvisionResult AwsCliControlPlane::bring_up(const AwsConfig& config,
     if (config.spot || !config.instance_type.empty()) {
         flag(create, "--mixed-instances-policy", mixed_instances_policy(config));
     }
-    // Hand each node the cluster seed address so it auto-joins at boot. (A real
-    // deployment bakes this into the launch template's user-data; the reference
-    // carries it as a propagating tag the bootstrap reads.)
+    // Hand each node the cluster seed address — and, on a secure cluster, the
+    // join token (#670) — so it auto-joins at boot with the equivalent of
+    // `zetta --peer <seed> --join-token <token>`. (A real deployment bakes these
+    // into the launch template's user-data / a secret; the reference carries them
+    // as propagating tags the bootstrap reads. The join token is a secret, so a
+    // production control plane must not leave it in a plaintext, describe-able
+    // tag — it rides here only to illustrate the same delivery seam as the seed.)
+    std::string tags;
     if (!config.seed_peer.empty()) {
-        flag(create, "--tags",
-             "Key=ZETTA_SEED_PEER,Value=" + config.seed_peer +
-                 ",PropagateAtLaunch=true");
+        tags = "Key=ZETTA_SEED_PEER,Value=" + config.seed_peer +
+               ",PropagateAtLaunch=true";
+    }
+    if (!config.join_token.empty()) {
+        if (!tags.empty()) tags += ' ';
+        tags += "Key=ZETTA_CLUSTER_TOKEN,Value=" + config.join_token +
+                ",PropagateAtLaunch=true";
+    }
+    if (!tags.empty()) {
+        flag(create, "--tags", tags);
     }
     append_global(create, config);
 

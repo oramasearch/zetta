@@ -115,6 +115,19 @@ bool has_token(const std::vector<std::string>& argv, const std::string& token) {
     return std::find(argv.begin(), argv.end(), token) != argv.end();
 }
 
+// Find an argv whose value at `name` contains `needle` (the startup-script
+// metadata now carries the seed peer AND the join token as KEY=VALUE lines — #670).
+bool flag_value_contains(const std::vector<std::string>& argv,
+                         const std::string& name, const std::string& needle) {
+    for (std::size_t index = 0; index + 1 < argv.size(); ++index) {
+        if (argv[index] == name &&
+            argv[index + 1].find(needle) != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // The first recorded call containing all of `tokens` (e.g. {"managed","create"} to
 // pick the MIG create out of the several `gcloud compute` calls a bring_up makes).
 const std::vector<std::string>* call_with(
@@ -462,6 +475,10 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     GcpConfig config = sample_config();
     config.spot = true;
     config.seed_peer = "10.0.0.1:7777";
+    // On a secure cluster the join token rides alongside the seed peer (#670),
+    // both in the one startup-script metadata value.
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
@@ -469,7 +486,10 @@ TEST(GcpCliControlPlane, SpotConfigAddsSpotAndSeedFlagsToTheTemplate) {
     ASSERT_NE(tmpl, nullptr);
     EXPECT_TRUE(has_flag(*tmpl, "--provisioning-model", "SPOT"));
     EXPECT_TRUE(has_token(*tmpl, "--instance-termination-action"));
-    EXPECT_TRUE(has_flag(*tmpl, "--metadata", "startup-script=ZETTA_SEED_PEER=10.0.0.1:7777"));
+    EXPECT_TRUE(flag_value_contains(*tmpl, "--metadata", "ZETTA_SEED_PEER=10.0.0.1:7777"));
+    EXPECT_TRUE(flag_value_contains(
+        *tmpl, "--metadata",
+        "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
 }
 
 TEST(GcpCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {

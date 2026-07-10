@@ -385,6 +385,10 @@ TEST(AwsCliControlPlane, SpotConfigAddsMixedInstancesPolicyAndSeedTag) {
     config.max_price = 1.25;
     config.instance_type = "g5.xlarge";
     config.seed_peer = "10.0.0.1:7777";
+    // On a secure cluster the join token rides alongside the seed peer (#670) so a
+    // burst node can join the mTLS cluster, not just a plaintext one.
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     config.profile = "burst-dev";
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
@@ -396,6 +400,10 @@ TEST(AwsCliControlPlane, SpotConfigAddsMixedInstancesPolicyAndSeedTag) {
     EXPECT_TRUE(flag_value_contains(create, "--mixed-instances-policy", "g5.xlarge"));
     EXPECT_TRUE(flag_value_contains(create, "--tags", "Key=ZETTA_SEED_PEER"));
     EXPECT_TRUE(flag_value_contains(create, "--tags", "Value=10.0.0.1:7777"));
+    EXPECT_TRUE(flag_value_contains(create, "--tags", "Key=ZETTA_CLUSTER_TOKEN"));
+    EXPECT_TRUE(flag_value_contains(
+        create, "--tags",
+        "Value=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
     EXPECT_TRUE(has_flag(create, "--profile", "burst-dev"));
 }
 

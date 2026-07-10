@@ -469,8 +469,17 @@ int main(int argc, char** argv) {
     const std::string default_seed_peer = cluster.listen_addresses().empty()
                                               ? std::string{}
                                               : cluster.listen_addresses().front();
+    // On a secure (mTLS) cluster, hand each burst node this cluster's join token
+    // too — so a provisioned node boots with `--peer <seed> --join-token <token>`
+    // and can join a non-plaintext cluster instead of being stuck on
+    // --cluster-plaintext (#670). Empty under --cluster-plaintext, so nothing is
+    // injected. The token is a secret: it rides the same bootstrap env seam as the
+    // seed peer (ZETTA_CLUSTER_TOKEN alongside ZETTA_SEED_PEER) and is never stored
+    // in the detected provisioner config / system.provisioners.
+    const std::string default_cluster_token = opts.cluster.security.join_token;
     for (const zetta::cloud::ProvisionerFleet::Wiring& wiring :
-         provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer)) {
+         provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer,
+                                default_cluster_token)) {
         if (wiring.wired) {
             std::printf("zetta: cloud provisioner wired for %s (local CLI)\n",
                         wiring.id.c_str());
