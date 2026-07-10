@@ -35,6 +35,7 @@
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/role.hpp"
 #include "zetta/governance/token.hpp"
@@ -720,6 +721,38 @@ public:
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens() const { return tokens_; }
     std::size_t token_count() const { return tokens_.size(); }
 
+    // ----- Row-level security policies (RLS, #748, epic #743 item 5) ----------
+    // A Policy is a Postgres-style row-security rule over one table (a USING read
+    // filter + a WITH CHECK write filter, evaluated by the SQL WHERE engine
+    // against the acting identity). Replicated through the same capture/reconcile
+    // path as roles (`policy:<uuid>`). The executor enforces them; see
+    // docs/governance/access-control.md.
+
+    // Create a policy (unique name). The value's `created` is stamped here. Empty
+    // handle on an empty name or a name clash. Captured into the CRDT + persisted.
+    std::shared_ptr<zetta::governance::Policy> create_policy(
+        zetta::governance::PolicyValue value);
+    // Drop a policy by name. false on an unknown name. Drops the CRDT `policy:` key
+    // + its on-disk folder.
+    bool drop_policy(const std::string& name);
+    std::shared_ptr<zetta::governance::Policy> find_policy(const std::string& name) const;
+    std::shared_ptr<zetta::governance::Policy> find_policy_by_id(const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::governance::Policy>> policies() const {
+        return policies_;
+    }
+    std::size_t policy_count() const { return policies_.size(); }
+
+    // Whether the acting identity BYPASSES row-level security (sees/writes every
+    // row regardless of policy). Three identities bypass, mirroring the object-
+    // scoping bypass (#747): an empty acting id (the trusted unauthenticated-local
+    // session), a legacy AccessKey (`acting_is_user` false, non-empty), and any
+    // user that is an admin (holds the cluster:admin permission — the built-in
+    // admin does). Every other user is subject to RLS. Deny-by-default: only these
+    // widen; a non-bypass user with no applicable policy on a protected table sees
+    // no rows.
+    bool bypasses_row_security(const std::string& acting_id,
+                               bool acting_is_user) const;
+
     // Resolve a bearer secret to the user it authenticates as, or an empty handle
     // when no live token matches (deny-by-default). Hashes + constant-time
     // compares against every non-revoked, unexpired token, and requires the
@@ -837,6 +870,7 @@ private:
     void load_roles();
     void load_tokens();
     void load_user_roles();
+    void load_policies();
 
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
@@ -876,6 +910,7 @@ private:
     void reconcile_roles(const nlohmann::json& snapshot);
     void reconcile_tokens(const nlohmann::json& snapshot);
     void reconcile_user_roles(const nlohmann::json& snapshot);
+    void reconcile_policies(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -922,6 +957,9 @@ private:
     std::shared_ptr<zetta::governance::UserRole> materialize_user_role(
         std::string id, std::string user_id, std::string role_id);
     bool materialize_drop_user_role(const std::string& id);
+    std::shared_ptr<zetta::governance::Policy> materialize_policy(
+        std::string id, zetta::governance::PolicyValue value);
+    bool materialize_drop_policy(const std::string& id);
     // Apply a replicated audit event (a peer's, or one rebuilt from the document)
     // by id, without capturing. Append-only — there is no drop counterpart.
     std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
@@ -977,6 +1015,7 @@ private:
     std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
     std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
+    std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
     // Durable, local (non-replicated) checkpoint store for eviction tolerance
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.
