@@ -121,8 +121,13 @@ struct DeleteStmt {
     std::optional<WhereClause> where;
 };
 
+// TRUNCATE [TABLE] <table> — remove every row (each tombstoned, so it replicates).
+struct TruncateStmt {
+    TableRef table;
+};
+
 using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
-                               UpdateStmt, DeleteStmt, SelectStmt>;
+                               UpdateStmt, DeleteStmt, TruncateStmt, SelectStmt>;
 
 }  // namespace zetta::query

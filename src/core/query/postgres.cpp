@@ -260,9 +260,10 @@ private:
         if (accept_keyword("insert")) return parse_insert();
         if (accept_keyword("update")) return parse_update();
         if (accept_keyword("delete")) return parse_delete();
+        if (accept_keyword("truncate")) return parse_truncate();
         if (accept_keyword("select")) return parse_select();
         throw ParseError{"unsupported statement, expected CREATE/DROP/INSERT/"
-                         "UPDATE/DELETE/SELECT, got '" + peek().text + "'"};
+                         "UPDATE/DELETE/TRUNCATE/SELECT, got '" + peek().text + "'"};
     }
 
     // WHERE <column> <op> <value> — the single-predicate clause shared by SELECT,
@@ -295,6 +296,13 @@ private:
         DeleteStmt stmt;
         stmt.table = parse_table_ref();
         if (accept_keyword("where")) stmt.where = parse_where_clause();
+        return stmt;
+    }
+
+    Statement parse_truncate() {
+        accept_keyword("table");  // optional TABLE keyword (TRUNCATE t == TRUNCATE TABLE t)
+        TruncateStmt stmt;
+        stmt.table = parse_table_ref();
         return stmt;
     }
 

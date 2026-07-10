@@ -1475,6 +1475,29 @@ QueryResult Executor::execute(const Statement& stmt,
                 for (const std::string& id : ids) table->delete_row(id);
                 return {.message = "DELETE " + std::to_string(ids.size())};
             },
+            [&](const TruncateStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto db = resolve_db(s.table);
+                if (!db) {
+                    return error("database \"" + db_name(s.table) +
+                                 "\" does not exist");
+                }
+                auto table = db->find_table(s.table.table);
+                if (!table) {
+                    return error("table \"" + s.table.table + "\" does not exist");
+                }
+                // Remove every row — each as a tombstone, so the truncation
+                // replicates (same path as DELETE with no WHERE).
+                std::vector<std::string> ids;
+                const zetta::storage::StorageEngine& store = table->store();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    ids.push_back(store.id_at(i));
+                }
+                for (const std::string& id : ids) table->delete_row(id);
+                return {.message = "TRUNCATE TABLE"};
+            },
             [&](const SelectStmt& s) -> QueryResult {
                 // Virtual `system` database (computed, read-only).
                 if (const std::string sys = system_table_of(s.table);
