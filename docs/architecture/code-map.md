@@ -198,7 +198,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     scope.hpp               zetta::governance::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
     capability.hpp          zetta::governance::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
     user.hpp                zetta::governance::User/UserStatus — an authenticatable identity (a Principal{User} in the new model); replicated user:<uuid> (#744)
-    role.hpp                zetta::governance::Role/RolePermissions/builtin_role_permissions — a named permission set (scope + rights); built-in admin/writer/reader; role:<uuid>
+    role.hpp                zetta::governance::Role/RolePermissions/builtin_role_permissions — a named permission set (scope + rights); built-in admin/writer/reader + custom (#746); role:<uuid>
+    permission.hpp          zetta::governance::permission_vocabulary/permission_operations/capabilities_for_permissions/permissions_of/builtin_role_permission_names — the RBAC permission vocabulary: sql:read/write/ddl · mcp:call · serving:read · users/roles/tokens:manage · cluster:admin, each mapped onto Capability{domain,action} (#746)
     token.hpp               zetta::governance::Token/TokenValue/TokenType — a bearer credential hashed at rest (secret shown once); token:<uuid>
     user_role.hpp           zetta::governance::UserRole — a user↔role assignment; user_role:<uuid>
     token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/constant_time_equal — the token crypto (OpenSSL)
@@ -257,7 +258,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     replicated_blob_store.cpp  large-object body transfer (CRDT metadata + disk)
   query/
     postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST), incl. CREATE USER / CREATE TOKEN (#744)
-    statement_builders.cpp  zetta::query::make_create_token_statement — assembles the CreateTokenStmt Statement OUT of the parser TU (a pinned-toolchain EH-miscompile workaround; see the file header)
+    statement_builders.cpp  zetta::query::make_create_token_statement + the role-management make_*_statement builders (#746) — assemble Statement variants OUT of the parser TU (a pinned-toolchain EH-miscompile workaround; the parser TU is also built at -O1, see CMakeLists)
     executor.cpp            zetta::query::Executor — statement execution against the Node (incl. CREATE USER / CREATE TOKEN returning the plaintext once) + the read-only system.* observability tables (tables / nodes / deployments / runs / models / indexes / jobs / principals / keys / users / roles / tokens / audit / activity / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / spans / traces / crashes / cloud_providers / cloud_status / provisioners); kSystemTableCatalog is the one list they all derive from (system.tables + system_table_names() + the unknown-table error, #684)
     service.cpp             zetta::query::QueryService — parse-with-Postgres + execute-each-statement facade (the Outcome the REPL/GUI render)
   parquet/
@@ -373,7 +374,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     scope.cpp               zetta::governance::Scope — permits() + JSON boundary validation
     capability.cpp          zetta::governance::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
     user.cpp                zetta::governance::User — persist user.json + status/schema (#744)
-    role.cpp                zetta::governance::Role — persist role.json + built-in permission sets + schema + JSON boundary validation
+    role.cpp                zetta::governance::Role — persist role.json + built-in permission sets (from the vocabulary) + schema + JSON boundary validation
+    permission.cpp          the RBAC permission vocabulary table + the atoms→Capability{domain,action} mapping + expand/reverse + built-in role permission-name sets (#746)
     token.cpp               zetta::governance::Token — persist token.json + validates()/expired() + TokenValue JSON boundary validation
     user_role.cpp           zetta::governance::UserRole — persist user_role.json + schema
     token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + CRYPTO_memcmp constant-time compare (#744)

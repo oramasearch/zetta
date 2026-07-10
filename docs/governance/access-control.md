@@ -255,8 +255,8 @@ User   (user:<uuid>)         an authenticatable identity — a Principal of kind
 
 Role   (role:<uuid>)         a named permission set: a Scope (resources) + a
   name, scope, capabilities,   CapabilitySet (rights) — the SAME two axes an
-  created                      AccessKey carries. Built-in admin/writer/reader
-                               ship now; custom/editable roles are #746.
+  created                      AccessKey carries. Built-in admin/writer/reader +
+                               custom/editable roles (#746, below).
 
 UserRole (user_role:<uuid>)  a user↔role assignment. A user's effective
   user, role                   permissions are the union of its roles.
@@ -283,15 +283,19 @@ self-contained `zetta::util::sha256_hex` is deliberately **not** used for secret
 ### Built-in roles
 
 `builtin_role_permissions(name)` seeds three roles, all unrestricted in scope
-(they reach every resource) and differing only in rights:
+(they reach every resource) and differing only in rights. They are defined in
+terms of the **permission vocabulary** (below), not raw capabilities:
 
-| role   | rights |
-|--------|--------|
-| admin  | api:query, api:deploy, api:manage_users, data:read, data:write, orchestration:start_run |
-| writer | api:query, data:read, data:write, orchestration:start_run |
-| reader | api:query, data:read |
+| role   | permissions |
+|--------|-------------|
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin` |
+| writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
+| reader | `sql:read`, `serving:read`, `mcp:call` |
 
-Deny-by-default still holds: a right a role doesn't list is denied.
+Deny-by-default still holds: a right a role doesn't list is denied. Bootstrap
+**reconciles** these on every start (`Node::ensure_builtin_roles`, idempotent):
+they always exist and always mean exactly the sets above — a drifted built-in is
+repaired in place.
 
 ### Bootstrap owner (closes #733)
 
@@ -323,9 +327,10 @@ issued programmatically via `Node::create_token`.
 > replicates in full; the plaintext never enters the document.
 
 > **What's next.** The *store* above is the foundation; the **default-deny gate**
-> below (`--require-auth`, #745) consumes it. Still ahead: full role management is
-> #746; scoped grants down to table/column/blob/MCP tool are #4; row-level
-> security is #5.
+> below (`--require-auth`, #745) consumes it, and **RBAC role management** (the
+> permission vocabulary, custom roles, user↔role assignment — #746) is the section
+> after it. Still ahead: scoped grants down to table/column/blob/MCP tool are #4;
+> row-level security is #5.
 
 ## The default-deny gate (`--require-auth` — #745)
 
@@ -381,15 +386,97 @@ Bootstrap seeds `owner` with the `admin` role, so the `--admin-token` secret bot
 opens the gate and (as admin) satisfies the capability check.
 
 > **Scope note.** #745 centralizes enforcement + makes it mandatory; it does not
-> expand the *model*. The built-in roles are still the minimal admin/writer/reader
-> sets (#746 adds custom roles), and scope stays coarse (#4 adds table/column/blob
-> grants). An admin token therefore reaches every route but is still deny-by-default
-> on rights its role does not name.
+> expand the *model*. Role management (custom roles, the permission vocabulary) is
+> #746, below; scope stays coarse (#4 adds table/column/blob grants). An admin
+> token therefore reaches every route but is still deny-by-default on rights its
+> role does not name.
+
+## RBAC roles: the vocabulary, custom roles, assignment (FEAT-9 / #746)
+
+RBAC turns roles into a first-class, self-service surface on top of the store
+(#744) and the gate (#745): a referenceable **permission vocabulary**, **custom
+roles** created + edited via SQL, and **user↔role assignment** — all gated on the
+`roles:manage` permission, all replicated like every other entity.
+
+### The permission vocabulary
+
+A **permission** is a stable product-level atom — a `<domain>:<action>` name —
+that maps onto one or more concrete `Capability{domain,action}` the enforcement
+layer decides against. It is the layer *over* the three coarse `CapabilityDomain`
+values (`api`/`data`/`orchestration`): the vocabulary names are what a `GRANT`
+statement accepts and what `system.roles` renders, while the operations they
+expand to are what `Node::authorize_user` / `Node::authorize` check. The canonical
+list lives in one place — `include/zetta/governance/permission.hpp`
+(`permission_vocabulary()`) — so the grammar, the built-in seed, and the read view
+can never disagree:
+
+| permission | maps onto Capability{domain, action} | what it gates |
+|------------|--------------------------------------|---------------|
+| `sql:read`      | `data:read`                    | read rows via SQL / the query engine |
+| `sql:write`     | `data:write`                   | insert/update/delete rows via SQL |
+| `sql:ddl`       | `data:ddl`                     | create/drop databases + tables |
+| `mcp:call`      | `api:query`                    | invoke the MCP/REST capability surface (the API-call right) |
+| `serving:read`  | `data:predict`, `data:search`  | call the governed serving routes (predict + search) |
+| `users:manage`  | `api:manage_users`             | create/disable/drop users |
+| `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
+| `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
+| `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
+
+The `sql:*` and `serving:*` data rights and the `*:manage` / `cluster:admin`
+admin rights are enforced where their surface already checks them; the finer
+per-statement SQL enforcement (which `sql:read` vs `sql:write` a given statement
+needs, masking, RLS) is the scoped-grants / RLS work (#4 / #5). `mcp:call`
+(`api:query`) is what all read capabilities + the `sql` capability check today, so
+every built-in carries it.
+
+### Custom roles + the SQL grammar
+
+Custom roles are created and edited through a minimal SQL grammar, **gated on
+`roles:manage`** (checked inside the executor against the acting identity the gate
+resolved — an empty acting key is the trusted unauthenticated-local session and is
+allowed):
+
+```sql
+CREATE ROLE analyst;                                   -- empty custom role (deny-by-default)
+GRANT sql:read, serving:read TO ROLE analyst;          -- add permissions from the vocabulary
+REVOKE serving:read FROM ROLE analyst;                 -- narrow it
+DROP ROLE analyst;                                     -- remove it (+ its assignments)
+
+GRANT ROLE analyst TO dana;                            -- assign a role to a user
+REVOKE ROLE analyst FROM dana;                         -- unassign it
+```
+
+`GRANT`/`REVOKE` of a permission list validate every name against the vocabulary
+first (an unknown permission fails the whole statement). A custom role starts with
+no rights and gains exactly the permissions granted — nothing more. The same
+operations exist programmatically on `Node` (`create_role`, `grant_permissions`,
+`revoke_permissions`, `drop_role`, `assign_role`, `unassign_role`).
+
+### Effective permissions = the union across roles
+
+A user's effective reach is the **union** of its assigned roles' capability sets —
+already the contract of `Node::authorize_user` (#745): the operation is allowed as
+soon as *any* assigned role grants a matching, unexpired right, deny-by-default
+otherwise. Custom roles + assignments feed the exact same decision as the
+built-ins; assigning a role grants its permissions, unassigning revokes them, and
+dropping a role removes it from every user (its assignments go with it).
+
+### Read views
+
+`system.roles` gains a **`permissions`** column rendering each role's set back in
+the vocabulary (the reverse of the expand — a permission shows iff *all* its
+operations are granted), alongside the raw `scope`/`capabilities`. `system.user_roles`
+is the new (user, role) assignment view — the many-to-many that feeds each user's
+effective permissions. Neither exposes secret material.
 
 ## Pointers
 
 - `include/zetta/governance/user.hpp` — `zetta::governance::User` + `UserStatus` (an authenticatable identity; #744).
 - `include/zetta/governance/role.hpp` — `zetta::governance::Role` / `RolePermissions` / `builtin_role_permissions` (named permission sets).
+- `include/zetta/governance/permission.hpp` — the RBAC **permission vocabulary** (#746): `permission_vocabulary()` / `permission_operations()` / `capabilities_for_permissions()` / `permissions_of()` / `builtin_role_permission_names()` (the atoms → `Capability{domain,action}` mapping).
+- `include/zetta/node.hpp` — role management (#746): `Node::create_role` / `grant_permissions` / `revoke_permissions` / `drop_role` / `ensure_builtin_roles` (idempotent reconcile) / `assign_role` / `unassign_role`.
+- `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the SQL grammar (`CREATE/DROP ROLE`, `GRANT/REVOKE … TO/FROM ROLE`, `GRANT/REVOKE ROLE … TO/FROM <user>`) + its `roles:manage` gate and the `system.roles` / `system.user_roles` views (#746).
+- `tests/governance/test_roles.cpp` — the RBAC coverage (#746): the vocabulary mapping, built-ins seeded + reconciled, a custom subset grants exactly those, assignment/unassignment changes reach, `roles:manage` required, effective = union across roles, the read views.
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).

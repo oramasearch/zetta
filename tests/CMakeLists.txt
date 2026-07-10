@@ -76,6 +76,7 @@ add_executable(zetta-tests
   data/test_partition_rebalance.cpp
   governance/test_access_control.cpp
   governance/test_users_roles_tokens.cpp
+  governance/test_roles.cpp
   governance/test_consent.cpp
   pipeline/test_executor.cpp
   pipeline/test_run_progress.cpp

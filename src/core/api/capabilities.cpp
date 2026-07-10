@@ -144,7 +144,11 @@ const nlohmann::json& sql_output_schema() {
 }
 
 ApiResult handle_sql(const nlohmann::json& input, ApiContext& context) {
-    zetta::query::QueryService service(context.node, context.cluster);
+    // Thread the gate-resolved identity (#745) into the engine so role-management
+    // DDL is gated on roles:manage (#746). Read SQL still only needs the sql
+    // capability's required op (mcp:call); the finer gate is per-statement inside.
+    zetta::query::QueryService service(context.node, context.cluster,
+                                       context.acting_key, context.acting_is_user);
     const std::string database = input.value("database", "");
     auto outcome = service.run(input.at("statement").get<std::string>(), database);
     if (!outcome.ok()) {

@@ -451,6 +451,7 @@ add_library(zetta-core STATIC
   src/core/governance/access_key.cpp
   src/core/governance/scope.cpp
   src/core/governance/capability.cpp
+  src/core/governance/permission.cpp
   src/core/governance/audit_event.cpp
   src/core/governance/consent.cpp
   src/core/governance/token_secret.cpp
@@ -549,6 +550,20 @@ add_library(zetta-core STATIC
   src/core/headless.cpp
   src/core/signals.cpp
 )
+
+# Toolchain workaround: the pinned Homebrew Clang miscompiles the SQL parser's
+# exception unwinding at -O3 + -fexperimental-library — a thrown ParseError
+# escapes run()'s try/catch and std::terminate()s the process. It first bit the
+# two-string CREATE TOKEN branch (isolated with a [[gnu::noinline]] helper + an
+# out-of-TU statement builder; see src/core/query/statement_builders.cpp), but
+# that mitigation is fragile: growing the grammar (the role-management DDL, #746)
+# tips it over again TU-wide, aborting even pre-existing parse-error paths.
+# Building just this one TU at -O1 makes its exception tables correct; it is a
+# text parser over tiny inputs, so the optimization level is immaterial to
+# performance. The last -O flag wins, so this overrides the target's -O3. Drop
+# this (and the noinline/builder dance) when the compiler is bumped.
+set_source_files_properties(src/core/query/postgres.cpp
+  PROPERTIES COMPILE_OPTIONS "-O1")
 
 target_compile_features(zetta-core PUBLIC cxx_std_26)
 

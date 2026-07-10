@@ -83,6 +83,43 @@ struct CreateTokenStmt {
     std::string type;   // "access" | "api" (the parser defaults to "api")
 };
 
+// CREATE ROLE <name> — mint a custom, empty role (FEAT-9 / #746); permissions are
+// added with GRANT. Gated by the roles:manage permission at execution.
+struct CreateRoleStmt {
+    std::string name;
+};
+
+// DROP ROLE <name> — remove a role and its user assignments (#746). roles:manage.
+struct DropRoleStmt {
+    std::string name;
+};
+
+// GRANT <perm>[, <perm>]* TO ROLE <name> — add permissions from the vocabulary
+// (permission.hpp) to a role's rights (#746). roles:manage.
+struct GrantPermissionStmt {
+    std::string role;
+    std::vector<std::string> permissions;  // e.g. {"sql:read", "roles:manage"}
+};
+
+// REVOKE <perm>[, <perm>]* FROM ROLE <name> — remove permissions from a role (#746).
+struct RevokePermissionStmt {
+    std::string role;
+    std::vector<std::string> permissions;
+};
+
+// GRANT ROLE <role> TO <user> — assign a role to a user; the user's effective
+// permissions become the union across its roles (#746). roles:manage.
+struct GrantRoleStmt {
+    std::string role;   // the role's name
+    std::string user;   // the user's name
+};
+
+// REVOKE ROLE <role> FROM <user> — unassign a role from a user (#746). roles:manage.
+struct RevokeRoleStmt {
+    std::string role;
+    std::string user;
+};
+
 struct CreateTableStmt {
     TableRef table;
     std::vector<ColumnDef> columns;
@@ -117,17 +154,30 @@ struct SelectStmt {
 
 using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
                                CreateUserStmt, CreateTokenStmt,
+                               CreateRoleStmt, DropRoleStmt,
+                               GrantPermissionStmt, RevokePermissionStmt,
+                               GrantRoleStmt, RevokeRoleStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
                                SelectStmt>;
 
-// Wrap a CreateTokenStmt into a Statement. Defined in its OWN translation unit
-// (statement_builders.cpp), never inline: constructing this particular variant
-// alternative inside the SQL parser's TU (src/core/query/postgres.cpp)
-// miscompiles that TU's exception unwinding under the pinned Clang +
-// -fexperimental-library — a thrown ParseError then escapes every catch and
-// aborts. Building the variant here keeps the parser TU free of that construction
-// (the parser just moves the returned Statement). Remove when the toolchain bug
-// is gone.
+// Wrap a statement's variant alternative into a Statement. Each is defined in its
+// OWN translation unit (statement_builders.cpp), never inline: constructing these
+// particular variant alternatives inside the SQL parser's TU
+// (src/core/query/postgres.cpp) miscompiles that TU's exception unwinding under
+// the pinned Clang + -fexperimental-library — a thrown ParseError then escapes
+// every catch and aborts. Building the variant here keeps the parser TU free of
+// that construction (the parser just moves the returned Statement). The primary
+// mitigation is now building that one TU at -O1 (see the CMakeLists note); this
+// pattern is kept for the branches that first exposed the bug. Remove both when
+// the toolchain is bumped.
 Statement make_create_token_statement(std::string user, std::string type);
+Statement make_create_role_statement(std::string name);
+Statement make_drop_role_statement(std::string name);
+Statement make_grant_permission_statement(std::string role,
+                                          std::vector<std::string> permissions);
+Statement make_revoke_permission_statement(std::string role,
+                                           std::vector<std::string> permissions);
+Statement make_grant_role_statement(std::string role, std::string user);
+Statement make_revoke_role_statement(std::string role, std::string user);
 
 }  // namespace zetta::query

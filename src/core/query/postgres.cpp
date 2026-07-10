@@ -121,7 +121,7 @@ private:
                 i = j;
                 continue;
             }
-            static constexpr std::string_view kPunct = "(),;*.=-<>!";
+            static constexpr std::string_view kPunct = "(),;*.=-<>!:";
             if (kPunct.find(c) != std::string_view::npos) {
                 tokens_.push_back({Tok::Punct, std::string(1, c)});
                 ++i;
@@ -259,8 +259,10 @@ private:
         if (accept_keyword("drop")) return parse_drop();
         if (accept_keyword("insert")) return parse_insert();
         if (accept_keyword("select")) return parse_select();
+        if (accept_keyword("grant")) return parse_grant();
+        if (accept_keyword("revoke")) return parse_revoke();
         throw ParseError{"unsupported statement, expected CREATE/DROP/INSERT/"
-                         "SELECT, got '" + peek().text + "'"};
+                         "SELECT/GRANT/REVOKE, got '" + peek().text + "'"};
     }
 
     Statement parse_create() {
@@ -291,7 +293,17 @@ private:
         if (accept_keyword("token")) {
             return parse_create_token();
         }
-        throw ParseError{"expected DATABASE, TABLE, USER, or TOKEN after CREATE"};
+        if (accept_keyword("role")) {
+            return parse_create_role();
+        }
+        throw ParseError{
+            "expected DATABASE, TABLE, USER, TOKEN, or ROLE after CREATE"};
+    }
+
+    // CREATE ROLE <name>. Out-of-line + variant built in a separate TU — the same
+    // toolchain workaround as CREATE TOKEN (see parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_create_role() {
+        return make_create_role_statement(parse_ident());
     }
 
     // CREATE TOKEN FOR <user> [TYPE access|api]. Kept in its OWN out-of-line
@@ -329,7 +341,68 @@ private:
         if (accept_keyword("table")) {
             return DropTableStmt{parse_table_ref()};
         }
-        throw ParseError{"expected DATABASE or TABLE after DROP"};
+        if (accept_keyword("role")) {
+            return parse_drop_role();
+        }
+        throw ParseError{"expected DATABASE, TABLE, or ROLE after DROP"};
+    }
+
+    // DROP ROLE <name>. Out-of-line + variant built in a separate TU (toolchain
+    // workaround, see parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_drop_role() {
+        return make_drop_role_statement(parse_ident());
+    }
+
+    // A permission atom from the RBAC vocabulary: `<domain>:<action>` (e.g.
+    // sql:read). The ':' is a punct token, so this is ident ':' ident rejoined —
+    // the executor validates the reassembled name against permission_vocabulary().
+    std::string parse_permission() {
+        std::string permission = parse_ident();
+        expect_punct(':');
+        permission += ':';
+        permission += parse_ident();
+        return permission;
+    }
+
+    // A comma-separated permission list (at least one).
+    std::vector<std::string> parse_permission_list() {
+        std::vector<std::string> permissions;
+        do {
+            permissions.push_back(parse_permission());
+        } while (accept_punct(','));
+        return permissions;
+    }
+
+    // GRANT ROLE <role> TO <user>            — assign a role to a user
+    // GRANT <perm>[, <perm>]* TO ROLE <name> — add permissions to a role
+    // Out-of-line + variants built in a separate TU (toolchain workaround, see
+    // parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_grant() {
+        if (accept_keyword("role")) {
+            std::string role = parse_ident();
+            expect_keyword("to");
+            return make_grant_role_statement(std::move(role), parse_ident());
+        }
+        std::vector<std::string> permissions = parse_permission_list();
+        expect_keyword("to");
+        expect_keyword("role");
+        return make_grant_permission_statement(parse_ident(),
+                                               std::move(permissions));
+    }
+
+    // REVOKE ROLE <role> FROM <user>            — unassign a role from a user
+    // REVOKE <perm>[, <perm>]* FROM ROLE <name> — remove permissions from a role
+    [[gnu::noinline]] Statement parse_revoke() {
+        if (accept_keyword("role")) {
+            std::string role = parse_ident();
+            expect_keyword("from");
+            return make_revoke_role_statement(std::move(role), parse_ident());
+        }
+        std::vector<std::string> permissions = parse_permission_list();
+        expect_keyword("from");
+        expect_keyword("role");
+        return make_revoke_permission_statement(parse_ident(),
+                                                std::move(permissions));
     }
 
     Statement parse_insert() {
