@@ -613,11 +613,29 @@ public:
     std::size_t user_count() const { return users_.size(); }
 
     // Create a built-in role by name ("admin"/"writer"/"reader") — empty handle
-    // on an unknown built-in name or a name clash. Custom/editable roles are #746.
+    // on an unknown built-in name or a name clash.
     std::shared_ptr<zetta::governance::Role> create_builtin_role(const std::string& name);
-    // Ensure the built-in admin/writer/reader roles all exist (idempotent); used
-    // by bootstrap. Returns the number newly created.
+    // Ensure the built-in admin/writer/reader roles all exist (idempotent), and
+    // reconcile any that drifted from their canonical permission set back to it —
+    // used by bootstrap so the built-ins always exist and always mean the same
+    // thing. Returns the number newly created (drift repairs are not counted).
     std::size_t ensure_builtin_roles();
+    // Create a CUSTOM role (#746): unrestricted-scope but with NO capabilities —
+    // permissions are added with grant_permissions. Empty handle on an empty name
+    // or a name clash (built-in or custom). Captured into the CRDT + persisted.
+    std::shared_ptr<zetta::governance::Role> create_role(const std::string& name);
+    // Drop a role by name, and any user↔role assignments referencing it (mirrors
+    // drop_user's cleanup). false on an unknown name.
+    bool drop_role(const std::string& name);
+    // Add / remove permissions (from the vocabulary, permission.hpp) on a role's
+    // rights, idempotently — grant is a no-op for a right already present, revoke
+    // for one absent. Unknown permission names are ignored (validate at the
+    // grammar boundary with governance::is_permission). false on an unknown role
+    // name. Rewrites role.json + captures the new value into the CRDT.
+    bool grant_permissions(const std::string& role_name,
+                           const std::vector<std::string>& permissions);
+    bool revoke_permissions(const std::string& role_name,
+                            const std::vector<std::string>& permissions);
     std::shared_ptr<zetta::governance::Role> find_role(const std::string& name) const;
     std::shared_ptr<zetta::governance::Role> find_role_by_id(const std::string& id) const;
     std::vector<std::shared_ptr<zetta::governance::Role>> roles() const { return roles_; }
@@ -627,6 +645,9 @@ public:
     // already assigned). Empty handle if either id is unknown.
     std::shared_ptr<zetta::governance::UserRole> assign_role(const std::string& user_id,
                                                              const std::string& role_id);
+    // Remove a user↔role assignment (#746). false if the pair is not assigned.
+    // Drops the CRDT `user_role:` key + its on-disk folder.
+    bool unassign_role(const std::string& user_id, const std::string& role_id);
     std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles() const {
         return user_roles_;
     }

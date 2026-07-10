@@ -3,36 +3,22 @@
 #include <fstream>
 #include <utility>
 
+#include "zetta/governance/permission.hpp"
+
 namespace zetta::governance {
 namespace fs = std::filesystem;
 
 std::optional<RolePermissions> builtin_role_permissions(std::string_view name) {
+    // The built-ins are defined purely in terms of the permission vocabulary
+    // (#746): each is a named set of permission atoms, expanded to a
+    // CapabilitySet here. Built-ins reach every resource (unrestricted scope) and
+    // differ only in rights — scope granularity is a later slice (epic #743 #4).
+    const auto permission_names = builtin_role_permission_names(name);
+    if (!permission_names) return std::nullopt;
     RolePermissions permissions;
-    // Built-ins reach every resource (unrestricted scope); they differ in rights.
     permissions.scope = unrestricted_scope();
-    CapabilitySet& caps = permissions.capabilities;
-    if (name == "admin") {
-        caps.grant(CapabilityDomain::Api, "query");
-        caps.grant(CapabilityDomain::Api, "deploy");
-        caps.grant(CapabilityDomain::Api, "manage_users");
-        caps.grant(CapabilityDomain::Data, "read");
-        caps.grant(CapabilityDomain::Data, "write");
-        caps.grant(CapabilityDomain::Orchestration, "start_run");
-        return permissions;
-    }
-    if (name == "writer") {
-        caps.grant(CapabilityDomain::Api, "query");
-        caps.grant(CapabilityDomain::Data, "read");
-        caps.grant(CapabilityDomain::Data, "write");
-        caps.grant(CapabilityDomain::Orchestration, "start_run");
-        return permissions;
-    }
-    if (name == "reader") {
-        caps.grant(CapabilityDomain::Api, "query");
-        caps.grant(CapabilityDomain::Data, "read");
-        return permissions;
-    }
-    return std::nullopt;
+    permissions.capabilities = capabilities_for_permissions(*permission_names);
+    return permissions;
 }
 
 const std::vector<std::string>& builtin_role_names() {

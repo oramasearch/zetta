@@ -16,6 +16,7 @@
 #include "zetta/data/partition_rebalance.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/governance/permission.hpp"
 #include "zetta/governance/token_secret.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/util/sha256.hpp"
@@ -1856,9 +1857,126 @@ std::shared_ptr<zetta::governance::Role> Node::create_builtin_role(
 std::size_t Node::ensure_builtin_roles() {
     std::size_t created = 0;
     for (const std::string& name : governance::builtin_role_names()) {
-        if (!find_role(name) && create_builtin_role(name)) ++created;
+        auto existing = find_role(name);
+        if (!existing) {
+            if (create_builtin_role(name)) ++created;
+            continue;
+        }
+        // Reconcile drift: a built-in must always mean its canonical permission
+        // set. If a prior version (or a hand-edit) left it different, repair it in
+        // place — idempotent, keeps the id/folder, re-captures into the CRDT.
+        const auto canonical = governance::builtin_role_permissions(name);
+        if (canonical && existing->permissions() != *canonical) {
+            existing->set_metadata(existing->name(), *canonical,
+                                   existing->created());
+            if (replication_) {
+                replication_->set(catalog::role_key(existing->id()),
+                                  existing->metadata());
+            }
+        }
     }
     return created;
+}
+
+std::shared_ptr<zetta::governance::Role> Node::create_role(
+    const std::string& name) {
+    if (name.empty() || find_role(name)) return nullptr;  // empty or clash
+    // A custom role starts with NO rights (deny-by-default) and an unrestricted
+    // scope — scope granularity is a later slice (epic #743 #4); today
+    // authorize_user decides on capabilities alone, so an empty capability set
+    // grants nothing until GRANT adds permissions.
+    governance::RolePermissions permissions;
+    permissions.scope = governance::unrestricted_scope();
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::role_key(id),
+                          nlohmann::json{{"name", name},
+                                         {"scope", permissions.scope},
+                                         {"capabilities", permissions.capabilities},
+                                         {"created", now}});
+    }
+    return materialize_role(id, name, std::move(permissions), now);
+}
+
+bool Node::drop_role(const std::string& name) {
+    auto role = find_role(name);
+    if (!role) return false;
+    const std::string role_id = role->id();
+    // Snapshot the assignments referencing this role first (the removes below
+    // mutate user_roles_ as materialize/reconcile run).
+    std::vector<std::string> assignment_ids;
+    for (const auto& assignment : user_roles_) {
+        if (assignment->role_id() == role_id) {
+            assignment_ids.push_back(assignment->id());
+        }
+    }
+    if (replication_) {
+        for (const std::string& id : assignment_ids) {
+            replication_->remove(catalog::user_role_key(id));
+        }
+        replication_->remove(catalog::role_key(role_id));
+    }
+    for (const std::string& id : assignment_ids) materialize_drop_user_role(id);
+    return materialize_drop_role(role_id);
+}
+
+bool Node::grant_permissions(const std::string& role_name,
+                             const std::vector<std::string>& permissions) {
+    auto role = find_role(role_name);
+    if (!role) return false;
+    governance::RolePermissions updated = role->permissions();
+    for (const std::string& name : permissions) {
+        for (const governance::Operation& op :
+             governance::permission_operations(name)) {
+            bool present = false;
+            for (const governance::Capability& existing :
+                 updated.capabilities.grants) {
+                if (existing.right() == op) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) updated.capabilities.grant(op.domain, op.action);
+        }
+    }
+    role->set_metadata(role->name(), std::move(updated), role->created());
+    if (replication_) {
+        replication_->set(catalog::role_key(role->id()), role->metadata());
+    }
+    return true;
+}
+
+bool Node::revoke_permissions(const std::string& role_name,
+                              const std::vector<std::string>& permissions) {
+    auto role = find_role(role_name);
+    if (!role) return false;
+    // Collect the operations to remove (the union across the named permissions).
+    std::vector<governance::Operation> to_remove;
+    for (const std::string& name : permissions) {
+        for (const governance::Operation& op :
+             governance::permission_operations(name)) {
+            to_remove.push_back(op);
+        }
+    }
+    governance::RolePermissions updated = role->permissions();
+    std::vector<governance::Capability> kept;
+    for (const governance::Capability& capability : updated.capabilities.grants) {
+        bool remove = false;
+        for (const governance::Operation& op : to_remove) {
+            if (capability.right() == op) {
+                remove = true;
+                break;
+            }
+        }
+        if (!remove) kept.push_back(capability);
+    }
+    updated.capabilities.grants = std::move(kept);
+    role->set_metadata(role->name(), std::move(updated), role->created());
+    if (replication_) {
+        replication_->set(catalog::role_key(role->id()), role->metadata());
+    }
+    return true;
 }
 
 std::shared_ptr<zetta::governance::Role> Node::materialize_role(
@@ -2113,6 +2231,23 @@ std::shared_ptr<zetta::governance::UserRole> Node::assign_role(
                           nlohmann::json{{"user", user_id}, {"role", role_id}});
     }
     return materialize_user_role(id, user_id, role_id);
+}
+
+bool Node::unassign_role(const std::string& user_id,
+                         const std::string& role_id) {
+    std::string assignment_id;
+    for (const auto& assignment : user_roles_) {
+        if (assignment->user_id() == user_id &&
+            assignment->role_id() == role_id) {
+            assignment_id = assignment->id();
+            break;
+        }
+    }
+    if (assignment_id.empty()) return false;  // not assigned
+    if (replication_) {
+        replication_->remove(catalog::user_role_key(assignment_id));
+    }
+    return materialize_drop_user_role(assignment_id);
 }
 
 std::vector<std::string> Node::roles_for_user(const std::string& user_id) const {
