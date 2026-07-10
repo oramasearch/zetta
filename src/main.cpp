@@ -75,9 +75,10 @@ void print_usage(const char* argv0) {
         "  --mcp-token T       Require this bearer token (= acting key id)\n"
         "  --no-mcp            Disable the embedded MCP server\n"
         "  --data-dir PATH     Database directory (default: %s)\n"
-        "  --listen HOST:PORT  Cluster listen address (default: %s:%u)\n"
-        "  --port-range N      Ports to try from --listen, for several nodes\n"
-        "                      per host (default: %u)\n"
+        "  --listen HOST:PORT  Cluster listen address (default: %s:%u);\n"
+        "                      bound exactly or the node exits (no silent drift)\n"
+        "  --port-range N      Bind the first free port in [PORT, PORT+N), to\n"
+        "                      pack several nodes per host (default: %u = strict)\n"
         "  --peer HOST:PORT    A node to connect to (repeatable; all equal)\n"
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
         "                      persisted in data-dir on first use\n"
@@ -274,6 +275,27 @@ int main(int argc, char** argv) {
     zetta::data::ReplicatedBlobStore blobs(opts.node.data_dir, replication);
     zetta::cluster::Cluster cluster(node_id, opts.cluster, &replication, &blobs);
     cluster.start();
+
+    // Honor --listen strictly (#738): a node's peer address is load-bearing —
+    // siblings dial it and it's gossiped as membership — so if the requested
+    // port couldn't be bound we exit non-zero rather than silently drift to
+    // another port and fall off the mesh. SO_REUSEADDR already lets us rebind
+    // across a TIME_WAIT window; this catches the case where the port is still
+    // actively held (e.g. a k8s rolling restart overlapping the old process),
+    // so a supervisor restarts us cleanly once it frees. Widen --port-range to
+    // opt into binding the first free port in a range instead.
+    if (!cluster.is_listening()) {
+        std::fprintf(stderr,
+                     "zetta: could not bind cluster listener on %s:%u — port in "
+                     "use. Refusing to start rather than drift to another port "
+                     "(#738). Free the port, or pass --port-range N to bind the "
+                     "first free port in a range.\n",
+                     opts.cluster.listen_host.c_str(),
+                     static_cast<unsigned>(opts.cluster.listen_port));
+        cluster.stop();
+        node.stop();
+        return 1;
+    }
 
     // Seed this node's membership entry now that its reachable address is known;
     // peers merge it so every node's document lists all nodes.

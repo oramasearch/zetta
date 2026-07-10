@@ -9,10 +9,15 @@ leader election and failover are planned; until then all nodes are equal.
 
 Nodes listen on **all interfaces** and the **same port** by default (`--listen`,
 default `0.0.0.0:7777`) so a plain node is reachable across machines out of the
-box. To run several nodes on one host (e.g. one per NUMA node), each binds the
-**first free port in a range** (`--port-range`, default 16) — so a second local
-node grabs `7778` automatically. Point a node at others with `--peer HOST:PORT`
-(repeatable; all peers are equal — a seed is just somewhere to start).
+box. `--listen` is honored **exactly**: the node binds that port or **exits
+non-zero** — it never silently drifts to another port, because its peer address
+is load-bearing (siblings dial it and it's gossiped as membership; a silent move
+fragments the mesh — [#738](https://github.com/oramasearch/zetta/issues/738)).
+To run several nodes on one host (e.g. one per NUMA node), opt into a range with
+`--port-range N`: each then binds the **first free port** in `[PORT, PORT+N)` and
+advertises the one it actually bound — so a second local node grabs `7778`. Point
+a node at others with `--peer HOST:PORT` (repeatable; all peers are equal — a
+seed is just somewhere to start).
 
 All inter-node traffic runs **mutual TLS**, and joining needs the cluster's
 **join token** (the first node generates it; the printed join command carries
@@ -25,8 +30,8 @@ zetta
 # Another machine joins it (copy the exact command the first node printed):
 zetta --peer 192.168.1.10:7777 --join-token <64-hex>
 
-# Second node on the same host (auto-binds 7778), joining the first:
-zetta --peer 127.0.0.1:7777 --join-token <64-hex>
+# Second node on the same host (--port-range binds the next free port, 7778):
+zetta --port-range 8 --peer 127.0.0.1:7777 --join-token <64-hex>
 
 # Restrict to loopback (not reachable from other machines):
 zetta --listen 127.0.0.1:7777
@@ -140,7 +145,13 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   [security.md](security.md).
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
-  an accept loop plus one dial coroutine per `--peer`.
+  an accept loop plus one dial coroutine per `--peer`. `port_range` defaults to
+  **1** (strict — exactly `listen_port`); the acceptor sets **`SO_REUSEADDR`**
+  before bind so a restarted node reclaims its exact port even while the previous
+  process's sockets linger in `TIME_WAIT`. If nothing binds, `is_listening()` is
+  false and the zetta binary **exits non-zero** rather than run without its
+  advertised address — never a silent drift
+  ([#738](https://github.com/oramasearch/zetta/issues/738)).
 - **Symmetric handshake** (line protocol): each side sends
   `ZETTA/1 HELLO <node-id> <listen-addr>` and records the other; the dialer
   speaks first, the acceptor replies. The connection stays open; dropping it
@@ -160,7 +171,11 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   (default 3) a node re-dials any `--peer` it isn't currently connected to, so a
   dropped link re-establishes itself. Between the two, a restarted or
   briefly-partitioned peer reconnects and the stale entry is replaced — no
-  stuck `syncing`/`no status` ghost.
+  stuck `syncing`/`no status` ghost. This self-healing **depends on a node
+  keeping its advertised address across a restart**: siblings re-dial the exact
+  `--peer` they were given, so a node that drifted to a different port would
+  never be found again. Strict `--listen` + `SO_REUSEADDR` (above) guarantee the
+  reclaimed address matches ([#738](https://github.com/oramasearch/zetta/issues/738)).
 
 ## Signal plane (RPC / events / tasks)
 

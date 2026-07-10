@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <exception>
 #include <future>
 #include <map>
 #include <memory>
@@ -772,6 +773,20 @@ void Cluster::start() {
     // listen (not the throwing ctor) — "port in use" is expected while probing.
     state_->acceptor.emplace(state_->io_context);
     state_->acceptor->open();  // tcp::v4()
+    // SO_REUSEADDR before bind (#738): let a fresh process rebind the exact
+    // --listen port while the previous process's accepted sockets still linger
+    // in TIME_WAIT, instead of the OS refusing the bind. Set between open() and
+    // bind(). set_option throws on failure; keep start() non-throwing (the
+    // seam's boundary discipline) — a failure here only forfeits the fast
+    // rebind, so log and carry on rather than abort startup.
+    try {
+        state_->acceptor->set_option(net::reuse_address(true));
+    } catch (const std::exception& e) {
+        std::fprintf(stderr,
+                     "zetta: could not set SO_REUSEADDR on cluster listener: "
+                     "%s\n",
+                     e.what());
+    }
     for (std::uint16_t offset = 0; offset < config_.port_range; ++offset) {
         const std::uint16_t port = config_.listen_port + offset;
         if (!state_->acceptor->bind(net::endpoint(host, port)) &&
@@ -819,6 +834,8 @@ std::string Cluster::listen_address() const {
         state_->bound_port != 0 ? state_->bound_port : config_.listen_port;
     return config_.listen_host + ":" + std::to_string(port);
 }
+
+bool Cluster::is_listening() const { return state_->bound_port != 0; }
 
 std::vector<std::string> Cluster::listen_addresses() const {
     const std::uint16_t port =
