@@ -20,6 +20,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <sstream>
 #include <string>
@@ -61,10 +62,23 @@ struct GossipLink {
 };
 
 struct Cluster::State {
-    // A connected peer plus the replication status it last reported over gossip.
+    // A peer we know, plus the replication status it last reported over gossip.
+    // Per-peer routing/reachability lives here (#739): the candidate endpoints the
+    // peer advertised, the one we actually reached it on, and whether a live link
+    // is held right now (vs. kept purely by membership hysteresis).
     struct PeerRecord {
         std::string node_id;
+        // The endpoint we reached this peer on (its chosen/last-good path from our
+        // vantage point) — one of `endpoints`.
         std::string address;
+        // The peer's full advertised candidate-endpoint set (from its HELLO).
+        std::vector<std::string> endpoints;
+        // Is a live link to this peer held right now? A record with connected=false
+        // is retained only by membership hysteresis until its grace window lapses.
+        bool connected = true;
+        // When a live link was last held (stamped on connect and on disconnect) —
+        // the clock the hysteresis grace window is measured from.
+        std::chrono::steady_clock::time_point last_seen{};
         bool has_status = false;  // have we received a STATUS from it yet?
         std::size_t entries = 0;
         std::string version;
@@ -92,6 +106,9 @@ struct Cluster::State {
     zetta::data::BlobStore* blobs = nullptr;                 // large-object body transfer (optional)
     std::chrono::steady_clock::duration idle_timeout{};
     std::chrono::steady_clock::duration reconnect_interval{};
+    // How long a peer stays in the membership view after its live link drops
+    // (hysteresis, #739). Zero drops it immediately.
+    std::chrono::steady_clock::duration membership_grace{};
     bool log_events = false;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
@@ -106,6 +123,21 @@ struct Cluster::State {
     // peer_count() in steady state; a higher value would mean links are leaking. An
     // atomic so connection_count() can read it without the peer mutex.
     std::atomic<int> live_connections{0};
+
+    // --- Reconnect routing (dedup redials by node id, #739) -----------------
+    //
+    // The reconnect loop must NOT redial a seed just because the seed STRING isn't
+    // among peers' advertised addresses — a seed that never matches (a 127.0.0.1
+    // loopback or a load-balancer VIP vs. the peer's advertised LAN/pod IP) would
+    // redial every interval forever, churning connect+handshake (each reaped by the
+    // per-node-id registry, so no leak, but wasteful). Instead we remember which
+    // node id each seed resolved to and skip a seed whose node already holds a live
+    // link. `dialing` suppresses a second concurrent dial of the same seed while one
+    // is in flight. Both are touched only by the network-thread coroutines
+    // (dial/accept/reconnect), but guarded so a stray reader is still safe.
+    mutable std::mutex route_mutex;
+    std::map<std::string, std::string> seed_node;  // seed string -> resolved node id
+    std::set<std::string> dialing;                 // seeds with a dial in flight
 
     // --- Signal plane -------------------------------------------------------
     //
@@ -187,21 +219,45 @@ struct Cluster::State {
         }
     }
 
-    // Record a peer. One entry per listen address: a node that restarts reuses
-    // its address with a fresh node id, so a new HELLO from a known address
-    // evicts the stale entry (and any same-id entry from a prior connection).
-    void add_peer(std::string node_id, std::string address) {
+    // Record a live peer. `address` is the endpoint we reached it on (its chosen
+    // path from our vantage); `endpoints` is the full advertised candidate set.
+    // One entry per node id AND per reached address: a node that restarts reuses
+    // its address with a fresh node id, so a new HELLO from a known address evicts
+    // the stale entry (and any same-id entry from a prior connection) — no ghost.
+    void add_peer(std::string node_id, std::string address,
+                  std::vector<std::string> endpoints) {
         const std::lock_guard<std::mutex> lock(mutex);
         std::erase_if(peers, [&](const PeerRecord& p) {
             return p.node_id == node_id || p.address == address;
         });
         peers.push_back(PeerRecord{.node_id = std::move(node_id),
-                                   .address = std::move(address)});
+                                   .address = std::move(address),
+                                   .endpoints = std::move(endpoints),
+                                   .connected = true,
+                                   .last_seen = std::chrono::steady_clock::now()});
     }
-    void remove_peer(const std::string& node_id) {
+    // A live link to this peer dropped. Membership hysteresis (#739): don't erase
+    // the record — flag it not-connected and stamp when, so the membership view
+    // (nodes()) keeps it through the grace window while a reconnect is attempted.
+    // reap_members() removes it once the grace lapses; a reconnect refreshes it.
+    void mark_peer_disconnected(const std::string& node_id) {
         const std::lock_guard<std::mutex> lock(mutex);
-        std::erase_if(peers,
-                      [&](const PeerRecord& p) { return p.node_id == node_id; });
+        for (PeerRecord& peer : peers) {
+            if (peer.node_id != node_id) continue;
+            peer.connected = false;
+            peer.last_seen = std::chrono::steady_clock::now();
+            return;
+        }
+    }
+    // Drop peers whose link has been gone longer than the membership grace window
+    // (the down side of the hysteresis). Keeps still-connected and still-in-grace
+    // peers. Runs off a timer on the network thread.
+    void reap_members() {
+        const auto now = std::chrono::steady_clock::now();
+        const std::lock_guard<std::mutex> lock(mutex);
+        std::erase_if(peers, [&](const PeerRecord& p) {
+            return !p.connected && (now - p.last_seen) > membership_grace;
+        });
     }
     // Register `link` as THE connection for `node_id`, reaping duplicates down to one.
     // Returns true if this link is the keeper (the caller proceeds to serve it); false
@@ -243,13 +299,36 @@ struct Cluster::State {
         }
         return false;
     }
-    // Listen addresses of currently-connected peers (for the reconnect loop).
-    std::vector<std::string> connected_addresses() const {
+    // Is a live registered link to this node id held right now? The reconnect loop's
+    // dedup key: a seed whose resolved node is already linked needs no redial (#739).
+    bool has_live_link(const std::string& node_id) const {
         const std::lock_guard<std::mutex> lock(mutex);
-        std::vector<std::string> addresses;
-        addresses.reserve(peers.size());
-        for (const PeerRecord& peer : peers) addresses.push_back(peer.address);
-        return addresses;
+        const auto it = active_links.find(node_id);
+        return it != active_links.end() && it->second && it->second->alive;
+    }
+    // Remember which node id a seed resolved to (learned during its handshake), so a
+    // later redial of that seed can be skipped while its node holds a live link.
+    void note_seed_node(const std::string& seed, const std::string& node_id) {
+        if (seed.empty()) return;
+        const std::lock_guard<std::mutex> lock(route_mutex);
+        seed_node[seed] = node_id;
+    }
+    std::string seed_resolved_node(const std::string& seed) const {
+        const std::lock_guard<std::mutex> lock(route_mutex);
+        const auto it = seed_node.find(seed);
+        return it == seed_node.end() ? std::string{} : it->second;
+    }
+    // Claim a seed for dialing; false if a dial for it is already in flight (so we
+    // never run two concurrent dials of the same seed).
+    bool begin_dial(const std::string& seed) {
+        if (seed.empty()) return true;  // an un-keyed dial is never deduped
+        const std::lock_guard<std::mutex> lock(route_mutex);
+        return dialing.insert(seed).second;
+    }
+    void end_dial(const std::string& seed) {
+        if (seed.empty()) return;
+        const std::lock_guard<std::mutex> lock(route_mutex);
+        dialing.erase(seed);
     }
     // Record a peer's reported replication status (entries + version) and stamp
     // the sync time. No-op if the peer has since disconnected.
@@ -334,20 +413,50 @@ capy::task<bool> write_line(net::any_stream& stream, std::string line) {
     co_return !ec && written == line.size();
 }
 
-// Parse "ZETTA/1 HELLO <node_id> <listen_address>". Returns an empty node_id on
-// anything malformed.
+// Split a comma-separated endpoint list into its parts, trimming surrounding
+// spaces and dropping empties. A single `host:port` (no comma) yields one element —
+// so an old single-address HELLO or `--peer` entry still parses as a one-element set.
+std::vector<std::string> split_endpoints(const std::string& text) {
+    std::vector<std::string> parts;
+    std::string::size_type start = 0;
+    while (start <= text.size()) {
+        const auto comma = text.find(',', start);
+        const auto end = comma == std::string::npos ? text.size() : comma;
+        std::string part = text.substr(start, end - start);
+        while (!part.empty() && part.front() == ' ') part.erase(0, 1);
+        while (!part.empty() && part.back() == ' ') part.pop_back();
+        if (!part.empty()) parts.push_back(std::move(part));
+        if (comma == std::string::npos) break;
+        start = comma + 1;
+    }
+    return parts;
+}
+
+// Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]>". The endpoints are a single
+// whitespace-delimited, comma-separated token — the peer's advertised candidate
+// SET (#739). A legacy single-address HELLO parses as a one-element set (backward
+// compatible). `address` defaults to the first advertised endpoint; the observer
+// overrides it with the endpoint it actually reached the peer on. Returns an empty
+// node_id on anything malformed.
 ClusterPeer parse_hello(const std::string& line) {
     std::istringstream parser(line);
-    std::string protocol, verb;
+    std::string protocol, verb, endpoints_token;
     ClusterPeer peer;
-    parser >> protocol >> verb >> peer.node_id >> peer.address;
+    parser >> protocol >> verb >> peer.node_id >> endpoints_token;
     if (protocol != kProtocol || verb != "HELLO") return ClusterPeer{};
+    peer.endpoints = split_endpoints(endpoints_token);
+    if (!peer.endpoints.empty()) peer.address = peer.endpoints.front();
     return peer;
 }
 
 std::string hello_line(const std::string& node_id,
-                       const std::string& listen_address) {
-    return std::string(kProtocol) + " HELLO " + node_id + " " + listen_address;
+                       const std::vector<std::string>& endpoints) {
+    std::string joined;
+    for (const std::string& endpoint : endpoints) {
+        if (!joined.empty()) joined.push_back(',');
+        joined += endpoint;
+    }
+    return std::string(kProtocol) + " HELLO " + node_id + " " + joined;
 }
 
 // --- Replication gossip -----------------------------------------------------
@@ -594,9 +703,16 @@ capy::task<> link_writer(Cluster::State* self, std::shared_ptr<GossipLink> link,
 // protocol byte crosses the wire before both sides have proven a certificate
 // chained to the token-derived cluster CA, so an unenrolled dialer (or a
 // plaintext one) is dropped here and never reaches HELLO.
+// `my_endpoints` is the candidate set we advertise in our HELLO. `dialed_endpoint`
+// is the address we connected to when we dialed (empty when we accepted) — the
+// endpoint we reached this peer on, recorded as its per-observer path. `seed_key`
+// is the original seed string this dial came from (empty for accepts / non-seed
+// dials), used to dedup redials by the node id it resolves to (#739).
 capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
                                 std::string my_node_id,
-                                std::string my_listen_address, bool initiate) {
+                                std::vector<std::string> my_endpoints,
+                                bool initiate, std::string dialed_endpoint,
+                                std::string seed_key) {
     // The connection's transport, built before any line is exchanged: the raw
     // socket, or the TLS layer over it. Lives in the link so the writer pump
     // shares it (and so the keepalive can still close the raw socket).
@@ -625,13 +741,11 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     std::string pending;
     std::optional<std::string> their_hello;
     if (initiate) {
-        co_await write_line(link->stream,
-                            hello_line(my_node_id, my_listen_address));
+        co_await write_line(link->stream, hello_line(my_node_id, my_endpoints));
         their_hello = co_await read_line(link->stream, pending);
     } else {
         their_hello = co_await read_line(link->stream, pending);
-        co_await write_line(link->stream,
-                            hello_line(my_node_id, my_listen_address));
+        co_await write_line(link->stream, hello_line(my_node_id, my_endpoints));
     }
     if (!their_hello) {
         link->socket->close();
@@ -642,6 +756,11 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         link->socket->close();  // malformed, or we dialed ourselves
         co_return;
     }
+    // Record which node id this seed resolved to BEFORE dedup, so the reconnect loop
+    // can skip the seed while this node is linked — even if this very link then loses
+    // the register_link tiebreak (the winning link still holds the node). Ends the
+    // redial churn a seed whose string never matches the advertised address caused.
+    self->note_seed_node(seed_key, peer.node_id);
     // Keep exactly one connection per peer: a reconnect race, a seed whose address
     // never matches the peer's advertised one (127.0.0.1, a LB VIP), or a mutual dial
     // would otherwise leave duplicate held links (and burn CPU servicing them). Reap
@@ -653,9 +772,13 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     }
     if (superseded) superseded->socket->close();  // we displaced a stale link
     self->live_connections.fetch_add(1, std::memory_order_relaxed);
-    self->add_peer(peer.node_id, peer.address);
+    // The endpoint we reached this peer on, from THIS vantage point: the address we
+    // dialed (the reachable candidate) or, when we accepted, its advertised front.
+    const std::string reached =
+        !dialed_endpoint.empty() ? dialed_endpoint : peer.address;
+    self->add_peer(peer.node_id, reached, peer.endpoints);
     log_event(self, std::string("+ peer ") + short_id(peer.node_id) + " @ " +
-                        peer.address + (initiate ? " (dialed)" : " (accepted)"));
+                        reached + (initiate ? " (dialed)" : " (accepted)"));
 
     // Per-connection link shared between this read pump and the per-link write
     // pump (both on the io thread). The writer flushes queued signals + periodic
@@ -680,7 +803,11 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // Only the currently-registered link tears down the shared peer state — a link
     // that was already superseded must not evict its replacement's peer record.
     if (self->unregister_link(peer.node_id, link.get())) {
-        self->remove_peer(peer.node_id);
+        // Membership hysteresis (#739): flag the peer not-connected but keep it in
+        // the membership view through the grace window, so a brief blip / reconnect
+        // doesn't flap it out of nodes(). Outbox + pending RPCs go now regardless —
+        // nothing can be sent over a dead link.
+        self->mark_peer_disconnected(peer.node_id);
         self->clear_outbound(peer.node_id);        // drop any lines queued for it
         self->fail_pending_for_peer(peer.node_id);  // fail RPCs awaiting it
         log_event(self, std::string("- peer ") + short_id(peer.node_id) +
@@ -691,52 +818,99 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
 }
 
 capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
-                         std::string my_listen_address) {
+                         std::vector<std::string> my_endpoints) {
     for (;;) {
         net::tcp_socket peer(self->io_context);
         if (auto [ec] = co_await self->acceptor->accept(peer); ec) co_return;
         capy::run_async(self->io_context.get_executor())(handshake_and_hold(
-            self, std::move(peer), my_node_id, my_listen_address,
-            /*initiate=*/false));
+            self, std::move(peer), my_node_id, my_endpoints,
+            /*initiate=*/false, /*dialed_endpoint=*/std::string{},
+            /*seed_key=*/std::string{}));
     }
 }
 
-capy::task<> dial_seed(Cluster::State* self, net::ipv4_address address,
-                       std::uint16_t port, std::string my_node_id,
-                       std::string my_listen_address) {
-    net::tcp_socket socket(self->io_context);
-    socket.open();
-    if (auto [ec] = co_await socket.connect(net::endpoint(address, port)); ec) {
-        co_return;
+// Dial one seed, trying its candidate endpoints in order until one connects — the
+// reachable path from THIS vantage point (a peer behind NAT/LB advertises several
+// candidates; only some are reachable here). `seed_key` is the original seed string,
+// used to dedup redials by the node id it resolves to. Holds the connection until it
+// drops. The dial-in-flight claim is released on every exit path (RAII) so a later
+// reconnect can redial once the link is truly gone.
+capy::task<> dial_seed(Cluster::State* self, std::vector<std::string> candidates,
+                       std::string my_node_id,
+                       std::vector<std::string> my_endpoints,
+                       std::string seed_key) {
+    struct DialGuard {
+        Cluster::State* self;
+        std::string seed;
+        ~DialGuard() { self->end_dial(seed); }
+    } guard{self, seed_key};
+
+    for (const std::string& candidate : candidates) {
+        net::ipv4_address address;
+        std::uint16_t port = 0;
+        if (!parse_host_port(candidate, address, port)) continue;
+        net::tcp_socket socket(self->io_context);
+        socket.open();
+        if (auto [ec] = co_await socket.connect(net::endpoint(address, port)); ec) {
+            continue;  // this candidate isn't reachable from here — try the next
+        }
+        co_await handshake_and_hold(self, std::move(socket), my_node_id,
+                                    my_endpoints, /*initiate=*/true,
+                                    /*dialed_endpoint=*/candidate, seed_key);
+        co_return;  // connected (and since dropped); reconnect_loop will retry
     }
-    co_await handshake_and_hold(self, std::move(socket), my_node_id,
-                                my_listen_address, /*initiate=*/true);
 }
 
-// Periodically re-dial any seed we're not currently connected to, so a dropped
-// link re-establishes itself (the keepalive on the other side clears the stale
-// entry; this side reconnects). Runs for the cluster's lifetime.
+// Start a dial for one seed, unless a dial for it is already in flight. Splits the
+// seed into its candidate endpoints (a comma-separated set names one peer reachable
+// at several addresses). Runs on the network thread.
+void spawn_dial(Cluster::State* self, const std::string& seed,
+                const std::string& my_node_id,
+                const std::vector<std::string>& my_endpoints) {
+    if (!self->begin_dial(seed)) return;  // a dial for this seed is already in flight
+    std::vector<std::string> candidates = split_endpoints(seed);
+    if (candidates.empty()) {  // nothing dial-able — release the claim
+        self->end_dial(seed);
+        return;
+    }
+    log_event(self, "dial " + seed);
+    capy::run_async(self->io_context.get_executor())(
+        dial_seed(self, std::move(candidates), my_node_id, my_endpoints, seed));
+}
+
+// Periodically re-dial any seed whose node we don't currently hold a live link to,
+// so a dropped link re-establishes itself. Dedups by NODE ID, not by matching the
+// seed string against advertised addresses: a seed that never matches (a 127.0.0.1
+// loopback or a load-balancer VIP vs. the peer's advertised address) used to redial
+// every interval; now, once the seed has resolved to a node that's linked, it's
+// skipped — ending the connect+handshake churn (#739). Runs for the cluster's life.
 capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds,
                             std::string my_node_id,
-                            std::string my_listen_address) {
+                            std::vector<std::string> my_endpoints) {
     net::timer timer(self->io_context);
     for (;;) {
         timer.expires_after(self->reconnect_interval);
         [[maybe_unused]] const auto wait_result = co_await timer.wait();
-        const std::vector<std::string> connected = self->connected_addresses();
         for (const std::string& seed : seeds) {
-            if (std::find(connected.begin(), connected.end(), seed) !=
-                connected.end()) {
-                continue;  // already connected to this seed
+            const std::string resolved = self->seed_resolved_node(seed);
+            if (!resolved.empty() && self->has_live_link(resolved)) {
+                continue;  // this seed's node already holds a live link — no redial
             }
-            net::ipv4_address address;
-            std::uint16_t port = 0;
-            if (parse_host_port(seed, address, port)) {
-                log_event(self, "redial " + seed + " (not connected)");
-                capy::run_async(self->io_context.get_executor())(dial_seed(
-                    self, address, port, my_node_id, my_listen_address));
-            }
+            spawn_dial(self, seed, my_node_id, my_endpoints);
         }
+    }
+}
+
+// Age peers out of the membership view once their link has been gone past the grace
+// window (the down side of membership hysteresis, #739). A short cadence is enough —
+// nodes() also applies the grace on read, so this is just cleanup. Runs for life.
+capy::task<> membership_loop(Cluster::State* self) {
+    using namespace std::chrono_literals;
+    net::timer timer(self->io_context);
+    for (;;) {
+        timer.expires_after(1s);
+        [[maybe_unused]] const auto wait_result = co_await timer.wait();
+        self->reap_members();
     }
 }
 
@@ -805,6 +979,8 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
         std::chrono::seconds(config_.peer_idle_timeout_seconds);
     state_->reconnect_interval =
         std::chrono::seconds(config_.reconnect_interval_seconds);
+    state_->membership_grace =
+        std::chrono::seconds(config_.membership_grace_seconds);
     state_->log_events = config_.log_events;
 }
 
@@ -870,27 +1046,26 @@ void Cluster::start() {
     }
     if (state_->bound_port == 0) state_->acceptor.reset();  // nothing bound
 
-    // Advertise a *reachable* address in the handshake — never the bare wildcard
-    // (0.0.0.0), which a peer can't dial. listen_addresses() puts the best
-    // (non-loopback) one first.
-    const std::string my_listen = listen_addresses().front();
+    // Advertise the SET of *reachable* endpoints in the handshake — never the bare
+    // wildcard (0.0.0.0), which a peer can't dial. This is the reachable listen
+    // address(es) plus any --advertise extras (a NAT/LB node's public address), so
+    // a peer learns every path it might dial, not just the bound pod IP (#739).
+    const std::vector<std::string> my_endpoints = advertised_endpoints();
     if (state_->bound_port != 0) {
         capy::run_async(state_->io_context.get_executor())(
-            accept_loop(state_.get(), node_id_, my_listen));
+            accept_loop(state_.get(), node_id_, my_endpoints));
     }
     for (const std::string& seed : config_.seeds) {
-        net::ipv4_address address;
-        std::uint16_t port = 0;
-        if (parse_host_port(seed, address, port)) {
-            capy::run_async(state_->io_context.get_executor())(
-                dial_seed(state_.get(), address, port, node_id_, my_listen));
-        }
+        spawn_dial(state_.get(), seed, node_id_, my_endpoints);
     }
-    // Keep re-dialing seeds that drop, so the cluster self-heals.
+    // Keep re-dialing seeds that drop, so the cluster self-heals (deduped by node id).
     if (!config_.seeds.empty()) {
         capy::run_async(state_->io_context.get_executor())(
-            reconnect_loop(state_.get(), config_.seeds, node_id_, my_listen));
+            reconnect_loop(state_.get(), config_.seeds, node_id_, my_endpoints));
     }
+    // Age peers out of membership only after the hysteresis grace window (#739).
+    capy::run_async(state_->io_context.get_executor())(
+        membership_loop(state_.get()));
 
     state_->network_thread = std::thread([this] { state_->io_context.run(); });
 }
@@ -944,20 +1119,38 @@ std::string Cluster::peer_command() const {
     return command;
 }
 
+std::vector<std::string> Cluster::advertised_endpoints() const {
+    // The reachable listen address(es) first (non-loopback ahead of loopback), then
+    // any explicit --advertise extras a peer might dial (a NAT/LB public address),
+    // deduped. This is the candidate set carried in the HELLO (#739).
+    std::vector<std::string> endpoints = listen_addresses();
+    for (const std::string& extra : config_.advertise) {
+        if (std::find(endpoints.begin(), endpoints.end(), extra) ==
+            endpoints.end()) {
+            endpoints.push_back(extra);
+        }
+    }
+    return endpoints;
+}
+
 std::vector<ClusterPeer> Cluster::peers() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     std::vector<ClusterPeer> result;
     result.reserve(state_->peers.size());
     for (const State::PeerRecord& peer : state_->peers) {
+        if (!peer.connected) continue;  // live-link view; hysteresis-only excluded
         result.push_back(ClusterPeer{.node_id = peer.node_id,
-                                     .address = peer.address});
+                                     .address = peer.address,
+                                     .endpoints = peer.endpoints});
     }
     return result;
 }
 
 std::size_t Cluster::peer_count() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
-    return state_->peers.size();
+    return static_cast<std::size_t>(
+        std::count_if(state_->peers.begin(), state_->peers.end(),
+                      [](const State::PeerRecord& p) { return p.connected; }));
 }
 
 std::size_t Cluster::connection_count() const {
@@ -996,12 +1189,19 @@ std::vector<NodeStatus> Cluster::nodes() const {
     result.push_back(std::move(self));
 
     for (const State::PeerRecord& peer : state_->peers) {
+        // Membership hysteresis (#739): a peer whose link just dropped stays listed
+        // through the grace window (connected=false) so a brief blip doesn't flap it
+        // out; it's omitted only once the grace lapses (reap_members() also erases it).
+        if (!peer.connected &&
+            (now - peer.last_seen) > state_->membership_grace) {
+            continue;
+        }
         NodeStatus node;
         node.node_id = peer.node_id;
         node.address = peer.address;
         node.role = ClusterRole::Follower;
         node.is_self = false;
-        node.connected = true;
+        node.connected = peer.connected;
         node.replication.known = peer.has_status;
         node.replication.entries = peer.entries;
         node.replication.version = peer.version;
@@ -1020,13 +1220,15 @@ std::vector<NodeStatus> Cluster::nodes() const {
 
 namespace {
 
-// Node ids of currently-connected peers (for addressing + counts).
+// Node ids of peers with a live link (for addressing + counts). A peer kept only by
+// membership hysteresis (its link dropped) is excluded — the signal plane can't reach
+// it, so it must not be addressed until a live link is re-established.
 std::vector<std::string> connected_node_ids(const Cluster::State& state) {
     const std::lock_guard<std::mutex> lock(state.mutex);
     std::vector<std::string> ids;
     ids.reserve(state.peers.size());
     for (const Cluster::State::PeerRecord& peer : state.peers) {
-        ids.push_back(peer.node_id);
+        if (peer.connected) ids.push_back(peer.node_id);
     }
     return ids;
 }
@@ -1034,7 +1236,7 @@ std::vector<std::string> connected_node_ids(const Cluster::State& state) {
 bool is_connected(const Cluster::State& state, const std::string& node_id) {
     const std::lock_guard<std::mutex> lock(state.mutex);
     for (const Cluster::State::PeerRecord& peer : state.peers) {
-        if (peer.node_id == node_id) return true;
+        if (peer.node_id == node_id && peer.connected) return true;
     }
     return false;
 }

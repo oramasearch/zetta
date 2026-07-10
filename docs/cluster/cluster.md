@@ -153,14 +153,27 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   advertised address — never a silent drift
   ([#738](https://github.com/oramasearch/zetta/issues/738)).
 - **Symmetric handshake** (line protocol): each side sends
-  `ZETTA/1 HELLO <node-id> <listen-addr>` and records the other; the dialer
-  speaks first, the acceptor replies. The connection stays open; dropping it
-  removes the peer. Peers are keyed by **listen address** — one entry per
-  address — so a node that restarts (new id, same address) **replaces** its
-  stale entry instead of leaving a ghost.
-- The advertised `<listen-addr>` is a **reachable** address, never the bare
-  wildcard — a `0.0.0.0` bind advertises (and `peer_command()`/the banner show)
-  the host's first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
+  `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]>` and records the other; the
+  dialer speaks first, the acceptor replies. The connection stays open; dropping
+  it drops the live link. Peers are keyed by **reached address** — one entry per
+  address — so a node that restarts (new id, same address) **replaces** its stale
+  entry instead of leaving a ghost.
+- **A node advertises a SET of candidate endpoints, not one address** (#739). The
+  HELLO carries a comma-separated set — the reachable listen address(es) plus any
+  `--advertise HOST:PORT[,…]` extras (a node behind NAT / a load balancer lists its
+  public/LB address there, so peers learn the endpoint they can actually dial, not
+  just the unreachable bound pod IP — the root cause of the membership flap). A
+  legacy single-address HELLO parses as a one-element set (backward compatible).
+  `Cluster::advertised_endpoints()` is the set a node sends.
+- **The reached endpoint is per-observer.** Each side records the endpoint it
+  actually reached the peer on (the address it dialed; for the acceptor, the peer's
+  advertised front) — the reachable path differs by vantage point (a home node
+  reaches an AKS pod via the LB, an in-cluster node via the pod IP). A seed may
+  itself be a comma-separated candidate set for one peer; the dialer tries the
+  candidates in order and keeps the first that connects.
+- The advertised endpoints are **reachable** addresses, never the bare wildcard —
+  a `0.0.0.0` bind advertises (and `peer_command()`/the banner show) the host's
+  first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
 - `node-id` is a UUIDv4 generated per process.
 - **Self-healing links.** Each peer sends traffic every ~0.5s — replication
   gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`
@@ -177,6 +190,22 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   never be found again. Strict `--listen` + `SO_REUSEADDR` (above) guarantee the
   reclaimed address matches ([#738](https://github.com/oramasearch/zetta/issues/738)).
   stuck `syncing`/`no status` ghost.
+  (default 3) a node re-dials any `--peer` **whose node it doesn't currently hold a
+  live link to**, so a dropped link re-establishes itself. The reconnect is deduped
+  **by node id**, not by matching the seed string against advertised addresses: a
+  seed that never matches (a `127.0.0.1` loopback or a load-balancer VIP vs. the
+  peer's advertised address) used to redial every interval forever — connect +
+  handshake churn (bounded by #741's reap, but wasteful). Now, once a seed has
+  resolved to a node that's linked, it's skipped (#739). Between the two, a
+  restarted or briefly-partitioned peer reconnects and the stale entry is replaced —
+  no stuck `syncing`/`no status` ghost.
+- **Membership hysteresis (#739).** When a peer's live link drops, the live views
+  (`peers()`/`peer_count()` and the signal plane) reflect it at once, but the
+  **membership** view (`nodes()` / `system.nodes` / the UI) keeps the node for
+  `membership_grace_seconds` (default 10) before dropping it, so a brief blip or a
+  reconnect doesn't flap it out — it ages out only after a sustained absence. This
+  debounces the down edge; the up edge is immediate (a node appears the moment a
+  live link is held). Mirrors the operator's status anti-flap.
 - **One connection per peer (no leak).** A handshake is keyed by the peer's
   **node id**: the moment both ends learn each other's id, a per-node-id registry
   keeps exactly one link and closes any duplicate. This covers a mutual dial
@@ -216,6 +245,34 @@ needs to be dialed — it is always the initiator.
 > source-locked to one peer's IP) to "make it reachable" **inverts the model** — it puts
 > an inbound surface on a node that should only dial out. Designate the genuinely
 > wan-accessible nodes instead, and let the private ones dial them.
+
+### What the route table holds today (#739)
+
+Each `PeerRecord` carries the peer's advertised **candidate-endpoint set** plus the
+one endpoint **we reached it on** (per-observer). The pieces in place:
+
+- **Multi-endpoint advertise** — the HELLO carries the whole candidate set; a node
+  behind NAT/LB adds its public/LB address with `--advertise`, so the reachable path
+  is advertised, not just the bound pod IP.
+- **Per-vantage path selection** — a seed may list several candidate endpoints for one
+  peer; the dialer tries them in order and caches the one that connected, so the
+  reachable endpoint is chosen from *this* node's vantage point.
+- **Prefer the established connection** — the per-node-id link registry (#741) keeps a
+  single bidirectional session and never re-dials a candidate a live link already
+  covers (reconnect deduped by node id).
+- **Membership hysteresis** — a node stays in `system.nodes` through the grace window
+  after its link drops, so a blip on one endpoint doesn't flap it out.
+
+**Division of responsibility.** The **operator** supplies candidate endpoints (each
+slice's LB/public + LAN addresses, via `--advertise` / peer-LB wiring); **Zetta** owns
+the routing — reachability selection, connection lifecycle, and membership hysteresis.
+
+**Still future.** Reachability *classification* (`wan-accessible` / `ephemeral` /
+`dial-out-only` as a field on the nodes table), RTT-ranked candidate ordering, and
+**transitive gossip relay** of a peer's learned endpoints (so a node dials peers it
+only heard about second-hand, through a rendezvous) are not yet built — today a node
+dials the seeds/candidates it is configured with, and the registry + hysteresis keep
+that mesh stable.
 
 ## Signal plane (RPC / events / tasks)
 
