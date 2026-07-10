@@ -296,8 +296,11 @@ private:
         if (accept_keyword("role")) {
             return parse_create_role();
         }
-        throw ParseError{
-            "expected DATABASE, TABLE, USER, TOKEN, or ROLE after CREATE"};
+        if (accept_keyword("policy")) {
+            return parse_create_policy();
+        }
+        throw ParseError{"expected DATABASE, TABLE, USER, TOKEN, ROLE, or POLICY "
+                         "after CREATE"};
     }
 
     // CREATE ROLE <name>. Out-of-line + variant built in a separate TU — the same
@@ -344,7 +347,10 @@ private:
         if (accept_keyword("role")) {
             return parse_drop_role();
         }
-        throw ParseError{"expected DATABASE, TABLE, or ROLE after DROP"};
+        if (accept_keyword("policy")) {
+            return parse_drop_policy();
+        }
+        throw ParseError{"expected DATABASE, TABLE, ROLE, or POLICY after DROP"};
     }
 
     // DROP ROLE <name>. Out-of-line + variant built in a separate TU (toolchain
@@ -462,6 +468,149 @@ private:
         return make_revoke_permission_statement(parse_ident(),
                                                 std::move(permissions),
                                                 std::move(object));
+    }
+
+    // The command class of a CREATE POLICY (the FOR clause).
+    PolicyCommand parse_policy_command() {
+        if (accept_keyword("select")) return PolicyCommand::Select;
+        if (accept_keyword("insert")) return PolicyCommand::Insert;
+        if (accept_keyword("update")) return PolicyCommand::Update;
+        if (accept_keyword("all")) return PolicyCommand::All;
+        throw ParseError{"expected SELECT, INSERT, UPDATE, or ALL after FOR, got '" +
+                         peek().text + "'"};
+    }
+
+    // One term of a row-security predicate: a context function (current_user() /
+    // current_roles()), a boolean/null keyword, a column reference (a bare
+    // identifier), or a string/number literal. Reused for both sides of the
+    // comparison and for the ANY(...) argument (#748). A literal is captured as raw
+    // text + a type tag (the executor decodes it) so the predicate AST stays
+    // json-free and lightweight — see PolicyTerm in ast.hpp.
+    PolicyTerm parse_policy_term() {
+        PolicyTerm term;
+        if (peek().type == Tok::Ident) {
+            const std::string name = peek().text;
+            if (iequals(name, "current_user")) {
+                advance();
+                expect_punct('(');
+                expect_punct(')');
+                term.kind = PolicyTerm::Kind::CurrentUser;
+                return term;
+            }
+            if (iequals(name, "current_roles")) {
+                advance();
+                expect_punct('(');
+                expect_punct(')');
+                term.kind = PolicyTerm::Kind::CurrentRoles;
+                return term;
+            }
+            if (iequals(name, "true") || iequals(name, "false")) {
+                advance();
+                term.kind = PolicyTerm::Kind::Literal;
+                term.literal_type = PolicyTerm::LiteralType::Boolean;
+                term.literal = iequals(name, "true") ? "true" : "false";
+                return term;
+            }
+            if (iequals(name, "null")) {
+                advance();
+                term.kind = PolicyTerm::Kind::Literal;
+                term.literal_type = PolicyTerm::LiteralType::Null;
+                return term;
+            }
+            advance();  // a bare identifier is a row column reference
+            term.kind = PolicyTerm::Kind::Column;
+            term.column = name;
+            return term;
+        }
+        // A numeric literal (with an optional leading '-') or a string literal.
+        const bool negative = accept_punct('-');
+        if (peek().type == Tok::Num) {
+            term.kind = PolicyTerm::Kind::Literal;
+            term.literal_type = PolicyTerm::LiteralType::Number;
+            term.literal = (negative ? "-" : "") + advance().text;
+            return term;
+        }
+        if (negative) throw ParseError{"expected a number after '-'"};
+        if (peek().type == Tok::Str) {
+            term.kind = PolicyTerm::Kind::Literal;
+            term.literal_type = PolicyTerm::LiteralType::String;
+            term.literal = advance().text;
+            return term;
+        }
+        throw ParseError{"expected a policy predicate term (a column, a literal, "
+                         "current_user(), or current_roles()), got '" +
+                         peek().text + "'"};
+    }
+
+    // The parenthesized predicate of a USING / WITH CHECK clause: `(true)` (a
+    // permissive filter), or a single comparison `(<term> <op> <term>)` where the
+    // RHS may be `ANY(<term>)` for a membership test — e.g.
+    //   (owner = current_user())
+    //   ('admin' = ANY(current_roles()))
+    // Out-of-line to keep the json/string-heavy cleanup out of the caller's frame
+    // (the toolchain EH workaround; see parse_create_token / ast.hpp).
+    [[gnu::noinline]] PolicyPredicate parse_policy_predicate() {
+        expect_punct('(');
+        PolicyPredicate predicate;
+        predicate.lhs = parse_policy_term();
+        // `(true)` — a bare boolean literal admits every row.
+        if (predicate.lhs.kind == PolicyTerm::Kind::Literal &&
+            predicate.lhs.literal_type == PolicyTerm::LiteralType::Boolean &&
+            predicate.lhs.literal == "true" && peek().type == Tok::Punct &&
+            peek().text == ")") {
+            predicate.always_true = true;
+            expect_punct(')');
+            return predicate;
+        }
+        predicate.op = parse_comparison();
+        if (accept_keyword("any")) {
+            expect_punct('(');
+            predicate.rhs = parse_policy_term();
+            expect_punct(')');
+            predicate.rhs_any = true;
+        } else {
+            predicate.rhs = parse_policy_term();
+        }
+        expect_punct(')');
+        return predicate;
+    }
+
+    // CREATE POLICY <name> ON <db.table> FOR SELECT|INSERT|UPDATE|ALL
+    //   [TO ROLE <role>[, <role>]*] USING (<predicate>) [WITH CHECK (<predicate>)]
+    // Out-of-line + variant built in a separate TU (toolchain workaround, see
+    // parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_create_policy() {
+        std::string name = parse_ident();
+        expect_keyword("on");
+        TableRef table = parse_table_ref();
+        expect_keyword("for");
+        PolicyCommand command = parse_policy_command();
+        std::vector<std::string> roles;
+        if (accept_keyword("to")) {
+            expect_keyword("role");
+            do {
+                roles.push_back(parse_ident());
+            } while (accept_punct(','));
+        }
+        std::optional<PolicyPredicate> using_predicate;
+        std::optional<PolicyPredicate> check_predicate;
+        if (accept_keyword("using")) using_predicate = parse_policy_predicate();
+        if (accept_keyword("with")) {
+            expect_keyword("check");
+            check_predicate = parse_policy_predicate();
+        }
+        return make_create_policy_statement(
+            std::move(name), std::move(table), command, std::move(roles),
+            std::move(using_predicate), std::move(check_predicate));
+    }
+
+    // DROP POLICY <name> [ON <db.table>]. The optional ON clause is parsed for
+    // symmetry with CREATE and ignored (policy names are unique). Out-of-line +
+    // variant built in a separate TU (toolchain workaround).
+    [[gnu::noinline]] Statement parse_drop_policy() {
+        std::string name = parse_ident();
+        if (accept_keyword("on")) parse_table_ref();  // accepted, ignored
+        return make_drop_policy_statement(std::move(name));
     }
 
     Statement parse_insert() {

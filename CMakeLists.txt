@@ -460,6 +460,7 @@ add_library(zetta-core STATIC
   src/core/governance/role.cpp
   src/core/governance/token.cpp
   src/core/governance/user_role.cpp
+  src/core/governance/policy.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/storage/jsonl_store.cpp

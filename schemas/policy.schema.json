@@ -1,0 +1,61 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/policy.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A row-level security policy (FEAT-9 / #748, epic #743 item 5): Postgres-style RLS over one table for one command class, carrying a USING read filter and/or a WITH CHECK write filter that the SQL WHERE engine evaluates against the acting identity (current_user()/current_roles()). The on-disk policy.json projection of the replicated `policy:<uuid>` CRDT value. Mirrored by zetta::governance::Policy in include/zetta/governance/policy.hpp and enforced by policy_value_from_json() + Node::load_policies()/reconcile_policies() — keep them in sync. The predicate expressions are opaque objects here; zetta::query::PolicyPredicate owns their grammar + evaluation.",
+  "properties": {
+    "check": {
+      "description": "The write filter (WITH CHECK predicate): a written row is admitted iff it satisfies it. Opaque to governance. Absent when the policy has no write filter.",
+      "type": "object"
+    },
+    "command": {
+      "description": "The command class the policy governs. SELECT filters reads (USING); INSERT/UPDATE filter writes (WITH CHECK); ALL covers both.",
+      "enum": [
+        "select",
+        "insert",
+        "update",
+        "all"
+      ],
+      "type": "string"
+    },
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    },
+    "database": {
+      "description": "The database owning the protected table.",
+      "type": "string"
+    },
+    "id": {
+      "description": "The policy's UUID — its CRDT key and on-disk folder name. Present in policy.json and omitted from the CRDT value (the key carries it).",
+      "type": "string"
+    },
+    "name": {
+      "description": "The policy's name (unique among policies on the node) — the DROP POLICY handle.",
+      "type": "string"
+    },
+    "roles": {
+      "description": "The role names the policy applies to. Absent/empty means it applies to every role.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "table": {
+      "description": "The table the policy protects.",
+      "type": "string"
+    },
+    "using": {
+      "description": "The read filter (USING predicate): a row is visible iff it satisfies it. Opaque to governance — zetta::query::PolicyPredicate owns its grammar + evaluation. Absent when the policy has no read filter.",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "database",
+    "table",
+    "command"
+  ],
+  "title": "Policy",
+  "type": "object"
+}

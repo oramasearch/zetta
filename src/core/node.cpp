@@ -205,6 +205,7 @@ bool Node::start() {
     load_roles();
     load_tokens();
     load_user_roles();
+    load_policies();
     load_audit_events();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
@@ -2388,6 +2389,136 @@ void Node::reconcile_user_roles(const nlohmann::json& snapshot) {
     }
 }
 
+// ----- row-level security policies (policy:<uuid>, #748) ---------------------
+
+void Node::load_policies() {
+    policies_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "policy.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr, false);
+        const auto value = governance::policy_value_from_json(meta);
+        if (!value) continue;  // boundary validation — skip a malformed policy
+        policies_.push_back(std::make_shared<governance::Policy>(
+            entry.path().filename().string(), *value, entry.path()));
+    }
+    std::sort(policies_.begin(), policies_.end(),
+              [](const auto& a, const auto& b) { return a->name() < b->name(); });
+}
+
+std::shared_ptr<zetta::governance::Policy> Node::find_policy(
+    const std::string& name) const {
+    for (const auto& policy : policies_) {
+        if (policy->name() == name) return policy;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::governance::Policy> Node::find_policy_by_id(
+    const std::string& id) const {
+    for (const auto& policy : policies_) {
+        if (policy->id() == id) return policy;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::governance::Policy> Node::create_policy(
+    governance::PolicyValue value) {
+    if (value.name.empty() || find_policy(value.name)) return nullptr;  // empty/clash
+    if (value.created.empty()) value.created = zetta::util::now_iso8601();
+    const std::string id = zetta::util::new_uuid();
+    if (replication_) {
+        replication_->set(catalog::policy_key(id),
+                          governance::policy_value_to_json(value));
+    }
+    return materialize_policy(id, std::move(value));
+}
+
+bool Node::drop_policy(const std::string& name) {
+    auto policy = find_policy(name);
+    if (!policy) return false;
+    const std::string id = policy->id();
+    if (replication_) {
+        replication_->remove(catalog::policy_key(id));
+    }
+    return materialize_drop_policy(id);
+}
+
+std::shared_ptr<zetta::governance::Policy> Node::materialize_policy(
+    std::string id, governance::PolicyValue value) {
+    if (auto existing = find_policy_by_id(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto policy = std::make_shared<governance::Policy>(std::move(id),
+                                                       std::move(value), dir);
+    policy->persist_meta();
+    policies_.push_back(policy);
+    return policy;
+}
+
+bool Node::materialize_drop_policy(const std::string& id) {
+    const auto it = std::find_if(
+        policies_.begin(), policies_.end(),
+        [&](const std::shared_ptr<governance::Policy>& p) {
+            return p->id() == id;
+        });
+    if (it == policies_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    policies_.erase(it);
+    return true;
+}
+
+void Node::reconcile_policies(const nlohmann::json& snapshot) {
+    std::map<std::string, governance::PolicyValue> desired;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kPolicyPrefix);
+        if (id.empty()) continue;
+        const auto parsed = governance::policy_value_from_json(value);
+        if (!parsed) continue;  // boundary
+        desired.emplace(std::move(id), *parsed);
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& policy : policies_) local_ids.push_back(policy->id());
+    for (const std::string& id : local_ids) {
+        if (!desired.contains(id)) materialize_drop_policy(id);
+    }
+    for (auto& [id, value] : desired) {
+        auto policy = find_policy_by_id(id);
+        if (!policy) {
+            materialize_policy(id, value);
+        } else if (policy->value() != value) {
+            policy->set_value(value);
+        }
+    }
+}
+
+bool Node::bypasses_row_security(const std::string& acting_id,
+                                 bool acting_is_user) const {
+    if (acting_id.empty()) return true;   // trusted unauthenticated-local session
+    if (!acting_is_user) return true;     // legacy AccessKey — no RLS tier (#747 parity)
+    auto user = find_user_by_id(acting_id);
+    if (!user || !user->active()) return false;  // unknown/disabled — no bypass
+    // Admin bypasses RLS: only the built-in admin role grants cluster:admin
+    // (api:cluster_admin), so it distinguishes an admin from writer/reader/custom
+    // users. Deny-by-default otherwise — an ordinary user is subject to policy.
+    const governance::Operation admin_marker{governance::CapabilityDomain::Api,
+                                             "cluster_admin"};
+    const std::string now = zetta::util::now_iso8601();
+    for (const std::string& role_id : roles_for_user(acting_id)) {
+        auto role = find_role_by_id(role_id);
+        if (role && role->capabilities().permits(admin_marker, now)) return true;
+    }
+    return false;
+}
+
 // ----- bootstrap owner (#733) ------------------------------------------------
 
 Node::BootstrapResult Node::bootstrap_owner(
@@ -2848,6 +2979,7 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_roles(snapshot);
     reconcile_tokens(snapshot);
     reconcile_user_roles(snapshot);
+    reconcile_policies(snapshot);
     reconcile_audit_events(snapshot);
 }
 

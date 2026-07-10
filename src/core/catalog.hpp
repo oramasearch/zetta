@@ -79,6 +79,11 @@
 //   user_role:<uuid>   -> { user, role }                   (a user↔role
 //                          assignment; a user's rights are the union of its
 //                          roles; see governance/user_role.hpp)
+//   policy:<uuid>      -> { name, database, table, command, using?, check?,
+//                          roles?, created }  (a row-level security policy —
+//                          Postgres-style RLS: a USING read filter + a WITH CHECK
+//                          write filter, evaluated by the SQL WHERE engine against
+//                          the acting identity; see governance/policy.hpp / #748)
 //   part:<uuid>        -> { table, blob_ref, row_range:{start,end}, stats,
 //                          owner_nodes }  (a dataset partition — a record of where
 //                          a slice of a table's data physically lives: its table
@@ -115,6 +120,7 @@ inline constexpr std::string_view kUserPrefix = "user:";
 inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
+inline constexpr std::string_view kPolicyPrefix = "policy:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -178,6 +184,9 @@ inline std::string token_key(const std::string& token_id) {
 }
 inline std::string user_role_key(const std::string& user_role_id) {
     return std::string(kUserRolePrefix) + user_role_id;
+}
+inline std::string policy_key(const std::string& policy_id) {
+    return std::string(kPolicyPrefix) + policy_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

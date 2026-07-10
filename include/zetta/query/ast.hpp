@@ -138,6 +138,68 @@ struct RevokeRoleStmt {
     std::string user;
 };
 
+// ----- Row-level security (RLS, #748, epic #743 item 5) --------------------
+
+// A term in a row-security policy predicate: a row column, a constant literal, or
+// a context function resolved at execution against the acting identity —
+// current_user() (the acting user's name) or current_roles() (its role-name set,
+// meaningful only inside ANY(...)). The dialect-neutral shape the executor
+// evaluates; no governance types leak into the AST.
+//
+// A literal is carried as its raw TEXT plus a type tag rather than a parsed
+// nlohmann::json, keeping the predicate AST lightweight and free of a json member
+// in the SQL parser's translation unit (which carries the fragile EH workaround —
+// see the CMakeLists note on postgres.cpp). The executor decodes (literal,
+// literal_type) into a json value at evaluation time via compare_cell.
+struct PolicyTerm {
+    enum class Kind { Column, Literal, CurrentUser, CurrentRoles };
+    enum class LiteralType { String, Number, Boolean, Null };
+    Kind kind = Kind::Literal;
+    std::string column;                              // Kind::Column — the row column
+    std::string literal;                             // Kind::Literal — the raw text
+    LiteralType literal_type = LiteralType::String;  // how to decode `literal`
+};
+
+// A row-security predicate (#748): ONE comparison `lhs <op> rhs`, evaluated with
+// the same comparison semantics as a WHERE clause (the executor's compare_cell —
+// no new predicate language). Either side may be a row column, a literal, or a
+// context function. `rhs_any` marks the RHS as ANY(<array>) — a membership test
+// (lhs is a member of the resolved array, e.g. 'admin' = ANY(current_roles())).
+// `always_true` is USING (true) / WITH CHECK (true): a permissive predicate that
+// admits every row.
+struct PolicyPredicate {
+    bool always_true = false;
+    PolicyTerm lhs;
+    CompareOp op = CompareOp::Equal;
+    PolicyTerm rhs;
+    bool rhs_any = false;
+};
+
+// The command class a policy governs (Postgres FOR clause). SELECT filters reads
+// (USING); INSERT/UPDATE filter writes (WITH CHECK); ALL covers both.
+enum class PolicyCommand { Select, Insert, Update, All };
+
+// CREATE POLICY <name> ON <db.table> FOR SELECT|INSERT|UPDATE|ALL
+//   [TO ROLE <role>[, <role>]*] USING (<predicate>) [WITH CHECK (<predicate>)]
+// — a row-security policy (#748). Gated on the roles:manage permission at
+// execution. `using_predicate` filters reads; `check_predicate` filters writes;
+// either may be absent (the executor requires the one its command needs).
+struct CreatePolicyStmt {
+    std::string name;
+    TableRef table;
+    PolicyCommand command = PolicyCommand::All;
+    std::vector<std::string> roles;                  // role names (empty => all roles)
+    std::optional<PolicyPredicate> using_predicate;  // USING (...)
+    std::optional<PolicyPredicate> check_predicate;  // WITH CHECK (...)
+};
+
+// DROP POLICY <name> [ON <db.table>] — remove a row-security policy (#748). The
+// optional ON clause is accepted for symmetry with CREATE but ignored (policy
+// names are unique on the node). roles:manage.
+struct DropPolicyStmt {
+    std::string name;
+};
+
 struct CreateTableStmt {
     TableRef table;
     std::vector<ColumnDef> columns;
@@ -175,6 +237,7 @@ using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
                                CreateRoleStmt, DropRoleStmt,
                                GrantPermissionStmt, RevokePermissionStmt,
                                GrantRoleStmt, RevokeRoleStmt,
+                               CreatePolicyStmt, DropPolicyStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
                                SelectStmt>;
 
@@ -199,5 +262,11 @@ Statement make_revoke_permission_statement(std::string role,
                                            GrantObject object = {});
 Statement make_grant_role_statement(std::string role, std::string user);
 Statement make_revoke_role_statement(std::string role, std::string user);
+Statement make_create_policy_statement(
+    std::string name, TableRef table, PolicyCommand command,
+    std::vector<std::string> roles,
+    std::optional<PolicyPredicate> using_predicate,
+    std::optional<PolicyPredicate> check_predicate);
+Statement make_drop_policy_statement(std::string name);
 
 }  // namespace zetta::query
