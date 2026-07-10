@@ -23,6 +23,7 @@
 #include "zetta/api/bridge.hpp"
 #include "zetta/api/capabilities.hpp"
 #include "zetta/api/llms.hpp"
+#include "zetta/api/mcp_docs.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
@@ -573,6 +574,31 @@ bool ApiServer::start() {
                    const std::string_view body = web_ui_page();
                    route.status(http::status::ok);
                    route.res.set(http::field::content_type, "text/html; charset=utf-8");
+    // GET /mcp.md — public, human/agent Markdown on how to connect an MCP client to
+    // this node (mcp_docs.cpp). Registered BEFORE the /mcp mount so the exact route
+    // wins. Deliberately NOT bearer-gated (you must be able to read the connect
+    // instructions without already holding the token) and it NEVER prints the token.
+    router.add(http::method::get, "/mcp.md",
+               [&impl](http::route_params& route) -> http::route_task {
+                   std::string host;
+                   if (route.req.count(http::field::host)) {
+                       host = std::string(route.req.at(http::field::host));
+                   }
+                   if (host.empty()) {
+                       host = impl.options.listen_address + ":" +
+                              std::to_string(impl.options.port);
+                   }
+                   const bool local =
+                       host.starts_with("localhost") || host.starts_with("127.") ||
+                       host.starts_with("0.0.0.0") || host.starts_with("[::1]") ||
+                       host.starts_with("::1");
+                   const std::string origin =
+                       std::string(local ? "http://" : "https://") + host;
+                   const std::string body =
+                       render_mcp_md(origin, !impl.options.bearer_token.empty());
+                   route.status(http::status::ok);
+                   route.res.set(http::field::content_type,
+                                 "text/markdown; charset=utf-8");
                    stamp_response_headers(route, body);
                    auto [send_error] = co_await route.send(body);
                    if (send_error) co_return http::route_error(send_error);
