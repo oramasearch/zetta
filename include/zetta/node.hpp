@@ -35,6 +35,10 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/governance/principal.hpp"
+#include "zetta/governance/role.hpp"
+#include "zetta/governance/token.hpp"
+#include "zetta/governance/user.hpp"
+#include "zetta/governance/user_role.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
@@ -578,6 +582,88 @@ public:
     zetta::governance::AccessDecision authorize(const std::string& key_id,
                              const zetta::governance::Operation& operation) const;
 
+    // ----- Users / roles / tokens: the credential store (FEAT-9 / #744) -------
+    // The foundation the rest of the identity model builds on. A User is an
+    // authenticatable identity, a Role a named permission set, a Token a bearer
+    // credential **stored hashed** (the plaintext is shown once), and a UserRole
+    // ties a user to a role. All four are replicated through the same
+    // capture/reconcile path as principals (see docs/governance/access-control.md).
+
+    // Create a user (unique name, status Active). Empty handle on an empty name
+    // or a clash. Captured into the CRDT (`user:<uuid>`) + persisted on disk.
+    std::shared_ptr<zetta::governance::User> create_user(std::string name);
+    std::shared_ptr<zetta::governance::User> find_user(const std::string& name) const;
+    std::shared_ptr<zetta::governance::User> find_user_by_id(const std::string& id) const;
+    bool drop_user(const std::string& name);
+    // Enable/disable a user (a disabled user's tokens stop validating). false on
+    // an unknown name.
+    bool set_user_status(const std::string& name, zetta::governance::UserStatus status);
+    std::vector<std::shared_ptr<zetta::governance::User>> users() const { return users_; }
+    std::size_t user_count() const { return users_.size(); }
+
+    // Create a built-in role by name ("admin"/"writer"/"reader") — empty handle
+    // on an unknown built-in name or a name clash. Custom/editable roles are #746.
+    std::shared_ptr<zetta::governance::Role> create_builtin_role(const std::string& name);
+    // Ensure the built-in admin/writer/reader roles all exist (idempotent); used
+    // by bootstrap. Returns the number newly created.
+    std::size_t ensure_builtin_roles();
+    std::shared_ptr<zetta::governance::Role> find_role(const std::string& name) const;
+    std::shared_ptr<zetta::governance::Role> find_role_by_id(const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::governance::Role>> roles() const { return roles_; }
+    std::size_t role_count() const { return roles_.size(); }
+
+    // Assign a role to a user (idempotent — the existing assignment if the pair is
+    // already assigned). Empty handle if either id is unknown.
+    std::shared_ptr<zetta::governance::UserRole> assign_role(const std::string& user_id,
+                                                             const std::string& role_id);
+    std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles() const {
+        return user_roles_;
+    }
+    std::size_t user_role_count() const { return user_roles_.size(); }
+    // The role ids assigned to a user (its effective roles).
+    std::vector<std::string> roles_for_user(const std::string& user_id) const;
+
+    // The plaintext secret surfaced once at token creation, alongside its handle.
+    // The secret is never stored (only its salted hash) and never returned again.
+    struct TokenIssue {
+        std::shared_ptr<zetta::governance::Token> token;
+        std::string secret;  // PLAINTEXT — shown once, never persisted
+    };
+    // Issue a token for a user: generates a random secret + salt, stores only the
+    // hash (`token:<uuid>`), and returns the handle + plaintext. Empty handle if
+    // the user id is unknown. `expires_at` empty => no TTL.
+    TokenIssue create_token(const std::string& user_id,
+                            zetta::governance::TokenType type,
+                            std::string expires_at = {});
+    std::shared_ptr<zetta::governance::Token> find_token_by_id(const std::string& id) const;
+    // Revoke a token (a revoked token never validates). false on an unknown id.
+    bool revoke_token(const std::string& id);
+    std::vector<std::shared_ptr<zetta::governance::Token>> tokens() const { return tokens_; }
+    std::size_t token_count() const { return tokens_.size(); }
+
+    // Resolve a bearer secret to the user it authenticates as, or an empty handle
+    // when no live token matches (deny-by-default). Hashes + constant-time
+    // compares against every non-revoked, unexpired token, and requires the
+    // owning user to exist and be active. This is the seam issue #2's gate calls.
+    std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
+
+    // The outcome of bootstrap_owner: whether an owner was minted this call, and
+    // the identifiers to log (never the secret).
+    struct BootstrapResult {
+        bool performed = false;   // false = no-op (store already seeded, or no secret)
+        std::string user_id;
+        std::string user_name;    // "owner"
+        std::string token_id;
+        std::string reason;       // why it was a no-op, when !performed
+    };
+    // Bootstrap the owner (#733): if the user store is empty, mint an "owner"
+    // user, ensure the built-in roles exist, assign it "admin", and issue an
+    // access token whose secret is `admin_token_secret` (the operator's, via
+    // --admin-token / ZETTA_ADMIN_TOKEN). A no-op when a user already exists or
+    // the secret is empty. Never logs / returns the secret — the operator already
+    // holds it.
+    BootstrapResult bootstrap_owner(const std::string& admin_token_secret);
+
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.
@@ -665,6 +751,14 @@ private:
     void load_principals();
     std::shared_ptr<zetta::governance::Principal> find_principal_by_id(const std::string& id) const;
 
+    // Rebuild the credential store (users/roles/tokens/user_roles) by scanning
+    // config_.data_dir for each entity's marker file. Called from start().
+    // Malformed records are skipped at the boundary (schema).
+    void load_users();
+    void load_roles();
+    void load_tokens();
+    void load_user_roles();
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -699,6 +793,10 @@ private:
     void reconcile_principals(const nlohmann::json& snapshot);
     void reconcile_access_keys(const nlohmann::json& snapshot);
     void reconcile_audit_events(const nlohmann::json& snapshot);
+    void reconcile_users(const nlohmann::json& snapshot);
+    void reconcile_roles(const nlohmann::json& snapshot);
+    void reconcile_tokens(const nlohmann::json& snapshot);
+    void reconcile_user_roles(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -731,6 +829,20 @@ private:
                                                      std::string name,
                                                      std::string created);
     bool materialize_drop_principal(const std::string& id);
+    std::shared_ptr<zetta::governance::User> materialize_user(
+        std::string id, std::string name, zetta::governance::UserStatus status,
+        std::string created);
+    bool materialize_drop_user(const std::string& id);
+    std::shared_ptr<zetta::governance::Role> materialize_role(
+        std::string id, std::string name,
+        zetta::governance::RolePermissions permissions, std::string created);
+    bool materialize_drop_role(const std::string& id);
+    std::shared_ptr<zetta::governance::Token> materialize_token(
+        std::string id, zetta::governance::TokenValue value);
+    bool materialize_drop_token(const std::string& id);
+    std::shared_ptr<zetta::governance::UserRole> materialize_user_role(
+        std::string id, std::string user_id, std::string role_id);
+    bool materialize_drop_user_role(const std::string& id);
     // Apply a replicated audit event (a peer's, or one rebuilt from the document)
     // by id, without capturing. Append-only — there is no drop counterpart.
     std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
@@ -782,6 +894,10 @@ private:
     std::deque<OwnerWork> owner_work_queue_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
+    std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
+    std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
+    std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
     // Durable, local (non-replicated) checkpoint store for eviction tolerance
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.

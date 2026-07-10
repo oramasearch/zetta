@@ -64,6 +64,21 @@
 //                          change / deploy / data-access decision; a top-level
 //                          entity with no parent, never edited or removed; see
 //                          audit_event.hpp)
+//   user:<uuid>        -> { name, status, created }        (an authenticatable
+//                          identity — conceptually a Principal of kind User in
+//                          the FEAT-9 access model; a top-level entity — see
+//                          governance/user.hpp)
+//   role:<uuid>        -> { name, scope, capabilities, created }  (a named
+//                          permission set granted to users via user_role; the
+//                          built-in admin/writer/reader plus custom roles (#746);
+//                          see governance/role.hpp)
+//   token:<uuid>       -> { user, type, hash, salt, created, expires_at?,
+//                          revoked }  (a bearer credential authenticating as a
+//                          user, stored HASHED — the secret plaintext is never in
+//                          the document; see governance/token.hpp / #744)
+//   user_role:<uuid>   -> { user, role }                   (a user↔role
+//                          assignment; a user's rights are the union of its
+//                          roles; see governance/user_role.hpp)
 //   part:<uuid>        -> { table, blob_ref, row_range:{start,end}, stats,
 //                          owner_nodes }  (a dataset partition — a record of where
 //                          a slice of a table's data physically lives: its table
@@ -96,6 +111,10 @@ inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
 inline constexpr std::string_view kPartitionPrefix = "part:";
+inline constexpr std::string_view kUserPrefix = "user:";
+inline constexpr std::string_view kRolePrefix = "role:";
+inline constexpr std::string_view kTokenPrefix = "token:";
+inline constexpr std::string_view kUserRolePrefix = "user_role:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -147,6 +166,18 @@ inline std::string audit_key(const std::string& audit_id) {
 }
 inline std::string partition_key(const std::string& partition_id) {
     return std::string(kPartitionPrefix) + partition_id;
+}
+inline std::string user_key(const std::string& user_id) {
+    return std::string(kUserPrefix) + user_id;
+}
+inline std::string role_key(const std::string& role_id) {
+    return std::string(kRolePrefix) + role_id;
+}
+inline std::string token_key(const std::string& token_id) {
+    return std::string(kTokenPrefix) + token_id;
+}
+inline std::string user_role_key(const std::string& user_role_id) {
+    return std::string(kUserRolePrefix) + user_role_id;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

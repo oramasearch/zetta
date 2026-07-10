@@ -192,11 +192,16 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     burst_approval_gate.hpp  zetta::cloud::BurstApprovalGate/BurstCap — large-burst cost-cap approval gate: a Provisioner decorator, block over-cap bursts pending approval + audit (APR-3/RSK-9; #379)
     cloud_provider.hpp      zetta::cloud::CloudProvider/CloudProviderCatalog — pure-metadata catalog of deployment-target backends for the permission-gated Cloud Inspector (no cloud access); each inspect command is an InspectCommand (display + no-shell argv)
     cloud_inspector.hpp     zetta::cloud::CloudInspector/CloudInspectReport — the real read-only inspect: run a provider's inspect_commands via the shared CommandRunner (behind GUI consent), parse each vendor's JSON at a validated boundary → identity/regions/nodes; no creds read (#445)
-  governance/               access control (principals, keys, scopes, capabilities) + the audit trail
+  governance/               access control (principals, keys, scopes, capabilities) + users/roles/tokens + the audit trail
     principal.hpp           zetta::governance::Principal — an authenticated actor; owns access keys
     access_key.hpp          zetta::governance::AccessKey — a scoped + capability-bearing login credential + authorize()
     scope.hpp               zetta::governance::Scope/Resource — deny-by-default key-scoped access, the resource axis (RULE-3)
     capability.hpp          zetta::governance::Capability/CapabilitySet/Operation — deny-by-default rights, the verb axis, TTL'd (ENT-22)
+    user.hpp                zetta::governance::User/UserStatus — an authenticatable identity (a Principal{User} in the new model); replicated user:<uuid> (#744)
+    role.hpp                zetta::governance::Role/RolePermissions/builtin_role_permissions — a named permission set (scope + rights); built-in admin/writer/reader; role:<uuid>
+    token.hpp               zetta::governance::Token/TokenValue/TokenType — a bearer credential hashed at rest (secret shown once); token:<uuid>
+    user_role.hpp           zetta::governance::UserRole — a user↔role assignment; user_role:<uuid>
+    token_secret.hpp        generate_token_secret/generate_token_salt/hash_token_secret/constant_time_equal — the token crypto (OpenSSL)
     audit_event.hpp         zetta::governance::AuditEvent/AuditSink — immutable audit trail + JSON Schema (ENT-23)
     consent.hpp             zetta::governance::ConsentAction/ConsentChallenge/ConsentLedger — remote consent for cloud-touching capabilities (#621): one-time challenges naming exactly what would be read/run, consumable exactly once by a distinctly-privileged approval; ephemeral + owner-thread-only, never replicated (docs/api/consent.md)
   usecases/churn/           UC-1 churn — the first use case, end to end
@@ -251,8 +256,9 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     replication_strategy.cpp  zetta::data::ReplicationStrategy — kind names, JSON boundary validation, replication_strategy_from_meta reader (ENT-35; #509)
     replicated_blob_store.cpp  large-object body transfer (CRDT metadata + disk)
   query/
-    postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST)
-    executor.cpp            zetta::query::Executor — statement execution against the Node + the read-only system.* observability tables (tables / nodes / deployments / runs / models / indexes / jobs / principals / keys / audit / activity / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / spans / traces / crashes / cloud_providers / cloud_status / provisioners); kSystemTableCatalog is the one list they all derive from (system.tables + system_table_names() + the unknown-table error, #684)
+    postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST), incl. CREATE USER / CREATE TOKEN (#744)
+    statement_builders.cpp  zetta::query::make_create_token_statement — assembles the CreateTokenStmt Statement OUT of the parser TU (a pinned-toolchain EH-miscompile workaround; see the file header)
+    executor.cpp            zetta::query::Executor — statement execution against the Node (incl. CREATE USER / CREATE TOKEN returning the plaintext once) + the read-only system.* observability tables (tables / nodes / deployments / runs / models / indexes / jobs / principals / keys / users / roles / tokens / audit / activity / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / spans / traces / crashes / cloud_providers / cloud_status / provisioners); kSystemTableCatalog is the one list they all derive from (system.tables + system_table_names() + the unknown-table error, #684)
     service.cpp             zetta::query::QueryService — parse-with-Postgres + execute-each-statement facade (the Outcome the REPL/GUI render)
   parquet/
     thrift_compact.hpp      zetta::parquet::detail::CompactReader — the shared, non-throwing Thrift compact-protocol cursor (used by both the footer and page-header parsers; internal header)
@@ -366,6 +372,11 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     access_key.cpp          zetta::governance::AccessKey — persist key.json + authorize() decisions (resource + operation)
     scope.cpp               zetta::governance::Scope — permits() + JSON boundary validation
     capability.cpp          zetta::governance::CapabilitySet — permits()/TTL + JSON boundary validation (ENT-22)
+    user.cpp                zetta::governance::User — persist user.json + status/schema (#744)
+    role.cpp                zetta::governance::Role — persist role.json + built-in permission sets + schema + JSON boundary validation
+    token.cpp               zetta::governance::Token — persist token.json + validates()/expired() + TokenValue JSON boundary validation
+    user_role.cpp           zetta::governance::UserRole — persist user_role.json + schema
+    token_secret.cpp        the token crypto (the 2nd OpenSSL-libcrypto user): RAND_bytes secret/salt + SHA-256(salt||secret) + CRYPTO_memcmp constant-time compare (#744)
     audit_event.cpp         zetta::governance::AuditEvent — value, JSON form, JSON-Schema boundary validation
     consent.cpp             zetta::governance::ConsentLedger — challenge lifecycle (pending → denied/approved → executed/failed, lazy TTL expiry, capacity that drops decided entries first), challenge JSON + embedded schema (#621)
   usecases/churn/

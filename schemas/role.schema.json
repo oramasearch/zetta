@@ -1,0 +1,111 @@
+{
+  "$defs": {
+    "capability": {
+      "additionalProperties": false,
+      "description": "A deny-by-default grant of a specific API/data/orchestration right (ENT-22), optionally TTL'd.",
+      "properties": {
+        "action": {
+          "description": "The specific right within the domain (e.g. 'query', 'read', 'deploy', 'start_run', 'manage_users').",
+          "type": "string"
+        },
+        "domain": {
+          "description": "The governance domain of the right.",
+          "enum": [
+            "api",
+            "data",
+            "orchestration"
+          ],
+          "type": "string"
+        },
+        "expires_at": {
+          "description": "Optional TTL: the ISO-8601 UTC instant at/after which the capability is expired. Omitted means it never expires.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "domain",
+        "action"
+      ],
+      "type": "object"
+    },
+    "resource": {
+      "additionalProperties": false,
+      "description": "A single node-owned resource a grant names (database or project).",
+      "properties": {
+        "kind": {
+          "description": "The kind of resource.",
+          "enum": [
+            "database",
+            "project"
+          ],
+          "type": "string"
+        },
+        "name": {
+          "description": "The resource's name (its human-facing handle).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "type": "object"
+    },
+    "scope": {
+      "additionalProperties": false,
+      "description": "What the role permits — deny-by-default. A resource is in scope iff `unrestricted` is true or it appears in `grants`.",
+      "properties": {
+        "grants": {
+          "description": "The explicit in-scope resources. Order is preserved.",
+          "items": {
+            "$ref": "#/$defs/resource"
+          },
+          "type": "array"
+        },
+        "unrestricted": {
+          "description": "The '*' grant: when true the role reaches every resource.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "unrestricted",
+        "grants"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://oramasearch.github.io/zetta/schemas/role.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A named permission set (FEAT-9 / #744): a Scope (which resources) + a CapabilitySet (which rights), granted to a user via UserRole. The on-disk role.json projection of the replicated `role:<uuid>` CRDT value. Mirrored by zetta::governance::Role in include/zetta/governance/role.hpp and enforced by role_permissions_from_json() + Node::load_roles()/reconcile_roles() — keep them in sync. The scope/capability sub-shapes mirror access_key.schema.json's $defs.",
+  "properties": {
+    "capabilities": {
+      "description": "The deny-by-default rights this role grants (ENT-22). Optional; absent means no rights.",
+      "items": {
+        "$ref": "#/$defs/capability"
+      },
+      "type": "array"
+    },
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    },
+    "id": {
+      "description": "The role's UUID — its CRDT key and on-disk folder name. Present in role.json and omitted from the CRDT value (the key carries it).",
+      "type": "string"
+    },
+    "name": {
+      "description": "The role's name (unique among roles), e.g. a built-in 'admin'/'writer'/'reader'.",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    }
+  },
+  "required": [
+    "name",
+    "scope"
+  ],
+  "title": "Role",
+  "type": "object"
+}

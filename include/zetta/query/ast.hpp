@@ -70,6 +70,19 @@ struct DropDatabaseStmt {
     std::string name;
 };
 
+// CREATE USER <name> — mint an authenticatable identity (FEAT-9 / #744).
+struct CreateUserStmt {
+    std::string name;
+};
+
+// CREATE TOKEN FOR <user> [TYPE access|api] — issue a bearer credential for a
+// user; the executor returns the PLAINTEXT secret once (it is never stored). The
+// parser always sets `type`, defaulting to "api" when TYPE is omitted.
+struct CreateTokenStmt {
+    std::string user;   // the owning user's name
+    std::string type;   // "access" | "api" (the parser defaults to "api")
+};
+
 struct CreateTableStmt {
     TableRef table;
     std::vector<ColumnDef> columns;
@@ -103,7 +116,18 @@ struct SelectStmt {
 };
 
 using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
+                               CreateUserStmt, CreateTokenStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
                                SelectStmt>;
+
+// Wrap a CreateTokenStmt into a Statement. Defined in its OWN translation unit
+// (statement_builders.cpp), never inline: constructing this particular variant
+// alternative inside the SQL parser's TU (src/core/query/postgres.cpp)
+// miscompiles that TU's exception unwinding under the pinned Clang +
+// -fexperimental-library — a thrown ParseError then escapes every catch and
+// aborts. Building the variant here keeps the parser TU free of that construction
+// (the parser just moves the returned Statement). Remove when the toolchain bug
+// is gone.
+Statement make_create_token_statement(std::string user, std::string type);
 
 }  // namespace zetta::query

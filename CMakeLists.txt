@@ -453,6 +453,11 @@ add_library(zetta-core STATIC
   src/core/governance/capability.cpp
   src/core/governance/audit_event.cpp
   src/core/governance/consent.cpp
+  src/core/governance/token_secret.cpp
+  src/core/governance/user.cpp
+  src/core/governance/role.cpp
+  src/core/governance/token.cpp
+  src/core/governance/user_role.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
   src/core/storage/jsonl_store.cpp
@@ -538,6 +543,7 @@ add_library(zetta-core STATIC
   src/core/repl/console_model.cpp
   src/core/repl/governed_console.cpp
   src/core/query/postgres.cpp
+  src/core/query/statement_builders.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
   src/core/headless.cpp

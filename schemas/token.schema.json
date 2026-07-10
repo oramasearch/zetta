@@ -1,0 +1,52 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/token.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A bearer credential (FEAT-9 / #744) that authenticates as a user, stored HASHED at rest — the plaintext secret is shown once at creation and never persisted. The on-disk token.json projection of the replicated `token:<uuid>` CRDT value. Mirrored by zetta::governance::Token in include/zetta/governance/token.hpp and enforced by token_value_from_json() + Node::load_tokens()/reconcile_tokens() — keep them in sync. `hash` = hex SHA-256(salt || secret); the secret itself never appears here or in system.tokens.",
+  "properties": {
+    "created": {
+      "description": "ISO-8601 UTC creation stamp (millisecond precision, trailing 'Z').",
+      "type": "string"
+    },
+    "expires_at": {
+      "description": "Optional TTL: the ISO-8601 UTC instant at/after which the token stops validating. Omitted means it never expires.",
+      "type": "string"
+    },
+    "hash": {
+      "description": "Hex SHA-256(salt || secret) — the at-rest hash of the secret. The plaintext is never stored.",
+      "type": "string"
+    },
+    "id": {
+      "description": "The token's UUID — its CRDT key and on-disk folder name. Present in token.json and omitted from the CRDT value (the key carries it).",
+      "type": "string"
+    },
+    "revoked": {
+      "description": "When true the token never validates (revocation without deletion, preserving history).",
+      "type": "boolean"
+    },
+    "salt": {
+      "description": "Hex per-token salt mixed into the hash so identical secrets hash differently.",
+      "type": "string"
+    },
+    "type": {
+      "description": "How the token was issued: a pre-assigned long-lived 'access' credential, or an issued revocable 'api' token.",
+      "enum": [
+        "api",
+        "access"
+      ],
+      "type": "string"
+    },
+    "user": {
+      "description": "The id of the User this token authenticates as.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "user",
+    "type",
+    "hash",
+    "salt"
+  ],
+  "title": "Token",
+  "type": "object"
+}

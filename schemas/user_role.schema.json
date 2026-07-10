@@ -1,0 +1,26 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/user_role.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A user-to-role assignment (FEAT-9 / #744): a user's effective permissions are the union of its assigned roles. The on-disk user_role.json projection of the replicated `user_role:<uuid>` CRDT value. Mirrored by zetta::governance::UserRole in include/zetta/governance/user_role.hpp and enforced by Node::load_user_roles()/reconcile_user_roles() — keep them in sync.",
+  "properties": {
+    "id": {
+      "description": "The assignment's UUID — its CRDT key and on-disk folder name. Present in user_role.json and omitted from the CRDT value (the key carries it).",
+      "type": "string"
+    },
+    "role": {
+      "description": "The id of the granted Role.",
+      "type": "string"
+    },
+    "user": {
+      "description": "The id of the assigned User.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "user",
+    "role"
+  ],
+  "title": "UserRole",
+  "type": "object"
+}

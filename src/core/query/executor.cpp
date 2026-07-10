@@ -72,6 +72,13 @@ namespace {
 //  - `principals` — the authenticated actors (Node::principals(); ENT-20).
 //  - `keys` — the access keys the principals own (ENT-21/22): each key's
 //    scope (resources) + capabilities (rights), no secret material.
+//  - `users` — the authenticatable identities (Node::users(); FEAT-9 / #744):
+//    identity + status + assigned role names + token count.
+//  - `roles` — the named permission sets (Node::roles()): each role's scope
+//    (resources) + capabilities (rights), the same rendering as `keys`.
+//  - `tokens` — the bearer credentials per user (Node::tokens()): id, user,
+//    type, created, expiry, revoked — deliberately NO hash/salt/secret (the
+//    plaintext is shown once at creation and never stored).
 //  - `audit` — the immutable, append-only audit trail (Node::audit_events();
 //    ENT-23 / FEAT-9).
 //  - `activity` — the merged, newest-first activity feed (#622): the audit trail
@@ -136,6 +143,9 @@ constexpr std::string_view kConsentRequestsTable = "consent_requests";
 constexpr std::string_view kRunsTable = "runs";
 constexpr std::string_view kPrincipalsTable = "principals";
 constexpr std::string_view kKeysTable = "keys";
+constexpr std::string_view kUsersTable = "users";
+constexpr std::string_view kRolesTable = "roles";
+constexpr std::string_view kTokensTable = "tokens";
 constexpr std::string_view kAuditTable = "audit";
 constexpr std::string_view kActivityTable = "activity";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
@@ -212,6 +222,9 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kProvisionersTable,
                     "cloud-burst provisioners detected from this node's local "
                     "CLIs; carries no credentials"},
+    SystemTableInfo{kRolesTable,
+                    "the role registry: named permission sets (scope + rights) "
+                    "granted to users"},
     SystemTableInfo{kRunsTable,
                     "the run registry: one row per graph execution + its "
                     "lifecycle and lineage"},
@@ -220,9 +233,15 @@ constexpr std::array kSystemTableCatalog = {
                     "operation's intent, plan, timing"},
     SystemTableInfo{kTablesTable,
                     "this catalog: every system table + what it holds"},
+    SystemTableInfo{kTokensTable,
+                    "the token registry: bearer credentials per user — id, "
+                    "type, created, revoked (NO secret material)"},
     SystemTableInfo{kTracesTable,
                     "one row per trace aggregated from the span ring: the "
                     "what-happened summary"},
+    SystemTableInfo{kUsersTable,
+                    "the user registry: authenticatable identities + status + "
+                    "assigned roles"},
 };
 
 // One JSON row per system table for the system.tables catalog view (#684).
@@ -690,6 +709,104 @@ std::vector<nlohmann::json> access_key_rows(const Node& node) {
             row["created"] = key->created();
             rows.push_back(std::move(row));
         }
+    }
+    return rows;
+}
+
+// Render a Scope + CapabilitySet as the two human-readable strings shared by the
+// keys and roles views: `scope` ("*" for unrestricted, else "<kind>:<name>,…")
+// and `capabilities` ("<domain>:<action>[@<ttl>],…"). No secret material.
+void render_reach(const zetta::governance::Scope& scope,
+                  const zetta::governance::CapabilitySet& capabilities,
+                  nlohmann::json& row) {
+    std::vector<std::string> scope_parts;
+    if (scope.unrestricted) {
+        scope_parts.push_back("*");
+    } else {
+        for (const zetta::governance::Resource& resource : scope.grants) {
+            scope_parts.push_back(std::string(to_string(resource.kind)) + ":" +
+                                  resource.name);
+        }
+    }
+    std::vector<std::string> capability_parts;
+    for (const zetta::governance::Capability& capability : capabilities.grants) {
+        std::string text =
+            std::string(to_string(capability.domain)) + ":" + capability.action;
+        if (!capability.expires_at.empty()) text += "@" + capability.expires_at;
+        capability_parts.push_back(std::move(text));
+    }
+    row["unrestricted"] = scope.unrestricted;
+    row["scope"] = join_comma(scope_parts);
+    row["capabilities"] = join_comma(capability_parts);
+}
+
+// One JSON row per user for the users system table — the authenticatable
+// identities (FEAT-9 / #744). Sourced from Node::users(): identity + status +
+// created + the names of its assigned roles + how many tokens it owns. No secret
+// material (tokens are the tokens view; neither exposes hashes).
+std::vector<nlohmann::json> user_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& user : node.users()) {
+        std::vector<std::string> role_names;
+        for (const std::string& role_id : node.roles_for_user(user->id())) {
+            if (auto role = node.find_role_by_id(role_id)) {
+                role_names.push_back(role->name());
+            }
+        }
+        int token_count = 0;
+        for (const auto& token : node.tokens()) {
+            if (token->user_id() == user->id()) ++token_count;
+        }
+        nlohmann::json row;
+        row["user_id"] = user->id();
+        row["name"] = user->name();
+        row["status"] = std::string(to_string(user->status()));
+        row["created"] = user->created();
+        row["roles"] = join_comma(role_names);
+        row["token_count"] = token_count;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per role for the roles system table — the named permission sets
+// (FEAT-9 / #744). Sourced from Node::roles(): the role's scope (resources) +
+// capabilities (rights), the same rendering as the keys view. No secret material.
+std::vector<nlohmann::json> role_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& role : node.roles()) {
+        nlohmann::json row;
+        row["role_id"] = role->id();
+        row["name"] = role->name();
+        render_reach(role->scope(), role->capabilities(), row);
+        row["created"] = role->created();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per token for the tokens system table — the bearer credentials
+// (FEAT-9 / #744). Sourced from Node::tokens(). This view deliberately exposes
+// NO secret material: only the token id, its owning user, type, created, optional
+// expiry, and revoked flag — never the hash or salt (the plaintext is shown once
+// at creation and never stored). This is the "system.tokens must not leak the
+// secret" guarantee.
+std::vector<nlohmann::json> token_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& token : node.tokens()) {
+        nlohmann::json row;
+        row["token_id"] = token->id();
+        row["user_id"] = token->user_id();
+        if (auto user = node.find_user_by_id(token->user_id())) {
+            row["user"] = user->name();
+        } else {
+            row["user"] = "";
+        }
+        row["type"] = std::string(to_string(token->type()));
+        row["created"] = token->created();
+        row["expires_at"] = token->expires_at();
+        row["revoked"] = token->revoked();
+        rows.push_back(std::move(row));
     }
     return rows;
 }
@@ -1464,6 +1581,15 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kKeysTable) {
                         return select_over_rows(s, access_key_rows(node_));
                     }
+                    if (sys == kUsersTable) {
+                        return select_over_rows(s, user_rows(node_));
+                    }
+                    if (sys == kRolesTable) {
+                        return select_over_rows(s, role_rows(node_));
+                    }
+                    if (sys == kTokensTable) {
+                        return select_over_rows(s, token_rows(node_));
+                    }
                     if (sys == kAuditTable) {
                         return select_over_rows(s, audit_rows(node_));
                     }
@@ -1545,6 +1671,41 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                 }
                 r.message = "SELECT " + std::to_string(r.rows.size());
+                return r;
+            },
+            [&](const CreateUserStmt& s) -> QueryResult {
+                if (!node_.create_user(s.name)) {
+                    return error("user \"" + s.name +
+                                 "\" already exists or the name is invalid");
+                }
+                return {.message = "CREATE USER"};
+            },
+            [&](const CreateTokenStmt& s) -> QueryResult {
+                auto user = node_.find_user(s.user);
+                if (!user) {
+                    return error("user \"" + s.user + "\" does not exist");
+                }
+                const auto type = zetta::governance::token_type_from(s.type);
+                if (!type) {
+                    return error("unknown token type \"" + s.type +
+                                 "\" (want 'access' or 'api')");
+                }
+                Node::TokenIssue issue = node_.create_token(user->id(), *type);
+                if (!issue.token) {
+                    return error("failed to issue token for user \"" + s.user +
+                                 "\"");
+                }
+                // Return the plaintext secret ONCE — the only time it is ever
+                // surfaced. It is not stored (only its salted hash is).
+                QueryResult r;
+                r.message = "CREATE TOKEN";
+                r.columns = {"token_id", "user", "type", "secret"};
+                nlohmann::json row;
+                row["token_id"] = issue.token->id();
+                row["user"] = s.user;
+                row["type"] = std::string(to_string(*type));
+                row["secret"] = issue.secret;
+                r.rows.push_back(std::move(row));
                 return r;
             },
         },
