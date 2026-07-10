@@ -96,15 +96,17 @@ class BackgroundActions;
 using ProvisionerResolver =
     std::function<zetta::cloud::Provisioner*(const std::string& target_id)>;
 
-// What a handler sees. `acting_key` is the AccessKey id the bearer token
-// mapped to (empty = the audited "unauthenticated local" session — the
+// What a handler sees. `acting_key` is the acting identity the auth gate
+// resolved: under the default-deny gate (#745) it is a USER id (see
+// `acting_is_user`); otherwise it is the AccessKey id the bearer token mapped
+// to, or empty for the audited "unauthenticated local" session (the
 // governed-console precedent). The context is only ever constructed on the
 // loop that owns the Node, so handlers may touch the node freely but must be
 // quick (they run inside a tick).
 struct ApiContext {
     Node& node;
     const zetta::cluster::Cluster* cluster = nullptr;  // for system.nodes
-    std::string acting_key;                             // AccessKey id or empty
+    std::string acting_key;                             // user/AccessKey id or empty
 
     // The trace this call belongs to (an inbound traceparent, or a fresh root
     // made by the server layer) and the node's span ring. Null recorder =
@@ -121,6 +123,13 @@ struct ApiContext {
     // The provisioner backends this embedding wired (#621) — consulted by the
     // consent-gated `add_nodes` capability. Empty = no targets wired here.
     ProvisionerResolver provisioners;
+
+    // The default-deny gate (#745) resolved a bearer TOKEN to a user, so
+    // `acting_key` is that user's id: authorize the operation against the
+    // user's effective permissions (the union of its roles' capabilities),
+    // not against an AccessKey. False = the legacy path (`acting_key` is an
+    // AccessKey id, or empty for the unauthenticated-local session).
+    bool acting_is_user = false;
 
     // Set by Registry::decide_consent while executing an approved challenge:
     // the challenge whose outcome the execution must land on. Handlers that

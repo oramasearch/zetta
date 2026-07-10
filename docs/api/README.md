@@ -42,7 +42,9 @@ MCP/HTTP work.
 `tools/list`, `tools/call`), served by Beast2 on the vendored capy/corosio
 stack, embedded in BOTH run modes. Defaults: `127.0.0.1:4800`, the audited
 unauthenticated-local session; flags: `--mcp-listen HOST:PORT`,
-`--mcp-token T` (the bearer token doubles as the acting AccessKey id),
+`--mcp-token T` (legacy shared secret, doubles as the acting AccessKey id),
+`--require-auth` (the default-deny gate — bearer resolves to a **user** on every
+path or 401; see [access-control.md](../governance/access-control.md#the-default-deny-gate---require-auth---745)),
 `--no-mcp`. Every `tools/call` result carries `structuredContent` with
 `ok/value|error`, `trace_id`, `span_id`, `duration_ms` (`value` follows the
 tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal

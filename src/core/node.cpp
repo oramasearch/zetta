@@ -2368,6 +2368,33 @@ zetta::governance::AccessDecision Node::authorize(const std::string& key_id,
     return zetta::governance::authorize(*key, operation, zetta::util::now_iso8601());
 }
 
+zetta::governance::AccessDecision Node::authorize_user(
+    const std::string& user_id,
+    const zetta::governance::Operation& operation) const {
+    // Deny-by-default: an unknown or disabled user has no reach at all.
+    auto user = find_user_by_id(user_id);
+    if (!user) {
+        return zetta::governance::AccessDecision{false, "unknown user — denied"};
+    }
+    if (!user->active()) {
+        return zetta::governance::AccessDecision{false, "user is disabled — denied"};
+    }
+    // Effective permissions = the union of the user's roles' capability sets.
+    // Allowed as soon as any assigned role grants a matching, unexpired right;
+    // TTL is honored against the current time (same contract as an AccessKey).
+    const std::string now = zetta::util::now_iso8601();
+    for (const std::string& role_id : roles_for_user(user_id)) {
+        auto role = find_role_by_id(role_id);
+        if (role && role->capabilities().permits(operation, now)) {
+            return zetta::governance::AccessDecision{
+                true, "granted by role '" + role->name() + "'"};
+        }
+    }
+    return zetta::governance::AccessDecision{
+        false, "no role grants " + std::string(to_string(operation.domain)) +
+                   ":" + operation.action};
+}
+
 zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,
                                 std::string project, std::string graph_id) {
     // Delegate to the standalone orchestrator with the default per-step executor.

@@ -31,8 +31,20 @@ struct ServerOptions {
     // When set, every request must carry "Authorization: Bearer <token>", and
     // the token doubles as the acting AccessKey id (registry-design.md: the
     // bearer token IS the key). Empty = the audited "unauthenticated local"
-    // session — only sane on a loopback bind.
+    // session — only sane on a loopback bind. Legacy shared-secret gate;
+    // ignored when `require_auth` is set (see below).
     std::string bearer_token;
+    // The default-deny auth gate (#745). When true, EVERY route is closed
+    // unless the request carries a bearer that resolves — via the token store
+    // (#744): salted-hash + constant-time compare, honoring expiry/revocation —
+    // to an active user; anything else is 401. The resolved user becomes the
+    // acting identity, and the capability check runs against that user's
+    // effective permissions (its roles' capabilities). The legacy
+    // `bearer_token` shared secret is not honored in this mode; seed a real
+    // credential with --admin-token (the bootstrap owner, #733). Default off
+    // for back-compat: the loopback GUI's unauthenticated-local session still
+    // works when this is unset. See docs/governance/access-control.md.
+    bool require_auth = false;
     int worker_coroutines = 4;
 };
 
