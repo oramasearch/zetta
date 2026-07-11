@@ -70,7 +70,13 @@ is wired in, peers gossip their documents and status over the connection (see
 [replication.md](replication.md)). The view shows up three ways:
 
 - **Headed** — the Cluster panel's spatial node-box canvas (below).
-- **Headless** — the heartbeat prints a per-node table when it changes.
+- **Headless** — a one-line status heartbeat prints every **~30s**, and the full
+  per-node table prints **immediately** whenever membership or a sync state
+  changes (a node joins/leaves or flips in/out of sync). The per-second heartbeat
+  was throttled to ~30s so a long-running node doesn't flood its log
+  ([#788](https://github.com/oramasearch/zetta/issues/788)); membership changes
+  are still surfaced within ~1s. The one-time startup banner (node id, listen
+  addresses, join command) is unchanged.
 - **SQL** — `SELECT * FROM system.nodes;` (see [query.md](../data/query.md)).
 
 ### Spatial node-box view (the headed canvas)
@@ -171,6 +177,14 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   reaches an AKS pod via the LB, an in-cluster node via the pod IP). A seed may
   itself be a comma-separated candidate set for one peer; the dialer tries the
   candidates in order and keeps the first that connects.
+- **A seed/candidate host may be a DNS name, not just a numeric IPv4** — e.g. a
+  Kubernetes StatefulSet per-pod address
+  (`foo-0.foo-headless.ns.svc.cluster.local:7777`). A non-numeric host is
+  **resolved at dial time** and the dialer tries the resolved address(es) in
+  order; resolution is **never cached** (a pod restart gets a fresh IP, so every
+  redial re-resolves), and the *recorded* reached endpoint stays the stable
+  seed/DNS label rather than the ephemeral IP
+  ([#785](https://github.com/oramasearch/zetta/issues/785)).
 - The advertised endpoints are **reachable** addresses, never the bare wildcard —
   a `0.0.0.0` bind advertises (and `peer_command()`/the banner show) the host's
   first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
@@ -262,17 +276,27 @@ one endpoint **we reached it on** (per-observer). The pieces in place:
   covers (reconnect deduped by node id).
 - **Membership hysteresis** — a node stays in `system.nodes` through the grace window
   after its link drops, so a blip on one endpoint doesn't flap it out.
+- **Dial learned members ([#789](https://github.com/oramasearch/zetta/issues/789))** —
+  the reconnect loop dials not just configured seeds but every member it has learned:
+  a direct peer whose link dropped, plus a node known only **transitively** from the
+  replicated `node:<id>` membership entries gossiped through a common peer. Deduped by
+  node id (skip a node we already hold a live link to; one dial in flight per node),
+  with the registry reaping any duplicate a mutual dial makes. This fills a hub-seeded
+  **star** (every node `--peer`'d at one seed, as k8s does) into a full equal-peer
+  **mesh** — learned members were recorded but never dialed before.
 
 **Division of responsibility.** The **operator** supplies candidate endpoints (each
 slice's LB/public + LAN addresses, via `--advertise` / peer-LB wiring); **Zetta** owns
 the routing — reachability selection, connection lifecycle, and membership hysteresis.
 
 **Still future.** Reachability *classification* (`wan-accessible` / `ephemeral` /
-`dial-out-only` as a field on the nodes table), RTT-ranked candidate ordering, and
-**transitive gossip relay** of a peer's learned endpoints (so a node dials peers it
-only heard about second-hand, through a rendezvous) are not yet built — today a node
-dials the seeds/candidates it is configured with, and the registry + hysteresis keep
-that mesh stable.
+`dial-out-only` as a field on the nodes table) and RTT-ranked candidate ordering are
+not yet built. A node **does** now dial members it learns second-hand — via the
+replicated `node:<id>` membership entries — so a hub-seeded star fills into a full
+mesh (#789); what remains future is **relaying a peer's full advertised endpoint
+set** (its LB / public candidates), so a transitively-learned member is currently
+dialed by its single `node:` address rather than by every path it advertises. The
+registry + hysteresis keep the mesh stable.
 
 ## Signal plane (RPC / events / tasks)
 
