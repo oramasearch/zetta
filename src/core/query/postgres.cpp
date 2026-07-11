@@ -285,7 +285,35 @@ private:
             }
             return stmt;
         }
-        throw ParseError{"expected DATABASE or TABLE after CREATE"};
+        if (accept_keyword("user")) {
+            return CreateUserStmt{parse_ident()};
+        }
+        if (accept_keyword("token")) {
+            return parse_create_token();
+        }
+        throw ParseError{"expected DATABASE, TABLE, USER, or TOKEN after CREATE"};
+    }
+
+    // CREATE TOKEN FOR <user> [TYPE access|api]. Kept in its OWN out-of-line
+    // frame ([[gnu::noinline]]) with the Statement assembled by a builder in a
+    // separate TU (statement_builders.cpp). Both are deliberate toolchain
+    // workarounds: under the pinned Clang + -fexperimental-library, string-local
+    // cleanup for this branch — when it inlines into run()'s frame — and
+    // constructing the CreateTokenStmt variant alternative in this TU each
+    // miscompile the parser's exception unwinding, so a thrown ParseError escapes
+    // every catch and aborts. Keeping the cleanup out-of-line and the variant
+    // construction out-of-TU sidesteps both. Remove when the compiler is bumped.
+    [[gnu::noinline]] Statement parse_create_token() {
+        expect_keyword("for");
+        std::string user = parse_ident();
+        std::string type = parse_token_type();
+        return make_create_token_statement(std::move(user), std::move(type));
+    }
+
+    // The optional "TYPE <access|api>" tail of CREATE TOKEN; defaults to "api".
+    std::string parse_token_type() {
+        if (accept_keyword("type")) return parse_ident();
+        return "api";
     }
 
     // Skip an optional "(255)" / "(10,2)" type modifier after a column type.

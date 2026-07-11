@@ -239,8 +239,103 @@ now surfaced read-only in the headed [Admin & Settings panel](../gui/admin-panel
 (SCR-7 / CMP-5); issuing keys and granting capabilities from the GUI is a later
 slice.
 
+## Users, roles, and tokens (the credential store — FEAT-9 / #744)
+
+The V1 model above (a bare **AccessKey** carrying scope + capabilities directly)
+is the enforcement engine. Layered **on top of it**, not replacing it, is the
+**credential store** the rest of the identity work builds on (epic #743): a
+**user + role + token** model, all replicated through the same
+capture/reconcile/persist path as principals.
+
+```
+User   (user:<uuid>)         an authenticatable identity — a Principal of kind
+  name, status, created        User in the new model. Its rights come from the
+                               roles assigned to it; a bearer authenticates AS a
+                               user by presenting one of its tokens.
+
+Role   (role:<uuid>)         a named permission set: a Scope (resources) + a
+  name, scope, capabilities,   CapabilitySet (rights) — the SAME two axes an
+  created                      AccessKey carries. Built-in admin/writer/reader
+                               ship now; custom/editable roles are #746.
+
+UserRole (user_role:<uuid>)  a user↔role assignment. A user's effective
+  user, role                   permissions are the union of its roles.
+
+Token  (token:<uuid>)        a bearer credential that authenticates as a user,
+  user, type (api|access),     stored HASHED at rest. The plaintext secret is
+  hash, salt, created,         shown ONCE at creation and never persisted; only
+  expires_at?, revoked         hash = SHA-256(salt || secret) + salt is stored.
+```
+
+### Hashed tokens
+
+A token's secret is a 256-bit random value from the OS CSPRNG (`RAND_bytes`).
+At creation the **plaintext is returned exactly once**; at rest only its salted
+hash lives in the CRDT + `token.json`. Validation (`Node::authenticate_token`)
+re-hashes a presented bearer and **constant-time compares** it against every
+live token (`CRYPTO_memcmp`), rejecting revoked, expired, or disabled-user
+tokens, and resolves to the owning **User**. The crypto lives in one OpenSSL TU,
+`src/core/governance/token_secret.cpp` — the second (after
+`src/core/cluster/security.cpp`) allowed to name libcrypto directly. The
+self-contained `zetta::util::sha256_hex` is deliberately **not** used for secrets
+(it is not constant-time — "content fingerprints, never secrets").
+
+### Built-in roles
+
+`builtin_role_permissions(name)` seeds three roles, all unrestricted in scope
+(they reach every resource) and differing only in rights:
+
+| role   | rights |
+|--------|--------|
+| admin  | api:query, api:deploy, api:manage_users, data:read, data:write, orchestration:start_run |
+| writer | api:query, data:read, data:write, orchestration:start_run |
+| reader | api:query, data:read |
+
+Deny-by-default still holds: a right a role doesn't list is denied.
+
+### Bootstrap owner (closes #733)
+
+On node start, `Node::bootstrap_owner(secret)` runs only when the **user store is
+empty** and a secret is available from `--admin-token` / `ZETTA_ADMIN_TOKEN`. It
+mints an `owner` user, ensures the built-in roles exist, assigns `owner` the
+`admin` role, and issues an **access** token whose secret is the operator's — so
+a fresh node is never locked out of its own governance. The node logs **where**
+the token record lives, **never** the secret value (the operator already holds
+it). With no secret supplied, bootstrap is a no-op and the node prints how to
+seed one.
+
+### Read views + issuance
+
+`system.users`, `system.roles`, and `system.tokens` are read views
+(`src/core/query/executor.cpp`) mirroring `system.principals`/`system.keys`. The
+**tokens view exposes no secret material** — id, user, type, created, expiry, and
+revoked only, never the hash or salt. A minimal SQL issuance surface exists:
+`CREATE USER <name>` and `CREATE TOKEN FOR <user> [TYPE access|api]` (the latter
+returns the plaintext secret once, in a single result row). Tokens can also be
+issued programmatically via `Node::create_token`.
+
+> **Replication + persistence.** Users, roles, tokens, and assignments replicate
+> exactly like principals: local create/drop/revoke are captured into the
+> Automerge document (`user:` / `role:` / `token:` / `user_role:` keys), each
+> `Node::tick()` reconciles the on-disk projection (materialize-only), and each
+> entity persists to a UUID-named folder under the data dir
+> (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
+> replicates in full; the plaintext never enters the document.
+
+> **What's next.** This is only the *store*. Resolving a bearer → user → effective
+> capabilities on every request path (the default-deny gate, `--require-auth`) is
+> #2; full role management is #746; scoped grants down to table/column/blob/MCP
+> tool are #4; row-level security is #5. This slice deliberately keeps the model
+> minimal but real.
+
 ## Pointers
 
+- `include/zetta/governance/user.hpp` — `zetta::governance::User` + `UserStatus` (an authenticatable identity; #744).
+- `include/zetta/governance/role.hpp` — `zetta::governance::Role` / `RolePermissions` / `builtin_role_permissions` (named permission sets).
+- `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
+- `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
+- `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
+- `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token`.
 - `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
 - `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,
   `authorize()`.

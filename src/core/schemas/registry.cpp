@@ -44,6 +44,10 @@
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/consent.hpp"
 #include "zetta/governance/principal.hpp"
+#include "zetta/governance/role.hpp"
+#include "zetta/governance/token.hpp"
+#include "zetta/governance/user.hpp"
+#include "zetta/governance/user_role.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/ml/calibration.hpp"
@@ -159,6 +163,11 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"access_key", "access_key.schema.json",
          &zetta::governance::access_key_schema},
         {"principal", "principal.schema.json", &zetta::governance::principal_schema},
+        {"user", "user.schema.json", &zetta::governance::user_schema},
+        {"role", "role.schema.json", &zetta::governance::role_schema},
+        {"token", "token.schema.json", &zetta::governance::token_schema},
+        {"user_role", "user_role.schema.json",
+         &zetta::governance::user_role_schema},
         // observability
         {"crash_report", "crash_report.schema.json",
          &zetta::observability::crash_report_schema},

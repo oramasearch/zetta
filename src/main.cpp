@@ -26,6 +26,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -46,6 +47,7 @@ struct Options {
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string mcp_token;                      // --mcp-token (acting key id)
+    std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
@@ -75,6 +77,9 @@ void print_usage(const char* argv0) {
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
         "  --mcp-token T       Require this bearer token (= acting key id)\n"
+        "  --admin-token T     Seed the owner user's access token from this\n"
+        "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
+        "                      hashed at rest, never logged (#744)\n"
         "  --no-mcp            Disable the embedded MCP server\n"
         "  --data-dir PATH     Database directory (default: %s)\n"
         "  --listen HOST:PORT  Cluster listen address (default: %s:%u)\n"
@@ -120,6 +125,9 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--mcp-token") {
             const char* v = take_value(argc, argv, i, o, "--mcp-token");
             if (v) o.mcp_token = v;
+        } else if (arg == "--admin-token") {
+            const char* v = take_value(argc, argv, i, o, "--admin-token");
+            if (v) o.admin_token = v;
         } else if (arg == "--headless") {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
@@ -326,6 +334,41 @@ int main(int argc, char** argv) {
     if (!node.start()) {
         std::fprintf(stderr, "zetta: failed to start node\n");
         return 1;
+    }
+
+    // Bootstrap the owner (#733 / #744): on an empty user store, mint an "owner"
+    // user + admin role + an access token seeded from --admin-token (or the
+    // ZETTA_ADMIN_TOKEN env). Closes the seeding gap so a node is never locked
+    // out. We log WHERE the token lives, never its value — the operator already
+    // holds the secret they supplied.
+    {
+        std::string admin_secret = opts.admin_token;
+        if (admin_secret.empty()) {
+            if (const char* env = std::getenv("ZETTA_ADMIN_TOKEN")) {
+                admin_secret = env;
+            }
+        }
+        if (!admin_secret.empty()) {
+            const zetta::Node::BootstrapResult boot =
+                node.bootstrap_owner(admin_secret);
+            if (boot.performed) {
+                std::printf(
+                    "zetta: bootstrapped owner user '%s' + admin role + access "
+                    "token %s (stored hashed under %s) — authenticate with the "
+                    "admin token you supplied\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    (std::filesystem::path(opts.node.data_dir) / boot.token_id)
+                        .c_str());
+            } else {
+                std::printf("zetta: owner bootstrap skipped (%s)\n",
+                            boot.reason.c_str());
+            }
+        } else if (node.user_count() == 0) {
+            std::printf(
+                "zetta: no users yet — seed an owner with --admin-token "
+                "<secret> or ZETTA_ADMIN_TOKEN (the secret is hashed at rest, "
+                "never logged; #744)\n");
+        }
     }
 
     // Large-object bodies transfer peer-to-peer (their metadata is in the CRDT).

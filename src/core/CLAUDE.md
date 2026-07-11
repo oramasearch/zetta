@@ -56,10 +56,11 @@ New capability = a new implementation of an existing seam: `StorageEngine`,
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
 - Only `src/core/cluster/cluster.cpp` names Corosio (via `zetta::runtime::net`
-  — including the TLS surface, #466); only `src/core/cluster/security.cpp`
-  names OpenSSL libcrypto (join-token/CA/cert minting); only
-  `src/core/cluster/replication.cpp` names automerge-cpp. Everything else goes
-  through `zetta::runtime` / the public seams — never
+  — including the TLS surface, #466); OpenSSL libcrypto is named by exactly two
+  TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
+  `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/constant-time
+  compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.
+  Everything else goes through `zetta::runtime` / the public seams — never
   `boost::capy`/`boost::corosio`/`openssl/*`.
 - Observable state defaults to a virtual read-only `system.<table>` computed at
   query time from the live source (RULE-7); plain names, no `zetta_` prefix for

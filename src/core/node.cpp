@@ -16,6 +16,7 @@
 #include "zetta/data/partition_rebalance.hpp"
 #include "zetta/pipeline/project_graph.hpp"
 #include "zetta/cluster/replication.hpp"
+#include "zetta/governance/token_secret.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/util/sha256.hpp"
 #include "zetta/util/timestamp.hpp"
@@ -199,6 +200,10 @@ bool Node::start() {
     load_jobs();
     load_dataset_partitions();
     load_principals();
+    load_users();
+    load_roles();
+    load_tokens();
+    load_user_roles();
     load_audit_events();
     if (replication_) {
         load_replication();         // bring in the persisted CRDT document
@@ -215,11 +220,13 @@ bool Node::start() {
     std::printf(
         "zetta %s: node started (data_dir=%s, %zu databases, %zu projects, "
         "%zu deployments, %zu runs, %zu models, %zu indexes, %zu jobs, "
-        "%zu partitions, %zu principals, %zu audit events)\n",
+        "%zu partitions, %zu principals, %zu users, %zu roles, %zu tokens, "
+        "%zu audit events)\n",
         kVersion, config_.data_dir.c_str(), databases_.size(),
         projects_.size(), deployments_.size(), runs_.size(), models_.size(),
         indexes_.size(), jobs_.size(), dataset_partitions_.size(),
-        principals_.size(), audit_events_.size());
+        principals_.size(), users_.size(), roles_.size(), tokens_.size(),
+        audit_events_.size());
     if (config_.preflight) {
         integrity_ = check_integrity();
         std::printf(
@@ -1608,6 +1615,644 @@ std::shared_ptr<zetta::governance::AccessKey> Node::find_access_key(
     return nullptr;
 }
 
+// ===== Users / roles / tokens: the credential store (FEAT-9 / #744) ==========
+// Each entity is a top-level replicated record living in its own UUID-named
+// folder under the data dir (like principals), distinguished by its marker file
+// (user.json / role.json / token.json / user_role.json). Local mutations capture
+// into the CRDT (`user:` / `role:` / `token:` / `user_role:`); reconcile
+// materializes the projection back from the document (never re-captures). The
+// load_* helpers rebuild the projection from disk on start().
+
+// ----- users (user:<uuid>) ---------------------------------------------------
+
+void Node::load_users() {
+    users_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "user.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr, false);
+        if (meta.is_discarded() || !meta.is_object() || !meta.contains("name") ||
+            !meta["name"].is_string()) {
+            continue;
+        }
+        const auto status = governance::user_status_from(
+            meta.value("status", std::string{}));
+        if (!status) continue;  // boundary validation
+        users_.push_back(std::make_shared<governance::User>(
+            entry.path().filename().string(), meta["name"].get<std::string>(),
+            *status, meta.value("created", std::string{}), entry.path()));
+    }
+    std::sort(users_.begin(), users_.end(),
+              [](const auto& a, const auto& b) { return a->name() < b->name(); });
+}
+
+std::shared_ptr<zetta::governance::User> Node::find_user(
+    const std::string& name) const {
+    for (const auto& user : users_) {
+        if (user->name() == name) return user;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::governance::User> Node::find_user_by_id(
+    const std::string& id) const {
+    for (const auto& user : users_) {
+        if (user->id() == id) return user;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::governance::User> Node::create_user(std::string name) {
+    if (name.empty() || find_user(name)) return nullptr;
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::user_key(id),
+                          nlohmann::json{{"name", name},
+                                         {"status", to_string(
+                                              governance::UserStatus::Active)},
+                                         {"created", now}});
+    }
+    return materialize_user(id, std::move(name), governance::UserStatus::Active,
+                            now);
+}
+
+std::shared_ptr<zetta::governance::User> Node::materialize_user(
+    std::string id, std::string name, governance::UserStatus status,
+    std::string created) {
+    if (auto existing = find_user_by_id(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto user = std::make_shared<governance::User>(
+        std::move(id), std::move(name), status, std::move(created), dir);
+    user->persist_meta();
+    users_.push_back(user);
+    return user;
+}
+
+bool Node::set_user_status(const std::string& name,
+                           governance::UserStatus status) {
+    auto user = find_user(name);
+    if (!user) return false;
+    user->set_metadata(user->name(), status, user->created());
+    if (replication_) {
+        replication_->set(catalog::user_key(user->id()), user->metadata());
+    }
+    return true;
+}
+
+bool Node::drop_user(const std::string& name) {
+    auto user = find_user(name);
+    if (!user) return false;
+    const std::string user_id = user->id();
+    if (replication_) {
+        // Drop the user's tokens and role assignments too (their bodies go with
+        // the folders removed below). Snapshot ids first — the removes mutate the
+        // vectors as reconcile/materialize run.
+        std::vector<std::string> token_ids;
+        for (const auto& token : tokens_) {
+            if (token->user_id() == user_id) token_ids.push_back(token->id());
+        }
+        for (const std::string& id : token_ids) {
+            replication_->remove(catalog::token_key(id));
+        }
+        std::vector<std::string> assignment_ids;
+        for (const auto& assignment : user_roles_) {
+            if (assignment->user_id() == user_id) {
+                assignment_ids.push_back(assignment->id());
+            }
+        }
+        for (const std::string& id : assignment_ids) {
+            replication_->remove(catalog::user_role_key(id));
+        }
+        replication_->remove(catalog::user_key(user_id));
+    }
+    // Also drop the local projections (standalone has no CRDT to reconcile from).
+    std::vector<std::string> token_ids;
+    for (const auto& token : tokens_) {
+        if (token->user_id() == user_id) token_ids.push_back(token->id());
+    }
+    for (const std::string& id : token_ids) materialize_drop_token(id);
+    std::vector<std::string> assignment_ids;
+    for (const auto& assignment : user_roles_) {
+        if (assignment->user_id() == user_id) {
+            assignment_ids.push_back(assignment->id());
+        }
+    }
+    for (const std::string& id : assignment_ids) materialize_drop_user_role(id);
+    return materialize_drop_user(user_id);
+}
+
+bool Node::materialize_drop_user(const std::string& id) {
+    const auto it = std::find_if(
+        users_.begin(), users_.end(),
+        [&](const std::shared_ptr<governance::User>& u) { return u->id() == id; });
+    if (it == users_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    users_.erase(it);
+    return true;
+}
+
+void Node::reconcile_users(const nlohmann::json& snapshot) {
+    struct UserEntry {
+        std::string name;
+        governance::UserStatus status;
+        std::string created;
+    };
+    std::map<std::string, UserEntry> desired;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kUserPrefix);
+        if (id.empty() || !value.is_object() || !value.contains("name")) continue;
+        const auto status =
+            governance::user_status_from(value.value("status", std::string{}));
+        if (!status) continue;  // boundary
+        desired.emplace(std::move(id),
+                        UserEntry{value.value("name", std::string{}), *status,
+                                  value.value("created", std::string{})});
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& user : users_) local_ids.push_back(user->id());
+    for (const std::string& id : local_ids) {
+        if (!desired.contains(id)) materialize_drop_user(id);
+    }
+    for (const auto& [id, entry] : desired) {
+        auto user = find_user_by_id(id);
+        if (!user) {
+            materialize_user(id, entry.name, entry.status, entry.created);
+        } else if (user->name() != entry.name || user->status() != entry.status) {
+            user->set_metadata(entry.name, entry.status, entry.created);
+        }
+    }
+}
+
+// ----- roles (role:<uuid>) ---------------------------------------------------
+
+void Node::load_roles() {
+    roles_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "role.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr, false);
+        if (meta.is_discarded() || !meta.is_object() || !meta.contains("name") ||
+            !meta["name"].is_string()) {
+            continue;
+        }
+        const auto permissions = governance::role_permissions_from_json(meta);
+        if (!permissions) continue;  // boundary validation
+        roles_.push_back(std::make_shared<governance::Role>(
+            entry.path().filename().string(), meta["name"].get<std::string>(),
+            *permissions, meta.value("created", std::string{}), entry.path()));
+    }
+    std::sort(roles_.begin(), roles_.end(),
+              [](const auto& a, const auto& b) { return a->name() < b->name(); });
+}
+
+std::shared_ptr<zetta::governance::Role> Node::find_role(
+    const std::string& name) const {
+    for (const auto& role : roles_) {
+        if (role->name() == name) return role;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::governance::Role> Node::find_role_by_id(
+    const std::string& id) const {
+    for (const auto& role : roles_) {
+        if (role->id() == id) return role;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<zetta::governance::Role> Node::create_builtin_role(
+    const std::string& name) {
+    if (find_role(name)) return nullptr;  // clash
+    const auto permissions = governance::builtin_role_permissions(name);
+    if (!permissions) return nullptr;  // not a known built-in
+    const std::string id = zetta::util::new_uuid();
+    const std::string now = zetta::util::now_iso8601();
+    if (replication_) {
+        replication_->set(catalog::role_key(id),
+                          nlohmann::json{{"name", name},
+                                         {"scope", permissions->scope},
+                                         {"capabilities", permissions->capabilities},
+                                         {"created", now}});
+    }
+    return materialize_role(id, name, *permissions, now);
+}
+
+std::size_t Node::ensure_builtin_roles() {
+    std::size_t created = 0;
+    for (const std::string& name : governance::builtin_role_names()) {
+        if (!find_role(name) && create_builtin_role(name)) ++created;
+    }
+    return created;
+}
+
+std::shared_ptr<zetta::governance::Role> Node::materialize_role(
+    std::string id, std::string name, governance::RolePermissions permissions,
+    std::string created) {
+    if (auto existing = find_role_by_id(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto role = std::make_shared<governance::Role>(
+        std::move(id), std::move(name), std::move(permissions),
+        std::move(created), dir);
+    role->persist_meta();
+    roles_.push_back(role);
+    return role;
+}
+
+bool Node::materialize_drop_role(const std::string& id) {
+    const auto it = std::find_if(
+        roles_.begin(), roles_.end(),
+        [&](const std::shared_ptr<governance::Role>& r) { return r->id() == id; });
+    if (it == roles_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    roles_.erase(it);
+    return true;
+}
+
+void Node::reconcile_roles(const nlohmann::json& snapshot) {
+    struct RoleEntry {
+        std::string name;
+        governance::RolePermissions permissions;
+        std::string created;
+    };
+    std::map<std::string, RoleEntry> desired;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kRolePrefix);
+        if (id.empty() || !value.is_object() || !value.contains("name")) continue;
+        const auto permissions = governance::role_permissions_from_json(value);
+        if (!permissions) continue;  // boundary
+        desired.emplace(std::move(id),
+                        RoleEntry{value.value("name", std::string{}),
+                                  *permissions,
+                                  value.value("created", std::string{})});
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& role : roles_) local_ids.push_back(role->id());
+    for (const std::string& id : local_ids) {
+        if (!desired.contains(id)) materialize_drop_role(id);
+    }
+    for (auto& [id, entry] : desired) {
+        auto role = find_role_by_id(id);
+        if (!role) {
+            materialize_role(id, entry.name, entry.permissions, entry.created);
+        } else if (role->name() != entry.name ||
+                   role->permissions() != entry.permissions) {
+            role->set_metadata(entry.name, entry.permissions, entry.created);
+        }
+    }
+}
+
+// ----- tokens (token:<uuid>) -------------------------------------------------
+
+void Node::load_tokens() {
+    tokens_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "token.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr, false);
+        const auto value = governance::token_value_from_json(meta);
+        if (!value) continue;  // boundary validation — skip a malformed token
+        tokens_.push_back(std::make_shared<governance::Token>(
+            entry.path().filename().string(), *value, entry.path()));
+    }
+    std::sort(tokens_.begin(), tokens_.end(), [](const auto& a, const auto& b) {
+        if (a->created() != b->created()) return a->created() < b->created();
+        return a->id() < b->id();
+    });
+}
+
+std::shared_ptr<zetta::governance::Token> Node::find_token_by_id(
+    const std::string& id) const {
+    for (const auto& token : tokens_) {
+        if (token->id() == id) return token;
+    }
+    return nullptr;
+}
+
+Node::TokenIssue Node::create_token(const std::string& user_id,
+                                    governance::TokenType type,
+                                    std::string expires_at) {
+    if (!find_user_by_id(user_id)) return {};  // unknown user
+    const std::string secret = governance::generate_token_secret();
+    const std::string salt = governance::generate_token_salt();
+    const std::string hash = governance::hash_token_secret(salt, secret);
+    if (secret.empty() || salt.empty() || hash.empty()) return {};  // RNG failure
+    governance::TokenValue value;
+    value.user_id = user_id;
+    value.type = type;
+    value.hash = hash;
+    value.salt = salt;
+    value.created = zetta::util::now_iso8601();
+    value.expires_at = std::move(expires_at);
+    value.revoked = false;
+    const std::string id = zetta::util::new_uuid();
+    if (replication_) {
+        nlohmann::json crdt = value.expires_at.empty()
+            ? nlohmann::json{{"user", value.user_id},
+                             {"type", to_string(value.type)},
+                             {"hash", value.hash},
+                             {"salt", value.salt},
+                             {"created", value.created},
+                             {"revoked", value.revoked}}
+            : nlohmann::json{{"user", value.user_id},
+                             {"type", to_string(value.type)},
+                             {"hash", value.hash},
+                             {"salt", value.salt},
+                             {"created", value.created},
+                             {"expires_at", value.expires_at},
+                             {"revoked", value.revoked}};
+        replication_->set(catalog::token_key(id), std::move(crdt));
+    }
+    TokenIssue issue;
+    issue.token = materialize_token(id, std::move(value));
+    if (!issue.token) return {};
+    issue.secret = secret;  // the ONLY time the plaintext leaves this function
+    return issue;
+}
+
+std::shared_ptr<zetta::governance::Token> Node::materialize_token(
+    std::string id, governance::TokenValue value) {
+    if (auto existing = find_token_by_id(id)) return existing;
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto token = std::make_shared<governance::Token>(std::move(id),
+                                                     std::move(value), dir);
+    token->persist_meta();
+    tokens_.push_back(token);
+    return token;
+}
+
+bool Node::revoke_token(const std::string& id) {
+    auto token = find_token_by_id(id);
+    if (!token) return false;
+    if (token->revoked()) return true;  // already revoked — idempotent
+    governance::TokenValue value = token->value();
+    value.revoked = true;
+    token->set_value(value);
+    if (replication_) {
+        nlohmann::json crdt = token->metadata();
+        replication_->set(catalog::token_key(id), std::move(crdt));
+    }
+    return true;
+}
+
+bool Node::materialize_drop_token(const std::string& id) {
+    const auto it = std::find_if(
+        tokens_.begin(), tokens_.end(),
+        [&](const std::shared_ptr<governance::Token>& t) { return t->id() == id; });
+    if (it == tokens_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    tokens_.erase(it);
+    return true;
+}
+
+void Node::reconcile_tokens(const nlohmann::json& snapshot) {
+    std::map<std::string, governance::TokenValue> desired;  // id -> value
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kTokenPrefix);
+        if (id.empty()) continue;
+        const auto parsed = governance::token_value_from_json(value);
+        if (!parsed) continue;  // boundary
+        desired.emplace(std::move(id), *parsed);
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& token : tokens_) local_ids.push_back(token->id());
+    for (const std::string& id : local_ids) {
+        if (!desired.contains(id)) materialize_drop_token(id);
+    }
+    for (auto& [id, value] : desired) {
+        auto token = find_token_by_id(id);
+        if (!token) {
+            materialize_token(id, value);
+        } else if (token->value() != value) {
+            token->set_value(value);  // a peer revoked / changed it (no re-capture)
+        }
+    }
+}
+
+std::shared_ptr<zetta::governance::User> Node::authenticate_token(
+    std::string_view secret) const {
+    if (secret.empty()) return nullptr;
+    const std::string now = zetta::util::now_iso8601();
+    for (const auto& token : tokens_) {
+        // validates() is constant-time on the hash compare and rejects revoked /
+        // expired tokens; then the owning user must exist and be active.
+        if (!token->validates(secret, now)) continue;
+        auto user = find_user_by_id(token->user_id());
+        if (user && user->active()) return user;
+    }
+    return nullptr;
+}
+
+// ----- user_roles (user_role:<uuid>) -----------------------------------------
+
+void Node::load_user_roles() {
+    user_roles_.clear();
+    const fs::path root = config_.data_dir;
+    std::error_code ec;
+    fs::create_directories(root, ec);
+    for (const auto& entry : fs::directory_iterator(root, ec)) {
+        if (!entry.is_directory()) continue;
+        const fs::path meta_path = entry.path() / "user_role.json";
+        if (!fs::exists(meta_path)) continue;
+        std::ifstream in(meta_path);
+        const auto meta = nlohmann::json::parse(in, nullptr, false);
+        if (meta.is_discarded() || !meta.is_object() ||
+            !meta.contains("user") || !meta["user"].is_string() ||
+            !meta.contains("role") || !meta["role"].is_string()) {
+            continue;
+        }
+        user_roles_.push_back(std::make_shared<governance::UserRole>(
+            entry.path().filename().string(), meta["user"].get<std::string>(),
+            meta["role"].get<std::string>(), entry.path()));
+    }
+    std::sort(user_roles_.begin(), user_roles_.end(),
+              [](const auto& a, const auto& b) { return a->id() < b->id(); });
+}
+
+std::shared_ptr<zetta::governance::UserRole> Node::assign_role(
+    const std::string& user_id, const std::string& role_id) {
+    if (!find_user_by_id(user_id) || !find_role_by_id(role_id)) return nullptr;
+    // Idempotent: return the existing assignment if the pair is already assigned.
+    for (const auto& assignment : user_roles_) {
+        if (assignment->user_id() == user_id &&
+            assignment->role_id() == role_id) {
+            return assignment;
+        }
+    }
+    const std::string id = zetta::util::new_uuid();
+    if (replication_) {
+        replication_->set(catalog::user_role_key(id),
+                          nlohmann::json{{"user", user_id}, {"role", role_id}});
+    }
+    return materialize_user_role(id, user_id, role_id);
+}
+
+std::vector<std::string> Node::roles_for_user(const std::string& user_id) const {
+    std::vector<std::string> role_ids;
+    for (const auto& assignment : user_roles_) {
+        if (assignment->user_id() == user_id) {
+            role_ids.push_back(assignment->role_id());
+        }
+    }
+    return role_ids;
+}
+
+std::shared_ptr<zetta::governance::UserRole> Node::materialize_user_role(
+    std::string id, std::string user_id, std::string role_id) {
+    for (const auto& assignment : user_roles_) {
+        if (assignment->id() == id) return assignment;
+    }
+    const fs::path dir = fs::path(config_.data_dir) / id;
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) return nullptr;
+    auto assignment = std::make_shared<governance::UserRole>(
+        std::move(id), std::move(user_id), std::move(role_id), dir);
+    assignment->persist_meta();
+    user_roles_.push_back(assignment);
+    return assignment;
+}
+
+bool Node::materialize_drop_user_role(const std::string& id) {
+    const auto it = std::find_if(
+        user_roles_.begin(), user_roles_.end(),
+        [&](const std::shared_ptr<governance::UserRole>& a) {
+            return a->id() == id;
+        });
+    if (it == user_roles_.end()) return false;
+    std::error_code ec;
+    fs::remove_all((*it)->dir(), ec);
+    user_roles_.erase(it);
+    return true;
+}
+
+void Node::reconcile_user_roles(const nlohmann::json& snapshot) {
+    // Assignments are immutable (like access keys): reconcile only adds new ones
+    // and drops the ones a peer removed.
+    struct AssignmentEntry {
+        std::string user_id;
+        std::string role_id;
+    };
+    std::map<std::string, AssignmentEntry> desired;  // id -> entry
+    for (const auto& [key, value] : snapshot.items()) {
+        std::string id = catalog::id_after(key, catalog::kUserRolePrefix);
+        if (id.empty() || !value.is_object() || !value.contains("user") ||
+            !value.contains("role") || !value["user"].is_string() ||
+            !value["role"].is_string()) {
+            continue;
+        }
+        desired.emplace(std::move(id),
+                        AssignmentEntry{value["user"].get<std::string>(),
+                                        value["role"].get<std::string>()});
+    }
+    std::vector<std::string> local_ids;
+    for (const auto& assignment : user_roles_) {
+        local_ids.push_back(assignment->id());
+    }
+    for (const std::string& id : local_ids) {
+        if (!desired.contains(id)) materialize_drop_user_role(id);
+    }
+    for (auto& [id, entry] : desired) {
+        bool present = false;
+        for (const auto& assignment : user_roles_) {
+            if (assignment->id() == id) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) materialize_user_role(id, entry.user_id, entry.role_id);
+    }
+}
+
+// ----- bootstrap owner (#733) ------------------------------------------------
+
+Node::BootstrapResult Node::bootstrap_owner(
+    const std::string& admin_token_secret) {
+    BootstrapResult result;
+    if (!users_.empty()) {
+        result.reason = "user store is not empty";
+        return result;  // already seeded — never re-mint
+    }
+    if (admin_token_secret.empty()) {
+        result.reason = "no admin token secret supplied";
+        return result;  // nothing to seed the owner's credential with
+    }
+    // Mint the owner user, ensure the built-in roles exist, grant it admin, and
+    // issue its access token from the operator's secret (never generated here).
+    auto owner = create_user("owner");
+    if (!owner) {
+        result.reason = "failed to create owner user";
+        return result;
+    }
+    ensure_builtin_roles();
+    if (auto admin = find_role("admin")) {
+        assign_role(owner->id(), admin->id());
+    }
+    // Seed the token directly from the supplied secret (create_token generates a
+    // fresh secret, which we don't want for the seeded owner credential).
+    const std::string salt = governance::generate_token_salt();
+    const std::string hash = governance::hash_token_secret(salt, admin_token_secret);
+    if (salt.empty() || hash.empty()) {
+        result.reason = "failed to hash the admin token secret";
+        return result;
+    }
+    governance::TokenValue value;
+    value.user_id = owner->id();
+    value.type = governance::TokenType::Access;
+    value.hash = hash;
+    value.salt = salt;
+    value.created = zetta::util::now_iso8601();
+    value.revoked = false;
+    const std::string token_id = zetta::util::new_uuid();
+    if (replication_) {
+        replication_->set(catalog::token_key(token_id),
+                          nlohmann::json{{"user", value.user_id},
+                                         {"type", to_string(value.type)},
+                                         {"hash", value.hash},
+                                         {"salt", value.salt},
+                                         {"created", value.created},
+                                         {"revoked", value.revoked}});
+    }
+    auto token = materialize_token(token_id, std::move(value));
+    if (!token) {
+        result.reason = "failed to persist the owner token";
+        return result;
+    }
+    result.performed = true;
+    result.user_id = owner->id();
+    result.user_name = owner->name();
+    result.token_id = token->id();
+    return result;
+}
+
 bool Node::drop_run(const std::string& id) {
     if (!find_run(id)) return false;
     if (replication_) replication_->remove(catalog::run_key(id));
@@ -1886,7 +2531,8 @@ void Node::migrate_to_replication() {
 void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     // Reconcile each replicated entity type from the same snapshot, parents
     // before children (databases before tables/rows/large objects; projects
-    // before inputs/graphs; principals before access keys). Order matters.
+    // before inputs/graphs; principals before access keys; users + roles before
+    // their tokens + assignments). Order matters.
     reconcile_databases(snapshot);
     reconcile_projects(snapshot);
     reconcile_inputs(snapshot);
@@ -1899,6 +2545,10 @@ void Node::reconcile_from_replication(const nlohmann::json& snapshot) {
     reconcile_partitions(snapshot);
     reconcile_principals(snapshot);
     reconcile_access_keys(snapshot);
+    reconcile_users(snapshot);
+    reconcile_roles(snapshot);
+    reconcile_tokens(snapshot);
+    reconcile_user_roles(snapshot);
     reconcile_audit_events(snapshot);
 }
 

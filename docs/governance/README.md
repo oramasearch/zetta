@@ -7,7 +7,7 @@ through. Read here when adding any action a user can take: it must be capability
 and recorded as an `AuditEvent`. The read-only GUI is [../gui/admin-panel.md](../gui/admin-panel.md);
 the gate that governs *correctness* (vs access) is [../pipeline/gate.md](../pipeline/gate.md).
 
-- [access-control.md](access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default (RULE-3 / ENT-22).
+- [access-control.md](access-control.md) — key-scoped access (V1): `Principal` + `AccessKey` + `Scope` (resources) + `Capability` (rights, TTL'd), deny-by-default (RULE-3 / ENT-22). Plus the **credential store** (#744): `User` + `Role` + `Token` (hashed at rest) + `UserRole`, the built-in admin/writer/reader roles, and the bootstrap owner (#733).
 - [audit-trail.md](audit-trail.md) — the immutable, append-only `AuditEvent`: graph change / deploy / data-access events, replicated + JSON-Schema validated (ENT-23 / FEAT-9).
 - [governed-console.md](governed-console.md) — the governed Console/REPL screen: every statement capability-scoped, sim-Python gated before it runs, each statement audited (SCR-8 / #525).
 - Remote consent for cloud-touching actions (#621) lives with its surface: [../api/consent.md](../api/consent.md) — `ConsentLedger` (governance) + the challenge/approval protocol (api); approvals must come from a different principal, audited on both sides.
