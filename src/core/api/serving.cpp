@@ -287,14 +287,23 @@ std::string index_endpoint_path(const std::string& index_id) {
 ApiResult serve_predict(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:predict");
 
-    // Endpoint access is key-scoped (deny-by-default): a named key must hold
-    // data:predict; the empty key is the audited "unauthenticated local"
-    // session (the loopback default — the Registry::call convention).
-    if (!request.acting_key.empty()) {
-        auto decision = node.authorize(
-            request.acting_key,
-            zetta::governance::Operation{
-                zetta::governance::CapabilityDomain::Data, "predict"});
+    // Endpoint access is deny-by-default. Under the default-deny gate (#745) a
+    // token-resolved user must hold data:predict through one of its roles;
+    // otherwise the legacy key path holds — a named AccessKey must carry it,
+    // and the empty key is the audited "unauthenticated local" session (only
+    // reachable with the gate off — the loopback default).
+    const zetta::governance::Operation predict_op{
+        zetta::governance::CapabilityDomain::Data, "predict"};
+    if (request.acting_is_user) {
+        auto decision = node.authorize_user(request.acting_key, predict_op);
+        if (!decision) {
+            audit_serve(node, "predict", request.target, request.acting_key,
+                        /*allowed=*/false, decision.reason);
+            return serve.finish(
+                ApiResult::failure("unauthorized", decision.reason));
+        }
+    } else if (!request.acting_key.empty()) {
+        auto decision = node.authorize(request.acting_key, predict_op);
         if (!decision) {
             audit_serve(node, "predict", request.target, request.acting_key,
                         /*allowed=*/false, decision.reason);
@@ -413,11 +422,18 @@ ApiResult serve_predict(Node& node, const ServeRequest& request) {
 ApiResult serve_search(Node& node, const ServeRequest& request) {
     ServeSpan serve(request, "serve:search");
 
-    if (!request.acting_key.empty()) {
-        auto decision = node.authorize(
-            request.acting_key,
-            zetta::governance::Operation{
-                zetta::governance::CapabilityDomain::Data, "search"});
+    const zetta::governance::Operation search_op{
+        zetta::governance::CapabilityDomain::Data, "search"};
+    if (request.acting_is_user) {
+        auto decision = node.authorize_user(request.acting_key, search_op);
+        if (!decision) {
+            audit_serve(node, "search", request.target, request.acting_key,
+                        /*allowed=*/false, decision.reason);
+            return serve.finish(
+                ApiResult::failure("unauthorized", decision.reason));
+        }
+    } else if (!request.acting_key.empty()) {
+        auto decision = node.authorize(request.acting_key, search_op);
         if (!decision) {
             audit_serve(node, "search", request.target, request.acting_key,
                         /*allowed=*/false, decision.reason);

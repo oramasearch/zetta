@@ -322,11 +322,69 @@ issued programmatically via `Node::create_token`.
 > (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
 > replicates in full; the plaintext never enters the document.
 
-> **What's next.** This is only the *store*. Resolving a bearer → user → effective
-> capabilities on every request path (the default-deny gate, `--require-auth`) is
-> #2; full role management is #746; scoped grants down to table/column/blob/MCP
-> tool are #4; row-level security is #5. This slice deliberately keeps the model
-> minimal but real.
+> **What's next.** The *store* above is the foundation; the **default-deny gate**
+> below (`--require-auth`, #745) consumes it. Still ahead: full role management is
+> #746; scoped grants down to table/column/blob/MCP tool are #4; row-level
+> security is #5.
+
+## The default-deny gate (`--require-auth` — #745)
+
+Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
+openapi + llms.txt), and the governed serving endpoints — is fronted by **one
+auth gate**: a single middleware at the router seam (`src/core/api/http_server.cpp`,
+beside `router.use(cors())`), not a shared-secret check duplicated per handler.
+It resolves the acting identity **once** per request and hands it to the matched
+handler through the request's `route_data`; the handlers carry no auth logic of
+their own. The gate has three modes:
+
+- **`--require-auth` (secure-by-default).** Every path is closed unless the
+  request carries `Authorization: Bearer <secret>` whose secret resolves — via
+  the token store (`Node::authenticate_token`: salted-hash + **constant-time**
+  compare, rejecting revoked/expired tokens and disabled users) — to an **active
+  user**. Anything else (no header, wrong secret, revoked/expired token, disabled
+  user) is **401**. There is **no anonymous path**, and the legacy `--mcp-token`
+  shared secret is **not** honored in this mode. The resolved **user** becomes the
+  acting identity, and the capability check runs against that user's **effective
+  permissions**.
+- **Legacy `--mcp-token` (back-compat).** With no `--require-auth`, a configured
+  shared secret still gates at the door by exact match, and the token doubles as
+  the acting AccessKey id — the pre-#745 behavior, unchanged.
+- **Unauthenticated-local (the loopback default).** With neither flag, there is
+  no gate: the acting key is whatever bearer was presented (empty = the audited
+  local session). This keeps the **loopback GUI** working as a trusted local
+  session with no credential — the deliberate, documented exception, only sane on
+  a loopback bind. `--require-auth` closes even this path.
+
+The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
+the gate, so a credential-less browser preflight is never blocked.
+
+### From bearer to a capability decision
+
+Under the gate, the acting identity is a **user id**, so the operation is checked
+against the user's roles, not against an AccessKey:
+
+```cpp
+node.authenticate_token(bearer)   // -> the owning User, or none (deny-by-default)
+node.authorize_user(user_id, op)  // allowed iff some assigned role's CapabilitySet
+                                  //   permits `op` now (union of the user's roles)
+```
+
+`Node::authorize_user` is the token-resolved counterpart to the AccessKey
+`Node::authorize(key_id, op)`: an unknown or **disabled** user is denied, and an
+operation is allowed only when one of the user's assigned roles (via `UserRole`)
+holds a matching, unexpired capability — the same deny-by-default, TTL-honoring
+decision, over a user's *effective* reach. `registry.cpp` (MCP + REST) and
+`serving.cpp` (predict/search) branch on this: a token-resolved user checks
+`authorize_user`; a legacy AccessKey id checks `authorize`; and an empty acting
+key is the unauthenticated-local session — reachable **only** with the gate off.
+Bootstrap seeds `owner` with the `admin` role, so the `--admin-token` secret both
+opens the gate and (as admin) satisfies the capability check.
+
+> **Scope note.** #745 centralizes enforcement + makes it mandatory; it does not
+> expand the *model*. The built-in roles are still the minimal admin/writer/reader
+> sets (#746 adds custom roles), and scope stays coarse (#4 adds table/column/blob
+> grants). An admin token therefore reaches every route but is still deny-by-default
+> on rights its role does not name.
 
 ## Pointers
 
@@ -335,7 +393,10 @@ issued programmatically via `Node::create_token`.
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
-- `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token`.
+- `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
+- `include/zetta/api/server.hpp` — `ServerOptions::require_auth` (the default-deny gate flag, #745).
+- `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router seam (`bearer → user`, else 401; #745).
+- `tests/api/test_auth_gate.cpp` — the gate + `authorize_user` coverage (401 on every path without a token; the owner token opens them; per-user capability verdicts; back-compat with the gate off).
 - `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
 - `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,
   `authorize()`.
