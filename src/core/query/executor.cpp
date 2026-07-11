@@ -26,6 +26,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/governance/permission.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
@@ -35,6 +36,7 @@
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::query {
 namespace {
@@ -145,6 +147,7 @@ constexpr std::string_view kPrincipalsTable = "principals";
 constexpr std::string_view kKeysTable = "keys";
 constexpr std::string_view kUsersTable = "users";
 constexpr std::string_view kRolesTable = "roles";
+constexpr std::string_view kUserRolesTable = "user_roles";
 constexpr std::string_view kTokensTable = "tokens";
 constexpr std::string_view kAuditTable = "audit";
 constexpr std::string_view kActivityTable = "activity";
@@ -239,6 +242,9 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kTracesTable,
                     "one row per trace aggregated from the span ring: the "
                     "what-happened summary"},
+    SystemTableInfo{kUserRolesTable,
+                    "the user↔role assignments: one row per (user, role) grant — "
+                    "the many-to-many feeding each user's effective permissions"},
     SystemTableInfo{kUsersTable,
                     "the user registry: authenticatable identities + status + "
                     "assigned roles"},
@@ -310,6 +316,23 @@ struct overloaded : Ts... {
 };
 template <class... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
+
+// The roles:manage operation the role-management DDL (CREATE/DROP ROLE,
+// GRANT/REVOKE …) is gated on (#746). Maps onto the api:manage_roles capability
+// — see the permission vocabulary (governance/permission.hpp).
+const zetta::governance::Operation kManageRoles{
+    zetta::governance::CapabilityDomain::Api, "manage_roles"};
+
+// The first permission name in `names` outside the vocabulary, or nullopt when
+// all are valid — the boundary check GRANT/REVOKE runs before touching a role, so
+// a typo fails the whole statement rather than silently granting nothing.
+std::optional<std::string> first_unknown_permission(
+    const std::vector<std::string>& names) {
+    for (const std::string& name : names) {
+        if (!zetta::governance::is_permission(name)) return name;
+    }
+    return std::nullopt;
+}
 
 QueryResult error(std::string message) {
     QueryResult r;
@@ -770,16 +793,41 @@ std::vector<nlohmann::json> user_rows(const Node& node) {
 }
 
 // One JSON row per role for the roles system table — the named permission sets
-// (FEAT-9 / #744). Sourced from Node::roles(): the role's scope (resources) +
-// capabilities (rights), the same rendering as the keys view. No secret material.
+// (FEAT-9 / #744, #746). Sourced from Node::roles(): the role's scope (resources)
+// + capabilities (rights, the same rendering as the keys view) + its permission
+// SET rendered in the RBAC vocabulary (permission.hpp) — the referenceable atoms
+// a custom role is built from. No secret material.
 std::vector<nlohmann::json> role_rows(const Node& node) {
+    const std::string now = zetta::util::now_iso8601();
     std::vector<nlohmann::json> rows;
     for (const auto& role : node.roles()) {
         nlohmann::json row;
         row["role_id"] = role->id();
         row["name"] = role->name();
         render_reach(role->scope(), role->capabilities(), row);
+        row["permissions"] =
+            join_comma(zetta::governance::permissions_of(role->capabilities(), now));
         row["created"] = role->created();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per user↔role assignment for the user_roles system table (#746) —
+// the many-to-many that feeds each user's effective permissions. Sourced from
+// Node::user_roles(); the user/role names are resolved for legibility.
+std::vector<nlohmann::json> user_role_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& assignment : node.user_roles()) {
+        nlohmann::json row;
+        row["user_id"] = assignment->user_id();
+        row["user"] = node.find_user_by_id(assignment->user_id())
+                          ? node.find_user_by_id(assignment->user_id())->name()
+                          : std::string{};
+        row["role_id"] = assignment->role_id();
+        row["role"] = node.find_role_by_id(assignment->role_id())
+                          ? node.find_role_by_id(assignment->role_id())->name()
+                          : std::string{};
         rows.push_back(std::move(row));
     }
     return rows;
@@ -1664,6 +1712,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kRolesTable) {
                         return select_over_rows(s, role_rows(node_));
                     }
+                    if (sys == kUserRolesTable) {
+                        return select_over_rows(s, user_role_rows(node_));
+                    }
                     if (sys == kTokensTable) {
                         return select_over_rows(s, token_rows(node_));
                     }
@@ -1785,8 +1836,106 @@ QueryResult Executor::execute(const Statement& stmt,
                 r.rows.push_back(std::move(row));
                 return r;
             },
+            [&](const CreateRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (!node_.create_role(s.name)) {
+                    return error("role \"" + s.name +
+                                 "\" already exists or the name is invalid");
+                }
+                return {.message = "CREATE ROLE"};
+            },
+            [&](const DropRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (!node_.drop_role(s.name)) {
+                    return error("role \"" + s.name + "\" does not exist");
+                }
+                return {.message = "DROP ROLE"};
+            },
+            [&](const GrantPermissionStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (auto bad = first_unknown_permission(s.permissions)) {
+                    return error("unknown permission \"" + *bad +
+                                 "\" — not in the permission vocabulary");
+                }
+                if (!node_.grant_permissions(s.role, s.permissions)) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                return {.message = "GRANT"};
+            },
+            [&](const RevokePermissionStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (auto bad = first_unknown_permission(s.permissions)) {
+                    return error("unknown permission \"" + *bad +
+                                 "\" — not in the permission vocabulary");
+                }
+                if (!node_.revoke_permissions(s.role, s.permissions)) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                return {.message = "REVOKE"};
+            },
+            [&](const GrantRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                auto user = node_.find_user(s.user);
+                if (!user) {
+                    return error("user \"" + s.user + "\" does not exist");
+                }
+                auto role = node_.find_role(s.role);
+                if (!role) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                if (!node_.assign_role(user->id(), role->id())) {
+                    return error("failed to assign role \"" + s.role +
+                                 "\" to user \"" + s.user + "\"");
+                }
+                return {.message = "GRANT ROLE"};
+            },
+            [&](const RevokeRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                auto user = node_.find_user(s.user);
+                if (!user) {
+                    return error("user \"" + s.user + "\" does not exist");
+                }
+                auto role = node_.find_role(s.role);
+                if (!role) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                if (!node_.unassign_role(user->id(), role->id())) {
+                    return error("role \"" + s.role +
+                                 "\" is not assigned to user \"" + s.user + "\"");
+                }
+                return {.message = "REVOKE ROLE"};
+            },
         },
         stmt);
+}
+
+std::optional<std::string> Executor::require_permission(
+    const zetta::governance::Operation& operation) const {
+    // Mirror the API layer's three-mode authorization (registry.cpp): a
+    // token-resolved user is checked against its effective (role-union)
+    // permissions; a legacy AccessKey against its own capabilities; an empty
+    // acting key is the trusted unauthenticated-local session (the library / GUI
+    // / test path) and is always allowed. Deny-by-default otherwise.
+    if (acting_is_user_) {
+        auto decision = node_.authorize_user(acting_key_, operation);
+        if (!decision) return decision.reason;
+    } else if (!acting_key_.empty()) {
+        auto decision = node_.authorize(acting_key_, operation);
+        if (!decision) return decision.reason;
+    }
+    return std::nullopt;
 }
 
 }  // namespace zetta::query

@@ -26,11 +26,14 @@ struct RolePermissions {
 };
 
 // The permissions for a built-in role name ("admin" / "writer" / "reader"), or
-// std::nullopt for an unknown name. The three built-ins are unrestricted in
+// std::nullopt for an unknown name. Defined in terms of the permission
+// vocabulary (permission.hpp / #746) — see builtin_role_permission_names() — and
+// expanded to a CapabilitySet here. The three built-ins are unrestricted in
 // scope (they reach every resource) and differ only in rights:
-//   admin  — full control incl. governance (manage_users), deploy, read+write, runs
-//   writer — read + write data, query, start runs (no governance/deploy)
-//   reader — read data + query only
+//   admin  — every permission (incl. users:manage/roles:manage/tokens:manage/
+//            cluster:admin)
+//   writer — sql:read, sql:write, sql:ddl, mcp:call, serving:read
+//   reader — sql:read, serving:read, mcp:call
 // Deny-by-default still applies: a right not listed is denied.
 std::optional<RolePermissions> builtin_role_permissions(std::string_view name);
 
