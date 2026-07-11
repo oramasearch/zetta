@@ -151,6 +151,13 @@ zetta --peer 127.0.0.1:7777 --join-token ...   # second node on this host (auto-
 zetta --listen 127.0.0.1:7777                  # restrict to loopback (not network-reachable)
 ```
 
+A **provisioned / burst node** can auto-join with no manual flags: the binary
+reads `ZETTA_SEED_PEER` (→ `--peer`) and `ZETTA_CLUSTER_TOKEN` (→ `--join-token`),
+plus `ZETTA_DATA_DIR` (→ `--data-dir`), from its environment on boot, as defaults
+that any explicit flag overrides. So a node started with those env vars set joins
+the secure cluster automatically. See
+[docs/cloud/node-bootstrap-env.md](docs/cloud/node-bootstrap-env.md).
+
 Data replicates between nodes as an Automerge CRDT — databases, tables, rows,
 projects, runs, models, jobs, principals, and the audit trail created on any
 node converge onto every node, in memory and on disk, conflict-free, with no
