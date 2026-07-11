@@ -574,6 +574,12 @@ bool ApiServer::start() {
                    const std::string_view body = web_ui_page();
                    route.status(http::status::ok);
                    route.res.set(http::field::content_type, "text/html; charset=utf-8");
+                   stamp_response_headers(route, body);
+                   auto [send_error] = co_await route.send(body);
+                   if (send_error) co_return http::route_error(send_error);
+                   co_return http::route_done;
+               });
+
     // GET /mcp.md — public, human/agent Markdown on how to connect an MCP client to
     // this node (mcp_docs.cpp). Registered BEFORE the /mcp mount so the exact route
     // wins. Deliberately NOT bearer-gated (you must be able to read the connect
