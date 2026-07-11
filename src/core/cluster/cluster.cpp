@@ -39,6 +39,7 @@
 #include "zetta/util/uuid.hpp"
 
 #include "../base64.hpp"
+#include "../catalog.hpp"
 
 // src/core/cluster.cpp is the networking adapter: the one .cpp allowed to use
 // the Corosio backend (via zetta::runtime::net). Cluster's public header
@@ -344,6 +345,55 @@ struct Cluster::State {
             peer.last_sync = when;
             return;
         }
+    }
+
+    // Every OTHER node we know about, keyed by node id, mapped to the endpoint(s)
+    // we might dial it on (self excluded). Two sources (#789):
+    //   - a DIRECT peer's advertised HELLO candidate set (plus the path we reached
+    //     it on) — including a peer held only by membership hysteresis, so a dropped
+    //     link is redialed;
+    //   - a node known only TRANSITIVELY from the replicated membership document
+    //     (`node:<id>` -> {address}, gossiped to us through a common peer).
+    // The reconnect loop dials these so a hub-seeded STAR (every node --peer'd at one
+    // seed, as k8s does) fills into a full equal-peer mesh — learned members were
+    // recorded but never dialed before. Called on the network thread; locks `mutex`
+    // for the peer table and reads the mutex-guarded ReplicationManager separately.
+    std::map<std::string, std::vector<std::string>> known_member_endpoints(
+        const std::string& my_node_id) const {
+        std::map<std::string, std::vector<std::string>> members;
+        const auto add_endpoint = [&](const std::string& node_id,
+                                      const std::string& endpoint) {
+            if (node_id.empty() || node_id == my_node_id || endpoint.empty()) {
+                return;
+            }
+            std::vector<std::string>& list = members[node_id];
+            if (std::find(list.begin(), list.end(), endpoint) == list.end()) {
+                list.push_back(endpoint);
+            }
+        };
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            for (const PeerRecord& peer : peers) {
+                for (const std::string& endpoint : peer.endpoints) {
+                    add_endpoint(peer.node_id, endpoint);
+                }
+                add_endpoint(peer.node_id, peer.address);
+            }
+        }
+        if (replication) {
+            const nlohmann::json document = replication->snapshot();
+            if (document.is_object()) {
+                for (const auto& [key, value] : document.items()) {
+                    if (!key.starts_with(zetta::catalog::kNodePrefix)) continue;
+                    if (!value.is_object()) continue;
+                    const auto address = value.find("address");
+                    if (address == value.end() || !address->is_string()) continue;
+                    add_endpoint(key.substr(zetta::catalog::kNodePrefix.size()),
+                                 address->get<std::string>());
+                }
+            }
+        }
+        return members;
     }
 };
 
@@ -938,12 +988,31 @@ void spawn_dial(Cluster::State* self, const std::string& seed,
         dial_seed(self, std::move(candidates), my_node_id, my_endpoints, seed));
 }
 
+// Dial a learned member (a peer we're not linked to, or a node known only
+// transitively via gossip), unless a dial for it is already in flight. Deduped by
+// the member's NODE ID (not a seed string): begin_dial claims the id, dial_seed's
+// guard releases it on exit. register_link still reaps any duplicate that races a
+// concurrent dial reaching the same node via another path (a config seed / a mutual
+// dial), so links never leak (#789 stacks on the #741 registry). Network thread.
+void spawn_member_dial(Cluster::State* self, const std::string& member_id,
+                       const std::vector<std::string>& endpoints,
+                       const std::string& my_node_id,
+                       const std::vector<std::string>& my_endpoints) {
+    if (endpoints.empty()) return;
+    if (!self->begin_dial(member_id)) return;  // a dial for this member is in flight
+    log_event(self, "dial member " + short_id(member_id));
+    capy::run_async(self->io_context.get_executor())(
+        dial_seed(self, endpoints, my_node_id, my_endpoints, member_id));
+}
+
 // Periodically re-dial any seed whose node we don't currently hold a live link to,
-// so a dropped link re-establishes itself. Dedups by NODE ID, not by matching the
-// seed string against advertised addresses: a seed that never matches (a 127.0.0.1
-// loopback or a load-balancer VIP vs. the peer's advertised address) used to redial
-// every interval; now, once the seed has resolved to a node that's linked, it's
-// skipped — ending the connect+handshake churn (#739). Runs for the cluster's life.
+// AND maintain a link to every LEARNED member (not just config seeds), so a dropped
+// link re-establishes itself and a hub-seeded star fills into a full mesh (#789).
+// Both dedup by NODE ID, not by matching a seed string against advertised addresses:
+// a seed that never matches (a 127.0.0.1 loopback or a load-balancer VIP vs. the
+// peer's advertised address) used to redial every interval; now, once it has
+// resolved to a node that's linked, it's skipped — ending the connect+handshake
+// churn (#739). Runs for the cluster's life.
 capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds,
                             std::string my_node_id,
                             std::vector<std::string> my_endpoints) {
@@ -951,12 +1020,22 @@ capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds
     for (;;) {
         timer.expires_after(self->reconnect_interval);
         [[maybe_unused]] const auto wait_result = co_await timer.wait();
+        // Redial configured seeds we've lost (deduped by the node id each resolved
+        // to, #739).
         for (const std::string& seed : seeds) {
             const std::string resolved = self->seed_resolved_node(seed);
             if (!resolved.empty() && self->has_live_link(resolved)) {
                 continue;  // this seed's node already holds a live link — no redial
             }
             spawn_dial(self, seed, my_node_id, my_endpoints);
+        }
+        // Dial every learned member we don't already hold a live link to — a direct
+        // peer whose link dropped, or a node we know only transitively via gossip.
+        // This is what turns a star into an equal-peer mesh (#789).
+        for (const auto& [member_id, endpoints] :
+             self->known_member_endpoints(my_node_id)) {
+            if (self->has_live_link(member_id)) continue;  // already linked — skip
+            spawn_member_dial(self, member_id, endpoints, my_node_id, my_endpoints);
         }
     }
 }
@@ -1118,11 +1197,12 @@ void Cluster::start() {
     for (const std::string& seed : config_.seeds) {
         spawn_dial(state_.get(), seed, node_id_, my_endpoints);
     }
-    // Keep re-dialing seeds that drop, so the cluster self-heals (deduped by node id).
-    if (!config_.seeds.empty()) {
-        capy::run_async(state_->io_context.get_executor())(
-            reconnect_loop(state_.get(), config_.seeds, node_id_, my_endpoints));
-    }
+    // Keep re-dialing seeds that drop AND dial members learned via gossip, so the
+    // cluster self-heals into a full equal-peer mesh (deduped by node id, #789).
+    // Always run it — even a seedless node (a hub with no --peer) must dial the
+    // members it learns, so a star fills into a mesh.
+    capy::run_async(state_->io_context.get_executor())(
+        reconnect_loop(state_.get(), config_.seeds, node_id_, my_endpoints));
     // Age peers out of membership only after the hysteresis grace window (#739).
     capy::run_async(state_->io_context.get_executor())(
         membership_loop(state_.get()));

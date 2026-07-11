@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
 // Routing-table behaviours for #739 (stacked on the per-node-id link dedup, #741):
@@ -24,6 +25,7 @@ using zetta::cluster::Cluster;
 using zetta::cluster::ClusterConfig;
 using zetta::cluster::ClusterPeer;
 using zetta::cluster::NodeStatus;
+using zetta::cluster::ReplicationManager;
 
 namespace {
 
@@ -179,6 +181,72 @@ TEST(ClusterRouting, DialTriesCandidateEndpointsUntilOneConnects) {
     EXPECT_EQ(b.connection_count(), 1u);
     EXPECT_EQ(b.peer_count(), 1u);
 
+    b.stop();
+    a.stop();
+}
+
+// Fix #789: a hub-seeded topology (every node --peer'd at ONE seed, as a k8s
+// StatefulSet does) must fill into a full equal-peer mesh — not stay a STAR rooted
+// at the seed. Two spokes (B, C) seed only the hub (A). Once they learn each other
+// through gossiped membership (`node:<id>` entries merged via A), the reconnect loop
+// dials the learned member directly, so every node ends up linked to every other.
+TEST(ClusterRouting, HubSeededTopologyFillsIntoFullMesh) {
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+    const std::string id_c = zetta::util::new_uuid();
+
+    // Each node publishes its own membership entry, exactly as main.cpp does; gossip
+    // merges them so every node learns every node's address.
+    ReplicationManager repl_a{id_a};
+    ReplicationManager repl_b{id_b};
+    ReplicationManager repl_c{id_c};
+    repl_a.set("node:" + id_a, nlohmann::json{{"address", "127.0.0.1:43160"}});
+    repl_b.set("node:" + id_b, nlohmann::json{{"address", "127.0.0.1:43161"}});
+    repl_c.set("node:" + id_c, nlohmann::json{{"address", "127.0.0.1:43162"}});
+
+    ClusterConfig cfg_a;  // the hub — no seeds of its own
+    cfg_a.listen_host = "127.0.0.1";
+    cfg_a.listen_port = 43160;
+    cfg_a.port_range = 1;
+    cfg_a.reconnect_interval_seconds = 1;
+
+    const auto spoke = [](std::uint16_t port) {
+        ClusterConfig cfg;
+        cfg.listen_host = "127.0.0.1";
+        cfg.listen_port = port;
+        cfg.port_range = 1;
+        cfg.seeds = {"127.0.0.1:43160"};  // seed ONLY the hub
+        cfg.reconnect_interval_seconds = 1;
+        return cfg;
+    };
+
+    Cluster a(id_a, cfg_a, &repl_a);
+    Cluster b(id_b, spoke(43161), &repl_b);
+    Cluster c(id_c, spoke(43162), &repl_c);
+    a.start();
+    b.start();
+    c.start();
+
+    // Every node linked to BOTH others — the mesh, not a star (patient: the mesh
+    // forms over gossip propagation + a couple reconnect cycles).
+    ASSERT_TRUE(wait_for(
+        [&] {
+            return a.peer_count() == 2 && b.peer_count() == 2 &&
+                   c.peer_count() == 2;
+        },
+        15000));
+
+    // Exactly one served connection per peer — both spokes dial each other, and the
+    // per-node-id registry reaps the duplicate to one (no leak, #741/#789).
+    sleep_ms(2500);
+    EXPECT_EQ(a.connection_count(), 2u);
+    EXPECT_EQ(b.connection_count(), 2u);
+    EXPECT_EQ(c.connection_count(), 2u);
+    EXPECT_EQ(a.peer_count(), 2u);
+    EXPECT_EQ(b.peer_count(), 2u);
+    EXPECT_EQ(c.peer_count(), 2u);
+
+    c.stop();
     b.stop();
     a.stop();
 }
