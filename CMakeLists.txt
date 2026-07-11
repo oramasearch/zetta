@@ -408,6 +408,7 @@ add_library(zetta-core STATIC
   src/core/pipeline/deployment.cpp
   src/core/pipeline/deployment_controller.cpp
   src/core/cloud/node_capability.cpp
+  src/core/cloud/node_bootstrap_env.cpp
   src/core/cloud/provisioner.cpp
   src/core/cloud/provisioner_detect.cpp
   src/core/cloud/add_nodes.cpp

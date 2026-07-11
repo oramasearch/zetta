@@ -108,6 +108,13 @@ fallback path).
   format, requiring an upstream peer-cert accessor (#669).
 - **No revocation.** Removing a node's trust today means rotating the token
   (re-key every node). Token rotation is manual (`--join-token` on each node).
-- **Burst nodes** (cloud provisioners) receive only `ZETTA_SEED_PEER` today —
-  the join token isn't plumbed through the provisioner seam yet, so a burst
-  node comes up unable to join a TLS cluster until that follow-up lands (#670).
+- **Burst nodes** (cloud provisioners) now **consume** `ZETTA_CLUSTER_TOKEN`
+  (and `ZETTA_SEED_PEER`) from the environment on boot — the binary maps them to
+  `--join-token` / `--peer` as defaults beneath explicit flags, so a provisioned
+  node whose env carries the token derives the cluster CA + its mTLS identity and
+  auto-joins the secure cluster with no manual flags (#749;
+  [../cloud/node-bootstrap-env.md](../cloud/node-bootstrap-env.md)). The
+  remaining gap is the **injection** side: the provisioner seam still hands the
+  VM only `ZETTA_SEED_PEER` today, so until the join-token plumbing lands
+  (#670/#742) a burst node's env carries no token and it comes up unable to join
+  a TLS cluster. The consuming side is ready for it.

@@ -46,6 +46,7 @@ add_executable(zetta-tests
   pipeline/test_deployment_controller.cpp
   cloud/test_provisioner.cpp
   cloud/test_provisioner_detect.cpp
+  cloud/test_node_bootstrap_env.cpp
   cloud/test_add_nodes.cpp
   cloud/test_local_provisioner.cpp
   cloud/test_azure_provisioner.cpp
