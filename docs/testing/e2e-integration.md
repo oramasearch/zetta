@@ -22,10 +22,29 @@ is idempotent against a persistent PVC (per-run unique table/user/project names 
 append-only, [#735](https://github.com/oramasearch/zetta/issues/735)), and adapts to the node
 count (the replication canary skips on a single-node target).
 
-Every check is **PASS / FAIL / SKIP**. `SKIP` is for a genuinely-unavailable surface (no GPU, the
-OramaCore engine not compiled in, a single-node cluster, a capability this build omits) — it is
-*tracked*, never a silent pass. Any `FAIL` exits non-zero. **Never weaken an assertion to make it
-pass — extend the engine instead** (the same forcing-function rule as the rest of the suite).
+Every check is **PASS / FAIL / SKIP**, with a precise rule:
+
+- **FAIL** — the surface is present but returned the **wrong answer**. Exits non-zero.
+- **SKIP** — the surface is **genuinely absent** in this build: the engine *rejected* the statement
+  (a documented limit), a capability/view is missing, the cluster is single-node, or auth is off. It
+  is *tracked*, never a silent pass.
+
+This "engine-rejects → SKIP, wrong-answer → FAIL" split (via the `assert_count` / `assert_ok` /
+`assert_reject` helpers) is what lets one script run green across engine versions without masking a
+real regression. **Never weaken an assertion to make it pass — extend the engine instead.**
+
+### Deployed-engine behaviors the harness is grounded on
+
+The assertions are written against what the **deployed** engine actually does (verified live), not the
+HEAD source — they differ:
+
+- SQL rows come back as **named objects** (`rows: [{col: val, …}]`), not positional arrays — the
+  harness counts with `.rows | length` and reads fields by key.
+- **No bare `count(*)`** (aggregates require `GROUP BY`); **`GROUP BY` is numeric-only** (the DDF
+  engine, zetta#756); **no `ORDER BY`**. These are asserted as tracked `SKIP`s.
+- Run status is lowercase **`succeeded`** and `system.runs` keys on **`run_id`**.
+- `system.test_cases` and the user/role/token authz DDL are **not in every image** — L2 falls back to a
+  built-in case list, and the authz DDL/enforcement checks `SKIP` until that build is deployed.
 
 ### Configuration (environment)
 
@@ -51,26 +70,30 @@ ZETTA_E2E_BASE_URL=http://127.0.0.1:4800 ZETTA_E2E_LEVELS=3 sh tests/e2e/zetta-e
 
 ## Coverage
 
-**Level 2** enumerates `system.test_cases`, submits each via `testkit_run` (a *job* capability
-returning a durable `run_id`), and polls `system.runs` to a terminal status — `Succeeded` (Pass or
-Skipped) is a pass, `Failed` is a fail. So the entire testkit catalog (compute / DDF / ML /
-cluster / governance / UC-1 / example scripts) runs inside the deployed binary.
+**Level 2** (#775) discovers the case list (from `system.test_cases`, falling back to a built-in
+canonical list), submits each via `testkit_run` (a *job* capability returning a durable `run_id`),
+and polls `system.runs` (keyed on `run_id`) to a lowercase terminal status — `succeeded` is a pass,
+`failed`/`error` a fail, a case the build omits a `SKIP`. It then asserts **catalog completeness**
+(the core categories ran) and reports per-category counts. So the entire testkit catalog (compute /
+DDF / ML / cluster / governance / UC-1 / example scripts) runs inside the deployed binary.
 
-**Level 3** sections (each is a labeled block in the script — this list is the coverage map, and it
-is meant to grow):
+**Level 3** sections (each a labeled block in the script; this is the coverage map, and the epic #774
+tracks growing it):
 
-1. **identity + membership** — `/v1/server_info`, `system.nodes`
-2. **SQL DDL/DML** — `CREATE DATABASE`/`TABLE`, `INSERT`, `SELECT count`
-3. **query engine** — `WHERE` filters, `GROUP BY`, `sum`/`max`
-4. **`system.*` views** — the observability catalog is readable
-5. **MCP protocol** — `initialize` → `serverInfo`, `tools/list`
-6. **REST reads** — `GET /v1/list_*`, `/llms.txt`
-7. **orchestration** — `create_project` + read-back
-8. **serving** — `expose_index` + `/v1/indexes/:name/search`
-9. **governance** — `CREATE USER`, `system.principals`, the audit trail *(deny-by-default
-   enforcement engages only under `--require-auth`; the deployed node is unauthenticated-local, so
-   this asserts existence, not rejection)*
-10. **CRDT replication** — write on node A, converge on node B (needs ≥2 nodes)
+| § | Area | Covered / issue |
+|---|---|---|
+| 3.1 | identity + membership | `/v1/server_info`, `system.nodes` count |
+| 3.2 | SQL DDL/DML | `CREATE DATABASE`/`TABLE`, `INSERT`, `SELECT *` count, point lookup by key |
+| 3.3 | query engine (#776) | `=`/`<>`/`<`/`>`/`<=`, `AND`/`OR`/`NOT`, bool+string filters, numeric `GROUP BY`+aggregate, unknown-column rejection; `ORDER BY` + string `GROUP BY` are tracked SKIPs |
+| 3.4 | `system.*` views (#777) | all 23 views readable |
+| 3.5 | MCP protocol (#778) | `initialize`→`serverInfo`, `tools/list`, `tools/call server_info` |
+| 3.6 | REST reads (#778) | every `GET /v1/<read>`, `/v1/openapi.json`, `/llms.txt` |
+| 3.7 | orchestration | `create_project` + read-back |
+| 3.8 | serving (#779) | `expose_index` + `/v1/indexes/:name/search` |
+| 3.9 | governance | `system.principals`/`keys`/`audit` readable; authz DDL SKIP until deployed |
+| 3.10 | CRDT replication (#781) | write on node A → converge on node B (needs ≥2 nodes) |
+| 3.11 | observability (#782) | `system.runs`/`spans` carry the e2e's ops; `system.crashes` empty |
+| 3.12 | authz enforcement (#780) | under `--require-auth`: unauthenticated request denied; full matrix pending |
 
 ## How it is operated in production
 
