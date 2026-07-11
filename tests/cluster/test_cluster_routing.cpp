@@ -183,6 +183,46 @@ TEST(ClusterRouting, DialTriesCandidateEndpointsUntilOneConnects) {
     a.stop();
 }
 
+// A seed given as a DNS HOSTNAME (not a numeric IPv4) is resolved at dial time and
+// the node connects to the resolved address — the Kubernetes StatefulSet per-pod
+// DNS case, which never dialed before because the dialer accepted only numeric IPs
+// (#785). `localhost` always resolves to loopback, so this is hermetic.
+TEST(ClusterRouting, HostnameSeedResolvesAndConnects) {
+    const std::string a_id = zetta::util::new_uuid();
+
+    ClusterConfig a_config;
+    a_config.listen_host = "127.0.0.1";
+    a_config.listen_port = 43150;
+    a_config.port_range = 1;
+
+    ClusterConfig b_config;
+    b_config.listen_host = "127.0.0.1";
+    b_config.listen_port = 43151;
+    b_config.port_range = 1;
+    b_config.seeds = {"localhost:43150"};     // a DNS name, not 127.0.0.1
+    b_config.reconnect_interval_seconds = 1;  // redial promptly
+
+    Cluster a(a_id, a_config);
+    Cluster b(zetta::util::new_uuid(), b_config);
+    a.start();
+    b.start();
+
+    ASSERT_TRUE(wait_for([&] { return b.peer_count() == 1 && a.peer_count() == 1; }));
+    EXPECT_EQ(b.peers().front().node_id, a_id);
+    // The recorded reached endpoint is the STABLE seed label (the hostname), not
+    // the ephemeral resolved IP — so a pod-IP change doesn't rewrite the path.
+    EXPECT_EQ(b.peers().front().address, "localhost:43150");
+
+    // Still exactly one served connection after several reconnect cycles: each
+    // redial re-resolves (no cached IP), and the node-id dedup keeps it at one.
+    sleep_ms(2500);
+    EXPECT_EQ(b.connection_count(), 1u);
+    EXPECT_EQ(b.peer_count(), 1u);
+
+    b.stop();
+    a.stop();
+}
+
 // Membership hysteresis (the down edge): when a peer's live link drops, the live
 // views (peer_count/peers) reflect it immediately, but the MEMBERSHIP view (nodes())
 // keeps the node through the grace window so a brief blip doesn't flap it out of

@@ -361,17 +361,35 @@ void log_event(const Cluster::State* self, const std::string& message) {
 // First UUID segment, for compact logs.
 std::string short_id(const std::string& id) { return id.substr(0, 8); }
 
-bool parse_host_port(const std::string& text, net::ipv4_address& address,
+// Split "host:port" into its host token and validated port. The host may be a
+// numeric IPv4 OR a DNS name (validated only for non-emptiness here); the port
+// must be 1..65535. Returns false on a missing/out-of-range port or empty host.
+// This is the general split; parse_host_port stays the numeric-IPv4 fast path.
+bool split_host_port(const std::string& text, std::string& host,
                      std::uint16_t& port) {
     const auto colon = text.rfind(':');
     if (colon == std::string::npos) return false;
-    if (net::parse_ipv4_address(text.substr(0, colon), address)) return false;
+    host = text.substr(0, colon);
+    if (host.empty()) return false;
     const std::string port_text = text.substr(colon + 1);
     unsigned value = 0;
     const auto [ptr, ec] = std::from_chars(
         port_text.data(), port_text.data() + port_text.size(), value);
-    if (ec != std::errc{} || value == 0 || value > 65535) return false;
+    if (ec != std::errc{} || ptr != port_text.data() + port_text.size() ||
+        value == 0 || value > 65535) {
+        return false;
+    }
     port = static_cast<std::uint16_t>(value);
+    return true;
+}
+
+bool parse_host_port(const std::string& text, net::ipv4_address& address,
+                     std::uint16_t& port) {
+    std::string host;
+    if (!split_host_port(text, host, port)) return false;
+    // Numeric IPv4 only: parse_ipv4_address returns a truthy error on a
+    // non-numeric host (a DNS name), which this fast path rejects.
+    if (net::parse_ipv4_address(host, address)) return false;
     return true;
 }
 
@@ -829,12 +847,37 @@ capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
     }
 }
 
+// Connect to one already-resolved endpoint and, on success, run the handshake and
+// hold the link until it drops. `dialed_label` is the candidate string recorded as
+// the endpoint we reached the peer on — the STABLE seed/DNS name, not an ephemeral
+// resolved IP, so the per-observer path survives a pod IP change. Returns true if
+// the connect succeeded (the link was held and has since dropped); false if this
+// endpoint wasn't reachable from here (the caller tries the next candidate).
+capy::task<bool> connect_and_hold(Cluster::State* self, net::endpoint endpoint,
+                                  std::string dialed_label,
+                                  std::string my_node_id,
+                                  std::vector<std::string> my_endpoints,
+                                  std::string seed_key) {
+    net::tcp_socket socket(self->io_context);
+    socket.open();
+    if (auto [ec] = co_await socket.connect(endpoint); ec) co_return false;
+    co_await handshake_and_hold(self, std::move(socket), std::move(my_node_id),
+                                std::move(my_endpoints), /*initiate=*/true,
+                                std::move(dialed_label), std::move(seed_key));
+    co_return true;
+}
+
 // Dial one seed, trying its candidate endpoints in order until one connects — the
 // reachable path from THIS vantage point (a peer behind NAT/LB advertises several
-// candidates; only some are reachable here). `seed_key` is the original seed string,
-// used to dedup redials by the node id it resolves to. Holds the connection until it
-// drops. The dial-in-flight claim is released on every exit path (RAII) so a later
-// reconnect can redial once the link is truly gone.
+// candidates; only some are reachable here). A candidate whose host is a numeric
+// IPv4 connects directly; a candidate whose host is a DNS name (e.g. a k8s
+// StatefulSet per-pod address `foo-0.foo-headless.ns.svc.cluster.local:7777`) is
+// RESOLVED at dial time and its resolved address(es) tried in order (#785).
+// Resolution is never cached — a pod restart gets a fresh IP, so we re-resolve on
+// every dial. `seed_key` is the original seed string, used to dedup redials by the
+// node id it resolves to. Holds the connection until it drops. The dial-in-flight
+// claim is released on every exit path (RAII) so a later reconnect can redial once
+// the link is truly gone.
 capy::task<> dial_seed(Cluster::State* self, std::vector<std::string> candidates,
                        std::string my_node_id,
                        std::vector<std::string> my_endpoints,
@@ -846,18 +889,35 @@ capy::task<> dial_seed(Cluster::State* self, std::vector<std::string> candidates
     } guard{self, seed_key};
 
     for (const std::string& candidate : candidates) {
-        net::ipv4_address address;
+        std::string host;
         std::uint16_t port = 0;
-        if (!parse_host_port(candidate, address, port)) continue;
-        net::tcp_socket socket(self->io_context);
-        socket.open();
-        if (auto [ec] = co_await socket.connect(net::endpoint(address, port)); ec) {
-            continue;  // this candidate isn't reachable from here — try the next
+        if (!split_host_port(candidate, host, port)) continue;  // malformed
+        net::ipv4_address numeric;
+        if (!net::parse_ipv4_address(host, numeric)) {
+            // A numeric IPv4 host — connect directly (the unchanged fast path).
+            if (co_await connect_and_hold(self, net::endpoint(numeric, port),
+                                          candidate, my_node_id, my_endpoints,
+                                          seed_key)) {
+                co_return;  // connected (and since dropped); reconnect retries
+            }
+            continue;  // not reachable from here — try the next candidate
         }
-        co_await handshake_and_hold(self, std::move(socket), my_node_id,
-                                    my_endpoints, /*initiate=*/true,
-                                    /*dialed_endpoint=*/candidate, seed_key);
-        co_return;  // connected (and since dropped); reconnect_loop will retry
+        // A DNS hostname: resolve it at dial time (never cached — pod IPs are
+        // ephemeral) and try each resolved address in order (#785).
+        net::resolver resolver(self->io_context);
+        auto [resolve_error, results] =
+            co_await resolver.resolve(host, std::to_string(port));
+        if (resolve_error) {
+            log_event(self, "resolve " + host + " failed: " +
+                                resolve_error.message());
+            continue;  // unresolvable from here — try the next candidate
+        }
+        for (const auto& entry : results) {
+            if (co_await connect_and_hold(self, entry.get_endpoint(), candidate,
+                                          my_node_id, my_endpoints, seed_key)) {
+                co_return;  // connected on a resolved address; path stays the name
+            }
+        }
     }
 }
 

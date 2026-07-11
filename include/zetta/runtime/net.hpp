@@ -12,6 +12,7 @@
 #include <boost/capy/write.hpp>
 #include <boost/corosio.hpp>
 #include <boost/corosio/openssl_stream.hpp>
+#include <boost/corosio/resolver.hpp>
 #include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_acceptor.hpp>
 #include <boost/corosio/timer.hpp>
@@ -26,6 +27,14 @@ using tcp_socket = boost::corosio::tcp_socket;
 using endpoint = boost::corosio::endpoint;
 using ipv4_address = boost::corosio::ipv4_address;
 using timer = boost::corosio::timer;
+
+// Async DNS resolution (getaddrinfo behind the coroutine seam), so the peer
+// dialer can accept a hostname seed — e.g. a Kubernetes StatefulSet per-pod
+// address `foo-0.foo-headless.ns.svc.cluster.local:7777` — and connect to the
+// address(es) it resolves to, re-resolving on every dial (pod IPs are
+// ephemeral). See src/core/cluster/cluster.cpp dial_seed (#785).
+using resolver = boost::corosio::resolver;
+using resolver_results = boost::corosio::resolver_results;
 
 // SO_REUSEADDR on the cluster listener (#738). Set on the acceptor between
 // open() and bind() (open() deliberately does NOT set it) so a restarted node

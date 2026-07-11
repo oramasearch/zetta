@@ -171,6 +171,14 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   reaches an AKS pod via the LB, an in-cluster node via the pod IP). A seed may
   itself be a comma-separated candidate set for one peer; the dialer tries the
   candidates in order and keeps the first that connects.
+- **A seed/candidate host may be a DNS name, not just a numeric IPv4** — e.g. a
+  Kubernetes StatefulSet per-pod address
+  (`foo-0.foo-headless.ns.svc.cluster.local:7777`). A non-numeric host is
+  **resolved at dial time** and the dialer tries the resolved address(es) in
+  order; resolution is **never cached** (a pod restart gets a fresh IP, so every
+  redial re-resolves), and the *recorded* reached endpoint stays the stable
+  seed/DNS label rather than the ephemeral IP
+  ([#785](https://github.com/oramasearch/zetta/issues/785)).
 - The advertised endpoints are **reachable** addresses, never the bare wildcard —
   a `0.0.0.0` bind advertises (and `peer_command()`/the banner show) the host's
   first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
