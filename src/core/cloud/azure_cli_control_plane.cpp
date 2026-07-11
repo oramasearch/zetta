@@ -105,8 +105,23 @@ std::vector<std::string> build_vmss_create(const AzureConfig& config,
     if (!config.managed_identity.empty()) {
         flag(create, "--assign-identity", config.managed_identity);
     }
+    // Hand each VM the cluster seed address via cloud-init custom-data — and, on a
+    // secure cluster, the join token (#670) — so it boots with the equivalent of
+    // `zetta --peer <seed> --join-token <token>`. Both ride the one custom-data
+    // blob as KEY=VALUE lines the bootstrap reads. The join token is a secret; a
+    // production deployment supplies it through a proper cloud-init secret, not a
+    // readable custom-data literal — this reference carries it on the same seam as
+    // the seed only to illustrate the plumbing.
+    std::string custom_data;
     if (!config.seed_peer.empty()) {
-        flag(create, "--custom-data", "ZETTA_SEED_PEER=" + config.seed_peer);
+        custom_data = "ZETTA_SEED_PEER=" + config.seed_peer;
+    }
+    if (!config.join_token.empty()) {
+        if (!custom_data.empty()) custom_data += '\n';
+        custom_data += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
+    }
+    if (!custom_data.empty()) {
+        flag(create, "--custom-data", custom_data);
     }
     return create;
 }

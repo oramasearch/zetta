@@ -504,6 +504,10 @@ TEST(OciCliControlPlane, SpotConfigAddsPreemptibleAndSeedToInstanceDetails) {
     OciConfig config = sample_config();
     config.spot = true;
     config.seed_peer = "10.0.0.1:7777";
+    // On a secure cluster the join token rides alongside the seed peer (#670),
+    // both in the one cloud-init user_data value.
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
@@ -512,6 +516,9 @@ TEST(OciCliControlPlane, SpotConfigAddsPreemptibleAndSeedToInstanceDetails) {
     const std::string details = flag_value(*cfg, "--instance-details");
     EXPECT_NE(details.find("preemptibleInstanceConfig"), std::string::npos);
     EXPECT_NE(details.find("ZETTA_SEED_PEER=10.0.0.1:7777"), std::string::npos);
+    EXPECT_NE(details.find("ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef"
+                           "0123456789abcdef0123456789abcdef"),
+              std::string::npos);
 }
 
 TEST(OciCliControlPlane, BringUpIsBestEffortWhenFewerInstancesComeUp) {

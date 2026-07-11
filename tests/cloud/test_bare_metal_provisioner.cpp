@@ -404,6 +404,10 @@ TEST(BareMetalCliControlPlane, BringUpLaunchesTheShortfallThenLists) {
     BareMetalCliControlPlane control_plane{runner};
     BareMetalConfig config = sample_config();
     config.seed_peer = "10.0.0.1:7777";
+    // On a secure cluster the join token rides alongside the seed peer (#670) as a
+    // second container env var.
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     const ProvisionResult result =
         control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
@@ -412,7 +416,7 @@ TEST(BareMetalCliControlPlane, BringUpLaunchesTheShortfallThenLists) {
     ASSERT_EQ(result.nodes.size(), 2u);
 
     // Two `run -d` launches (the pool started empty), each carrying the label, a
-    // unique name, the image, and the seed env.
+    // unique name, the image, and the seed + token env.
     int run_calls = 0;
     for (const std::vector<std::string>& argv : fake.calls) {
         if (has_token(argv, "run")) {
@@ -421,6 +425,10 @@ TEST(BareMetalCliControlPlane, BringUpLaunchesTheShortfallThenLists) {
             EXPECT_TRUE(has_flag(argv, "--label", "zetta-burst"));
             EXPECT_TRUE(has_token(argv, "--name"));
             EXPECT_TRUE(has_flag(argv, "--env", "ZETTA_SEED_PEER=10.0.0.1:7777"));
+            EXPECT_TRUE(has_flag(
+                argv, "--env",
+                "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef"
+                "0123456789abcdef0123456789abcdef"));
             EXPECT_TRUE(has_token(argv, "ghcr.io/oramasearch/zetta:latest"));
         }
     }

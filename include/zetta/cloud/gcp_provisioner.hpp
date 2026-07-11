@@ -33,6 +33,7 @@ struct GcpConfig {
     std::string service_account;  // the service account granted to burst nodes
     bool spot = false;            // burst Spot / preemptible (cheaper, evictable) capacity
     std::string seed_peer;        // cluster seed host:port injected into node bootstrap to auto-join
+    std::string join_token;       // cluster join token (secret) injected as ZETTA_CLUSTER_TOKEN so a burst node joins a SECURE (mTLS) cluster (#670); set at wire time from this cluster's own token, never serialized (kept off system.provisioners)
 
     bool operator==(const GcpConfig&) const = default;
 

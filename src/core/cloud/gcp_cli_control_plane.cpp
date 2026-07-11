@@ -66,11 +66,22 @@ std::vector<std::string> template_argv(const GcpConfig& config) {
         flag(create, "--provisioning-model", "SPOT");
         flag(create, "--instance-termination-action", "STOP");
     }
-    // Hand each node the cluster seed address at boot so it auto-joins, via a
-    // startup-script metadata entry. (A real deployment supplies a full startup
-    // script; this illustrative metadata carries the seed peer the bootstrap reads.)
+    // Hand each node the cluster seed address at boot so it auto-joins — and, on a
+    // secure cluster, the join token (#670) — via a startup-script metadata entry,
+    // so the node comes up with the equivalent of `zetta --peer <seed>
+    // --join-token <token>`. (A real deployment supplies a full startup script and
+    // sources the secret token from Secret Manager; this illustrative metadata
+    // carries both KEY=VALUE lines the bootstrap reads on the same seam.)
+    std::string startup;
     if (!config.seed_peer.empty()) {
-        flag(create, "--metadata", "startup-script=ZETTA_SEED_PEER=" + config.seed_peer);
+        startup = "ZETTA_SEED_PEER=" + config.seed_peer;
+    }
+    if (!config.join_token.empty()) {
+        if (!startup.empty()) startup += '\n';
+        startup += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
+    }
+    if (!startup.empty()) {
+        flag(create, "--metadata", "startup-script=" + startup);
     }
     return create;
 }

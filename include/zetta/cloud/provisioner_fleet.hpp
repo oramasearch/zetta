@@ -53,12 +53,18 @@ public:
     // For every detected provisioner config in `configs` whose target is a
     // known cloud provider, inject `default_seed_peer` into any config that did
     // not set its own seed (so burst nodes auto-join this cluster) and
-    // construct the reference CLI control plane + provisioner. Returns a
-    // per-provider outcome for every known cloud provider; a provider with no
-    // detected config is reported skipped. Never throws — a malformed detected
-    // config is simply skipped, matching the seam's no-throw contract.
+    // `default_cluster_token` into any config that did not set its own token (so
+    // a burst node can join a SECURE, non-plaintext cluster — #670; the token is
+    // this cluster's own join token, secret, injected here at wire time and never
+    // stored in the detected config / system.provisioners), then construct the
+    // reference CLI control plane + provisioner. Returns a per-provider outcome
+    // for every known cloud provider; a provider with no detected config is
+    // reported skipped. Never throws — a malformed detected config is simply
+    // skipped, matching the seam's no-throw contract. `default_cluster_token` is
+    // empty for a plaintext cluster, in which case no token is injected.
     std::vector<Wiring> wire(const std::vector<ProvisionerConfig>& configs,
-                             const std::string& default_seed_peer);
+                             const std::string& default_seed_peer,
+                             const std::string& default_cluster_token = {});
 
     // The wired Provisioner for a catalog target id, or nullptr when that
     // target has no detected context here. Non-owning; valid for the fleet's

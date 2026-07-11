@@ -59,6 +59,26 @@ re-minted under the new CA. `--cluster-plaintext` disables the whole subsystem
 (debugging only — it prints a warning, and such a node cannot talk to a TLS
 cluster); it conflicts with `--join-token`.
 
+### Provisioned / burst nodes (#670)
+
+A cloud-burst node can't be handed these flags interactively, so the provisioner
+seam injects them at boot. Each `<Vendor>ControlPlane` puts the cluster's seed
+address in **`ZETTA_SEED_PEER`** and — when the cluster is secure — its join token
+in **`ZETTA_CLUSTER_TOKEN`**, on the same per-cloud delivery seam (an AWS instance
+tag / Azure cloud-init custom-data / GCP + OCI metadata / a Kubernetes pod env / a
+container `--env`), so the node's bootstrap comes up with the equivalent of
+`zetta --peer <seed> --join-token <token>` and joins the **mTLS** cluster instead
+of being stuck on `--cluster-plaintext`. Both are injected once, at fleet
+wire time, from this node's own live cluster security — `main.cpp` passes
+`ClusterConfig::security.join_token` to `ProvisionerFleet::wire`, which fills any
+per-cloud config that didn't set its own. The token is the cluster secret, so
+unlike the seed peer it is **never** part of the config's JSON boundary: it is not
+serialized into the node's detected provisioner config or the `system.provisioners`
+table, and rides only the bootstrap seam. A plaintext cluster has an empty token,
+so nothing is injected. (The reference control planes carry the token illustratively
+on the same visible seam as the seed; a production control plane sources it from a
+per-cloud secret store rather than a describe-able tag / literal.)
+
 ## On disk — `<data_dir>/security/`
 
 | File | What | Mode |
@@ -96,8 +116,7 @@ traffic (TLS 1.3), uninvited joins (no token → no CA-signed cert → handshake
 fails), silent plaintext downgrade (fail-closed credential loading, no
 fallback path).
 
-**Open, by design of this slice** (follow-ups: #669 enrollment/pinning/revocation,
-#670 burst-provisioner token plumbing):
+**Open, by design of this slice** (follow-up: #669 enrollment/pinning/revocation):
 
 - **Member-vs-member node-id impersonation.** Corosio exposes no
   peer-certificate accessor, so the `HELLO` node id cannot be checked against
@@ -118,3 +137,7 @@ fallback path).
   VM only `ZETTA_SEED_PEER` today, so until the join-token plumbing lands
   (#670/#742) a burst node's env carries no token and it comes up unable to join
   a TLS cluster. The consuming side is ready for it.
+
+**Closed by #670:** burst nodes now receive the join token too — the provisioner
+seam injects `ZETTA_CLUSTER_TOKEN` alongside `ZETTA_SEED_PEER`, so a provisioned
+node joins a secure (non-plaintext) cluster (see "Provisioned / burst nodes" above).

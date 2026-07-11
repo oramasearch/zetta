@@ -140,7 +140,7 @@ injected **`CommandRunner`**, and parses the JSON the CLI returns.
 
 | `GcpControlPlane` call | `gcloud` command (shape) |
 |---|---|
-| `bring_up` | `gcloud compute instance-templates create <template> [--machine-type … --image-family … --network … --subnet … --service-account … --provisioning-model SPOT --instance-termination-action STOP --metadata startup-script=ZETTA_SEED_PEER=…]`, then `gcloud compute instance-groups managed create <pool> --template <template> --size N`, then `… managed resize <pool> --size N`, then `list` |
+| `bring_up` | `gcloud compute instance-templates create <template> [--machine-type … --image-family … --network … --subnet … --service-account … --provisioning-model SPOT --instance-termination-action STOP --metadata startup-script="ZETTA_SEED_PEER=… ZETTA_CLUSTER_TOKEN=…"]`, then `gcloud compute instance-groups managed create <pool> --template <template> --size N`, then `… managed resize <pool> --size N`, then `list` (the join token rides the startup-script only on a secure cluster — #670) |
 | `destroy` | `gcloud compute instance-groups managed delete-instances <pool> --instances <node_id> --quiet` |
 | `list` | `gcloud compute instance-groups managed list-instances <pool> --format json` |
 
