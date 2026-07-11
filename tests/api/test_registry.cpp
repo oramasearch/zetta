@@ -57,7 +57,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 41u);
+    EXPECT_EQ(registry.size(), 42u);
     EXPECT_TRUE(registry.find("server_info"));
     // The #646 spec-index slice.
     EXPECT_TRUE(registry.find("list_specs"));
@@ -65,6 +65,8 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
     EXPECT_TRUE(registry.find("sql"));
     EXPECT_TRUE(registry.find("submit_feedback"));
     EXPECT_TRUE(registry.find("search"));
+    // The in-app test-suite catalog listing (sibling of testsuite_run).
+    EXPECT_TRUE(registry.find("testsuite_list"));
     // The #616 read-parity slice: typed detail reads + list_* siblings.
     for (const char* name :
          {"get_project", "get_run", "get_model", "get_job", "get_index",
@@ -73,13 +75,13 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
         EXPECT_TRUE(registry.find(name)) << name;
     }
     // The #617 action-parity slice: the rest of the governed product loop,
-    // each requiring orchestration:<name>; run/testkit_run are kind:job.
+    // each requiring orchestration:<name>; run/testsuite_run are kind:job.
     // ...and the governed serving slice (#648): exposure is an
     // orchestration:<name> action like every other mutation.
     for (const char* name :
          {"capture_intent", "import_n8n", "compile_intent", "compile_n8n",
           "compile_python", "gate", "deploy", "run", "add_dataset",
-          "testkit_run", "expose_model", "unexpose_model", "expose_index",
+          "testsuite_run", "expose_model", "unexpose_model", "expose_index",
           "unexpose_index"}) {
         const auto entry = registry.find(name);
         ASSERT_TRUE(entry) << name;
@@ -89,7 +91,7 @@ TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
         EXPECT_EQ(entry->required_operation.action, name);
     }
     EXPECT_EQ(registry.find("run")->kind, CapabilityKind::Job);
-    EXPECT_EQ(registry.find("testkit_run")->kind, CapabilityKind::Job);
+    EXPECT_EQ(registry.find("testsuite_run")->kind, CapabilityKind::Job);
     EXPECT_FALSE(registry.find("no_such_tool"));
 }
 
@@ -376,6 +378,24 @@ TEST_F(RegistryFixture, JourneyListReadsReturnCompactRows) {
     ASSERT_EQ(runs.value.at("runs").size(), 1u);
     EXPECT_EQ(runs.value.at("runs")[0].at("id"), run->id());
     EXPECT_EQ(runs.value.at("runs")[0].at("status"), "pending");
+
+    // testsuite_list serves the whole in-app test-suite catalog (independent of
+    // node state): every case with its id / category / name + tunable options,
+    // the same source system.test_cases and the Test suite panel read.
+    auto tests = call("testsuite_list", nlohmann::json::object());
+    ASSERT_TRUE(tests.ok) << tests.error.message;
+    ASSERT_FALSE(tests.value.at("tests").empty());
+    bool found_elementwise = false;
+    for (const auto& entry : tests.value.at("tests")) {
+        EXPECT_FALSE(entry.at("id").get<std::string>().empty());
+        EXPECT_FALSE(entry.at("category").get<std::string>().empty());
+        EXPECT_TRUE(entry.contains("options"));
+        if (entry.at("id") == "compute.cpu.elementwise") {
+            found_elementwise = true;
+            EXPECT_EQ(entry.at("category"), "compute");
+        }
+    }
+    EXPECT_TRUE(found_elementwise);
 
     auto models = call("list_models", nlohmann::json::object());
     ASSERT_TRUE(models.ok) << models.error.message;

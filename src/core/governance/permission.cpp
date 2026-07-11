@@ -1,0 +1,112 @@
+#include "zetta/governance/permission.hpp"
+
+#include <array>
+
+namespace zetta::governance {
+namespace {
+
+// One entry of the permission vocabulary: the atom's name and the operations it
+// expands to. THE single source of truth for the mapping (see permission.hpp).
+struct PermissionEntry {
+    std::string_view name;
+    std::vector<Operation> operations;
+};
+
+// The canonical vocabulary, in privilege-ish order (read → write → manage). The
+// list, the mapping, and the built-in role sets below all derive from this — a
+// new atom is one entry here plus (optionally) membership in a built-in role.
+const std::vector<PermissionEntry>& vocabulary() {
+    static const std::vector<PermissionEntry> entries = {
+        {"sql:read", {{CapabilityDomain::Data, "read"}}},
+        {"sql:write", {{CapabilityDomain::Data, "write"}}},
+        {"sql:ddl", {{CapabilityDomain::Data, "ddl"}}},
+        {"mcp:call", {{CapabilityDomain::Api, "query"}}},
+        {"blob:read", {{CapabilityDomain::Data, "blob_read"}}},
+        {"serving:read",
+         {{CapabilityDomain::Data, "predict"}, {CapabilityDomain::Data, "search"}}},
+        {"users:manage", {{CapabilityDomain::Api, "manage_users"}}},
+        {"roles:manage", {{CapabilityDomain::Api, "manage_roles"}}},
+        {"tokens:manage", {{CapabilityDomain::Api, "manage_tokens"}}},
+        {"cluster:admin", {{CapabilityDomain::Api, "cluster_admin"}}},
+    };
+    return entries;
+}
+
+const PermissionEntry* find_entry(std::string_view name) {
+    for (const PermissionEntry& entry : vocabulary()) {
+        if (entry.name == name) return &entry;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+const std::vector<std::string>& permission_vocabulary() {
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> out;
+        out.reserve(vocabulary().size());
+        for (const PermissionEntry& entry : vocabulary()) {
+            out.emplace_back(entry.name);
+        }
+        return out;
+    }();
+    return names;
+}
+
+bool is_permission(std::string_view name) { return find_entry(name) != nullptr; }
+
+std::vector<Operation> permission_operations(std::string_view name) {
+    if (const PermissionEntry* entry = find_entry(name)) return entry->operations;
+    return {};
+}
+
+CapabilitySet capabilities_for_permissions(
+    const std::vector<std::string>& names) {
+    CapabilitySet capabilities;
+    for (const std::string& name : names) {
+        for (const Operation& op : permission_operations(name)) {
+            // De-duplicate: two permissions may share an operation.
+            const Operation right{op.domain, op.action};
+            bool present = false;
+            for (const Capability& existing : capabilities.grants) {
+                if (existing.right() == right) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) capabilities.grant(op.domain, op.action);
+        }
+    }
+    return capabilities;
+}
+
+std::vector<std::string> permissions_of(const CapabilitySet& capabilities,
+                                        std::string_view now) {
+    std::vector<std::string> names;
+    for (const PermissionEntry& entry : vocabulary()) {
+        bool all = !entry.operations.empty();
+        for (const Operation& op : entry.operations) {
+            if (!capabilities.permits(op, now)) {
+                all = false;
+                break;
+            }
+        }
+        if (all) names.emplace_back(entry.name);
+    }
+    return names;
+}
+
+std::optional<std::vector<std::string>> builtin_role_permission_names(
+    std::string_view role) {
+    if (role == "admin") return permission_vocabulary();  // everything
+    if (role == "writer") {
+        return std::vector<std::string>{"sql:read", "sql:write", "sql:ddl",
+                                        "mcp:call", "serving:read"};
+    }
+    if (role == "reader") {
+        return std::vector<std::string>{"sql:read", "serving:read", "mcp:call"};
+    }
+    return std::nullopt;
+}
+
+}  // namespace zetta::governance

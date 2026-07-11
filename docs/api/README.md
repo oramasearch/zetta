@@ -42,7 +42,9 @@ MCP/HTTP work.
 `tools/list`, `tools/call`), served by Beast2 on the vendored capy/corosio
 stack, embedded in BOTH run modes. Defaults: `127.0.0.1:4800`, the audited
 unauthenticated-local session; flags: `--mcp-listen HOST:PORT`,
-`--mcp-token T` (the bearer token doubles as the acting AccessKey id),
+`--mcp-token T` (legacy shared secret, doubles as the acting AccessKey id),
+`--require-auth` (the default-deny gate — bearer resolves to a **user** on every
+path or 401; see [access-control.md](../governance/access-control.md#the-default-deny-gate---require-auth---745)),
 `--no-mcp`. Every `tools/call` result carries `structuredContent` with
 `ok/value|error`, `trace_id`, `span_id`, `duration_ms` (`value` follows the
 tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal
@@ -132,6 +134,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `get_trace` | read | api:query | every span of one trace id |
 | `list_specs` | read | api:query | the spec index (#646): OpenAPI + every capability and boundary schema as names/kinds/links |
 | `get_spec` | read | api:query | one spec document by its `list_specs` name (`openapi`, `<capability>.input`/`.output`, or a boundary name) |
+| `testsuite_list` | read | api:query | the in-app test-suite catalog — every case id + category + tunable options; ids feed `testsuite_run` (also queryable as `system.test_cases`) |
 | `submit_feedback` | action | api:query | snapshot a feedback bundle (description + traces + errors + crashes + versions) as a large object; export is explicit (#640) |
 | `create_project` | action | orchestration:create_project | create a replicated AI project |
 | `expose_model` | action | orchestration:expose_model | publish a model's /v1/models/{name}/predict endpoint on every node (replicated flag); endpoint access needs data:predict |
@@ -147,7 +150,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
 | `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
-| `testkit_run` | job | orchestration:testkit_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
+| `testsuite_run` | job | orchestration:testsuite_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
 | `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
 | `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated** re-detect of the local CLIs' deployment contexts → `system.provisioners` |
 | `add_nodes` | action | orchestration:add_nodes | add permanent cluster nodes via a wired provisioner; cloud targets **consent-gated** (billable), `local` executes directly |
@@ -170,6 +173,6 @@ GUI cannot drift (RULE-7). Arbitrary reads beyond these go through `sql`.
 **Action parity (#617).** The mutating half of the loop — each a thin caller
 of the same engine entry point the GUI drives, `orchestration:<name>`-scoped,
 audited under the acting key, `mutates` firing the activity hook; `run` and
-`testkit_run` are `kind: job` and return the engine's durable Run id
+`testsuite_run` are `kind: job` and return the engine's durable Run id
 immediately (poll `get_run` / `system.runs`). Details + handle-ownership
 design: [governed-actions.md](governed-actions.md).

@@ -159,11 +159,39 @@ ApiResult Registry::call(const std::string& name, const nlohmann::json& input,
         return finish(ApiResult::failure("invalid_input", reason));
     }
 
-    // Authorization: an empty acting key is the audited "unauthenticated
-    // local" session (the governed-console precedent — the default loopback
-    // binding); any named key must hold the entry's required capability
-    // (deny-by-default). Either way the decision lands in the audit trail.
-    if (!context.acting_key.empty()) {
+    // Authorization (deny-by-default). Under the default-deny gate (#745) the
+    // acting identity is a TOKEN-resolved user; otherwise the legacy key path
+    // holds (a named AccessKey must carry the right; an empty acting key is the
+    // audited "unauthenticated local" session — only reachable with the gate off).
+    // Either way the decision is audited.
+    //
+    // The invoke right for the MCP/REST surface is `mcp:call` ({api,query}). Under
+    // #747 that right is object-scopable PER TOOL, so for a user the invoke check
+    // is `may_call_tool` (a flat mcp:call covers every tool — the built-ins have
+    // it — while `mcp:call ON TOOL x` covers only x). A capability that needs a
+    // MORE-specific right than the bare invoke (the orchestration actions) also
+    // requires that right; capabilities gated on {api,query} need only the
+    // per-tool invoke right (may_call_tool subsumes the coarse check).
+    const zetta::governance::Operation kInvokeRight{
+        zetta::governance::CapabilityDomain::Api, "query"};
+    if (context.acting_is_user) {
+        if (!context.node.may_call_tool(context.acting_key,
+                                        /*acting_is_user=*/true, name)) {
+            const std::string reason = "no mcp:call grant for tool '" + name + "'";
+            audit_call(context.node, *capability, context.acting_key,
+                       /*allowed=*/false, reason);
+            return finish(ApiResult::failure("unauthorized", reason));
+        }
+        if (!(capability->required_operation == kInvokeRight)) {
+            auto decision = context.node.authorize_user(
+                context.acting_key, capability->required_operation);
+            if (!decision) {
+                audit_call(context.node, *capability, context.acting_key,
+                           /*allowed=*/false, decision.reason);
+                return finish(ApiResult::failure("unauthorized", decision.reason));
+            }
+        }
+    } else if (!context.acting_key.empty()) {
         auto decision =
             context.node.authorize(context.acting_key, capability->required_operation);
         if (!decision) {

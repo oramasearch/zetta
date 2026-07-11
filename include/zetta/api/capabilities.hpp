@@ -27,7 +27,7 @@
 // adds governed action parity — the rest of the product loop as thin callers
 // of the same engine entry points the GUI drives (capture_intent · import_n8n
 // · compile_intent/n8n/python · gate · deploy · run · add_dataset ·
-// testkit_run; run/testkit_run are `kind: job` and return the engine's durable
+// testsuite_run; run/testsuite_run are `kind: job` and return the engine's durable
 // Run id immediately). See docs/api/governed-actions.md +
 // docs/api/adding-a-capability.md.
 namespace zetta::api {

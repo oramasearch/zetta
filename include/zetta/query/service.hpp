@@ -3,6 +3,7 @@
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -22,10 +23,16 @@ namespace query {
 //
 // Pass a Cluster to make the `nodes` system table queryable (all nodes +
 // replication status).
+//
+// `acting_key` / `acting_is_user` carry the API gate's resolved identity (#745)
+// so the executor can gate role-management DDL on roles:manage (#746). The
+// default (empty acting key) is the trusted unauthenticated-local session — the
+// GUI/library/test path — and is always allowed.
 class QueryService {
 public:
-    explicit QueryService(Node& node, const zetta::cluster::Cluster* cluster = nullptr)
-        : executor_(node, cluster) {}
+    explicit QueryService(Node& node, const zetta::cluster::Cluster* cluster = nullptr,
+                          std::string acting_key = {}, bool acting_is_user = false)
+        : executor_(node, cluster, std::move(acting_key), acting_is_user) {}
 
     struct Outcome {
         std::vector<std::string> messages;  // one status per executed statement

@@ -1,12 +1,15 @@
 #pragma once
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/governance/capability.hpp"
 #include "zetta/query/ast.hpp"
 
 namespace zetta {
@@ -37,16 +40,36 @@ std::span<const std::string_view> system_table_names();
 //
 // An optional Cluster lets SELECT read the `nodes` system table (all nodes
 // + replication status); without one, querying it returns a clear error.
+//
+// `acting_key` / `acting_is_user` carry the identity the API gate resolved (#745)
+// so per-statement authorization can run inside the engine: role-management DDL
+// (CREATE ROLE, GRANT/REVOKE …) is gated on the roles:manage permission (#746).
+// The default — an empty acting key — is the unauthenticated-local session (the
+// library / GUI / test path), which is trusted and always allowed, exactly as
+// the API layer treats an empty acting key.
 class Executor {
 public:
-    explicit Executor(Node& node, const zetta::cluster::Cluster* cluster = nullptr)
-        : node_(node), cluster_(cluster) {}
+    explicit Executor(Node& node, const zetta::cluster::Cluster* cluster = nullptr,
+                      std::string acting_key = {}, bool acting_is_user = false)
+        : node_(node),
+          cluster_(cluster),
+          acting_key_(std::move(acting_key)),
+          acting_is_user_(acting_is_user) {}
 
     QueryResult execute(const Statement& stmt, const std::string& current_database);
 
 private:
+    // Authorize a role-management operation against the acting identity. Returns
+    // an empty optional when allowed; a deny reason otherwise. An empty acting key
+    // is the trusted local session (allowed); a token-resolved user is checked
+    // against its effective permissions; a legacy AccessKey against its own.
+    std::optional<std::string> require_permission(
+        const zetta::governance::Operation& operation) const;
+
     Node& node_;
     const zetta::cluster::Cluster* cluster_;
+    std::string acting_key_;
+    bool acting_is_user_;
 };
 
 }  // namespace query

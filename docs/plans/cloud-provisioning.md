@@ -58,16 +58,36 @@ reasons. This is the next real work.
 
 ### Gap A — the VM doesn't actually run zetta yet
 
+**Update (#749): the env→flag half is built.** The binary now reads its
+provisioning env on boot — `ZETTA_SEED_PEER`→`--peer`, `ZETTA_CLUSTER_TOKEN`→
+`--join-token`, `ZETTA_DATA_DIR`→`--data-dir` — as defaults beneath explicit
+flags (option (a) from #749; `zetta::cloud::apply_bootstrap_env`,
+[../cloud/node-bootstrap-env.md](../cloud/node-bootstrap-env.md)). So a node that
+comes up **with those env vars set and the binary launched auto-joins the secure
+(mTLS) cluster with no manual flags** — the node-bootstrap unit no longer has to
+translate env into flags; the launched process inherits and consumes the injected
+env itself. What remains of Gap A is purely **delivering + starting the binary**.
+
 `bring_up` passes the cluster seed to the VM as `--custom-data
-ZETTA_SEED_PEER=<addr>`, but there is **no cloud-init that installs and starts the
-zetta binary**. The VM boots a bare Ubuntu image and sits there.
+ZETTA_SEED_PEER=<addr>`, but there is still **no cloud-init that installs and
+starts the zetta binary**. The VM boots a bare Ubuntu image and sits there.
+(The join **token** injection itself — `ZETTA_CLUSTER_TOKEN` through the
+provisioner seam — is the sibling #670/#742 plumbing; the consuming side is now
+ready for it.)
+ZETTA_SEED_PEER=<addr>` (and, on a secure cluster, the join token as
+`ZETTA_CLUSTER_TOKEN=<token>` — #670), but there is **no cloud-init that installs
+and starts the zetta binary**. The VM boots a bare Ubuntu image and sits there.
+When the systemd unit below is built it must read **both** env vars and start
+`zetta --peer $ZETTA_SEED_PEER --join-token $ZETTA_CLUSTER_TOKEN` (dropping the
+`--join-token` when the token is absent, i.e. a plaintext cluster).
 
 *How we'd like to try it (options, roughly in order of preference):*
 
 - **A pre-baked image / shared-gallery image** that already contains the zetta
-  binary + a systemd unit reading `ZETTA_SEED_PEER` from instance metadata. Fastest
-  boot, most reproducible; needs an image-build pipeline (a later sub-slice can bake
-  it from CI).
+  binary + a systemd unit that sets `ZETTA_SEED_PEER` / `ZETTA_CLUSTER_TOKEN` from
+  instance metadata in the launched process's environment (no flag translation
+  needed — the binary reads the env). Fastest boot, most reproducible; needs an
+  image-build pipeline (a later sub-slice can bake it from CI).
 - **cloud-init that pulls the binary** (from a release URL / blob) and runs it —
   slower boot, no image pipeline, good for a first working join. This is the likely
   **first** step: prove the join with cloud-init, then optimize with an image.

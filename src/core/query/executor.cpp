@@ -26,6 +26,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/governance/permission.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
 #include "zetta/ddf/ops.hpp"
@@ -35,6 +36,8 @@
 #include "zetta/node.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/util/timestamp.hpp"
+#include "zetta/testkit/test_suite.hpp"
 
 namespace zetta::query {
 namespace {
@@ -72,6 +75,13 @@ namespace {
 //  - `principals` — the authenticated actors (Node::principals(); ENT-20).
 //  - `keys` — the access keys the principals own (ENT-21/22): each key's
 //    scope (resources) + capabilities (rights), no secret material.
+//  - `users` — the authenticatable identities (Node::users(); FEAT-9 / #744):
+//    identity + status + assigned role names + token count.
+//  - `roles` — the named permission sets (Node::roles()): each role's scope
+//    (resources) + capabilities (rights), the same rendering as `keys`.
+//  - `tokens` — the bearer credentials per user (Node::tokens()): id, user,
+//    type, created, expiry, revoked — deliberately NO hash/salt/secret (the
+//    plaintext is shown once at creation and never stored).
 //  - `audit` — the immutable, append-only audit trail (Node::audit_events();
 //    ENT-23 / FEAT-9).
 //  - `activity` — the merged, newest-first activity feed (#622): the audit trail
@@ -136,6 +146,11 @@ constexpr std::string_view kConsentRequestsTable = "consent_requests";
 constexpr std::string_view kRunsTable = "runs";
 constexpr std::string_view kPrincipalsTable = "principals";
 constexpr std::string_view kKeysTable = "keys";
+constexpr std::string_view kUsersTable = "users";
+constexpr std::string_view kRolesTable = "roles";
+constexpr std::string_view kUserRolesTable = "user_roles";
+constexpr std::string_view kPoliciesTable = "policies";
+constexpr std::string_view kTokensTable = "tokens";
 constexpr std::string_view kAuditTable = "audit";
 constexpr std::string_view kActivityTable = "activity";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
@@ -148,6 +163,7 @@ constexpr std::string_view kSpansTable = "spans";
 constexpr std::string_view kTracesTable = "traces";
 constexpr std::string_view kCrashesTable = "crashes";
 constexpr std::string_view kTablesTable = "tables";
+constexpr std::string_view kTestCasesTable = "test_cases";
 
 // The system-table catalog: every table the `system` database serves, with a
 // one-line description, alphabetical. THE single list (#684) — the
@@ -208,10 +224,16 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kPipelineJobsTable,
                     "recorded near-data compute jobs (ephemeral, not "
                     "replicated)"},
+    SystemTableInfo{kPoliciesTable,
+                    "the row-level security policy registry: per-table USING "
+                    "read filters + WITH CHECK write filters (RLS)"},
     SystemTableInfo{kPrincipalsTable, "the authenticated actors"},
     SystemTableInfo{kProvisionersTable,
                     "cloud-burst provisioners detected from this node's local "
                     "CLIs; carries no credentials"},
+    SystemTableInfo{kRolesTable,
+                    "the role registry: named permission sets (scope + rights) "
+                    "granted to users"},
     SystemTableInfo{kRunsTable,
                     "the run registry: one row per graph execution + its "
                     "lifecycle and lineage"},
@@ -220,9 +242,21 @@ constexpr std::array kSystemTableCatalog = {
                     "operation's intent, plan, timing"},
     SystemTableInfo{kTablesTable,
                     "this catalog: every system table + what it holds"},
+    SystemTableInfo{kTokensTable,
+                    "the token registry: bearer credentials per user — id, "
+                    "type, created, revoked (NO secret material)"},
+    SystemTableInfo{kTestCasesTable,
+                    "the in-app test-suite catalog: one row per runnable case "
+                    "(id, category, name, description, option count)"},
     SystemTableInfo{kTracesTable,
                     "one row per trace aggregated from the span ring: the "
                     "what-happened summary"},
+    SystemTableInfo{kUserRolesTable,
+                    "the user↔role assignments: one row per (user, role) grant — "
+                    "the many-to-many feeding each user's effective permissions"},
+    SystemTableInfo{kUsersTable,
+                    "the user registry: authenticatable identities + status + "
+                    "assigned roles"},
 };
 
 // One JSON row per system table for the system.tables catalog view (#684).
@@ -291,6 +325,68 @@ struct overloaded : Ts... {
 };
 template <class... Ts>
 overloaded(Ts...) -> overloaded<Ts...>;
+
+// The roles:manage operation the role-management DDL (CREATE/DROP ROLE,
+// GRANT/REVOKE …) is gated on (#746). Maps onto the api:manage_roles capability
+// — see the permission vocabulary (governance/permission.hpp).
+const zetta::governance::Operation kManageRoles{
+    zetta::governance::CapabilityDomain::Api, "manage_roles"};
+
+// The data operations the executor enforces object scoping against (#747): a
+// SELECT reads, an INSERT writes. These are the `sql:read` / `sql:write`
+// operations from the permission vocabulary (governance/permission.hpp).
+const zetta::governance::Operation kSqlRead{
+    zetta::governance::CapabilityDomain::Data, "read"};
+const zetta::governance::Operation kSqlWrite{
+    zetta::governance::CapabilityDomain::Data, "write"};
+
+// Translate the AST's dialect-neutral GrantObject into the governance Resource
+// the scoped-grant store + enforcement use (#747). RoleWide has no object (the
+// caller routes it to the flat grant path instead).
+zetta::governance::Resource resource_of_object(const GrantObject& object) {
+    using RK = zetta::governance::ResourceKind;
+    switch (object.kind) {
+        case GrantObjectKind::Database:
+            return zetta::governance::Resource{RK::Database, object.database};
+        case GrantObjectKind::Table:
+            return zetta::governance::Resource::table(object.database,
+                                                      object.table);
+        case GrantObjectKind::Columns:
+            return zetta::governance::Resource::column(object.database,
+                                                       object.table,
+                                                       object.columns);
+        case GrantObjectKind::Blob:
+            return zetta::governance::Resource::blob(object.name);
+        case GrantObjectKind::Tool:
+            return zetta::governance::Resource::tool(object.name);
+        case GrantObjectKind::RoleWide:
+            break;
+    }
+    return zetta::governance::Resource{};  // unreachable for a well-formed stmt
+}
+
+// The canonical stored spelling of a policy command (the FOR clause), matching
+// governance::is_policy_command (#748).
+std::string policy_command_string(PolicyCommand command) {
+    switch (command) {
+        case PolicyCommand::Select: return "select";
+        case PolicyCommand::Insert: return "insert";
+        case PolicyCommand::Update: return "update";
+        case PolicyCommand::All:    return "all";
+    }
+    return "all";
+}
+
+// The first permission name in `names` outside the vocabulary, or nullopt when
+// all are valid — the boundary check GRANT/REVOKE runs before touching a role, so
+// a typo fails the whole statement rather than silently granting nothing.
+std::optional<std::string> first_unknown_permission(
+    const std::vector<std::string>& names) {
+    for (const std::string& name : names) {
+        if (!zetta::governance::is_permission(name)) return name;
+    }
+    return std::nullopt;
+}
 
 QueryResult error(std::string message) {
     QueryResult r;
@@ -529,6 +625,27 @@ std::vector<nlohmann::json> cloud_provider_rows() {
     return rows;
 }
 
+// One JSON row per case for the test_cases system table — the in-app test-suite
+// catalog (zetta::testkit::TestSuite::builtin()). Pure metadata, assembled once
+// + cached: it declares each runnable case (nothing is executed at query time).
+// The headed Test suite panel and the testsuite_list capability serve the same
+// live source (RULE-7).
+std::vector<nlohmann::json> test_case_rows() {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::testkit::TestCase& test_case :
+         zetta::testkit::TestSuite::builtin().cases()) {
+        nlohmann::json row;
+        row["id"] = test_case.id;
+        row["category"] =
+            std::string(zetta::testkit::to_string(test_case.category));
+        row["name"] = test_case.name;
+        row["description"] = test_case.description;
+        row["options"] = static_cast<long>(test_case.options.size());
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 // One JSON row per cached cloud inspect for the cloud_status system table —
 // the results of consent-gated inspects (Node::cloud_inspections()). **Reading
 // this never triggers a cloud call**: it only reflects inspects the user already
@@ -690,6 +807,553 @@ std::vector<nlohmann::json> access_key_rows(const Node& node) {
             row["created"] = key->created();
             rows.push_back(std::move(row));
         }
+    }
+    return rows;
+}
+
+// Render a Scope + CapabilitySet as the two human-readable strings shared by the
+// keys and roles views: `scope` ("*" for unrestricted, else "<kind>:<name>,…")
+// and `capabilities` ("<domain>:<action>[@<ttl>],…"). No secret material.
+void render_reach(const zetta::governance::Scope& scope,
+                  const zetta::governance::CapabilitySet& capabilities,
+                  nlohmann::json& row) {
+    std::vector<std::string> scope_parts;
+    if (scope.unrestricted) {
+        scope_parts.push_back("*");
+    } else {
+        for (const zetta::governance::Resource& resource : scope.grants) {
+            scope_parts.push_back(std::string(to_string(resource.kind)) + ":" +
+                                  resource.name);
+        }
+    }
+    std::vector<std::string> capability_parts;
+    for (const zetta::governance::Capability& capability : capabilities.grants) {
+        std::string text =
+            std::string(to_string(capability.domain)) + ":" + capability.action;
+        if (!capability.expires_at.empty()) text += "@" + capability.expires_at;
+        capability_parts.push_back(std::move(text));
+    }
+    row["unrestricted"] = scope.unrestricted;
+    row["scope"] = join_comma(scope_parts);
+    row["capabilities"] = join_comma(capability_parts);
+}
+
+// One JSON row per user for the users system table — the authenticatable
+// identities (FEAT-9 / #744). Sourced from Node::users(): identity + status +
+// created + the names of its assigned roles + how many tokens it owns. No secret
+// material (tokens are the tokens view; neither exposes hashes).
+std::vector<nlohmann::json> user_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& user : node.users()) {
+        std::vector<std::string> role_names;
+        for (const std::string& role_id : node.roles_for_user(user->id())) {
+            if (auto role = node.find_role_by_id(role_id)) {
+                role_names.push_back(role->name());
+            }
+        }
+        int token_count = 0;
+        for (const auto& token : node.tokens()) {
+            if (token->user_id() == user->id()) ++token_count;
+        }
+        nlohmann::json row;
+        row["user_id"] = user->id();
+        row["name"] = user->name();
+        row["status"] = std::string(to_string(user->status()));
+        row["created"] = user->created();
+        row["roles"] = join_comma(role_names);
+        row["token_count"] = token_count;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// The vocabulary permission name a single operation stands for (e.g. {data,read}
+// -> "sql:read"), or the raw "<domain>:<action>" spelling when no single-op
+// permission matches — for rendering a scoped grant's right in the roles view.
+std::string permission_name_of(const zetta::governance::Operation& op) {
+    for (const std::string& name : zetta::governance::permission_vocabulary()) {
+        const auto ops = zetta::governance::permission_operations(name);
+        if (ops.size() == 1 && ops.front() == op) return name;
+    }
+    return std::string(to_string(op.domain)) + ":" + op.action;
+}
+
+// Render one scoped grant as "<perm> ON <object>" (#747) for the roles view.
+std::string render_scoped_grant(const zetta::governance::ScopedGrant& grant) {
+    using RK = zetta::governance::ResourceKind;
+    const zetta::governance::Resource& r = grant.object;
+    std::string object;
+    switch (r.kind) {
+        case RK::Database: object = r.name + ".*"; break;
+        case RK::Project:  object = "project:" + r.name; break;
+        case RK::Table:    object = r.database + "." + r.name; break;
+        case RK::Column:
+            object = r.database + "." + r.name + "(" + join_comma(r.columns) + ")";
+            break;
+        case RK::Blob: object = "blob:" + r.name; break;
+        case RK::Tool: object = "tool:" + r.name; break;
+    }
+    return permission_name_of(grant.operation) + " ON " + object;
+}
+
+// One JSON row per role for the roles system table — the named permission sets
+// (FEAT-9 / #744, #746). Sourced from Node::roles(): the role's scope (resources)
+// + capabilities (rights, the same rendering as the keys view) + its permission
+// SET rendered in the RBAC vocabulary (permission.hpp) — the referenceable atoms
+// a custom role is built from — plus its object-scoped grants (#747). No secret
+// material.
+std::vector<nlohmann::json> role_rows(const Node& node) {
+    const std::string now = zetta::util::now_iso8601();
+    std::vector<nlohmann::json> rows;
+    for (const auto& role : node.roles()) {
+        nlohmann::json row;
+        row["role_id"] = role->id();
+        row["name"] = role->name();
+        render_reach(role->scope(), role->capabilities(), row);
+        row["permissions"] =
+            join_comma(zetta::governance::permissions_of(role->capabilities(), now));
+        std::vector<std::string> scoped;
+        for (const auto& grant : role->permissions().scoped_grants) {
+            scoped.push_back(render_scoped_grant(grant));
+        }
+        row["scoped_grants"] = join_comma(scoped);
+        row["created"] = role->created();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per user↔role assignment for the user_roles system table (#746) —
+// the many-to-many that feeds each user's effective permissions. Sourced from
+// Node::user_roles(); the user/role names are resolved for legibility.
+std::vector<nlohmann::json> user_role_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& assignment : node.user_roles()) {
+        nlohmann::json row;
+        row["user_id"] = assignment->user_id();
+        row["user"] = node.find_user_by_id(assignment->user_id())
+                          ? node.find_user_by_id(assignment->user_id())->name()
+                          : std::string{};
+        row["role_id"] = assignment->role_id();
+        row["role"] = node.find_role_by_id(assignment->role_id())
+                          ? node.find_role_by_id(assignment->role_id())->name()
+                          : std::string{};
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// ===== Row-level security (RLS, #748) — predicate (de)serialization + eval =====
+//
+// A policy's USING / WITH CHECK predicate is a query::PolicyPredicate (ast.hpp).
+// The executor serializes it to JSON for the governance Policy store (opaque
+// there), reads it back on enforcement, and evaluates it against a row + the
+// acting identity — REUSING the WHERE comparison primitive (compare_cell), so
+// there is no second predicate language. All helpers are file-local: only the
+// executor parses, stores, renders, and evaluates policy predicates.
+
+// The stable string spelling of a comparison, for the serialized predicate.
+std::string_view compare_op_token(CompareOp op) {
+    switch (op) {
+        case CompareOp::Equal:        return "eq";
+        case CompareOp::NotEqual:     return "ne";
+        case CompareOp::Less:         return "lt";
+        case CompareOp::LessEqual:    return "le";
+        case CompareOp::Greater:      return "gt";
+        case CompareOp::GreaterEqual: return "ge";
+    }
+    return "eq";
+}
+bool compare_op_from_token(std::string_view text, CompareOp& out) {
+    if (text == "eq") { out = CompareOp::Equal; return true; }
+    if (text == "ne") { out = CompareOp::NotEqual; return true; }
+    if (text == "lt") { out = CompareOp::Less; return true; }
+    if (text == "le") { out = CompareOp::LessEqual; return true; }
+    if (text == "gt") { out = CompareOp::Greater; return true; }
+    if (text == "ge") { out = CompareOp::GreaterEqual; return true; }
+    return false;
+}
+
+std::string_view policy_term_kind_token(PolicyTerm::Kind kind) {
+    switch (kind) {
+        case PolicyTerm::Kind::Column:       return "column";
+        case PolicyTerm::Kind::Literal:      return "literal";
+        case PolicyTerm::Kind::CurrentUser:  return "current_user";
+        case PolicyTerm::Kind::CurrentRoles: return "current_roles";
+    }
+    return "literal";
+}
+
+std::string_view literal_type_token(PolicyTerm::LiteralType type) {
+    switch (type) {
+        case PolicyTerm::LiteralType::String:  return "string";
+        case PolicyTerm::LiteralType::Number:  return "number";
+        case PolicyTerm::LiteralType::Boolean: return "boolean";
+        case PolicyTerm::LiteralType::Null:    return "null";
+    }
+    return "string";
+}
+bool literal_type_from_token(std::string_view text, PolicyTerm::LiteralType& out) {
+    if (text == "string")  { out = PolicyTerm::LiteralType::String;  return true; }
+    if (text == "number")  { out = PolicyTerm::LiteralType::Number;  return true; }
+    if (text == "boolean") { out = PolicyTerm::LiteralType::Boolean; return true; }
+    if (text == "null")    { out = PolicyTerm::LiteralType::Null;    return true; }
+    return false;
+}
+
+// Decode a literal term's raw text + type tag into its JSON value (the executor
+// side of the parser's json-free predicate representation).
+nlohmann::json decode_policy_literal(const PolicyTerm& term) {
+    switch (term.literal_type) {
+        case PolicyTerm::LiteralType::String:
+            return nlohmann::json(term.literal);
+        case PolicyTerm::LiteralType::Boolean:
+            return nlohmann::json(term.literal == "true");
+        case PolicyTerm::LiteralType::Null:
+            return nlohmann::json();
+        case PolicyTerm::LiteralType::Number: {
+            auto value = nlohmann::json::parse(term.literal, nullptr,
+                                               /*allow_exceptions=*/false);
+            if (value.is_discarded() || !value.is_number()) return nlohmann::json();
+            return value;
+        }
+    }
+    return nlohmann::json();
+}
+
+nlohmann::json policy_term_to_json(const PolicyTerm& term) {
+    nlohmann::json out;
+    out["kind"] = std::string(policy_term_kind_token(term.kind));
+    if (term.kind == PolicyTerm::Kind::Column) {
+        out["column"] = term.column;
+    } else if (term.kind == PolicyTerm::Kind::Literal) {
+        out["literal"] = term.literal;  // raw text; decoded at evaluation
+        out["literal_type"] = std::string(literal_type_token(term.literal_type));
+    }
+    return out;
+}
+
+std::optional<PolicyTerm> policy_term_from_json(const nlohmann::json& document) {
+    if (!document.is_object() || !document.contains("kind") ||
+        !document["kind"].is_string()) {
+        return std::nullopt;
+    }
+    PolicyTerm term;
+    const std::string kind = document["kind"].get<std::string>();
+    if (kind == "column") {
+        if (!document.contains("column") || !document["column"].is_string()) {
+            return std::nullopt;
+        }
+        term.kind = PolicyTerm::Kind::Column;
+        term.column = document["column"].get<std::string>();
+    } else if (kind == "literal") {
+        term.kind = PolicyTerm::Kind::Literal;
+        term.literal = document.value("literal", std::string{});
+        PolicyTerm::LiteralType type = PolicyTerm::LiteralType::String;
+        if (document.contains("literal_type")) {
+            if (!document["literal_type"].is_string() ||
+                !literal_type_from_token(
+                    document["literal_type"].get<std::string>(), type)) {
+                return std::nullopt;
+            }
+        }
+        term.literal_type = type;
+    } else if (kind == "current_user") {
+        term.kind = PolicyTerm::Kind::CurrentUser;
+    } else if (kind == "current_roles") {
+        term.kind = PolicyTerm::Kind::CurrentRoles;
+    } else {
+        return std::nullopt;
+    }
+    return term;
+}
+
+nlohmann::json policy_predicate_to_json(const PolicyPredicate& predicate) {
+    nlohmann::json out;
+    if (predicate.always_true) {
+        out["always_true"] = true;
+        return out;
+    }
+    out["lhs"] = policy_term_to_json(predicate.lhs);
+    out["op"] = std::string(compare_op_token(predicate.op));
+    out["rhs"] = policy_term_to_json(predicate.rhs);
+    if (predicate.rhs_any) out["any"] = true;
+    return out;
+}
+
+std::optional<PolicyPredicate> policy_predicate_from_json(
+    const nlohmann::json& document) {
+    if (!document.is_object()) return std::nullopt;
+    PolicyPredicate predicate;
+    if (document.value("always_true", false)) {
+        predicate.always_true = true;
+        return predicate;
+    }
+    if (!document.contains("lhs") || !document.contains("op") ||
+        !document.contains("rhs") || !document["op"].is_string()) {
+        return std::nullopt;
+    }
+    const auto lhs = policy_term_from_json(document["lhs"]);
+    const auto rhs = policy_term_from_json(document["rhs"]);
+    if (!lhs || !rhs) return std::nullopt;
+    if (!compare_op_from_token(document["op"].get<std::string>(), predicate.op)) {
+        return std::nullopt;
+    }
+    predicate.lhs = *lhs;
+    predicate.rhs = *rhs;
+    predicate.rhs_any = document.value("any", false);
+    return predicate;
+}
+
+// Render a term / predicate back to SQL-ish text for the system.policies view.
+std::string policy_term_to_sql(const PolicyTerm& term) {
+    switch (term.kind) {
+        case PolicyTerm::Kind::Column:       return term.column;
+        case PolicyTerm::Kind::CurrentUser:  return "current_user()";
+        case PolicyTerm::Kind::CurrentRoles: return "current_roles()";
+        case PolicyTerm::Kind::Literal:
+            switch (term.literal_type) {
+                case PolicyTerm::LiteralType::String:
+                    return "'" + term.literal + "'";
+                case PolicyTerm::LiteralType::Null:
+                    return "null";
+                case PolicyTerm::LiteralType::Number:
+                case PolicyTerm::LiteralType::Boolean:
+                    return term.literal;
+            }
+    }
+    return "";
+}
+std::string policy_predicate_to_sql(const PolicyPredicate& predicate) {
+    if (predicate.always_true) return "true";
+    std::string sql = policy_term_to_sql(predicate.lhs) + " ";
+    switch (predicate.op) {
+        case CompareOp::Equal:        sql += "="; break;
+        case CompareOp::NotEqual:     sql += "<>"; break;
+        case CompareOp::Less:         sql += "<"; break;
+        case CompareOp::LessEqual:    sql += "<="; break;
+        case CompareOp::Greater:      sql += ">"; break;
+        case CompareOp::GreaterEqual: sql += ">="; break;
+    }
+    sql += " ";
+    if (predicate.rhs_any) {
+        sql += "ANY(" + policy_term_to_sql(predicate.rhs) + ")";
+    } else {
+        sql += policy_term_to_sql(predicate.rhs);
+    }
+    return sql;
+}
+
+// Resolve a term to a scalar JSON value against a row + the acting identity, or
+// nullopt when it cannot resolve (an absent row column, or a bare current_roles()
+// used outside ANY()). current_user() -> the acting user's name.
+std::optional<nlohmann::json> resolve_policy_term(
+    const PolicyTerm& term, const nlohmann::json& row,
+    const std::string& current_user) {
+    // Explicit in_place construction: `std::optional<json>` from a bare `json`
+    // is ambiguous (json's templated conversion operator competes with optional's
+    // converting constructor), so build the contained value directly.
+    switch (term.kind) {
+        case PolicyTerm::Kind::Column:
+            if (!row.contains(term.column)) return std::nullopt;
+            return std::optional<nlohmann::json>(std::in_place, row.at(term.column));
+        case PolicyTerm::Kind::Literal:
+            return std::optional<nlohmann::json>(std::in_place,
+                                                 decode_policy_literal(term));
+        case PolicyTerm::Kind::CurrentUser:
+            return std::optional<nlohmann::json>(std::in_place, current_user);
+        case PolicyTerm::Kind::CurrentRoles:
+            return std::nullopt;  // only meaningful as the ANY() array
+    }
+    return std::nullopt;
+}
+
+// Whether a row satisfies a policy predicate for the acting identity — the RLS
+// counterpart of row_matches, reusing compare_cell for the comparison. A membership
+// predicate (`x = ANY(current_roles())`) tests set membership against the caller's
+// roles; every other form resolves both sides and compares. A predicate that
+// cannot resolve fails closed (the row does not match) — never widens access.
+bool policy_predicate_matches(const PolicyPredicate& predicate,
+                              const nlohmann::json& row,
+                              const std::string& current_user,
+                              const std::vector<std::string>& current_roles) {
+    if (predicate.always_true) return true;
+    // `<lhs> = ANY(current_roles())` — a membership test over the caller's roles.
+    if (predicate.rhs_any) {
+        if (predicate.rhs.kind != PolicyTerm::Kind::CurrentRoles) return false;
+        if (predicate.op != CompareOp::Equal &&
+            predicate.op != CompareOp::NotEqual) {
+            return false;  // only = / <> ANY(...) are supported
+        }
+        const auto lhs = resolve_policy_term(predicate.lhs, row, current_user);
+        if (!lhs) return false;
+        bool member = false;
+        for (const std::string& role : current_roles) {
+            if (nlohmann::json(role) == *lhs) { member = true; break; }
+        }
+        return predicate.op == CompareOp::Equal ? member : !member;
+    }
+    const auto lhs = resolve_policy_term(predicate.lhs, row, current_user);
+    const auto rhs = resolve_policy_term(predicate.rhs, row, current_user);
+    if (!lhs || !rhs) return false;
+    return compare_cell(*lhs, predicate.op, *rhs);
+}
+
+// One JSON row per row-security policy for the system.policies view (#748).
+// Sourced from Node::policies(); renders the USING / WITH CHECK predicates back to
+// text for legibility (no secret material — a policy carries none).
+std::vector<nlohmann::json> policy_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& policy : node.policies()) {
+        const zetta::governance::PolicyValue& v = policy->value();
+        nlohmann::json row;
+        row["policy_id"] = policy->id();
+        row["name"] = v.name;
+        row["table"] = v.database + "." + v.table;
+        row["command"] = v.command;
+        std::string using_sql;
+        if (!v.using_predicate.is_null()) {
+            if (auto p = policy_predicate_from_json(v.using_predicate)) {
+                using_sql = policy_predicate_to_sql(*p);
+            }
+        }
+        std::string check_sql;
+        if (!v.check_predicate.is_null()) {
+            if (auto p = policy_predicate_from_json(v.check_predicate)) {
+                check_sql = policy_predicate_to_sql(*p);
+            }
+        }
+        row["using"] = using_sql;
+        row["check"] = check_sql;
+        row["roles"] = join_comma(v.roles);
+        row["created"] = v.created;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// The acting identity's RLS context: whether it BYPASSES row security entirely
+// (admin / unrestricted / trusted-local — see Node::bypasses_row_security), plus
+// the current_user() name and current_roles() set the predicates resolve against.
+// A bypassing identity carries no user/roles — it never evaluates a predicate.
+struct RlsContext {
+    bool bypass = false;
+    std::string user;
+    std::vector<std::string> roles;
+};
+
+RlsContext rls_context(const Node& node, const std::string& acting_id,
+                       bool acting_is_user) {
+    RlsContext ctx;
+    ctx.bypass = node.bypasses_row_security(acting_id, acting_is_user);
+    if (ctx.bypass) return ctx;
+    if (acting_is_user) {  // only a user session has current_user/current_roles
+        if (auto user = node.find_user_by_id(acting_id)) ctx.user = user->name();
+        for (const std::string& role_id : node.roles_for_user(acting_id)) {
+            if (auto role = node.find_role_by_id(role_id)) {
+                ctx.roles.push_back(role->name());
+            }
+        }
+    }
+    return ctx;
+}
+
+bool policy_command_covers(const std::string& command, bool write) {
+    if (command == "all") return true;
+    return write ? (command == "insert" || command == "update")
+                 : (command == "select");
+}
+
+// Whether a policy applies to the acting identity: its role set intersects the
+// policy's role list, or the policy names no roles (applies to every role).
+bool policy_applies_to_roles(const zetta::governance::PolicyValue& value,
+                             const std::vector<std::string>& roles) {
+    if (value.roles.empty()) return true;
+    for (const std::string& want : value.roles) {
+        for (const std::string& have : roles) {
+            if (want == have) return true;
+        }
+    }
+    return false;
+}
+
+// The row-security decision for one (db.table, access class) under an identity.
+// `engaged` is true when the table has ANY policy covering this access class
+// (regardless of caller roles — RLS is per-table opt-in by creating a policy);
+// `predicates` are the applicable ones (roles match), OR-ed permissively.
+struct RlsFilter {
+    bool bypass = false;
+    bool engaged = false;
+    std::vector<PolicyPredicate> predicates;
+};
+
+RlsFilter build_rls_filter(const Node& node, const RlsContext& ctx,
+                           const std::string& database, const std::string& table,
+                           bool write) {
+    RlsFilter filter;
+    filter.bypass = ctx.bypass;
+    if (ctx.bypass) return filter;
+    for (const auto& policy : node.policies()) {
+        const zetta::governance::PolicyValue& v = policy->value();
+        if (v.database != database || v.table != table) continue;
+        if (!policy_command_covers(v.command, write)) continue;
+        filter.engaged = true;  // a policy governs this table+class -> RLS is on
+        if (!policy_applies_to_roles(v, ctx.roles)) continue;  // not this caller
+        // read -> USING; write -> WITH CHECK, falling back to USING when a write
+        // policy carries no explicit WITH CHECK (Postgres-like).
+        const nlohmann::json& source =
+            write ? (!v.check_predicate.is_null() ? v.check_predicate
+                                                  : v.using_predicate)
+                  : v.using_predicate;
+        if (source.is_null()) {
+            PolicyPredicate always;  // an applicable, predicate-less policy admits its rows
+            always.always_true = true;
+            filter.predicates.push_back(always);
+        } else if (auto parsed = policy_predicate_from_json(source)) {
+            filter.predicates.push_back(*parsed);
+        }
+        // A malformed predicate contributes nothing (fail-closed).
+    }
+    return filter;
+}
+
+// Whether a row is permitted under the filter. Bypass or a table with no policy
+// (not engaged) admits everything; an engaged table with no applicable predicate
+// admits NOTHING (deny-by-default); otherwise the row must satisfy at least one
+// applicable predicate (permissive OR of the policies).
+bool rls_row_permitted(const RlsFilter& filter, const nlohmann::json& row,
+                       const RlsContext& ctx) {
+    if (filter.bypass || !filter.engaged) return true;
+    for (const PolicyPredicate& predicate : filter.predicates) {
+        if (policy_predicate_matches(predicate, row, ctx.user, ctx.roles)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// One JSON row per token for the tokens system table — the bearer credentials
+// (FEAT-9 / #744). Sourced from Node::tokens(). This view deliberately exposes
+// NO secret material: only the token id, its owning user, type, created, optional
+// expiry, and revoked flag — never the hash or salt (the plaintext is shown once
+// at creation and never stored). This is the "system.tokens must not leak the
+// secret" guarantee.
+std::vector<nlohmann::json> token_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const auto& token : node.tokens()) {
+        nlohmann::json row;
+        row["token_id"] = token->id();
+        row["user_id"] = token->user_id();
+        if (auto user = node.find_user_by_id(token->user_id())) {
+            row["user"] = user->name();
+        } else {
+            row["user"] = "";
+        }
+        row["type"] = std::string(to_string(token->type()));
+        row["created"] = token->created();
+        row["expires_at"] = token->expires_at();
+        row["revoked"] = token->revoked();
+        rows.push_back(std::move(row));
     }
     return rows;
 }
@@ -1404,6 +2068,33 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("INSERT requires an explicit column list, e.g. "
                                  "INSERT INTO t (a, b) VALUES (...)");
                 }
+                // Object-scoped write enforcement (#747): the acting identity must
+                // be able to write this table, and every target column.
+                const zetta::governance::ColumnAccess write_access =
+                    node_.column_scope(acting_key_, acting_is_user_, kSqlWrite,
+                                       db_name(s.table), s.table.table);
+                if (!write_access.table_allowed) {
+                    return error("permission denied: no sql:write grant on \"" +
+                                 db_name(s.table) + "." + s.table.table + "\"");
+                }
+                if (!write_access.all_columns) {
+                    for (const std::string& col : s.columns) {
+                        if (!write_access.allows(col)) {
+                            return error("permission denied: no sql:write grant on "
+                                         "column \"" + col + "\" of \"" +
+                                         db_name(s.table) + "." + s.table.table +
+                                         "\"");
+                        }
+                    }
+                }
+                // Row-level security (#748): a WITH CHECK write filter rejects a
+                // row the caller may not write. Deny-by-default — a table with a
+                // write policy admits a row only when it satisfies an applicable
+                // WITH CHECK; admin / unrestricted / the local session bypass.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                    acting_is_user_);
+                const RlsFilter write_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, /*write=*/true);
                 std::size_t inserted = 0;
                 for (const auto& tuple : s.rows) {
                     if (tuple.size() != s.columns.size()) {
@@ -1416,10 +2107,92 @@ QueryResult Executor::execute(const Statement& stmt,
                     for (std::size_t i = 0; i < s.columns.size(); ++i) {
                         row[s.columns[i]] = tuple[i];
                     }
+                    if (!rls_row_permitted(write_filter, row, rls)) {
+                        return error("permission denied: row violates the "
+                                     "row-security WITH CHECK policy on \"" +
+                                     db_name(s.table) + "." + s.table.table + "\"");
+                    }
                     table->add_row(std::move(row));
                     ++inserted;
                 }
                 return {.message = "INSERT 0 " + std::to_string(inserted)};
+            },
+            [&](const UpdateStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto db = resolve_db(s.table);
+                if (!db) {
+                    return error("database \"" + db_name(s.table) +
+                                 "\" does not exist");
+                }
+                auto table = db->find_table(s.table.table);
+                if (!table) {
+                    return error("table \"" + s.table.table + "\" does not exist");
+                }
+                // Collect the matches (id + the updated row) BEFORE applying —
+                // update_row rewrites the store, which would invalidate indices.
+                std::vector<std::pair<std::string, nlohmann::json>> edits;
+                const zetta::storage::StorageEngine& store = table->store();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    const nlohmann::json& row = store.at(i);
+                    if (!row_matches(row, s.where)) continue;
+                    nlohmann::json updated = row;
+                    for (const Assignment& a : s.assignments) {
+                        updated[a.column] = a.value;
+                    }
+                    edits.emplace_back(store.id_at(i), std::move(updated));
+                }
+                for (auto& [id, doc] : edits) {
+                    table->update_row(id, std::move(doc));
+                }
+                return {.message = "UPDATE " + std::to_string(edits.size())};
+            },
+            [&](const DeleteStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto db = resolve_db(s.table);
+                if (!db) {
+                    return error("database \"" + db_name(s.table) +
+                                 "\" does not exist");
+                }
+                auto table = db->find_table(s.table.table);
+                if (!table) {
+                    return error("table \"" + s.table.table + "\" does not exist");
+                }
+                std::vector<std::string> ids;
+                const zetta::storage::StorageEngine& store = table->store();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    if (row_matches(store.at(i), s.where)) {
+                        ids.push_back(store.id_at(i));
+                    }
+                }
+                for (const std::string& id : ids) table->delete_row(id);
+                return {.message = "DELETE " + std::to_string(ids.size())};
+            },
+            [&](const TruncateStmt& s) -> QueryResult {
+                if (db_name(s.table) == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto db = resolve_db(s.table);
+                if (!db) {
+                    return error("database \"" + db_name(s.table) +
+                                 "\" does not exist");
+                }
+                auto table = db->find_table(s.table.table);
+                if (!table) {
+                    return error("table \"" + s.table.table + "\" does not exist");
+                }
+                // Remove every row — each as a tombstone, so the truncation
+                // replicates (same path as DELETE with no WHERE).
+                std::vector<std::string> ids;
+                const zetta::storage::StorageEngine& store = table->store();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    ids.push_back(store.id_at(i));
+                }
+                for (const std::string& id : ids) table->delete_row(id);
+                return {.message = "TRUNCATE TABLE"};
             },
             [&](const SelectStmt& s) -> QueryResult {
                 // Virtual `system` database (computed, read-only).
@@ -1430,6 +2203,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kTablesTable) {
                         return select_over_rows(s, system_table_rows());
+                    }
+                    if (sys == kTestCasesTable) {
+                        return select_over_rows(s, test_case_rows());
                     }
                     if (sys == kDeploymentsTable) {
                         return select_over_rows(s, deployment_rows(node_));
@@ -1463,6 +2239,21 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kKeysTable) {
                         return select_over_rows(s, access_key_rows(node_));
+                    }
+                    if (sys == kUsersTable) {
+                        return select_over_rows(s, user_rows(node_));
+                    }
+                    if (sys == kRolesTable) {
+                        return select_over_rows(s, role_rows(node_));
+                    }
+                    if (sys == kUserRolesTable) {
+                        return select_over_rows(s, user_role_rows(node_));
+                    }
+                    if (sys == kPoliciesTable) {
+                        return select_over_rows(s, policy_rows(node_));
+                    }
+                    if (sys == kTokensTable) {
+                        return select_over_rows(s, token_rows(node_));
                     }
                     if (sys == kAuditTable) {
                         return select_over_rows(s, audit_rows(node_));
@@ -1525,21 +2316,88 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
-                // An aggregating SELECT (GROUP BY) runs through the DDF engine.
-                if (s.grouped()) return execute_grouped(s, *table);
+                // Object-scoped read enforcement (#747): the acting identity must
+                // be able to read this table; columns it lacks sql:read on are
+                // masked (nulled) in the output.
+                const zetta::governance::ColumnAccess read_access =
+                    node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                       db_name(s.table), s.table.table);
+                if (!read_access.table_allowed) {
+                    return error("permission denied: no sql:read grant on \"" +
+                                 db_name(s.table) + "." + s.table.table + "\"");
+                }
+                // Block filtering/grouping on a column the caller can't read — a
+                // WHERE/GROUP BY over a masked column would otherwise leak it.
+                if (!read_access.all_columns) {
+                    if (s.where && !read_access.allows(s.where->column)) {
+                        return error("permission denied: no sql:read grant on "
+                                     "column \"" + s.where->column +
+                                     "\" used in WHERE");
+                    }
+                    for (const std::string& key : s.group_by) {
+                        if (!read_access.allows(key)) {
+                            return error("permission denied: no sql:read grant on "
+                                         "column \"" + key + "\" used in GROUP BY");
+                        }
+                    }
+                    for (const GroupedItem& item : s.items) {
+                        if (!item.column.empty() &&
+                            !read_access.allows(item.column)) {
+                            return error("permission denied: no sql:read grant on "
+                                         "column \"" + item.column + "\"");
+                        }
+                    }
+                }
+                // Row-level security (#748): AND the applicable policies' USING
+                // read filter into the row scan — the caller sees only rows it may.
+                // Deny-by-default: a table with a read policy shows a non-bypass
+                // caller only rows an applicable USING admits (none, if no policy
+                // applies to its roles). admin / unrestricted / local bypass.
+                const RlsContext rls = rls_context(node_, acting_key_,
+                                                   acting_is_user_);
+                const RlsFilter read_filter = build_rls_filter(
+                    node_, rls, db_name(s.table), s.table.table, /*write=*/false);
+                // An aggregating SELECT (GROUP BY) runs through the DDF engine,
+                // which filters numerically and can't apply a row-security
+                // predicate — refuse it on a policy-protected table (for a
+                // non-bypass caller) rather than leak aggregates over hidden rows.
+                if (s.grouped()) {
+                    if (!read_filter.bypass && read_filter.engaged) {
+                        return error("row-level security is enabled on \"" +
+                                     db_name(s.table) + "." + s.table.table +
+                                     "\": GROUP BY over a policy-protected table is "
+                                     "not supported — query it without aggregation");
+                    }
+                    return execute_grouped(s, *table);
+                }
                 QueryResult r;
                 if (!s.all) r.columns = s.columns;
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
                     const nlohmann::json& row = store.at(i);
                     if (!row_matches(row, s.where)) continue;
+                    if (!rls_row_permitted(read_filter, row, rls)) continue;
                     if (s.all) {
-                        r.rows.push_back(row);
+                        if (read_access.all_columns) {
+                            r.rows.push_back(row);
+                        } else {
+                            // SELECT * — keep every column but redact the ones the
+                            // caller can't read (masked to null, not dropped).
+                            nlohmann::json masked = nlohmann::json::object();
+                            for (auto it = row.begin(); it != row.end(); ++it) {
+                                masked[it.key()] = read_access.allows(it.key())
+                                                       ? it.value()
+                                                       : nlohmann::json();
+                            }
+                            r.rows.push_back(std::move(masked));
+                        }
                     } else {
                         nlohmann::json projected = nlohmann::json::object();
                         for (const std::string& col : s.columns) {
+                            const bool visible =
+                                read_access.allows(col) && row.contains(col);
                             projected[col] =
-                                row.contains(col) ? row.at(col) : nlohmann::json();
+                                visible ? row.at(col) : nlohmann::json();
                         }
                         r.rows.push_back(std::move(projected));
                     }
@@ -1547,8 +2405,225 @@ QueryResult Executor::execute(const Statement& stmt,
                 r.message = "SELECT " + std::to_string(r.rows.size());
                 return r;
             },
+            [&](const CreateUserStmt& s) -> QueryResult {
+                if (!node_.create_user(s.name)) {
+                    return error("user \"" + s.name +
+                                 "\" already exists or the name is invalid");
+                }
+                return {.message = "CREATE USER"};
+            },
+            [&](const CreateTokenStmt& s) -> QueryResult {
+                auto user = node_.find_user(s.user);
+                if (!user) {
+                    return error("user \"" + s.user + "\" does not exist");
+                }
+                const auto type = zetta::governance::token_type_from(s.type);
+                if (!type) {
+                    return error("unknown token type \"" + s.type +
+                                 "\" (want 'access' or 'api')");
+                }
+                Node::TokenIssue issue = node_.create_token(user->id(), *type);
+                if (!issue.token) {
+                    return error("failed to issue token for user \"" + s.user +
+                                 "\"");
+                }
+                // Return the plaintext secret ONCE — the only time it is ever
+                // surfaced. It is not stored (only its salted hash is).
+                QueryResult r;
+                r.message = "CREATE TOKEN";
+                r.columns = {"token_id", "user", "type", "secret"};
+                nlohmann::json row;
+                row["token_id"] = issue.token->id();
+                row["user"] = s.user;
+                row["type"] = std::string(to_string(*type));
+                row["secret"] = issue.secret;
+                r.rows.push_back(std::move(row));
+                return r;
+            },
+            [&](const CreateRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (!node_.create_role(s.name)) {
+                    return error("role \"" + s.name +
+                                 "\" already exists or the name is invalid");
+                }
+                return {.message = "CREATE ROLE"};
+            },
+            [&](const DropRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (!node_.drop_role(s.name)) {
+                    return error("role \"" + s.name + "\" does not exist");
+                }
+                return {.message = "DROP ROLE"};
+            },
+            [&](const GrantPermissionStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (auto bad = first_unknown_permission(s.permissions)) {
+                    return error("unknown permission \"" + *bad +
+                                 "\" — not in the permission vocabulary");
+                }
+                // A bare GRANT adds flat rights; `ON <object>` (#747) adds
+                // object-scoped grants instead.
+                const bool ok =
+                    s.object.kind == GrantObjectKind::RoleWide
+                        ? node_.grant_permissions(s.role, s.permissions)
+                        : node_.grant_scoped_permissions(
+                              s.role, s.permissions, resource_of_object(s.object));
+                if (!ok) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                return {.message = "GRANT"};
+            },
+            [&](const RevokePermissionStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (auto bad = first_unknown_permission(s.permissions)) {
+                    return error("unknown permission \"" + *bad +
+                                 "\" — not in the permission vocabulary");
+                }
+                const bool ok =
+                    s.object.kind == GrantObjectKind::RoleWide
+                        ? node_.revoke_permissions(s.role, s.permissions)
+                        : node_.revoke_scoped_permissions(
+                              s.role, s.permissions, resource_of_object(s.object));
+                if (!ok) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                return {.message = "REVOKE"};
+            },
+            [&](const GrantRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                auto user = node_.find_user(s.user);
+                if (!user) {
+                    return error("user \"" + s.user + "\" does not exist");
+                }
+                auto role = node_.find_role(s.role);
+                if (!role) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                if (!node_.assign_role(user->id(), role->id())) {
+                    return error("failed to assign role \"" + s.role +
+                                 "\" to user \"" + s.user + "\"");
+                }
+                return {.message = "GRANT ROLE"};
+            },
+            [&](const RevokeRoleStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                auto user = node_.find_user(s.user);
+                if (!user) {
+                    return error("user \"" + s.user + "\" does not exist");
+                }
+                auto role = node_.find_role(s.role);
+                if (!role) {
+                    return error("role \"" + s.role + "\" does not exist");
+                }
+                if (!node_.unassign_role(user->id(), role->id())) {
+                    return error("role \"" + s.role +
+                                 "\" is not assigned to user \"" + s.user + "\"");
+                }
+                return {.message = "REVOKE ROLE"};
+            },
+            [&](const CreatePolicyStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                const std::string database = db_name(s.table);
+                if (database.empty()) {
+                    return error("CREATE POLICY needs a database-qualified table "
+                                 "(db.table) or a current database");
+                }
+                if (database == kSystemDatabase) {
+                    return error("the \"system\" database is read-only");
+                }
+                auto policy_db = node_.find_database(database);
+                if (!policy_db) {
+                    return error("database \"" + database + "\" does not exist");
+                }
+                if (!policy_db->find_table(s.table.table)) {
+                    return error("table \"" + database + "." + s.table.table +
+                                 "\" does not exist");
+                }
+                // Require the predicate the command actually enforces, so a policy
+                // can never silently fail open: a read policy needs USING, a write
+                // policy needs WITH CHECK (USING is accepted as the check fallback).
+                const bool reads = s.command == PolicyCommand::Select ||
+                                   s.command == PolicyCommand::All;
+                const bool writes = s.command == PolicyCommand::Insert ||
+                                    s.command == PolicyCommand::Update ||
+                                    s.command == PolicyCommand::All;
+                if (reads && !s.using_predicate) {
+                    return error("CREATE POLICY FOR SELECT/ALL requires a "
+                                 "USING (<predicate>) clause");
+                }
+                if (writes && !s.using_predicate && !s.check_predicate) {
+                    return error("CREATE POLICY FOR INSERT/UPDATE requires a "
+                                 "WITH CHECK (<predicate>) clause");
+                }
+                // A policy scoped to a role that doesn't exist would never apply —
+                // fail the statement rather than store a dead rule.
+                for (const std::string& role : s.roles) {
+                    if (!node_.find_role(role)) {
+                        return error("role \"" + role + "\" does not exist");
+                    }
+                }
+                zetta::governance::PolicyValue value;
+                value.name = s.name;
+                value.database = database;
+                value.table = s.table.table;
+                value.command = policy_command_string(s.command);
+                value.roles = s.roles;
+                if (s.using_predicate) {
+                    value.using_predicate =
+                        policy_predicate_to_json(*s.using_predicate);
+                }
+                if (s.check_predicate) {
+                    value.check_predicate =
+                        policy_predicate_to_json(*s.check_predicate);
+                }
+                if (!node_.create_policy(std::move(value))) {
+                    return error("policy \"" + s.name +
+                                 "\" already exists or the name is invalid");
+                }
+                return {.message = "CREATE POLICY"};
+            },
+            [&](const DropPolicyStmt& s) -> QueryResult {
+                if (auto denied = require_permission(kManageRoles)) {
+                    return error(*denied);
+                }
+                if (!node_.drop_policy(s.name)) {
+                    return error("policy \"" + s.name + "\" does not exist");
+                }
+                return {.message = "DROP POLICY"};
+            },
         },
         stmt);
+}
+
+std::optional<std::string> Executor::require_permission(
+    const zetta::governance::Operation& operation) const {
+    // Mirror the API layer's three-mode authorization (registry.cpp): a
+    // token-resolved user is checked against its effective (role-union)
+    // permissions; a legacy AccessKey against its own capabilities; an empty
+    // acting key is the trusted unauthenticated-local session (the library / GUI
+    // / test path) and is always allowed. Deny-by-default otherwise.
+    if (acting_is_user_) {
+        auto decision = node_.authorize_user(acting_key_, operation);
+        if (!decision) return decision.reason;
+    } else if (!acting_key_.empty()) {
+        auto decision = node_.authorize(acting_key_, operation);
+        if (!decision) return decision.reason;
+    }
+    return std::nullopt;
 }
 
 }  // namespace zetta::query

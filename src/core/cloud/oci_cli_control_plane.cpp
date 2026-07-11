@@ -81,11 +81,22 @@ std::string instance_details_json(const OciConfig& config) {
     if (!config.image_id.empty()) {
         launch["sourceDetails"] = {{"sourceType", "image"}, {"imageId", config.image_id}};
     }
+    // Hand each node the cluster seed address at boot via cloud-init user_data —
+    // and, on a secure cluster, the join token (#670) — so it comes up with the
+    // equivalent of `zetta --peer <seed> --join-token <token>`. (A real deployment
+    // supplies a full base64 cloud-init and sources the secret token from OCI
+    // Vault; this illustrative value carries both KEY=VALUE lines the bootstrap
+    // reads on the same seam.)
+    std::string user_data;
     if (!config.seed_peer.empty()) {
-        // Hand each node the cluster seed address at boot via cloud-init user_data.
-        // (A real deployment supplies a full base64 cloud-init; this illustrative
-        // value carries the seed peer the bootstrap reads.)
-        launch["metadata"] = {{"user_data", "ZETTA_SEED_PEER=" + config.seed_peer}};
+        user_data = "ZETTA_SEED_PEER=" + config.seed_peer;
+    }
+    if (!config.join_token.empty()) {
+        if (!user_data.empty()) user_data += '\n';
+        user_data += "ZETTA_CLUSTER_TOKEN=" + config.join_token;
+    }
+    if (!user_data.empty()) {
+        launch["metadata"] = {{"user_data", user_data}};
     }
     if (config.spot) {
         launch["preemptibleInstanceConfig"] = {

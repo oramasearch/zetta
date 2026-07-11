@@ -128,7 +128,7 @@ injected **`CommandRunner`**, and parses the JSON the CLI returns.
 
 | `BareMetalControlPlane` call | runtime command (shape) |
 |---|---|
-| `bring_up` | list the pool (`<runtime> ps --filter label=<pool> --format '{{json .}}'`), then `<runtime> run -d --label <pool> --name <prefix>-<uuid> [--network … --gpus all --env ZETTA_SEED_PEER=…] <image>` for the **shortfall** only, then list again |
+| `bring_up` | list the pool (`<runtime> ps --filter label=<pool> --format '{{json .}}'`), then `<runtime> run -d --label <pool> --name <prefix>-<uuid> [--network … --gpus all --env ZETTA_SEED_PEER=… --env ZETTA_CLUSTER_TOKEN=…] <image>` for the **shortfall** only, then list again (the join token env is added only on a secure cluster — #670) |
 | `destroy` | `<runtime> rm -f <id>` |
 | `list` | `<runtime> ps --filter label=<pool> --format '{{json .}}'` |
 
@@ -136,8 +136,9 @@ injected **`CommandRunner`**, and parses the JSON the CLI returns.
 label and launches only `count − current` new workers, so a re-burst to the same
 count launches nothing (idempotent on the label). `docker run -d` returns
 immediately, so each launch is a synchronous command that completes. The per-worker
-shape — the pool label, a unique name, the network, `--gpus all`, and the
-`ZETTA_SEED_PEER` env — lands on the `run` argv. `destroy` force-removes a worker
+shape — the pool label, a unique name, the network, `--gpus all`, the
+`ZETTA_SEED_PEER` env, and (on a secure cluster) the `ZETTA_CLUSTER_TOKEN` env
+(#670) — lands on the `run` argv. `destroy` force-removes a worker
 (`rm -f`, stop + remove). The command shapes are grounded in
 [research/baremetal-compute.md](../research/baremetal-compute.md) (the cited guide — §7
 containers on bare metal, §8 `--gpus all`).

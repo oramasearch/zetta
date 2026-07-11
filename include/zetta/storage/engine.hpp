@@ -28,6 +28,14 @@ public:
     // Append a row with the given id. Caller ensures the id is unique.
     virtual void add(std::string id, nlohmann::json doc) = 0;
 
+    // Replace the data of the row with this id, keeping the id + position. No-op if
+    // absent. Backs SQL UPDATE (and the reconcile of a peer's row-value change).
+    virtual void update(const std::string& id, nlohmann::json doc) = 0;
+
+    // Remove the row with this id. No-op if absent. Backs SQL DELETE (and the
+    // reconcile of a peer's row tombstone).
+    virtual void remove(const std::string& id) = 0;
+
     // Whether a row with this id is already stored (idempotent reconciliation).
     virtual bool contains(const std::string& id) const = 0;
 

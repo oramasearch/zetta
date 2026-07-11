@@ -121,7 +121,7 @@ private:
                 i = j;
                 continue;
             }
-            static constexpr std::string_view kPunct = "(),;*.=-<>!";
+            static constexpr std::string_view kPunct = "(),;*.=-<>!:";
             if (kPunct.find(c) != std::string_view::npos) {
                 tokens_.push_back({Tok::Punct, std::string(1, c)});
                 ++i;
@@ -258,9 +258,54 @@ private:
         if (accept_keyword("create")) return parse_create();
         if (accept_keyword("drop")) return parse_drop();
         if (accept_keyword("insert")) return parse_insert();
+        if (accept_keyword("update")) return parse_update();
+        if (accept_keyword("delete")) return parse_delete();
+        if (accept_keyword("truncate")) return parse_truncate();
         if (accept_keyword("select")) return parse_select();
+        if (accept_keyword("grant")) return parse_grant();
+        if (accept_keyword("revoke")) return parse_revoke();
         throw ParseError{"unsupported statement, expected CREATE/DROP/INSERT/"
-                         "SELECT, got '" + peek().text + "'"};
+                         "UPDATE/DELETE/TRUNCATE/SELECT/GRANT/REVOKE, got '" + peek().text + "'"};
+    }
+
+    // WHERE <column> <op> <value> — the single-predicate clause shared by SELECT,
+    // UPDATE, and DELETE.
+    WhereClause parse_where_clause() {
+        WhereClause where;
+        where.column = parse_ident();
+        where.op = parse_comparison();
+        where.value = parse_value();
+        return where;
+    }
+
+    Statement parse_update() {
+        UpdateStmt stmt;
+        stmt.table = parse_table_ref();
+        expect_keyword("set");
+        do {
+            Assignment assignment;
+            assignment.column = parse_ident();
+            expect_punct('=');
+            assignment.value = parse_value();
+            stmt.assignments.push_back(std::move(assignment));
+        } while (accept_punct(','));
+        if (accept_keyword("where")) stmt.where = parse_where_clause();
+        return stmt;
+    }
+
+    Statement parse_delete() {
+        expect_keyword("from");
+        DeleteStmt stmt;
+        stmt.table = parse_table_ref();
+        if (accept_keyword("where")) stmt.where = parse_where_clause();
+        return stmt;
+    }
+
+    Statement parse_truncate() {
+        accept_keyword("table");  // optional TABLE keyword (TRUNCATE t == TRUNCATE TABLE t)
+        TruncateStmt stmt;
+        stmt.table = parse_table_ref();
+        return stmt;
     }
 
     Statement parse_create() {
@@ -285,7 +330,48 @@ private:
             }
             return stmt;
         }
-        throw ParseError{"expected DATABASE or TABLE after CREATE"};
+        if (accept_keyword("user")) {
+            return CreateUserStmt{parse_ident()};
+        }
+        if (accept_keyword("token")) {
+            return parse_create_token();
+        }
+        if (accept_keyword("role")) {
+            return parse_create_role();
+        }
+        if (accept_keyword("policy")) {
+            return parse_create_policy();
+        }
+        throw ParseError{"expected DATABASE, TABLE, USER, TOKEN, ROLE, or POLICY "
+                         "after CREATE"};
+    }
+
+    // CREATE ROLE <name>. Out-of-line + variant built in a separate TU — the same
+    // toolchain workaround as CREATE TOKEN (see parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_create_role() {
+        return make_create_role_statement(parse_ident());
+    }
+
+    // CREATE TOKEN FOR <user> [TYPE access|api]. Kept in its OWN out-of-line
+    // frame ([[gnu::noinline]]) with the Statement assembled by a builder in a
+    // separate TU (statement_builders.cpp). Both are deliberate toolchain
+    // workarounds: under the pinned Clang + -fexperimental-library, string-local
+    // cleanup for this branch — when it inlines into run()'s frame — and
+    // constructing the CreateTokenStmt variant alternative in this TU each
+    // miscompile the parser's exception unwinding, so a thrown ParseError escapes
+    // every catch and aborts. Keeping the cleanup out-of-line and the variant
+    // construction out-of-TU sidesteps both. Remove when the compiler is bumped.
+    [[gnu::noinline]] Statement parse_create_token() {
+        expect_keyword("for");
+        std::string user = parse_ident();
+        std::string type = parse_token_type();
+        return make_create_token_statement(std::move(user), std::move(type));
+    }
+
+    // The optional "TYPE <access|api>" tail of CREATE TOKEN; defaults to "api".
+    std::string parse_token_type() {
+        if (accept_keyword("type")) return parse_ident();
+        return "api";
     }
 
     // Skip an optional "(255)" / "(10,2)" type modifier after a column type.
@@ -301,7 +387,273 @@ private:
         if (accept_keyword("table")) {
             return DropTableStmt{parse_table_ref()};
         }
-        throw ParseError{"expected DATABASE or TABLE after DROP"};
+        if (accept_keyword("role")) {
+            return parse_drop_role();
+        }
+        if (accept_keyword("policy")) {
+            return parse_drop_policy();
+        }
+        throw ParseError{"expected DATABASE, TABLE, ROLE, or POLICY after DROP"};
+    }
+
+    // DROP ROLE <name>. Out-of-line + variant built in a separate TU (toolchain
+    // workaround, see parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_drop_role() {
+        return make_drop_role_statement(parse_ident());
+    }
+
+    // A permission atom from the RBAC vocabulary: `<domain>:<action>` (e.g.
+    // sql:read). The ':' is a punct token, so this is ident ':' ident rejoined —
+    // the executor validates the reassembled name against permission_vocabulary().
+    std::string parse_permission() {
+        std::string permission = parse_ident();
+        expect_punct(':');
+        permission += ':';
+        permission += parse_ident();
+        return permission;
+    }
+
+    // A comma-separated permission list (at least one).
+    std::vector<std::string> parse_permission_list() {
+        std::vector<std::string> permissions;
+        do {
+            permissions.push_back(parse_permission());
+        } while (accept_punct(','));
+        return permissions;
+    }
+
+    // A tool name / blob prefix: an identifier or a single-quoted string literal
+    // (a blob prefix may hold characters an identifier can't).
+    std::string parse_object_name() {
+        if (peek().type == Tok::Str) return advance().text;
+        return parse_ident();
+    }
+
+    // The `ON <object>` scope of a scoped GRANT/REVOKE (#747). Grammar:
+    //   ON DATABASE <db>                       — whole database
+    //   ON <db>.*                              — whole database (shorthand)
+    //   ON [TABLE] <db>.<table>                — whole table
+    //   ON [TABLE] <db>.<table>(col[, col]*)   — a column set
+    //   ON TOOL <name>                         — an MCP tool
+    //   ON BLOB <prefix>                       — a blob id / id prefix
+    // Out-of-line to keep the string-heavy cleanup out of the caller's frame
+    // (the toolchain EH workaround; see parse_create_token / ast.hpp).
+    [[gnu::noinline]] GrantObject parse_grant_object() {
+        GrantObject object;
+        if (accept_keyword("tool")) {
+            object.kind = GrantObjectKind::Tool;
+            object.name = parse_object_name();
+            return object;
+        }
+        if (accept_keyword("blob")) {
+            object.kind = GrantObjectKind::Blob;
+            object.name = parse_object_name();
+            return object;
+        }
+        if (accept_keyword("database")) {
+            object.kind = GrantObjectKind::Database;
+            object.database = parse_ident();
+            return object;
+        }
+        accept_keyword("table");  // optional keyword before db.table
+        object.database = parse_ident();
+        expect_punct('.');
+        if (accept_punct('*')) {  // db.* — the whole database
+            object.kind = GrantObjectKind::Database;
+            return object;
+        }
+        object.table = parse_ident();
+        if (accept_punct('(')) {  // a column set
+            object.kind = GrantObjectKind::Columns;
+            do {
+                object.columns.push_back(parse_ident());
+            } while (accept_punct(','));
+            expect_punct(')');
+        } else {
+            object.kind = GrantObjectKind::Table;
+        }
+        return object;
+    }
+
+    // GRANT ROLE <role> TO <user>                       — assign a role to a user
+    // GRANT <perm>[, <perm>]* [ON <object>] TO ROLE ...  — permissions to a role
+    // Out-of-line + variants built in a separate TU (toolchain workaround, see
+    // parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_grant() {
+        if (accept_keyword("role")) {
+            std::string role = parse_ident();
+            expect_keyword("to");
+            return make_grant_role_statement(std::move(role), parse_ident());
+        }
+        std::vector<std::string> permissions = parse_permission_list();
+        GrantObject object;
+        if (accept_keyword("on")) object = parse_grant_object();
+        expect_keyword("to");
+        expect_keyword("role");
+        return make_grant_permission_statement(parse_ident(),
+                                               std::move(permissions),
+                                               std::move(object));
+    }
+
+    // REVOKE ROLE <role> FROM <user>                         — unassign a role
+    // REVOKE <perm>[, <perm>]* [ON <object>] FROM ROLE ...    — permissions
+    [[gnu::noinline]] Statement parse_revoke() {
+        if (accept_keyword("role")) {
+            std::string role = parse_ident();
+            expect_keyword("from");
+            return make_revoke_role_statement(std::move(role), parse_ident());
+        }
+        std::vector<std::string> permissions = parse_permission_list();
+        GrantObject object;
+        if (accept_keyword("on")) object = parse_grant_object();
+        expect_keyword("from");
+        expect_keyword("role");
+        return make_revoke_permission_statement(parse_ident(),
+                                                std::move(permissions),
+                                                std::move(object));
+    }
+
+    // The command class of a CREATE POLICY (the FOR clause).
+    PolicyCommand parse_policy_command() {
+        if (accept_keyword("select")) return PolicyCommand::Select;
+        if (accept_keyword("insert")) return PolicyCommand::Insert;
+        if (accept_keyword("update")) return PolicyCommand::Update;
+        if (accept_keyword("all")) return PolicyCommand::All;
+        throw ParseError{"expected SELECT, INSERT, UPDATE, or ALL after FOR, got '" +
+                         peek().text + "'"};
+    }
+
+    // One term of a row-security predicate: a context function (current_user() /
+    // current_roles()), a boolean/null keyword, a column reference (a bare
+    // identifier), or a string/number literal. Reused for both sides of the
+    // comparison and for the ANY(...) argument (#748). A literal is captured as raw
+    // text + a type tag (the executor decodes it) so the predicate AST stays
+    // json-free and lightweight — see PolicyTerm in ast.hpp.
+    PolicyTerm parse_policy_term() {
+        PolicyTerm term;
+        if (peek().type == Tok::Ident) {
+            const std::string name = peek().text;
+            if (iequals(name, "current_user")) {
+                advance();
+                expect_punct('(');
+                expect_punct(')');
+                term.kind = PolicyTerm::Kind::CurrentUser;
+                return term;
+            }
+            if (iequals(name, "current_roles")) {
+                advance();
+                expect_punct('(');
+                expect_punct(')');
+                term.kind = PolicyTerm::Kind::CurrentRoles;
+                return term;
+            }
+            if (iequals(name, "true") || iequals(name, "false")) {
+                advance();
+                term.kind = PolicyTerm::Kind::Literal;
+                term.literal_type = PolicyTerm::LiteralType::Boolean;
+                term.literal = iequals(name, "true") ? "true" : "false";
+                return term;
+            }
+            if (iequals(name, "null")) {
+                advance();
+                term.kind = PolicyTerm::Kind::Literal;
+                term.literal_type = PolicyTerm::LiteralType::Null;
+                return term;
+            }
+            advance();  // a bare identifier is a row column reference
+            term.kind = PolicyTerm::Kind::Column;
+            term.column = name;
+            return term;
+        }
+        // A numeric literal (with an optional leading '-') or a string literal.
+        const bool negative = accept_punct('-');
+        if (peek().type == Tok::Num) {
+            term.kind = PolicyTerm::Kind::Literal;
+            term.literal_type = PolicyTerm::LiteralType::Number;
+            term.literal = (negative ? "-" : "") + advance().text;
+            return term;
+        }
+        if (negative) throw ParseError{"expected a number after '-'"};
+        if (peek().type == Tok::Str) {
+            term.kind = PolicyTerm::Kind::Literal;
+            term.literal_type = PolicyTerm::LiteralType::String;
+            term.literal = advance().text;
+            return term;
+        }
+        throw ParseError{"expected a policy predicate term (a column, a literal, "
+                         "current_user(), or current_roles()), got '" +
+                         peek().text + "'"};
+    }
+
+    // The parenthesized predicate of a USING / WITH CHECK clause: `(true)` (a
+    // permissive filter), or a single comparison `(<term> <op> <term>)` where the
+    // RHS may be `ANY(<term>)` for a membership test — e.g.
+    //   (owner = current_user())
+    //   ('admin' = ANY(current_roles()))
+    // Out-of-line to keep the json/string-heavy cleanup out of the caller's frame
+    // (the toolchain EH workaround; see parse_create_token / ast.hpp).
+    [[gnu::noinline]] PolicyPredicate parse_policy_predicate() {
+        expect_punct('(');
+        PolicyPredicate predicate;
+        predicate.lhs = parse_policy_term();
+        // `(true)` — a bare boolean literal admits every row.
+        if (predicate.lhs.kind == PolicyTerm::Kind::Literal &&
+            predicate.lhs.literal_type == PolicyTerm::LiteralType::Boolean &&
+            predicate.lhs.literal == "true" && peek().type == Tok::Punct &&
+            peek().text == ")") {
+            predicate.always_true = true;
+            expect_punct(')');
+            return predicate;
+        }
+        predicate.op = parse_comparison();
+        if (accept_keyword("any")) {
+            expect_punct('(');
+            predicate.rhs = parse_policy_term();
+            expect_punct(')');
+            predicate.rhs_any = true;
+        } else {
+            predicate.rhs = parse_policy_term();
+        }
+        expect_punct(')');
+        return predicate;
+    }
+
+    // CREATE POLICY <name> ON <db.table> FOR SELECT|INSERT|UPDATE|ALL
+    //   [TO ROLE <role>[, <role>]*] USING (<predicate>) [WITH CHECK (<predicate>)]
+    // Out-of-line + variant built in a separate TU (toolchain workaround, see
+    // parse_create_token / ast.hpp).
+    [[gnu::noinline]] Statement parse_create_policy() {
+        std::string name = parse_ident();
+        expect_keyword("on");
+        TableRef table = parse_table_ref();
+        expect_keyword("for");
+        PolicyCommand command = parse_policy_command();
+        std::vector<std::string> roles;
+        if (accept_keyword("to")) {
+            expect_keyword("role");
+            do {
+                roles.push_back(parse_ident());
+            } while (accept_punct(','));
+        }
+        std::optional<PolicyPredicate> using_predicate;
+        std::optional<PolicyPredicate> check_predicate;
+        if (accept_keyword("using")) using_predicate = parse_policy_predicate();
+        if (accept_keyword("with")) {
+            expect_keyword("check");
+            check_predicate = parse_policy_predicate();
+        }
+        return make_create_policy_statement(
+            std::move(name), std::move(table), command, std::move(roles),
+            std::move(using_predicate), std::move(check_predicate));
+    }
+
+    // DROP POLICY <name> [ON <db.table>]. The optional ON clause is parsed for
+    // symmetry with CREATE and ignored (policy names are unique). Out-of-line +
+    // variant built in a separate TU (toolchain workaround).
+    [[gnu::noinline]] Statement parse_drop_policy() {
+        std::string name = parse_ident();
+        if (accept_keyword("on")) parse_table_ref();  // accepted, ignored
+        return make_drop_policy_statement(std::move(name));
     }
 
     Statement parse_insert() {

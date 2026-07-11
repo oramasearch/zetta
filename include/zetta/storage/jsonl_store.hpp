@@ -31,6 +31,8 @@ public:
 
     const char* name() const override { return "jsonl"; }
     void add(std::string id, nlohmann::json doc) override;
+    void update(const std::string& id, nlohmann::json doc) override;
+    void remove(const std::string& id) override;
     bool contains(const std::string& id) const override {
         return id_index_.contains(id);
     }
@@ -43,7 +45,10 @@ public:
     }
 
 private:
+    static constexpr std::size_t kMissing = static_cast<std::size_t>(-1);
     void load();
+    void persist_all();  // rewrite every chunk file from the in-memory rows
+    std::size_t index_of(const std::string& id) const;
     std::filesystem::path chunk_path(std::size_t chunk_index) const;
 
     std::filesystem::path dir_;

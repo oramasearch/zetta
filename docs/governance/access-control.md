@@ -239,8 +239,445 @@ now surfaced read-only in the headed [Admin & Settings panel](../gui/admin-panel
 (SCR-7 / CMP-5); issuing keys and granting capabilities from the GUI is a later
 slice.
 
+## Users, roles, and tokens (the credential store — FEAT-9 / #744)
+
+The V1 model above (a bare **AccessKey** carrying scope + capabilities directly)
+is the enforcement engine. Layered **on top of it**, not replacing it, is the
+**credential store** the rest of the identity work builds on (epic #743): a
+**user + role + token** model, all replicated through the same
+capture/reconcile/persist path as principals.
+
+```
+User   (user:<uuid>)         an authenticatable identity — a Principal of kind
+  name, status, created        User in the new model. Its rights come from the
+                               roles assigned to it; a bearer authenticates AS a
+                               user by presenting one of its tokens.
+
+Role   (role:<uuid>)         a named permission set: a Scope (resources) + a
+  name, scope, capabilities,   CapabilitySet (rights) — the SAME two axes an
+  created                      AccessKey carries. Built-in admin/writer/reader +
+                               custom/editable roles (#746, below).
+
+UserRole (user_role:<uuid>)  a user↔role assignment. A user's effective
+  user, role                   permissions are the union of its roles.
+
+Token  (token:<uuid>)        a bearer credential that authenticates as a user,
+  user, type (api|access),     stored HASHED at rest. The plaintext secret is
+  hash, salt, created,         shown ONCE at creation and never persisted; only
+  expires_at?, revoked         hash = SHA-256(salt || secret) + salt is stored.
+```
+
+### Hashed tokens
+
+A token's secret is a 256-bit random value from the OS CSPRNG (`RAND_bytes`).
+At creation the **plaintext is returned exactly once**; at rest only its salted
+hash lives in the CRDT + `token.json`. Validation (`Node::authenticate_token`)
+re-hashes a presented bearer and **constant-time compares** it against every
+live token (`CRYPTO_memcmp`), rejecting revoked, expired, or disabled-user
+tokens, and resolves to the owning **User**. The crypto lives in one OpenSSL TU,
+`src/core/governance/token_secret.cpp` — the second (after
+`src/core/cluster/security.cpp`) allowed to name libcrypto directly. The
+self-contained `zetta::util::sha256_hex` is deliberately **not** used for secrets
+(it is not constant-time — "content fingerprints, never secrets").
+
+### Built-in roles
+
+`builtin_role_permissions(name)` seeds three roles, all unrestricted in scope
+(they reach every resource) and differing only in rights. They are defined in
+terms of the **permission vocabulary** (below), not raw capabilities:
+
+| role   | permissions |
+|--------|-------------|
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin` |
+| writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
+| reader | `sql:read`, `serving:read`, `mcp:call` |
+
+Deny-by-default still holds: a right a role doesn't list is denied. Bootstrap
+**reconciles** these on every start (`Node::ensure_builtin_roles`, idempotent):
+they always exist and always mean exactly the sets above — a drifted built-in is
+repaired in place.
+
+### Bootstrap owner (closes #733)
+
+On node start, `Node::bootstrap_owner(secret)` runs only when the **user store is
+empty** and a secret is available from `--admin-token` / `ZETTA_ADMIN_TOKEN`. It
+mints an `owner` user, ensures the built-in roles exist, assigns `owner` the
+`admin` role, and issues an **access** token whose secret is the operator's — so
+a fresh node is never locked out of its own governance. The node logs **where**
+the token record lives, **never** the secret value (the operator already holds
+it). With no secret supplied, bootstrap is a no-op and the node prints how to
+seed one.
+
+### Read views + issuance
+
+`system.users`, `system.roles`, and `system.tokens` are read views
+(`src/core/query/executor.cpp`) mirroring `system.principals`/`system.keys`. The
+**tokens view exposes no secret material** — id, user, type, created, expiry, and
+revoked only, never the hash or salt. A minimal SQL issuance surface exists:
+`CREATE USER <name>` and `CREATE TOKEN FOR <user> [TYPE access|api]` (the latter
+returns the plaintext secret once, in a single result row). Tokens can also be
+issued programmatically via `Node::create_token`.
+
+> **Replication + persistence.** Users, roles, tokens, and assignments replicate
+> exactly like principals: local create/drop/revoke are captured into the
+> Automerge document (`user:` / `role:` / `token:` / `user_role:` keys), each
+> `Node::tick()` reconciles the on-disk projection (materialize-only), and each
+> entity persists to a UUID-named folder under the data dir
+> (`user.json` / `role.json` / `token.json` / `user_role.json`). A token's hash
+> replicates in full; the plaintext never enters the document.
+
+> **What's next.** The *store* above is the foundation; the **default-deny gate**
+> below (`--require-auth`, #745) consumes it, and **RBAC role management** (the
+> permission vocabulary, custom roles, user↔role assignment — #746) is the section
+> after it, and **fine-grained scoped grants** (table/column/blob/MCP tool — #4,
+> #747) the section after that. Still ahead: row-level security is #5.
+
+## The default-deny gate (`--require-auth` — #745)
+
+Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
+openapi + llms.txt), and the governed serving endpoints — is fronted by **one
+auth gate**: a single middleware at the router seam (`src/core/api/http_server.cpp`,
+beside `router.use(cors())`), not a shared-secret check duplicated per handler.
+It resolves the acting identity **once** per request and hands it to the matched
+handler through the request's `route_data`; the handlers carry no auth logic of
+their own. The gate has three modes:
+
+- **`--require-auth` (secure-by-default).** Every path is closed unless the
+  request carries `Authorization: Bearer <secret>` whose secret resolves — via
+  the token store (`Node::authenticate_token`: salted-hash + **constant-time**
+  compare, rejecting revoked/expired tokens and disabled users) — to an **active
+  user**. Anything else (no header, wrong secret, revoked/expired token, disabled
+  user) is **401**. There is **no anonymous path**, and the legacy `--mcp-token`
+  shared secret is **not** honored in this mode. The resolved **user** becomes the
+  acting identity, and the capability check runs against that user's **effective
+  permissions**.
+- **Legacy `--mcp-token` (back-compat).** With no `--require-auth`, a configured
+  shared secret still gates at the door by exact match, and the token doubles as
+  the acting AccessKey id — the pre-#745 behavior, unchanged.
+- **Unauthenticated-local (the loopback default).** With neither flag, there is
+  no gate: the acting key is whatever bearer was presented (empty = the audited
+  local session). This keeps the **loopback GUI** working as a trusted local
+  session with no credential — the deliberate, documented exception, only sane on
+  a loopback bind. `--require-auth` closes even this path.
+
+The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
+the gate, so a credential-less browser preflight is never blocked.
+
+### From bearer to a capability decision
+
+Under the gate, the acting identity is a **user id**, so the operation is checked
+against the user's roles, not against an AccessKey:
+
+```cpp
+node.authenticate_token(bearer)   // -> the owning User, or none (deny-by-default)
+node.authorize_user(user_id, op)  // allowed iff some assigned role's CapabilitySet
+                                  //   permits `op` now (union of the user's roles)
+```
+
+`Node::authorize_user` is the token-resolved counterpart to the AccessKey
+`Node::authorize(key_id, op)`: an unknown or **disabled** user is denied, and an
+operation is allowed only when one of the user's assigned roles (via `UserRole`)
+holds a matching, unexpired capability — the same deny-by-default, TTL-honoring
+decision, over a user's *effective* reach. `registry.cpp` (MCP + REST) and
+`serving.cpp` (predict/search) branch on this: a token-resolved user checks
+`authorize_user`; a legacy AccessKey id checks `authorize`; and an empty acting
+key is the unauthenticated-local session — reachable **only** with the gate off.
+Bootstrap seeds `owner` with the `admin` role, so the `--admin-token` secret both
+opens the gate and (as admin) satisfies the capability check.
+
+> **Scope note.** #745 centralizes enforcement + makes it mandatory; it does not
+> expand the *model*. Role management (custom roles, the permission vocabulary) is
+> #746, below; fine-grained object scoping (table/column/blob/MCP tool) is #747,
+> further below. An admin token therefore reaches every route but is still
+> deny-by-default on rights its role does not name.
+
+## RBAC roles: the vocabulary, custom roles, assignment (FEAT-9 / #746)
+
+RBAC turns roles into a first-class, self-service surface on top of the store
+(#744) and the gate (#745): a referenceable **permission vocabulary**, **custom
+roles** created + edited via SQL, and **user↔role assignment** — all gated on the
+`roles:manage` permission, all replicated like every other entity.
+
+### The permission vocabulary
+
+A **permission** is a stable product-level atom — a `<domain>:<action>` name —
+that maps onto one or more concrete `Capability{domain,action}` the enforcement
+layer decides against. It is the layer *over* the three coarse `CapabilityDomain`
+values (`api`/`data`/`orchestration`): the vocabulary names are what a `GRANT`
+statement accepts and what `system.roles` renders, while the operations they
+expand to are what `Node::authorize_user` / `Node::authorize` check. The canonical
+list lives in one place — `include/zetta/governance/permission.hpp`
+(`permission_vocabulary()`) — so the grammar, the built-in seed, and the read view
+can never disagree:
+
+| permission | maps onto Capability{domain, action} | what it gates |
+|------------|--------------------------------------|---------------|
+| `sql:read`      | `data:read`                    | read rows via SQL / the query engine |
+| `sql:write`     | `data:write`                   | insert/update/delete rows via SQL |
+| `sql:ddl`       | `data:ddl`                     | create/drop databases + tables |
+| `mcp:call`      | `api:query`                    | invoke the MCP/REST capability surface (the API-call right) |
+| `serving:read`  | `data:predict`, `data:search`  | call the governed serving routes (predict + search) |
+| `users:manage`  | `api:manage_users`             | create/disable/drop users |
+| `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
+| `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
+| `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
+
+The `sql:*` and `serving:*` data rights and the `*:manage` / `cluster:admin`
+admin rights are enforced where their surface already checks them; the finer
+per-statement SQL enforcement (which `sql:read` vs `sql:write` a given statement
+needs, masking, RLS) is the scoped-grants / RLS work (#4 / #5). `mcp:call`
+(`api:query`) is what all read capabilities + the `sql` capability check today, so
+every built-in carries it.
+
+### Custom roles + the SQL grammar
+
+Custom roles are created and edited through a minimal SQL grammar, **gated on
+`roles:manage`** (checked inside the executor against the acting identity the gate
+resolved — an empty acting key is the trusted unauthenticated-local session and is
+allowed):
+
+```sql
+CREATE ROLE analyst;                                   -- empty custom role (deny-by-default)
+GRANT sql:read, serving:read TO ROLE analyst;          -- add permissions from the vocabulary
+REVOKE serving:read FROM ROLE analyst;                 -- narrow it
+DROP ROLE analyst;                                     -- remove it (+ its assignments)
+
+GRANT ROLE analyst TO dana;                            -- assign a role to a user
+REVOKE ROLE analyst FROM dana;                         -- unassign it
+```
+
+`GRANT`/`REVOKE` of a permission list validate every name against the vocabulary
+first (an unknown permission fails the whole statement). A custom role starts with
+no rights and gains exactly the permissions granted — nothing more. The same
+operations exist programmatically on `Node` (`create_role`, `grant_permissions`,
+`revoke_permissions`, `drop_role`, `assign_role`, `unassign_role`).
+
+### Effective permissions = the union across roles
+
+A user's effective reach is the **union** of its assigned roles' capability sets —
+already the contract of `Node::authorize_user` (#745): the operation is allowed as
+soon as *any* assigned role grants a matching, unexpired right, deny-by-default
+otherwise. Custom roles + assignments feed the exact same decision as the
+built-ins; assigning a role grants its permissions, unassigning revokes them, and
+dropping a role removes it from every user (its assignments go with it).
+
+### Read views
+
+`system.roles` gains a **`permissions`** column rendering each role's set back in
+the vocabulary (the reverse of the expand — a permission shows iff *all* its
+operations are granted), alongside the raw `scope`/`capabilities`. `system.user_roles`
+is the new (user, role) assignment view — the many-to-many that feeds each user's
+effective permissions. Neither exposes secret material.
+
+## Fine-grained scoped grants (FEAT-9 / #747)
+
+RBAC (#746) grouped rights into roles, but a granted right still reached **every**
+object of its kind. Scoped grants add the object tier: a permission can be bound to
+a **specific object** — a table, a **column set**, a **blob** (by id or prefix), or
+an **MCP tool** — and the enforcement layer narrows access to exactly what the
+object covers.
+
+### The object tiers
+
+`ResourceKind` (`include/zetta/governance/scope.hpp`) grows from the two coarse
+tiers (`database` / `project`) to include `table` / `column` / `blob` / `tool`. A
+`Resource` gains two optional fields the fine tiers use — `database` (the owning db
+of a table/column) and `columns` (a column set) — so a coarse resource still
+serializes exactly as before (backward compatible on disk + over the CRDT):
+
+```
+kind      name                database   columns
+database  db name             —          —
+table     table name          owning db  —
+column    table name          owning db  the column set
+blob      blob id / prefix    —          —
+tool      MCP tool name       —          —
+```
+
+`object_covers(granted, target)` is the deny-by-default covering decision: a
+**database** grant covers every table/column in it; a **table** grant covers the
+whole table; a **column-set** grant covers the table for reachability and exactly
+its columns; a **blob** grant is a **prefix** (covers every id that starts with it);
+a **tool** grant is exact.
+
+### The grant model
+
+A role carries flat `capabilities` (the coarse, **unscoped** rights it grants on
+every object — what the built-ins use) **plus** a `scoped_grants` list — each a
+`{operation, object}` pair (`include/zetta/governance/grant.hpp`). The two compose:
+
+- a **flat** right (`GRANT sql:read TO ROLE r`) reaches every object — unchanged;
+- a **scoped** right (`GRANT sql:read ON db.t(a,b) TO ROLE r`) reaches only the
+  object it covers.
+
+A user's effective scoped grants are the **union across its roles**. `blob:read`
+(`data:blob_read`) is added to the vocabulary as the object-scopable large-object
+read right.
+
+### The `ON` grammar
+
+`GRANT`/`REVOKE` take an optional `ON <object>` clause; without it, the grant is
+role-wide (flat), exactly as #746:
+
+```sql
+GRANT sql:read  ON sales.customers            TO ROLE reader;   -- a whole table
+GRANT sql:read  ON sales.customers(id, email) TO ROLE reader;   -- a column set
+GRANT sql:read  ON sales.*                    TO ROLE reader;   -- a whole database
+GRANT sql:write ON sales.customers(status)    TO ROLE editor;   -- writable columns
+GRANT mcp:call  ON TOOL search                TO ROLE reader;   -- one MCP tool
+GRANT blob:read ON BLOB 2026/                 TO ROLE archivist;-- a blob prefix
+REVOKE sql:read ON sales.customers(email)     FROM ROLE reader;
+```
+
+`ON DATABASE <db>` and `ON <db>.*` are equivalent; `TABLE` before `db.table` is
+optional. The object is dialect-neutral in the AST (`GrantObject`) and translated to
+a `governance::Resource` in the executor. Programmatically:
+`Node::grant_scoped_permissions` / `revoke_scoped_permissions`.
+
+### Enforcement (deny-by-default, admin/unrestricted bypasses)
+
+Every check bypasses object scoping for three identities: the trusted
+unauthenticated-local session (empty acting key), a legacy AccessKey (it carries
+only coarse scope/caps), and any user holding the operation as a **flat** right (so
+**admin — flat everything — reaches every object**). Only a user whose right is
+*exclusively* object-scoped is narrowed.
+
+- **SQL executor** (`src/core/query/executor.cpp`, the one choke point every
+  statement flows through): `Node::column_scope(identity, op, db, table)` returns the
+  identity's column access for a table. A `SELECT` on a table with **no** covering
+  grant is denied; columns the caller lacks `sql:read` on are **masked** to null in
+  the output (both `SELECT *` and a projected list), and a `WHERE`/`GROUP BY` over a
+  masked column is refused (no inference). An `INSERT` to a table or column with no
+  `sql:write` grant is **rejected**.
+- **MCP / REST** (`src/core/api/registry.cpp`): the invoke right for the capability
+  surface is `mcp:call`, now scopable per tool. `tools/call` (and the REST
+  `/v1/<capability>`, the same `Registry::call` choke point) checks
+  `Node::may_call_tool` — a deny is a clean `unauthorized` with no side effect. The
+  MCP `tools/list` (`src/core/api/http_server.cpp`) is **filtered** to the tools the
+  caller may invoke.
+- **Blobs** (`src/core/api/serving.cpp`, `serve_blob`): `Node::authorize_blob` gates
+  a large-object body read on `blob:read` covering the id (a flat right or a prefix
+  grant).
+
+`system.roles` gains a **`scoped_grants`** column rendering each grant as
+`<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
+
+## Row-level security (FEAT-9 / #748 — closes epic #743)
+
+Scoped grants decide *which columns* of a table an identity may touch; **row-level
+security (RLS)** decides *which rows*. It is Postgres-style: a **policy** names a
+table + a command class and carries a **`USING`** read filter and/or a **`WITH
+CHECK`** write filter — SQL predicates the executor evaluates per row against the
+acting identity. This is the last slice of the authz epic.
+
+### `system.policies` (a new `policy:` catalog entity)
+
+A policy is replicated state, projected on disk exactly like a role (`policy:<uuid>`
+in the CRDT, a UUID-named folder with `policy.json`, the same capture/reconcile
+path). Its value is:
+
+```
+policy:<uuid> -> { name, database, table, command, using?, check?, roles?, created }
+```
+
+`command` is `select` / `insert` / `update` / `all`; `roles` is the role-name set
+the policy applies to (**empty = every role**); `using` / `check` are the stored
+predicate expressions (opaque JSON to the governance layer — the query layer owns
+their grammar + evaluation). `system.policies` is the read view (name, table,
+command, the `using` / `check` predicates rendered back to text, roles). The value
+round-trips through `policy_value_from_json` at the trust boundary — a malformed
+policy is **skipped**, never silently enforced as open.
+
+### The grammar
+
+```sql
+CREATE POLICY own_docs ON sales.orders FOR SELECT
+  USING (owner = current_user());                       -- read filter, every role
+
+CREATE POLICY own_writes ON sales.orders FOR INSERT
+  WITH CHECK (owner = current_user());                  -- write filter
+
+CREATE POLICY analyst_rows ON sales.orders FOR ALL
+  TO ROLE analyst
+  USING (owner = current_user())                        -- reads: only own rows
+  WITH CHECK (owner = current_user());                  -- writes: only own rows
+
+CREATE POLICY audit_all ON sales.orders FOR SELECT
+  USING ('auditor' = ANY(current_roles()));             -- a role sees everything
+
+DROP POLICY own_docs;
+```
+
+`FOR SELECT` needs a `USING`; `FOR INSERT`/`UPDATE` needs a `WITH CHECK` (`USING`
+is accepted as the check fallback). Both the grammar (`src/core/query/postgres.cpp`,
+kept out-of-line + built at `-O1` like the rest of the auth DDL) and the DDL
+execution are gated on the **`roles:manage`** permission — policy management is an
+admin function, reusing the roles vocabulary rather than adding one.
+
+### Context functions
+
+Two functions resolve against the acting identity, usable anywhere a value is:
+
+- **`current_user()`** → the acting user's **name** (so `owner = current_user()`
+  matches rows whose `owner` column equals the caller's username).
+- **`current_roles()`** → the caller's **role-name set**, tested with
+  `<value> = ANY(current_roles())` (membership) — e.g. `'admin' = ANY(current_roles())`.
+
+Predicates **reuse the existing `WHERE` expression evaluator** (`compare_cell`) — no
+second predicate language. A predicate that can't resolve (an absent column, a
+corrupt stored predicate) **fails closed** (the row does not match) and never widens
+access.
+
+### Enforcement (deny-by-default; admin / unrestricted / local bypass)
+
+The executor is the one choke point — the same per-statement seam that #747 enforces
+column grants on:
+
+- On **`SELECT`**, the applicable policies' `USING` predicates are AND-ed into the
+  row scan: the caller sees only rows an applicable policy admits. Multiple
+  applicable policies are **permissive** (OR-ed), as in Postgres.
+- On **`INSERT`**, each new row must satisfy an applicable `WITH CHECK` — a violating
+  row **rejects** the statement.
+- **Deny-by-default**: RLS is *engaged* for a table as soon as any policy governs
+  that table+command. On an engaged table, a caller with **no applicable policy**
+  (its role set doesn't intersect any policy's `roles`) sees **no rows** / can write
+  **no rows** — a policy `TO ROLE analyst` narrows analysts to their own rows and
+  shuts everyone else out (unless another policy admits them).
+- **`GROUP BY`** over a policy-protected table is refused for a non-bypass caller
+  (the numeric DDF aggregate path can't apply a row predicate — refuse rather than
+  leak an aggregate over hidden rows).
+
+Three identities **bypass** RLS entirely (mirroring the #747 object-scoping bypass):
+the trusted unauthenticated-local session (empty acting key), a legacy AccessKey,
+and any **admin** user (one holding `cluster:admin` — the built-in `admin` does).
+So **admin sees every row regardless of policy**. `Node::bypasses_row_security`
+is the decision; `current_user()` / `current_roles()` are resolved from the acting
+user via `find_user_by_id` + `roles_for_user`.
+
 ## Pointers
 
+- `include/zetta/governance/user.hpp` — `zetta::governance::User` + `UserStatus` (an authenticatable identity; #744).
+- `include/zetta/governance/role.hpp` — `zetta::governance::Role` / `RolePermissions` / `builtin_role_permissions` (named permission sets).
+- `include/zetta/governance/permission.hpp` — the RBAC **permission vocabulary** (#746): `permission_vocabulary()` / `permission_operations()` / `capabilities_for_permissions()` / `permissions_of()` / `builtin_role_permission_names()` (the atoms → `Capability{domain,action}` mapping).
+- `include/zetta/node.hpp` — role management (#746): `Node::create_role` / `grant_permissions` / `revoke_permissions` / `drop_role` / `ensure_builtin_roles` (idempotent reconcile) / `assign_role` / `unassign_role`.
+- `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the SQL grammar (`CREATE/DROP ROLE`, `GRANT/REVOKE … TO/FROM ROLE`, `GRANT/REVOKE ROLE … TO/FROM <user>`) + its `roles:manage` gate and the `system.roles` / `system.user_roles` views (#746).
+- `tests/governance/test_roles.cpp` — the RBAC coverage (#746): the vocabulary mapping, built-ins seeded + reconciled, a custom subset grants exactly those, assignment/unassignment changes reach, `roles:manage` required, effective = union across roles, the read views.
+- `include/zetta/governance/grant.hpp` — scoped grants (#747): `ScopedGrant` (`{operation, object}`), `object_covers`, `column_access_for`, `object_permitted`, and `ColumnAccess`.
+- `include/zetta/node.hpp` — object decisions (#747): `Node::authorize_object` / `column_scope` / `may_call_tool` / `authorize_blob`, and `grant_scoped_permissions` / `revoke_scoped_permissions`.
+- `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
+- `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
+- `include/zetta/governance/policy.hpp` — row-level security (#748): `zetta::governance::Policy` / `PolicyValue` / `policy_value_from_json` / `policy_schema` (the `policy:<uuid>` entity + its trust boundary).
+- `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).
+- `include/zetta/node.hpp` — policy CRUD + the RLS bypass decision (#748): `Node::create_policy` / `drop_policy` / `find_policy` / `policies` / `bypasses_row_security`.
+- `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the `CREATE/DROP POLICY` grammar + its `roles:manage` gate, the `system.policies` view, and the per-statement `USING` (SELECT) / `WITH CHECK` (INSERT) row rewrite reusing the WHERE evaluator (#748).
+- `tests/governance/test_row_security.cpp` + `tests/api/test_row_security_api.cpp` — the RLS coverage (#748): `USING (owner = current_user())` limits a non-admin to its own rows, a `WITH CHECK` violation is rejected, admin bypasses, a role-scoped policy applies only to that role (deny-by-default otherwise), `current_roles()` membership, policies replicate.
+- `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
+- `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
+- `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
+- `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
+- `include/zetta/api/server.hpp` — `ServerOptions::require_auth` (the default-deny gate flag, #745).
+- `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router seam (`bearer → user`, else 401; #745).
+- `tests/api/test_auth_gate.cpp` — the gate + `authorize_user` coverage (401 on every path without a token; the owner token opens them; per-user capability verdicts; back-compat with the gate off).
 - `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
 - `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,
   `authorize()`.

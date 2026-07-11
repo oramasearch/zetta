@@ -65,7 +65,11 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   identity system.
 - **Loopback + no token = the "unauthenticated local" session** — the governed
   console precedent: permitted, still audited. Any non-loopback bind requires
-  a token (default bind is loopback).
+  a token (default bind is loopback). Under **`--require-auth`** (the
+  default-deny gate, #745) even loopback is closed: the bearer must resolve to a
+  **user** through the token store, and the capability check then runs against
+  that user's effective permissions — see
+  [access-control.md](../governance/access-control.md#the-default-deny-gate---require-auth---745).
 - Every call runs `Node::authorize(key, required_operation)` — deny-by-default
   capability check **and** the audit record in one motion. Convention: reads
   require `api:query`; each action requires `orchestration:<name>`

@@ -441,15 +441,22 @@ TEST(K8sCliControlPlane, SeedServiceAccountAndSpotShapeTheDeployment) {
     K8sCliControlPlane control_plane{runner};
     K8sConfig config = sample_config();
     config.seed_peer = "10.0.0.1:7777";
+    // On a secure cluster the join token rides alongside the seed peer (#670),
+    // both set in the one `kubectl set env` call.
+    config.join_token =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     config.service_account = "zetta-burst-sa";
     config.spot = true;
 
     control_plane.bring_up(config, ProvisionRequest{2, gpu_spec()});
 
-    // Seed peer → set env ZETTA_SEED_PEER.
+    // Seed peer → set env ZETTA_SEED_PEER; join token → set env ZETTA_CLUSTER_TOKEN.
     const std::vector<std::string>* env = call_with(calls, {"set", "env"});
     ASSERT_NE(env, nullptr);
     EXPECT_TRUE(has_token(*env, "ZETTA_SEED_PEER=10.0.0.1:7777"));
+    EXPECT_TRUE(has_token(
+        *env,
+        "ZETTA_CLUSTER_TOKEN=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"));
 
     // Service account → set serviceaccount.
     const std::vector<std::string>* sa = call_with(calls, {"set", "serviceaccount"});

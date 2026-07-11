@@ -35,7 +35,9 @@ QueryService::Outcome QueryService::run(std::string_view sql,
             return out;  // stop at the first failing statement
         }
         out.messages.push_back(std::move(r.message));
-        if (std::holds_alternative<SelectStmt>(stmt)) {
+        // Surface the result set for a SELECT, and for any other statement that
+        // returns rows (e.g. CREATE TOKEN returns the plaintext secret once).
+        if (std::holds_alternative<SelectStmt>(stmt) || !r.rows.empty()) {
             out.columns = std::move(r.columns);
             out.rows = std::move(r.rows);
         }

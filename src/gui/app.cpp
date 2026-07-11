@@ -647,7 +647,7 @@ void App::poll_background_ops() {
         }
     }
 
-    // Palette-launched job capabilities (run / testkit_run, #617): drop the
+    // Palette-launched job capabilities (run / testsuite_run, #617): drop the
     // worker handles once done — their runs stay observable through the same
     // live Run records every surface reads.
     if (palette_background_) palette_background_->prune();

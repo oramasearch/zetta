@@ -163,7 +163,7 @@ void App::run_palette_capability(const std::string& capability_name) {
     // audited "unauthenticated local" session (the governed-console
     // precedent), and the span lands in the node's ring beside MCP calls.
     // The lazily-built background owner lets the kind:job entries (run /
-    // testkit_run, #617) launch from the palette too; poll_background_ops()
+    // testsuite_run, #617) launch from the palette too; poll_background_ops()
     // prunes finished workers each frame.
     if (!palette_background_) {
         palette_background_ = std::make_unique<api::BackgroundActions>();

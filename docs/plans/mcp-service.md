@@ -67,7 +67,7 @@ hook).
    GUI.
 3. **Governed action parity** — create_project / capture_intent / import_n8n /
    compile (intent · n8n · sim-Python) / gate / deploy / run / sql / add_dataset
-   / testkit_run; each capability-scoped + audited; `mutates=true` fires the
+   / testsuite_run; each capability-scoped + audited; `mutates=true` fires the
    activity hook. Acceptance: UC-1 driven end to end from Claude Code over MCP
    on a live multi-node cluster.
 4. **REST rendering** — the same registry served as plain HTTP routes

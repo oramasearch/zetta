@@ -91,7 +91,7 @@ kubeconfig context is the "account", set up out-of-band). The same four operatio
 | **destroy one** | `kubectl delete pod <pod-name>` |
 | **teardown pool** | `kubectl scale deployment/<name> --replicas 0` then `kubectl delete deployment <name>` |
 | **Spot / preemptible** | `kubectl patch deployment <name> --patch <nodeSelector>` onto a spot node pool |
-| **node join (bootstrap)** | `kubectl set env deployment/<name> ZETTA_SEED_PEER=…` |
+| **node join (bootstrap)** | `kubectl set env deployment/<name> ZETTA_SEED_PEER=… ZETTA_CLUSTER_TOKEN=…` (token only on a secure cluster) |
 | **per-node identity** | **ServiceAccount** (`kubectl set serviceaccount deployment/<name> <sa>`) |
 | **eviction signal** | pod eviction / `kubectl get pods` no longer lists it |
 
@@ -108,7 +108,7 @@ counts by label). The same four operations:
 | **destroy one** | `<runtime> rm -f <id>` |
 | **teardown pool** | `<runtime> rm -f $(<runtime> ps -q --filter label=<pool>)` |
 | **Spot / preemptible** | n/a (local host) — `--gpus all` gives workers the host GPUs instead |
-| **node join (bootstrap)** | `--env ZETTA_SEED_PEER=…` (+ `--network host` to reach the cluster) |
+| **node join (bootstrap)** | `--env ZETTA_SEED_PEER=…` (+ `--env ZETTA_CLUSTER_TOKEN=…` on a secure cluster; + `--network host` to reach the cluster) |
 | **per-node identity** | the zetta-side burst identity only (no host identity); a `--user` could be added |
 | **eviction signal** | the worker container exits / `ps` no longer lists it |
 
@@ -116,6 +116,21 @@ The eviction column is why `provisioned()` reads the control plane live on every
 call: a Spot/preemptible reclaim removes a node **without** a `teardown`, and the
 list must reflect that (the short-lived burst credential expires on its own — the
 TTL is the backstop, the bulk revoke is the clean-shutdown path).
+
+**Secure-cluster join (#670).** The bootstrap seam carries **two** values, not
+one: the cluster seed address in `ZETTA_SEED_PEER`, and — when the cluster runs
+inter-node mTLS ([cluster security](../cluster/security.md)) — its join token in
+`ZETTA_CLUSTER_TOKEN`, so the node comes up with the equivalent of `zetta --peer
+<seed> --join-token <token>` and joins the **secure** cluster rather than being
+forced onto `--cluster-plaintext`. Both are filled at fleet wire time from this
+node's own live cluster security (`ProvisionerFleet::wire` takes a
+`default_cluster_token`); the config's `join_token` mirrors its `seed_peer`, with
+one deliberate difference — the token is the cluster **secret**, so it is **not**
+part of the config's JSON boundary (no schema field, never `to_json`/`from_json`)
+and so never lands in the detected provisioner config or `system.provisioners`. A
+plaintext cluster injects no token. The reference bindings carry the token on the
+same visible seam as the seed to illustrate the plumbing; a production binding
+sources it from the cloud's secret store instead of a describe-able tag / literal.
 
 ### Concrete binding shapes
 
@@ -146,13 +161,13 @@ oci compute-management instance-pool list-instances --instance-pool-id <pool-oci
 
 # Kubernetes bring_up: ensure the Deployment, shape its pods, scale it, then list.
 kubectl create deployment <name> --image <img> --namespace <ns>
-kubectl set env deployment/<name> ZETTA_SEED_PEER=<seed> --namespace <ns>
+kubectl set env deployment/<name> ZETTA_SEED_PEER=<seed> ZETTA_CLUSTER_TOKEN=<token> --namespace <ns>
 kubectl scale deployment/<name> --replicas <N> --namespace <ns>
 kubectl get pods --selector app=<name> --output json --namespace <ns>
 
 # Bare metal bring_up: count labelled workers, run the shortfall, then list.
 docker ps --filter label=<pool> --format '{{json .}}'   # current count
-docker run -d --label <pool> --name <prefix>-<uuid> --env ZETTA_SEED_PEER=<seed> <img>
+docker run -d --label <pool> --name <prefix>-<uuid> --env ZETTA_SEED_PEER=<seed> --env ZETTA_CLUSTER_TOKEN=<token> <img>
 docker ps --filter label=<pool> --format '{{json .}}'   # NDJSON, one object per line
 
 # AWS bring_up: ensure the ASG exists at N, then list its instances.

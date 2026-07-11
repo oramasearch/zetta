@@ -16,6 +16,7 @@
 #include "zetta/query/executor.hpp"
 #include "zetta/query/postgres.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/testkit/test_suite.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/util/uuid.hpp"
@@ -309,6 +310,48 @@ TEST(QueryService, EveryCatalogedSystemTableIsSelectable) {
             << "system." << name << " is cataloged but not served: "
             << sel.error;
     }
+    node.stop();
+}
+
+// ---- system.test_cases (the in-app test-suite catalog) ----------------------
+
+// The test_cases view serves the whole zetta::testkit catalog — one row per
+// runnable case, the same live source the testsuite_list capability and the
+// headed Test suite panel read (RULE-7). It lists *every* case, in builtin
+// order, and behaves like any other read-only system table.
+TEST(QueryService, SystemTestCasesListsTheTestSuiteCatalog) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+    QueryService svc{node};
+
+    const zetta::testkit::TestSuite& catalog =
+        zetta::testkit::TestSuite::builtin();
+    ASSERT_GT(catalog.size(), 0u);
+
+    auto sel = svc.run("SELECT * FROM system.test_cases;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), catalog.size());
+    for (std::size_t i = 0; i < catalog.size(); ++i) {
+        EXPECT_EQ(sel.rows[i].at("id").get<std::string>(),
+                  catalog.cases()[i].id);
+        EXPECT_FALSE(sel.rows[i].at("category").get<std::string>().empty());
+        EXPECT_FALSE(sel.rows[i].at("name").get<std::string>().empty());
+    }
+
+    // Projection + WHERE work over the catalog like any system table.
+    auto one = svc.run(
+        "SELECT category, options FROM system.test_cases "
+        "WHERE id = 'compute.cpu.elementwise';",
+        "");
+    ASSERT_TRUE(one.ok()) << one.error;
+    ASSERT_EQ(one.rows.size(), 1u);
+    EXPECT_EQ(one.rows[0].at("category").get<std::string>(), "compute");
+
+    // Read-only, like the rest of the system database.
+    EXPECT_FALSE(
+        svc.run("INSERT INTO system.test_cases (id) VALUES ('x');", "").ok());
+
     node.stop();
 }
 

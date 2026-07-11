@@ -92,8 +92,16 @@ std::vector<std::string> run_argv(const BareMetalConfig& config) {
     flag(run, "--name", config.name_prefix + "-" + zetta::util::new_uuid());
     if (!config.network.empty()) flag(run, "--network", config.network);
     if (config.gpus) flag(run, "--gpus", "all");
+    // Seed peer — and, on a secure cluster, the join token (#670) — ride as
+    // container env vars so the worker comes up with the equivalent of
+    // `zetta --peer <seed> --join-token <token>`. (The join token is a secret; a
+    // production runner would pass it via an env-file / secret rather than a
+    // literal --env — it rides the same seam here to illustrate the plumbing.)
     if (!config.seed_peer.empty()) {
         flag(run, "--env", "ZETTA_SEED_PEER=" + config.seed_peer);
+    }
+    if (!config.join_token.empty()) {
+        flag(run, "--env", "ZETTA_CLUSTER_TOKEN=" + config.join_token);
     }
     run.push_back(config.image);  // the image is the trailing positional arg
     return run;

@@ -61,7 +61,7 @@ read-backs proving nothing placed and nothing executed), **dataset ingest**
 (add_dataset → placement visible in `get_dataset` AND the
 `system.dataset_partitions` read-back). `tests/api/test_action_journeys.cpp`
 runs them at layer 1 (plus n8n import+compile, sim-Python compile,
-testkit_run submit-then-poll, and the denied-key negative);
+testsuite_run submit-then-poll, and the denied-key negative);
 `tests/api/test_mcp_server.cpp` replays dataset-ingest and gate-blocked over
 the wire; see [../api/governed-actions.md](../api/governed-actions.md).
 

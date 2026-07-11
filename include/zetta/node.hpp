@@ -17,6 +17,7 @@
 #include "zetta/governance/access_key.hpp"
 #include "zetta/governance/audit_event.hpp"
 #include "zetta/governance/consent.hpp"
+#include "zetta/governance/grant.hpp"
 #include "zetta/cloud/cloud_inspector.hpp"
 #include "zetta/cloud/provisioner_config.hpp"
 #include "zetta/compute/checkpoint.hpp"
@@ -34,7 +35,12 @@
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
+#include "zetta/governance/role.hpp"
+#include "zetta/governance/token.hpp"
+#include "zetta/governance/user.hpp"
+#include "zetta/governance/user_role.hpp"
 #include "zetta/pipeline/project.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/governance/scope.hpp"
@@ -578,6 +584,198 @@ public:
     zetta::governance::AccessDecision authorize(const std::string& key_id,
                              const zetta::governance::Operation& operation) const;
 
+    // The capability decision for a USER (the default-deny gate, #745): the
+    // operation is allowed iff any role assigned to the user (via UserRole)
+    // holds a matching, unexpired capability. Deny-by-default — an unknown or
+    // disabled user, or no role granting the right, denies. This is the
+    // token-resolved counterpart to the AccessKey `authorize` above: the gate
+    // resolves a bearer to a user (authenticate_token), then this checks the
+    // user's *effective* permissions (the union of its roles' capabilities).
+    zetta::governance::AccessDecision authorize_user(
+        const std::string& user_id,
+        const zetta::governance::Operation& operation) const;
+
+    // ----- Object-scoped authorization (fine-grained grants, #747) -----------
+    // The object tier layered over roles (#746): the acting identity's grants
+    // decide access to a SPECIFIC object (table / column / blob / MCP tool), not
+    // just to a resource kind. Deny-by-default. Three identities BYPASS object
+    // scoping: an empty acting id (the trusted unauthenticated-local session), a
+    // legacy AccessKey (`acting_is_user` false, non-empty — it carries only coarse
+    // scope/caps), and any user that holds the operation as a FLAT, unscoped right
+    // (admin holds every one). Only a user whose right is exclusively object-scoped
+    // is narrowed.
+
+    // Whether the identity may perform `operation` on `object` — the general
+    // single-object decision (blob / MCP tool / any Resource).
+    bool authorize_object(const std::string& acting_id, bool acting_is_user,
+                          const zetta::governance::Operation& operation,
+                          const zetta::governance::Resource& object) const;
+
+    // The column-level access the identity has to `database.table` under
+    // `operation` ({data,read} / {data,write}) — drives the executor's table
+    // denial + column masking (SELECT) / write rejection (INSERT).
+    zetta::governance::ColumnAccess column_scope(
+        const std::string& acting_id, bool acting_is_user,
+        const zetta::governance::Operation& operation,
+        const std::string& database, const std::string& table) const;
+
+    // Whether the identity may invoke the MCP/REST tool `tool_name` — the per-tool
+    // `mcp:call` scope. Drives tools/call denial + tools/list filtering (#747).
+    bool may_call_tool(const std::string& acting_id, bool acting_is_user,
+                       const std::string& tool_name) const;
+
+    // Whether the identity may read the blob `blob_id` — `blob:read` scoped by
+    // id/prefix. Drives the blob serve path (#747).
+    bool authorize_blob(const std::string& acting_id, bool acting_is_user,
+                        const std::string& blob_id) const;
+
+    // Add / remove OBJECT-SCOPED grants on a role (#747): each named permission's
+    // operation(s) bound to `object`, idempotently (grant is a no-op for a grant
+    // already present, revoke for one absent). Unknown permission names are
+    // ignored (validate at the grammar boundary with governance::is_permission).
+    // false on an unknown role name. Rewrites role.json + captures into the CRDT.
+    bool grant_scoped_permissions(const std::string& role_name,
+                                  const std::vector<std::string>& permissions,
+                                  const zetta::governance::Resource& object);
+    bool revoke_scoped_permissions(const std::string& role_name,
+                                   const std::vector<std::string>& permissions,
+                                   const zetta::governance::Resource& object);
+
+    // ----- Users / roles / tokens: the credential store (FEAT-9 / #744) -------
+    // The foundation the rest of the identity model builds on. A User is an
+    // authenticatable identity, a Role a named permission set, a Token a bearer
+    // credential **stored hashed** (the plaintext is shown once), and a UserRole
+    // ties a user to a role. All four are replicated through the same
+    // capture/reconcile path as principals (see docs/governance/access-control.md).
+
+    // Create a user (unique name, status Active). Empty handle on an empty name
+    // or a clash. Captured into the CRDT (`user:<uuid>`) + persisted on disk.
+    std::shared_ptr<zetta::governance::User> create_user(std::string name);
+    std::shared_ptr<zetta::governance::User> find_user(const std::string& name) const;
+    std::shared_ptr<zetta::governance::User> find_user_by_id(const std::string& id) const;
+    bool drop_user(const std::string& name);
+    // Enable/disable a user (a disabled user's tokens stop validating). false on
+    // an unknown name.
+    bool set_user_status(const std::string& name, zetta::governance::UserStatus status);
+    std::vector<std::shared_ptr<zetta::governance::User>> users() const { return users_; }
+    std::size_t user_count() const { return users_.size(); }
+
+    // Create a built-in role by name ("admin"/"writer"/"reader") — empty handle
+    // on an unknown built-in name or a name clash.
+    std::shared_ptr<zetta::governance::Role> create_builtin_role(const std::string& name);
+    // Ensure the built-in admin/writer/reader roles all exist (idempotent), and
+    // reconcile any that drifted from their canonical permission set back to it —
+    // used by bootstrap so the built-ins always exist and always mean the same
+    // thing. Returns the number newly created (drift repairs are not counted).
+    std::size_t ensure_builtin_roles();
+    // Create a CUSTOM role (#746): unrestricted-scope but with NO capabilities —
+    // permissions are added with grant_permissions. Empty handle on an empty name
+    // or a name clash (built-in or custom). Captured into the CRDT + persisted.
+    std::shared_ptr<zetta::governance::Role> create_role(const std::string& name);
+    // Drop a role by name, and any user↔role assignments referencing it (mirrors
+    // drop_user's cleanup). false on an unknown name.
+    bool drop_role(const std::string& name);
+    // Add / remove permissions (from the vocabulary, permission.hpp) on a role's
+    // rights, idempotently — grant is a no-op for a right already present, revoke
+    // for one absent. Unknown permission names are ignored (validate at the
+    // grammar boundary with governance::is_permission). false on an unknown role
+    // name. Rewrites role.json + captures the new value into the CRDT.
+    bool grant_permissions(const std::string& role_name,
+                           const std::vector<std::string>& permissions);
+    bool revoke_permissions(const std::string& role_name,
+                            const std::vector<std::string>& permissions);
+    std::shared_ptr<zetta::governance::Role> find_role(const std::string& name) const;
+    std::shared_ptr<zetta::governance::Role> find_role_by_id(const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::governance::Role>> roles() const { return roles_; }
+    std::size_t role_count() const { return roles_.size(); }
+
+    // Assign a role to a user (idempotent — the existing assignment if the pair is
+    // already assigned). Empty handle if either id is unknown.
+    std::shared_ptr<zetta::governance::UserRole> assign_role(const std::string& user_id,
+                                                             const std::string& role_id);
+    // Remove a user↔role assignment (#746). false if the pair is not assigned.
+    // Drops the CRDT `user_role:` key + its on-disk folder.
+    bool unassign_role(const std::string& user_id, const std::string& role_id);
+    std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles() const {
+        return user_roles_;
+    }
+    std::size_t user_role_count() const { return user_roles_.size(); }
+    // The role ids assigned to a user (its effective roles).
+    std::vector<std::string> roles_for_user(const std::string& user_id) const;
+
+    // The plaintext secret surfaced once at token creation, alongside its handle.
+    // The secret is never stored (only its salted hash) and never returned again.
+    struct TokenIssue {
+        std::shared_ptr<zetta::governance::Token> token;
+        std::string secret;  // PLAINTEXT — shown once, never persisted
+    };
+    // Issue a token for a user: generates a random secret + salt, stores only the
+    // hash (`token:<uuid>`), and returns the handle + plaintext. Empty handle if
+    // the user id is unknown. `expires_at` empty => no TTL.
+    TokenIssue create_token(const std::string& user_id,
+                            zetta::governance::TokenType type,
+                            std::string expires_at = {});
+    std::shared_ptr<zetta::governance::Token> find_token_by_id(const std::string& id) const;
+    // Revoke a token (a revoked token never validates). false on an unknown id.
+    bool revoke_token(const std::string& id);
+    std::vector<std::shared_ptr<zetta::governance::Token>> tokens() const { return tokens_; }
+    std::size_t token_count() const { return tokens_.size(); }
+
+    // ----- Row-level security policies (RLS, #748, epic #743 item 5) ----------
+    // A Policy is a Postgres-style row-security rule over one table (a USING read
+    // filter + a WITH CHECK write filter, evaluated by the SQL WHERE engine
+    // against the acting identity). Replicated through the same capture/reconcile
+    // path as roles (`policy:<uuid>`). The executor enforces them; see
+    // docs/governance/access-control.md.
+
+    // Create a policy (unique name). The value's `created` is stamped here. Empty
+    // handle on an empty name or a name clash. Captured into the CRDT + persisted.
+    std::shared_ptr<zetta::governance::Policy> create_policy(
+        zetta::governance::PolicyValue value);
+    // Drop a policy by name. false on an unknown name. Drops the CRDT `policy:` key
+    // + its on-disk folder.
+    bool drop_policy(const std::string& name);
+    std::shared_ptr<zetta::governance::Policy> find_policy(const std::string& name) const;
+    std::shared_ptr<zetta::governance::Policy> find_policy_by_id(const std::string& id) const;
+    std::vector<std::shared_ptr<zetta::governance::Policy>> policies() const {
+        return policies_;
+    }
+    std::size_t policy_count() const { return policies_.size(); }
+
+    // Whether the acting identity BYPASSES row-level security (sees/writes every
+    // row regardless of policy). Three identities bypass, mirroring the object-
+    // scoping bypass (#747): an empty acting id (the trusted unauthenticated-local
+    // session), a legacy AccessKey (`acting_is_user` false, non-empty), and any
+    // user that is an admin (holds the cluster:admin permission — the built-in
+    // admin does). Every other user is subject to RLS. Deny-by-default: only these
+    // widen; a non-bypass user with no applicable policy on a protected table sees
+    // no rows.
+    bool bypasses_row_security(const std::string& acting_id,
+                               bool acting_is_user) const;
+
+    // Resolve a bearer secret to the user it authenticates as, or an empty handle
+    // when no live token matches (deny-by-default). Hashes + constant-time
+    // compares against every non-revoked, unexpired token, and requires the
+    // owning user to exist and be active. This is the seam issue #2's gate calls.
+    std::shared_ptr<zetta::governance::User> authenticate_token(std::string_view secret) const;
+
+    // The outcome of bootstrap_owner: whether an owner was minted this call, and
+    // the identifiers to log (never the secret).
+    struct BootstrapResult {
+        bool performed = false;   // false = no-op (store already seeded, or no secret)
+        std::string user_id;
+        std::string user_name;    // "owner"
+        std::string token_id;
+        std::string reason;       // why it was a no-op, when !performed
+    };
+    // Bootstrap the owner (#733): if the user store is empty, mint an "owner"
+    // user, ensure the built-in roles exist, assign it "admin", and issue an
+    // access token whose secret is `admin_token_secret` (the operator's, via
+    // --admin-token / ZETTA_ADMIN_TOKEN). A no-op when a user already exists or
+    // the secret is empty. Never logs / returns the secret — the operator already
+    // holds it.
+    BootstrapResult bootstrap_owner(const std::string& admin_token_secret);
+
     // The control plane that reconciles local deployments desired → actual and
     // self-heals their runs (see deployment_controller.hpp). Driven each tick();
     // exposed so tests/UI can introspect its counters or run a pass directly.
@@ -665,6 +863,15 @@ private:
     void load_principals();
     std::shared_ptr<zetta::governance::Principal> find_principal_by_id(const std::string& id) const;
 
+    // Rebuild the credential store (users/roles/tokens/user_roles) by scanning
+    // config_.data_dir for each entity's marker file. Called from start().
+    // Malformed records are skipped at the boundary (schema).
+    void load_users();
+    void load_roles();
+    void load_tokens();
+    void load_user_roles();
+    void load_policies();
+
     // --- replication (only when replication_ != nullptr) -------------------
     std::filesystem::path replication_path() const;
     void load_replication();           // read the persisted CRDT document
@@ -699,6 +906,11 @@ private:
     void reconcile_principals(const nlohmann::json& snapshot);
     void reconcile_access_keys(const nlohmann::json& snapshot);
     void reconcile_audit_events(const nlohmann::json& snapshot);
+    void reconcile_users(const nlohmann::json& snapshot);
+    void reconcile_roles(const nlohmann::json& snapshot);
+    void reconcile_tokens(const nlohmann::json& snapshot);
+    void reconcile_user_roles(const nlohmann::json& snapshot);
+    void reconcile_policies(const nlohmann::json& snapshot);
     // Materialize (no capture) — used by reconciliation:
     std::shared_ptr<zetta::data::Database> materialize_database(
         std::string id, std::string name, zetta::data::ReplicationStrategy strategy = {});
@@ -731,6 +943,23 @@ private:
                                                      std::string name,
                                                      std::string created);
     bool materialize_drop_principal(const std::string& id);
+    std::shared_ptr<zetta::governance::User> materialize_user(
+        std::string id, std::string name, zetta::governance::UserStatus status,
+        std::string created);
+    bool materialize_drop_user(const std::string& id);
+    std::shared_ptr<zetta::governance::Role> materialize_role(
+        std::string id, std::string name,
+        zetta::governance::RolePermissions permissions, std::string created);
+    bool materialize_drop_role(const std::string& id);
+    std::shared_ptr<zetta::governance::Token> materialize_token(
+        std::string id, zetta::governance::TokenValue value);
+    bool materialize_drop_token(const std::string& id);
+    std::shared_ptr<zetta::governance::UserRole> materialize_user_role(
+        std::string id, std::string user_id, std::string role_id);
+    bool materialize_drop_user_role(const std::string& id);
+    std::shared_ptr<zetta::governance::Policy> materialize_policy(
+        std::string id, zetta::governance::PolicyValue value);
+    bool materialize_drop_policy(const std::string& id);
     // Apply a replicated audit event (a peer's, or one rebuilt from the document)
     // by id, without capturing. Append-only — there is no drop counterpart.
     std::shared_ptr<zetta::governance::AuditEvent> materialize_audit_event(std::string id,
@@ -782,6 +1011,11 @@ private:
     std::deque<OwnerWork> owner_work_queue_;
     std::vector<std::shared_ptr<zetta::governance::Principal>> principals_;    // insertion order
     std::vector<std::shared_ptr<zetta::governance::AuditEvent>> audit_events_; // sorted (time, id)
+    std::vector<std::shared_ptr<zetta::governance::User>> users_;          // credential store (#744)
+    std::vector<std::shared_ptr<zetta::governance::Role>> roles_;          // named permission sets
+    std::vector<std::shared_ptr<zetta::governance::Token>> tokens_;        // hashed bearer credentials
+    std::vector<std::shared_ptr<zetta::governance::UserRole>> user_roles_; // user↔role assignments
+    std::vector<std::shared_ptr<zetta::governance::Policy>> policies_;      // row-level security policies (#748)
     zetta::index::IndexRegistry index_registry_;            // IndexBackend container (#528)
     // Durable, local (non-replicated) checkpoint store for eviction tolerance
     // (RULE-5 / #468); rooted at <data_dir>/checkpoints, set in the ctor.

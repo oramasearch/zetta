@@ -122,8 +122,8 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 - **Merged to `dev` 2026-07-03 (action parity)**: [#617](https://github.com/oramasearch/zetta/issues/617)
   — governed action parity: the mutating product loop over MCP
   (capture_intent · import_n8n · compile_intent/n8n/python · gate · deploy ·
-  run · add_dataset · testkit_run), each `orchestration:<name>`-scoped +
-  audited under the acting key; `run`/`testkit_run` are kind:job over the
+  run · add_dataset · testsuite_run), each `orchestration:<name>`-scoped +
+  audited under the acting key; `run`/`testsuite_run` are kind:job over the
   engine's durable Run handles (`api::BackgroundActions` owns the workers,
   `testkit::AsyncCaseRun` is the new testkit entry point)
   ([docs/api/governed-actions.md](api/governed-actions.md)).
@@ -205,11 +205,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
   cluster link, per-node Ed25519 identities, token-gated join (the token
   derives the cluster CA), secure by default with `--cluster-plaintext` the
-  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-ups
-  filed: [#669](https://github.com/oramasearch/zetta/issues/669) CSR enrollment
-  / peer-cert pinning / revocation,
-  [#670](https://github.com/oramasearch/zetta/issues/670) provisioner
-  join-token plumbing.
+  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-up
+  still open: [#669](https://github.com/oramasearch/zetta/issues/669) CSR
+  enrollment / peer-cert pinning / revocation.
+  [#670](https://github.com/oramasearch/zetta/issues/670) (provisioner
+  join-token plumbing) is **done** — burst nodes now get `ZETTA_CLUSTER_TOKEN`
+  alongside `ZETTA_SEED_PEER`, so a provisioned node joins the secure cluster
+  (PR [#742](https://github.com/oramasearch/zetta/pull/742)).
 - **Churn-run consolidation shipped
   ([#637](https://github.com/oramasearch/zetta/issues/637), PR
   [#661](https://github.com/oramasearch/zetta/pull/661))**: ONE public churn

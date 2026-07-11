@@ -10,6 +10,7 @@
 #include "zetta/api/server.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
+#include "zetta/cloud/node_bootstrap_env.hpp"
 #include "zetta/node.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/cloud/provisioner_detect.hpp"
@@ -25,6 +26,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -45,8 +47,11 @@ struct Options {
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
     std::string mcp_token;                      // --mcp-token (acting key id)
+    bool require_auth = false;      // --require-auth / ZETTA_REQUIRE_AUTH (#745)
+    std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
     bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
+    bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool show_help = false;
     bool bad_usage = false;
 };
@@ -72,20 +77,39 @@ void print_usage(const char* argv0) {
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
-        "  --mcp-token T       Require this bearer token (= acting key id)\n"
+        "  --mcp-token T       Legacy shared-secret bearer (= acting key id);\n"
+        "                      ignored when --require-auth is set\n"
+        "  --require-auth      Default-deny: every HTTP/MCP/REST path needs a\n"
+        "                      bearer that resolves to a user via the token\n"
+        "                      store, else 401 (or ZETTA_REQUIRE_AUTH); #745\n"
+        "  --admin-token T     Seed the owner user's access token from this\n"
+        "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
+        "                      hashed at rest, never logged (#744)\n"
         "  --no-mcp            Disable the embedded MCP server\n"
         "  --data-dir PATH     Database directory (default: %s)\n"
-        "  --listen HOST:PORT  Cluster listen address (default: %s:%u)\n"
-        "  --port-range N      Ports to try from --listen, for several nodes\n"
-        "                      per host (default: %u)\n"
-        "  --peer HOST:PORT    A node to connect to (repeatable; all equal)\n"
+        "  --listen HOST:PORT  Cluster listen address (default: %s:%u);\n"
+        "                      bound exactly or the node exits (no silent drift)\n"
+        "  --port-range N      Bind the first free port in [PORT, PORT+N), to\n"
+        "                      pack several nodes per host (default: %u = strict)\n"
+        "  --peer HOST:PORT    A node to connect to (repeatable; all equal).\n"
+        "                      HOST:PORT,HOST:PORT lists one peer's candidate\n"
+        "                      endpoints — the reachable one is used\n"
+        "  --advertise H:P[,..] Extra reachable endpoints to advertise to peers\n"
+        "                      (a NAT'd / load-balanced node's public/LB address,\n"
+        "                      beyond its bound listen address). Repeatable\n"
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
         "                      persisted in data-dir on first use\n"
         "  --cluster-plaintext Disable inter-node mTLS (debugging only —\n"
         "                      anyone who can reach the port can join)\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
-        "  -h, --help          Show this help\n",
+        "  -h, --help          Show this help\n"
+        "\n"
+        "Environment (provisioning; applied as defaults, overridden by the\n"
+        "flags above — a provisioned node auto-joins with no manual flags):\n"
+        "  ZETTA_SEED_PEER     Seed peer(s) -> --peer (comma/space separated)\n"
+        "  ZETTA_CLUSTER_TOKEN Cluster join token -> --join-token\n"
+        "  ZETTA_DATA_DIR      Database directory -> --data-dir\n",
         zetta::kVersion, argv0, zetta::NodeConfig{}.data_dir.c_str(),
         defaults.listen_host.c_str(), defaults.listen_port, defaults.port_range);
 }
@@ -112,6 +136,11 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--mcp-token") {
             const char* v = take_value(argc, argv, i, o, "--mcp-token");
             if (v) o.mcp_token = v;
+        } else if (arg == "--require-auth") {
+            o.require_auth = true;
+        } else if (arg == "--admin-token") {
+            const char* v = take_value(argc, argv, i, o, "--admin-token");
+            if (v) o.admin_token = v;
         } else if (arg == "--headless") {
             o.mode = Mode::Headless;
         } else if (arg == "--headed") {
@@ -120,6 +149,7 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--data-dir");
             if (!v) break;
             o.node.data_dir = v;
+            o.data_dir_from_cli = true;
         } else if (arg == "--listen") {
             const char* v = take_value(argc, argv, i, o, "--listen");
             if (!v) break;
@@ -146,6 +176,23 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--peer");
             if (!v) break;
             o.cluster.seeds.emplace_back(v);
+        } else if (arg == "--advertise") {
+            const char* v = take_value(argc, argv, i, o, "--advertise");
+            if (!v) break;
+            // A comma-separated set — split so each becomes one advertised
+            // candidate endpoint (a NAT/LB node lists its public/LB address here).
+            const std::string list = v;
+            std::string::size_type start = 0;
+            while (start <= list.size()) {
+                const auto comma = list.find(',', start);
+                const auto end = comma == std::string::npos ? list.size() : comma;
+                std::string part = list.substr(start, end - start);
+                while (!part.empty() && part.front() == ' ') part.erase(0, 1);
+                while (!part.empty() && part.back() == ' ') part.pop_back();
+                if (!part.empty()) o.cluster.advertise.push_back(std::move(part));
+                if (comma == std::string::npos) break;
+                start = comma + 1;
+            }
         } else if (arg == "--join-token") {
             const char* v = take_value(argc, argv, i, o, "--join-token");
             if (!v) break;
@@ -202,6 +249,55 @@ int main(int argc, char** argv) {
         print_usage(argv[0]);
         return 0;
     }
+
+    // Provisioning env (#749): a burst/provisioned node is handed its cluster
+    // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
+    // ZETTA_CLUSTER_TOKEN, ZETTA_DATA_DIR; docs/plans/cloud-provisioning.md Gap
+    // A). Fold them in as defaults beneath the flags already parsed — explicit
+    // flag > env > default — so a provisioned node auto-joins a secure (mTLS)
+    // cluster with no manual flags. A plaintext cluster stays plaintext (env
+    // never forces security on); the --join-token/--cluster-plaintext conflict
+    // check below still guards the result.
+    {
+        zetta::cloud::NodeBootstrap bootstrap;
+        bootstrap.seeds = opts.cluster.seeds;
+        bootstrap.join_token = opts.join_token;
+        bootstrap.data_dir = opts.node.data_dir;
+        bootstrap.cluster_plaintext = opts.cluster_plaintext;
+        bootstrap.peer_from_cli = !opts.cluster.seeds.empty();
+        bootstrap.join_token_from_cli = !opts.join_token.empty();
+        bootstrap.data_dir_from_cli = opts.data_dir_from_cli;
+
+        const zetta::cloud::BootstrapEnvApplied applied =
+            zetta::cloud::apply_bootstrap_env(bootstrap);
+
+        opts.cluster.seeds = std::move(bootstrap.seeds);
+        opts.join_token = std::move(bootstrap.join_token);
+        opts.node.data_dir = std::move(bootstrap.data_dir);
+
+        // One startup line naming what env contributed — token redacted.
+        if (applied.any()) {
+            std::string summary = "zetta: applied provisioning env:";
+            if (!applied.seeds.empty()) {
+                summary += " ZETTA_SEED_PEER=";
+                bool first = true;
+                for (const std::string& seed : applied.seeds) {
+                    if (!first) summary += ",";
+                    summary += seed;
+                    first = false;
+                }
+                summary += " (--peer)";
+            }
+            if (applied.join_token) {
+                summary += " ZETTA_CLUSTER_TOKEN=**** (--join-token)";
+            }
+            if (!applied.data_dir.empty()) {
+                summary += " ZETTA_DATA_DIR=" + applied.data_dir + " (--data-dir)";
+            }
+            std::printf("%s\n", summary.c_str());
+        }
+    }
+
     if (opts.cluster_plaintext && !opts.join_token.empty()) {
         std::fprintf(stderr,
                      "zetta: --cluster-plaintext and --join-token conflict\n");
@@ -270,10 +366,66 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Bootstrap the owner (#733 / #744): on an empty user store, mint an "owner"
+    // user + admin role + an access token seeded from --admin-token (or the
+    // ZETTA_ADMIN_TOKEN env). Closes the seeding gap so a node is never locked
+    // out. We log WHERE the token lives, never its value — the operator already
+    // holds the secret they supplied.
+    {
+        std::string admin_secret = opts.admin_token;
+        if (admin_secret.empty()) {
+            if (const char* env = std::getenv("ZETTA_ADMIN_TOKEN")) {
+                admin_secret = env;
+            }
+        }
+        if (!admin_secret.empty()) {
+            const zetta::Node::BootstrapResult boot =
+                node.bootstrap_owner(admin_secret);
+            if (boot.performed) {
+                std::printf(
+                    "zetta: bootstrapped owner user '%s' + admin role + access "
+                    "token %s (stored hashed under %s) — authenticate with the "
+                    "admin token you supplied\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    (std::filesystem::path(opts.node.data_dir) / boot.token_id)
+                        .c_str());
+            } else {
+                std::printf("zetta: owner bootstrap skipped (%s)\n",
+                            boot.reason.c_str());
+            }
+        } else if (node.user_count() == 0) {
+            std::printf(
+                "zetta: no users yet — seed an owner with --admin-token "
+                "<secret> or ZETTA_ADMIN_TOKEN (the secret is hashed at rest, "
+                "never logged; #744)\n");
+        }
+    }
+
     // Large-object bodies transfer peer-to-peer (their metadata is in the CRDT).
     zetta::data::ReplicatedBlobStore blobs(opts.node.data_dir, replication);
     zetta::cluster::Cluster cluster(node_id, opts.cluster, &replication, &blobs);
     cluster.start();
+
+    // Honor --listen strictly (#738): a node's peer address is load-bearing —
+    // siblings dial it and it's gossiped as membership — so if the requested
+    // port couldn't be bound we exit non-zero rather than silently drift to
+    // another port and fall off the mesh. SO_REUSEADDR already lets us rebind
+    // across a TIME_WAIT window; this catches the case where the port is still
+    // actively held (e.g. a k8s rolling restart overlapping the old process),
+    // so a supervisor restarts us cleanly once it frees. Widen --port-range to
+    // opt into binding the first free port in a range instead.
+    if (!cluster.is_listening()) {
+        std::fprintf(stderr,
+                     "zetta: could not bind cluster listener on %s:%u — port in "
+                     "use. Refusing to start rather than drift to another port "
+                     "(#738). Free the port, or pass --port-range N to bind the "
+                     "first free port in a range.\n",
+                     opts.cluster.listen_host.c_str(),
+                     static_cast<unsigned>(opts.cluster.listen_port));
+        cluster.stop();
+        node.stop();
+        return 1;
+    }
 
     // Seed this node's membership entry now that its reachable address is known;
     // peers merge it so every node's document lists all nodes.
@@ -339,8 +491,17 @@ int main(int argc, char** argv) {
     const std::string default_seed_peer = cluster.listen_addresses().empty()
                                               ? std::string{}
                                               : cluster.listen_addresses().front();
+    // On a secure (mTLS) cluster, hand each burst node this cluster's join token
+    // too — so a provisioned node boots with `--peer <seed> --join-token <token>`
+    // and can join a non-plaintext cluster instead of being stuck on
+    // --cluster-plaintext (#670). Empty under --cluster-plaintext, so nothing is
+    // injected. The token is a secret: it rides the same bootstrap env seam as the
+    // seed peer (ZETTA_CLUSTER_TOKEN alongside ZETTA_SEED_PEER) and is never stored
+    // in the detected provisioner config / system.provisioners.
+    const std::string default_cluster_token = opts.cluster.security.join_token;
     for (const zetta::cloud::ProvisionerFleet::Wiring& wiring :
-         provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer)) {
+         provisioner_fleet.wire(node.provisioner_configs(), default_seed_peer,
+                                default_cluster_token)) {
         if (wiring.wired) {
             std::printf("zetta: cloud provisioner wired for %s (local CLI)\n",
                         wiring.id.c_str());
@@ -371,14 +532,35 @@ int main(int argc, char** argv) {
         api_options.listen_address = opts.mcp_listen.substr(0, colon);
         api_options.port = api_port;
         api_options.bearer_token = opts.mcp_token;
+        // The default-deny gate (#745): --require-auth or ZETTA_REQUIRE_AUTH
+        // closes every path unless the bearer resolves to a user via the token
+        // store. Secure-by-default when set; off keeps the loopback GUI's
+        // unauthenticated-local session working (back-compat).
+        bool require_auth = opts.require_auth;
+        if (!require_auth) {
+            if (const char* env = std::getenv("ZETTA_REQUIRE_AUTH")) {
+                const std::string value = env;
+                require_auth =
+                    !(value.empty() || value == "0" || value == "false");
+            }
+        }
+        api_options.require_auth = require_auth;
         api_server = std::make_unique<zetta::api::ApiServer>(node, &cluster,
                                                              api_options);
         if (api_server->start()) {
+            const char* auth_note =
+                require_auth ? " (auth required — token resolves to a user)"
+                : opts.mcp_token.empty() ? " (unauthenticated local)"
+                                         : " (bearer token required)";
             std::printf("zetta: MCP endpoint http://%s:%u/mcp%s\n",
                         api_options.listen_address.c_str(),
-                        static_cast<unsigned>(api_server->port()),
-                        opts.mcp_token.empty() ? " (unauthenticated local)"
-                                               : " (bearer token required)");
+                        static_cast<unsigned>(api_server->port()), auth_note);
+            if (require_auth && node.token_count() == 0) {
+                std::fprintf(stderr,
+                             "zetta: WARNING --require-auth is on but no tokens "
+                             "exist — every request will 401. Seed an owner with "
+                             "--admin-token <secret> (#745/#733).\n");
+            }
         } else {
             std::fprintf(stderr, "zetta: MCP server failed to start: %s\n",
                          api_server->reason().c_str());

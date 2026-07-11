@@ -16,6 +16,7 @@ FetchContent_MakeAvailable(googletest)
 add_executable(zetta-tests
   api/test_registry.cpp
   api/test_consent.cpp
+  api/test_auth_gate.cpp
   api/test_mcp_server.cpp
   api/test_rest_server.cpp
   api/test_openapi.cpp
@@ -24,6 +25,8 @@ add_executable(zetta-tests
   api/test_search_journey.cpp
   api/test_action_journeys.cpp
   api/test_serving.cpp
+  api/test_scoped_grants_api.cpp
+  api/test_row_security_api.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   util/test_fuzzy.cpp
@@ -46,6 +49,7 @@ add_executable(zetta-tests
   pipeline/test_deployment_controller.cpp
   cloud/test_provisioner.cpp
   cloud/test_provisioner_detect.cpp
+  cloud/test_node_bootstrap_env.cpp
   cloud/test_add_nodes.cpp
   cloud/test_local_provisioner.cpp
   cloud/test_azure_provisioner.cpp
@@ -74,6 +78,10 @@ add_executable(zetta-tests
   data/test_partition_writer.cpp
   data/test_partition_rebalance.cpp
   governance/test_access_control.cpp
+  governance/test_users_roles_tokens.cpp
+  governance/test_roles.cpp
+  governance/test_scoped_grants.cpp
+  governance/test_row_security.cpp
   governance/test_consent.cpp
   pipeline/test_executor.cpp
   pipeline/test_run_progress.cpp
@@ -140,6 +148,8 @@ add_executable(zetta-tests
   compute/test_job_coordinator.cpp
   compute/test_node_job_coordinator.cpp
   cluster/test_cluster.cpp
+  cluster/test_listen_port.cpp
+  cluster/test_cluster_routing.cpp
   cluster/test_cluster_security.cpp
   cluster/test_signal.cpp
   cluster/test_collectives.cpp
