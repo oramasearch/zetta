@@ -12,6 +12,7 @@
 #include <boost/capy/write.hpp>
 #include <boost/corosio.hpp>
 #include <boost/corosio/openssl_stream.hpp>
+#include <boost/corosio/socket_option.hpp>
 #include <boost/corosio/tcp_acceptor.hpp>
 #include <boost/corosio/timer.hpp>
 #include <boost/corosio/tls_context.hpp>
@@ -25,6 +26,13 @@ using tcp_socket = boost::corosio::tcp_socket;
 using endpoint = boost::corosio::endpoint;
 using ipv4_address = boost::corosio::ipv4_address;
 using timer = boost::corosio::timer;
+
+// SO_REUSEADDR on the cluster listener (#738). Set on the acceptor between
+// open() and bind() (open() deliberately does NOT set it) so a restarted node
+// can rebind its exact --listen port while the previous process's accepted
+// sockets are still lingering in TIME_WAIT — instead of the OS refusing the
+// bind and the node drifting to the next port.
+using reuse_address = boost::corosio::socket_option::reuse_address;
 
 // TLS on the cluster transport (CTL-2, #466): the backend-agnostic context +
 // stream surface, and the OpenSSL implementation the build links.

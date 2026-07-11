@@ -57,12 +57,18 @@ struct ClusterConfig {
     // Bind all interfaces by default (the wildcard 0.0.0.0) so a plain node is
     // reachable from other machines out of the box; listen_addresses() expands
     // it to the host's real LAN IPs. Set a specific host (e.g. "127.0.0.1") to
-    // restrict it to loopback. Nodes default to the same port; the range lets
-    // several share one host (e.g. one per NUMA node) — each binds the first
-    // free port in [listen_port, listen_port + port_range).
+    // restrict it to loopback.
     std::string listen_host = "0.0.0.0";
     std::uint16_t listen_port = 7777;
-    std::uint16_t port_range = 16;
+    // Ports to try from `listen_port`: `start()` binds the first free port in
+    // [listen_port, listen_port + port_range). Default 1 = strict — bind
+    // *exactly* `listen_port` or nothing (start() leaves is_listening() false;
+    // the zetta binary then exits non-zero rather than drift). A node's peer
+    // address is load-bearing — siblings dial it — so a fixed --listen must
+    // never silently move (#738). Widen the range (`--port-range N`) only to
+    // pack several nodes on one host (e.g. one per NUMA node); each then grabs
+    // the next free port, and the *actually-bound* address is what's advertised.
+    std::uint16_t port_range = 1;
     // Other nodes (host:port) to dial. All peers are equal — a seed is just
     // somewhere to start; the handshake is symmetric.
     std::vector<std::string> seeds;
@@ -123,6 +129,13 @@ public:
     // The host:port this node actually bound (the configured base until start()
     // picks a free port in the range).
     std::string listen_address() const;
+
+    // Whether start() actually bound a listen socket. False means the port(s)
+    // in [listen_port, listen_port + port_range) were all in use — with the
+    // default strict range that's the exact --listen port. The zetta binary
+    // treats a false here as fatal (exits non-zero) rather than run a node that
+    // never listens or drifts off its advertised address (#738).
+    bool is_listening() const;
 
     // The address(es) other nodes can reach this one at. When bound to a
     // specific host, that host:port. When bound to a wildcard (0.0.0.0), the
