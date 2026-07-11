@@ -29,8 +29,9 @@
 #   ZETTA_E2E_BASE_URL   REQUIRED. Base URL of the node's HTTP API, e.g.
 #                        http://<name>-zetta.<ns>.svc.cluster.local:4800
 #   ZETTA_E2E_PEER_URLS  Optional space/comma list of the OTHER nodes' base URLs
-#                        (per-pod DNS). With >=2 nodes total the CRDT
-#                        replication canary runs; otherwise it is skipped.
+#                        (per-pod DNS; scheme optional — http:// is assumed).
+#                        With >=2 nodes total the CRDT replication canary runs;
+#                        otherwise it is skipped.
 #   ZETTA_E2E_LEVELS     "2", "3", or "2,3" (default "2,3").
 #   ZETTA_E2E_TOKEN      Optional bearer token (default: none — the deployed
 #                        node runs as an unauthenticated local session).
@@ -307,7 +308,13 @@ if want_level 3; then
 
     # --- 3.10 CRDT replication canary across nodes --------------------------
     sec "LEVEL 3.10 — CRDT replication"
-    PEER=""; for p in $PEERS; do _pp="${p%/}"; [ -n "$_pp" ] && [ "$_pp" != "$BASE" ] && PEER="$_pp" && break; done
+    PEER=""
+    for p in $PEERS; do
+        _pp="${p%/}"
+        [ -z "$_pp" ] && continue
+        case "$_pp" in http://*|https://*) : ;; *) _pp="http://$_pp" ;; esac  # scheme optional
+        [ "$_pp" != "$BASE" ] && PEER="$_pp" && break
+    done
     if [ -z "$PEER" ]; then
         skip "single-node target (no distinct peer URL) — replication canary needs replicas>=2"
     else
