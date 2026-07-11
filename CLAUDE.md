@@ -79,6 +79,25 @@ level can be trusted — a stale card is worse than none.
 | UC-1 churn end to end | [`docs/use-cases/`](docs/use-cases/README.md) |
 | Tests, the in-app test suite, runbooks | [`docs/testing/`](docs/testing/README.md) |
 
+## Deployment under the Orama operator (One Orama)
+
+Zetta is deployed + operated by the **orama-cloud-v1-operator** (One Orama,
+[orama-bridge#130](https://github.com/oramasearch/orama-bridge/issues/130)) as an `OramaZettaCluster` —
+a StatefulSet of headless nodes + a headless peer Service (:7777) + a client Service (:4800). Two facts
+shape how the engine is used there:
+
+- **One CRDT cluster spans many k8s clusters (and bare hosts).** Nodes are equal peers joined on :7777;
+  they are **not** bound to one k8s cluster. Topology in practice: **N k8s clusters → 1 operator each →
+  1 shared Zetta.** Cross-cluster peering needs routable :7777 (same-LAN direct; cross-cloud → a
+  LoadBalancer on 7777 or a mesh). Multi-node currently uses `--cluster-plaintext` on a trusted network
+  until mTLS token-sharing is automated.
+- **Zetta is the operators' datastore.** Each operator provisions its own schema (`orama_control` /
+  `orama_data`) over `/v1/sql` and syncs its observed state into it, namespaced by a per-operator id so a
+  shared store never collides. See the operator's
+  [`docs/zetta-datastore.md`](https://github.com/oramasearch/orama-cloud-v1-operator/blob/main/docs/zetta-datastore.md).
+  Planned: Zetta signals the operator for elastic capacity (→ Karpenter → more nodes,
+  [operator#69](https://github.com/oramasearch/orama-cloud-v1-operator/issues/69)).
+
 ## Repository shape: bridge + modules
 
 zetta is both a buildable product **and** a bridge repo: pinned third-party
