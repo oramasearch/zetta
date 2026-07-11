@@ -70,7 +70,13 @@ is wired in, peers gossip their documents and status over the connection (see
 [replication.md](replication.md)). The view shows up three ways:
 
 - **Headed** — the Cluster panel's spatial node-box canvas (below).
-- **Headless** — the heartbeat prints a per-node table when it changes.
+- **Headless** — a one-line status heartbeat prints every **~30s**, and the full
+  per-node table prints **immediately** whenever membership or a sync state
+  changes (a node joins/leaves or flips in/out of sync). The per-second heartbeat
+  was throttled to ~30s so a long-running node doesn't flood its log
+  ([#788](https://github.com/oramasearch/zetta/issues/788)); membership changes
+  are still surfaced within ~1s. The one-time startup banner (node id, listen
+  addresses, join command) is unchanged.
 - **SQL** — `SELECT * FROM system.nodes;` (see [query.md](../data/query.md)).
 
 ### Spatial node-box view (the headed canvas)
