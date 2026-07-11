@@ -1,3 +1,4 @@
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -50,6 +51,21 @@ Statement make_grant_role_statement(std::string role, std::string user) {
 
 Statement make_revoke_role_statement(std::string role, std::string user) {
     return RevokeRoleStmt{std::move(role), std::move(user)};
+}
+
+Statement make_create_policy_statement(
+    std::string name, TableRef table, PolicyCommand command,
+    std::vector<std::string> roles,
+    std::optional<PolicyPredicate> using_predicate,
+    std::optional<PolicyPredicate> check_predicate) {
+    return CreatePolicyStmt{std::move(name),   std::move(table),
+                            command,            std::move(roles),
+                            std::move(using_predicate),
+                            std::move(check_predicate)};
+}
+
+Statement make_drop_policy_statement(std::string name) {
+    return DropPolicyStmt{std::move(name)};
 }
 
 }  // namespace zetta::query

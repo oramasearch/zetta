@@ -562,6 +562,98 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
 `system.roles` gains a **`scoped_grants`** column rendering each grant as
 `<perm> ON <object>` (e.g. `sql:read ON sales.customers(id, email)`).
 
+## Row-level security (FEAT-9 / #748 — closes epic #743)
+
+Scoped grants decide *which columns* of a table an identity may touch; **row-level
+security (RLS)** decides *which rows*. It is Postgres-style: a **policy** names a
+table + a command class and carries a **`USING`** read filter and/or a **`WITH
+CHECK`** write filter — SQL predicates the executor evaluates per row against the
+acting identity. This is the last slice of the authz epic.
+
+### `system.policies` (a new `policy:` catalog entity)
+
+A policy is replicated state, projected on disk exactly like a role (`policy:<uuid>`
+in the CRDT, a UUID-named folder with `policy.json`, the same capture/reconcile
+path). Its value is:
+
+```
+policy:<uuid> -> { name, database, table, command, using?, check?, roles?, created }
+```
+
+`command` is `select` / `insert` / `update` / `all`; `roles` is the role-name set
+the policy applies to (**empty = every role**); `using` / `check` are the stored
+predicate expressions (opaque JSON to the governance layer — the query layer owns
+their grammar + evaluation). `system.policies` is the read view (name, table,
+command, the `using` / `check` predicates rendered back to text, roles). The value
+round-trips through `policy_value_from_json` at the trust boundary — a malformed
+policy is **skipped**, never silently enforced as open.
+
+### The grammar
+
+```sql
+CREATE POLICY own_docs ON sales.orders FOR SELECT
+  USING (owner = current_user());                       -- read filter, every role
+
+CREATE POLICY own_writes ON sales.orders FOR INSERT
+  WITH CHECK (owner = current_user());                  -- write filter
+
+CREATE POLICY analyst_rows ON sales.orders FOR ALL
+  TO ROLE analyst
+  USING (owner = current_user())                        -- reads: only own rows
+  WITH CHECK (owner = current_user());                  -- writes: only own rows
+
+CREATE POLICY audit_all ON sales.orders FOR SELECT
+  USING ('auditor' = ANY(current_roles()));             -- a role sees everything
+
+DROP POLICY own_docs;
+```
+
+`FOR SELECT` needs a `USING`; `FOR INSERT`/`UPDATE` needs a `WITH CHECK` (`USING`
+is accepted as the check fallback). Both the grammar (`src/core/query/postgres.cpp`,
+kept out-of-line + built at `-O1` like the rest of the auth DDL) and the DDL
+execution are gated on the **`roles:manage`** permission — policy management is an
+admin function, reusing the roles vocabulary rather than adding one.
+
+### Context functions
+
+Two functions resolve against the acting identity, usable anywhere a value is:
+
+- **`current_user()`** → the acting user's **name** (so `owner = current_user()`
+  matches rows whose `owner` column equals the caller's username).
+- **`current_roles()`** → the caller's **role-name set**, tested with
+  `<value> = ANY(current_roles())` (membership) — e.g. `'admin' = ANY(current_roles())`.
+
+Predicates **reuse the existing `WHERE` expression evaluator** (`compare_cell`) — no
+second predicate language. A predicate that can't resolve (an absent column, a
+corrupt stored predicate) **fails closed** (the row does not match) and never widens
+access.
+
+### Enforcement (deny-by-default; admin / unrestricted / local bypass)
+
+The executor is the one choke point — the same per-statement seam that #747 enforces
+column grants on:
+
+- On **`SELECT`**, the applicable policies' `USING` predicates are AND-ed into the
+  row scan: the caller sees only rows an applicable policy admits. Multiple
+  applicable policies are **permissive** (OR-ed), as in Postgres.
+- On **`INSERT`**, each new row must satisfy an applicable `WITH CHECK` — a violating
+  row **rejects** the statement.
+- **Deny-by-default**: RLS is *engaged* for a table as soon as any policy governs
+  that table+command. On an engaged table, a caller with **no applicable policy**
+  (its role set doesn't intersect any policy's `roles`) sees **no rows** / can write
+  **no rows** — a policy `TO ROLE analyst` narrows analysts to their own rows and
+  shuts everyone else out (unless another policy admits them).
+- **`GROUP BY`** over a policy-protected table is refused for a non-bypass caller
+  (the numeric DDF aggregate path can't apply a row predicate — refuse rather than
+  leak an aggregate over hidden rows).
+
+Three identities **bypass** RLS entirely (mirroring the #747 object-scoping bypass):
+the trusted unauthenticated-local session (empty acting key), a legacy AccessKey,
+and any **admin** user (one holding `cluster:admin` — the built-in `admin` does).
+So **admin sees every row regardless of policy**. `Node::bypasses_row_security`
+is the decision; `current_user()` / `current_roles()` are resolved from the acting
+user via `find_user_by_id` + `roles_for_user`.
+
 ## Pointers
 
 - `include/zetta/governance/user.hpp` — `zetta::governance::User` + `UserStatus` (an authenticatable identity; #744).
@@ -574,6 +666,11 @@ only coarse scope/caps), and any user holding the operation as a **flat** right 
 - `include/zetta/node.hpp` — object decisions (#747): `Node::authorize_object` / `column_scope` / `may_call_tool` / `authorize_blob`, and `grant_scoped_permissions` / `revoke_scoped_permissions`.
 - `src/core/query/executor.cpp` — the SQL choke point that denies ungranted tables, masks ungranted columns on read, and rejects writes to ungranted columns (#747); `src/core/api/registry.cpp` (per-tool `mcp:call`), `src/core/api/http_server.cpp` (`tools/list` filter), `src/core/api/serving.cpp` (`serve_blob`).
 - `tests/governance/test_scoped_grants.cpp` + `tests/api/test_scoped_grants_api.cpp` — the scoped-grants coverage (#747): covering decision, column masking, table denial, write rejection, per-tool `mcp:call` + `tools/list` filter, blob-prefix serve, admin/local bypass.
+- `include/zetta/governance/policy.hpp` — row-level security (#748): `zetta::governance::Policy` / `PolicyValue` / `policy_value_from_json` / `policy_schema` (the `policy:<uuid>` entity + its trust boundary).
+- `include/zetta/query/ast.hpp` — the RLS predicate AST (#748): `PolicyPredicate` / `PolicyTerm` / `PolicyCommand` + `CreatePolicyStmt` / `DropPolicyStmt` (the dialect-neutral parsed form the executor evaluates with `compare_cell`).
+- `include/zetta/node.hpp` — policy CRUD + the RLS bypass decision (#748): `Node::create_policy` / `drop_policy` / `find_policy` / `policies` / `bypasses_row_security`.
+- `src/core/query/postgres.cpp` + `src/core/query/executor.cpp` — the `CREATE/DROP POLICY` grammar + its `roles:manage` gate, the `system.policies` view, and the per-statement `USING` (SELECT) / `WITH CHECK` (INSERT) row rewrite reusing the WHERE evaluator (#748).
+- `tests/governance/test_row_security.cpp` + `tests/api/test_row_security_api.cpp` — the RLS coverage (#748): `USING (owner = current_user())` limits a non-admin to its own rows, a `WITH CHECK` violation is rejected, admin bypasses, a role-scoped policy applies only to that role (deny-by-default otherwise), `current_roles()` membership, policies replicate.
 - `include/zetta/governance/token.hpp` — `zetta::governance::Token` / `TokenValue` / `TokenType` (hashed bearer credentials).
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
