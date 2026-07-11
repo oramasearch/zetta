@@ -17,7 +17,7 @@ class Run;
 
 // Run one testkit case WITHOUT blocking the caller's thread, with the node's
 // own Run record as the durable, replicated progress handle (#617 — the MCP
-// `testkit_run` capability's engine entry point, mirroring AsyncChurnRun's
+// `testsuite_run` capability's engine entry point, mirroring AsyncChurnRun's
 // worker discipline).
 //
 // start() runs on the node's owner thread: it creates a Run (project label

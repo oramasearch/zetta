@@ -56,9 +56,17 @@ owner thread at `start()` (project label `testkit`, graph label = the case
 id) so the `run:<uuid>` id is known at submit; the case's log lines, metrics,
 and verdict flush to the Run with the terminal status (Pass/Skipped →
 Succeeded, Fail/Error → Failed). This is the engine entry point behind the
-MCP `testkit_run` capability
+MCP `testsuite_run` capability
 ([../api/governed-actions.md](../api/governed-actions.md)); the GUI panel
 keeps its own worker + live-streamed panel log.
+
+**Discovering the catalog headlessly.** The whole case list is readable without
+running anything: the **`testsuite_list`** capability returns one structured
+entry per case (id · category · name · description · tunable options), and
+**`SELECT * FROM system.test_cases`** serves the same rows for SQL. Both compute
+from the one `TestSuite::builtin()` source the headed panel renders, so the MCP
+tool, the SQL view, and the GUI can't drift (RULE-7). Feed a case `id` to
+`testsuite_run`.
 
 ## The cases
 

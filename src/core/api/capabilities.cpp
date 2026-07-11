@@ -1902,9 +1902,9 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
-// --- testkit_run (kind: job) --------------------------------------------------------
+// --- testsuite_run (kind: job) ------------------------------------------------------
 
-const nlohmann::json& testkit_run_schema() {
+const nlohmann::json& testsuite_run_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required", {"case"}},
@@ -1913,8 +1913,9 @@ const nlohmann::json& testkit_run_schema() {
          {{"case",
            {{"type", "string"},
             {"minLength", 1},
-            {"description", "a testkit case id (system.test_cases / the Test "
-                            "suite panel list them)"}}},
+            {"description", "a test-suite case id (testsuite_list / "
+                            "system.test_cases / the Test suite panel list "
+                            "them)"}}},
           {"options",
            {{"type", "object"},
             {"description", "per-case option overrides keyed by option key; "
@@ -1926,7 +1927,7 @@ const nlohmann::json& testkit_run_schema() {
     return schema;
 }
 
-const nlohmann::json& testkit_run_output_schema() {
+const nlohmann::json& testsuite_run_output_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
         {"required", {"run_id", "case", "status", "poll"}},
@@ -2021,19 +2022,19 @@ std::optional<ApiResult> apply_case_options(
     return std::nullopt;
 }
 
-ApiResult handle_testkit_run(const nlohmann::json& input, ApiContext& context) {
+ApiResult handle_testsuite_run(const nlohmann::json& input, ApiContext& context) {
     if (!context.background) {
         return ApiResult::failure(
             "engine_error",
-            "testkit_run is a job capability and this embedding wired no "
+            "testsuite_run is a job capability and this embedding wired no "
             "background action owner");
     }
     const std::string case_id = input.at("case").get<std::string>();
     const zetta::testkit::TestCase* test_case =
         zetta::testkit::TestSuite::builtin().find(case_id);
     if (!test_case) {
-        return ApiResult::failure("not_found",
-                                  "no testkit case with id '" + case_id + "'");
+        return ApiResult::failure(
+            "not_found", "no test-suite case with id '" + case_id + "'");
     }
     zetta::testkit::TestOptions options = test_case->defaults();
     if (const auto overrides = input.find("options");
@@ -2057,6 +2058,89 @@ ApiResult handle_testkit_run(const nlohmann::json& input, ApiContext& context) {
     output["status"] = "running";
     output["poll"] = "get_run for status; the case's log lines land with the "
                      "terminal status";
+    return ApiResult::success(std::move(output));
+}
+
+// --- testsuite_list (read) ----------------------------------------------------
+//
+// The whole in-app test-suite catalog (zetta::testkit::TestSuite::builtin()) as
+// a structured listing — the same cases the headed Test suite panel renders and
+// system.test_cases serves — so an agent can discover every case id + its
+// tunable options before feeding one to testsuite_run.
+
+const nlohmann::json& testsuite_list_schema() {
+    static const nlohmann::json schema = empty_object_schema();
+    return schema;
+}
+
+std::string_view option_type_name(zetta::testkit::OptionType type) {
+    switch (type) {
+        case zetta::testkit::OptionType::Bool:
+            return "bool";
+        case zetta::testkit::OptionType::Int:
+            return "int";
+        case zetta::testkit::OptionType::Double:
+            return "double";
+        case zetta::testkit::OptionType::Choice:
+            return "choice";
+        case zetta::testkit::OptionType::Text:
+            return "text";
+    }
+    return "text";
+}
+
+const nlohmann::json& testsuite_list_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"tests"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"tests",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required",
+               {"id", "category", "name", "description", "options"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"id", {{"type", "string"}}},
+                {"category", {{"type", "string"}}},
+                {"name", {{"type", "string"}}},
+                {"description", {{"type", "string"}}},
+                {"options",
+                 {{"type", "array"},
+                  {"items",
+                   {{"type", "object"},
+                    {"required", {"key", "label", "type"}},
+                    {"additionalProperties", false},
+                    {"properties",
+                     {{"key", {{"type", "string"}}},
+                      {"label", {{"type", "string"}}},
+                      {"type", {{"type", "string"}}}}}}}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_testsuite_list(const nlohmann::json&, ApiContext&) {
+    nlohmann::json tests = nlohmann::json::array();
+    for (const zetta::testkit::TestCase& test_case :
+         zetta::testkit::TestSuite::builtin().cases()) {
+        nlohmann::json options = nlohmann::json::array();
+        for (const zetta::testkit::TestOption& option : test_case.options) {
+            options.push_back(
+                {{"key", option.key},
+                 {"label", option.label},
+                 {"type", std::string(option_type_name(option.type))}});
+        }
+        tests.push_back(
+            {{"id", test_case.id},
+             {"category",
+              std::string(zetta::testkit::to_string(test_case.category))},
+             {"name", test_case.name},
+             {"description", test_case.description},
+             {"options", std::move(options)}});
+    }
+    nlohmann::json output;
+    output["tests"] = std::move(tests);
     return ApiResult::success(std::move(output));
 }
 
@@ -2584,18 +2668,34 @@ void register_core_capabilities(Registry& registry) {
         handle_add_dataset});
 
     registry.add(Capability{
-        "testkit_run",
-        "Run a testkit case",
+        "testsuite_run",
+        "Run a test-suite case",
         "Start one in-app test-suite case in the background and return its "
         "run id immediately (poll get_run — the case's log lines land with "
-        "the terminal status).",
-        testkit_run_schema(),
-        testkit_run_output_schema(),
+        "the terminal status). List the cases with testsuite_list / "
+        "system.test_cases.",
+        testsuite_run_schema(),
+        testsuite_run_output_schema(),
         CapabilityKind::Job,
-        Operation{CapabilityDomain::Orchestration, "testkit_run"},
+        Operation{CapabilityDomain::Orchestration, "testsuite_run"},
         /*mutates=*/true,
         /*requires_consent=*/false,
-        handle_testkit_run});
+        handle_testsuite_run});
+
+    registry.add(Capability{
+        "testsuite_list",
+        "List test-suite cases",
+        "Read the whole in-app test-suite catalog — one entry per runnable "
+        "case (id, category, name, description, tunable options). Feed a case "
+        "id to testsuite_run. Also queryable as system.test_cases. No side "
+        "effects.",
+        testsuite_list_schema(),
+        testsuite_list_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_testsuite_list});
 
     // The spec index (#646, docs/api/specs-index.md): discovery of every
     // schema the cluster speaks, served from the C++ accessors. The handlers

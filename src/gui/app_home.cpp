@@ -566,7 +566,7 @@ App::View App::view_for_external_capability(
         return View::Graph;
     }
     if (capability == "deploy") return View::Deploy;
-    if (capability == "run" || capability == "testkit_run") return View::Runs;
+    if (capability == "run" || capability == "testsuite_run") return View::Runs;
     if (capability == "add_dataset") return View::Datasets;
     return View::Activity;
 }

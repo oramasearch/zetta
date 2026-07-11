@@ -23,7 +23,7 @@ the GUI calls**, so RULE-1/RULE-3 cannot be bypassed by construction:
 | `deploy` | `Node::deploy_graph` | the engine self-gates (RULE-1) + self-audits both outcomes; the handler pre-runs the gate only to surface the failing check's reason verbatim |
 | `run` | `usecases::churn::run_churn_solution_on_node` (#637) via `AsyncChurnRun` · `Node::run_graph` | see below |
 | `add_dataset` | `data::add_dataset_file` | placement over the live `cluster_members()`; audits `dataset_added` |
-| `testkit_run` | `testkit::run_test_case` via `testkit::AsyncCaseRun` | see below |
+| `testsuite_run` | `testkit::run_test_case` via `testkit::AsyncCaseRun` | see below |
 
 Governance is uniform (RULE-3): each action requires
 `orchestration:<tool-name>` on the calling key; `Registry::call` authorizes
@@ -42,7 +42,7 @@ gate on every member).
 
 ## Long-running work — `kind: job`, no new infrastructure
 
-`run` (churn-shaped graphs) and `testkit_run` return **the engine's durable
+`run` (churn-shaped graphs) and `testsuite_run` return **the engine's durable
 Run id immediately** and never block the request on engine work
 (registry-design.md → "reuse the durable handles"). Progress and outcome are
 polled through the read surface: `get_run` / `system.runs` for status + logs,
@@ -61,7 +61,7 @@ polled through the read surface: `get_run` / `system.runs` for status + logs,
   `index` output (the score/rank at-risk handle), and the `drivers:<job>`
   dataset ref. A non-churn graph runs **structurally** (DefaultStepExecutor)
   within the call and returns its run id + terminal status directly.
-- **`testkit_run`** — `testkit::AsyncCaseRun`
+- **`testsuite_run`** — `testkit::AsyncCaseRun`
   (`include/zetta/testkit/async_case_run.hpp`) creates the Run on the owner
   thread (project label `testkit`, graph label = the case id) so the id is
   known at submit, marks it Running, and executes the case on a worker (case
@@ -85,7 +85,7 @@ No new JSON format: every input rides the registered draft-07 tool schema
 (the pboettch boundary in `Registry::call`), and everything the handlers
 store rides existing validated boundaries — the n8n workflow schema, the IR's
 `ir::from_json`, the Run/ComputeJob/DatasetPartition records. The one new
-validation surface is `testkit_run`'s per-case option typing, checked against
+validation surface is `testsuite_run`'s per-case option typing, checked against
 the case's own declared `TestOption`s.
 
 ## Journeys
@@ -102,7 +102,7 @@ index/drivers read back, the near-data trace read-back via the train job's
 (deploy AND run refused with the failing check's reason; read-backs prove
 nothing placed, nothing executed), import/compile n8n from the committed
 fixture, sim-Python compile, `add_dataset` with placement read-back,
-`testkit_run` submit-then-poll, and the denied-key negative.
+`testsuite_run` submit-then-poll, and the denied-key negative.
 `tests/api/test_mcp_server.cpp` replays the dataset-ingest and gate-blocked
 tables unchanged over real JSON-RPC (layer 2). Deliberately later slices:
 the L2 protocol journey for job polling over real HTTP, the #621 L2 consent

@@ -249,14 +249,14 @@ TEST_F(ActionJourneys, JourneyCompilePythonSource) {
 }
 
 // =====================================================================
-// testkit_run: kind job — the durable Run id returns immediately while the
+// testsuite_run: kind job — the durable Run id returns immediately while the
 // case executes on a worker; status + the case's log land on the run.
 // Unknown case / unknown option are rejected with path-qualified reasons.
 // =====================================================================
 TEST_F(ActionJourneys, JourneyTestkitRunReturnsHandleImmediately) {
     journey::Journey testkit{"testkit-submit-then-poll", {}};
     testkit.steps = {
-        {"submit the case (the handle returns immediately)", "testkit_run",
+        {"submit the case (the handle returns immediately)", "testsuite_run",
          {{"case", "compute.cpu.elementwise"}},
          {.checks = {journey::not_empty("/run_id"),
                      journey::equals("/status", "running")}},
@@ -271,11 +271,11 @@ TEST_F(ActionJourneys, JourneyTestkitRunReturnsHandleImmediately) {
                      journey::size_at_least("/logs", 2)}},
          {},
          journey::Poll{"/status", {"succeeded", "failed"}}},
-        {"an unknown case is not_found", "testkit_run",
+        {"an unknown case is not_found", "testsuite_run",
          {{"case", "no.such.case"}},
          {.ok = false, .error_code = "not_found"}},
         {"an unknown option key carries the path-qualified reason",
-         "testkit_run",
+         "testsuite_run",
          {{"case", "compute.cpu.elementwise"}, {"options", {{"bogus", 1}}}},
          {.ok = false,
           .error_code = "invalid_input",

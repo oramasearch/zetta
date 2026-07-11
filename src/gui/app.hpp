@@ -533,7 +533,7 @@ private:
     zetta::api::Registry* capability_registry_ = nullptr;
     std::unique_ptr<zetta::api::Registry> owned_capability_registry_;
     // Owner for the worker handles the kind:job capabilities launch when
-    // executed from the palette (run / testkit_run, #617); pruned each frame
+    // executed from the palette (run / testsuite_run, #617); pruned each frame
     // in poll_background_ops() — the owner thread, like churn_run_.
     std::unique_ptr<zetta::api::BackgroundActions> palette_background_;
     bool palette_requested_ = false;  // Cmd+K / menu asks to open next frame
