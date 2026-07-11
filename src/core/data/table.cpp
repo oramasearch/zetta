@@ -32,10 +32,38 @@ std::size_t Table::add_row(nlohmann::json doc) {
     return store_->size();
 }
 
+void Table::update_row(const std::string& row_id, nlohmann::json doc) {
+    if (!store_->contains(row_id)) return;
+    // CRDT first (the source of truth), then the local store projection.
+    if (replication_) {
+        replication_->set(catalog::row_key(row_id),
+                          nlohmann::json{{"tbl", id_}, {"data", doc}});
+    }
+    store_->update(row_id, std::move(doc));
+}
+
+void Table::delete_row(const std::string& row_id) {
+    if (!store_->contains(row_id)) return;
+    // A TOMBSTONE value (not a key removal) so the delete replicates as a normal
+    // value change; a reconciling peer sees `deleted` and drops its local row.
+    if (replication_) {
+        replication_->set(catalog::row_key(row_id),
+                          nlohmann::json{{"tbl", id_}, {"deleted", true}});
+    }
+    store_->remove(row_id);
+}
+
 bool Table::materialize_row(std::string row_id, nlohmann::json doc) {
-    if (store_->contains(row_id)) return false;
+    if (store_->contains(row_id)) {
+        store_->update(row_id, std::move(doc));  // upsert — apply a peer's edit
+        return false;
+    }
     store_->add(std::move(row_id), std::move(doc));
     return true;
+}
+
+void Table::materialize_row_delete(const std::string& row_id) {
+    store_->remove(row_id);
 }
 
 std::size_t Table::row_count() const { return store_->size(); }

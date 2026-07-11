@@ -115,10 +115,34 @@ struct SelectStmt {
     bool grouped() const { return !group_by.empty(); }
 };
 
+// One SET assignment in an UPDATE: column = value.
+struct Assignment {
+    std::string column;
+    nlohmann::json value;
+};
+
+// UPDATE <table> SET col = val [, col = val …] [WHERE …]. No WHERE => all rows.
+struct UpdateStmt {
+    TableRef table;
+    std::vector<Assignment> assignments;
+    std::optional<WhereClause> where;
+};
+
+// DELETE FROM <table> [WHERE …]. No WHERE => all rows.
+struct DeleteStmt {
+    TableRef table;
+    std::optional<WhereClause> where;
+};
+
+// TRUNCATE [TABLE] <table> — remove every row (each tombstoned, so it replicates).
+struct TruncateStmt {
+    TableRef table;
+};
+
 using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
                                CreateUserStmt, CreateTokenStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
-                               SelectStmt>;
+                               UpdateStmt, DeleteStmt, TruncateStmt, SelectStmt>;
 
 // Wrap a CreateTokenStmt into a Statement. Defined in its OWN translation unit
 // (statement_builders.cpp), never inline: constructing this particular variant

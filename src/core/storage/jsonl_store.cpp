@@ -66,6 +66,48 @@ void zetta::storage::JsonlStore::add(std::string id, nlohmann::json doc) {
     out << line.dump() << '\n';
 }
 
+void zetta::storage::JsonlStore::update(const std::string& id,
+                                        nlohmann::json doc) {
+    const std::size_t i = index_of(id);
+    if (i == kMissing) return;
+    records_[i] = std::move(doc);
+    persist_all();  // rewrite the chunk file(s) from memory
+}
+
+void zetta::storage::JsonlStore::remove(const std::string& id) {
+    const std::size_t i = index_of(id);
+    if (i == kMissing) return;
+    records_.erase(records_.begin() + static_cast<std::ptrdiff_t>(i));
+    ids_.erase(ids_.begin() + static_cast<std::ptrdiff_t>(i));
+    id_index_.erase(id);
+    persist_all();
+}
+
+std::size_t zetta::storage::JsonlStore::index_of(const std::string& id) const {
+    if (!id_index_.contains(id)) return kMissing;
+    for (std::size_t i = 0; i < ids_.size(); ++i) {
+        if (ids_[i] == id) return i;
+    }
+    return kMissing;
+}
+
+// Rewrite all chunk files from the in-memory rows. update/remove change indices
+// (and can drop a chunk), so the simplest correct persistence is a full rewrite;
+// rows are all in memory today, so this is O(n) over a small store.
+void zetta::storage::JsonlStore::persist_all() {
+    std::error_code ec;
+    for (std::size_t chunk = 0;; ++chunk) {
+        const fs::path path = chunk_path(chunk);
+        if (!fs::exists(path, ec)) break;
+        fs::remove(path, ec);
+    }
+    for (std::size_t i = 0; i < records_.size(); ++i) {
+        const nlohmann::json line{{"_zid", ids_[i]}, {"doc", records_[i]}};
+        std::ofstream out(chunk_path(i / kRecordsPerChunk), std::ios::app);
+        out << line.dump() << '\n';
+    }
+}
+
 fs::path JsonlStore::chunk_path(std::size_t chunk_index) const {
     char name[32];
     std::snprintf(name, sizeof(name), "%06zu.jsonl", chunk_index);

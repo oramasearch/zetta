@@ -2580,7 +2580,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         zetta::data::ReplicationStrategy strategy;
     };
     std::map<std::string, TableEntry> tables;                 // id -> entry
-    struct RowEntry { std::string table_id; nlohmann::json data; };
+    struct RowEntry { std::string table_id; nlohmann::json data; bool tombstone = false; };
     std::map<std::string, RowEntry> rows;                     // id -> entry
     struct LargeObjectEntry {
         std::string database_id;
@@ -2607,10 +2607,15 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
-                   value.contains("tbl") && value.contains("data")) {
+                   value.contains("tbl")) {
+            // A row entry is either data (`{tbl, data}`) or a delete TOMBSTONE
+            // (`{tbl, deleted:true}`) — both replicate as value changes.
+            const bool tombstone = value.value("deleted", false);
             rows.emplace(std::move(row_id),
                          RowEntry{value["tbl"].get<std::string>(),
-                                  value["data"]});
+                                  tombstone ? nlohmann::json()
+                                            : value.value("data", nlohmann::json()),
+                                  tombstone});
         } else if (std::string lo_id =
                        catalog::id_after(key, catalog::kLargeObjectPrefix);
                    !lo_id.empty() && value.is_object() && value.contains("db")) {
@@ -2681,7 +2686,12 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             }
             return nullptr;
         }();
-        if (db_table) db_table->materialize_row(id, std::move(entry.data));
+        if (!db_table) continue;
+        if (entry.tombstone) {
+            db_table->materialize_row_delete(id);  // a peer deleted this row
+        } else {
+            db_table->materialize_row(id, std::move(entry.data));  // add or update
+        }
     }
     for (const auto& [id, entry] : large_objects) {
         auto db = find_database_by_id(entry.database_id);

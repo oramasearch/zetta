@@ -46,9 +46,23 @@ public:
     // new row count. The row's id is generated here and used as its CRDT key.
     std::size_t add_row(nlohmann::json doc);
 
-    // Apply a replicated row (from a peer) to the local store, only if not
-    // already present. Does NOT write back to the CRDT. Returns whether added.
+    // Update a row in place by id: overwrites its CRDT value + the local store.
+    // No-op if the id is absent. Backs SQL UPDATE.
+    void update_row(const std::string& row_id, nlohmann::json doc);
+
+    // Delete a row by id: writes a TOMBSTONE to the CRDT (`{tbl, deleted:true}`, so
+    // the removal replicates as a value change a peer can apply) and drops the row
+    // from the local store. Backs SQL DELETE.
+    void delete_row(const std::string& row_id);
+
+    // Apply a replicated row (from a peer) to the local store: adds it, or updates
+    // it in place if the id already exists (upsert). Does NOT write back to the
+    // CRDT. Returns whether a NEW row was added (false = updated or unchanged).
     bool materialize_row(std::string row_id, nlohmann::json doc);
+
+    // Apply a replicated row tombstone (from a peer): drop the row if present. Does
+    // NOT write back to the CRDT.
+    void materialize_row_delete(const std::string& row_id);
 
     std::size_t row_count() const;
 
