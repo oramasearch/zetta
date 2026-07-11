@@ -151,6 +151,12 @@ public:
     std::vector<ClusterPeer> peers() const;
     std::size_t peer_count() const;
 
+    // Number of live peer connections held. At most one per peer node id: a value
+    // above peer_count() would mean duplicate links are leaking (a reconnect race, a
+    // seed whose address never matches the peer's advertised one, or a mutual dial).
+    // Kept at parity by the per-node-id link registry — see #739.
+    std::size_t connection_count() const;
+
     // Every node and its replication status, for the "list of all nodes" view:
     // this node first (is_self), then each connected peer with the replication
     // state it last reported. Thread-safe. With no ReplicationManager wired in,

@@ -47,6 +47,19 @@ namespace zetta::cluster {
 namespace capy = boost::capy;
 namespace net = zetta::runtime::net;
 
+// One peer connection: the socket (or its TLS layer), shared between the read pump
+// and the per-link write pump. `initiate` records whether we dialed it (true) or
+// accepted it (false) — used to pick a single canonical link when both sides
+// connect to each other (the min-node-id-initiator wins), so duplicate links reap.
+struct GossipLink {
+    std::shared_ptr<net::tcp_socket> socket;
+    std::unique_ptr<net::openssl_stream> tls;  // engaged when security is on
+    net::any_stream stream;                    // the protocol's transport
+    bool alive = true;
+    bool initiate = false;  // did we dial this link (true) or accept it (false)?
+    std::chrono::steady_clock::time_point last_activity{};  // last line received
+};
+
 struct Cluster::State {
     // A connected peer plus the replication status it last reported over gossip.
     struct PeerRecord {
@@ -82,6 +95,17 @@ struct Cluster::State {
     bool log_events = false;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
+    // At most one live connection per peer node_id (guarded by `mutex`). A reconnect
+    // race, a dialed-vs-advertised address mismatch (a seed that never matches the
+    // peer's advertised address, e.g. 127.0.0.1 or a LB VIP), or both sides dialing
+    // each other would otherwise pile up duplicate held links; register_link reaps
+    // them to one so connections can't leak.
+    std::map<std::string, std::shared_ptr<GossipLink>> active_links;
+    // Count of connections actually being SERVED (a link that won dedup and spawned
+    // its pumps), incremented past register_link and decremented at teardown. Equals
+    // peer_count() in steady state; a higher value would mean links are leaking. An
+    // atomic so connection_count() can read it without the peer mutex.
+    std::atomic<int> live_connections{0};
 
     // --- Signal plane -------------------------------------------------------
     //
@@ -178,6 +202,46 @@ struct Cluster::State {
         const std::lock_guard<std::mutex> lock(mutex);
         std::erase_if(peers,
                       [&](const PeerRecord& p) { return p.node_id == node_id; });
+    }
+    // Register `link` as THE connection for `node_id`, reaping duplicates down to one.
+    // Returns true if this link is the keeper (the caller proceeds to serve it); false
+    // if it lost the tiebreak (the caller must close it and stop). The keeper is the
+    // link INITIATED BY the smaller node_id, so both ends independently choose the same
+    // physical connection when they cross-dial; among same-direction duplicates the
+    // first registered stays and later redials lose. A win that displaces a stale link
+    // hands it back via `superseded` for the caller to close OUTSIDE the lock.
+    bool register_link(const std::string& node_id,
+                       const std::shared_ptr<GossipLink>& link,
+                       const std::string& my_node_id,
+                       std::shared_ptr<GossipLink>& superseded) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const auto it = active_links.find(node_id);
+        if (it == active_links.end() || !it->second || !it->second->alive) {
+            active_links[node_id] = link;
+            return true;
+        }
+        const bool link_is_canonical = (my_node_id < node_id) == link->initiate;
+        const bool existing_is_canonical =
+            (my_node_id < node_id) == it->second->initiate;
+        if (link_is_canonical && !existing_is_canonical) {
+            superseded = it->second;  // caller closes it outside the lock
+            superseded->alive = false;
+            it->second = link;
+            return true;
+        }
+        return false;  // an equal/canonical link already holds this peer
+    }
+    // Drop `link` as the connection for `node_id` iff it's still the registered one (a
+    // superseded link must not evict its replacement). Returns true only if it was the
+    // active link — the signal for the caller to tear down the shared peer state.
+    bool unregister_link(const std::string& node_id, const GossipLink* link) {
+        const std::lock_guard<std::mutex> lock(mutex);
+        const auto it = active_links.find(node_id);
+        if (it != active_links.end() && it->second.get() == link) {
+            active_links.erase(it);
+            return true;
+        }
+        return false;
     }
     // Listen addresses of currently-connected peers (for the reconnect loop).
     std::vector<std::string> connected_addresses() const {
@@ -341,14 +405,6 @@ std::string signal_line(const Signal& signal) {
 // the keepalive can force-close the connection under either transport; the
 // TLS session supports one in-flight read + one in-flight write, which is
 // exactly the read-pump + link-writer pattern.
-struct GossipLink {
-    std::shared_ptr<net::tcp_socket> socket;
-    std::unique_ptr<net::openssl_stream> tls;  // engaged when security is on
-    net::any_stream stream;                    // the protocol's transport
-    bool alive = true;
-    std::chrono::steady_clock::time_point last_activity{};  // last line received
-};
-
 // Dispatch one received signal. `peer_node_id` is the sender. A Request is
 // answered by the registered handler and its Response queued back to the sender;
 // a Response wakes the waiting RPC; an Event/Task is delivered to the handler.
@@ -546,6 +602,7 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // shares it (and so the keepalive can still close the raw socket).
     auto link = std::make_shared<GossipLink>();
     link->socket = std::make_shared<net::tcp_socket>(std::move(socket));
+    link->initiate = initiate;
     if (self->tls) {
         link->tls = std::make_unique<net::openssl_stream>(link->socket.get(),
                                                           *self->tls);
@@ -585,6 +642,17 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
         link->socket->close();  // malformed, or we dialed ourselves
         co_return;
     }
+    // Keep exactly one connection per peer: a reconnect race, a seed whose address
+    // never matches the peer's advertised one (127.0.0.1, a LB VIP), or a mutual dial
+    // would otherwise leave duplicate held links (and burn CPU servicing them). Reap
+    // to one before we register the peer or spawn its pumps.
+    std::shared_ptr<GossipLink> superseded;
+    if (!self->register_link(peer.node_id, link, my_node_id, superseded)) {
+        link->socket->close();  // a canonical link already holds this peer
+        co_return;
+    }
+    if (superseded) superseded->socket->close();  // we displaced a stale link
+    self->live_connections.fetch_add(1, std::memory_order_relaxed);
     self->add_peer(peer.node_id, peer.address);
     log_event(self, std::string("+ peer ") + short_id(peer.node_id) + " @ " +
                         peer.address + (initiate ? " (dialed)" : " (accepted)"));
@@ -609,11 +677,16 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     }
 
     link->alive = false;
-    self->remove_peer(peer.node_id);
-    self->clear_outbound(peer.node_id);        // drop any lines queued for it
-    self->fail_pending_for_peer(peer.node_id);  // fail RPCs awaiting it
-    log_event(self, std::string("- peer ") + short_id(peer.node_id) +
-                        " (connection closed)");
+    // Only the currently-registered link tears down the shared peer state — a link
+    // that was already superseded must not evict its replacement's peer record.
+    if (self->unregister_link(peer.node_id, link.get())) {
+        self->remove_peer(peer.node_id);
+        self->clear_outbound(peer.node_id);        // drop any lines queued for it
+        self->fail_pending_for_peer(peer.node_id);  // fail RPCs awaiting it
+        log_event(self, std::string("- peer ") + short_id(peer.node_id) +
+                            " (connection closed)");
+    }
+    self->live_connections.fetch_sub(1, std::memory_order_relaxed);
     link->socket->close();
 }
 
@@ -885,6 +958,11 @@ std::vector<ClusterPeer> Cluster::peers() const {
 std::size_t Cluster::peer_count() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     return state_->peers.size();
+}
+
+std::size_t Cluster::connection_count() const {
+    const int count = state_->live_connections.load(std::memory_order_relaxed);
+    return count > 0 ? static_cast<std::size_t>(count) : 0;
 }
 
 std::vector<NodeStatus> Cluster::nodes() const {

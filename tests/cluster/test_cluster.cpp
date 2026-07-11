@@ -262,3 +262,46 @@ TEST(Cluster, GossipsReplicationStatusBetweenNodes) {
     b.stop();
     a.stop();
 }
+
+TEST(Cluster, MutualDialConvergesToOneConnection) {
+    // Both nodes seed each other, so each DIALS the other and also ACCEPTS the
+    // other's dial — two links to the same peer. The per-node-id registry must reap
+    // them to exactly one (the smaller node id's initiator wins on both ends, so the
+    // two sides pick the same physical connection), or connections leak (#739).
+    ClusterConfig a_config;
+    a_config.listen_host = "127.0.0.1";
+    a_config.listen_port = 42210;
+    a_config.reconnect_interval_seconds = 1;  // dial the seed promptly
+    ClusterConfig b_config;
+    b_config.listen_host = "127.0.0.1";
+    b_config.listen_port = 42211;
+    b_config.reconnect_interval_seconds = 1;
+    a_config.seeds = {"127.0.0.1:42211"};
+    b_config.seeds = {"127.0.0.1:42210"};
+
+    Cluster a(zetta::util::new_uuid(), a_config);
+    Cluster b(zetta::util::new_uuid(), b_config);
+    a.start();
+    b.start();
+
+    // Patient wait for both to see each other (real in-process TCP + dial timing).
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (std::chrono::steady_clock::now() < deadline &&
+           !(a.peer_count() == 1 && b.peer_count() == 1)) {
+        sleep_ms(100);
+    }
+    ASSERT_EQ(a.peer_count(), 1u);
+    ASSERT_EQ(b.peer_count(), 1u);
+
+    // Let several reconnect cycles pass: a leak would push connection_count() above
+    // one; the registry pins it at exactly one served connection per peer.
+    sleep_ms(3500);
+    EXPECT_EQ(a.connection_count(), 1u);
+    EXPECT_EQ(b.connection_count(), 1u);
+    EXPECT_EQ(a.connection_count(), a.peer_count());
+    EXPECT_EQ(b.connection_count(), b.peer_count());
+
+    b.stop();
+    a.stop();
+}
