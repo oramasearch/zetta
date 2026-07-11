@@ -390,6 +390,7 @@ add_library(zetta-core STATIC
   src/core/api/rest.cpp
   src/core/api/serving.cpp
   src/core/api/specs.cpp
+  src/core/api/web_ui.cpp
   src/core/schemas/registry.cpp
   src/core/cluster/cluster.cpp
   src/core/cluster/security.cpp

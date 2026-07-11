@@ -26,6 +26,7 @@
 #include "zetta/api/rest.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
+#include "zetta/api/web_ui.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/version.hpp"
@@ -560,6 +561,19 @@ bool ApiServer::start() {
 
     http::router router;
     router.use(http::cors());
+    // GET / — the web dashboard (#647, web_ui.cpp): a self-contained HTML/JS page rendering the
+    // read model + capability registry. PUBLIC shell (no secrets in it); its JS fetches the data
+    // endpoints (/v1/*) under the node's own bearer policy. Registered before the /mcp mount.
+    router.add(http::method::get, "/",
+               [](http::route_params& route) -> http::route_task {
+                   const std::string_view body = web_ui_page();
+                   route.status(http::status::ok);
+                   route.res.set(http::field::content_type, "text/html; charset=utf-8");
+                   stamp_response_headers(route, body);
+                   auto [send_error] = co_await route.send(body);
+                   if (send_error) co_return http::route_error(send_error);
+                   co_return http::route_done;
+               });
     router.use("/mcp", [&impl](http::route_params& route) -> http::route_task {
         if (route.req.method() != http::method::post) {
             route.status(http::status::method_not_allowed);
