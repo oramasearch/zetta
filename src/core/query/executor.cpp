@@ -323,6 +323,39 @@ overloaded(Ts...) -> overloaded<Ts...>;
 const zetta::governance::Operation kManageRoles{
     zetta::governance::CapabilityDomain::Api, "manage_roles"};
 
+// The data operations the executor enforces object scoping against (#747): a
+// SELECT reads, an INSERT writes. These are the `sql:read` / `sql:write`
+// operations from the permission vocabulary (governance/permission.hpp).
+const zetta::governance::Operation kSqlRead{
+    zetta::governance::CapabilityDomain::Data, "read"};
+const zetta::governance::Operation kSqlWrite{
+    zetta::governance::CapabilityDomain::Data, "write"};
+
+// Translate the AST's dialect-neutral GrantObject into the governance Resource
+// the scoped-grant store + enforcement use (#747). RoleWide has no object (the
+// caller routes it to the flat grant path instead).
+zetta::governance::Resource resource_of_object(const GrantObject& object) {
+    using RK = zetta::governance::ResourceKind;
+    switch (object.kind) {
+        case GrantObjectKind::Database:
+            return zetta::governance::Resource{RK::Database, object.database};
+        case GrantObjectKind::Table:
+            return zetta::governance::Resource::table(object.database,
+                                                      object.table);
+        case GrantObjectKind::Columns:
+            return zetta::governance::Resource::column(object.database,
+                                                       object.table,
+                                                       object.columns);
+        case GrantObjectKind::Blob:
+            return zetta::governance::Resource::blob(object.name);
+        case GrantObjectKind::Tool:
+            return zetta::governance::Resource::tool(object.name);
+        case GrantObjectKind::RoleWide:
+            break;
+    }
+    return zetta::governance::Resource{};  // unreachable for a well-formed stmt
+}
+
 // The first permission name in `names` outside the vocabulary, or nullopt when
 // all are valid — the boundary check GRANT/REVOKE runs before touching a role, so
 // a typo fails the whole statement rather than silently granting nothing.
@@ -792,11 +825,41 @@ std::vector<nlohmann::json> user_rows(const Node& node) {
     return rows;
 }
 
+// The vocabulary permission name a single operation stands for (e.g. {data,read}
+// -> "sql:read"), or the raw "<domain>:<action>" spelling when no single-op
+// permission matches — for rendering a scoped grant's right in the roles view.
+std::string permission_name_of(const zetta::governance::Operation& op) {
+    for (const std::string& name : zetta::governance::permission_vocabulary()) {
+        const auto ops = zetta::governance::permission_operations(name);
+        if (ops.size() == 1 && ops.front() == op) return name;
+    }
+    return std::string(to_string(op.domain)) + ":" + op.action;
+}
+
+// Render one scoped grant as "<perm> ON <object>" (#747) for the roles view.
+std::string render_scoped_grant(const zetta::governance::ScopedGrant& grant) {
+    using RK = zetta::governance::ResourceKind;
+    const zetta::governance::Resource& r = grant.object;
+    std::string object;
+    switch (r.kind) {
+        case RK::Database: object = r.name + ".*"; break;
+        case RK::Project:  object = "project:" + r.name; break;
+        case RK::Table:    object = r.database + "." + r.name; break;
+        case RK::Column:
+            object = r.database + "." + r.name + "(" + join_comma(r.columns) + ")";
+            break;
+        case RK::Blob: object = "blob:" + r.name; break;
+        case RK::Tool: object = "tool:" + r.name; break;
+    }
+    return permission_name_of(grant.operation) + " ON " + object;
+}
+
 // One JSON row per role for the roles system table — the named permission sets
 // (FEAT-9 / #744, #746). Sourced from Node::roles(): the role's scope (resources)
 // + capabilities (rights, the same rendering as the keys view) + its permission
 // SET rendered in the RBAC vocabulary (permission.hpp) — the referenceable atoms
-// a custom role is built from. No secret material.
+// a custom role is built from — plus its object-scoped grants (#747). No secret
+// material.
 std::vector<nlohmann::json> role_rows(const Node& node) {
     const std::string now = zetta::util::now_iso8601();
     std::vector<nlohmann::json> rows;
@@ -807,6 +870,11 @@ std::vector<nlohmann::json> role_rows(const Node& node) {
         render_reach(role->scope(), role->capabilities(), row);
         row["permissions"] =
             join_comma(zetta::governance::permissions_of(role->capabilities(), now));
+        std::vector<std::string> scoped;
+        for (const auto& grant : role->permissions().scoped_grants) {
+            scoped.push_back(render_scoped_grant(grant));
+        }
+        row["scoped_grants"] = join_comma(scoped);
         row["created"] = role->created();
         rows.push_back(std::move(row));
     }
@@ -1569,6 +1637,25 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("INSERT requires an explicit column list, e.g. "
                                  "INSERT INTO t (a, b) VALUES (...)");
                 }
+                // Object-scoped write enforcement (#747): the acting identity must
+                // be able to write this table, and every target column.
+                const zetta::governance::ColumnAccess write_access =
+                    node_.column_scope(acting_key_, acting_is_user_, kSqlWrite,
+                                       db_name(s.table), s.table.table);
+                if (!write_access.table_allowed) {
+                    return error("permission denied: no sql:write grant on \"" +
+                                 db_name(s.table) + "." + s.table.table + "\"");
+                }
+                if (!write_access.all_columns) {
+                    for (const std::string& col : s.columns) {
+                        if (!write_access.allows(col)) {
+                            return error("permission denied: no sql:write grant on "
+                                         "column \"" + col + "\" of \"" +
+                                         db_name(s.table) + "." + s.table.table +
+                                         "\"");
+                        }
+                    }
+                }
                 std::size_t inserted = 0;
                 for (const auto& tuple : s.rows) {
                     if (tuple.size() != s.columns.size()) {
@@ -1779,6 +1866,38 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!table) {
                     return error("table \"" + s.table.table + "\" does not exist");
                 }
+                // Object-scoped read enforcement (#747): the acting identity must
+                // be able to read this table; columns it lacks sql:read on are
+                // masked (nulled) in the output.
+                const zetta::governance::ColumnAccess read_access =
+                    node_.column_scope(acting_key_, acting_is_user_, kSqlRead,
+                                       db_name(s.table), s.table.table);
+                if (!read_access.table_allowed) {
+                    return error("permission denied: no sql:read grant on \"" +
+                                 db_name(s.table) + "." + s.table.table + "\"");
+                }
+                // Block filtering/grouping on a column the caller can't read — a
+                // WHERE/GROUP BY over a masked column would otherwise leak it.
+                if (!read_access.all_columns) {
+                    if (s.where && !read_access.allows(s.where->column)) {
+                        return error("permission denied: no sql:read grant on "
+                                     "column \"" + s.where->column +
+                                     "\" used in WHERE");
+                    }
+                    for (const std::string& key : s.group_by) {
+                        if (!read_access.allows(key)) {
+                            return error("permission denied: no sql:read grant on "
+                                         "column \"" + key + "\" used in GROUP BY");
+                        }
+                    }
+                    for (const GroupedItem& item : s.items) {
+                        if (!item.column.empty() &&
+                            !read_access.allows(item.column)) {
+                            return error("permission denied: no sql:read grant on "
+                                         "column \"" + item.column + "\"");
+                        }
+                    }
+                }
                 // An aggregating SELECT (GROUP BY) runs through the DDF engine.
                 if (s.grouped()) return execute_grouped(s, *table);
                 QueryResult r;
@@ -1788,12 +1907,26 @@ QueryResult Executor::execute(const Statement& stmt,
                     const nlohmann::json& row = store.at(i);
                     if (!row_matches(row, s.where)) continue;
                     if (s.all) {
-                        r.rows.push_back(row);
+                        if (read_access.all_columns) {
+                            r.rows.push_back(row);
+                        } else {
+                            // SELECT * — keep every column but redact the ones the
+                            // caller can't read (masked to null, not dropped).
+                            nlohmann::json masked = nlohmann::json::object();
+                            for (auto it = row.begin(); it != row.end(); ++it) {
+                                masked[it.key()] = read_access.allows(it.key())
+                                                       ? it.value()
+                                                       : nlohmann::json();
+                            }
+                            r.rows.push_back(std::move(masked));
+                        }
                     } else {
                         nlohmann::json projected = nlohmann::json::object();
                         for (const std::string& col : s.columns) {
+                            const bool visible =
+                                read_access.allows(col) && row.contains(col);
                             projected[col] =
-                                row.contains(col) ? row.at(col) : nlohmann::json();
+                                visible ? row.at(col) : nlohmann::json();
                         }
                         r.rows.push_back(std::move(projected));
                     }
@@ -1863,7 +1996,14 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("unknown permission \"" + *bad +
                                  "\" — not in the permission vocabulary");
                 }
-                if (!node_.grant_permissions(s.role, s.permissions)) {
+                // A bare GRANT adds flat rights; `ON <object>` (#747) adds
+                // object-scoped grants instead.
+                const bool ok =
+                    s.object.kind == GrantObjectKind::RoleWide
+                        ? node_.grant_permissions(s.role, s.permissions)
+                        : node_.grant_scoped_permissions(
+                              s.role, s.permissions, resource_of_object(s.object));
+                if (!ok) {
                     return error("role \"" + s.role + "\" does not exist");
                 }
                 return {.message = "GRANT"};
@@ -1876,7 +2016,12 @@ QueryResult Executor::execute(const Statement& stmt,
                     return error("unknown permission \"" + *bad +
                                  "\" — not in the permission vocabulary");
                 }
-                if (!node_.revoke_permissions(s.role, s.permissions)) {
+                const bool ok =
+                    s.object.kind == GrantObjectKind::RoleWide
+                        ? node_.revoke_permissions(s.role, s.permissions)
+                        : node_.revoke_scoped_permissions(
+                              s.role, s.permissions, resource_of_object(s.object));
+                if (!ok) {
                     return error("role \"" + s.role + "\" does not exist");
                 }
                 return {.message = "REVOKE"};

@@ -146,9 +146,10 @@ TEST(Scope, RejectsMalformedJsonAtTheBoundary) {
         nlohmann::json{{"unrestricted", "no"},
                        {"grants", nlohmann::json::array()}}));
     // An unknown resource kind must fail fast (never silently drop a grant).
+    // ("table" is now a real kind — #747 — so use a kind outside the enum.)
     EXPECT_FALSE(zetta::governance::scope_from_json(
         nlohmann::json::parse(
-            R"({"unrestricted": false, "grants": [{"kind": "table", "name": "x"}]})")));
+            R"({"unrestricted": false, "grants": [{"kind": "row", "name": "x"}]})")));
 }
 
 TEST(AccessKey, MetadataCarriesPrincipalAndScope) {

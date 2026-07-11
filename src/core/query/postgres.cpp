@@ -416,8 +416,61 @@ private:
         return permissions;
     }
 
-    // GRANT ROLE <role> TO <user>            — assign a role to a user
-    // GRANT <perm>[, <perm>]* TO ROLE <name> — add permissions to a role
+    // A tool name / blob prefix: an identifier or a single-quoted string literal
+    // (a blob prefix may hold characters an identifier can't).
+    std::string parse_object_name() {
+        if (peek().type == Tok::Str) return advance().text;
+        return parse_ident();
+    }
+
+    // The `ON <object>` scope of a scoped GRANT/REVOKE (#747). Grammar:
+    //   ON DATABASE <db>                       — whole database
+    //   ON <db>.*                              — whole database (shorthand)
+    //   ON [TABLE] <db>.<table>                — whole table
+    //   ON [TABLE] <db>.<table>(col[, col]*)   — a column set
+    //   ON TOOL <name>                         — an MCP tool
+    //   ON BLOB <prefix>                       — a blob id / id prefix
+    // Out-of-line to keep the string-heavy cleanup out of the caller's frame
+    // (the toolchain EH workaround; see parse_create_token / ast.hpp).
+    [[gnu::noinline]] GrantObject parse_grant_object() {
+        GrantObject object;
+        if (accept_keyword("tool")) {
+            object.kind = GrantObjectKind::Tool;
+            object.name = parse_object_name();
+            return object;
+        }
+        if (accept_keyword("blob")) {
+            object.kind = GrantObjectKind::Blob;
+            object.name = parse_object_name();
+            return object;
+        }
+        if (accept_keyword("database")) {
+            object.kind = GrantObjectKind::Database;
+            object.database = parse_ident();
+            return object;
+        }
+        accept_keyword("table");  // optional keyword before db.table
+        object.database = parse_ident();
+        expect_punct('.');
+        if (accept_punct('*')) {  // db.* — the whole database
+            object.kind = GrantObjectKind::Database;
+            return object;
+        }
+        object.table = parse_ident();
+        if (accept_punct('(')) {  // a column set
+            object.kind = GrantObjectKind::Columns;
+            do {
+                object.columns.push_back(parse_ident());
+            } while (accept_punct(','));
+            expect_punct(')');
+        } else {
+            object.kind = GrantObjectKind::Table;
+        }
+        return object;
+    }
+
+    // GRANT ROLE <role> TO <user>                       — assign a role to a user
+    // GRANT <perm>[, <perm>]* [ON <object>] TO ROLE ...  — permissions to a role
     // Out-of-line + variants built in a separate TU (toolchain workaround, see
     // parse_create_token / ast.hpp).
     [[gnu::noinline]] Statement parse_grant() {
@@ -427,14 +480,17 @@ private:
             return make_grant_role_statement(std::move(role), parse_ident());
         }
         std::vector<std::string> permissions = parse_permission_list();
+        GrantObject object;
+        if (accept_keyword("on")) object = parse_grant_object();
         expect_keyword("to");
         expect_keyword("role");
         return make_grant_permission_statement(parse_ident(),
-                                               std::move(permissions));
+                                               std::move(permissions),
+                                               std::move(object));
     }
 
-    // REVOKE ROLE <role> FROM <user>            — unassign a role from a user
-    // REVOKE <perm>[, <perm>]* FROM ROLE <name> — remove permissions from a role
+    // REVOKE ROLE <role> FROM <user>                         — unassign a role
+    // REVOKE <perm>[, <perm>]* [ON <object>] FROM ROLE ...    — permissions
     [[gnu::noinline]] Statement parse_revoke() {
         if (accept_keyword("role")) {
             std::string role = parse_ident();
@@ -442,10 +498,13 @@ private:
             return make_revoke_role_statement(std::move(role), parse_ident());
         }
         std::vector<std::string> permissions = parse_permission_list();
+        GrantObject object;
+        if (accept_keyword("on")) object = parse_grant_object();
         expect_keyword("from");
         expect_keyword("role");
         return make_revoke_permission_statement(parse_ident(),
-                                                std::move(permissions));
+                                                std::move(permissions),
+                                                std::move(object));
     }
 
     Statement parse_insert() {

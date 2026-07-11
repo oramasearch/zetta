@@ -9,18 +9,24 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/governance/capability.hpp"
+#include "zetta/governance/grant.hpp"
 #include "zetta/governance/scope.hpp"
 
 namespace zetta::governance {
 
-// A named grouping of permissions along the same two axes an AccessKey carries:
-// a Scope (which resources) + a CapabilitySet (which rights). A role is the unit
-// a user is granted (via UserRole); a user's effective reach is the union of its
-// roles' permissions. Full role management (custom roles, editing) is #746 —
-// this slice ships the built-in admin/writer/reader sets plus the store.
+// A named grouping of permissions along the axes an AccessKey carries — a Scope
+// (which resources) + a CapabilitySet (which rights) — PLUS a list of
+// object-scoped grants (#747). A role is the unit a user is granted (via
+// UserRole); a user's effective reach is the union of its roles' permissions.
+//
+// `capabilities` are the flat, UNSCOPED rights (granted on every object — the
+// coarse behavior the built-ins use); `scoped_grants` are the fine-grained rights
+// bound to specific objects (`GRANT <perm> ON <object> TO ROLE`). The two
+// compose: a flat right covers everything, a scoped right only its object.
 struct RolePermissions {
     Scope scope;
     CapabilitySet capabilities;
+    std::vector<ScopedGrant> scoped_grants;  // object-scoped rights (#747)
 
     bool operator==(const RolePermissions&) const = default;
 };

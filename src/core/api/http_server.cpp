@@ -185,6 +185,14 @@ struct ApiServer::Impl {
         if (method == "tools/list") {
             nlohmann::json tools = nlohmann::json::array();
             for (const auto& capability : capability_registry.list()) {
+                // Per-tool scope (#747): a token-resolved user only sees the tools
+                // it may invoke (mcp:call scoped to the tool). Legacy keys + the
+                // local session see them all — the same bypass Registry::call uses.
+                if (acting_is_user &&
+                    !node.may_call_tool(acting_key, /*acting_is_user=*/true,
+                                        capability->name)) {
+                    continue;
+                }
                 nlohmann::json tool = {{"name", capability->name},
                                        {"title", capability->title},
                                        {"description", capability->description},

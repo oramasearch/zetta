@@ -1979,6 +1979,67 @@ bool Node::revoke_permissions(const std::string& role_name,
     return true;
 }
 
+bool Node::grant_scoped_permissions(
+    const std::string& role_name, const std::vector<std::string>& permissions,
+    const governance::Resource& object) {
+    auto role = find_role(role_name);
+    if (!role) return false;
+    governance::RolePermissions updated = role->permissions();
+    for (const std::string& name : permissions) {
+        for (const governance::Operation& op :
+             governance::permission_operations(name)) {
+            const governance::ScopedGrant grant{op, object};
+            bool present = false;
+            for (const governance::ScopedGrant& existing : updated.scoped_grants) {
+                if (existing == grant) {
+                    present = true;
+                    break;
+                }
+            }
+            if (!present) updated.scoped_grants.push_back(grant);
+        }
+    }
+    role->set_metadata(role->name(), std::move(updated), role->created());
+    if (replication_) {
+        replication_->set(catalog::role_key(role->id()), role->metadata());
+    }
+    return true;
+}
+
+bool Node::revoke_scoped_permissions(
+    const std::string& role_name, const std::vector<std::string>& permissions,
+    const governance::Resource& object) {
+    auto role = find_role(role_name);
+    if (!role) return false;
+    // The (operation, object) pairs to remove — the named permissions' operations
+    // each bound to `object`.
+    std::vector<governance::ScopedGrant> to_remove;
+    for (const std::string& name : permissions) {
+        for (const governance::Operation& op :
+             governance::permission_operations(name)) {
+            to_remove.push_back(governance::ScopedGrant{op, object});
+        }
+    }
+    governance::RolePermissions updated = role->permissions();
+    std::vector<governance::ScopedGrant> kept;
+    for (const governance::ScopedGrant& grant : updated.scoped_grants) {
+        bool remove = false;
+        for (const governance::ScopedGrant& target : to_remove) {
+            if (grant == target) {
+                remove = true;
+                break;
+            }
+        }
+        if (!remove) kept.push_back(grant);
+    }
+    updated.scoped_grants = std::move(kept);
+    role->set_metadata(role->name(), std::move(updated), role->created());
+    if (replication_) {
+        replication_->set(catalog::role_key(role->id()), role->metadata());
+    }
+    return true;
+}
+
 std::shared_ptr<zetta::governance::Role> Node::materialize_role(
     std::string id, std::string name, governance::RolePermissions permissions,
     std::string created) {
@@ -2528,6 +2589,82 @@ zetta::governance::AccessDecision Node::authorize_user(
     return zetta::governance::AccessDecision{
         false, "no role grants " + std::string(to_string(operation.domain)) +
                    ":" + operation.action};
+}
+
+namespace {
+
+// Does any role assigned to `user_id` hold `operation` as a FLAT, unscoped
+// capability (unexpired as of `now`)? A true here means the identity reaches the
+// operation on EVERY object — the coarse behavior, and the object-scoping bypass.
+bool user_holds_global(const Node& node, const std::string& user_id,
+                       const zetta::governance::Operation& operation,
+                       const std::string& now) {
+    for (const std::string& role_id : node.roles_for_user(user_id)) {
+        auto role = node.find_role_by_id(role_id);
+        if (role && role->capabilities().permits(operation, now)) return true;
+    }
+    return false;
+}
+
+// The union of every OBJECT-SCOPED grant across a user's roles (#747).
+std::vector<zetta::governance::ScopedGrant> user_scoped_grants(
+    const Node& node, const std::string& user_id) {
+    std::vector<zetta::governance::ScopedGrant> grants;
+    for (const std::string& role_id : node.roles_for_user(user_id)) {
+        auto role = node.find_role_by_id(role_id);
+        if (!role) continue;
+        for (const auto& grant : role->permissions().scoped_grants) {
+            grants.push_back(grant);
+        }
+    }
+    return grants;
+}
+
+}  // namespace
+
+bool Node::authorize_object(const std::string& acting_id, bool acting_is_user,
+                            const zetta::governance::Operation& operation,
+                            const zetta::governance::Resource& object) const {
+    if (acting_id.empty()) return true;    // trusted unauthenticated-local session
+    if (!acting_is_user) return true;      // legacy AccessKey — no object tier
+    auto user = find_user_by_id(acting_id);
+    if (!user || !user->active()) return false;  // unknown/disabled user — denied
+    const std::string now = zetta::util::now_iso8601();
+    const bool global = user_holds_global(*this, acting_id, operation, now);
+    return zetta::governance::object_permitted(
+        global, user_scoped_grants(*this, acting_id), operation, object);
+}
+
+zetta::governance::ColumnAccess Node::column_scope(
+    const std::string& acting_id, bool acting_is_user,
+    const zetta::governance::Operation& operation, const std::string& database,
+    const std::string& table) const {
+    zetta::governance::ColumnAccess bypass;
+    bypass.table_allowed = true;
+    bypass.all_columns = true;
+    if (acting_id.empty()) return bypass;   // trusted local
+    if (!acting_is_user) return bypass;     // legacy AccessKey bypass
+    auto user = find_user_by_id(acting_id);
+    if (!user || !user->active()) return {};  // table_allowed=false — denied
+    const std::string now = zetta::util::now_iso8601();
+    const bool global = user_holds_global(*this, acting_id, operation, now);
+    return zetta::governance::column_access_for(
+        global, user_scoped_grants(*this, acting_id), operation, database, table);
+}
+
+bool Node::may_call_tool(const std::string& acting_id, bool acting_is_user,
+                         const std::string& tool_name) const {
+    return authorize_object(acting_id, acting_is_user,
+                            {zetta::governance::CapabilityDomain::Api, "query"},
+                            zetta::governance::Resource::tool(tool_name));
+}
+
+bool Node::authorize_blob(const std::string& acting_id, bool acting_is_user,
+                          const std::string& blob_id) const {
+    return authorize_object(
+        acting_id, acting_is_user,
+        {zetta::governance::CapabilityDomain::Data, "blob_read"},
+        zetta::governance::Resource::blob(blob_id));
 }
 
 zetta::pipeline::ExecutionResult Node::run_graph(const ir::ExecutionGraph& graph,

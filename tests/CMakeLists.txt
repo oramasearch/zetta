@@ -25,6 +25,7 @@ add_executable(zetta-tests
   api/test_search_journey.cpp
   api/test_action_journeys.cpp
   api/test_serving.cpp
+  api/test_scoped_grants_api.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   util/test_fuzzy.cpp
@@ -78,6 +79,7 @@ add_executable(zetta-tests
   governance/test_access_control.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
+  governance/test_scoped_grants.cpp
   governance/test_consent.cpp
   pipeline/test_executor.cpp
   pipeline/test_run_progress.cpp

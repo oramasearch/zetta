@@ -30,18 +30,33 @@
     },
     "resource": {
       "additionalProperties": false,
-      "description": "A single node-owned resource a grant names (database or project).",
+      "description": "A single node-owned object a grant names. The coarse tiers are database/project; the fine-grained object tiers (#747) are table/column/blob/tool, which add the optional `database` (table/column) and `columns` (column) fields.",
       "properties": {
+        "columns": {
+          "description": "The granted column set, for the column kind.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "database": {
+          "description": "The owning database, for the table/column kinds.",
+          "type": "string"
+        },
         "kind": {
-          "description": "The kind of resource.",
+          "description": "The kind of object.",
           "enum": [
             "database",
-            "project"
+            "project",
+            "table",
+            "column",
+            "blob",
+            "tool"
           ],
           "type": "string"
         },
         "name": {
-          "description": "The resource's name (its human-facing handle).",
+          "description": "The object's handle: database/project name, table name (table/column), blob id-or-prefix, or MCP tool name.",
           "type": "string"
         }
       },
@@ -72,6 +87,42 @@
         "grants"
       ],
       "type": "object"
+    },
+    "scoped_grant": {
+      "additionalProperties": false,
+      "description": "A specific right (operation) bound to a specific object (#747).",
+      "properties": {
+        "object": {
+          "$ref": "#/$defs/resource"
+        },
+        "operation": {
+          "additionalProperties": false,
+          "description": "The right this grant confers on the object.",
+          "properties": {
+            "action": {
+              "type": "string"
+            },
+            "domain": {
+              "enum": [
+                "api",
+                "data",
+                "orchestration"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "domain",
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "operation",
+        "object"
+      ],
+      "type": "object"
     }
   },
   "$id": "https://oramasearch.github.io/zetta/schemas/role.schema.json",
@@ -80,7 +131,7 @@
   "description": "A named permission set (FEAT-9 / #744): a Scope (which resources) + a CapabilitySet (which rights), granted to a user via UserRole. The on-disk role.json projection of the replicated `role:<uuid>` CRDT value. Mirrored by zetta::governance::Role in include/zetta/governance/role.hpp and enforced by role_permissions_from_json() + Node::load_roles()/reconcile_roles() — keep them in sync. The scope/capability sub-shapes mirror access_key.schema.json's $defs.",
   "properties": {
     "capabilities": {
-      "description": "The deny-by-default rights this role grants (ENT-22). Optional; absent means no rights.",
+      "description": "The deny-by-default FLAT (unscoped) rights this role grants (ENT-22) — granted on every object. Optional; absent means no flat rights.",
       "items": {
         "$ref": "#/$defs/capability"
       },
@@ -100,6 +151,13 @@
     },
     "scope": {
       "$ref": "#/$defs/scope"
+    },
+    "scoped_grants": {
+      "description": "Object-scoped grants (#747): rights bound to a specific object (table / column-set / blob prefix / MCP tool / database). Optional; absent means no object-scoped rights. Each narrows a permission to exactly the objects it covers.",
+      "items": {
+        "$ref": "#/$defs/scoped_grant"
+      },
+      "type": "array"
     }
   },
   "required": [
