@@ -12,9 +12,9 @@
 // (mTLS) cluster with no manual flags.
 //
 // Precedence is **explicit CLI flag > env > default**: env only fills a gap the
-// operator left. A plaintext cluster stays plaintext — env never forces
-// security on (the token is taken from env only when neither `--join-token` nor
-// `--cluster-plaintext` was given). Non-throwing (a zetta-core boundary).
+// operator left. The token is taken from env only when `--join-token` was not
+// given on the CLI. Inter-node mTLS is always on (#799), so there is no plaintext
+// case to consider here. Non-throwing (a zetta-core boundary).
 
 #include <functional>
 #include <string>
@@ -43,7 +43,6 @@ struct NodeBootstrap {
     std::vector<std::string> seeds;   // --peer (repeatable) <- ZETTA_SEED_PEER
     std::string join_token;           // --join-token        <- ZETTA_CLUSTER_TOKEN
     std::string data_dir;             // --data-dir          <- ZETTA_DATA_DIR
-    bool cluster_plaintext = false;   // --cluster-plaintext (env never sets this)
 
     bool peer_from_cli = false;
     bool join_token_from_cli = false;
@@ -66,9 +65,7 @@ struct BootstrapEnvApplied {
 // Apply the provisioning env vars onto `config` as defaults beneath explicit CLI
 // flags (explicit flag > env > default), and report what env contributed:
 //   ZETTA_SEED_PEER     -> appends to config.seeds  (skipped if peer_from_cli)
-//   ZETTA_CLUSTER_TOKEN -> sets config.join_token   (skipped if join_token_from_cli
-//                                                     OR cluster_plaintext — env
-//                                                     never forces security on)
+//   ZETTA_CLUSTER_TOKEN -> sets config.join_token   (skipped if join_token_from_cli)
 //   ZETTA_DATA_DIR      -> sets config.data_dir     (skipped if data_dir_from_cli)
 // Blank/unset env vars are ignored. Non-throwing.
 BootstrapEnvApplied apply_bootstrap_env(NodeBootstrap& config,

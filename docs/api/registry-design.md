@@ -63,13 +63,15 @@ obeys). The HTTP server runs on its own thread, so **no handler may touch the
   credential, exactly the strength of the existing model (V1); minting a
   dedicated API-secret rides the existing key entity later, not a parallel
   identity system.
-- **Loopback + no token = the "unauthenticated local" session** — the governed
-  console precedent: permitted, still audited. Any non-loopback bind requires
-  a token (default bind is loopback). Under **`--require-auth`** (the
-  default-deny gate, #745) even loopback is closed: the bearer must resolve to a
-  **user** through the token store, and the capability check then runs against
-  that user's effective permissions — see
-  [access-control.md](../governance/access-control.md#the-default-deny-gate---require-auth---745).
+- **The default-deny gate is always on (#799).** Every HTTP surface (`/mcp` +
+  `/v1/*`), loopback or not, is closed unless the bearer resolves to a **user**
+  through the token store; the capability check then runs against that user's
+  effective permissions — see
+  [access-control.md](../governance/access-control.md#the-default-deny-gate-is-always-on).
+  There is no `--require-auth` flag anymore (#799 removed it and `ZETTA_REQUIRE_AUTH`);
+  the gate is unconditional. The in-process headed-GUI governed console still runs as
+  a trusted local session because it authorizes **in-process**, not through this HTTP
+  gate.
 - Every call runs `Node::authorize(key, required_operation)` — deny-by-default
   capability check **and** the audit record in one motion. Convention: reads
   require `api:query`; each action requires `orchestration:<name>`

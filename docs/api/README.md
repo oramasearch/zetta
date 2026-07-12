@@ -40,12 +40,16 @@ MCP/HTTP work.
 
 `POST /mcp` — JSON-RPC 2.0 (`initialize`, `notifications/initialized`, `ping`,
 `tools/list`, `tools/call`), served by Beast2 on the vendored capy/corosio
-stack, embedded in BOTH run modes. Defaults: `127.0.0.1:4800`, the audited
-unauthenticated-local session; flags: `--mcp-listen HOST:PORT`,
-`--mcp-token T` (legacy shared secret, doubles as the acting AccessKey id),
-`--require-auth` (the default-deny gate — bearer resolves to a **user** on every
-path or 401; see [access-control.md](../governance/access-control.md#the-default-deny-gate---require-auth---745)),
-`--no-mcp`. Every `tools/call` result carries `structuredContent` with
+stack, embedded in BOTH run modes. Default bind: `127.0.0.1:4800`. The default-deny
+auth gate is **always on** (#799): every `/mcp` + `/v1/*` request needs
+`Authorization: Bearer <secret>` resolving to a **user** via the token store, else
+**401** (see [access-control.md](../governance/access-control.md#the-default-deny-gate-is-always-on)).
+A fresh node with an empty user store seeds an owner token — from `--admin-token` /
+`ZETTA_ADMIN_TOKEN`, or auto-generated and printed **once** if none is supplied —
+so it is never locked out. Flags: `--mcp-listen HOST:PORT`, `--no-mcp`. There is
+**no** auth flag or toggle: `--require-auth` and `ZETTA_REQUIRE_AUTH` were removed
+(#799) and the legacy `--mcp-token` shared secret was removed from the CLI — the
+gate is unconditional. Every `tools/call` result carries `structuredContent` with
 `ok/value|error`, `trace_id`, `span_id`, `duration_ms` (`value` follows the
 tool's `outputSchema`); inbound `traceparent` is honored. The handlers marshal
 onto the owning loop (headless tick / headed frame) via the bridge — the loops
@@ -75,13 +79,14 @@ answer only while the entity's replicated `exposed` flag is set
 
 `POST /mcp` is the **Streamable HTTP** MCP transport, so any MCP client points
 straight at it — no adapter, no stdio shim. With a running node (default
-`127.0.0.1:4800`, no token unless started with `--mcp-token`):
+`127.0.0.1:4800`; the auth gate is always on, so every request carries a bearer
+token):
 
 **Claude Code** — register the server for the current project:
 
 ```sh
-claude mcp add --transport http zetta http://127.0.0.1:4800/mcp
-# with a token: append  --header "Authorization: Bearer <token>"
+claude mcp add --transport http zetta http://127.0.0.1:4800/mcp \
+  --header "Authorization: Bearer <token>"   # bearer required — the gate is always on
 # remove:  claude mcp remove zetta
 ```
 
@@ -96,7 +101,8 @@ claude mcp add --transport http zetta http://127.0.0.1:4800/mcp
 ```
 
 **Any HTTP client** — the three calls the protocol needs (add
-`-H 'Authorization: Bearer <token>'` when the node requires one):
+`-H 'Authorization: Bearer <token>'` — the node always requires one, the gate is
+always on):
 
 ```sh
 curl -sX POST http://127.0.0.1:4800/mcp -H 'content-type: application/json' \

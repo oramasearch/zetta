@@ -40,10 +40,11 @@ hook).
   (c) later, CLI verbs (API-7). Tool inputs validate against the registered
   schema at the boundary (the pboettch pattern — same validator, same
   discipline).
-- **Auth = the existing identity model**: a bearer token maps to an
-  `AccessKey`; every call is `Node::authorize`d (deny-by-default) and audited
-  (`data_access` / the action's own audit event). An unauthenticated loopback
-  session mirrors the console's "unauthenticated local" (still audited).
+- **Auth = the existing identity model**: a bearer token resolves (via the token
+  store) to a **user**; every call is `Node::authorize_user`d (deny-by-default)
+  and audited (`data_access` / the action's own audit event). The gate is always
+  on (#799) — there is no unauthenticated loopback session over MCP; the
+  in-process headed-GUI console is the only local-trusted path (still audited).
   Cloud-touching tools carry the consent gate — deny-by-default, per-action,
   named commands — exactly like the GUI.
 - **Embedded + headless**: the server runs inside the headed app (a background

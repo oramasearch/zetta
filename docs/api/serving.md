@@ -41,9 +41,9 @@ cluster. Realizes [../product/experience/serving.md](../product/experience/servi
   bearer key must hold **`data:predict`** (models) or **`data:search`**
   (indexes) — deliberately NOT `api:query`, so a customer-facing serving key
   can be minted with exactly serving access and nothing else (deny-by-default,
-  [../governance/access-control.md](../governance/access-control.md)). The
-  empty-bearer loopback call remains the audited "unauthenticated local"
-  session, the same convention as every surface.
+  [../governance/access-control.md](../governance/access-control.md)). Like every
+  gated route, a served request needs a bearer that resolves to a user (the
+  always-on gate, #799) — there is no empty-bearer path over HTTP.
 - **Every request lands on the audit trail** (`serve:predict:<target>` /
   `serve:search:<target>`, allow and deny), and **every request is a trace
   span** — `serve:predict` / `serve:search` with the four captures (intent ·

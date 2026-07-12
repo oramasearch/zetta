@@ -111,10 +111,10 @@ struct ClusterConfig {
     // Inter-node transport security (CTL-2, #466): when enabled(), every
     // connection — accepted or dialed — runs mutual TLS 1.3 against the
     // token-derived cluster CA before any protocol line is exchanged, so a
-    // node without the join token cannot join. Default (all-empty) is
-    // plaintext; the zetta binary always populates this (see main.cpp), so
-    // plaintext is reached only by explicit --cluster-plaintext or by
-    // embedding a bare Cluster. See docs/cluster/security.md.
+    // node without the join token cannot join. The zetta binary ALWAYS
+    // populates this (#799 removed the plaintext opt-out), so the all-empty
+    // "plaintext" default is reached only by embedding a bare Cluster in a
+    // test/host. See docs/cluster/security.md.
     ClusterSecurity security;
 };
 

@@ -95,24 +95,6 @@ TEST(NodeBootstrapEnv, CliFlagsOverrideEnv) {
     EXPECT_FALSE(applied.any());
 }
 
-// ---- a plaintext cluster stays plaintext: env never forces security on -------
-
-TEST(NodeBootstrapEnv, PlaintextClusterIgnoresTokenEnv) {
-    NodeBootstrap config;
-    config.cluster_plaintext = true;  // --cluster-plaintext
-
-    const BootstrapEnvApplied applied = apply_bootstrap_env(
-        config, env_from({{"ZETTA_CLUSTER_TOKEN", "envtoken"},
-                          {"ZETTA_SEED_PEER", "seed-a:7777"}}));
-
-    // Seeds still fill (peering is orthogonal to security), but the token is
-    // ignored — a plaintext node must not silently become secure from env.
-    EXPECT_TRUE(config.join_token.empty());
-    EXPECT_FALSE(applied.join_token);
-    EXPECT_EQ(config.seeds, (std::vector<std::string>{"seed-a:7777"}));
-    EXPECT_EQ(applied.seeds, (std::vector<std::string>{"seed-a:7777"}));
-}
-
 // ---- no env set: config is unchanged, nothing applied ------------------------
 
 TEST(NodeBootstrapEnv, NoEnvLeavesConfigUnchanged) {

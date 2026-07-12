@@ -288,9 +288,12 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 
 | role   | permissions |
 |--------|-------------|
-| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin` |
+| admin  | *every* permission — `sql:read/write/ddl`, `mcp:call`, `serving:read`, `users:manage`, `roles:manage`, `tokens:manage`, `cluster:admin`, **plus the orchestration control surface** `pipelines:manage`, `serving:manage`, `cloud:manage` (#799) |
 | writer | `sql:read`, `sql:write`, `sql:ddl`, `mcp:call`, `serving:read` |
 | reader | `sql:read`, `serving:read`, `mcp:call` |
+
+`writer` and `reader` are **unchanged** — they do **not** carry the orchestration
+atoms; only `admin` does.
 
 Deny-by-default still holds: a right a role doesn't list is denied. Bootstrap
 **reconciles** these on every start (`Node::ensure_builtin_roles`, idempotent):
@@ -299,14 +302,21 @@ repaired in place.
 
 ### Bootstrap owner (closes #733)
 
-On node start, `Node::bootstrap_owner(secret)` runs only when the **user store is
-empty** and a secret is available from `--admin-token` / `ZETTA_ADMIN_TOKEN`. It
-mints an `owner` user, ensures the built-in roles exist, assigns `owner` the
-`admin` role, and issues an **access** token whose secret is the operator's — so
-a fresh node is never locked out of its own governance. The node logs **where**
-the token record lives, **never** the secret value (the operator already holds
-it). With no secret supplied, bootstrap is a no-op and the node prints how to
-seed one.
+On node start, bootstrap runs when the **user store is empty**. It mints an
+`owner` user, ensures the built-in roles exist, assigns `owner` the `admin` role,
+and issues an **access** token — so a fresh node is never locked out of its own
+governance. Since auth is now always on (#799), a fresh node with the MCP server
+enabled **always** ends up with an owner token, by one of two paths:
+
+- **Secret supplied** (`--admin-token` / `ZETTA_ADMIN_TOKEN`; the operator always
+  injects `ZETTA_ADMIN_TOKEN`). `Node::bootstrap_owner(secret)` seeds the owner
+  from that secret — hashed at rest, **never** logged (the operator already holds
+  it); the node logs only **where** the token record lives.
+- **No secret supplied — never-locked-out auto-seed (#799).** On a fresh node with
+  the MCP server enabled and an empty user store, the node **generates** an owner
+  access token and prints it **once** ("SAVE THIS — shown only once"), so a node
+  that would otherwise be unreachable under the always-on gate is never locked
+  out. The generated secret is shown that one time and only its hash is stored.
 
 ### Read views + issuance
 
@@ -327,18 +337,23 @@ issued programmatically via `Node::create_token`.
 > replicates in full; the plaintext never enters the document.
 
 > **What's next.** The *store* above is the foundation; the **default-deny gate**
-> below (`--require-auth`, #745) consumes it, and **RBAC role management** (the
+> below (#745, always on since #799) consumes it, and **RBAC role management** (the
 > permission vocabulary, custom roles, user↔role assignment — #746) is the section
 > after it, and **fine-grained scoped grants** (table/column/blob/MCP tool — #4,
 > #747) the section after that. Still ahead: row-level security is #5.
 
-## The default-deny gate (`--require-auth` — #745)
+## The default-deny gate is always on
 
-> **Direction (One Orama, [#799](https://github.com/oramasearch/zetta/issues/799)):** the platform runs
-> auth **and** inter-node mTLS **always on** — `--require-auth` becomes the default/only mode and the peer
-> `--cluster-plaintext` escape hatch is removed; the unauthenticated-local + legacy `--mcp-token` modes
-> below are transitional. The Orama operator already enforces this (defaults `spec.requireAuth: true`,
-> seeds the admin owner token, and renders **no** `--cluster-plaintext` — orama-cloud-v1-operator#92).
+> **Shipped (One Orama, #799):** the platform now runs auth **and** inter-node mTLS
+> **always on**. The default-deny gate below is **non-optional** — every HTTP/MCP/REST path requires a
+> bearer that resolves to a user, else 401 — and there is **no** auth flag or toggle: the `--require-auth`
+> flag and the `ZETTA_REQUIRE_AUTH` env were both **removed** (passing `--require-auth` is now an
+> unknown-option error). Inter-node peer mTLS is likewise always on; the
+> peer `--cluster-plaintext` escape hatch was **removed** (see [../cluster/security.md](../cluster/security.md)).
+> The legacy anonymous HTTP path and the `--mcp-token` shared secret are **gone** from the binary — but the
+> in-process headed-GUI local session is **unaffected** (it authorizes in-process, not through the HTTP
+> gate; see below). The Orama operator injects `ZETTA_ADMIN_TOKEN` to seed the admin owner and renders
+> **no** `--cluster-plaintext` ([orama-cloud-v1-operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)).
 
 Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
 openapi + llms.txt), and the governed serving endpoints — is fronted by **one
@@ -346,25 +361,32 @@ auth gate**: a single middleware at the router seam (`src/core/api/http_server.c
 beside `router.use(cors())`), not a shared-secret check duplicated per handler.
 It resolves the acting identity **once** per request and hands it to the matched
 handler through the request's `route_data`; the handlers carry no auth logic of
-their own. The gate has three modes:
+their own. The gate is **always on** (#799) — there is no mode switch:
 
-- **`--require-auth` (secure-by-default).** Every path is closed unless the
-  request carries `Authorization: Bearer <secret>` whose secret resolves — via
-  the token store (`Node::authenticate_token`: salted-hash + **constant-time**
-  compare, rejecting revoked/expired tokens and disabled users) — to an **active
-  user**. Anything else (no header, wrong secret, revoked/expired token, disabled
-  user) is **401**. There is **no anonymous path**, and the legacy `--mcp-token`
-  shared secret is **not** honored in this mode. The resolved **user** becomes the
-  acting identity, and the capability check runs against that user's **effective
+- **Default-deny, always (#745; mandatory since #799).** Every path is closed
+  unless the request carries `Authorization: Bearer <secret>` whose secret
+  resolves — via the token store (`Node::authenticate_token`: salted-hash +
+  **constant-time** compare, rejecting revoked/expired tokens and disabled
+  users) — to an **active user**. Anything else (no header, wrong secret,
+  revoked/expired token, disabled user) is **401**. There is **no anonymous HTTP
+  path** and **no shared-secret door**: the resolved **user** becomes the acting
+  identity, and the capability check runs against that user's **effective
   permissions**.
-- **Legacy `--mcp-token` (back-compat).** With no `--require-auth`, a configured
-  shared secret still gates at the door by exact match, and the token doubles as
-  the acting AccessKey id — the pre-#745 behavior, unchanged.
-- **Unauthenticated-local (the loopback default).** With neither flag, there is
-  no gate: the acting key is whatever bearer was presented (empty = the audited
-  local session). This keeps the **loopback GUI** working as a trusted local
-  session with no credential — the deliberate, documented exception, only sane on
-  a loopback bind. `--require-auth` closes even this path.
+- **No flag, no toggle.** There is no `--require-auth` flag and no
+  `ZETTA_REQUIRE_AUTH` env — both were removed (#799). The gate is unconditional;
+  nothing turns it off. (Passing the old `--require-auth` is now an unknown-option
+  error, exit 2.)
+- **No shared-secret path anywhere.** The legacy `--mcp-token` CLI flag is gone,
+  and the embedded `ApiServer` no longer carries a `bearer_token` (or
+  `require_auth`) option — its gate is **unconditional**. A bearer that resolves to
+  a user via the token store is the *only* way in; there is no shared secret to
+  configure. (The OpenAPI document still *names* its security scheme `bearer_token`
+  — that is just the scheme identifier saying a bearer is required.)
+- **The in-process headed-GUI local session is unaffected.** The governed console
+  authorizes **in-process** (`node.cpp`), not through this HTTP gate, so the
+  desktop still runs as a trusted local session with no bearer. This is the
+  deliberate, in-process exception — it is **not** an HTTP path, and no network
+  caller can reach it.
 
 The CORS preflight (`OPTIONS`) is answered by the `cors()` middleware **before**
 the gate, so a credential-less browser preflight is never blocked.
@@ -386,10 +408,12 @@ operation is allowed only when one of the user's assigned roles (via `UserRole`)
 holds a matching, unexpired capability — the same deny-by-default, TTL-honoring
 decision, over a user's *effective* reach. `registry.cpp` (MCP + REST) and
 `serving.cpp` (predict/search) branch on this: a token-resolved user checks
-`authorize_user`; a legacy AccessKey id checks `authorize`; and an empty acting
-key is the unauthenticated-local session — reachable **only** with the gate off.
-Bootstrap seeds `owner` with the `admin` role, so the `--admin-token` secret both
-opens the gate and (as admin) satisfies the capability check.
+`authorize_user`; a legacy AccessKey id (embedder/library only) checks
+`authorize`; and an empty acting key is the trusted **in-process** session — now
+reachable **only** in-process (the headed-GUI governed console), never over the
+always-on HTTP gate. Bootstrap seeds `owner` with the `admin` role, so the
+`ZETTA_ADMIN_TOKEN` secret both opens the gate and (as admin) satisfies the
+capability check.
 
 > **Scope note.** #745 centralizes enforcement + makes it mandatory; it does not
 > expand the *model*. Role management (custom roles, the permission vocabulary) is
@@ -427,6 +451,9 @@ can never disagree:
 | `roles:manage`  | `api:manage_roles`             | create/edit/drop roles + assign them |
 | `tokens:manage` | `api:manage_tokens`            | issue/revoke tokens |
 | `cluster:admin` | `api:cluster_admin`            | cluster-wide administration |
+| `pipelines:manage` | `orchestration:{create_project, add_dataset, capture_intent, import_n8n, compile_intent, compile_n8n, compile_python, gate, deploy, run, start_run, testsuite_run}` | drive the pipeline authoring → gate → deploy → run control surface over MCP/REST |
+| `serving:manage`   | `orchestration:{expose_model, unexpose_model, expose_index, unexpose_index}` | expose / unexpose models + indexes for governed serving |
+| `cloud:manage`     | `orchestration:{cloud_inspect, detect_provisioners, add_nodes, approve_consent, deny_consent}` | inspect targets, detect provisioners, add nodes, decide consent challenges |
 
 The `sql:*` and `serving:*` data rights and the `*:manage` / `cluster:admin`
 admin rights are enforced where their surface already checks them; the finer
@@ -435,11 +462,23 @@ needs, masking, RLS) is the scoped-grants / RLS work (#4 / #5). `mcp:call`
 (`api:query`) is what all read capabilities + the `sql` capability check today, so
 every built-in carries it.
 
+The three **orchestration atoms** (`pipelines:manage` / `serving:manage` /
+`cloud:manage`, #799) cover every registry **Orchestration** op — the pipeline
+authoring/deploy/run flow, model+index exposure, and the cloud control surface.
+The capability model is exact-match (no wildcard), so each op must be named by some
+atom or **no** role could ever grant it. These went unwired while the only way to
+reach orchestration over HTTP/MCP was the (now-removed) unauthenticated-local
+bypass, which skipped the capability check entirely; with **auth always on** the
+bootstrap owner (`admin` = the whole vocabulary) must actually hold them, so it can
+drive orchestration over HTTP/MCP/REST. **Only `admin` gets them** — `writer` and
+`reader` are unchanged. The admin-covers-every-registry-op invariant is guarded by a
+test (`AdminRoleCoversRegistry` in `tests/api/test_mcp_server.cpp`).
+
 ### Custom roles + the SQL grammar
 
 Custom roles are created and edited through a minimal SQL grammar, **gated on
 `roles:manage`** (checked inside the executor against the acting identity the gate
-resolved — an empty acting key is the trusted unauthenticated-local session and is
+resolved — an empty acting key is the trusted **in-process** local session and is
 allowed):
 
 ```sql
@@ -543,7 +582,7 @@ a `governance::Resource` in the executor. Programmatically:
 ### Enforcement (deny-by-default, admin/unrestricted bypasses)
 
 Every check bypasses object scoping for three identities: the trusted
-unauthenticated-local session (empty acting key), a legacy AccessKey (it carries
+in-process local session (empty acting key), a legacy AccessKey (it carries
 only coarse scope/caps), and any user holding the operation as a **flat** right (so
 **admin — flat everything — reaches every object**). Only a user whose right is
 *exclusively* object-scoped is narrowed.
@@ -654,7 +693,7 @@ column grants on:
   leak an aggregate over hidden rows).
 
 Three identities **bypass** RLS entirely (mirroring the #747 object-scoping bypass):
-the trusted unauthenticated-local session (empty acting key), a legacy AccessKey,
+the trusted in-process local session (empty acting key), a legacy AccessKey,
 and any **admin** user (one holding `cluster:admin` — the built-in `admin` does).
 So **admin sees every row regardless of policy**. `Node::bypasses_row_security`
 is the decision; `current_user()` / `current_roles()` are resolved from the acting
@@ -681,9 +720,9 @@ user via `find_user_by_id` + `roles_for_user`.
 - `include/zetta/governance/user_role.hpp` — `zetta::governance::UserRole` (the user↔role assignment).
 - `include/zetta/governance/token_secret.hpp` — `generate_token_secret` / `hash_token_secret` / `constant_time_equal` (the OpenSSL token crypto).
 - `include/zetta/node.hpp` — user/role/token CRUD + `Node::bootstrap_owner` / `Node::authenticate_token` / `Node::authorize_user` (the token-resolved capability decision, #745).
-- `include/zetta/api/server.hpp` — `ServerOptions::require_auth` (the default-deny gate flag, #745).
+- `include/zetta/api/server.hpp` — the embedded `ApiServer` + `ServerOptions`; the auth gate is **unconditional** (#799 removed the `require_auth` and `bearer_token` options — a bearer that resolves to a user is required on every gated route).
 - `src/core/api/http_server.cpp` — the ONE auth-gate middleware at the router seam (`bearer → user`, else 401; #745).
-- `tests/api/test_auth_gate.cpp` — the gate + `authorize_user` coverage (401 on every path without a token; the owner token opens them; per-user capability verdicts; back-compat with the gate off).
+- `tests/api/test_auth_gate.cpp` — the gate + `authorize_user` coverage (401 on every path without a token; the owner token opens them; per-user capability verdicts).
 - `include/zetta/governance/principal.hpp` — `zetta::governance::Principal` (ENT-20) + `PrincipalKind`.
 - `include/zetta/governance/access_key.hpp` — `zetta::governance::AccessKey` (ENT-21), `AccessDecision`,
   `authorize()`.

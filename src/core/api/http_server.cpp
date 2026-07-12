@@ -600,8 +600,9 @@ bool ApiServer::start() {
                        host.starts_with("::1");
                    const std::string origin =
                        std::string(local ? "http://" : "https://") + host;
-                   const std::string body =
-                       render_mcp_md(origin, !impl.options.bearer_token.empty());
+                   // Auth is always required (#799), so the connect docs always
+                   // show the bearer step.
+                   const std::string body = render_mcp_md(origin, /*auth=*/true);
                    route.status(http::status::ok);
                    route.res.set(http::field::content_type,
                                  "text/markdown; charset=utf-8");
@@ -612,50 +613,33 @@ bool ApiServer::start() {
                });
 
     // The ONE auth gate (#745, epic #743): a single middleware at the router
-    // seam that runs before EVERY route (cors handles the CORS preflight before
-    // it, so credential-less OPTIONS is not blocked). It resolves the acting
-    // identity once — no more per-handler shared-secret checks — and, on
-    // failure, short-circuits the whole request with 401. Three modes:
-    //
-    //   --require-auth (secure-by-default): the bearer MUST resolve, through the
-    //     token store (#744: salted-hash + constant-time compare, honoring
-    //     expiry/revocation and requiring an active user), to a user; anything
-    //     else is 401. The resolved USER is the acting identity, and downstream
-    //     capability checks run against its effective permissions. There is no
-    //     anonymous path and the legacy shared secret is not honored.
-    //   legacy --mcp-token (back-compat): the bearer must equal the configured
-    //     shared secret, which doubles as the acting AccessKey id.
-    //   unauthenticated-local (the loopback GUI default): no gate — the acting
-    //     key is whatever bearer was presented (may be empty = the audited
-    //     local session).
+    // seam that runs before EVERY gated route (cors handles the CORS preflight
+    // before it, so credential-less OPTIONS is not blocked). Auth is ALWAYS on
+    // (#799) — there is exactly one mode, no toggle, no legacy shared secret, no
+    // anonymous path. The bearer MUST resolve, through the token store (#744:
+    // salted-hash + constant-time compare, honoring expiry/revocation and
+    // requiring an active user), to a user; anything else is 401. The resolved
+    // USER is the acting identity, and downstream capability checks run against
+    // its effective permissions. (The public web-UI shell + connect docs are
+    // registered BEFORE this middleware, so they stay reachable without a token;
+    // and the in-process headed GUI authorizes locally, not through this gate.)
     router.use([&impl](http::route_params& route) -> http::route_task {
         const std::string bearer = bearer_of(route);
         RequestIdentity identity;
-        bool authorized = true;
+        bool authorized = false;
 
-        if (impl.options.require_auth) {
-            std::string resolved_user_id;
-            // authenticate_token touches the Node (token store) — main-thread
-            // only, so marshal it onto the owning loop, like every handler.
-            co_await impl.bridge.run_on_owner([&] {
-                if (auto user = impl.node.authenticate_token(bearer)) {
-                    resolved_user_id = user->id();
-                }
-            });
-            if (resolved_user_id.empty()) {
-                authorized = false;
-            } else {
-                identity.acting_key = std::move(resolved_user_id);
-                identity.is_user = true;
+        std::string resolved_user_id;
+        // authenticate_token touches the Node (token store) — main-thread only,
+        // so marshal it onto the owning loop, like every handler.
+        co_await impl.bridge.run_on_owner([&] {
+            if (auto user = impl.node.authenticate_token(bearer)) {
+                resolved_user_id = user->id();
             }
-        } else if (!impl.options.bearer_token.empty()) {
-            if (bearer != impl.options.bearer_token) {
-                authorized = false;
-            } else {
-                identity.acting_key = bearer;  // legacy: bearer IS the key id
-            }
-        } else {
-            identity.acting_key = bearer;  // unauthenticated-local (may be empty)
+        });
+        if (!resolved_user_id.empty()) {
+            authorized = true;
+            identity.acting_key = std::move(resolved_user_id);
+            identity.is_user = true;
         }
 
         if (!authorized) {
