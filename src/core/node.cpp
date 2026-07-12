@@ -2500,6 +2500,90 @@ void Node::reconcile_policies(const nlohmann::json& snapshot) {
     }
 }
 
+// ----- virtual tables (vtable:<name>, #809 slice 3) -------------------------
+//
+// A virtual table is durable, replicated catalog metadata read live from the
+// CRDT document — there is no in-memory projection to keep in sync (the document
+// IS the source of truth, exactly like system.nodes reads the node-list). So
+// these go straight through the ReplicationManager: create/drop capture the
+// `vtable:<name>` key; find/list/rows read the current snapshot. Durability +
+// convergence + restart-survival come free from the CRDT (persist/load/gossip).
+// A standalone node has no CRDT to store in or project over, so create/drop
+// return false and find/list/rows are empty there.
+
+bool Node::create_virtual_table(const zetta::data::VirtualTable& definition) {
+    if (!replication_) return false;         // no CRDT to store/project over
+    if (definition.name.empty()) return false;
+    const nlohmann::json snapshot = replication_->snapshot();
+    if (snapshot.contains(catalog::virtual_table_key(definition.name))) {
+        return false;                        // name clash
+    }
+    replication_->set(catalog::virtual_table_key(definition.name),
+                      zetta::data::virtual_table_to_json(definition));
+    return true;
+}
+
+bool Node::drop_virtual_table(const std::string& name) {
+    if (!replication_) return false;
+    const nlohmann::json snapshot = replication_->snapshot();
+    if (!snapshot.contains(catalog::virtual_table_key(name))) return false;
+    replication_->remove(catalog::virtual_table_key(name));
+    return true;
+}
+
+std::optional<zetta::data::VirtualTable> Node::find_virtual_table(
+    const std::string& name) const {
+    if (!replication_) return std::nullopt;
+    const nlohmann::json snapshot = replication_->snapshot();
+    const auto it = snapshot.find(catalog::virtual_table_key(name));
+    if (it == snapshot.end()) return std::nullopt;
+    return zetta::data::virtual_table_from_json(*it);
+}
+
+std::vector<zetta::data::VirtualTable> Node::virtual_tables() const {
+    std::vector<zetta::data::VirtualTable> tables;
+    if (!replication_) return tables;
+    const nlohmann::json snapshot = replication_->snapshot();
+    for (const auto& [key, value] : snapshot.items()) {
+        if (catalog::id_after(key, catalog::kVirtualTablePrefix).empty()) continue;
+        if (auto table = zetta::data::virtual_table_from_json(value)) {
+            tables.push_back(std::move(*table));
+        }
+    }
+    std::sort(tables.begin(), tables.end(),
+              [](const auto& a, const auto& b) { return a.name < b.name; });
+    return tables;
+}
+
+std::vector<nlohmann::json> Node::virtual_table_rows(
+    const zetta::data::VirtualTable& definition) const {
+    std::vector<nlohmann::json> rows;
+    if (!replication_) return rows;
+    const nlohmann::json snapshot = replication_->snapshot();
+    for (const auto& [key, value] : snapshot.items()) {
+        // A row per CRDT entry under the definition's prefix. `id_after` yields
+        // the id (the part after the prefix), empty when the key is not under it.
+        const std::string id = catalog::id_after(key, definition.crdt_prefix);
+        if (id.empty()) continue;
+        if (!value.is_object()) continue;  // a durable tier is a JSON entry
+        nlohmann::json row = nlohmann::json::object();
+        for (const zetta::data::VirtualColumn& column : definition.columns) {
+            if (column.is_key) {
+                row[column.name] = id;  // the CRDT key (the id after the prefix)
+            } else if (column.tier == zetta::data::VirtualColumnTier::Durable) {
+                row[column.name] = value.contains(column.name)
+                                       ? value.at(column.name)
+                                       : nlohmann::json();
+            } else {
+                // Ephemeral tiers are null until a resolver is bound (follow-up).
+                row[column.name] = nlohmann::json();
+            }
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 bool Node::bypasses_row_security(const std::string& acting_id,
                                  bool acting_is_user) const {
     if (acting_id.empty()) return true;   // trusted unauthenticated-local session

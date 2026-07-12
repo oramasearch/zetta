@@ -11,6 +11,7 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam (`zetta::storage::StorageEngine`).
 - [large-objects.md](large-objects.md) — storing files as large objects (metadata in the CRDT, bodies peer-to-peer) and importing JSON/JSONL records.
 - [query.md](query.md) — the dialect-agnostic query layer: the Postgres subset, `GROUP BY` through the [DDF engine](../ddf/ddf.md), and the virtual `system` tables.
+- [virtual-tables.md](virtual-tables.md) — `CREATE VIRTUAL TABLE <name> OVER CRDT '<prefix>' (…)`: a user-declared, read-only table over any CRDT key-family (durable/ephemeral tiers), stored as durable `vtable:` catalog metadata (`zetta::data::VirtualTable`, #809 slice 3).
 - [replication-strategy.md](replication-strategy.md) — the per-table/db strategy: `ReplicateToAll` | `Partitioned` | `PartitionedWithReplicas(rf)`, recorded + replicated (`zetta::data::ReplicationStrategy`, ENT-35).
 - [partitioner.md](partitioner.md) — the `Partitioner` seam: record→partition (Hash/RoundRobin) + partition→node (`RendezvousPlacement` HRW) over a fixed P >> nodes (ADR-31 / #512–#514).
 - [dataset-partitions.md](dataset-partitions.md) — the replicate-to-all partition catalog: where each slice of a table's data lives (`zetta::data::DatasetPartition`, ENT-36 / #510).

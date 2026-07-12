@@ -25,6 +25,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/virtual_table.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/pipeline/deployment_controller.hpp"
 #include "zetta/index/index.hpp"
@@ -741,6 +742,38 @@ public:
         return policies_;
     }
     std::size_t policy_count() const { return policies_.size(); }
+
+    // ----- Virtual tables (vtable:<name>, #809 slice 3) -----------------------
+    // A user-declared, read-only VIRTUAL TABLE over a CRDT key-family (see
+    // data/virtual_table.hpp / docs/data/virtual-tables.md). The definition is
+    // durable, replicated catalog metadata — captured under the `vtable:<name>`
+    // CRDT key so it converges + survives restart, mirroring db:/tbl:. There is
+    // no in-memory projection: the definitions + their rows are read live from
+    // the replicated document at query time (like system.nodes reads the
+    // node-list), so a peer's CREATE is visible without a reconcile pass. A
+    // virtual table needs a CRDT to project over, so a standalone (non-replicated)
+    // node has none and create returns false.
+
+    // Create a virtual table (unique name). false when the node is not replicated
+    // (no CRDT), the name is empty, or a virtual table by that name already
+    // exists. Captures the `vtable:<name>` key into the CRDT.
+    bool create_virtual_table(const zetta::data::VirtualTable& definition);
+    // Drop a virtual table by name. false when not replicated or no such vtable.
+    bool drop_virtual_table(const std::string& name);
+    // The virtual table named `name`, read live from the replicated document, or
+    // nullopt when absent / not replicated.
+    std::optional<zetta::data::VirtualTable> find_virtual_table(
+        const std::string& name) const;
+    // Every virtual table defined in the replicated document (name order). Empty
+    // when not replicated. The read source for a possible system.virtual_tables.
+    std::vector<zetta::data::VirtualTable> virtual_tables() const;
+    // The rows of a virtual table, composed at query time from the replicated
+    // document: one row per CRDT entry under the definition's prefix — the
+    // DURABLE KEY column is the id after the prefix, other DURABLE columns are
+    // projected from the entry JSON (null when absent), and EPHEMERAL columns are
+    // null (a resolver binding is a follow-up). Empty when not replicated.
+    std::vector<nlohmann::json> virtual_table_rows(
+        const zetta::data::VirtualTable& definition) const;
 
     // Whether the acting identity BYPASSES row-level security (sees/writes every
     // row regardless of policy). Three identities bypass, mirroring the object-

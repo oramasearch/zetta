@@ -486,6 +486,7 @@ add_library(zetta-core STATIC
   src/core/data/large_object.cpp
   src/core/data/replicated_blob_store.cpp
   src/core/data/import.cpp
+  src/core/data/virtual_table.cpp
   src/core/data/add_dataset.cpp
   src/core/usecases/churn/churn_dataset.cpp
   src/core/pipeline/n8n_import.cpp
@@ -565,8 +566,23 @@ add_library(zetta-core STATIC
 # tips it over again TU-wide, aborting even pre-existing parse-error paths.
 # Building just this one TU at -O1 makes its exception tables correct; it is a
 # text parser over tiny inputs, so the optimization level is immaterial to
-# performance. The last -O flag wins, so this overrides the target's -O3. Drop
-# this (and the noinline/builder dance) when the compiler is bumped.
+# performance. -O1 is a genuine sweet spot: BOTH -O3 (the target default) and -O0
+# miscompile this TU's exception unwinding (a thrown ParseError escapes run()'s
+# try/catch), so -O0 is NOT a safe "more conservative" fallback. The last -O flag
+# wins, so this overrides the target's -O3.
+#
+# Two more constraints keep the miscompile at bay (both learned the hard way while
+# adding CREATE VIRTUAL TABLE, #809):
+#   1. Unwinding OUT OF a [[gnu::noinline]] parse helper is itself miscompiled at
+#      -O1 (the throw is not caught), even though the helper is what keeps a big
+#      grammar branch from bloating parse_create/run and tipping the TU-wide EH
+#      over. So a helper that would throw must instead be NON-throwing — set a
+#      pending-error member + return std::nullopt — and the caller does the actual
+#      `throw` from its inline frame (inline throws ARE caught at -O1). See
+#      parse_create_virtual_table_or_error.
+#   2. The multi-string Statement *construction* miscompiles in-TU, so it is
+#      routed out via statement_builders.cpp.
+# Drop this whole dance when the compiler is bumped.
 set_source_files_properties(src/core/query/postgres.cpp
   PROPERTIES COMPILE_OPTIONS "-O1")
 

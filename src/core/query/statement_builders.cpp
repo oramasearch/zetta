@@ -68,4 +68,11 @@ Statement make_drop_policy_statement(std::string name) {
     return DropPolicyStmt{std::move(name)};
 }
 
+Statement make_create_virtual_table_statement(
+    std::string name, std::string crdt_prefix,
+    std::vector<VirtualColumnDef> columns) {
+    return CreateVirtualTableStmt{std::move(name), std::move(crdt_prefix),
+                                  std::move(columns)};
+}
+
 }  // namespace zetta::query
