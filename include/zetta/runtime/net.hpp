@@ -18,6 +18,7 @@
 #include <boost/corosio/timer.hpp>
 #include <boost/corosio/tls_context.hpp>
 #include <boost/corosio/tls_stream.hpp>
+#include <boost/corosio/wait_type.hpp>
 
 namespace zetta::runtime::net {
 
@@ -35,6 +36,12 @@ using timer = boost::corosio::timer;
 // ephemeral). See src/core/cluster/cluster.cpp dial_seed (#785).
 using resolver = boost::corosio::resolver;
 using resolver_results = boost::corosio::resolver_results;
+
+// Socket readiness selector for `tcp_socket::wait()` — await raw-socket
+// readability without consuming bytes. Used by the TLS read pump to wait for
+// data off the per-link I/O lock, so a read and a write never drive one SSL
+// object concurrently while writes still flow (cluster.cpp, #786).
+using wait_type = boost::corosio::wait_type;
 
 // SO_REUSEADDR on the cluster listener (#738). Set on the acceptor between
 // open() and bind() (open() deliberately does NOT set it) so a restarted node

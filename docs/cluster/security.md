@@ -32,6 +32,15 @@ characters. Everything else derives from it:
    plaintext dialer is dropped before it even reaches `HELLO`. Credentials that
    fail to load **fail closed** — the node runs no networking rather than
    falling back to plaintext.
+4. **One TLS stream, serialized I/O.** A link's read pump and write pump share
+   **one** OpenSSL stream, whose `SSL` object + scratch buffers can't be driven
+   concurrently (interleaved `SSL_read`/`SSL_write` corrupt the record stream). A
+   per-link async mutex serializes them: the read pump waits for socket
+   readability *off* the lock, then drains the decrypted bytes *under* it, so a
+   read and a write never overlap on the one `SSL` object (#786). A plaintext link
+   keeps lock-free full-duplex I/O. Gossip currently re-ships the full document
+   each round (incremental sync is #794), so this serialization is half-duplex per
+   link under heavy write load.
 
 Mixed modes fail cleanly in both directions: a TLS node treats a plaintext
 `HELLO` as a failed handshake; a plaintext node treats a TLS `ClientHello` as a

@@ -5,10 +5,13 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
@@ -203,6 +206,130 @@ TEST(ClusterSecurity, SameTokenNodesConvergeOverMutualTls) {
 
     node_b.stop();
     node_a.stop();
+}
+
+// The TLS-transport stress gate (#786). Interleaving SSL_read and SSL_write across
+// coroutine await points on ONE SSL object corrupts the OpenSSL state machine, so a
+// mutual-TLS link drops under sustained bidirectional gossip while a plaintext link
+// (raw full-duplex socket) syncs fine — the isolation of the fault. This drives a
+// 3-node, fully-meshed mTLS cluster under continuous, sizable, concurrent mutations
+// on every node, then asserts (a) no link ever dropped (connection_count stayed at
+// the full-mesh count — a TLS corruption would tear a link down and reconnect) and
+// (b) the documents converge. It is the key validation gate for the per-link TLS
+// I/O serialization; on the buggy transport it flaps/fails to converge.
+TEST(ClusterSecurity, MeshConvergesOverMutualTlsUnderSustainedLoad) {
+    const std::string token = zetta::cluster::generate_join_token();
+    const std::string id_a = zetta::util::new_uuid();
+    const std::string id_b = zetta::util::new_uuid();
+    const std::string id_c = zetta::util::new_uuid();
+
+    ReplicationManager repl_a(id_a);
+    ReplicationManager repl_b(id_b);
+    ReplicationManager repl_c(id_c);
+    // Each node publishes its membership entry so the hub-seeded star meshes (#789).
+    repl_a.set("node:" + id_a, {{"address", "127.0.0.1:42440"}});
+    repl_b.set("node:" + id_b, {{"address", "127.0.0.1:42441"}});
+    repl_c.set("node:" + id_c, {{"address", "127.0.0.1:42442"}});
+
+    const auto make = [&](const std::string& id, std::uint16_t port,
+                          bool seed_hub) {
+        ClusterConfig config;
+        config.listen_host = "127.0.0.1";
+        config.listen_port = port;
+        config.port_range = 1;
+        config.reconnect_interval_seconds = 1;
+        if (seed_hub) config.seeds = {"127.0.0.1:42440"};
+        config.security = must_derive(token, id);
+        return config;
+    };
+
+    Cluster a(id_a, make(id_a, 42440, false), &repl_a);
+    Cluster b(id_b, make(id_b, 42441, true), &repl_b);
+    Cluster c(id_c, make(id_c, 42442, true), &repl_c);
+    a.start();
+    b.start();
+    c.start();
+
+    // Full mesh over TLS: every node linked to both others.
+    const auto meshed = [&] {
+        return a.peer_count() == 2 && b.peer_count() == 2 && c.peer_count() == 2;
+    };
+    ASSERT_TRUE([&] {
+        for (int waited = 0; waited < 20000; waited += 50) {
+            if (meshed()) return true;
+            sleep_ms(50);
+        }
+        return meshed();
+    }()) << "mesh did not form over mTLS";
+
+    // Hammer every node's document concurrently with sizable values so each SYNC
+    // line spans multiple TLS records — exercising the read-pump / write-pump
+    // interleaving on each TLS stream. Overwrite a bounded key set at a moderate
+    // rate: enough sustained bidirectional traffic to trip the #786 corruption,
+    // without pathological Automerge history growth that would just make merge slow.
+    std::atomic<bool> stop{false};
+    std::atomic<int> min_connections{100};
+    const auto hammer = [&](ReplicationManager& repl, const std::string& tag) {
+        const std::string blob(512, 'x');
+        for (std::uint64_t i = 0; !stop.load(); ++i) {
+            for (int key = 0; key < 4; ++key) {
+                repl.set(tag + ":" + std::to_string(key),
+                         {{"n", i}, {"blob", blob}});
+            }
+            sleep_ms(50);
+        }
+    };
+    std::thread ta(hammer, std::ref(repl_a), "a");
+    std::thread tb(hammer, std::ref(repl_b), "b");
+    std::thread tc(hammer, std::ref(repl_c), "c");
+
+    // Watch the links for ~6s: a TLS corruption drops a link (connection_count
+    // dips below the full-mesh 2) before the reconnect loop heals it.
+    for (int waited = 0; waited < 5000; waited += 50) {
+        const int lowest = std::min({static_cast<int>(a.connection_count()),
+                                     static_cast<int>(b.connection_count()),
+                                     static_cast<int>(c.connection_count())});
+        int prior = min_connections.load();
+        while (lowest < prior && !min_connections.compare_exchange_weak(prior, lowest)) {
+        }
+        sleep_ms(50);
+    }
+
+    stop.store(true);
+    ta.join();
+    tb.join();
+    tc.join();
+
+    // The documents converge once mutations stop and a final gossip round lands.
+    const auto converged = [&] {
+        return repl_a.version() == repl_b.version() &&
+               repl_b.version() == repl_c.version() &&
+               repl_a.entry_count() == repl_b.entry_count() &&
+               repl_b.entry_count() == repl_c.entry_count();
+    };
+    const bool did_converge = [&] {
+        for (int waited = 0; waited < 45000; waited += 100) {
+            if (converged()) return true;
+            sleep_ms(100);
+        }
+        return converged();
+    }();
+    std::fprintf(stderr,
+                 "[diag] min_conn=%d  entries a=%zu b=%zu c=%zu  "
+                 "ver a=%s b=%s c=%s\n",
+                 min_connections.load(), repl_a.entry_count(),
+                 repl_b.entry_count(), repl_c.entry_count(),
+                 repl_a.version().c_str(), repl_b.version().c_str(),
+                 repl_c.version().c_str());
+    EXPECT_TRUE(did_converge) << "documents did not converge over mTLS under load";
+
+    // No TLS link ever dropped under the sustained bidirectional load.
+    EXPECT_EQ(min_connections.load(), 2)
+        << "a mutual-TLS link dropped under load (SSL state corruption, #786)";
+
+    c.stop();
+    b.stop();
+    a.stop();
 }
 
 TEST(ClusterSecurity, WrongTokenNodeCannotJoin) {
