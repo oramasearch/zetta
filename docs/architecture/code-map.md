@@ -66,6 +66,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     import.hpp              zetta::data::import_records — JSON/JSONL files → table rows
     add_dataset.hpp         zetta::data::add_dataset_file + AsyncDatasetAdd — "Add dataset" affordance backend: load a parquet/jsonl/json/csv file as a partitioned table (RendezvousPlacement + write_partitioned), so it surfaces in system.datasets with partitions placed across the cluster; CSV type-inferred, no new JSON boundary (#587); the async handle decodes on a worker + materializes in owner-thread pump slices with progress/cancel + a dataset_added audit event (#624)
     replication_strategy.hpp  zetta::data::ReplicationStrategy — per-table/db replication strategy (ReplicateToAll | Partitioned | PartitionedWithReplicas(factor)) + JSON boundary; recorded/persisted/replicated, default ReplicateToAll (ENT-35; #509)
+    virtual_table.hpp       zetta::data::VirtualTable/VirtualColumn/VirtualColumnTier — a user-declared VIRTUAL TABLE over a CRDT key-family (durable KEY + durable/ephemeral columns) + virtual_table_to_json/from_json boundary; durable `vtable:<name>` catalog metadata, rows computed at query time (CREATE VIRTUAL TABLE, #809 slice 3; docs/data/virtual-tables.md)
     blob_store.hpp          zetta::data::BlobStore — large-object body transfer seam
     replicated_blob_store.hpp  zetta::data::ReplicatedBlobStore — BlobStore from CRDT + disk; partition-aware placement: a partition body is fetched/held only by its owner node(s) per the catalog + replication factor, not replicate-to-all (#515)
   storage/
@@ -254,11 +255,12 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     dataset_partition.cpp   zetta::data::DatasetPartition — value, apply_value, JSON-Schema boundary validation (parse_dataset_partition_value)
     large_object.cpp        zetta::data::LargeObjectStore — blob folders + body I/O (import_file/import_bytes, sha256 fingerprint)
     import.cpp              zetta::data::import_records — JSON/JSONL file → table rows
+    virtual_table.cpp       zetta::data::VirtualTable — tier names + to_json/from_json (non-throwing boundary) for the durable `vtable:<name>` catalog value (CREATE VIRTUAL TABLE, #809 slice 3)
     add_dataset.cpp         zetta::data::add_dataset_file + AsyncDatasetAdd — decode parquet/jsonl/json/csv by extension → free-form rows (native Parquet reader + CSV type inference), create a uniquely-named table, write_partitioned with RendezvousPlacement (#587); async decode worker + pump-sliced materialize + cancel + audit (#624)
     replication_strategy.cpp  zetta::data::ReplicationStrategy — kind names, JSON boundary validation, replication_strategy_from_meta reader (ENT-35; #509)
     replicated_blob_store.cpp  large-object body transfer (CRDT metadata + disk)
   query/
-    postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST), incl. CREATE USER / CREATE TOKEN (#744)
+    postgres.cpp            zetta::query::PostgresDialect — the tokenizer + recursive-descent parser (Postgres subset → the generic AST), incl. CREATE USER / CREATE TOKEN (#744) + CREATE VIRTUAL TABLE … OVER CRDT … (#809 slice 3)
     statement_builders.cpp  zetta::query::make_create_token_statement + the role-management make_*_statement builders (#746) — assemble Statement variants OUT of the parser TU (a pinned-toolchain EH-miscompile workaround; the parser TU is also built at -O1, see CMakeLists)
     executor.cpp            zetta::query::Executor — statement execution against the Node (incl. CREATE USER / CREATE TOKEN returning the plaintext once) + the read-only system.* observability tables (tables / nodes / deployments / runs / models / indexes / jobs / principals / keys / users / roles / tokens / audit / activity / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / spans / traces / crashes / cloud_providers / cloud_status / provisioners); kSystemTableCatalog is the one list they all derive from (system.tables + system_table_names() + the unknown-table error, #684)
     service.cpp             zetta::query::QueryService — parse-with-Postgres + execute-each-statement facade (the Outcome the REPL/GUI render)

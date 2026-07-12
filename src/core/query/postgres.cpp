@@ -2,8 +2,10 @@
 
 #include <cctype>
 #include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -330,6 +332,17 @@ private:
             }
             return stmt;
         }
+        if (accept_keyword("virtual")) {
+            expect_keyword("table");  // an inline throw here is caught (see below)
+            // The heavy parse runs in a NON-throwing noinline helper (it sets
+            // pending_error_ + returns nullopt on failure) — unwinding OUT of a
+            // noinline helper miscompiles at -O1, so the actual throw is done here
+            // in the inline frame, where it IS caught. See the CMakeLists note.
+            if (auto stmt = parse_create_virtual_table_or_error()) {
+                return std::move(*stmt);
+            }
+            throw ParseError{std::move(pending_error_)};
+        }
         if (accept_keyword("user")) {
             return CreateUserStmt{parse_ident()};
         }
@@ -342,8 +355,93 @@ private:
         if (accept_keyword("policy")) {
             return parse_create_policy();
         }
-        throw ParseError{"expected DATABASE, TABLE, USER, TOKEN, ROLE, or POLICY "
-                         "after CREATE"};
+        throw ParseError{"expected DATABASE, TABLE, VIRTUAL TABLE, USER, TOKEN, "
+                         "ROLE, or POLICY after CREATE"};
+    }
+
+    // The NON-throwing body of CREATE VIRTUAL TABLE (#809 slice 3): consumes
+    //   <name> OVER CRDT '<prefix>' ( <col> <type> <tier…>, … )
+    // and returns the assembled Statement, or std::nullopt with pending_error_
+    // set on any malformed input. It must NOT throw — unwinding out of a noinline
+    // helper miscompiles this TU at -O1 (see the CMakeLists note); the caller
+    // (parse_create) throws pending_error_ from its inline frame instead. OVER
+    // CRDT is REQUIRED (the must-extend-a-CRDT invariant). Uses only the
+    // non-throwing cursor ops (peek/advance/accept_*), and its locals are
+    // destroyed on NORMAL return (never by unwinding), so it is EH-safe. The
+    // multi-string Statement variant is built out-of-TU (statement_builders.cpp).
+    [[gnu::noinline]] std::optional<Statement>
+    parse_create_virtual_table_or_error() {
+        if (peek().type != Tok::Ident) {
+            pending_error_ =
+                "expected a virtual-table name, got '" + peek().text + "'";
+            return std::nullopt;
+        }
+        std::string name = advance().text;
+        if (!accept_keyword("over") || !accept_keyword("crdt")) {
+            pending_error_ =
+                "CREATE VIRTUAL TABLE requires OVER CRDT '<prefix>' (a virtual "
+                "table must extend a CRDT key-family), got '" + peek().text + "'";
+            return std::nullopt;
+        }
+        if (peek().type != Tok::Str) {
+            pending_error_ =
+                "expected a quoted CRDT key prefix after OVER CRDT, got '" +
+                peek().text + "'";
+            return std::nullopt;
+        }
+        std::string prefix = advance().text;
+        if (!accept_punct('(')) {
+            pending_error_ =
+                "expected '(' before the virtual-table columns, got '" +
+                peek().text + "'";
+            return std::nullopt;
+        }
+        std::vector<VirtualColumnDef> columns;
+        if (!accept_punct(')')) {
+            do {
+                VirtualColumnDef column;
+                if (peek().type != Tok::Ident) {
+                    pending_error_ =
+                        "expected a column name, got '" + peek().text + "'";
+                    return std::nullopt;
+                }
+                column.name = advance().text;
+                if (peek().type != Tok::Ident) {
+                    pending_error_ = "expected a type for column '" + column.name +
+                                     "', got '" + peek().text + "'";
+                    return std::nullopt;
+                }
+                column.type = advance().text;  // a type is required (e.g. TEXT)
+                if (accept_keyword("durable")) {
+                    column.tier = VirtualTableTier::Durable;
+                    if (accept_keyword("key")) column.is_key = true;
+                } else if (accept_keyword("ephemeral")) {
+                    if (accept_keyword("local")) {
+                        column.tier = VirtualTableTier::EphemeralLocal;
+                    } else if (accept_keyword("synced")) {
+                        column.tier = VirtualTableTier::EphemeralSynced;
+                    } else {
+                        pending_error_ = "expected LOCAL or SYNCED after EPHEMERAL "
+                                         "for column '" + column.name + "'";
+                        return std::nullopt;
+                    }
+                } else {
+                    pending_error_ = "expected a tier (DURABLE [KEY], EPHEMERAL "
+                                     "LOCAL, EPHEMERAL SYNCED) for column '" +
+                                     column.name + "'";
+                    return std::nullopt;
+                }
+                columns.push_back(std::move(column));
+            } while (accept_punct(','));
+            if (!accept_punct(')')) {
+                pending_error_ =
+                    "expected ',' or ')' in the virtual-table columns, got '" +
+                    peek().text + "'";
+                return std::nullopt;
+            }
+        }
+        return make_create_virtual_table_statement(
+            std::move(name), std::move(prefix), std::move(columns));
     }
 
     // CREATE ROLE <name>. Out-of-line + variant built in a separate TU — the same
@@ -763,6 +861,11 @@ private:
     std::string_view src_;
     std::vector<Token> tokens_;
     std::size_t pos_ = 0;
+    // Error message set by the non-throwing parse_create_virtual_table_or_error;
+    // the caller throws it from its inline frame (the -O1 EH workaround). A
+    // member, not a local, so no std::string is alive on the caller's stack at
+    // the throw.
+    std::string pending_error_;
 };
 
 }  // namespace

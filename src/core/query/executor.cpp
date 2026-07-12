@@ -26,6 +26,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/virtual_table.hpp"
 #include "zetta/governance/permission.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
@@ -2043,6 +2044,19 @@ QueryResult Executor::execute(const Statement& stmt,
         return ref.database.empty() ? current_database : ref.database;
     };
 
+    // A virtual table (#809 slice 3) is referenced by its unqualified, global
+    // name; a real table in the current database takes precedence (a virtual
+    // table never shadows one). Resolves to the definition when `ref` is an
+    // unqualified name that is a virtual table and is NOT shadowed by a real
+    // table — used by SELECT (to project) and the write paths (to reject).
+    const auto resolve_virtual_table =
+        [&](const TableRef& ref) -> std::optional<zetta::data::VirtualTable> {
+        if (!ref.database.empty()) return std::nullopt;
+        auto current = node_.find_database(current_database);
+        if (current && current->find_table(ref.table)) return std::nullopt;
+        return node_.find_virtual_table(ref.table);
+    };
+
     return std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
@@ -2083,6 +2097,79 @@ QueryResult Executor::execute(const Statement& stmt,
                 }
                 return {.message = "CREATE TABLE"};
             },
+            [&](const CreateVirtualTableStmt& s) -> QueryResult {
+                // OVER CRDT is required (the must-extend-a-CRDT invariant). The
+                // grammar can't reach here without it, but a bare '' is possible.
+                if (s.crdt_prefix.empty()) {
+                    return error("CREATE VIRTUAL TABLE requires a non-empty OVER "
+                                 "CRDT '<prefix>' (a virtual table must extend a "
+                                 "CRDT key-family)");
+                }
+                // Exactly one DURABLE KEY column — the convergent row identity.
+                int key_count = 0;
+                std::unordered_set<std::string> seen;
+                for (const VirtualColumnDef& column : s.columns) {
+                    if (!seen.insert(column.name).second) {
+                        return error("duplicate column \"" + column.name +
+                                     "\" in CREATE VIRTUAL TABLE");
+                    }
+                    if (column.is_key) ++key_count;
+                }
+                if (key_count != 1) {
+                    return error("CREATE VIRTUAL TABLE needs exactly one DURABLE "
+                                 "KEY column (the CRDT key — the id after the "
+                                 "prefix)");
+                }
+                // The name must not shadow a system table (or the bare zetta_nodes
+                // alias), nor an existing table in the current database.
+                for (const std::string_view sys : kSystemTableNames) {
+                    if (s.name == sys) {
+                        return error("\"" + s.name +
+                                     "\" is a reserved system-table name");
+                    }
+                }
+                if (s.name == "zetta_nodes") {
+                    return error("\"zetta_nodes\" is a reserved system-table alias");
+                }
+                if (auto current = node_.find_database(current_database)) {
+                    if (current->find_table(s.name)) {
+                        return error("\"" + s.name +
+                                     "\" already names a table in \"" +
+                                     current_database + "\"");
+                    }
+                }
+                // Translate the parsed statement into the durable definition.
+                zetta::data::VirtualTable definition;
+                definition.name = s.name;
+                definition.crdt_prefix = s.crdt_prefix;
+                for (const VirtualColumnDef& column : s.columns) {
+                    zetta::data::VirtualColumn out;
+                    out.name = column.name;
+                    out.type = column.type;
+                    out.is_key = column.is_key;
+                    switch (column.tier) {
+                        case VirtualTableTier::Durable:
+                            out.tier = zetta::data::VirtualColumnTier::Durable;
+                            break;
+                        case VirtualTableTier::EphemeralLocal:
+                            out.tier =
+                                zetta::data::VirtualColumnTier::EphemeralLocal;
+                            break;
+                        case VirtualTableTier::EphemeralSynced:
+                            out.tier =
+                                zetta::data::VirtualColumnTier::EphemeralSynced;
+                            break;
+                    }
+                    definition.columns.push_back(std::move(out));
+                }
+                if (!node_.create_virtual_table(definition)) {
+                    return error("virtual table \"" + s.name +
+                                 "\" already exists, or this node has no replicated "
+                                 "CRDT to store the definition (needs a cluster / "
+                                 "ReplicationManager)");
+                }
+                return {.message = "CREATE VIRTUAL TABLE"};
+            },
             [&](const DropTableStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
@@ -2100,6 +2187,11 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const InsertStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {
@@ -2167,6 +2259,11 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +
@@ -2198,6 +2295,11 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +
@@ -2220,6 +2322,11 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const TruncateStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {
@@ -2353,6 +2460,17 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     return select_over_rows(s,
                                             cluster_node_rows(*cluster_, node_));
+                }
+                // Virtual table (#809 slice 3): a user-declared read-only table
+                // over a CRDT key-family, referenced by its unqualified global
+                // name (a real table takes precedence). Its durable rows are
+                // projected from the CRDT; WHERE/projection reuse select_over_rows.
+                if (auto vtable = resolve_virtual_table(s.table)) {
+                    if (s.grouped()) {
+                        return error(
+                            "GROUP BY is not supported over virtual tables");
+                    }
+                    return select_over_rows(s, node_.virtual_table_rows(*vtable));
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {
