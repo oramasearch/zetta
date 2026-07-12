@@ -16,3 +16,8 @@ plan.
   one registry of governed, schema-validated tools over the existing engine
   entry points (read parity → action parity → REST/OpenAPI → simulated user
   tests → GUI activity surfacing), embedded in headed + headless nodes.
+- [virtual-tables.md](virtual-tables.md) — **virtual tables over CRDT entities**: a
+  read-only table whose columns span three tiers (durable CRDT / ephemeral-synced /
+  ephemeral-local), composed at query time so fast state (telemetry, `last_seen`)
+  never churns the CRDT. Generalizes the `system.nodes` redesign (one table with
+  fields, not a table per view); distinct from DDF and from a materialized view.
