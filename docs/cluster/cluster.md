@@ -188,6 +188,13 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 - The advertised endpoints are **reachable** addresses, never the bare wildcard —
   a `0.0.0.0` bind advertises (and `peer_command()`/the banner show) the host's
   first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
+- **Dial-out-only nodes advertise NO dialable address; peers must never dial them**
+  ([#803](https://github.com/oramasearch/zetta/issues/803)). A node behind NAT / a private VNet has no
+  routable address — it advertises an empty dialable set (node-id + a dial-out-only marker) and is a pure
+  **initiator**: the one outbound link it opens carries CRDT sync **both directions**. Advertising a
+  private/bound pod IP is actively harmful when two k8s clusters **share a pod CIDR** (both `10.244.0.x`) —
+  a peer dials the colliding address, reaches the WRONG node, and membership undercounts. Reachability is
+  gossiped so every peer makes the same don't-dial decision.
 - `node-id` is a UUIDv4 generated per process.
 - **Direct peers vs full membership.** `system.nodes` lists a node's DIRECT peers + self, so on a
   cross-cluster (spanning) mesh no single node shows all N members (the "5 not 9" surprise) — full

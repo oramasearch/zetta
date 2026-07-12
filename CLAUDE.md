@@ -88,9 +88,16 @@ shape how the engine is used there:
 
 - **One CRDT cluster spans many k8s clusters (and bare hosts).** Nodes are equal peers joined on :7777;
   they are **not** bound to one k8s cluster. Topology in practice: **N k8s clusters → 1 operator each →
-  1 shared Zetta.** Cross-cluster peering needs routable :7777 (same-LAN direct; cross-cloud → a
-  LoadBalancer on 7777 or a mesh). Multi-node currently uses `--cluster-plaintext` on a trusted network
-  until mTLS token-sharing is automated.
+  1 shared Zetta.** Cross-cluster peering needs a routable :7777 for the **wan-accessible** nodes
+  (same-LAN direct; cross-cloud → a **per-node** `LoadBalancer` on 7777 so each advertises its own IP and
+  sync spreads across all their uplinks — aggregate bandwidth); **dial-out-only** nodes (NAT / private
+  pods) advertise no dialable address and only reach outbound. Peer traffic is **always mTLS** — one
+  shared join token per cluster; there is **no plaintext mode** (the `--cluster-plaintext` escape hatch
+  was removed as a security hole, [operator#92](https://github.com/oramasearch/orama-cloud-v1-operator/issues/92)).
+  A dial-out-only node must **never advertise its private pod IP**, and peers must **never dial it** — else,
+  when two clusters share a pod CIDR (e.g. k0s + AKS both `10.244.0.x`), the dial hits the wrong node and
+  undercounts membership ([#803](https://github.com/oramasearch/zetta/issues/803)); it syncs via its one
+  outbound link + the CRDT node-list ([#800](https://github.com/oramasearch/zetta/issues/800)).
 - **Zetta is the operators' datastore.** Each operator provisions its own schema (`orama_control` /
   `orama_data`) over `/v1/sql` and syncs its observed state into it, namespaced by a per-operator id so a
   shared store never collides. See the operator's
