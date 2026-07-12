@@ -334,6 +334,12 @@ issued programmatically via `Node::create_token`.
 
 ## The default-deny gate (`--require-auth` — #745)
 
+> **Direction (One Orama, [#799](https://github.com/oramasearch/zetta/issues/799)):** the platform runs
+> auth **and** inter-node mTLS **always on** — `--require-auth` becomes the default/only mode and the peer
+> `--cluster-plaintext` escape hatch is removed; the unauthenticated-local + legacy `--mcp-token` modes
+> below are transitional. The Orama operator already enforces this (defaults `spec.requireAuth: true`,
+> seeds the admin owner token, and renders **no** `--cluster-plaintext` — orama-cloud-v1-operator#92).
+
 Every control surface — `/mcp`, `/v1/sql`, all `/v1/*` (REST + specs +
 openapi + llms.txt), and the governed serving endpoints — is fronted by **one
 auth gate**: a single middleware at the router seam (`src/core/api/http_server.cpp`,
