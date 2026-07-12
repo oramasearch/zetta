@@ -2,7 +2,8 @@
 
 > **Status: design / proposed — not yet built.** A living spec being grilled into
 > shape (see "Open questions"). When it ships, its durable parts fold into the
-> query + cluster domain docs and this plan is trimmed.
+> query + cluster domain docs and this plan is trimmed. Tracking issue:
+> [#809](https://github.com/oramasearch/zetta/issues/809).
 >
 > **Provenance:** grew out of the `system.nodes` redesign — the reachability-aware
 > dialer ([#803](https://github.com/oramasearch/zetta/issues/803)) surfaced full
