@@ -135,7 +135,6 @@ namespace {
 // aliases (canonical_system_table below, #538) for at least one cycle.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "nodes";
-constexpr std::string_view kClusterNodesTable = "cluster_nodes";
 constexpr std::string_view kDeploymentsTable = "deployments";
 constexpr std::string_view kModelsTable = "models";
 constexpr std::string_view kIndexesTable = "indexes";
@@ -190,10 +189,6 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kCloudStatusTable,
                     "cached results of consent-gated cloud inspects; querying "
                     "never triggers a cloud call"},
-    SystemTableInfo{kClusterNodesTable,
-                    "FULL cluster membership from the replicated node-list — "
-                    "every node incl. those not directly linked to this one, "
-                    "with reachability (needs a cluster)"},
     SystemTableInfo{kCollectiveRoundsTable,
                     "this node's live collective-plane counters (ephemeral, "
                     "not replicated)"},
@@ -224,8 +219,10 @@ constexpr std::array kSystemTableCatalog = {
                     "this node's live host resource utilization, sampled at "
                     "query time"},
     SystemTableInfo{kNodesTable,
-                    "cluster membership + replication status (needs a "
-                    "cluster)"},
+                    "FULL cluster membership (virtual table over the node-list "
+                    "CRDT, #809): every node — incl. those not directly linked — "
+                    "with reachability, node_type, liveness + replication status "
+                    "(needs a cluster)"},
     SystemTableInfo{kPipelineJobsTable,
                     "recorded near-data compute jobs (ephemeral, not "
                     "replicated)"},
@@ -401,48 +398,71 @@ QueryResult error(std::string message) {
 
 // One JSON row per node for the nodes system table. Unknown replication
 // fields (e.g. a peer that hasn't reported yet, or self's sync state) are null.
-std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& cluster) {
-    std::vector<nlohmann::json> rows;
-    for (const zetta::cluster::NodeStatus& node : cluster.nodes()) {
-        const zetta::cluster::NodeReplication& replication = node.replication;
-        nlohmann::json row;
-        row["node_id"] = node.node_id;
-        row["address"] = node.address;
-        row["role"] = to_string(node.role);
-        row["is_self"] = node.is_self;
-        row["connected"] = node.connected;
-        row["entries"] = replication.known ? nlohmann::json(replication.entries)
-                                           : nlohmann::json();
-        row["version"] = replication.known ? nlohmann::json(replication.version)
-                                           : nlohmann::json();
-        row["in_sync"] = (replication.known && !node.is_self)
-                             ? nlohmann::json(replication.in_sync)
-                             : nlohmann::json();
-        row["last_sync_seconds"] =
-            (replication.known && !node.is_self)
-                ? nlohmann::json(replication.seconds_since_sync)
-                : nlohmann::json();
-        rows.push_back(std::move(row));
+// system.nodes (#809) — the unified virtual table over the node-list CRDT. Its rows
+// are the FULL membership (every node:<id> the document knows — converging to all N
+// from any node, not just direct peers), composed at query time from three tiers:
+//   durable (CRDT node:<id>): node_id, address, reachability, node_type
+//   ephemeral-local: is_self, directly_connected, status, last_seen_seconds
+//   ephemeral-synced/local: replication status (self + direct peers, over STATUS
+//     gossip) and liveness from the telemetry plane (cluster-wide, TTL'd).
+// The ephemeral tiers are overlaid here and NEVER written to the CRDT, so a steady
+// cluster produces zero CRDT writes. (The `gone` status + node-list GC is #809
+// slice 2; user-facing CREATE VIRTUAL TABLE is slice 3.)
+std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& cluster,
+                                              const Node& node) {
+    // Direct-peer replication status, keyed by node_id (the live peer table).
+    std::map<std::string, zetta::cluster::NodeReplication> replication_by_id;
+    for (const zetta::cluster::NodeStatus& n : cluster.nodes()) {
+        replication_by_id[n.node_id] = n.replication;
     }
-    return rows;
-}
+    // Live telemetry, cluster-wide + TTL'd — the ephemeral liveness signal
+    // (node_id -> seconds since its last sample).
+    std::map<std::string, double> telemetry_age_by_id;
+    for (const zetta::cluster::NodeTelemetrySample& sample : node.telemetry_snapshot()) {
+        telemetry_age_by_id[sample.node_id] = sample.age_seconds;
+    }
 
-// One JSON row per cluster member from the replicated node-list
-// (system.cluster_nodes, #800): the FULL membership — every node, including those
-// THIS node has no direct link to — with each node's reachability and whether a
-// live link to it is held right now. On a spanning cluster system.nodes shows only
-// a slice; this converges to all N from any node.
-std::vector<nlohmann::json> cluster_nodes_rows(
-    const zetta::cluster::Cluster& cluster) {
     std::vector<nlohmann::json> rows;
     for (const zetta::cluster::ClusterMember& member : cluster.membership()) {
         nlohmann::json row;
+        // --- durable (CRDT node:<id>) ---
         row["node_id"] = member.node_id;
         row["address"] = member.address;
         row["reachability"] =
             member.dial_out_only ? "dial-out-only" : "wan-accessible";
+        row["node_type"] =
+            member.node_type.empty() ? "permanent" : member.node_type;
+        // --- ephemeral-local ---
         row["is_self"] = member.is_self;
         row["directly_connected"] = member.directly_connected;
+        // Liveness: live if we hold a direct link OR fresh telemetry reached us
+        // within the TTL; else a declared member we can't currently see.
+        const auto telemetry = telemetry_age_by_id.find(member.node_id);
+        const bool has_telemetry = telemetry != telemetry_age_by_id.end();
+        const bool live =
+            member.is_self || member.directly_connected || has_telemetry;
+        row["status"] = live ? "live" : "unreachable";
+        if (member.is_self || member.directly_connected) {
+            row["last_seen_seconds"] = 0.0;  // now
+        } else if (has_telemetry) {
+            row["last_seen_seconds"] = telemetry->second;
+        } else {
+            row["last_seen_seconds"] = nlohmann::json();  // never seen here
+        }
+        // --- ephemeral-synced/local: replication status (self + direct peers) ---
+        const auto rep = replication_by_id.find(member.node_id);
+        const bool rep_known = rep != replication_by_id.end() && rep->second.known;
+        row["entries"] =
+            rep_known ? nlohmann::json(rep->second.entries) : nlohmann::json();
+        row["version"] =
+            rep_known ? nlohmann::json(rep->second.version) : nlohmann::json();
+        row["in_sync"] = (rep_known && !member.is_self)
+                             ? nlohmann::json(rep->second.in_sync)
+                             : nlohmann::json();
+        row["last_sync_seconds"] =
+            (rep_known && !member.is_self)
+                ? nlohmann::json(rep->second.seconds_since_sync)
+                : nlohmann::json();
         rows.push_back(std::move(row));
     }
     return rows;
@@ -2314,13 +2334,6 @@ QueryResult Executor::execute(const Statement& stmt,
                     if (sys == kCrashesTable) {
                         return select_over_rows(s, crash_rows(node_));
                     }
-                    if (sys == kClusterNodesTable) {
-                        if (!cluster_) {
-                            return error("system.cluster_nodes is unavailable "
-                                         "here (no cluster)");
-                        }
-                        return select_over_rows(s, cluster_nodes_rows(*cluster_));
-                    }
                     if (sys != kNodesTable) {
                         // Suggest the catalog itself (never drifts, unlike a
                         // hand-kept list — the pre-#684 one already had).
@@ -2338,7 +2351,8 @@ QueryResult Executor::execute(const Statement& stmt,
                         return error("system.nodes is unavailable here "
                                      "(no cluster)");
                     }
-                    return select_over_rows(s, cluster_node_rows(*cluster_));
+                    return select_over_rows(s,
+                                            cluster_node_rows(*cluster_, node_));
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {

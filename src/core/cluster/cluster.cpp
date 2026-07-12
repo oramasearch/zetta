@@ -1401,6 +1401,8 @@ std::vector<std::string> Cluster::advertised_endpoints() const {
 
 bool Cluster::dial_out_only() const { return config_.dial_out_only; }
 
+std::string Cluster::node_type() const { return config_.node_type; }
+
 std::string Cluster::primary_advertised_address() const {
     // The single most-dialable address recorded in the replicated node-list for
     // transitive learners (#803/#800): empty for a dial-out-only node; else the
@@ -1454,6 +1456,10 @@ std::vector<ClusterMember> Cluster::membership() const {
         if (const auto reach = value.find("reachability");
             reach != value.end() && reach->is_string()) {
             member.dial_out_only = reach->get<std::string>() == "dial-out-only";
+        }
+        if (const auto type = value.find("node_type");
+            type != value.end() && type->is_string()) {
+            member.node_type = type->get<std::string>();
         }
         member.is_self = member.node_id == node_id_;
         member.directly_connected =

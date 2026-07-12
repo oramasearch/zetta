@@ -67,8 +67,8 @@ owner of a source is gone the step degrades to its no-locality default.
 `App::build_graph_plan` (`src/gui/app_graph_workspace.cpp`) resolves the inputs from the
 live node each frame:
 
-- **members** — `Cluster::nodes()` (the same source as `system.nodes` and the
-  Cluster view).
+- **members** — `Cluster::nodes()` (the direct-peer view the Cluster view renders; it
+  also feeds the ephemeral replication-status tier of `system.nodes`).
 - **owners** — `Node::dataset_partitions()` (the source of
   `system.dataset_partitions`), grouped by table id into the per-table owner-node
   union.

@@ -204,13 +204,17 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   and membership undercounts (the "7 not 9" flap). Reachability is gossiped on the node-list, so every peer
   makes the same don't-dial decision.
 - `node-id` is a UUIDv4 generated per process.
-- **Direct peers vs full membership.** `system.nodes` lists a node's DIRECT peers + self, so on a
-  cross-cluster (spanning) mesh no single node shows all N members (the "5 not 9" surprise) — full
-  gossiped membership rides the CRDT node-list and is surfaced as the read-only **`system.cluster_nodes`**
-  table ([#800](https://github.com/oramasearch/zetta/issues/800); see [../data/query.md](../data/query.md)).
-  For aggregate cross-cluster bandwidth, each
-  PERMANENT wan-accessible node should advertise its OWN address (per-node LB, orama-cloud-v1-operator#104)
-  so sync spreads across every node's uplink instead of funnelling through one shared rendezvous.
+- **Full membership vs direct peers.** The read-only **`system.nodes`** table is the FULL gossiped
+  membership — every node the CRDT node-list knows, **including ones this node holds no direct link
+  to** — because the node-list converges on all N members from any node, so no single node undercounts
+  on a cross-cluster (spanning) mesh (the "5 not 9" surprise is gone). It is a **virtual table over the
+  node-list CRDT** (#809, folding in the full-membership view first added in #800; see
+  [../data/query.md](../data/query.md)): the durable `node:<id>` entry (`address`, `reachability`,
+  `node_type`) overlaid at query time with ephemeral per-node liveness + replication status
+  (`directly_connected`, `status`, sync state) that is never written back to the CRDT. For aggregate
+  cross-cluster bandwidth, each PERMANENT wan-accessible node should advertise its OWN address (per-node
+  LB, orama-cloud-v1-operator#104) so sync spreads across every node's uplink instead of funnelling
+  through one shared rendezvous.
 - **Self-healing links.** Each peer sends traffic every ~0.5s — replication
   gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`
   keepalive — so silence means the link
@@ -237,7 +241,7 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   no stuck `syncing`/`no status` ghost.
 - **Membership hysteresis (#739).** When a peer's live link drops, the live views
   (`peers()`/`peer_count()` and the signal plane) reflect it at once, but the
-  **membership** view (`nodes()` / `system.nodes` / the UI) keeps the node for
+  **membership** view (`nodes()` and the UI) keeps the node for
   `membership_grace_seconds` (default 10) before dropping it, so a brief blip or a
   reconnect doesn't flap it out — it ages out only after a sustained absence. This
   debounces the down edge; the up edge is immediate (a node appears the moment a
@@ -260,20 +264,30 @@ Not every node can accept inbound connections, so the mesh forms by having the
 unreachable nodes dial **outbound** to the reachable ones. Nodes are classified by
 reachability — a property of the node carried on both its HELLO (the `wan`/`dial-out`
 token) and its replicated `node:<id>` entry (`reachability`), and surfaced in
-`system.cluster_nodes`:
+`system.nodes`:
 
 - **wan-accessible** — the node has a routable address (a public/WAN IP, or a LAN IP
   its peers can reach). It's advertised in the nodes table at that address and is a
   **rendezvous**: other nodes dial **outbound** to it. It accepts inbound because it
   genuinely can.
-- **ephemeral** — a transient node (burst / autoscaled capacity). It's expected to come
-  and go; its departure is normal, not a fault, so membership shouldn't flap it out on a
-  brief absence (hysteresis — #739).
 - otherwise **dial-out-only** — behind NAT or private cloud networking (a home node; a
   cloud pod with only a private VNet IP), set with **`--dial-out-only`**. It opens
   **outbound** connections to wan-accessible nodes and accepts **no inbound** — no load
   balancer, no exposed port — and advertises no dialable address, so peers never dial it
   ([#803](https://github.com/oramasearch/zetta/issues/803)).
+
+**Node type is a separate, orthogonal axis.** Independent of reachability, each node
+declares a **durability class** with **`--node-type permanent|ephemeral`** (default
+`permanent`, self-declared into its `node:<id>` entry exactly like `--dial-out-only`):
+
+- **permanent** — stable capacity the cluster maintains its replication factor over.
+- **ephemeral** — transient capacity (burst / autoscaled), expected to come and go; its
+  departure is normal, not a fault, so membership shouldn't flap it out on a brief absence
+  (hysteresis — #739).
+
+`node_type` rides the durable `node:<id>` entry alongside `reachability` and is surfaced
+in `system.nodes`. (The RF/placement engine that actually maintains replicas over the
+permanent set is a **separate** concern, not part of this classification — #809.)
 
 **The route table self-forms.** Add a wan-accessible node's address to the nodes table (a
 `--peer` / seed) and existing nodes reach out to it; gossip then relays transitively so
@@ -300,8 +314,10 @@ one endpoint **we reached it on** (per-observer). The pieces in place:
 - **Prefer the established connection** — the per-node-id link registry (#741) keeps a
   single bidirectional session and never re-dials a candidate a live link already
   covers (reconnect deduped by node id).
-- **Membership hysteresis** — a node stays in `system.nodes` through the grace window
-  after its link drops, so a blip on one endpoint doesn't flap it out.
+- **Membership hysteresis** — a node stays in the direct-peer membership (`nodes()`) through
+  the grace window after its link drops, so a blip on one endpoint doesn't flap it out (its
+  `node:<id>` entry persists in `system.nodes` regardless; the `directly_connected` / `status`
+  columns reflect the drop).
 - **Dial learned members ([#789](https://github.com/oramasearch/zetta/issues/789))** —
   the reconnect loop dials not just configured seeds but every member it has learned:
   a direct peer whose link dropped, plus a node known only **transitively** from the
@@ -317,9 +333,10 @@ one endpoint **we reached it on** (per-observer). The pieces in place:
   dial-out, and any replicated `node:<id>` entry whose `reachability` is `dial-out-only`. This closes
   the cross-cluster "7 not 9" undercount — two k8s clusters sharing a pod CIDR (`10.244.0.x`) no longer
   have wan peers dial a dial-out node's colliding private IP and reach the wrong node. The node-list
-  entry now carries reachability: `node:<id>` is `{ address, reachability }`, where `address` is the
-  node's dialable address (the `--advertise` front for a wan node behind an LB, else its bound address)
-  and **empty** for a dial-out-only node, and `reachability` is `"wan-accessible"` or `"dial-out-only"`
+  entry now carries reachability **and node type**: `node:<id>` is `{ address, reachability, node_type }`,
+  where `address` is the node's dialable address (the `--advertise` front for a wan node behind an LB,
+  else its bound address) and **empty** for a dial-out-only node, `reachability` is `"wan-accessible"` or
+  `"dial-out-only"`, and `node_type` is `"permanent"` or `"ephemeral"` (self-declared via `--node-type`)
   (`Cluster::primary_advertised_address()` computes the address; `ClusterPeer` and the internal peer
   record carry a `dial_out_only` bool).
 

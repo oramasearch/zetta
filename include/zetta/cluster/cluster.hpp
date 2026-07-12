@@ -79,6 +79,7 @@ struct ClusterMember {
     std::string node_id;
     std::string address;         // its dialable address; empty for dial-out-only
     bool dial_out_only = false;  // reachability recorded in the node-list entry
+    std::string node_type;       // "permanent" | "ephemeral" (from the node-list entry)
     bool is_self = false;
     bool directly_connected = false;  // a live link is held to it right now
 };
@@ -122,6 +123,14 @@ struct ClusterConfig {
     // it for any slice whose reachability isn't wan-accessible. Default false =
     // wan-accessible (advertise a routable address others dial out to).
     bool dial_out_only = false;
+    // Node type (#809): "permanent" (default — reliable uptime, durability-bearing:
+    // counts toward the replication factor) or "ephemeral" (burst / autoscaled
+    // capacity that may vanish at any moment; holds only uncounted *locality*
+    // replicas and never moves the replication factor). Self-declared via
+    // `--node-type`, written into this node's `node:<id>` entry, surfaced on
+    // system.nodes. Orthogonal to reachability. Any string is stored; the engine
+    // treats anything other than "ephemeral" as permanent.
+    std::string node_type = "permanent";
     // Drop a peer that has sent nothing for this long (gossip flows every ~0.5s,
     // so silence means the link died — clears it so a fresh one can replace it).
     unsigned peer_idle_timeout_seconds = 6;
@@ -220,6 +229,10 @@ public:
     // Reachability of THIS node (#803): true when it is dial-out-only (advertises
     // no dialable address; a pure initiator). Mirrors ClusterConfig::dial_out_only.
     bool dial_out_only() const;
+
+    // This node's type (#809): "permanent" (default) or "ephemeral". Mirrors
+    // ClusterConfig::node_type; written into this node's node:<id> entry.
+    std::string node_type() const;
 
     // The single most-dialable address to record in the replicated node-list
     // (`node:<id>`) for transitive learners (#803/#800): empty when dial-out-only;

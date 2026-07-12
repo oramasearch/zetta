@@ -115,13 +115,20 @@ serves: the headed explorer's `system` table list, the unknown-system-table
 error's suggestions, and this view all render from the one array. A test
 asserts every cataloged name dispatches.
 
-Its first table is **`nodes`** — cluster membership + [replication](../cluster/replication.md)
-status — available whenever the `QueryService` was given a `Cluster` (the headed
-UI wires this; without a cluster, selecting it returns a clear error):
+Its first table is **`nodes`** — the cluster's **FULL membership** as a **virtual
+table over the replicated node-list CRDT** (#809): one row per `node:<id>` the
+document knows, **including nodes this node holds no direct link to**, because the
+node-list CRDT converges on all N members from any node (the whole cluster, not
+just direct peers — no "5 not 9" undercount on a spanning mesh of many k8s
+clusters + hosts). Its rows carry the durable node-list entry overlaid with this
+node's live [replication](../cluster/replication.md) status, and it is available
+whenever the `QueryService` was given a `Cluster` (the headed UI wires this;
+without a cluster, selecting it returns a clear error):
 
 ```sql
 SELECT * FROM system.nodes;
 SELECT node_id, address, in_sync FROM system.nodes WHERE is_self = false;
+SELECT node_id, reachability FROM system.nodes WHERE directly_connected = false;
 SELECT * FROM zetta_nodes;   -- the historical bare spelling still resolves
 ```
 
@@ -133,32 +140,29 @@ legacy `system.zetta_<table>` name resolves to its plain `system.<table>`:
 SELECT * FROM system.zetta_nodes;   -- back-compat alias for system.nodes
 ```
 
-Columns: `node_id`, `address`, `role`, `is_self`, `connected`, `entries`,
-`version`, `in_sync`, `last_sync_seconds`. `SELECT *`, projection, and a single
-`WHERE` equality all work, exactly as for a regular table — the executor just
-sources the rows from `Cluster::nodes()` instead of a storage engine. The headed
-explorer also lists `system` (marked *virtual*) with every table from
-`system_table_names()`, so all of them are browsable, not just queryable
+The rows are **composed at query time from tiers** — the durable node-list entry
+overlaid with ephemeral, observed state that is **never written back to the CRDT**:
+
+- **durable** (from the replicated `node:<id>` entry): `node_id`, `address` (its
+  dialable address; **empty** for a dial-out-only node), `reachability`
+  (`wan-accessible` | `dial-out-only`), and `node_type` (`permanent` | `ephemeral`
+  — the node's self-declared durability class, set with `--node-type`; see
+  [../cluster/cluster.md](../cluster/cluster.md)).
+- **ephemeral, local to this node**: `is_self`, `directly_connected` (whether a
+  live link to it is held right now), `status` (`live` | `unreachable` — a `gone`
+  state + GC of departed node-list entries is a later slice), and `last_seen_seconds`
+  (`null` when this node has never seen that member).
+- **ephemeral, synced/observed**: replication status — `entries`, `version`,
+  `in_sync` (its version equals ours), `last_sync_seconds` — known for **self +
+  direct peers**, plus liveness overlaid from the TTL'd telemetry plane.
+
+`SELECT *`, projection, and a single `WHERE` equality all work, exactly as for a
+regular table — the executor composes the rows from the node-list CRDT (the durable
+tier) plus the live `Cluster` (the ephemeral tiers) instead of a storage engine, and
+the ephemeral overlays are recomputed per query, never captured back into the
+document. The headed explorer also lists `system` (marked *virtual*) with every
+table from `system_table_names()`, so all of them are browsable, not just queryable
 ([gui/explorer-system-tables.md](../gui/explorer-system-tables.md), #684).
-
-Beside it is **`cluster_nodes`** — the FULL cluster membership from the
-replicated node-list CRDT ([#800](https://github.com/oramasearch/zetta/issues/800)).
-Where `system.nodes` shows this node's DIRECT peers + self (on a spanning cluster
-of many k8s clusters + hosts, only a slice — the "5 not 9" surprise),
-`system.cluster_nodes` lists EVERY node the document knows, **including ones this
-node holds no direct link to**, because the node-list CRDT converges on every
-member (see [../cluster/cluster.md](../cluster/cluster.md)):
-
-```sql
-SELECT * FROM system.cluster_nodes;
-SELECT node_id, reachability FROM system.cluster_nodes WHERE directly_connected = false;
-```
-
-Columns: `node_id`, `address` (its dialable address; **empty** for a
-dial-out-only node), `reachability` (`wan-accessible` | `dial-out-only`),
-`is_self`, and `directly_connected` (whether a live link to it is held right
-now). Sourced from `Cluster::membership()`; like `system.nodes` it needs a wired
-`Cluster` (without one, selecting it returns a clear error).
 
 A second table is **`deployments`** — the recorded graph→target
 [placements](../pipeline/deployments.md) (no cluster needed; it is sourced from

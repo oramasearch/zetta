@@ -100,6 +100,9 @@ void print_usage(const char* argv0) {
         "  --dial-out-only     This node has no routable address (behind NAT / a\n"
         "                      private VNet): advertise nothing dialable and only\n"
         "                      reach peers outbound; peers never dial it (#803)\n"
+        "  --node-type T       permanent (default — durability-bearing, counts\n"
+        "                      toward the replication factor) or ephemeral (burst\n"
+        "                      capacity; locality replicas only, uncounted) (#809)\n"
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
         "                      persisted in data-dir on first use\n"
         "  --cluster-plaintext Disable inter-node mTLS (debugging only —\n"
@@ -198,6 +201,10 @@ Options parse_args(int argc, char** argv) {
             }
         } else if (arg == "--dial-out-only") {
             o.cluster.dial_out_only = true;
+        } else if (arg == "--node-type") {
+            const char* v = take_value(argc, argv, i, o, "--node-type");
+            if (!v) break;
+            o.cluster.node_type = v;
         } else if (arg == "--join-token") {
             const char* v = take_value(argc, argv, i, o, "--join-token");
             if (!v) break;
@@ -433,17 +440,20 @@ int main(int argc, char** argv) {
     }
 
     // Seed this node's membership entry now that its reachable address is known;
-    // peers merge it so every node's document lists all nodes. The address is the
-    // node's DIALABLE address (the --advertise front for a wan node behind an LB,
-    // else its bound address) and empty for a dial-out-only node; `reachability`
-    // tells transitive learners whether they may dial it (#803) and feeds the
-    // system.cluster_nodes membership view (#800).
+    // peers merge it so every node's document lists all nodes. The durable tier of
+    // system.nodes (#809): `address` is the node's DIALABLE address (the --advertise
+    // front for a wan node behind an LB, else its bound address) and empty for a
+    // dial-out-only node; `reachability` tells transitive learners whether they may
+    // dial it (#803); `node_type` (permanent|ephemeral) is the durability class (RF
+    // is maintained over permanent nodes). Ephemeral / liveness / telemetry columns
+    // are overlaid at query time and never written here.
     replication.set(
         "node:" + node_id,
         nlohmann::json{{"address", cluster.primary_advertised_address()},
                        {"reachability", cluster.dial_out_only()
                                             ? "dial-out-only"
-                                            : "wan-accessible"}});
+                                            : "wan-accessible"},
+                       {"node_type", cluster.node_type()}});
 
     // Give the running node its long-lived compute plane: a JobCoordinator over
     // the real cluster's signal plane (#579), so distributed jobs submitted
