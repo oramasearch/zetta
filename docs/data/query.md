@@ -141,6 +141,25 @@ explorer also lists `system` (marked *virtual*) with every table from
 `system_table_names()`, so all of them are browsable, not just queryable
 ([gui/explorer-system-tables.md](../gui/explorer-system-tables.md), #684).
 
+Beside it is **`cluster_nodes`** — the FULL cluster membership from the
+replicated node-list CRDT ([#800](https://github.com/oramasearch/zetta/issues/800)).
+Where `system.nodes` shows this node's DIRECT peers + self (on a spanning cluster
+of many k8s clusters + hosts, only a slice — the "5 not 9" surprise),
+`system.cluster_nodes` lists EVERY node the document knows, **including ones this
+node holds no direct link to**, because the node-list CRDT converges on every
+member (see [../cluster/cluster.md](../cluster/cluster.md)):
+
+```sql
+SELECT * FROM system.cluster_nodes;
+SELECT node_id, reachability FROM system.cluster_nodes WHERE directly_connected = false;
+```
+
+Columns: `node_id`, `address` (its dialable address; **empty** for a
+dial-out-only node), `reachability` (`wan-accessible` | `dial-out-only`),
+`is_self`, and `directly_connected` (whether a live link to it is held right
+now). Sourced from `Cluster::membership()`; like `system.nodes` it needs a wired
+`Cluster` (without one, selecting it returns a clear error).
+
 A second table is **`deployments`** — the recorded graph→target
 [placements](../pipeline/deployments.md) (no cluster needed; it is sourced from
 `Node::deployments()`):

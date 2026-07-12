@@ -63,6 +63,23 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Shipped (this branch) — reachability-aware dialer + full membership view**:
+  [#803](https://github.com/oramasearch/zetta/issues/803) makes dial-out-only nodes
+  first-class — a node with no routable address (behind NAT / a private VNet: a home
+  node, an AKS pod on a private IP) starts with **`--dial-out-only`**, advertises an
+  empty dialable set (`advertised_endpoints()` → `{}`; HELLO endpoints `-` + a
+  `dial-out` reachability token), and is a pure initiator whose one outbound link
+  carries CRDT sync both ways; the dialer **never** dials it (skipping both HELLO-marked
+  peers and replicated `node:<id>` entries whose `reachability` is `dial-out-only`),
+  fixing the cross-cluster "7 not 9" undercount when two k8s clusters share a pod CIDR
+  (`10.244.0.x`). The node-list entry is now `node:<id> → { address, reachability }`
+  (`Cluster::primary_advertised_address()` computes the dialable address, empty when
+  dial-out-only). [#800](https://github.com/oramasearch/zetta/issues/800) adds the
+  read-only **`system.cluster_nodes`** table — the FULL membership from the node-list
+  CRDT (every node, including ones this node has no direct link to; columns `node_id`,
+  `address`, `reachability`, `is_self`, `directly_connected`), via
+  `Cluster::membership()`, distinct from `system.nodes` (direct peers + self). See
+  [cluster/cluster.md](cluster/cluster.md) and [data/query.md](data/query.md).
 - **In flight 2026-07-03 (governed serving)**: [#648](https://github.com/oramasearch/zetta/issues/648)
   — models and indexes exposed as governed HTTP endpoints: `expose_model` /
   `expose_index` flip a replicated `exposed` flag on the entity value, the

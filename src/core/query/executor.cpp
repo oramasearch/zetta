@@ -135,6 +135,7 @@ namespace {
 // aliases (canonical_system_table below, #538) for at least one cycle.
 constexpr std::string_view kSystemDatabase = "system";
 constexpr std::string_view kNodesTable = "nodes";
+constexpr std::string_view kClusterNodesTable = "cluster_nodes";
 constexpr std::string_view kDeploymentsTable = "deployments";
 constexpr std::string_view kModelsTable = "models";
 constexpr std::string_view kIndexesTable = "indexes";
@@ -189,6 +190,10 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kCloudStatusTable,
                     "cached results of consent-gated cloud inspects; querying "
                     "never triggers a cloud call"},
+    SystemTableInfo{kClusterNodesTable,
+                    "FULL cluster membership from the replicated node-list — "
+                    "every node incl. those not directly linked to this one, "
+                    "with reachability (needs a cluster)"},
     SystemTableInfo{kCollectiveRoundsTable,
                     "this node's live collective-plane counters (ephemeral, "
                     "not replicated)"},
@@ -417,6 +422,27 @@ std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& clu
             (replication.known && !node.is_self)
                 ? nlohmann::json(replication.seconds_since_sync)
                 : nlohmann::json();
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
+// One JSON row per cluster member from the replicated node-list
+// (system.cluster_nodes, #800): the FULL membership — every node, including those
+// THIS node has no direct link to — with each node's reachability and whether a
+// live link to it is held right now. On a spanning cluster system.nodes shows only
+// a slice; this converges to all N from any node.
+std::vector<nlohmann::json> cluster_nodes_rows(
+    const zetta::cluster::Cluster& cluster) {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::cluster::ClusterMember& member : cluster.membership()) {
+        nlohmann::json row;
+        row["node_id"] = member.node_id;
+        row["address"] = member.address;
+        row["reachability"] =
+            member.dial_out_only ? "dial-out-only" : "wan-accessible";
+        row["is_self"] = member.is_self;
+        row["directly_connected"] = member.directly_connected;
         rows.push_back(std::move(row));
     }
     return rows;
@@ -2287,6 +2313,13 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kCrashesTable) {
                         return select_over_rows(s, crash_rows(node_));
+                    }
+                    if (sys == kClusterNodesTable) {
+                        if (!cluster_) {
+                            return error("system.cluster_nodes is unavailable "
+                                         "here (no cluster)");
+                        }
+                        return select_over_rows(s, cluster_nodes_rows(*cluster_));
                     }
                     if (sys != kNodesTable) {
                         // Suggest the catalog itself (never drifts, unlike a

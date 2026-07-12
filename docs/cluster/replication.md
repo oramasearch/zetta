@@ -138,6 +138,12 @@ replication status. It surfaces three ways:
 - **Headless** — the heartbeat logs a per-node table whenever it changes.
 - **SQL** — `SELECT * FROM system.nodes;` (see [query.md](../data/query.md)).
 
+`Cluster::nodes()` is the DIRECT-peer view (this node + its live links). The FULL
+membership — every node the replicated node-list knows, including ones this node has
+no direct link to — comes from `Cluster::membership()` and surfaces as
+`system.cluster_nodes` ([#800](https://github.com/oramasearch/zetta/issues/800); on a
+spanning cluster `system.nodes` shows only a slice — the "5 not 9" surprise).
+
 ## Data replication: CRDT is the source of truth, disk follows
 
 Real database data (DDL **and** rows) replicates: every node converges on the
