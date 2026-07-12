@@ -189,6 +189,12 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   a `0.0.0.0` bind advertises (and `peer_command()`/the banner show) the host's
   first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
 - `node-id` is a UUIDv4 generated per process.
+- **Direct peers vs full membership.** `system.nodes` lists a node's DIRECT peers + self, so on a
+  cross-cluster (spanning) mesh no single node shows all N members (the "5 not 9" surprise) — full
+  gossiped membership rides the CRDT node-list and is surfaced separately
+  ([#800](https://github.com/oramasearch/zetta/issues/800)). For aggregate cross-cluster bandwidth, each
+  PERMANENT wan-accessible node should advertise its OWN address (per-node LB, orama-cloud-v1-operator#104)
+  so sync spreads across every node's uplink instead of funnelling through one shared rendezvous.
 - **Self-healing links.** Each peer sends traffic every ~0.5s — replication
   gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`
   keepalive — so silence means the link
