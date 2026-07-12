@@ -39,6 +39,7 @@
 #include "zetta/util/uuid.hpp"
 
 #include "../base64.hpp"
+#include "../catalog.hpp"
 
 // src/core/cluster.cpp is the networking adapter: the one .cpp allowed to use
 // the Corosio backend (via zetta::runtime::net). Cluster's public header
@@ -345,6 +346,55 @@ struct Cluster::State {
             return;
         }
     }
+
+    // Every OTHER node we know about, keyed by node id, mapped to the endpoint(s)
+    // we might dial it on (self excluded). Two sources (#789):
+    //   - a DIRECT peer's advertised HELLO candidate set (plus the path we reached
+    //     it on) — including a peer held only by membership hysteresis, so a dropped
+    //     link is redialed;
+    //   - a node known only TRANSITIVELY from the replicated membership document
+    //     (`node:<id>` -> {address}, gossiped to us through a common peer).
+    // The reconnect loop dials these so a hub-seeded STAR (every node --peer'd at one
+    // seed, as k8s does) fills into a full equal-peer mesh — learned members were
+    // recorded but never dialed before. Called on the network thread; locks `mutex`
+    // for the peer table and reads the mutex-guarded ReplicationManager separately.
+    std::map<std::string, std::vector<std::string>> known_member_endpoints(
+        const std::string& my_node_id) const {
+        std::map<std::string, std::vector<std::string>> members;
+        const auto add_endpoint = [&](const std::string& node_id,
+                                      const std::string& endpoint) {
+            if (node_id.empty() || node_id == my_node_id || endpoint.empty()) {
+                return;
+            }
+            std::vector<std::string>& list = members[node_id];
+            if (std::find(list.begin(), list.end(), endpoint) == list.end()) {
+                list.push_back(endpoint);
+            }
+        };
+        {
+            const std::lock_guard<std::mutex> lock(mutex);
+            for (const PeerRecord& peer : peers) {
+                for (const std::string& endpoint : peer.endpoints) {
+                    add_endpoint(peer.node_id, endpoint);
+                }
+                add_endpoint(peer.node_id, peer.address);
+            }
+        }
+        if (replication) {
+            const nlohmann::json document = replication->snapshot();
+            if (document.is_object()) {
+                for (const auto& [key, value] : document.items()) {
+                    if (!key.starts_with(zetta::catalog::kNodePrefix)) continue;
+                    if (!value.is_object()) continue;
+                    const auto address = value.find("address");
+                    if (address == value.end() || !address->is_string()) continue;
+                    add_endpoint(key.substr(zetta::catalog::kNodePrefix.size()),
+                                 address->get<std::string>());
+                }
+            }
+        }
+        return members;
+    }
 };
 
 namespace {
@@ -361,17 +411,35 @@ void log_event(const Cluster::State* self, const std::string& message) {
 // First UUID segment, for compact logs.
 std::string short_id(const std::string& id) { return id.substr(0, 8); }
 
-bool parse_host_port(const std::string& text, net::ipv4_address& address,
+// Split "host:port" into its host token and validated port. The host may be a
+// numeric IPv4 OR a DNS name (validated only for non-emptiness here); the port
+// must be 1..65535. Returns false on a missing/out-of-range port or empty host.
+// This is the general split; parse_host_port stays the numeric-IPv4 fast path.
+bool split_host_port(const std::string& text, std::string& host,
                      std::uint16_t& port) {
     const auto colon = text.rfind(':');
     if (colon == std::string::npos) return false;
-    if (net::parse_ipv4_address(text.substr(0, colon), address)) return false;
+    host = text.substr(0, colon);
+    if (host.empty()) return false;
     const std::string port_text = text.substr(colon + 1);
     unsigned value = 0;
     const auto [ptr, ec] = std::from_chars(
         port_text.data(), port_text.data() + port_text.size(), value);
-    if (ec != std::errc{} || value == 0 || value > 65535) return false;
+    if (ec != std::errc{} || ptr != port_text.data() + port_text.size() ||
+        value == 0 || value > 65535) {
+        return false;
+    }
     port = static_cast<std::uint16_t>(value);
+    return true;
+}
+
+bool parse_host_port(const std::string& text, net::ipv4_address& address,
+                     std::uint16_t& port) {
+    std::string host;
+    if (!split_host_port(text, host, port)) return false;
+    // Numeric IPv4 only: parse_ipv4_address returns a truthy error on a
+    // non-numeric host (a DNS name), which this fast path rejects.
+    if (net::parse_ipv4_address(host, address)) return false;
     return true;
 }
 
@@ -829,12 +897,37 @@ capy::task<> accept_loop(Cluster::State* self, std::string my_node_id,
     }
 }
 
+// Connect to one already-resolved endpoint and, on success, run the handshake and
+// hold the link until it drops. `dialed_label` is the candidate string recorded as
+// the endpoint we reached the peer on — the STABLE seed/DNS name, not an ephemeral
+// resolved IP, so the per-observer path survives a pod IP change. Returns true if
+// the connect succeeded (the link was held and has since dropped); false if this
+// endpoint wasn't reachable from here (the caller tries the next candidate).
+capy::task<bool> connect_and_hold(Cluster::State* self, net::endpoint endpoint,
+                                  std::string dialed_label,
+                                  std::string my_node_id,
+                                  std::vector<std::string> my_endpoints,
+                                  std::string seed_key) {
+    net::tcp_socket socket(self->io_context);
+    socket.open();
+    if (auto [ec] = co_await socket.connect(endpoint); ec) co_return false;
+    co_await handshake_and_hold(self, std::move(socket), std::move(my_node_id),
+                                std::move(my_endpoints), /*initiate=*/true,
+                                std::move(dialed_label), std::move(seed_key));
+    co_return true;
+}
+
 // Dial one seed, trying its candidate endpoints in order until one connects — the
 // reachable path from THIS vantage point (a peer behind NAT/LB advertises several
-// candidates; only some are reachable here). `seed_key` is the original seed string,
-// used to dedup redials by the node id it resolves to. Holds the connection until it
-// drops. The dial-in-flight claim is released on every exit path (RAII) so a later
-// reconnect can redial once the link is truly gone.
+// candidates; only some are reachable here). A candidate whose host is a numeric
+// IPv4 connects directly; a candidate whose host is a DNS name (e.g. a k8s
+// StatefulSet per-pod address `foo-0.foo-headless.ns.svc.cluster.local:7777`) is
+// RESOLVED at dial time and its resolved address(es) tried in order (#785).
+// Resolution is never cached — a pod restart gets a fresh IP, so we re-resolve on
+// every dial. `seed_key` is the original seed string, used to dedup redials by the
+// node id it resolves to. Holds the connection until it drops. The dial-in-flight
+// claim is released on every exit path (RAII) so a later reconnect can redial once
+// the link is truly gone.
 capy::task<> dial_seed(Cluster::State* self, std::vector<std::string> candidates,
                        std::string my_node_id,
                        std::vector<std::string> my_endpoints,
@@ -846,18 +939,35 @@ capy::task<> dial_seed(Cluster::State* self, std::vector<std::string> candidates
     } guard{self, seed_key};
 
     for (const std::string& candidate : candidates) {
-        net::ipv4_address address;
+        std::string host;
         std::uint16_t port = 0;
-        if (!parse_host_port(candidate, address, port)) continue;
-        net::tcp_socket socket(self->io_context);
-        socket.open();
-        if (auto [ec] = co_await socket.connect(net::endpoint(address, port)); ec) {
-            continue;  // this candidate isn't reachable from here — try the next
+        if (!split_host_port(candidate, host, port)) continue;  // malformed
+        net::ipv4_address numeric;
+        if (!net::parse_ipv4_address(host, numeric)) {
+            // A numeric IPv4 host — connect directly (the unchanged fast path).
+            if (co_await connect_and_hold(self, net::endpoint(numeric, port),
+                                          candidate, my_node_id, my_endpoints,
+                                          seed_key)) {
+                co_return;  // connected (and since dropped); reconnect retries
+            }
+            continue;  // not reachable from here — try the next candidate
         }
-        co_await handshake_and_hold(self, std::move(socket), my_node_id,
-                                    my_endpoints, /*initiate=*/true,
-                                    /*dialed_endpoint=*/candidate, seed_key);
-        co_return;  // connected (and since dropped); reconnect_loop will retry
+        // A DNS hostname: resolve it at dial time (never cached — pod IPs are
+        // ephemeral) and try each resolved address in order (#785).
+        net::resolver resolver(self->io_context);
+        auto [resolve_error, results] =
+            co_await resolver.resolve(host, std::to_string(port));
+        if (resolve_error) {
+            log_event(self, "resolve " + host + " failed: " +
+                                resolve_error.message());
+            continue;  // unresolvable from here — try the next candidate
+        }
+        for (const auto& entry : results) {
+            if (co_await connect_and_hold(self, entry.get_endpoint(), candidate,
+                                          my_node_id, my_endpoints, seed_key)) {
+                co_return;  // connected on a resolved address; path stays the name
+            }
+        }
     }
 }
 
@@ -878,12 +988,31 @@ void spawn_dial(Cluster::State* self, const std::string& seed,
         dial_seed(self, std::move(candidates), my_node_id, my_endpoints, seed));
 }
 
+// Dial a learned member (a peer we're not linked to, or a node known only
+// transitively via gossip), unless a dial for it is already in flight. Deduped by
+// the member's NODE ID (not a seed string): begin_dial claims the id, dial_seed's
+// guard releases it on exit. register_link still reaps any duplicate that races a
+// concurrent dial reaching the same node via another path (a config seed / a mutual
+// dial), so links never leak (#789 stacks on the #741 registry). Network thread.
+void spawn_member_dial(Cluster::State* self, const std::string& member_id,
+                       const std::vector<std::string>& endpoints,
+                       const std::string& my_node_id,
+                       const std::vector<std::string>& my_endpoints) {
+    if (endpoints.empty()) return;
+    if (!self->begin_dial(member_id)) return;  // a dial for this member is in flight
+    log_event(self, "dial member " + short_id(member_id));
+    capy::run_async(self->io_context.get_executor())(
+        dial_seed(self, endpoints, my_node_id, my_endpoints, member_id));
+}
+
 // Periodically re-dial any seed whose node we don't currently hold a live link to,
-// so a dropped link re-establishes itself. Dedups by NODE ID, not by matching the
-// seed string against advertised addresses: a seed that never matches (a 127.0.0.1
-// loopback or a load-balancer VIP vs. the peer's advertised address) used to redial
-// every interval; now, once the seed has resolved to a node that's linked, it's
-// skipped — ending the connect+handshake churn (#739). Runs for the cluster's life.
+// AND maintain a link to every LEARNED member (not just config seeds), so a dropped
+// link re-establishes itself and a hub-seeded star fills into a full mesh (#789).
+// Both dedup by NODE ID, not by matching a seed string against advertised addresses:
+// a seed that never matches (a 127.0.0.1 loopback or a load-balancer VIP vs. the
+// peer's advertised address) used to redial every interval; now, once it has
+// resolved to a node that's linked, it's skipped — ending the connect+handshake
+// churn (#739). Runs for the cluster's life.
 capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds,
                             std::string my_node_id,
                             std::vector<std::string> my_endpoints) {
@@ -891,12 +1020,22 @@ capy::task<> reconnect_loop(Cluster::State* self, std::vector<std::string> seeds
     for (;;) {
         timer.expires_after(self->reconnect_interval);
         [[maybe_unused]] const auto wait_result = co_await timer.wait();
+        // Redial configured seeds we've lost (deduped by the node id each resolved
+        // to, #739).
         for (const std::string& seed : seeds) {
             const std::string resolved = self->seed_resolved_node(seed);
             if (!resolved.empty() && self->has_live_link(resolved)) {
                 continue;  // this seed's node already holds a live link — no redial
             }
             spawn_dial(self, seed, my_node_id, my_endpoints);
+        }
+        // Dial every learned member we don't already hold a live link to — a direct
+        // peer whose link dropped, or a node we know only transitively via gossip.
+        // This is what turns a star into an equal-peer mesh (#789).
+        for (const auto& [member_id, endpoints] :
+             self->known_member_endpoints(my_node_id)) {
+            if (self->has_live_link(member_id)) continue;  // already linked — skip
+            spawn_member_dial(self, member_id, endpoints, my_node_id, my_endpoints);
         }
     }
 }
@@ -1058,11 +1197,12 @@ void Cluster::start() {
     for (const std::string& seed : config_.seeds) {
         spawn_dial(state_.get(), seed, node_id_, my_endpoints);
     }
-    // Keep re-dialing seeds that drop, so the cluster self-heals (deduped by node id).
-    if (!config_.seeds.empty()) {
-        capy::run_async(state_->io_context.get_executor())(
-            reconnect_loop(state_.get(), config_.seeds, node_id_, my_endpoints));
-    }
+    // Keep re-dialing seeds that drop AND dial members learned via gossip, so the
+    // cluster self-heals into a full equal-peer mesh (deduped by node id, #789).
+    // Always run it — even a seedless node (a hub with no --peer) must dial the
+    // members it learns, so a star fills into a mesh.
+    capy::run_async(state_->io_context.get_executor())(
+        reconnect_loop(state_.get(), config_.seeds, node_id_, my_endpoints));
     // Age peers out of membership only after the hysteresis grace window (#739).
     capy::run_async(state_->io_context.get_executor())(
         membership_loop(state_.get()));

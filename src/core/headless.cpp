@@ -71,27 +71,40 @@ int run_headless(Node& node, const zetta::cluster::Cluster& cluster,
     std::fflush(stdout);
 
     using namespace std::chrono_literals;
-    constexpr auto kTickInterval = 100ms;  // 10 Hz heartbeat
-    constexpr int kTicksPerLog = 10;       // log status ~once per second
+    constexpr auto kTickInterval = 100ms;  // 10 Hz engine tick + API drain
+    constexpr int kChecksPerTick = 10;     // re-check membership ~once per second
+    // Emit the status heartbeat only every ~30s, not every second: the per-second
+    // line (`running — up Ns, N ticks | cluster: N node(s)`) flooded the log on a
+    // long-running headless node (#788). Membership/sync changes still print
+    // promptly (within ~1s) — a change is surfaced the moment it's observed, the
+    // heartbeat is just the periodic "still alive". The one-time startup banner
+    // (node id / listen addresses / join command) is printed by main() and stays.
+    constexpr int kChecksPerHeartbeat = 30;  // periodic heartbeat ~every 30s
 
-    int since_log = 0;
+    int since_check = 0;
+    int since_heartbeat = 0;
     std::string last_signature;
     while (!stop_requested()) {
         node.tick();
         if (on_tick) on_tick();
-        if (++since_log >= kTicksPerLog) {
-            since_log = 0;
+        if (++since_check >= kChecksPerTick) {
+            since_check = 0;
             const std::vector<zetta::cluster::NodeStatus> nodes = cluster.nodes();
-            // Always a one-line heartbeat; the full table only when it changes
-            // (a node joined/left or a sync state flipped).
-            std::printf("zetta: %s | cluster: %zu node(s)\n",
-                        node.status_line().c_str(), nodes.size());
-            if (std::string signature = nodes_signature(nodes);
-                signature != last_signature) {
-                last_signature = std::move(signature);
-                print_nodes(nodes);
+            std::string signature = nodes_signature(nodes);
+            const bool changed = signature != last_signature;
+            const bool heartbeat_due = ++since_heartbeat >= kChecksPerHeartbeat;
+            // Print on a membership/sync change (surfaced promptly) or on the
+            // periodic heartbeat — never every second.
+            if (changed || heartbeat_due) {
+                since_heartbeat = 0;
+                std::printf("zetta: %s | cluster: %zu node(s)\n",
+                            node.status_line().c_str(), nodes.size());
+                if (changed) {
+                    last_signature = std::move(signature);
+                    print_nodes(nodes);  // the full table only when it changed
+                }
+                std::fflush(stdout);
             }
-            std::fflush(stdout);
         }
         std::this_thread::sleep_for(kTickInterval);
     }
