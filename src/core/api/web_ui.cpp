@@ -65,7 +65,7 @@ form.inline{display:inline;margin:0;}
 .term{background:#221F1D;color:#ECEAE6;border-radius:10px;padding:14px 16px;font:13px/1.55 var(--font-mono);
   overflow-x:auto;}
 .term .prompt{color:var(--coral);}
-.term pre{margin:6px 0 0;padding:0;background:none;border:none;color:#D6D4CF;white-space:pre-wrap;word-break:break-word;}
+.term pre{margin:6px 0 0;padding:0;background:none;border:none;color:#D6D4CF;white-space:pre;overflow-x:auto;}
 .term .cmd{color:#ECEAE6;}
 .shellrow{display:flex;gap:8px;margin-top:12px;}
 .shellrow input{font-family:var(--font-mono);}
@@ -79,7 +79,7 @@ form.inline{display:inline;margin:0;}
 .cell{border:1px solid var(--rule-card);border-radius:10px;padding:10px;margin-bottom:12px;}
 .cellbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
 .cell textarea{min-height:60px;}
-.cell .out,.term-in .out{margin-top:8px;}
+.cell .out{margin-top:8px;white-space:pre;overflow-x:auto;word-break:normal;background:#221F1D;color:#ECEAE6;border:none;}
 
 @media (max-width:760px){
   .layout{grid-template-columns:1fr;}
@@ -395,20 +395,38 @@ std::string web_ui_shell_repl() {
     std::string out =
         "<section class=\"panel\"><div class=\"phead\"><h2>Shell</h2>"
         "<span class=\"psub\">SQL REPL over the read model \xC2\xB7 Enter runs \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 history</span></div>"
-        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta shell \xC2\xB7 type SQL and press Enter.</div></div>"
+        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta shell \xC2\xB7 type SQL, or <b>help</b>.</div></div>"
         "<div class=\"shellrow\"><input id=\"cmd\" placeholder=\"SELECT * FROM system.nodes\" autocomplete=\"off\" spellcheck=\"false\" autofocus>"
         "<button class=\"btn btn-primary\" id=\"run\">Run</button></div></section><script>";
     out += kSharedShellJs;
     out += R"JS(
 (function(){
   var term=document.getElementById('term'),cmd=document.getElementById('cmd'),run=document.getElementById('run'),hist=[],hi=-1;
+  var HELP='Orama Zetta shell — a SQL REPL over the read model (the ~30 system.* views).\n\n'
+    +'  <SQL>        run a statement, e.g. SELECT * FROM system.nodes\n'
+    +'  \\tables      list the system.* tables\n'
+    +'  \\d <table>   show a table (columns + rows)\n'
+    +'  help  or  ?  this help\n'
+    +'  clear        clear the screen\n\n'
+    +'Up / Down recall history.';
+  function meta(c){
+    var l=c.toLowerCase();
+    if(l==='help'||l==='\\help'||l==='.help'||l==='?') return {text:HELP};
+    if(l==='clear'||l==='\\clear'||l==='.clear'||l==='cls') return {clear:true};
+    if(l==='\\tables'||l==='.tables'||l==='\\dt') return {sql:'SELECT * FROM system.tables'};
+    if(l.indexOf('\\d ')===0||l.indexOf('.d ')===0) return {sql:'SELECT * FROM system.'+c.slice(3).trim().replace(/^system\./i,'')};
+    return null;
+  }
   async function go(){
     var c=cmd.value.trim(); if(!c) return;
-    hist.push(c); hi=hist.length;
+    hist.push(c); hi=hist.length; cmd.value='';
+    var m=meta(c);
+    if(m&&m.clear){ term.innerHTML=''; return; }
     var b=document.createElement('div');
-    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><pre class="out">running…</pre>';
-    term.appendChild(b); cmd.value=''; term.scrollTop=term.scrollHeight;
-    try{ b.querySelector('.out').textContent=zFmt(await zExec(c)); }catch(e){ b.querySelector('.out').textContent='error: '+e; }
+    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><pre class="out">'+(m&&m.text?zEsc(m.text):'running…')+'</pre>';
+    term.appendChild(b); term.scrollTop=term.scrollHeight;
+    if(m&&m.text){ return; }
+    try{ b.querySelector('.out').textContent=zFmt(await zExec((m&&m.sql)?m.sql:c)); }catch(e){ b.querySelector('.out').textContent='error: '+e; }
     term.scrollTop=term.scrollHeight;
   }
   run.onclick=go;

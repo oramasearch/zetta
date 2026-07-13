@@ -1046,6 +1046,27 @@ bool ApiServer::start() {
         return impl.serve_favicon(route);
     });
 
+    // Discovery docs are PUBLIC (registered before the gate, like /mcp.md): llms.txt is meant to be
+    // fetched credential-free (an agent reads it to learn how to authenticate), and the OpenAPI
+    // document is the API's own spec. The capability routes + /v1/specs stay bearer-gated below.
+    impl.openapi_body = openapi_document(impl.capability_registry).dump(2);
+    router.add(http::method::get, "/llms.txt", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_llms(route, "index");
+    });
+    router.add(http::method::get, "/llms-full.txt", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_llms(route, "full");
+    });
+    router.add(http::method::get, "/llms/:topic", [&impl](http::route_params& route) -> http::route_task {
+        std::string topic;
+        for (const auto& [parameter, value] : route.params)
+            if (parameter == "topic") topic = value;
+        if (topic.ends_with(".txt")) topic.resize(topic.size() - 4);
+        return impl.serve_llms(route, topic);
+    });
+    router.add(http::method::get, "/v1/openapi.json", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_openapi(route);
+    });
+
     // GET /mcp.md — public, human/agent Markdown on how to connect an MCP client to
     // this node (mcp_docs.cpp). Registered BEFORE the /mcp mount so the exact route
     // wins. Deliberately NOT bearer-gated (you must be able to read the connect
@@ -1185,43 +1206,10 @@ bool ApiServer::start() {
         co_return http::route_done;
     });
 
-    // The llms.txt progressive-disclosure surface (#645,
-    // docs/api/llms-endpoints.md): plain GET pages an agent with no MCP
-    // client can orient from, generated live from the registry + node state
-    // (llms.cpp). GET-only by registration; everything else is shared with
-    // /mcp via Impl::serve_llms.
-    router.add(http::method::get, "/llms.txt",
-               [&impl](http::route_params& route) -> http::route_task {
-                   return impl.serve_llms(route, "index");
-               });
-    router.add(http::method::get, "/llms-full.txt",
-               [&impl](http::route_params& route) -> http::route_task {
-                   return impl.serve_llms(route, "full");
-               });
-    router.add(http::method::get, "/llms/:topic",
-               [&impl](http::route_params& route) -> http::route_task {
-                   std::string topic;
-                   for (const auto& [parameter, value] : route.params) {
-                       if (parameter == "topic") topic = value;
-                   }
-                   // /llms/<topic>.txt is canonical; the bare name works too.
-                   if (topic.ends_with(".txt")) {
-                       topic.resize(topic.size() - 4);
-                   }
-                   return impl.serve_llms(route, topic);
-               });
-
-    // The REST rendering (#618, docs/api/rest-openapi.md): every registry
-    // entry mechanically becomes GET /v1/<name> (reads) or POST /v1/<name>
-    // (actions/jobs), and the OpenAPI document generated from the same
-    // schemas is served at GET /v1/openapi.json — one registry, two wire
-    // renderings, zero drift. Generated here, after any embedding-added
-    // entries (the registry is populated before start() and then only read).
-    impl.openapi_body = openapi_document(impl.capability_registry).dump(2);
-    router.add(http::method::get, "/v1/openapi.json",
-               [&impl](http::route_params& route) -> http::route_task {
-                   return impl.serve_openapi(route);
-               });
+    // /llms.txt, /llms-full.txt, /llms/<topic>, and /v1/openapi.json are registered as PUBLIC
+    // discovery docs BEFORE the auth gate above (near /favicon.svg) — llms.txt (#645) and the OpenAPI
+    // document (#618) are meant to be fetched credential-free. The capability routes + /v1/specs below
+    // stay bearer-gated.
     // The spec index (#646, docs/api/specs-index.md): GET /v1/specs (the
     // index) and GET /v1/specs/<name> (each raw document) — the OpenAPI
     // document + every capability and boundary schema, one navigable set.
