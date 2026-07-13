@@ -4,8 +4,8 @@
 	branch = develop
 [submodule "modules/corosio"]
 	path = modules/corosio
-	url = https://github.com/cppalliance/corosio.git
-	branch = develop
+	url = git@github.com:oramasearch/corosio.git
+	branch = orama-main
 [submodule "modules/automerge-cpp"]
 	path = modules/automerge-cpp
 	url = git@github.com:homer6/automerge-cpp.git

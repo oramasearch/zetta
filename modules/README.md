@@ -11,7 +11,7 @@ time and not vendored.
 | Module | Upstream | Branch | Role | Built? |
 |---|---|---|---|---|
 | `capy` | [cppalliance/capy](https://github.com/cppalliance/capy) | `develop` | C++ Alliance **Capy** — coroutine foundation (`task<T>`, executors, thread pools). Backs the `zetta::runtime` seam. | yes |
-| `corosio` | [cppalliance/corosio](https://github.com/cppalliance/corosio) | `develop` | **Corosio** — coroutine-native networking (the Boost.Asio successor). | yes (backs the cluster, `src/core/cluster.cpp`) |
+| `corosio` | [oramasearch/corosio](https://github.com/oramasearch/corosio) (private fork of [cppalliance/corosio](https://github.com/cppalliance/corosio)) | `fix/epoll-hangup-spin` | **Corosio** — coroutine-native networking (the Boost.Asio successor). Vendored via a private fork carrying the epoll `EPOLLHUP`/`EPOLLRDHUP` translation fix ([zetta#740](https://github.com/oramasearch/zetta/issues/740)) — upstream spun the reactor at 100% CPU on a hung-up fd, starving new connections. | yes (backs the cluster, `src/core/cluster.cpp`) |
 | `automerge-cpp` | [homer6/automerge-cpp](https://github.com/homer6/automerge-cpp) | `main` | From-scratch **C++23 CRDT** (no Rust). Has its own nested submodules (`upstream/json` + `upstream/automerge`). | yes (backs replication, `src/core/replication.cpp`) |
 | `oramacore-cpp` | [oramasearch/oramacore-cpp](https://github.com/oramasearch/oramacore-cpp) (**private**) | `main` | **C++23 port of OramaCore's full-text engine** (BM25F first). Backs the `OramaCoreFulltextIndex` search backend. | yes (CPU-only, `src/core/index/oramacore_fulltext_index.cpp`) — **guarded** |
 
