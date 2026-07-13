@@ -50,13 +50,44 @@ a{color:var(--ink-secondary);text-decoration:none;}
 .connpill.ok{color:var(--ok-fg);background:var(--ok-bg);}
 form.inline{display:inline;margin:0;}
 
-.nav{display:flex;gap:2px;padding:6px 10px;background:var(--sidebar);border-bottom:1px solid var(--rule-hair);
-  overflow-x:auto;-webkit-overflow-scrolling:touch;position:sticky;top:52px;z-index:9;}
-.nav a{white-space:nowrap;padding:7px 12px;border-radius:8px;color:var(--ink-secondary);font-size:13px;}
-.nav a:hover{background:var(--wash-hover);}
-.nav a.active{background:var(--white);color:var(--ink-primary);font-weight:500;}
+.layout{display:grid;grid-template-columns:212px 1fr;align-items:start;}
+.side{background:var(--sidebar);border-right:1px solid var(--rule-hair);padding:12px 8px;
+  position:sticky;top:52px;align-self:stretch;min-height:calc(100vh - 52px);}
+.side .group{font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.08em;color:var(--ink-quiet);
+  padding:14px 10px 6px;}
+.side a{display:block;padding:8px 10px;margin-bottom:1px;border-radius:8px;color:var(--ink-secondary);
+  font-size:13px;white-space:nowrap;}
+.side a:hover{background:var(--wash-hover);}
+.side a.active{background:var(--white);color:var(--ink-primary);font-weight:500;}
+.main{padding:20px 24px 56px;max-width:1080px;min-width:0;}
 
-.main{max-width:1160px;margin:0 auto;padding:18px 16px 56px;}
+/* Web shell — a terminal surface (charcoal), the one deliberately dark panel */
+.term{background:#221F1D;color:#ECEAE6;border-radius:10px;padding:14px 16px;font:13px/1.55 var(--font-mono);
+  overflow-x:auto;}
+.term .prompt{color:var(--coral);}
+.term pre{margin:6px 0 0;padding:0;background:none;border:none;color:#D6D4CF;white-space:pre-wrap;word-break:break-word;}
+.term .cmd{color:#ECEAE6;}
+.shellrow{display:flex;gap:8px;margin-top:12px;}
+.shellrow input{font-family:var(--font-mono);}
+
+/* Pagination + capability action forms + notebooks */
+.pager{display:flex;gap:12px;align-items:center;margin-top:10px;font:11px/1 var(--font-mono);color:var(--ink-quiet);}
+.pager a{color:var(--ink-secondary);border-bottom:1px dotted var(--rule-emph);}
+.actionsub{font-size:11px;color:var(--ink-muted);}
+.nbbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;align-items:center;}
+.nbbar select,.nbbar input{width:auto;}
+.cell{border:1px solid var(--rule-card);border-radius:10px;padding:10px;margin-bottom:12px;}
+.cellbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
+.cell textarea{min-height:60px;}
+.cell .out,.term-in .out{margin-top:8px;}
+
+@media (max-width:760px){
+  .layout{grid-template-columns:1fr;}
+  .side{position:sticky;top:52px;min-height:0;display:flex;gap:2px;overflow-x:auto;
+    -webkit-overflow-scrolling:touch;border-right:none;border-bottom:1px solid var(--rule-hair);padding:6px 10px;z-index:9;}
+  .side .group{display:none;}
+  .main{padding:16px;}
+}
 .panel{background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:16px;margin-bottom:16px;}
 .phead{display:flex;align-items:baseline;gap:10px;margin-bottom:12px;flex-wrap:wrap;}
 .phead h2{margin:0;font-size:15px;font-weight:500;}
@@ -106,12 +137,6 @@ pre{margin:8px 0 0;padding:12px;white-space:pre-wrap;word-break:break-word;font-
 .logincard .sub{margin:0;font-size:12px;color:var(--ink-muted);}
 )CSS";
 
-struct NavItem { std::string_view key; std::string_view label; };
-constexpr std::array<NavItem, 9> kNav = {{
-    {"overview", "Overview"}, {"cluster", "Cluster"}, {"data", "Data"}, {"models", "Models"},
-    {"pipeline", "Pipeline"}, {"observability", "Observability"}, {"governance", "Governance"},
-    {"sql", "SQL"}, {"console", "Console"}}};
-
 std::string lower(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(),
                    [](unsigned char c) { return std::tolower(c); });
@@ -122,11 +147,11 @@ std::string head(std::string_view title) {
     std::string out =
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">"
+        "<link rel=\"stylesheet\" href=\"/style.css\">"
         "<title>";
     out += web_ui_escape(title);
-    out += "</title><style>";
-    out += kCss;
-    out += "</style></head><body>";
+    out += "</title></head><body>";
     return out;
 }
 
@@ -250,26 +275,32 @@ std::string web_ui_login(std::string_view error) {
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content) {
+    auto link = [&](std::string_view key, std::string_view label) -> std::string {
+        std::string anchor = "<a class=\"";
+        if (key == active) anchor += "active";
+        anchor += "\" href=\"/?view=";
+        anchor += key;
+        anchor += "\">";
+        anchor += label;
+        anchor += "</a>";
+        return anchor;
+    };
     std::string out = head("Orama Zetta");
     out += "<div class=\"top\"><div class=\"brand\"><span class=\"live\"></span>Orama Zetta</div>";
     out += "<span class=\"connpill ok\">connected</span><span class=\"spacer\"></span>";
     out += "<span class=\"meta\">" + web_ui_escape(meta) + "</span>";
     if (!user.empty()) out += "<span class=\"user\">" + web_ui_escape(user) + "</span>";
     out += "<form class=\"inline\" method=\"post\" action=\"/logout\"><button class=\"btn small\">Sign out</button></form></div>";
-    out += "<nav class=\"nav\">";
-    for (const auto& item : kNav) {
-        const bool on = item.key == active;
-        out += "<a class=\"";
-        out += on ? "active" : "";
-        out += "\" href=\"/?view=";
-        out += item.key;
-        out += "\">";
-        out += item.label;
-        out += "</a>";
-    }
+    out += "<div class=\"layout\"><nav class=\"side\">";
+    out += "<div class=\"group\">Cluster</div>" + link("overview", "Overview") + link("cluster", "Cluster");
+    out += "<div class=\"group\">Workloads</div>" + link("data", "Data") + link("models", "Models") +
+           link("pipeline", "Pipeline");
+    out += "<div class=\"group\">Operate</div>" + link("observability", "Observability") +
+           link("governance", "Governance");
+    out += "<div class=\"group\">Build</div>" + link("shell", "Shell") + link("notebooks", "Notebooks");
     out += "</nav><main class=\"main\">";
     out += content;
-    out += "</main></body></html>";
+    out += "</main></div></body></html>";
     return out;
 }
 
@@ -332,6 +363,105 @@ std::string web_ui_overview_cards(const nlohmann::json& info) {
         out += "<div class=\"card\"><div class=\"num\">" + c.value + "</div><div class=\"lbl\">" +
                c.label + "</div></div>";
     out += "</div>";
+    return out;
+}
+
+std::string web_ui_stylesheet() { return std::string(kCss); }
+
+std::string web_ui_favicon() {
+    return R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#E2545A"/><path d="M9 9 H23 V12 L14 20 H23 V23 H9 V20 L18 12 H9 Z" fill="#fff"/></svg>)SVG";
+}
+
+namespace {
+// Shared client helpers for the interactive tools (Shell + Notebooks): POST a command to the
+// cookie-authed /shell endpoint and format a SQL result as a monospace text table.
+constexpr std::string_view kSharedShellJs = R"JS(
+function zEsc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+async function zExec(q){var r=await fetch('/shell',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'q='+encodeURIComponent(q)});return r.json();}
+function zFmt(r){
+  if(!r||r.error) return 'error: '+((r&&r.error)?r.error:'request failed');
+  if(!r.columns) return JSON.stringify(r.value!==undefined?r.value:r,null,2);
+  var cols=r.columns,rows=r.rows||[],w=cols.map(function(c){return c.length;});
+  rows.forEach(function(row){cols.forEach(function(c,i){var v=row[c]==null?'':(typeof row[c]==='object'?JSON.stringify(row[c]):String(row[c]));if(v.length>w[i])w[i]=Math.min(v.length,40);});});
+  function pad(s,n){s=String(s);return s.length>n?s.slice(0,n-1)+'…':s+' '.repeat(Math.max(0,n-s.length));}
+  var out=cols.map(function(c,i){return pad(c,w[i]);}).join('  ')+'\n'+cols.map(function(c,i){return '-'.repeat(w[i]);}).join('  ')+'\n';
+  rows.forEach(function(row){out+=cols.map(function(c,i){var v=row[c]==null?'·':(typeof row[c]==='object'?JSON.stringify(row[c]):String(row[c]));return pad(v,w[i]);}).join('  ')+'\n';});
+  return out+'('+rows.length+' row'+(rows.length===1?'':'s')+')';
+}
+)JS";
+}  // namespace
+
+std::string web_ui_shell_repl() {
+    std::string out =
+        "<section class=\"panel\"><div class=\"phead\"><h2>Shell</h2>"
+        "<span class=\"psub\">SQL REPL over the read model \xC2\xB7 Enter runs \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 history</span></div>"
+        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta shell \xC2\xB7 type SQL and press Enter.</div></div>"
+        "<div class=\"shellrow\"><input id=\"cmd\" placeholder=\"SELECT * FROM system.nodes\" autocomplete=\"off\" spellcheck=\"false\" autofocus>"
+        "<button class=\"btn btn-primary\" id=\"run\">Run</button></div></section><script>";
+    out += kSharedShellJs;
+    out += R"JS(
+(function(){
+  var term=document.getElementById('term'),cmd=document.getElementById('cmd'),run=document.getElementById('run'),hist=[],hi=-1;
+  async function go(){
+    var c=cmd.value.trim(); if(!c) return;
+    hist.push(c); hi=hist.length;
+    var b=document.createElement('div');
+    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><pre class="out">running…</pre>';
+    term.appendChild(b); cmd.value=''; term.scrollTop=term.scrollHeight;
+    try{ b.querySelector('.out').textContent=zFmt(await zExec(c)); }catch(e){ b.querySelector('.out').textContent='error: '+e; }
+    term.scrollTop=term.scrollHeight;
+  }
+  run.onclick=go;
+  cmd.addEventListener('keydown',function(e){
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go();}
+    else if(e.key==='ArrowUp'){if(hi>0){hi--;cmd.value=hist[hi];}e.preventDefault();}
+    else if(e.key==='ArrowDown'){if(hi<hist.length-1){hi++;cmd.value=hist[hi];}else{hi=hist.length;cmd.value='';}e.preventDefault();}
+  });
+})();
+)JS";
+    out += "</script>";
+    return out;
+}
+
+std::string web_ui_notebooks() {
+    std::string out =
+        "<section class=\"panel\"><div class=\"phead\"><h2>Notebooks</h2>"
+        "<span class=\"psub\">SQL cells \xC2\xB7 Cmd/Ctrl+Enter runs a cell \xC2\xB7 saved in this browser</span></div>"
+        "<div class=\"nbbar\"><select id=\"nbsel\"></select><input id=\"nbname\" placeholder=\"name\">"
+        "<button class=\"btn small\" id=\"nbnew\">New</button><button class=\"btn small\" id=\"nbsave\">Save</button>"
+        "<button class=\"btn small\" id=\"nbdel\">Delete</button><button class=\"btn small\" id=\"nbadd\">+ Cell</button></div>"
+        "<div id=\"cells\"></div></section><script>";
+    out += kSharedShellJs;
+    out += R"JS(
+(function(){
+  var KEY='zetta_notebooks',cellsEl=document.getElementById('cells'),sel=document.getElementById('nbsel'),name=document.getElementById('nbname');
+  function load(){try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};}}
+  function save(nb){localStorage.setItem(KEY,JSON.stringify(nb));}
+  var book=[{src:'SELECT * FROM system.nodes',out:''}];
+  async function runCell(i,d){var o=d.querySelector('.out');o.textContent='running…';try{book[i].out=zFmt(await zExec(book[i].src));o.textContent=book[i].out;}catch(e){o.textContent='error: '+e;}}
+  function render(){
+    cellsEl.innerHTML='';
+    book.forEach(function(cell,i){
+      var d=document.createElement('div');d.className='cell';
+      d.innerHTML='<div class="cellbar"><span class="q mono">['+(i+1)+']</span><button class="btn small run">Run</button><button class="btn small del">✕</button></div><textarea class="src" spellcheck="false"></textarea><pre class="out">'+zEsc(cell.out||'')+'</pre>';
+      var ta=d.querySelector('.src');ta.value=cell.src;
+      ta.addEventListener('input',function(){cell.src=this.value;});
+      ta.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();runCell(i,d);}});
+      d.querySelector('.run').onclick=function(){runCell(i,d);};
+      d.querySelector('.del').onclick=function(){book.splice(i,1);if(!book.length)book.push({src:'',out:''});render();};
+      cellsEl.appendChild(d);
+    });
+  }
+  function refreshSel(){var nb=load();sel.innerHTML='<option value="">— open —</option>'+Object.keys(nb).map(function(n){return '<option>'+zEsc(n)+'</option>';}).join('');}
+  document.getElementById('nbadd').onclick=function(){book.push({src:'',out:''});render();};
+  document.getElementById('nbnew').onclick=function(){book=[{src:'',out:''}];name.value='';render();};
+  document.getElementById('nbsave').onclick=function(){var n=(name.value||'untitled').trim();var nb=load();nb[n]=book;save(nb);refreshSel();sel.value=n;};
+  document.getElementById('nbdel').onclick=function(){var n=name.value.trim();if(!n)return;var nb=load();delete nb[n];save(nb);refreshSel();};
+  sel.onchange=function(){var n=sel.value;if(!n)return;book=JSON.parse(JSON.stringify(load()[n]||[]));name.value=n;render();};
+  refreshSel();render();
+})();
+)JS";
+    out += "</script>";
     return out;
 }
 

@@ -62,7 +62,8 @@ void print_nodes(const std::vector<zetta::cluster::NodeStatus>& nodes) {
 }  // namespace
 
 int run_headless(Node& node, const zetta::cluster::Cluster& cluster,
-                 const std::function<void()>& on_tick) {
+                 const std::function<void()>& on_tick,
+                 const std::function<void(std::chrono::milliseconds)>& wait_for_work) {
     install_signal_handlers();
 
     // The cluster banner (node id, listen addresses, join command) is printed
@@ -84,29 +85,49 @@ int run_headless(Node& node, const zetta::cluster::Cluster& cluster,
     int since_check = 0;
     int since_heartbeat = 0;
     std::string last_signature;
+    // Tick immediately on the first iteration, then rate-limit tick() (+ the
+    // membership/heartbeat checks) to ~10 Hz while draining the API queue on
+    // every wake (#731) — so requests don't wait for the next timed tick.
+    auto last_tick = std::chrono::steady_clock::now() - kTickInterval;
     while (!stop_requested()) {
-        node.tick();
+        // Drain the API queue every wake — the moment a request arrives, not on
+        // the next timed tick (the #731 ~100 ms/request floor / ~10 req/s ceiling).
         if (on_tick) on_tick();
-        if (++since_check >= kChecksPerTick) {
-            since_check = 0;
-            const std::vector<zetta::cluster::NodeStatus> nodes = cluster.nodes();
-            std::string signature = nodes_signature(nodes);
-            const bool changed = signature != last_signature;
-            const bool heartbeat_due = ++since_heartbeat >= kChecksPerHeartbeat;
-            // Print on a membership/sync change (surfaced promptly) or on the
-            // periodic heartbeat — never every second.
-            if (changed || heartbeat_due) {
-                since_heartbeat = 0;
-                std::printf("zetta: %s | cluster: %zu node(s)\n",
-                            node.status_line().c_str(), nodes.size());
-                if (changed) {
-                    last_signature = std::move(signature);
-                    print_nodes(nodes);  // the full table only when it changed
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_tick >= kTickInterval) {
+            last_tick = now;
+            node.tick();
+            if (++since_check >= kChecksPerTick) {
+                since_check = 0;
+                const std::vector<zetta::cluster::NodeStatus> nodes = cluster.nodes();
+                std::string signature = nodes_signature(nodes);
+                const bool changed = signature != last_signature;
+                const bool heartbeat_due = ++since_heartbeat >= kChecksPerHeartbeat;
+                // Print on a membership/sync change (surfaced promptly) or on the
+                // periodic heartbeat — never every second.
+                if (changed || heartbeat_due) {
+                    since_heartbeat = 0;
+                    std::printf("zetta: %s | cluster: %zu node(s)\n",
+                                node.status_line().c_str(), nodes.size());
+                    if (changed) {
+                        last_signature = std::move(signature);
+                        print_nodes(nodes);  // the full table only when it changed
+                    }
+                    std::fflush(stdout);
                 }
-                std::fflush(stdout);
             }
         }
-        std::this_thread::sleep_for(kTickInterval);
+        // Wait for the next request (wakes immediately on enqueue) or up to the
+        // remaining tick interval; a plain sleep only when no API server is wired.
+        const auto since_tick = std::chrono::steady_clock::now() - last_tick;
+        const auto idle = since_tick < kTickInterval
+                              ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    kTickInterval - since_tick)
+                              : std::chrono::milliseconds(0);
+        if (wait_for_work)
+            wait_for_work(idle);
+        else
+            std::this_thread::sleep_for(idle);
     }
 
     std::printf("\nzetta: signal received, shutting down\n");

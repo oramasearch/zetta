@@ -21,6 +21,12 @@ namespace zetta::api {
 // HTML-escape text for safe interpolation into an element body or a double-quoted attribute.
 std::string web_ui_escape(std::string_view text);
 
+// The stylesheet, served at its own cacheable GET /style.css endpoint (linked, not inlined).
+std::string web_ui_stylesheet();
+
+// The favicon — a self-contained SVG (coral tile + white Z), served at GET /favicon.svg.
+std::string web_ui_favicon();
+
 // The login page — a full HTML document. `error` shows a message when non-empty.
 std::string web_ui_login(std::string_view error);
 
@@ -38,5 +44,14 @@ std::string web_ui_table(const nlohmann::json& columns, const nlohmann::json& ro
 
 // Render the overview count cards from a `server_info` value object.
 std::string web_ui_overview_cards(const nlohmann::json& server_info);
+
+// The Shell view — an interactive SQL REPL (terminal + scrollback + history). Inherently interactive,
+// so it uses a small amount of client JS that POSTs each line to the cookie-authed `/shell` endpoint
+// and appends the result; the engine still runs it as the signed-in user.
+std::string web_ui_shell_repl();
+
+// The Notebooks view — Jupyter-style SQL cells (run, add/remove, saved in the browser), executed the
+// same way (POST `/shell`). Also client JS by nature.
+std::string web_ui_notebooks();
 
 }  // namespace zetta::api

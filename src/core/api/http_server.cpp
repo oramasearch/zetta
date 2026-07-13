@@ -667,15 +667,78 @@ struct ApiServer::Impl {
     // the page can never drift, and the engine still authorizes + consent-gates every call. Data is
     // gathered on the owning loop; the HTML is built from the returned JSON.
 
+    // One capability rendered as an action form (from its input_schema) that POSTs to /run.
+    std::string render_capability_form(const Capability& capability) {
+        std::string form =
+            "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
+            web_ui_escape(capability.name) + "\">";
+        const auto& schema = capability.input_schema;
+        if (schema.is_object() && schema.contains("properties") && schema["properties"].is_object()) {
+            const nlohmann::json required = schema.value("required", nlohmann::json::array());
+            for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
+                bool is_required = false;
+                for (const auto& item : required)
+                    if (item.is_string() && item.get<std::string>() == it.key()) is_required = true;
+                const std::string type = it.value().value("type", "string");
+                const std::string description = it.value().value("description", "");
+                form += "<label>" + web_ui_escape(it.key()) + (is_required ? " *" : "") + "</label>";
+                form += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
+                        web_ui_escape(type) +
+                        (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) + "\">";
+            }
+        }
+        form += "<div style=\"margin-top:10px\"><button class=\"btn";
+        form += capability.kind == CapabilityKind::Read ? "" : " btn-primary";
+        form += "\">Run ";
+        form += to_string(capability.kind);
+        form += "</button></div></form>";
+        return web_ui_panel(capability.name, capability.description, form);
+    }
+
+    std::string render_capabilities(std::initializer_list<std::string_view> names) {
+        std::string out;
+        for (std::string_view name : names)
+            if (auto capability = capability_registry.find(std::string(name)))
+                out += render_capability_form(*capability);
+        return out;
+    }
+
+    // A read table with server-side pagination — run the query, slice a 50-row page, add prev/next
+    // links. Each table on a view uses a distinct query key so several can page independently.
+    std::string render_paged_table(ApiContext& context, const std::string& statement,
+                                   const std::string& key, const std::string& view,
+                                   const boost::http::route_params& route) {
+        constexpr int page_size = 50;
+        ApiResult result =
+            capability_registry.call("sql", nlohmann::json{{"statement", statement}}, context);
+        if (!result.ok)
+            return "<div class=\"err-box\">" + web_ui_escape(result.error.message) + "</div>";
+        const nlohmann::json columns = result.value.value("columns", nlohmann::json::array());
+        const nlohmann::json all_rows = result.value.value("rows", nlohmann::json::array());
+        const int total = static_cast<int>(all_rows.size());
+        int page = std::atoi(query_param(route, key, "0").c_str());
+        if (page < 0) page = 0;
+        const int start = page * page_size;
+        const int end = std::min(start + page_size, total);
+        nlohmann::json rows = nlohmann::json::array();
+        for (int i = start; i < end; ++i) rows.push_back(all_rows[i]);
+        std::string out = web_ui_table(columns, rows);
+        if (total > page_size) {
+            out += "<div class=\"pager\"><span>showing " +
+                   std::to_string(total == 0 ? 0 : start + 1) + "\xE2\x80\x93" + std::to_string(end) +
+                   " of " + std::to_string(total) + "</span>";
+            const std::string base = "/?view=" + view + "&" + key + "=";
+            if (page > 0) out += "<a href=\"" + base + std::to_string(page - 1) + "\">prev</a>";
+            if (end < total) out += "<a href=\"" + base + std::to_string(page + 1) + "\">next</a>";
+            out += "</div>";
+        }
+        return out;
+    }
+
     std::string render_dashboard_content(ApiContext& context, const std::string& view,
                                          const boost::http::route_params& route) {
-        auto table = [&](const std::string& statement) -> std::string {
-            ApiResult result =
-                capability_registry.call("sql", nlohmann::json{{"statement", statement}}, context);
-            if (!result.ok)
-                return "<div class=\"err-box\">" + web_ui_escape(result.error.message) + "</div>";
-            return web_ui_table(result.value.value("columns", nlohmann::json::array()),
-                                result.value.value("rows", nlohmann::json::array()));
+        auto ptable = [&](const std::string& statement, const std::string& key) -> std::string {
+            return render_paged_table(context, statement, key, view, route);
         };
         std::string out;
         if (view == "overview") {
@@ -688,97 +751,44 @@ struct ApiServer::Impl {
                         web_ui_escape(info.value.value("node_id", "")) + " \xC2\xB7 v" +
                         web_ui_escape(info.value.value("version", "")) + "</div>");
             out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
-                                table("SELECT * FROM system.nodes"));
-            out += web_ui_panel("This node", "", table("SELECT * FROM system.node_metrics"));
+                                ptable("SELECT * FROM system.nodes", "n"));
         } else if (view == "cluster") {
-            out += web_ui_panel("Nodes", "", table("SELECT * FROM system.nodes"));
-            out += web_ui_panel("Node metrics", "", table("SELECT * FROM system.node_metrics"));
-            out += web_ui_panel("Deployments", "", table("SELECT * FROM system.deployments"));
+            out += web_ui_panel("Nodes", "", ptable("SELECT * FROM system.nodes", "n"));
+            out += web_ui_panel("Node metrics", "", ptable("SELECT * FROM system.node_metrics", "nm"));
+            out += web_ui_panel("Deployments", "", ptable("SELECT * FROM system.deployments", "dep"));
+            out += render_capabilities({"add_nodes", "detect_provisioners", "cloud_inspect"});
         } else if (view == "data") {
-            out += web_ui_panel("Datasets", "", table("SELECT * FROM system.datasets"));
-            out += web_ui_panel("Indexes", "", table("SELECT * FROM system.indexes"));
+            out += web_ui_panel("Datasets", "", ptable("SELECT * FROM system.datasets", "ds"));
+            out += web_ui_panel("Indexes", "", ptable("SELECT * FROM system.indexes", "idx"));
+            out += render_capabilities({"add_dataset", "expose_index", "unexpose_index"});
         } else if (view == "models") {
-            out += web_ui_panel("Models", "", table("SELECT * FROM system.models"));
+            out += web_ui_panel("Models", "", ptable("SELECT * FROM system.models", "m"));
+            out += render_capabilities({"expose_model", "unexpose_model"});
         } else if (view == "pipeline") {
-            out += web_ui_panel("Runs", "", table("SELECT * FROM system.runs"));
-            out += web_ui_panel("Jobs", "", table("SELECT * FROM system.jobs"));
+            out += web_ui_panel("Runs", "", ptable("SELECT * FROM system.runs", "runs"));
+            out += web_ui_panel("Jobs", "", ptable("SELECT * FROM system.jobs", "jobs"));
+            out += render_capabilities({"create_project", "capture_intent", "import_n8n",
+                                        "compile_intent", "compile_n8n", "compile_python", "gate",
+                                        "deploy", "run"});
         } else if (view == "observability") {
-            out += web_ui_panel("Traces", "", table("SELECT * FROM system.traces"));
-            out += web_ui_panel("Spans", "", table("SELECT * FROM system.spans"));
-            out += web_ui_panel("Crashes", "", table("SELECT * FROM system.crashes"));
+            out += web_ui_panel("Traces", "", ptable("SELECT * FROM system.traces", "tr"));
+            out += web_ui_panel("Spans", "", ptable("SELECT * FROM system.spans", "sp"));
+            out += web_ui_panel("Crashes", "", ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
-            out += web_ui_panel("Users", "", table("SELECT * FROM system.users"));
-            out += web_ui_panel("Roles", "", table("SELECT * FROM system.roles"));
-            out += web_ui_panel("Policies", "", table("SELECT * FROM system.policies"));
-            out += web_ui_panel("Tokens", "", table("SELECT * FROM system.tokens"));
+            out += web_ui_panel("Users", "", ptable("SELECT * FROM system.users", "u"));
+            out += web_ui_panel("Roles", "", ptable("SELECT * FROM system.roles", "r"));
+            out += web_ui_panel("Policies", "", ptable("SELECT * FROM system.policies", "pol"));
+            out += web_ui_panel("Tokens", "", ptable("SELECT * FROM system.tokens", "tok"));
             out += web_ui_panel("Consent requests", "",
-                                table("SELECT * FROM system.consent_requests"));
-            out += web_ui_panel("Audit", "", table("SELECT * FROM system.audit"));
-        } else if (view == "sql") {
-            const std::string statement = query_param(route, "q", "SELECT * FROM system.tables");
-            std::string body =
-                "<form method=\"get\" action=\"/\"><input type=\"hidden\" name=\"view\" value=\"sql\">"
-                "<textarea name=\"q\" spellcheck=\"false\">" +
-                web_ui_escape(statement) +
-                "</textarea><div style=\"margin-top:10px\"><button class=\"btn btn-primary\">Run</button> "
-                "<span class=\"q\">GET /v1/sql \xC2\xB7 Postgres subset</span></div></form>";
-            if (!statement.empty()) {
-                ApiResult result = capability_registry.call(
-                    "sql", nlohmann::json{{"statement", statement}}, context);
-                if (!result.ok)
-                    body += "<div class=\"err-box\" style=\"margin-top:12px\">" +
-                            web_ui_escape(result.error.message) + "</div>";
-                else {
-                    const auto rows = result.value.value("rows", nlohmann::json::array());
-                    body += "<div style=\"margin-top:12px\">" +
-                            web_ui_table(result.value.value("columns", nlohmann::json::array()),
-                                         rows) +
-                            "<div class=\"q\" style=\"margin-top:8px\">" +
-                            std::to_string(rows.size()) + " rows</div></div>";
-                }
-            }
-            out += web_ui_panel("SQL console", "", body);
-        } else if (view == "console") {
-            out += render_console();
+                                ptable("SELECT * FROM system.consent_requests", "cons"));
+            out += web_ui_panel("Audit", "", ptable("SELECT * FROM system.audit", "aud"));
+            out += render_capabilities({"approve_consent", "deny_consent", "submit_feedback"});
+        } else if (view == "shell") {
+            out += web_ui_shell_repl();
+        } else if (view == "notebooks") {
+            out += web_ui_notebooks();
         } else {
             out += "<div class=\"empty\">Unknown view.</div>";
-        }
-        return out;
-    }
-
-    std::string render_console() {
-        std::string out = web_ui_panel(
-            "Console", "invoke any capability \xE2\x80\x94 the engine enforces authz + consent",
-            "<div class=\"q\">Reads return a table; actions and jobs mutate and are audited as you.</div>");
-        for (const auto& capability : capability_registry.list()) {
-            std::string form =
-                "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
-                web_ui_escape(capability->name) + "\">";
-            const auto& schema = capability->input_schema;
-            if (schema.is_object() && schema.contains("properties") &&
-                schema["properties"].is_object()) {
-                const nlohmann::json required = schema.value("required", nlohmann::json::array());
-                for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
-                    bool is_required = false;
-                    for (const auto& item : required)
-                        if (item.is_string() && item.get<std::string>() == it.key())
-                            is_required = true;
-                    const std::string type = it.value().value("type", "string");
-                    const std::string description = it.value().value("description", "");
-                    form += "<label>" + web_ui_escape(it.key()) + (is_required ? " *" : "") + "</label>";
-                    form += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
-                            web_ui_escape(type) +
-                            (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) +
-                            "\">";
-                }
-            }
-            const bool is_read = capability->kind == CapabilityKind::Read;
-            form += "<div style=\"margin-top:10px\"><button class=\"btn";
-            form += is_read ? "" : " btn-primary";
-            form += "\">Run ";
-            form += to_string(capability->kind);
-            form += "</button></div></form>";
-            out += web_ui_panel(capability->name, capability->description, form);
         }
         return out;
     }
@@ -931,6 +941,67 @@ struct ApiServer::Impl {
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
+
+    // POST /shell — run one command (SQL) for the Shell/Notebooks REPL; returns JSON (columns/rows or
+    // an error). Cookie-authed and audited as the signed-in user, exactly like the REST sql capability.
+    boost::http::route_task serve_web_shell(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"error":"unauthorized"})";
+        } else {
+            const std::string statement = form_field(parse_form(sink.data), "q");
+            co_await bridge.run_on_owner([&] {
+                ApiContext context{node, cluster, user_id,
+                                   zetta::observability::make_root_trace(), &node.span_recorder(),
+                                   &background};
+                context.acting_is_user = true;
+                ApiResult result = capability_registry.call(
+                    "sql", nlohmann::json{{"statement", statement}}, context);
+                json_body = result.ok ? result.value.dump()
+                                      : nlohmann::json{{"error", result.error.message}}.dump();
+            });
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // GET /style.css — the cacheable stylesheet (linked from every page instead of inlined).
+    boost::http::route_task serve_style(boost::http::route_params& route) {
+        namespace http = boost::http;
+        static const std::string css = web_ui_stylesheet();
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "text/css; charset=utf-8");
+        route.res.set(http::field::cache_control, "public, max-age=86400");
+        stamp_response_headers(route, css);
+        auto [send_error] = co_await route.send(css);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // GET /favicon.svg — the self-contained favicon.
+    boost::http::route_task serve_favicon(boost::http::route_params& route) {
+        namespace http = boost::http;
+        static const std::string svg = web_ui_favicon();
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "image/svg+xml");
+        route.res.set(http::field::cache_control, "public, max-age=604800");
+        stamp_response_headers(route, svg);
+        auto [send_error] = co_await route.send(svg);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
 };
 
 ApiServer::ApiServer(Node& node, const zetta::cluster::Cluster* cluster,
@@ -964,6 +1035,15 @@ bool ApiServer::start() {
     });
     router.add(http::method::post, "/run", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_run(route);
+    });
+    router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_web_shell(route);
+    });
+    router.add(http::method::get, "/style.css", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_style(route);
+    });
+    router.add(http::method::get, "/favicon.svg", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_favicon(route);
     });
 
     // GET /mcp.md — public, human/agent Markdown on how to connect an MCP client to
@@ -1219,6 +1299,14 @@ const std::string& ApiServer::reason() const { return impl_->failure_reason; }
 void ApiServer::drain() {
     impl_->bridge.drain();
     impl_->background.prune();  // finished job workers join + free here
+}
+
+void ApiServer::wait_for_work(std::chrono::milliseconds max_idle) {
+    impl_->bridge.wait_for_work(max_idle);
+}
+
+void ApiServer::set_wakeup(std::function<void()> wakeup) {
+    impl_->bridge.set_wakeup(std::move(wakeup));
 }
 Registry& ApiServer::registry() { return impl_->capability_registry; }
 zetta::observability::SpanRecorder& ApiServer::recorder() {
