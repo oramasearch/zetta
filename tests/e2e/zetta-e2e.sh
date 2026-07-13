@@ -85,6 +85,15 @@ TIMEOUT="${ZETTA_E2E_TIMEOUT:-45}"
 RETRIES="${ZETTA_E2E_RETRIES:-10}"
 POLL="${ZETTA_E2E_POLL:-240}"
 
+# Per-run unique suffix for every object the suite creates (tables/projects/users).
+# It MUST be unique per invocation: the store is append-only (zetta#735), and this
+# script runs as the container ENTRYPOINT (the operator's ZettaClusterE2ETest Job) —
+# where $$ is PID 1, i.e. the SAME on every retry/re-run. A non-unique suffix makes
+# objects accumulate across runs and count assertions drift (widgets: expected 6, got
+# 6*N). Use a random hex token; fall back to the PID for a bare local run with no urandom.
+RUN="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 12 || true)"
+[ -z "$RUN" ] && RUN="$$"
+
 # Built-in testkit catalog (fallback when system.test_cases isn't served).
 TESTKIT_FALLBACK="compute.cpu.elementwise compute.cpu.reduce_sort compute.cuda.conformance ddf.scan_filter ddf.group_by ddf.parquet_reader_parity ml.gbdt_train ml.tree_shap ml.calibration cluster.membership cluster.allreduce cluster.group_by_consistency cluster.compute_near_data cluster.partition_rebalance cluster.fulltext_index cluster.uc1_at_scale governance.access_control governance.audit governance.entity_resolution_gate governance.burst_identity pipeline.uc1_end_to_end examples.churn_pipeline examples.minimal_train examples.method_chain examples.unterminated_string examples.no_pipeline_steps"
 
@@ -337,7 +346,7 @@ if want_level 3; then
 
     # --- 3.2 SQL DDL + DML (append-only; per-run unique names, zetta#735) ---
     sec "LEVEL 3.2 — SQL DDL/DML"
-    TBL="widgets_$$"
+    TBL="widgets_${RUN}"
     sql "CREATE DATABASE $DB" >/dev/null 2>&1                       # tolerate "already exists"
     assert_ok "CREATE TABLE $TBL (id, name, category, price, in_stock)" "CREATE TABLE $TBL"
     _ins=0
@@ -361,7 +370,7 @@ if want_level 3; then
     assert_count "SELECT id, sum(price) FROM $TBL GROUP BY id" 6 "numeric GROUP BY (aggregate over DDF)"
     # A SELECT over a missing table is rejected (the store is schemaless, so a
     # missing *column* resolves to null rather than an error — not a negative).
-    assert_reject "SELECT * FROM e2e_missing_$$" "SELECT over a nonexistent table is rejected"
+    assert_reject "SELECT * FROM e2e_missing_${RUN}" "SELECT over a nonexistent table is rejected"
     # Documented engine limits — asserted as tracked SKIPs, not silent gaps:
     if sql "SELECT * FROM $TBL WHERE price > 0" && ! sql "SELECT * FROM $TBL WHERE price > 20 AND in_stock = true"; then
         skip "compound WHERE (AND/OR/NOT) unsupported by the deployed engine (tracked, zetta#756)"
@@ -476,7 +485,7 @@ if want_level 3; then
 
     # --- 3.7 orchestration action + read-back ------------------------------
     sec "LEVEL 3.7 — orchestration"
-    PROJ="e2e-project-$$"
+    PROJ="e2e-project-${RUN}"
     if http POST "/v1/create_project" "$(jq -rn --arg n "$PROJ" '{name:$n}')" && printf '%s' "$BODY" | grep -qi 'project\|"id"\|"ok"'; then
         pass "create_project (action over REST)"
         if http GET "/v1/list_projects" && printf '%s' "$BODY" | grep -q "$PROJ"; then pass "created project is listed"; else skip "list_projects did not echo $PROJ (flaky read)"; fi
@@ -542,7 +551,7 @@ if want_level 3; then
     else
         # Membership agrees on both nodes.
         if peer_sql "$PEER" "SELECT node_id FROM system.nodes" | jq -e '(.value.rows // .rows) | length >= 2' >/dev/null 2>&1; then pass "system.nodes shows >=2 members on the peer"; else fail "peer $PEER does not see >=2 members"; fi
-        CTBL="canary_$$"; A="a_$$"; B="b_$$"
+        CTBL="canary_${RUN}"; A="a_${RUN}"; B="b_${RUN}"
         sql "CREATE TABLE $CTBL (id, tag)" >/dev/null 2>&1
         # A -> B convergence, latency-bounded.
         if sql "INSERT INTO $CTBL (id, tag) VALUES (1, '$A')"; then
@@ -611,7 +620,7 @@ if want_level 3; then
     skip "consent approve->execute round-trip needs a distinct approver key (+ would invoke a provisioner) — approver-key target profile (#782)"
     # Audit: append-only + monotonic growth across the e2e's own writes.
     _a0=0; sql "SELECT audit_id FROM system.audit" "" && _a0="$(rows_len)"
-    http POST "/v1/create_project" "$(jq -rn --arg n "e2e-audit-$$" '{name:$n}')" >/dev/null 2>&1
+    http POST "/v1/create_project" "$(jq -rn --arg n "e2e-audit-${RUN}" '{name:$n}')" >/dev/null 2>&1
     sleep 1
     if sql "SELECT audit_id FROM system.audit" ""; then
         _a1="$(rows_len)"
@@ -646,8 +655,8 @@ if want_level 3; then
         # deployed engine parses cleanly (scoped GRANT ... ON <object> is omitted:
         # it faults the current build via an escaping ParseError — see notes).
         sql_as "$ADMIN" "CREATE DATABASE $DB" >/dev/null 2>&1
-        RTBL="authz_$$"       # the reader may write here (the #759 write tests)
-        RLSTBL="authz_rls_$$" # PRISTINE: admin-only rows, the reader only reads it
+        RTBL="authz_${RUN}"       # the reader may write here (the #759 write tests)
+        RLSTBL="authz_rls_${RUN}" # PRISTINE: admin-only rows, the reader only reads it
         sql_as "$ADMIN" "CREATE TABLE $RTBL (id, owner, amount)" >/dev/null 2>&1
         sql_as "$ADMIN" "CREATE TABLE $RLSTBL (id, owner, amount)" >/dev/null 2>&1
         for _r in "1,'e2e_reader','100'" "2,'someone_else','200'" "3,'e2e_reader','300'"; do
@@ -682,9 +691,9 @@ if want_level 3; then
                 if sql_as "$RTOK" "$2"; then skip "$1 was ALLOWED for a reader — permission check skipped in this build [$3]"
                 else pass "$1 denied for a reader [$3]"; fi
             }
-            authz_privileged "CREATE USER"  "CREATE USER e2e_escalate_$$"        "#759"
+            authz_privileged "CREATE USER"  "CREATE USER e2e_escalate_${RUN}"        "#759"
             authz_privileged "CREATE TOKEN FOR owner" "CREATE TOKEN FOR owner TYPE access" "#759"
-            authz_privileged "CREATE TABLE (DDL)" "CREATE TABLE e2e_reader_ddl_$$ (x)" "#759"
+            authz_privileged "CREATE TABLE (DDL)" "CREATE TABLE e2e_reader_ddl_${RUN} (x)" "#759"
             # RLS: a SELECT policy limits a non-admin to rows current_user() owns;
             # admin bypasses [#748/#762]. RLS and column masking ride the SAME
             # per-statement executor gate as sql:write, so a build where writes are
@@ -693,14 +702,14 @@ if want_level 3; then
             # the PRISTINE admin-only table. A no-condition policy must be rejected [#765].
             if [ "$_wenf" -ne 1 ]; then
                 skip "RLS enforcement not asserted — the per-statement gate is off in this build (sql:write unenforced, #759); RLS shares that choke point [#748]"
-            elif sql_as "$ADMIN" "CREATE POLICY authz_own_$$ ON $RLSTBL FOR SELECT USING (owner = current_user())"; then
+            elif sql_as "$ADMIN" "CREATE POLICY authz_own_${RUN} ON $RLSTBL FOR SELECT USING (owner = current_user())"; then
                 if sql_as "$RTOK" "SELECT id, owner FROM $RLSTBL"; then
                     _rn="$(rows_len)"; _mine="$(printf '%s' "$BODY" | jq -r '[(.value.rows // .rows)[].owner] | unique | join(",")')"
                     if [ "$_mine" = "e2e_reader" ]; then pass "RLS: reader sees only its own rows ($_rn, owner=$_mine) [#748]"; else fail "RLS leaked rows to a non-owner (owners=$_mine) [#748]"; fi
                 else skip "RLS: could not read back as the policy user"; fi
                 if sql_as "$ADMIN" "SELECT id FROM $RLSTBL" && [ "$(rows_len)" -eq 3 ]; then pass "RLS: admin bypasses the policy (sees all rows) [#762]"; else skip "RLS admin-bypass read inconclusive"; fi
             else skip "RLS: CREATE POLICY unsupported in this build [#748]"; fi
-            if sql_as "$ADMIN" "CREATE POLICY authz_nocond_$$ ON $RLSTBL FOR SELECT"; then
+            if sql_as "$ADMIN" "CREATE POLICY authz_nocond_${RUN} ON $RLSTBL FOR SELECT"; then
                 fail "a no-condition SELECT policy was accepted — fail-open risk [#765]"
             else pass "a no-condition SELECT policy is rejected (no fail-open) [#765]"; fi
             # Column masking + fine-grained scoped grants need GRANT ... ON <object>,
