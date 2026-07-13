@@ -295,10 +295,14 @@ terms of the **permission vocabulary** (below), not raw capabilities:
 `writer` and `reader` are **unchanged** — they do **not** carry the orchestration
 atoms; only `admin` does.
 
-Deny-by-default still holds: a right a role doesn't list is denied. Bootstrap
-**reconciles** these on every start (`Node::ensure_builtin_roles`, idempotent):
-they always exist and always mean exactly the sets above — a drifted built-in is
-repaired in place.
+Deny-by-default still holds: a right a role doesn't list is denied. The node
+**reconciles** these on **every** start (`Node::ensure_builtin_roles`, idempotent
+— independent of the owner bootstrap below, which only runs on a fresh store):
+they always exist and always mean exactly the sets above. So a **binary upgrade
+that adds a capability heals a built-in role frozen at an older vocabulary** —
+otherwise an upgraded cluster's `admin` (seeded once into the replicated store)
+keeps denying the new right. Every role carrying a built-in name is repaired in
+place (CRDT multi-leader seeding can leave duplicates; all converge to canonical).
 
 ### Bootstrap owner (closes #733)
 

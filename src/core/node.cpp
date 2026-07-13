@@ -1858,23 +1858,29 @@ std::shared_ptr<zetta::governance::Role> Node::create_builtin_role(
 std::size_t Node::ensure_builtin_roles() {
     std::size_t created = 0;
     for (const std::string& name : governance::builtin_role_names()) {
-        auto existing = find_role(name);
-        if (!existing) {
-            if (create_builtin_role(name)) ++created;
-            continue;
-        }
-        // Reconcile drift: a built-in must always mean its canonical permission
-        // set. If a prior version (or a hand-edit) left it different, repair it in
-        // place — idempotent, keeps the id/folder, re-captures into the CRDT.
         const auto canonical = governance::builtin_role_permissions(name);
-        if (canonical && existing->permissions() != *canonical) {
-            existing->set_metadata(existing->name(), *canonical,
-                                   existing->created());
-            if (replication_) {
-                replication_->set(catalog::role_key(existing->id()),
-                                  existing->metadata());
+        if (!canonical) continue;  // not a known built-in
+        // Reconcile drift: a built-in must always mean its canonical permission
+        // set. Repair EVERY role carrying the name, not just the first — CRDT
+        // multi-leader seeding can leave duplicates (one per node that bootstrapped
+        // before syncing), and a user may be assigned any of them, so all must
+        // converge to canonical. Idempotent: keeps each id, writes only on drift,
+        // re-captures into the CRDT. This runs on every startup (main.cpp), so a
+        // binary upgrade heals roles frozen at an older vocabulary.
+        bool found = false;
+        for (const auto& role : roles_) {
+            if (role->name() != name) continue;
+            found = true;
+            if (role->permissions() != *canonical) {
+                role->set_metadata(role->name(), *canonical, role->created());
+                if (replication_) {
+                    replication_->set(catalog::role_key(role->id()),
+                                      role->metadata());
+                }
             }
         }
+        // A fresh store has none yet — create the one canonical instance.
+        if (!found && create_builtin_role(name)) ++created;
     }
     return created;
 }

@@ -373,6 +373,14 @@ int main(int argc, char** argv) {
             admin_secret = zetta::governance::generate_token_secret();
             generated = true;
         }
+        // Reconcile the built-in admin/writer/reader roles on EVERY startup — not
+        // only fresh-store bootstrap (bootstrap_owner early-returns once the user
+        // store is seeded). The roles live in the replicated store, seeded once at
+        // cluster creation; without this a binary upgrade leaves them frozen at
+        // whatever permission vocabulary first seeded them, so an upgraded cluster
+        // whose 'admin' role predates a newly-added capability keeps denying it
+        // (e.g. orchestration:testsuite_run). Idempotent — writes only on drift.
+        node.ensure_builtin_roles();
         if (!admin_secret.empty()) {
             const zetta::Node::BootstrapResult boot =
                 node.bootstrap_owner(admin_secret);
