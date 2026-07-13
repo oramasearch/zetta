@@ -65,7 +65,13 @@ form.inline{display:inline;margin:0;}
 .term{background:#221F1D;color:#ECEAE6;border-radius:10px;padding:14px 16px;font:13px/1.55 var(--font-mono);
   overflow-x:auto;}
 .term .prompt{color:var(--coral);}
-.term pre{margin:6px 0 0;padding:0;background:none;border:none;color:#D6D4CF;white-space:pre;overflow-x:auto;}
+.term .out{margin-top:6px;color:#D6D4CF;overflow-x:auto;}
+.out .txt{margin:0;padding:0;background:none;border:none;white-space:pre;font:12px/1.55 var(--font-mono);color:inherit;}
+.out .err{color:#ff9b9b;}
+.out .rtab{border-collapse:collapse;font:12px/1.5 var(--font-mono);}
+.out .rtab th{text-align:left;padding:2px 18px 5px 0;color:#948f88;font-weight:400;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,.16);}
+.out .rtab td{text-align:left;padding:2px 18px 2px 0;color:inherit;white-space:nowrap;}
+.out .rcount{color:#948f88;font-size:11px;margin-top:8px;}
 .term .cmd{color:#ECEAE6;}
 .shellrow{display:flex;gap:8px;margin-top:12px;}
 .shellrow input{font-family:var(--font-mono);}
@@ -79,7 +85,8 @@ form.inline{display:inline;margin:0;}
 .cell{border:1px solid var(--rule-card);border-radius:10px;padding:10px;margin-bottom:12px;}
 .cellbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
 .cell textarea{min-height:60px;}
-.cell .out{margin-top:8px;white-space:pre;overflow-x:auto;word-break:normal;background:#221F1D;color:#ECEAE6;border:none;}
+.cell .out{margin-top:8px;background:#221F1D;color:#ECEAE6;border-radius:8px;padding:12px;overflow-x:auto;}
+.cell .out:empty{display:none;}
 
 @media (max-width:760px){
   .layout{grid-template-columns:1fr;}
@@ -379,14 +386,15 @@ constexpr std::string_view kSharedShellJs = R"JS(
 function zEsc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 async function zExec(q){var r=await fetch('/shell',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'q='+encodeURIComponent(q)});return r.json();}
 function zFmt(r){
-  if(!r||r.error) return 'error: '+((r&&r.error)?r.error:'request failed');
-  if(!r.columns) return JSON.stringify(r.value!==undefined?r.value:r,null,2);
-  var cols=r.columns,rows=r.rows||[],w=cols.map(function(c){return c.length;});
-  rows.forEach(function(row){cols.forEach(function(c,i){var v=row[c]==null?'':(typeof row[c]==='object'?JSON.stringify(row[c]):String(row[c]));if(v.length>w[i])w[i]=Math.min(v.length,40);});});
-  function pad(s,n){s=String(s);return s.length>n?s.slice(0,n-1)+'…':s+' '.repeat(Math.max(0,n-s.length));}
-  var out=cols.map(function(c,i){return pad(c,w[i]);}).join('  ')+'\n'+cols.map(function(c,i){return '-'.repeat(w[i]);}).join('  ')+'\n';
-  rows.forEach(function(row){out+=cols.map(function(c,i){var v=row[c]==null?'·':(typeof row[c]==='object'?JSON.stringify(row[c]):String(row[c]));return pad(v,w[i]);}).join('  ')+'\n';});
-  return out+'('+rows.length+' row'+(rows.length===1?'':'s')+')';
+  if(!r||r.error) return '<pre class="txt err">error: '+zEsc((r&&r.error)?r.error:'request failed')+'</pre>';
+  if(!r.columns) return '<pre class="txt">'+zEsc(JSON.stringify(r.value!==undefined?r.value:r,null,2))+'</pre>';
+  var cols=r.columns,rows=r.rows||[];
+  if(!rows.length) return '<div class="rcount">(0 rows)</div>';
+  var h='<table class="rtab"><thead><tr>';
+  cols.forEach(function(c){h+='<th>'+zEsc(c)+'</th>';});
+  h+='</tr></thead><tbody>';
+  rows.forEach(function(row){h+='<tr>';cols.forEach(function(c){var v=row[c];v=(v==null?'·':(typeof v==='object'?JSON.stringify(v):String(v)));h+='<td>'+zEsc(v)+'</td>';});h+='</tr>';});
+  return h+'</tbody></table><div class="rcount">('+rows.length+' row'+(rows.length===1?'':'s')+')</div>';
 }
 )JS";
 }  // namespace
@@ -423,10 +431,11 @@ std::string web_ui_shell_repl() {
     var m=meta(c);
     if(m&&m.clear){ term.innerHTML=''; return; }
     var b=document.createElement('div');
-    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><pre class="out">'+(m&&m.text?zEsc(m.text):'running…')+'</pre>';
-    term.appendChild(b); term.scrollTop=term.scrollHeight;
-    if(m&&m.text){ return; }
-    try{ b.querySelector('.out').textContent=zFmt(await zExec((m&&m.sql)?m.sql:c)); }catch(e){ b.querySelector('.out').textContent='error: '+e; }
+    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><div class="out"></div>';
+    term.appendChild(b); var o=b.querySelector('.out');
+    if(m&&m.text){ o.innerHTML='<pre class="txt">'+zEsc(m.text)+'</pre>'; term.scrollTop=term.scrollHeight; return; }
+    o.innerHTML='<span class="txt">running…</span>'; term.scrollTop=term.scrollHeight;
+    try{ o.innerHTML=zFmt(await zExec((m&&m.sql)?m.sql:c)); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
     term.scrollTop=term.scrollHeight;
   }
   run.onclick=go;
@@ -456,12 +465,12 @@ std::string web_ui_notebooks() {
   function load(){try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};}}
   function save(nb){localStorage.setItem(KEY,JSON.stringify(nb));}
   var book=[{src:'SELECT * FROM system.nodes',out:''}];
-  async function runCell(i,d){var o=d.querySelector('.out');o.textContent='running…';try{book[i].out=zFmt(await zExec(book[i].src));o.textContent=book[i].out;}catch(e){o.textContent='error: '+e;}}
+  async function runCell(i,d){var o=d.querySelector('.out');o.innerHTML='<span class="txt">running…</span>';try{book[i].out=zFmt(await zExec(book[i].src));o.innerHTML=book[i].out;}catch(e){o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>';book[i].out='';}}
   function render(){
     cellsEl.innerHTML='';
     book.forEach(function(cell,i){
       var d=document.createElement('div');d.className='cell';
-      d.innerHTML='<div class="cellbar"><span class="q mono">['+(i+1)+']</span><button class="btn small run">Run</button><button class="btn small del">✕</button></div><textarea class="src" spellcheck="false"></textarea><pre class="out">'+zEsc(cell.out||'')+'</pre>';
+      d.innerHTML='<div class="cellbar"><span class="q mono">['+(i+1)+']</span><button class="btn small run">Run</button><button class="btn small del">✕</button></div><textarea class="src" spellcheck="false"></textarea><div class="out">'+(cell.out||'')+'</div>';
       var ta=d.querySelector('.src');ta.value=cell.src;
       ta.addEventListener('input',function(){cell.src=this.value;});
       ta.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();runCell(i,d);}});
