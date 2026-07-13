@@ -150,12 +150,26 @@ std::string lower(std::string s) {
     return s;
 }
 
+// FNV-1a of the stylesheet — stable per build, changes when the CSS changes. Used as the cache-busting
+// ?v= on the /style.css + /favicon.svg links so a long Cache-Control never serves a stale stylesheet.
+std::string asset_version() {
+    unsigned long long hash = 1469598103934665603ULL;
+    for (char c : kCss) {
+        hash ^= static_cast<unsigned char>(c);
+        hash *= 1099511628211ULL;
+    }
+    std::ostringstream os;
+    os << std::hex << (hash & 0xFFFFFFFULL);
+    return os.str();
+}
+
 std::string head(std::string_view title) {
+    static const std::string version = asset_version();
     std::string out =
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">"
-        "<link rel=\"stylesheet\" href=\"/style.css\">"
+        "<link rel=\"icon\" href=\"/favicon.svg?v=" + version + "\" type=\"image/svg+xml\">"
+        "<link rel=\"stylesheet\" href=\"/style.css?v=" + version + "\">"
         "<title>";
     out += web_ui_escape(title);
     out += "</title></head><body>";
