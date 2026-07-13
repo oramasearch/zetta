@@ -376,8 +376,9 @@ TEST(ClusterSecurity, PlaintextNodeCannotJoinTlsCluster) {
     Cluster node_a(id_a, config_a);
     node_a.start();
 
-    // No security at all (the --cluster-plaintext / bare-embedding shape):
-    // its HELLO bytes are not a TLS ClientHello, so the TLS side drops it.
+    // No security at all (a bare-embedded Cluster with all-empty security — the
+    // only way to reach plaintext now that #799 removed the CLI opt-out): its
+    // HELLO bytes are not a TLS ClientHello, so the TLS side drops it.
     ClusterConfig config_b;
     config_b.listen_host = "127.0.0.1";
     config_b.listen_port = 42431;

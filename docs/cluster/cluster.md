@@ -145,9 +145,11 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   `src/core/cluster/cluster.cpp` behind the `zetta::runtime::net` seam — `Cluster`'s
   public API (`include/zetta/cluster/cluster.hpp`) exposes no backend types.
 - **Every connection runs mutual TLS 1.3 first** (Corosio's OpenSSL provider)
-  when `ClusterConfig::security` is enabled — the handshake precedes any
+  whenever `ClusterConfig::security` is set — the handshake precedes any
   `ZETTA/1` line, so an unenrolled peer never reaches `HELLO`. The zetta binary
-  enables it by default; `--cluster-plaintext` opts out for debugging. See
+  **always** sets it (inter-node mTLS is non-optional; the old
+  `--cluster-plaintext` opt-out was removed in #799). The only unsecured path is
+  an embedded bare `Cluster` with empty `ClusterSecurity` (tests/hosts). See
   [security.md](security.md).
 - `Cluster` binds the first free port in `[listen_port, listen_port + port_range)`
   synchronously at `start()`, then runs an `io_context` on a background thread:
@@ -388,4 +390,6 @@ of roles, not a node-wide title. This is documented design only — see
   [replication.md](replication.md). Cluster **membership** is still a separate
   peer table (not yet replicated); that's the remaining "everything is
   replicated" gap.
-- Plaintext TCP (Corosio supports TLS; not wired yet).
+- **Inter-node transport security is done** (no longer a gap): mutual TLS 1.3 is
+  wired and **always on** (#466; mandatory since #799 — the `--cluster-plaintext`
+  opt-out was removed). See [security.md](security.md).

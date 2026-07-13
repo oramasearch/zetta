@@ -231,8 +231,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
   cluster link, per-node Ed25519 identities, token-gated join (the token
-  derives the cluster CA), secure by default with `--cluster-plaintext` the
-  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-up
+  derives the cluster CA), **always on** since #799 — which removed the
+  `--cluster-plaintext` opt-out (no plaintext peer mode) and made the default-deny
+  HTTP/MCP auth gate non-optional (there is no auth flag or toggle — the
+  `--require-auth` flag and `ZETTA_REQUIRE_AUTH` env were removed, and the built-in
+  `admin` role gained the orchestration atoms so the owner can drive orchestration
+  over HTTP/MCP; a never-locked-out node auto-seeds an owner token when no
+  `ZETTA_ADMIN_TOKEN` is supplied). PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-up
   still open: [#669](https://github.com/oramasearch/zetta/issues/669) CSR
   enrollment / peer-cert pinning / revocation.
   [#670](https://github.com/oramasearch/zetta/issues/670) (provisioner

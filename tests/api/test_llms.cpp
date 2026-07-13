@@ -177,9 +177,13 @@ struct LlmsHttpFixture : ::testing::Test {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     std::unique_ptr<zetta::api::ApiServer> server;
+    // Auth is always on (#799): seed the owner (admin) so this secret
+    // authenticates as it, and every fixture GET carries it as the bearer.
+    std::string owner_secret = "llms-owner-secret";
 
     void SetUp() override {
         ASSERT_TRUE(node.start());
+        ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
         zetta::api::ServerOptions options;
         options.port = 0;  // ephemeral
         server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
@@ -190,12 +194,15 @@ struct LlmsHttpFixture : ::testing::Test {
         node.stop();
     }
 
-    // Issue a GET from a helper thread while this (owning) thread drains.
+    // Issue a GET from a helper thread while this (owning) thread drains. An
+    // empty bearer defaults to the seeded owner's secret.
     std::string get(const std::string& target, const std::string& bearer = {}) {
+        const std::string effective_bearer =
+            bearer.empty() ? owner_secret : bearer;
         std::string response;
         std::atomic<bool> finished{false};
         std::thread client([&] {
-            response = http_get(server->port(), target, bearer);
+            response = http_get(server->port(), target, effective_bearer);
             finished = true;
         });
         const auto deadline =
@@ -244,6 +251,10 @@ TEST(LlmsHttpHeaders, ContentLengthIsCorrectOnEveryResponseOfOneWorker) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
+    // Auth is always on (#799): seed the owner so its secret authenticates the
+    // three GETs — the header regression is about successful (200) bodies.
+    const std::string owner_secret = "llms-headers-owner-secret";
+    ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
     zetta::api::ServerOptions options;
     options.port = 0;
     options.worker_coroutines = 1;
@@ -253,9 +264,10 @@ TEST(LlmsHttpHeaders, ContentLengthIsCorrectOnEveryResponseOfOneWorker) {
     std::vector<std::string> responses;
     std::atomic<bool> finished{false};
     std::thread client([&] {
-        responses.push_back(http_get(server.port(), "/llms.txt"));
-        responses.push_back(http_get(server.port(), "/llms-full.txt"));
-        responses.push_back(http_get(server.port(), "/llms.txt"));
+        responses.push_back(http_get(server.port(), "/llms.txt", owner_secret));
+        responses.push_back(
+            http_get(server.port(), "/llms-full.txt", owner_secret));
+        responses.push_back(http_get(server.port(), "/llms.txt", owner_secret));
         finished = true;
     });
     const auto deadline =
@@ -291,9 +303,11 @@ TEST(LlmsHttpAuth, ConfiguredTokenGatesTheLlmsPagesToo) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
+    // Auth is always on (#799): seed the owner from a known secret so that secret
+    // authenticates as the owner — there is no legacy shared-secret mode.
+    ASSERT_TRUE(node.bootstrap_owner("secret-key-id").performed);
     zetta::api::ServerOptions options;
     options.port = 0;
-    options.bearer_token = "secret-key-id";
     zetta::api::ApiServer server(node, nullptr, options);
     ASSERT_TRUE(server.start()) << server.reason();
 

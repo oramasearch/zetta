@@ -28,6 +28,40 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"roles:manage", {{CapabilityDomain::Api, "manage_roles"}}},
         {"tokens:manage", {{CapabilityDomain::Api, "manage_tokens"}}},
         {"cluster:admin", {{CapabilityDomain::Api, "cluster_admin"}}},
+        // Orchestration — the pipeline authoring/deploy/run + serving + cloud
+        // control surface. The capability model is exact-match (no wildcards), so
+        // every registry Orchestration op must appear here or NO role can grant it.
+        // These went unwired while the only way to reach orchestration over
+        // HTTP/MCP was the unauthenticated-local bypass (which skipped the
+        // capability check); with auth always on (#799) the bootstrap owner (admin
+        // = the whole vocabulary) must actually hold them. Keep in sync with the
+        // registry's Orchestration capabilities (capabilities.cpp /
+        // cloud_capabilities.cpp) — the admin-covers-every-op invariant is
+        // guarded by a test (tests/api/test_auth_gate.cpp).
+        {"pipelines:manage",
+         {{CapabilityDomain::Orchestration, "create_project"},
+          {CapabilityDomain::Orchestration, "add_dataset"},
+          {CapabilityDomain::Orchestration, "capture_intent"},
+          {CapabilityDomain::Orchestration, "import_n8n"},
+          {CapabilityDomain::Orchestration, "compile_intent"},
+          {CapabilityDomain::Orchestration, "compile_n8n"},
+          {CapabilityDomain::Orchestration, "compile_python"},
+          {CapabilityDomain::Orchestration, "gate"},
+          {CapabilityDomain::Orchestration, "deploy"},
+          {CapabilityDomain::Orchestration, "run"},
+          {CapabilityDomain::Orchestration, "start_run"},
+          {CapabilityDomain::Orchestration, "testsuite_run"}}},
+        {"serving:manage",
+         {{CapabilityDomain::Orchestration, "expose_model"},
+          {CapabilityDomain::Orchestration, "unexpose_model"},
+          {CapabilityDomain::Orchestration, "expose_index"},
+          {CapabilityDomain::Orchestration, "unexpose_index"}}},
+        {"cloud:manage",
+         {{CapabilityDomain::Orchestration, "cloud_inspect"},
+          {CapabilityDomain::Orchestration, "detect_provisioners"},
+          {CapabilityDomain::Orchestration, "add_nodes"},
+          {CapabilityDomain::Orchestration, "approve_consent"},
+          {CapabilityDomain::Orchestration, "deny_consent"}}},
     };
     return entries;
 }

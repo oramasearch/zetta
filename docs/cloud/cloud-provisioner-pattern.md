@@ -118,17 +118,18 @@ list must reflect that (the short-lived burst credential expires on its own — 
 TTL is the backstop, the bulk revoke is the clean-shutdown path).
 
 **Secure-cluster join (#670).** The bootstrap seam carries **two** values, not
-one: the cluster seed address in `ZETTA_SEED_PEER`, and — when the cluster runs
-inter-node mTLS ([cluster security](../cluster/security.md)) — its join token in
+one: the cluster seed address in `ZETTA_SEED_PEER`, and the cluster join token in
 `ZETTA_CLUSTER_TOKEN`, so the node comes up with the equivalent of `zetta --peer
-<seed> --join-token <token>` and joins the **secure** cluster rather than being
-forced onto `--cluster-plaintext`. Both are filled at fleet wire time from this
-node's own live cluster security (`ProvisionerFleet::wire` takes a
+<seed> --join-token <token>` and joins the **mTLS** cluster (inter-node mTLS is
+always on — #799 removed the `--cluster-plaintext` opt-out; see
+[cluster security](../cluster/security.md)). Both are filled at fleet wire time
+from this node's own live cluster security (`ProvisionerFleet::wire` takes a
 `default_cluster_token`); the config's `join_token` mirrors its `seed_peer`, with
 one deliberate difference — the token is the cluster **secret**, so it is **not**
 part of the config's JSON boundary (no schema field, never `to_json`/`from_json`)
 and so never lands in the detected provisioner config or `system.provisioners`. A
-plaintext cluster injects no token. The reference bindings carry the token on the
+`Cluster` with empty security (the embedded bare-`Cluster` test/host path) injects
+no token. The reference bindings carry the token on the
 same visible seam as the seed to illustrate the plumbing; a production binding
 sources it from the cloud's secret store instead of a describe-able tag / literal.
 

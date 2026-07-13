@@ -51,10 +51,10 @@ BootstrapEnvApplied apply_bootstrap_env(NodeBootstrap& config,
     }
 
     // ZETTA_CLUSTER_TOKEN -> --join-token. Skipped when the operator set a token
-    // explicitly, and when running plaintext — env never forces security on.
-    // The token is passed through unvalidated, exactly as --join-token is; a
-    // malformed token fails loudly in load_or_create_cluster_security.
-    if (!config.join_token_from_cli && !config.cluster_plaintext) {
+    // explicitly on the CLI. The token is passed through unvalidated, exactly as
+    // --join-token is; a malformed token fails loudly in
+    // load_or_create_cluster_security. Inter-node mTLS is always on (#799).
+    if (!config.join_token_from_cli) {
         std::string token = env_value(read, "ZETTA_CLUSTER_TOKEN");
         if (!token.empty()) {
             config.join_token = std::move(token);

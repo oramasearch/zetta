@@ -47,7 +47,7 @@
     },
     "securitySchemes": {
       "bearer_token": {
-        "description": "the AccessKey id (docs/api/registry-design.md: the bearer token IS the key). Optional on the default loopback bind — a tokenless local call runs as the audited unauthenticated-local session.",
+        "description": "an access token that resolves to a user via the token store (#744). Required on EVERY request — auth is always on (#799); there is no anonymous path. Seed the first credential with --admin-token (the bootstrap owner, #733).",
         "scheme": "bearer",
         "type": "http"
       }
@@ -6113,8 +6113,7 @@
   "security": [
     {
       "bearer_token": []
-    },
-    {}
+    }
   ],
   "servers": [
     {

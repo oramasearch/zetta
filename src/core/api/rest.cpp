@@ -265,14 +265,14 @@ nlohmann::json openapi_document(const Registry& registry) {
            {{"type", "http"},
             {"scheme", "bearer"},
             {"description",
-             "the AccessKey id (docs/api/registry-design.md: the bearer "
-             "token IS the key). Optional on the default loopback bind — a "
-             "tokenless local call runs as the audited unauthenticated-local "
-             "session."}}}}},
+             "an access token that resolves to a user via the token store "
+             "(#744). Required on EVERY request — auth is always on (#799); "
+             "there is no anonymous path. Seed the first credential with "
+             "--admin-token (the bootstrap owner, #733)."}}}}},
         {"schemas", {{"error_envelope", error_envelope_schema()}}}};
-    // A token when configured, or the audited unauthenticated-local session.
+    // Auth is always required (#799) — no anonymous alternative.
     document["security"] = nlohmann::json::array(
-        {{{"bearer_token", nlohmann::json::array()}}, nlohmann::json::object()});
+        {{{"bearer_token", nlohmann::json::array()}}});
 
     nlohmann::json paths = nlohmann::json::object();
     for (const auto& capability : registry.list()) {

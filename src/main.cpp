@@ -16,6 +16,7 @@
 #include "zetta/cloud/provisioner_detect.hpp"
 #include "zetta/cloud/provisioner_fleet.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
+#include "zetta/governance/token_secret.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/observability/crash.hpp"
 #include "zetta/util/uuid.hpp"
@@ -46,11 +47,8 @@ struct Options {
     zetta::cluster::ClusterConfig cluster;
     bool mcp_enabled = true;                    // --no-mcp disables
     std::string mcp_listen = "127.0.0.1:4800";  // --mcp-listen HOST:PORT
-    std::string mcp_token;                      // --mcp-token (acting key id)
-    bool require_auth = false;      // --require-auth / ZETTA_REQUIRE_AUTH (#745)
     std::string admin_token;        // --admin-token (bootstrap owner secret, #744)
     std::string join_token;         // --join-token (join an existing cluster)
-    bool cluster_plaintext = false;  // --cluster-plaintext (debugging only)
     bool data_dir_from_cli = false;  // --data-dir set explicitly (vs default/env)
     bool show_help = false;
     bool bad_usage = false;
@@ -77,14 +75,11 @@ void print_usage(const char* argv0) {
         "  --headed            Run with the SDL3 + ImGui UI (default)\n"
         "  --headless          Run without a UI (server only)\n"
         "  --mcp-listen H:P    MCP endpoint bind (default 127.0.0.1:4800)\n"
-        "  --mcp-token T       Legacy shared-secret bearer (= acting key id);\n"
-        "                      ignored when --require-auth is set\n"
-        "  --require-auth      Default-deny: every HTTP/MCP/REST path needs a\n"
-        "                      bearer that resolves to a user via the token\n"
-        "                      store, else 401 (or ZETTA_REQUIRE_AUTH); #745\n"
         "  --admin-token T     Seed the owner user's access token from this\n"
         "                      secret on first boot (or ZETTA_ADMIN_TOKEN);\n"
-        "                      hashed at rest, never logged (#744)\n"
+        "                      hashed at rest, never logged. If omitted on a\n"
+        "                      fresh node, one is generated and printed once so\n"
+        "                      the node is never locked out (#744/#733)\n"
         "  --no-mcp            Disable the embedded MCP server\n"
         "  --data-dir PATH     Database directory (default: %s)\n"
         "  --listen HOST:PORT  Cluster listen address (default: %s:%u);\n"
@@ -104,9 +99,8 @@ void print_usage(const char* argv0) {
         "                      toward the replication factor) or ephemeral (burst\n"
         "                      capacity; locality replicas only, uncounted) (#809)\n"
         "  --join-token TOKEN  Cluster join token (printed by the first node);\n"
-        "                      persisted in data-dir on first use\n"
-        "  --cluster-plaintext Disable inter-node mTLS (debugging only —\n"
-        "                      anyone who can reach the port can join)\n"
+        "                      persisted in data-dir on first use. Inter-node\n"
+        "                      mTLS is always on — there is no plaintext mode\n"
         "  --log-cluster       Log cluster gossip events to stderr (debugging)\n"
         "  --no-preflight      Skip the startup data integrity check\n"
         "  -h, --help          Show this help\n"
@@ -139,11 +133,6 @@ Options parse_args(int argc, char** argv) {
         } else if (arg == "--mcp-listen") {
             const char* v = take_value(argc, argv, i, o, "--mcp-listen");
             if (v) o.mcp_listen = v;
-        } else if (arg == "--mcp-token") {
-            const char* v = take_value(argc, argv, i, o, "--mcp-token");
-            if (v) o.mcp_token = v;
-        } else if (arg == "--require-auth") {
-            o.require_auth = true;
         } else if (arg == "--admin-token") {
             const char* v = take_value(argc, argv, i, o, "--admin-token");
             if (v) o.admin_token = v;
@@ -209,8 +198,6 @@ Options parse_args(int argc, char** argv) {
             const char* v = take_value(argc, argv, i, o, "--join-token");
             if (!v) break;
             o.join_token = v;
-        } else if (arg == "--cluster-plaintext") {
-            o.cluster_plaintext = true;
         } else if (arg == "--log-cluster") {
             o.cluster.log_events = true;
         } else if (arg == "--no-preflight") {
@@ -266,16 +253,13 @@ int main(int argc, char** argv) {
     // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
     // ZETTA_CLUSTER_TOKEN, ZETTA_DATA_DIR; docs/plans/cloud-provisioning.md Gap
     // A). Fold them in as defaults beneath the flags already parsed — explicit
-    // flag > env > default — so a provisioned node auto-joins a secure (mTLS)
-    // cluster with no manual flags. A plaintext cluster stays plaintext (env
-    // never forces security on); the --join-token/--cluster-plaintext conflict
-    // check below still guards the result.
+    // flag > env > default — so a provisioned node auto-joins the secure (mTLS)
+    // cluster with no manual flags. Inter-node mTLS is always on (#799).
     {
         zetta::cloud::NodeBootstrap bootstrap;
         bootstrap.seeds = opts.cluster.seeds;
         bootstrap.join_token = opts.join_token;
         bootstrap.data_dir = opts.node.data_dir;
-        bootstrap.cluster_plaintext = opts.cluster_plaintext;
         bootstrap.peer_from_cli = !opts.cluster.seeds.empty();
         bootstrap.join_token_from_cli = !opts.join_token.empty();
         bootstrap.data_dir_from_cli = opts.data_dir_from_cli;
@@ -310,12 +294,6 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (opts.cluster_plaintext && !opts.join_token.empty()) {
-        std::fprintf(stderr,
-                     "zetta: --cluster-plaintext and --join-token conflict\n");
-        return 2;
-    }
-
     // One UUID is both the cluster node id and the replication actor id, so a
     // node's changes are attributed to it and merge conflict-free. It's stable
     // across restarts (persisted in data_dir/node_id) so the change history
@@ -324,12 +302,12 @@ int main(int argc, char** argv) {
     // reconciles from it) and the Cluster (whose thread gossips it).
     const std::string node_id = load_or_create_node_id(opts.node.data_dir);
 
-    // Inter-node transport security (CTL-2, #466): secure by default. The
-    // first start generates a join token into data_dir/security/ (or adopts
-    // --join-token) and mints this node's identity; the Cluster then refuses
-    // any connection that can't prove that token's CA. Plaintext is an
-    // explicit opt-out, for debugging only.
-    if (!opts.cluster_plaintext) {
+    // Inter-node transport security (CTL-2, #466): always on (#799). The first
+    // start generates a join token into data_dir/security/ (or adopts
+    // --join-token) and mints this node's identity; the Cluster then refuses any
+    // connection that can't prove that token's CA. There is no plaintext mode —
+    // every accepted or dialed peer link runs mutual TLS 1.3.
+    {
         std::string reason;
         std::optional<zetta::cluster::ClusterSecurity> security =
             zetta::cluster::load_or_create_cluster_security(
@@ -340,11 +318,6 @@ int main(int argc, char** argv) {
             return 1;
         }
         opts.cluster.security = std::move(*security);
-    } else {
-        std::fprintf(stderr,
-                     "zetta: WARNING inter-node TLS disabled "
-                     "(--cluster-plaintext): any host that can reach the "
-                     "listen port can join this cluster\n");
     }
 
     zetta::cluster::ReplicationManager replication(node_id);
@@ -390,10 +363,28 @@ int main(int argc, char** argv) {
                 admin_secret = env;
             }
         }
+        // The default-deny gate is always on (#799), so a fresh node with the MCP
+        // server enabled needs an owner token or every request 401s. If no secret
+        // was supplied, generate one and print it ONCE so the node is never locked
+        // out (#733) — in the operator path a secret is always injected, so this
+        // fires only for a bare local run.
+        bool generated = false;
+        if (admin_secret.empty() && opts.mcp_enabled && node.user_count() == 0) {
+            admin_secret = zetta::governance::generate_token_secret();
+            generated = true;
+        }
         if (!admin_secret.empty()) {
             const zetta::Node::BootstrapResult boot =
                 node.bootstrap_owner(admin_secret);
-            if (boot.performed) {
+            if (boot.performed && generated) {
+                std::printf(
+                    "zetta: no --admin-token supplied — generated the owner '%s' "
+                    "access token (id %s). SAVE THIS — it is shown only once:\n"
+                    "    %s\n"
+                    "    authenticate MCP/REST with: Authorization: Bearer <token>\n",
+                    boot.user_name.c_str(), boot.token_id.c_str(),
+                    admin_secret.c_str());
+            } else if (boot.performed) {
                 std::printf(
                     "zetta: bootstrapped owner user '%s' + admin role + access "
                     "token %s (stored hashed under %s) — authenticate with the "
@@ -405,11 +396,6 @@ int main(int argc, char** argv) {
                 std::printf("zetta: owner bootstrap skipped (%s)\n",
                             boot.reason.c_str());
             }
-        } else if (node.user_count() == 0) {
-            std::printf(
-                "zetta: no users yet — seed an owner with --admin-token "
-                "<secret> or ZETTA_ADMIN_TOKEN (the secret is hashed at rest, "
-                "never logged; #744)\n");
         }
     }
 
@@ -553,35 +539,22 @@ int main(int argc, char** argv) {
         }
         api_options.listen_address = opts.mcp_listen.substr(0, colon);
         api_options.port = api_port;
-        api_options.bearer_token = opts.mcp_token;
-        // The default-deny gate (#745): --require-auth or ZETTA_REQUIRE_AUTH
-        // closes every path unless the bearer resolves to a user via the token
-        // store. Secure-by-default when set; off keeps the loopback GUI's
-        // unauthenticated-local session working (back-compat).
-        bool require_auth = opts.require_auth;
-        if (!require_auth) {
-            if (const char* env = std::getenv("ZETTA_REQUIRE_AUTH")) {
-                const std::string value = env;
-                require_auth =
-                    !(value.empty() || value == "0" || value == "false");
-            }
-        }
-        api_options.require_auth = require_auth;
+        // The default-deny gate is always on (#799) and has no toggle: every
+        // HTTP/MCP/REST path needs a bearer that resolves to a user via the token
+        // store, else 401. There is no opt-out and no legacy shared-secret bypass.
+        // The in-process GUI console is unaffected (it authorizes locally).
         api_server = std::make_unique<zetta::api::ApiServer>(node, &cluster,
                                                              api_options);
         if (api_server->start()) {
-            const char* auth_note =
-                require_auth ? " (auth required — token resolves to a user)"
-                : opts.mcp_token.empty() ? " (unauthenticated local)"
-                                         : " (bearer token required)";
-            std::printf("zetta: MCP endpoint http://%s:%u/mcp%s\n",
+            std::printf("zetta: MCP endpoint http://%s:%u/mcp "
+                        "(auth required — bearer must resolve to a user)\n",
                         api_options.listen_address.c_str(),
-                        static_cast<unsigned>(api_server->port()), auth_note);
-            if (require_auth && node.token_count() == 0) {
+                        static_cast<unsigned>(api_server->port()));
+            if (node.token_count() == 0) {
                 std::fprintf(stderr,
-                             "zetta: WARNING --require-auth is on but no tokens "
-                             "exist — every request will 401. Seed an owner with "
-                             "--admin-token <secret> (#745/#733).\n");
+                             "zetta: WARNING no tokens exist — every request "
+                             "will 401. Seed an owner with --admin-token <secret> "
+                             "or ZETTA_ADMIN_TOKEN (#799/#733).\n");
             }
         } else {
             std::fprintf(stderr, "zetta: MCP server failed to start: %s\n",

@@ -16,15 +16,20 @@
 
 #include "index/term_frequency_backend.hpp"
 #include "temp_dir.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
 #include "zetta/api/rest.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/api/specs.hpp"
+#include "zetta/governance/role.hpp"
 #include "zetta/schemas/registry.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/governance/capability.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
+#include "zetta/governance/token.hpp"
+#include "zetta/governance/user.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
 #include "zetta/ml/gbdt.hpp"
@@ -89,9 +94,14 @@ struct RestServerFixture : ::testing::Test {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     std::unique_ptr<zetta::api::ApiServer> server;
+    // Auth is always on (#799): seed the owner (admin) so this secret
+    // authenticates as it; request() sends it by default so every fixture call
+    // is a successful, authorized admin call.
+    std::string owner_secret = "rest-owner-secret";
 
     void SetUp() override {
         ASSERT_TRUE(node.start());
+        ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
         zetta::api::ServerOptions options;
         options.port = 0;  // ephemeral
         server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
@@ -104,14 +114,18 @@ struct RestServerFixture : ::testing::Test {
     }
 
     // Issue a request from a helper thread while this (owning) thread drains.
+    // An empty bearer defaults to the seeded owner's secret; an explicit bearer
+    // (e.g. a lower-privilege user's token) overrides it.
     HttpResponse request(const std::string& method, const std::string& target,
                          const std::string& body = {},
                          const std::string& bearer = {}) {
+        const std::string effective_bearer =
+            bearer.empty() ? owner_secret : bearer;
         HttpResponse response;
         std::atomic<bool> finished{false};
         std::thread client([&] {
-            response =
-                http_request(server->port(), method, target, body, bearer);
+            response = http_request(server->port(), method, target, body,
+                                    effective_bearer);
             finished = true;
         });
         const auto deadline =
@@ -270,9 +284,11 @@ TEST(RestServerAuth, ConfiguredTokenIsRequired) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
+    // Auth is always on (#799): seed the owner from a known secret so that secret
+    // authenticates as the owner — there is no legacy shared-secret mode.
+    ASSERT_TRUE(node.bootstrap_owner("secret-key-id").performed);
     zetta::api::ServerOptions options;
     options.port = 0;
-    options.bearer_token = "secret-key-id";
     zetta::api::ApiServer server(node, nullptr, options);
     ASSERT_TRUE(server.start()) << server.reason();
 
@@ -333,22 +349,18 @@ TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
     ASSERT_TRUE(model);
     ASSERT_TRUE(model->set_weights(trained.model.to_json().dump()));
 
-    // A serving key holding exactly data:predict + data:search, and a
-    // read-only key holding neither (the deny half).
-    auto principal = node.create_principal(
-        "customer", zetta::governance::PrincipalKind::Service);
-    ASSERT_TRUE(principal);
-    zetta::governance::CapabilitySet serving_rights;
-    serving_rights.grant(zetta::governance::CapabilityDomain::Data, "predict");
-    serving_rights.grant(zetta::governance::CapabilityDomain::Data, "search");
-    auto serving_key = principal->create_key(
-        zetta::governance::unrestricted_scope(), serving_rights);
-    ASSERT_TRUE(serving_key);
-    zetta::governance::CapabilitySet read_rights;
-    read_rights.grant(zetta::governance::CapabilityDomain::Api, "query");
-    auto reader_key = principal->create_key(
-        zetta::governance::unrestricted_scope(), read_rights);
-    ASSERT_TRUE(reader_key);
+    // Under always-on auth (#799) the HTTP gate resolves the bearer to a USER
+    // before the serving layer runs, so the serve:* authorize runs against that
+    // user's effective permissions (a raw AccessKey bearer never reaches here —
+    // it is 401 at the gate). The allow half is the seeded owner (admin holds
+    // data:predict + data:search); the deny half is a second user with NO roles.
+    // (The AccessKey-scoped allow/deny journeys live in test_serving.cpp.)
+    auto denied_user = node.create_user("no-serving");
+    ASSERT_TRUE(denied_user);
+    const auto denied_token =
+        node.create_token(denied_user->id(), zetta::governance::TokenType::Api);
+    ASSERT_TRUE(denied_token.token);
+    ASSERT_FALSE(denied_token.secret.empty());
 
     const std::string predict_target = "/v1/models/churn/predict";
     const std::string predict_body =
@@ -357,17 +369,16 @@ TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
                          {{"tenure", 0.05}, {"plan", 0.5}}}}}
             .dump();
 
-    // Not exposed yet: the route answers 404.
-    auto before = request("POST", predict_target, predict_body,
-                          serving_key->id());
+    // Not exposed yet: the route answers 404 (owner is authorized to predict,
+    // so this is the exposure check, not the capability check).
+    auto before = request("POST", predict_target, predict_body);
     EXPECT_EQ(before.status, 404);
 
     // Expose over the same wire (the control plane), then predict.
     auto exposed = request("POST", "/v1/expose_model",
                            nlohmann::json{{"model", "churn"}}.dump());
     ASSERT_EQ(exposed.status, 200) << exposed.body;
-    auto served = request("POST", predict_target, predict_body,
-                          serving_key->id());
+    auto served = request("POST", predict_target, predict_body);
     ASSERT_EQ(served.status, 200) << served.body;
     auto served_body = json_of(served);
     ASSERT_TRUE(served_body.at("ok").get<bool>()) << served.body;
@@ -375,17 +386,16 @@ TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
     EXPECT_EQ(served_body.at("value").at("ranked")[0].at("entity"), 0);
     EXPECT_EQ(served_body.at("trace_id").get<std::string>().size(), 32u);
 
-    // Deny: a key without data:predict gets 403 (unauthorized).
+    // Deny: a user without data:predict gets 403 (unauthorized).
     auto denied = request("POST", predict_target, predict_body,
-                          reader_key->id());
+                          denied_token.secret);
     EXPECT_EQ(denied.status, 403) << denied.body;
 
     // Un-expose kills the route.
     auto unexposed = request("POST", "/v1/unexpose_model",
                              nlohmann::json{{"model", "churn"}}.dump());
     ASSERT_EQ(unexposed.status, 200) << unexposed.body;
-    auto after = request("POST", predict_target, predict_body,
-                         serving_key->id());
+    auto after = request("POST", predict_target, predict_body);
     EXPECT_EQ(after.status, 404) << after.body;
 
     // Same for an index: seed a searchable table, expose, GET the served
@@ -415,28 +425,26 @@ TEST_F(RestServerFixture, ServedModelAndIndexEndpointsOverHttp) {
 
     const std::string search_target =
         "/v1/indexes/articles/search?query=postgres";
-    auto search_before = request("GET", search_target, "",
-                                 serving_key->id());
+    auto search_before = request("GET", search_target, "");
     EXPECT_EQ(search_before.status, 404);
 
     auto index_exposed = request("POST", "/v1/expose_index",
                                  nlohmann::json{{"index", "articles"}}.dump());
     ASSERT_EQ(index_exposed.status, 200) << index_exposed.body;
-    auto search_served = request("GET", search_target, "",
-                                 serving_key->id());
+    auto search_served = request("GET", search_target, "");
     ASSERT_EQ(search_served.status, 200) << search_served.body;
     auto search_body = json_of(search_served);
     ASSERT_TRUE(search_body.at("ok").get<bool>()) << search_served.body;
     ASSERT_GE(search_body.at("value").at("hits").size(), 1u);
 
-    auto search_denied = request("GET", search_target, "", reader_key->id());
+    auto search_denied = request("GET", search_target, "", denied_token.secret);
     EXPECT_EQ(search_denied.status, 403) << search_denied.body;
 
     auto index_unexposed =
         request("POST", "/v1/unexpose_index",
                 nlohmann::json{{"index", "articles"}}.dump());
     ASSERT_EQ(index_unexposed.status, 200) << index_unexposed.body;
-    auto search_after = request("GET", search_target, "", serving_key->id());
+    auto search_after = request("GET", search_target, "");
     EXPECT_EQ(search_after.status, 404) << search_after.body;
 }
 

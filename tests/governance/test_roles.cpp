@@ -79,10 +79,32 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
     EXPECT_EQ(permission_operations("cluster:admin"),
               (std::vector<Operation>{{CapabilityDomain::Api, "cluster_admin"}}));
 
+    // Orchestration atoms (#799): the pipeline authoring/deploy/run + serving +
+    // cloud control surface, so the admin/owner can drive it under always-on auth.
+    EXPECT_TRUE(is_permission("pipelines:manage"));
+    EXPECT_TRUE(is_permission("serving:manage"));
+    EXPECT_TRUE(is_permission("cloud:manage"));
+    EXPECT_EQ(permission_operations("serving:manage"),
+              (std::vector<Operation>{
+                  {CapabilityDomain::Orchestration, "expose_model"},
+                  {CapabilityDomain::Orchestration, "unexpose_model"},
+                  {CapabilityDomain::Orchestration, "expose_index"},
+                  {CapabilityDomain::Orchestration, "unexpose_index"}}));
+    EXPECT_EQ(permission_operations("cloud:manage"),
+              (std::vector<Operation>{
+                  {CapabilityDomain::Orchestration, "cloud_inspect"},
+                  {CapabilityDomain::Orchestration, "detect_provisioners"},
+                  {CapabilityDomain::Orchestration, "add_nodes"},
+                  {CapabilityDomain::Orchestration, "approve_consent"},
+                  {CapabilityDomain::Orchestration, "deny_consent"}}));
+    // pipelines:manage expands to the full authoring/deploy/run flow.
+    EXPECT_EQ(permission_operations("pipelines:manage").size(), 12u);
+
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 
-    // The canonical list carries the #746 atoms plus blob:read (#747).
-    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 10u);
+    // The canonical list carries the #746 atoms, blob:read (#747), and the three
+    // Orchestration atoms (#799).
+    EXPECT_EQ(zetta::governance::permission_vocabulary().size(), 13u);
 }
 
 TEST(PermissionVocabulary, ExpandAndReverseRoundTrip) {
