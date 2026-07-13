@@ -5,7 +5,7 @@
 [submodule "modules/corosio"]
 	path = modules/corosio
 	url = git@github.com:oramasearch/corosio.git
-	branch = fix/epoll-hangup-spin
+	branch = orama-main
 [submodule "modules/automerge-cpp"]
 	path = modules/automerge-cpp
 	url = git@github.com:homer6/automerge-cpp.git
