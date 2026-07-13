@@ -83,6 +83,116 @@ std::string bearer_of(const boost::http::route_params& route) {
     return std::string(header_value.substr(7));
 }
 
+// The value of the named cookie on a request, or empty — parses the Cookie header
+// ("name=value; name2=value2"). The server-rendered web UI authenticates from an
+// HttpOnly `zetta_session` cookie (its value is a bearer token, validated identically).
+std::string cookie_value(const boost::http::route_params& route, std::string_view name) {
+    if (route.req.count(boost::http::field::cookie) == 0) return {};
+    std::string_view header = route.req.at(boost::http::field::cookie);
+    std::size_t pos = 0;
+    while (pos < header.size()) {
+        const std::size_t semi = header.find(';', pos);
+        std::string_view pair = header.substr(
+            pos, semi == std::string_view::npos ? std::string_view::npos : semi - pos);
+        while (!pair.empty() && pair.front() == ' ') pair.remove_prefix(1);
+        const std::size_t eq = pair.find('=');
+        if (eq != std::string_view::npos && pair.substr(0, eq) == name)
+            return std::string(pair.substr(eq + 1));
+        if (semi == std::string_view::npos) break;
+        pos = semi + 1;
+    }
+    return {};
+}
+
+// Percent-decode an application/x-www-form-urlencoded token ('+' → space, %XX → byte).
+std::string form_decode(std::string_view in) {
+    std::string out;
+    out.reserve(in.size());
+    auto hex = [](char c) -> int {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    };
+    for (std::size_t i = 0; i < in.size(); ++i) {
+        if (in[i] == '+') {
+            out += ' ';
+        } else if (in[i] == '%' && i + 2 < in.size()) {
+            const int hi = hex(in[i + 1]);
+            const int lo = hex(in[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out += static_cast<char>((hi << 4) | lo);
+                i += 2;
+            } else {
+                out += in[i];
+            }
+        } else {
+            out += in[i];
+        }
+    }
+    return out;
+}
+
+// Every field of an x-www-form-urlencoded body, decoded.
+std::vector<std::pair<std::string, std::string>> parse_form(std::string_view body) {
+    std::vector<std::pair<std::string, std::string>> fields;
+    std::size_t pos = 0;
+    while (pos < body.size()) {
+        const std::size_t amp = body.find('&', pos);
+        std::string_view pair = body.substr(
+            pos, amp == std::string_view::npos ? std::string_view::npos : amp - pos);
+        const std::size_t eq = pair.find('=');
+        if (eq != std::string_view::npos)
+            fields.emplace_back(form_decode(pair.substr(0, eq)), form_decode(pair.substr(eq + 1)));
+        if (amp == std::string_view::npos) break;
+        pos = amp + 1;
+    }
+    return fields;
+}
+
+std::string form_field(const std::vector<std::pair<std::string, std::string>>& fields,
+                       std::string_view name) {
+    for (const auto& [key, value] : fields)
+        if (key == name) return value;
+    return {};
+}
+
+// A query-string parameter, or `fallback` when absent.
+std::string query_param(const boost::http::route_params& route, std::string_view name,
+                        std::string_view fallback) {
+    for (const auto& parameter : route.url.params())
+        if (parameter.key == name) return std::string(parameter.value);
+    return std::string(fallback);
+}
+
+// Whether the request reached us over HTTPS (behind the ingress/Cloudflare) — decides the
+// cookie's `Secure` flag (omitted for plain-HTTP local dev, or the login cookie never sticks).
+bool request_is_https(const boost::http::route_params& route) {
+    return route.req.count("x-forwarded-proto") != 0 &&
+           std::string_view(route.req.at("x-forwarded-proto")) == "https";
+}
+
+// A capy WriteSink that collects a request body into a std::string — the form-urlencoded bodies the
+// server-rendered login + Console POSTs send (json_sink parses JSON, which form bodies are not).
+struct StringBodySink {
+    std::string data;
+    template <boost::capy::ConstBufferSequence CB>
+    boost::capy::immediate<boost::capy::io_result<std::size_t>> write_some(const CB& buffers) {
+        std::size_t total = 0;
+        for (auto it = boost::capy::begin(buffers); it != boost::capy::end(buffers); ++it) {
+            const boost::capy::const_buffer buffer(*it);
+            data.append(static_cast<const char*>(buffer.data()), buffer.size());
+            total += buffer.size();
+        }
+        return {{{}, total}};
+    }
+    template <boost::capy::ConstBufferSequence CB>
+    boost::capy::immediate<boost::capy::io_result<std::size_t>> write(const CB& buffers) {
+        return write_some(buffers);
+    }
+    boost::capy::immediate<boost::capy::io_result<>> write_eof() { return {{}}; }
+};
+
 // The acting identity the ONE auth gate (#745) resolved for a request. Stashed
 // on the route's per-request datastore (the worker clears route_data each
 // request), so every downstream handler reads a single decision instead of
@@ -548,6 +658,279 @@ struct ApiServer::Impl {
         if (send_error) co_return http::route_error(send_error);
         co_return http::route_done;
     }
+
+    // --- server-rendered web dashboard (#647) --------------------------------
+    // Public HTML routes: the browser can't attach a bearer to a plain navigation, so these
+    // self-authenticate from an HttpOnly `zetta_session` cookie (its value IS a bearer token,
+    // validated identically). Reads render the read model + registry as HTML; the Console POSTs to
+    // /run, which invokes a capability through the SAME Registry::call the REST/MCP surfaces use — so
+    // the page can never drift, and the engine still authorizes + consent-gates every call. Data is
+    // gathered on the owning loop; the HTML is built from the returned JSON.
+
+    std::string render_dashboard_content(ApiContext& context, const std::string& view,
+                                         const boost::http::route_params& route) {
+        auto table = [&](const std::string& statement) -> std::string {
+            ApiResult result =
+                capability_registry.call("sql", nlohmann::json{{"statement", statement}}, context);
+            if (!result.ok)
+                return "<div class=\"err-box\">" + web_ui_escape(result.error.message) + "</div>";
+            return web_ui_table(result.value.value("columns", nlohmann::json::array()),
+                                result.value.value("rows", nlohmann::json::array()));
+        };
+        std::string out;
+        if (view == "overview") {
+            ApiResult info =
+                capability_registry.call("server_info", nlohmann::json::object(), context);
+            if (info.ok)
+                out += web_ui_panel(
+                    "Overview", "",
+                    web_ui_overview_cards(info.value) + "<div class=\"metaline mono\">" +
+                        web_ui_escape(info.value.value("node_id", "")) + " \xC2\xB7 v" +
+                        web_ui_escape(info.value.value("version", "")) + "</div>");
+            out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
+                                table("SELECT * FROM system.nodes"));
+            out += web_ui_panel("This node", "", table("SELECT * FROM system.node_metrics"));
+        } else if (view == "cluster") {
+            out += web_ui_panel("Nodes", "", table("SELECT * FROM system.nodes"));
+            out += web_ui_panel("Node metrics", "", table("SELECT * FROM system.node_metrics"));
+            out += web_ui_panel("Deployments", "", table("SELECT * FROM system.deployments"));
+        } else if (view == "data") {
+            out += web_ui_panel("Datasets", "", table("SELECT * FROM system.datasets"));
+            out += web_ui_panel("Indexes", "", table("SELECT * FROM system.indexes"));
+        } else if (view == "models") {
+            out += web_ui_panel("Models", "", table("SELECT * FROM system.models"));
+        } else if (view == "pipeline") {
+            out += web_ui_panel("Runs", "", table("SELECT * FROM system.runs"));
+            out += web_ui_panel("Jobs", "", table("SELECT * FROM system.jobs"));
+        } else if (view == "observability") {
+            out += web_ui_panel("Traces", "", table("SELECT * FROM system.traces"));
+            out += web_ui_panel("Spans", "", table("SELECT * FROM system.spans"));
+            out += web_ui_panel("Crashes", "", table("SELECT * FROM system.crashes"));
+        } else if (view == "governance") {
+            out += web_ui_panel("Users", "", table("SELECT * FROM system.users"));
+            out += web_ui_panel("Roles", "", table("SELECT * FROM system.roles"));
+            out += web_ui_panel("Policies", "", table("SELECT * FROM system.policies"));
+            out += web_ui_panel("Tokens", "", table("SELECT * FROM system.tokens"));
+            out += web_ui_panel("Consent requests", "",
+                                table("SELECT * FROM system.consent_requests"));
+            out += web_ui_panel("Audit", "", table("SELECT * FROM system.audit"));
+        } else if (view == "sql") {
+            const std::string statement = query_param(route, "q", "SELECT * FROM system.tables");
+            std::string body =
+                "<form method=\"get\" action=\"/\"><input type=\"hidden\" name=\"view\" value=\"sql\">"
+                "<textarea name=\"q\" spellcheck=\"false\">" +
+                web_ui_escape(statement) +
+                "</textarea><div style=\"margin-top:10px\"><button class=\"btn btn-primary\">Run</button> "
+                "<span class=\"q\">GET /v1/sql \xC2\xB7 Postgres subset</span></div></form>";
+            if (!statement.empty()) {
+                ApiResult result = capability_registry.call(
+                    "sql", nlohmann::json{{"statement", statement}}, context);
+                if (!result.ok)
+                    body += "<div class=\"err-box\" style=\"margin-top:12px\">" +
+                            web_ui_escape(result.error.message) + "</div>";
+                else {
+                    const auto rows = result.value.value("rows", nlohmann::json::array());
+                    body += "<div style=\"margin-top:12px\">" +
+                            web_ui_table(result.value.value("columns", nlohmann::json::array()),
+                                         rows) +
+                            "<div class=\"q\" style=\"margin-top:8px\">" +
+                            std::to_string(rows.size()) + " rows</div></div>";
+                }
+            }
+            out += web_ui_panel("SQL console", "", body);
+        } else if (view == "console") {
+            out += render_console();
+        } else {
+            out += "<div class=\"empty\">Unknown view.</div>";
+        }
+        return out;
+    }
+
+    std::string render_console() {
+        std::string out = web_ui_panel(
+            "Console", "invoke any capability \xE2\x80\x94 the engine enforces authz + consent",
+            "<div class=\"q\">Reads return a table; actions and jobs mutate and are audited as you.</div>");
+        for (const auto& capability : capability_registry.list()) {
+            std::string form =
+                "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
+                web_ui_escape(capability->name) + "\">";
+            const auto& schema = capability->input_schema;
+            if (schema.is_object() && schema.contains("properties") &&
+                schema["properties"].is_object()) {
+                const nlohmann::json required = schema.value("required", nlohmann::json::array());
+                for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
+                    bool is_required = false;
+                    for (const auto& item : required)
+                        if (item.is_string() && item.get<std::string>() == it.key())
+                            is_required = true;
+                    const std::string type = it.value().value("type", "string");
+                    const std::string description = it.value().value("description", "");
+                    form += "<label>" + web_ui_escape(it.key()) + (is_required ? " *" : "") + "</label>";
+                    form += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
+                            web_ui_escape(type) +
+                            (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) +
+                            "\">";
+                }
+            }
+            const bool is_read = capability->kind == CapabilityKind::Read;
+            form += "<div style=\"margin-top:10px\"><button class=\"btn";
+            form += is_read ? "" : " btn-primary";
+            form += "\">Run ";
+            form += to_string(capability->kind);
+            form += "</button></div></form>";
+            out += web_ui_panel(capability->name, capability->description, form);
+        }
+        return out;
+    }
+
+    // GET / — the dashboard (or the login page when the session cookie is absent/invalid).
+    boost::http::route_task serve_web_root(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        std::string body;
+        if (user_id.empty()) {
+            body = web_ui_login("");
+        } else {
+            const std::string view = query_param(route, "view", "overview");
+            std::string content;
+            std::string meta;
+            co_await bridge.run_on_owner([&] {
+                ApiContext context{node, cluster, user_id,
+                                   zetta::observability::make_root_trace(), &node.span_recorder(),
+                                   &background};
+                context.acting_is_user = true;
+                ApiResult info =
+                    capability_registry.call("server_info", nlohmann::json::object(), context);
+                if (info.ok) {
+                    std::string node_id = info.value.value("node_id", "");
+                    if (node_id.size() > 12) node_id.resize(12);
+                    const std::size_t nodes = info.value.contains("cluster_members")
+                                                  ? info.value["cluster_members"].size()
+                                                  : 0;
+                    meta = node_id + " \xC2\xB7 v" + info.value.value("version", "") + " \xC2\xB7 " +
+                           std::to_string(nodes) + " nodes";
+                }
+                content = render_dashboard_content(context, view, route);
+            });
+            body = web_ui_shell(view, user_id.size() > 12 ? user_id.substr(0, 12) : user_id, meta,
+                                content);
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /login — exchange a bearer token for the HttpOnly session cookie.
+    boost::http::route_task serve_web_login(boost::http::route_params& route) {
+        namespace http = boost::http;
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        const std::string token = form_field(parse_form(sink.data), "token");
+        bool ok = false;
+        if (!token.empty())
+            co_await bridge.run_on_owner([&] { if (node.authenticate_token(token)) ok = true; });
+        if (!ok) {
+            const std::string body = web_ui_login("Invalid or expired token.");
+            route.status(http::status::unauthorized);
+            route.res.set(http::field::content_type, "text/html; charset=utf-8");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        std::string cookie = "zetta_session=" + token + "; HttpOnly; SameSite=Strict; Path=/";
+        if (request_is_https(route)) cookie += "; Secure";
+        route.status(http::status::found);
+        route.res.set(http::field::set_cookie, cookie);
+        route.res.set(http::field::location, "/");
+        stamp_response_headers(route, "");
+        auto [send_error] = co_await route.send("");
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /logout — clear the session cookie.
+    boost::http::route_task serve_web_logout(boost::http::route_params& route) {
+        namespace http = boost::http;
+        route.status(http::status::found);
+        route.res.set(http::field::set_cookie,
+                      "zetta_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+        route.res.set(http::field::location, "/");
+        stamp_response_headers(route, "");
+        auto [send_error] = co_await route.send("");
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /run — invoke a capability from a Console form (input coerced by its schema).
+    boost::http::route_task serve_web_run(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string body;
+        if (user_id.empty()) {
+            body = web_ui_login("");
+        } else {
+            const auto fields = parse_form(sink.data);
+            const std::string cap_name = form_field(fields, "cap");
+            std::string content;
+            co_await bridge.run_on_owner([&] {
+                auto capability = capability_registry.find(cap_name);
+                if (!capability) {
+                    content = web_ui_panel("Unknown capability", "",
+                                           "<div class=\"err-box\">" + web_ui_escape(cap_name) +
+                                               "</div>");
+                    return;
+                }
+                std::vector<std::pair<std::string, std::string>> query;
+                if (capability->input_schema.is_object() &&
+                    capability->input_schema.contains("properties"))
+                    for (auto it = capability->input_schema["properties"].begin();
+                         it != capability->input_schema["properties"].end(); ++it) {
+                        const std::string value = form_field(fields, it.key());
+                        if (!value.empty()) query.emplace_back(it.key(), value);
+                    }
+                const nlohmann::json input = rest_input_from_query(*capability, query);
+                ApiContext context{node, cluster, user_id,
+                                   zetta::observability::make_root_trace(), &node.span_recorder(),
+                                   &background};
+                context.acting_is_user = true;
+                ApiResult result = capability_registry.call(cap_name, input, context);
+                std::string result_html;
+                if (result.ok) {
+                    result_html = "<div class=\"pill ok\" style=\"margin-bottom:10px\">ok</div><pre>" +
+                                  web_ui_escape(result.value.dump(2)) + "</pre>";
+                } else {
+                    result_html = "<div class=\"err-box\">" + web_ui_escape(result.error.code) +
+                                  ": " + web_ui_escape(result.error.message) + "</div>";
+                    if (!result.error.details.is_null())
+                        result_html += "<pre>" + web_ui_escape(result.error.details.dump(2)) + "</pre>";
+                }
+                result_html += "<div style=\"margin-top:12px\"><a class=\"btn small\" href=\"/?view=console\">Back to Console</a></div>";
+                content = web_ui_panel(cap_name, capability->description, result_html);
+            });
+            body = web_ui_shell("console",
+                                user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content);
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "text/html; charset=utf-8");
+        stamp_response_headers(route, body);
+        auto [send_error] = co_await route.send(body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
 };
 
 ApiServer::ApiServer(Node& node, const zetta::cluster::Cluster* cluster,
@@ -566,19 +949,22 @@ bool ApiServer::start() {
 
     http::router router;
     router.use(http::cors());
-    // GET / — the web dashboard (#647, web_ui.cpp): a self-contained HTML/JS page rendering the
-    // read model + capability registry. PUBLIC shell (no secrets in it); its JS fetches the data
-    // endpoints (/v1/*) under the node's own bearer policy. Registered before the /mcp mount.
-    router.add(http::method::get, "/",
-               [](http::route_params& route) -> http::route_task {
-                   const std::string_view body = web_ui_page();
-                   route.status(http::status::ok);
-                   route.res.set(http::field::content_type, "text/html; charset=utf-8");
-                   stamp_response_headers(route, body);
-                   auto [send_error] = co_await route.send(body);
-                   if (send_error) co_return http::route_error(send_error);
-                   co_return http::route_done;
-               });
+    // GET / — the server-rendered web dashboard (#647, web_ui.cpp). PUBLIC route: it self-authenticates
+    // from the HttpOnly `zetta_session` cookie and serves the login page when it is absent/invalid.
+    // POST /login, /logout, /run are its companions — all registered BEFORE the auth gate (they do
+    // their own cookie auth), so a browser navigation stays authenticated without a bearer header.
+    router.add(http::method::get, "/", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_web_root(route);
+    });
+    router.add(http::method::post, "/login", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_web_login(route);
+    });
+    router.add(http::method::post, "/logout", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_web_logout(route);
+    });
+    router.add(http::method::post, "/run", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_web_run(route);
+    });
 
     // GET /mcp.md — public, human/agent Markdown on how to connect an MCP client to
     // this node (mcp_docs.cpp). Registered BEFORE the /mcp mount so the exact route
