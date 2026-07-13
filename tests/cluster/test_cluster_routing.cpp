@@ -6,6 +6,8 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
@@ -336,4 +338,121 @@ TEST(ClusterRouting, MembershipSurvivesPeerBlip) {
     EXPECT_EQ(a.nodes().front().node_id, a_id);
 
     a.stop();
+}
+
+// A dial-out-only node (behind NAT / a private VNet, #803) advertises NO dialable
+// address: it dials wan peers OUTBOUND and they must never dial it back — its
+// private/bound IP is unroutable and collides across clusters sharing a pod CIDR
+// (the "7 not 9" membership undercount). Its one inbound link carries CRDT sync both
+// ways. Here B is dial-out-only and seeds A (wan): they converge, A records B as
+// dial-out-only with an EMPTY candidate set (so A never dials it), and B advertises
+// nothing dialable.
+TEST(ClusterRouting, DialOutOnlyNodeAdvertisesNoDialableAddress) {
+    const std::string a_id = zetta::util::new_uuid();
+    const std::string b_id = zetta::util::new_uuid();
+
+    ClusterConfig a_config;
+    a_config.listen_host = "127.0.0.1";
+    a_config.listen_port = 43140;
+    a_config.port_range = 1;
+
+    ClusterConfig b_config;
+    b_config.listen_host = "127.0.0.1";
+    b_config.listen_port = 43141;
+    b_config.port_range = 1;
+    b_config.seeds = {"127.0.0.1:43140"};
+    b_config.dial_out_only = true;  // no routable address; a pure initiator
+
+    Cluster a(a_id, a_config);
+    Cluster b(b_id, b_config);
+    a.start();
+    b.start();
+
+    ASSERT_TRUE(
+        wait_for([&] { return b.peer_count() == 1 && a.peer_count() == 1; }));
+
+    // B advertises nothing dialable; A is a routable wan node.
+    EXPECT_TRUE(b.dial_out_only());
+    EXPECT_TRUE(b.advertised_endpoints().empty());
+    EXPECT_TRUE(b.primary_advertised_address().empty());
+    EXPECT_FALSE(a.dial_out_only());
+    EXPECT_FALSE(a.advertised_endpoints().empty());
+    EXPECT_FALSE(a.primary_advertised_address().empty());
+
+    // A records B as dial-out-only with an EMPTY candidate set + empty reached
+    // address — nothing for the dialer to ever target.
+    const ClusterPeer b_seen_by_a = a.peers().front();
+    EXPECT_EQ(b_seen_by_a.node_id, b_id);
+    EXPECT_TRUE(b_seen_by_a.dial_out_only);
+    EXPECT_TRUE(b_seen_by_a.endpoints.empty());
+    EXPECT_TRUE(b_seen_by_a.address.empty());
+
+    // B sees A as a normal wan peer (candidate set present, not dial-out).
+    const ClusterPeer a_seen_by_b = b.peers().front();
+    EXPECT_EQ(a_seen_by_b.node_id, a_id);
+    EXPECT_FALSE(a_seen_by_b.dial_out_only);
+    EXPECT_FALSE(a_seen_by_b.endpoints.empty());
+
+    a.stop();
+    b.stop();
+}
+
+// system.cluster_nodes' source (#800): Cluster::membership() lists the FULL
+// membership from the replicated node-list — every node:<id> the CRDT knows,
+// including nodes THIS one has no direct link to — annotated with reachability and
+// whether a live link is held. A wan node's entry carries a dialable address; a
+// dial-out-only node's carries none.
+TEST(ClusterRouting, MembershipListsFullNodeListWithReachability) {
+    const std::string self_id = zetta::util::new_uuid();
+    const std::string wan_id = zetta::util::new_uuid();
+    const std::string dialout_id = zetta::util::new_uuid();
+
+    ReplicationManager replication{self_id};
+    // Seed the node-list exactly as a running node does (main.cpp): a dialable
+    // address + reachability for a wan node, empty + dial-out-only for the other.
+    replication.set("node:" + self_id,
+                    nlohmann::json{{"address", "10.0.0.1:7777"},
+                                   {"reachability", "wan-accessible"}});
+    replication.set("node:" + wan_id,
+                    nlohmann::json{{"address", "203.0.113.5:7777"},
+                                   {"reachability", "wan-accessible"}});
+    replication.set("node:" + dialout_id,
+                    nlohmann::json{{"address", ""},
+                                   {"reachability", "dial-out-only"}});
+
+    ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 43150;
+    Cluster cluster(self_id, config, &replication);
+    // No start()/live links needed — membership() reads the CRDT snapshot + the
+    // (empty) peer table, so only self is "directly connected" here.
+
+    std::vector<zetta::cluster::ClusterMember> members = cluster.membership();
+    ASSERT_EQ(members.size(), 3u);
+
+    const auto find = [&](const std::string& id) -> const
+        zetta::cluster::ClusterMember* {
+        for (const auto& member : members) {
+            if (member.node_id == id) return &member;
+        }
+        return nullptr;
+    };
+
+    const auto* self = find(self_id);
+    ASSERT_NE(self, nullptr);
+    EXPECT_TRUE(self->is_self);
+    EXPECT_TRUE(self->directly_connected);  // self is always "reachable"
+    EXPECT_FALSE(self->dial_out_only);
+
+    const auto* wan = find(wan_id);
+    ASSERT_NE(wan, nullptr);
+    EXPECT_FALSE(wan->is_self);
+    EXPECT_FALSE(wan->directly_connected);  // no live link stood up in this test
+    EXPECT_FALSE(wan->dial_out_only);
+    EXPECT_EQ(wan->address, "203.0.113.5:7777");
+
+    const auto* dialout = find(dialout_id);
+    ASSERT_NE(dialout, nullptr);
+    EXPECT_TRUE(dialout->dial_out_only);
+    EXPECT_TRUE(dialout->address.empty());
 }

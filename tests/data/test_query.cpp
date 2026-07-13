@@ -200,7 +200,12 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
 
     const std::string node_id = zetta::util::new_uuid();
     zetta::cluster::ReplicationManager replication{node_id};
-    replication.set(node_id, nlohmann::json{{"address", "127.0.0.1:43500"}});
+    // system.nodes is a virtual table over the node-list CRDT (#809): the durable
+    // membership record is the `node:<id>` entry (in production main.cpp seeds it).
+    replication.set("node:" + node_id,
+                    nlohmann::json{{"address", "127.0.0.1:43500"},
+                                   {"reachability", "wan-accessible"},
+                                   {"node_type", "permanent"}});
 
     zetta::cluster::ClusterConfig config;
     config.listen_host = "127.0.0.1";
@@ -217,6 +222,11 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
     EXPECT_EQ(sel.rows[0]["node_id"].get<std::string>(), node_id);
     EXPECT_TRUE(sel.rows[0]["is_self"].get<bool>());
     EXPECT_EQ(sel.rows[0]["entries"].get<int>(), 1);
+    // The unified virtual-table columns (#809): durable tier + ephemeral liveness.
+    EXPECT_EQ(sel.rows[0]["reachability"].get<std::string>(), "wan-accessible");
+    EXPECT_EQ(sel.rows[0]["node_type"].get<std::string>(), "permanent");
+    EXPECT_EQ(sel.rows[0]["status"].get<std::string>(), "live");  // self is live
+    EXPECT_TRUE(sel.rows[0]["directly_connected"].get<bool>());   // self
 
     // The legacy pre-#538 spellings still resolve (back-compat aliases): the
     // qualified system.zetta_nodes and the historical bare zetta_nodes.
@@ -251,6 +261,74 @@ TEST(QueryService, ClusterNodesNeedsACluster) {
     QueryService svc{node};  // no cluster wired in
     auto sel = svc.run("SELECT * FROM system.nodes;", "");
     EXPECT_FALSE(sel.ok());
+    node.stop();
+}
+
+// system.nodes surfaces the FULL node-list CRDT membership (#809), not just direct
+// peers: a member seeded into the node-list with no live link and no telemetry shows
+// as `unreachable` with its durable reachability + node_type and null live columns —
+// the "all N from any node" fix plus the durable/ephemeral tier composition.
+TEST(QueryService, NodesSurfacesFullMembershipWithTiers) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    const std::string self_id = zetta::util::new_uuid();
+    const std::string wan_id = zetta::util::new_uuid();
+    const std::string dialout_id = zetta::util::new_uuid();
+    zetta::cluster::ReplicationManager replication{self_id};
+    replication.set("node:" + self_id,
+                    nlohmann::json{{"address", "127.0.0.1:43510"},
+                                   {"reachability", "wan-accessible"},
+                                   {"node_type", "permanent"}});
+    replication.set("node:" + wan_id,  // a member we're not directly linked to
+                    nlohmann::json{{"address", "203.0.113.9:7777"},
+                                   {"reachability", "wan-accessible"},
+                                   {"node_type", "permanent"}});
+    replication.set("node:" + dialout_id,
+                    nlohmann::json{{"address", ""},
+                                   {"reachability", "dial-out-only"},
+                                   {"node_type", "ephemeral"}});
+
+    zetta::cluster::ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 43510;
+    config.port_range = 1;
+    zetta::cluster::Cluster cluster{self_id, config, &replication};
+    cluster.start();
+
+    QueryService svc{node, &cluster};
+    auto sel = svc.run("SELECT * FROM system.nodes;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 3u);  // full membership, not just self
+
+    const auto find = [&](const std::string& id) -> nlohmann::json {
+        for (const auto& row : sel.rows) {
+            if (row["node_id"].get<std::string>() == id) return row;
+        }
+        return nlohmann::json::object();
+    };
+    // Self: live + directly connected.
+    const auto self = find(self_id);
+    EXPECT_TRUE(self["is_self"].get<bool>());
+    EXPECT_EQ(self["status"].get<std::string>(), "live");
+    EXPECT_TRUE(self["directly_connected"].get<bool>());
+    // A relayed wan member (in the node-list, no live link / telemetry): unreachable,
+    // durable columns present, live columns null.
+    const auto wan = find(wan_id);
+    EXPECT_FALSE(wan["is_self"].get<bool>());
+    EXPECT_EQ(wan["reachability"].get<std::string>(), "wan-accessible");
+    EXPECT_EQ(wan["node_type"].get<std::string>(), "permanent");
+    EXPECT_EQ(wan["status"].get<std::string>(), "unreachable");
+    EXPECT_FALSE(wan["directly_connected"].get<bool>());
+    EXPECT_TRUE(wan["last_seen_seconds"].is_null());
+    // A relayed dial-out ephemeral member: durable reachability + node_type flow.
+    const auto dialout = find(dialout_id);
+    EXPECT_EQ(dialout["reachability"].get<std::string>(), "dial-out-only");
+    EXPECT_EQ(dialout["node_type"].get<std::string>(), "ephemeral");
+    EXPECT_EQ(dialout["status"].get<std::string>(), "unreachable");
+
+    cluster.stop();
     node.stop();
 }
 

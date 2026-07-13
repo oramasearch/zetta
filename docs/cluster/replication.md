@@ -123,7 +123,7 @@ The [cluster](cluster.md) carries replication. When a node is built with a
   (`read_blob`); the receiver verifies size + SHA-256 (`store_blob`) before
   writing. Bodies never enter the document.
 
-Each node seeds its own membership entry — `node:<node_id> → { address }` — under
+Each node seeds its own membership entry — `node:<node_id> → { address, reachability, node_type }` — under
 its own key, so the merge unions every node's entry conflict-free. The database
 catalog (DDL + rows) lives under separate keys (see *Data replication* below);
 once two nodes have exchanged everything, their documents share a `version()`.
@@ -138,6 +138,14 @@ replication status. It surfaces three ways:
 - **Headless** — the heartbeat logs a per-node table whenever it changes.
 - **SQL** — `SELECT * FROM system.nodes;` (see [query.md](../data/query.md)).
 
+`Cluster::nodes()` is the DIRECT-peer view (this node + its live links) — the source of
+the replication-status tier above. The FULL membership — every node the replicated
+node-list knows, including ones this node has no direct link to — is surfaced by the
+unified **`system.nodes`** virtual table (#809): a query-time composition of the durable
+`node:<id>` node-list entries (converging on all N members from any node, so no "5 not 9"
+undercount) overlaid with this node's live liveness + replication status. See
+[../data/query.md](../data/query.md).
+
 ## Data replication: CRDT is the source of truth, disk follows
 
 Real database data (DDL **and** rows) replicates: every node converges on the
@@ -149,7 +157,8 @@ are a materialized *projection* of it.** Concretely:
 
 - **Document model — flat keys, structured values** (so concurrent edits to
   different things never conflict; each row owns its own key by UUID):
-  - `node:<node_id>` → `{ address }` — membership (the node list / status view).
+  - `node:<node_id>` → `{ address, reachability, node_type }` — membership (the node-list
+    entry; the durable tier the unified `system.nodes` view reads). See [../data/query.md](../data/query.md).
   - `db:<db_uuid>` → `{ name }` — a database.
   - `tbl:<tbl_uuid>` → `{ db: <db_uuid>, name }` — a table.
   - `row:<row_uuid>` → `{ tbl: <tbl_uuid>, seq, data: {…} }` — a row. The UUID key

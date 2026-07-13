@@ -7,7 +7,10 @@
 // catalog into the replicated CRDT document. The CRDT is the source of truth;
 // the on-disk store + in-memory Node tree are a projection of these keys.
 //
-//   node:<node_id>     -> { address }                  (cluster membership)
+//   node:<node_id>     -> { address, reachability, node_type }  (cluster membership; #803/#809:
+//                          address is the node's dialable address, empty for a
+//                          dial-out-only node; reachability is "wan-accessible" or
+//                          "dial-out-only" — transitive learners never dial the latter)
 //   db:<db_uuid>       -> { name, replication? }        (a database; the optional
 //                          replication field is the per-db ReplicationStrategy —
 //                          ENT-35, omitted when the default ReplicateToAll; see

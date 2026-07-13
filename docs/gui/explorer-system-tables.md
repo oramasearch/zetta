@@ -34,6 +34,7 @@ tables, all browsable only via hand-typed SQL.
 ## Boundaries
 
 No new JSON format — `system.tables` rows are computed name/description pairs,
-never stored or parsed. `system.nodes` still needs a wired `Cluster`; selecting
-it without one surfaces the executor's reason in the rows panel banner,
-verbatim, like any other query error.
+never stored or parsed. `system.nodes` — the unified FULL-membership virtual table
+over the node-list CRDT (#809) — still needs a wired `Cluster`; selecting it without
+one surfaces the executor's reason in the rows panel banner, verbatim, like any other
+query error.

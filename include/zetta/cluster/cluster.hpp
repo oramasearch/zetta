@@ -34,9 +34,16 @@ struct ClusterPeer {
     std::string address;
     // The full candidate-endpoint SET the peer advertised in its HELLO (pod IP,
     // LAN IP, LB/public address, …). One node can be reachable at several; `address`
-    // is the one that worked here. Empty for an old single-address HELLO peer only
-    // if it advertised nothing (never happens in practice). See #739 (routing table).
+    // is the one that worked here. Empty for a `dial-out-only` peer, which
+    // advertises no dialable address (see below). See #739 (routing table).
     std::vector<std::string> endpoints;
+    // Reachability (#803): a `dial-out-only` peer (behind NAT / a private VNet) has
+    // NO routable address — it advertises an empty candidate set and is reached
+    // ONLY over the inbound link it opened. Peers must never try to dial it (its
+    // private/bound IP is unroutable and, worse, collides across clusters sharing a
+    // pod CIDR). It is a pure initiator; its one outbound link carries CRDT sync
+    // both ways. False = wan-accessible (a routable rendezvous others dial out to).
+    bool dial_out_only = false;
 };
 
 // A node's replication state, as last learned over the gossip exchange. For the
@@ -59,6 +66,22 @@ struct NodeStatus {
     bool is_self = false;
     bool connected = false;  // membership (always true for self)
     NodeReplication replication;
+};
+
+// One row of the FULL cluster membership from the replicated node-list (#800):
+// every node the CRDT document knows, whether or not THIS node holds a direct link
+// to it. Distinct from ClusterPeer/NodeStatus, which are the DIRECT-peer views — on
+// a spanning cluster (many k8s clusters + hosts) no single node is directly linked
+// to all N, so `system.nodes` shows only a slice; but the node-list CRDT converges
+// everywhere, so membership() lists every member from any node. Built by
+// Cluster::membership().
+struct ClusterMember {
+    std::string node_id;
+    std::string address;         // its dialable address; empty for dial-out-only
+    bool dial_out_only = false;  // reachability recorded in the node-list entry
+    std::string node_type;       // "permanent" | "ephemeral" (from the node-list entry)
+    bool is_self = false;
+    bool directly_connected = false;  // a live link is held to it right now
 };
 
 struct ClusterConfig {
@@ -91,6 +114,23 @@ struct ClusterConfig {
     // cause of the membership flap this addresses. Folded into the advertised
     // HELLO candidate set alongside listen_addresses(). See #739.
     std::vector<std::string> advertise;
+    // Reachability (#803): a `dial-out-only` node (behind NAT / a private VNet — a
+    // home node, an AKS pod on a private IP) has no routable address. It advertises
+    // an EMPTY dialable candidate set (its bound/private IP is unroutable and, when
+    // two clusters share a pod CIDR, collides — the "7 not 9" membership undercount)
+    // and reaches peers only OUTBOUND; that one link carries CRDT sync both ways, so
+    // a peer never needs to dial back. Set with `--dial-out-only`; the operator sets
+    // it for any slice whose reachability isn't wan-accessible. Default false =
+    // wan-accessible (advertise a routable address others dial out to).
+    bool dial_out_only = false;
+    // Node type (#809): "permanent" (default — reliable uptime, durability-bearing:
+    // counts toward the replication factor) or "ephemeral" (burst / autoscaled
+    // capacity that may vanish at any moment; holds only uncounted *locality*
+    // replicas and never moves the replication factor). Self-declared via
+    // `--node-type`, written into this node's `node:<id>` entry, surfaced on
+    // system.nodes. Orthogonal to reachability. Any string is stored; the engine
+    // treats anything other than "ephemeral" as permanent.
+    std::string node_type = "permanent";
     // Drop a peer that has sent nothing for this long (gossip flows every ~0.5s,
     // so silence means the link died — clears it so a fresh one can replace it).
     unsigned peer_idle_timeout_seconds = 6;
@@ -183,7 +223,22 @@ public:
     // listen address(es) plus any ClusterConfig::advertise extras (deduped). The
     // candidate set a peer stores and dials by. Non-loopback listen addresses come
     // first; front() is what peer_command()/nodes() report as this node's address.
+    // EMPTY for a dial-out-only node (#803) — it advertises no dialable address.
     std::vector<std::string> advertised_endpoints() const;
+
+    // Reachability of THIS node (#803): true when it is dial-out-only (advertises
+    // no dialable address; a pure initiator). Mirrors ClusterConfig::dial_out_only.
+    bool dial_out_only() const;
+
+    // This node's type (#809): "permanent" (default) or "ephemeral". Mirrors
+    // ClusterConfig::node_type; written into this node's node:<id> entry.
+    std::string node_type() const;
+
+    // The single most-dialable address to record in the replicated node-list
+    // (`node:<id>`) for transitive learners (#803/#800): empty when dial-out-only;
+    // else the --advertise front (a routable LB/public address) when set, else the
+    // bound listen address. Pair with dial_out_only() for the entry's reachability.
+    std::string primary_advertised_address() const;
 
     // Number of live peer connections held. At most one per peer node id: a value
     // above peer_count() would mean duplicate links are leaking (a reconnect race, a
@@ -199,6 +254,14 @@ public:
     // sustained absence. Thread-safe. With no ReplicationManager wired in, the
     // replication fields are left unknown.
     std::vector<NodeStatus> nodes() const;
+
+    // The FULL cluster membership from the replicated node-list (#800): every
+    // node:<id> the CRDT document knows — including nodes THIS node has no direct
+    // link to — annotated with each node's reachability and whether we hold a live
+    // link to it right now. On a spanning cluster nodes() shows only a slice, but
+    // the node-list CRDT converges everywhere, so this lists all N from any node.
+    // Thread-safe; empty with no ReplicationManager wired in.
+    std::vector<ClusterMember> membership() const;
 
     // --- Signal plane (RPC / events / tasks) --------------------------------
     //

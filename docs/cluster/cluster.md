@@ -159,11 +159,14 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   advertised address — never a silent drift
   ([#738](https://github.com/oramasearch/zetta/issues/738)).
 - **Symmetric handshake** (line protocol): each side sends
-  `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]>` and records the other; the
-  dialer speaks first, the acceptor replies. The connection stays open; dropping
-  it drops the live link. Peers are keyed by **reached address** — one entry per
-  address — so a node that restarts (new id, same address) **replaces** its stale
-  entry instead of leaving a ghost.
+  `ZETTA/1 HELLO <node-id> <endpoint[,endpoint,…]|-> [wan|dial-out]` and records
+  the other; the dialer speaks first, the acceptor replies. The trailing
+  reachability token is **optional** — absent or `wan` means wan-accessible
+  (back-compat with older nodes), `dial-out` means the node advertises no dialable
+  address (its endpoint field is `-`; see the dial-out-only bullet below). The
+  connection stays open; dropping it drops the live link. Peers are keyed by
+  **reached address** — one entry per address — so a node that restarts (new id,
+  same address) **replaces** its stale entry instead of leaving a ghost.
 - **A node advertises a SET of candidate endpoints, not one address** (#739). The
   HELLO carries a comma-separated set — the reachable listen address(es) plus any
   `--advertise HOST:PORT[,…]` extras (a node behind NAT / a load balancer lists its
@@ -188,20 +191,30 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 - The advertised endpoints are **reachable** addresses, never the bare wildcard —
   a `0.0.0.0` bind advertises (and `peer_command()`/the banner show) the host's
   first non-loopback LAN IP, since a peer can't dial `0.0.0.0`.
-- **Dial-out-only nodes advertise NO dialable address; peers must never dial them**
-  ([#803](https://github.com/oramasearch/zetta/issues/803)). A node behind NAT / a private VNet has no
-  routable address — it advertises an empty dialable set (node-id + a dial-out-only marker) and is a pure
-  **initiator**: the one outbound link it opens carries CRDT sync **both directions**. Advertising a
-  private/bound pod IP is actively harmful when two k8s clusters **share a pod CIDR** (both `10.244.0.x`) —
-  a peer dials the colliding address, reaches the WRONG node, and membership undercounts. Reachability is
-  gossiped so every peer makes the same don't-dial decision.
+- **Dial-out-only nodes advertise NO dialable address; peers never dial them**
+  ([#803](https://github.com/oramasearch/zetta/issues/803)). Start a node with **`--dial-out-only`** (sets
+  `ClusterConfig::dial_out_only`) when it has no routable address — behind NAT / a private VNet (a home
+  node, an AKS pod on a private IP). It advertises an **empty** dialable set: `advertised_endpoints()`
+  returns `{}`, its HELLO carries `-` for the endpoints plus the `dial-out` reachability token, and it is a
+  pure **initiator** — it dials wan-accessible peers outbound and that single inbound link carries CRDT
+  sync **both directions**; peers never dial it back. The dialer enforces this: it **skips** any peer whose
+  HELLO was marked `dial-out`, and any replicated `node:<id>` entry whose `reachability` is
+  `dial-out-only`. Advertising a private/bound pod IP would be actively harmful when two k8s clusters
+  **share a pod CIDR** (both `10.244.0.x`) — a peer dials the colliding address, reaches the WRONG node,
+  and membership undercounts (the "7 not 9" flap). Reachability is gossiped on the node-list, so every peer
+  makes the same don't-dial decision.
 - `node-id` is a UUIDv4 generated per process.
-- **Direct peers vs full membership.** `system.nodes` lists a node's DIRECT peers + self, so on a
-  cross-cluster (spanning) mesh no single node shows all N members (the "5 not 9" surprise) — full
-  gossiped membership rides the CRDT node-list and is surfaced separately
-  ([#800](https://github.com/oramasearch/zetta/issues/800)). For aggregate cross-cluster bandwidth, each
-  PERMANENT wan-accessible node should advertise its OWN address (per-node LB, orama-cloud-v1-operator#104)
-  so sync spreads across every node's uplink instead of funnelling through one shared rendezvous.
+- **Full membership vs direct peers.** The read-only **`system.nodes`** table is the FULL gossiped
+  membership — every node the CRDT node-list knows, **including ones this node holds no direct link
+  to** — because the node-list converges on all N members from any node, so no single node undercounts
+  on a cross-cluster (spanning) mesh (the "5 not 9" surprise is gone). It is a **virtual table over the
+  node-list CRDT** (#809, folding in the full-membership view first added in #800; see
+  [../data/query.md](../data/query.md)): the durable `node:<id>` entry (`address`, `reachability`,
+  `node_type`) overlaid at query time with ephemeral per-node liveness + replication status
+  (`directly_connected`, `status`, sync state) that is never written back to the CRDT. For aggregate
+  cross-cluster bandwidth, each PERMANENT wan-accessible node should advertise its OWN address (per-node
+  LB, orama-cloud-v1-operator#104) so sync spreads across every node's uplink instead of funnelling
+  through one shared rendezvous.
 - **Self-healing links.** Each peer sends traffic every ~0.5s — replication
   gossip when a `ReplicationManager` is wired in, otherwise a lightweight `PING`
   keepalive — so silence means the link
@@ -228,7 +241,7 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
   no stuck `syncing`/`no status` ghost.
 - **Membership hysteresis (#739).** When a peer's live link drops, the live views
   (`peers()`/`peer_count()` and the signal plane) reflect it at once, but the
-  **membership** view (`nodes()` / `system.nodes` / the UI) keeps the node for
+  **membership** view (`nodes()` and the UI) keeps the node for
   `membership_grace_seconds` (default 10) before dropping it, so a brief blip or a
   reconnect doesn't flap it out — it ages out only after a sustained absence. This
   debounces the down edge; the up edge is immediate (a node appears the moment a
@@ -249,18 +262,32 @@ partitions onto any new members; they appear in the canvas once they gossip in. 
 
 Not every node can accept inbound connections, so the mesh forms by having the
 unreachable nodes dial **outbound** to the reachable ones. Nodes are classified by
-reachability (a property of the node, added to the nodes table):
+reachability — a property of the node carried on both its HELLO (the `wan`/`dial-out`
+token) and its replicated `node:<id>` entry (`reachability`), and surfaced in
+`system.nodes`:
 
 - **wan-accessible** — the node has a routable address (a public/WAN IP, or a LAN IP
   its peers can reach). It's advertised in the nodes table at that address and is a
   **rendezvous**: other nodes dial **outbound** to it. It accepts inbound because it
   genuinely can.
-- **ephemeral** — a transient node (burst / autoscaled capacity). It's expected to come
-  and go; its departure is normal, not a fault, so membership shouldn't flap it out on a
-  brief absence (hysteresis — #739).
 - otherwise **dial-out-only** — behind NAT or private cloud networking (a home node; a
-  cloud pod with only a private VNet IP). It opens **outbound** connections to
-  wan-accessible nodes and accepts **no inbound** — no load balancer, no exposed port.
+  cloud pod with only a private VNet IP), set with **`--dial-out-only`**. It opens
+  **outbound** connections to wan-accessible nodes and accepts **no inbound** — no load
+  balancer, no exposed port — and advertises no dialable address, so peers never dial it
+  ([#803](https://github.com/oramasearch/zetta/issues/803)).
+
+**Node type is a separate, orthogonal axis.** Independent of reachability, each node
+declares a **durability class** with **`--node-type permanent|ephemeral`** (default
+`permanent`, self-declared into its `node:<id>` entry exactly like `--dial-out-only`):
+
+- **permanent** — stable capacity the cluster maintains its replication factor over.
+- **ephemeral** — transient capacity (burst / autoscaled), expected to come and go; its
+  departure is normal, not a fault, so membership shouldn't flap it out on a brief absence
+  (hysteresis — #739).
+
+`node_type` rides the durable `node:<id>` entry alongside `reachability` and is surfaced
+in `system.nodes`. (The RF/placement engine that actually maintains replicas over the
+permanent set is a **separate** concern, not part of this classification — #809.)
 
 **The route table self-forms.** Add a wan-accessible node's address to the nodes table (a
 `--peer` / seed) and existing nodes reach out to it; gossip then relays transitively so
@@ -287,8 +314,10 @@ one endpoint **we reached it on** (per-observer). The pieces in place:
 - **Prefer the established connection** — the per-node-id link registry (#741) keeps a
   single bidirectional session and never re-dials a candidate a live link already
   covers (reconnect deduped by node id).
-- **Membership hysteresis** — a node stays in `system.nodes` through the grace window
-  after its link drops, so a blip on one endpoint doesn't flap it out.
+- **Membership hysteresis** — a node stays in the direct-peer membership (`nodes()`) through
+  the grace window after its link drops, so a blip on one endpoint doesn't flap it out (its
+  `node:<id>` entry persists in `system.nodes` regardless; the `directly_connected` / `status`
+  columns reflect the drop).
 - **Dial learned members ([#789](https://github.com/oramasearch/zetta/issues/789))** —
   the reconnect loop dials not just configured seeds but every member it has learned:
   a direct peer whose link dropped, plus a node known only **transitively** from the
@@ -297,19 +326,33 @@ one endpoint **we reached it on** (per-observer). The pieces in place:
   with the registry reaping any duplicate a mutual dial makes. This fills a hub-seeded
   **star** (every node `--peer`'d at one seed, as k8s does) into a full equal-peer
   **mesh** — learned members were recorded but never dialed before.
+- **Reachability-gated dialing ([#803](https://github.com/oramasearch/zetta/issues/803))** — a
+  dial-out-only node (`--dial-out-only`) advertises no dialable address (empty candidate set; HELLO
+  endpoints `-` + the `dial-out` token), and the dialer never dials it: `known_member_endpoints`
+  (the reconnect loop's learned-member source) **skips** any learned peer whose HELLO marked it
+  dial-out, and any replicated `node:<id>` entry whose `reachability` is `dial-out-only`. This closes
+  the cross-cluster "7 not 9" undercount — two k8s clusters sharing a pod CIDR (`10.244.0.x`) no longer
+  have wan peers dial a dial-out node's colliding private IP and reach the wrong node. The node-list
+  entry now carries reachability **and node type**: `node:<id>` is `{ address, reachability, node_type }`,
+  where `address` is the node's dialable address (the `--advertise` front for a wan node behind an LB,
+  else its bound address) and **empty** for a dial-out-only node, `reachability` is `"wan-accessible"` or
+  `"dial-out-only"`, and `node_type` is `"permanent"` or `"ephemeral"` (self-declared via `--node-type`)
+  (`Cluster::primary_advertised_address()` computes the address; `ClusterPeer` and the internal peer
+  record carry a `dial_out_only` bool).
 
 **Division of responsibility.** The **operator** supplies candidate endpoints (each
 slice's LB/public + LAN addresses, via `--advertise` / peer-LB wiring); **Zetta** owns
 the routing — reachability selection, connection lifecycle, and membership hysteresis.
 
-**Still future.** Reachability *classification* (`wan-accessible` / `ephemeral` /
-`dial-out-only` as a field on the nodes table) and RTT-ranked candidate ordering are
-not yet built. A node **does** now dial members it learns second-hand — via the
-replicated `node:<id>` membership entries — so a hub-seeded star fills into a full
-mesh (#789); what remains future is **relaying a peer's full advertised endpoint
-set** (its LB / public candidates), so a transitively-learned member is currently
-dialed by its single `node:` address rather than by every path it advertises. The
-registry + hysteresis keep the mesh stable.
+**Shipped vs still future.** Reachability *classification* now ships
+([#803](https://github.com/oramasearch/zetta/issues/803)): the `dial_out_only` flag rides both the HELLO
+(the `wan`/`dial-out` token) and the replicated `node:<id>` entry (`reachability`:
+`wan-accessible` / `dial-out-only`), and the dialer honors it (never dialing a dial-out-only node —
+above). A node also dials members it learns second-hand — via the replicated `node:<id>` membership
+entries — so a hub-seeded star fills into a full mesh (#789). Still future: **RTT-ranked candidate
+ordering**, and **relaying a peer's full advertised endpoint set** (its LB / public candidates) through
+gossip, so a transitively-learned member is currently dialed by its single `node:` address rather than by
+every path it advertises. The registry + hysteresis keep the mesh stable.
 
 ## Signal plane (RPC / events / tasks)
 
