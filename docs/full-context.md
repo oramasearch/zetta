@@ -84,7 +84,12 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   `directly_connected`, `status` live|unreachable, `last_seen_seconds`) and synced replication
   status (`entries`, `version`, `in_sync`, `last_sync_seconds`, for self + direct peers). The
   full-membership source (#800) and reachability-gated dialer (#803) still underpin it. See
-  [cluster/cluster.md](cluster/cluster.md) and [data/query.md](data/query.md).
+  [cluster/cluster.md](cluster/cluster.md) and [data/query.md](data/query.md). **Slice 3 (#809)**
+  generalizes the primitive into a user-facing DDL: **`CREATE VIRTUAL TABLE <name> OVER CRDT
+  '<prefix>' (col type TIER…)`** declares a read-only virtual table over *any* CRDT key-family
+  (durable KEY + durable/ephemeral columns), stored as durable `vtable:<name>` catalog metadata
+  and projected at query time. Ephemeral-column *resolvers* (`FROM <source>`) are the documented
+  follow-up. See [data/virtual-tables.md](data/virtual-tables.md).
 - **In flight 2026-07-03 (governed serving)**: [#648](https://github.com/oramasearch/zetta/issues/648)
   — models and indexes exposed as governed HTTP endpoints: `expose_model` /
   `expose_index` flip a replicated `exposed` flag on the entity value, the
