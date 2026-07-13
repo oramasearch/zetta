@@ -74,12 +74,12 @@ starts the zetta binary**. The VM boots a bare Ubuntu image and sits there.
 (The join **token** injection itself — `ZETTA_CLUSTER_TOKEN` through the
 provisioner seam — is the sibling #670/#742 plumbing; the consuming side is now
 ready for it.)
-ZETTA_SEED_PEER=<addr>` (and, on a secure cluster, the join token as
+ZETTA_SEED_PEER=<addr>` (and the join token as
 `ZETTA_CLUSTER_TOKEN=<token>` — #670), but there is **no cloud-init that installs
 and starts the zetta binary**. The VM boots a bare Ubuntu image and sits there.
 When the systemd unit below is built it must read **both** env vars and start
-`zetta --peer $ZETTA_SEED_PEER --join-token $ZETTA_CLUSTER_TOKEN` (dropping the
-`--join-token` when the token is absent, i.e. a plaintext cluster).
+`zetta --peer $ZETTA_SEED_PEER --join-token $ZETTA_CLUSTER_TOKEN` (inter-node mTLS
+is always on, so the token is always present — #799).
 
 *How we'd like to try it (options, roughly in order of preference):*
 

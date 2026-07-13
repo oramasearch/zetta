@@ -200,7 +200,12 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
 
     const std::string node_id = zetta::util::new_uuid();
     zetta::cluster::ReplicationManager replication{node_id};
-    replication.set(node_id, nlohmann::json{{"address", "127.0.0.1:43500"}});
+    // system.nodes is a virtual table over the node-list CRDT (#809): the durable
+    // membership record is the `node:<id>` entry (in production main.cpp seeds it).
+    replication.set("node:" + node_id,
+                    nlohmann::json{{"address", "127.0.0.1:43500"},
+                                   {"reachability", "wan-accessible"},
+                                   {"node_type", "permanent"}});
 
     zetta::cluster::ClusterConfig config;
     config.listen_host = "127.0.0.1";
@@ -217,6 +222,11 @@ TEST(QueryService, SelectsClusterNodesSystemTable) {
     EXPECT_EQ(sel.rows[0]["node_id"].get<std::string>(), node_id);
     EXPECT_TRUE(sel.rows[0]["is_self"].get<bool>());
     EXPECT_EQ(sel.rows[0]["entries"].get<int>(), 1);
+    // The unified virtual-table columns (#809): durable tier + ephemeral liveness.
+    EXPECT_EQ(sel.rows[0]["reachability"].get<std::string>(), "wan-accessible");
+    EXPECT_EQ(sel.rows[0]["node_type"].get<std::string>(), "permanent");
+    EXPECT_EQ(sel.rows[0]["status"].get<std::string>(), "live");  // self is live
+    EXPECT_TRUE(sel.rows[0]["directly_connected"].get<bool>());   // self
 
     // The legacy pre-#538 spellings still resolve (back-compat aliases): the
     // qualified system.zetta_nodes and the historical bare zetta_nodes.
@@ -252,6 +262,243 @@ TEST(QueryService, ClusterNodesNeedsACluster) {
     auto sel = svc.run("SELECT * FROM system.nodes;", "");
     EXPECT_FALSE(sel.ok());
     node.stop();
+}
+
+// system.nodes surfaces the FULL node-list CRDT membership (#809), not just direct
+// peers: a member seeded into the node-list with no live link and no telemetry shows
+// as `unreachable` with its durable reachability + node_type and null live columns —
+// the "all N from any node" fix plus the durable/ephemeral tier composition.
+TEST(QueryService, NodesSurfacesFullMembershipWithTiers) {
+    TempDir tmp;
+    Node node{config_for(tmp)};
+    node.start();
+
+    const std::string self_id = zetta::util::new_uuid();
+    const std::string wan_id = zetta::util::new_uuid();
+    const std::string dialout_id = zetta::util::new_uuid();
+    zetta::cluster::ReplicationManager replication{self_id};
+    replication.set("node:" + self_id,
+                    nlohmann::json{{"address", "127.0.0.1:43510"},
+                                   {"reachability", "wan-accessible"},
+                                   {"node_type", "permanent"}});
+    replication.set("node:" + wan_id,  // a member we're not directly linked to
+                    nlohmann::json{{"address", "203.0.113.9:7777"},
+                                   {"reachability", "wan-accessible"},
+                                   {"node_type", "permanent"}});
+    replication.set("node:" + dialout_id,
+                    nlohmann::json{{"address", ""},
+                                   {"reachability", "dial-out-only"},
+                                   {"node_type", "ephemeral"}});
+
+    zetta::cluster::ClusterConfig config;
+    config.listen_host = "127.0.0.1";
+    config.listen_port = 43510;
+    config.port_range = 1;
+    zetta::cluster::Cluster cluster{self_id, config, &replication};
+    cluster.start();
+
+    QueryService svc{node, &cluster};
+    auto sel = svc.run("SELECT * FROM system.nodes;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 3u);  // full membership, not just self
+
+    const auto find = [&](const std::string& id) -> nlohmann::json {
+        for (const auto& row : sel.rows) {
+            if (row["node_id"].get<std::string>() == id) return row;
+        }
+        return nlohmann::json::object();
+    };
+    // Self: live + directly connected.
+    const auto self = find(self_id);
+    EXPECT_TRUE(self["is_self"].get<bool>());
+    EXPECT_EQ(self["status"].get<std::string>(), "live");
+    EXPECT_TRUE(self["directly_connected"].get<bool>());
+    // A relayed wan member (in the node-list, no live link / telemetry): unreachable,
+    // durable columns present, live columns null.
+    const auto wan = find(wan_id);
+    EXPECT_FALSE(wan["is_self"].get<bool>());
+    EXPECT_EQ(wan["reachability"].get<std::string>(), "wan-accessible");
+    EXPECT_EQ(wan["node_type"].get<std::string>(), "permanent");
+    EXPECT_EQ(wan["status"].get<std::string>(), "unreachable");
+    EXPECT_FALSE(wan["directly_connected"].get<bool>());
+    EXPECT_TRUE(wan["last_seen_seconds"].is_null());
+    // A relayed dial-out ephemeral member: durable reachability + node_type flow.
+    const auto dialout = find(dialout_id);
+    EXPECT_EQ(dialout["reachability"].get<std::string>(), "dial-out-only");
+    EXPECT_EQ(dialout["node_type"].get<std::string>(), "ephemeral");
+    EXPECT_EQ(dialout["status"].get<std::string>(), "unreachable");
+
+    cluster.stop();
+    node.stop();
+}
+
+// ---- virtual tables: CREATE VIRTUAL TABLE (#809 slice 3) ---------------------
+
+TEST(PostgresParser, ParsesCreateVirtualTable) {
+    PostgresDialect pg;
+    const auto parsed = pg.parse(
+        "CREATE VIRTUAL TABLE my_nodes OVER CRDT 'node:' ("
+        "  node_id TEXT DURABLE KEY,"
+        "  address TEXT DURABLE,"
+        "  status  TEXT EPHEMERAL LOCAL,"
+        "  region  TEXT EPHEMERAL SYNCED"
+        ");");
+    ASSERT_TRUE(parsed.ok()) << parsed.error;
+    ASSERT_EQ(parsed.statements.size(), 1u);
+    const auto* stmt =
+        std::get_if<zetta::query::CreateVirtualTableStmt>(&parsed.statements[0]);
+    ASSERT_NE(stmt, nullptr);
+    EXPECT_EQ(stmt->name, "my_nodes");
+    EXPECT_EQ(stmt->crdt_prefix, "node:");
+    ASSERT_EQ(stmt->columns.size(), 4u);
+    EXPECT_EQ(stmt->columns[0].name, "node_id");
+    EXPECT_TRUE(stmt->columns[0].is_key);
+    EXPECT_EQ(stmt->columns[0].tier, zetta::query::VirtualTableTier::Durable);
+    EXPECT_FALSE(stmt->columns[1].is_key);
+    EXPECT_EQ(stmt->columns[1].tier, zetta::query::VirtualTableTier::Durable);
+    EXPECT_EQ(stmt->columns[2].tier,
+              zetta::query::VirtualTableTier::EphemeralLocal);
+    EXPECT_EQ(stmt->columns[3].tier,
+              zetta::query::VirtualTableTier::EphemeralSynced);
+}
+
+// OVER CRDT is required (the must-extend-a-CRDT invariant) — a missing OVER
+// clause is a parse error.
+TEST(PostgresParser, RejectsVirtualTableWithoutOverCrdt) {
+    PostgresDialect pg;
+    const auto parsed =
+        pg.parse("CREATE VIRTUAL TABLE my_nodes (node_id text durable key);");
+    EXPECT_FALSE(parsed.ok());
+    EXPECT_FALSE(parsed.error.empty());
+}
+
+// A SELECT over a virtual table returns one row per CRDT entry under its prefix:
+// durable columns projected from the entry JSON, the DURABLE KEY column = the id
+// after the prefix, ephemeral columns null. Reuses select_over_rows so WHERE +
+// projection work, and writes are rejected (read-only).
+TEST(QueryService, VirtualTableProjectsDurableRowsOverCrdt) {
+    TempDir tmp;
+    const std::string node_id = zetta::util::new_uuid();
+    zetta::cluster::ReplicationManager replication{node_id};
+    // Seed a couple of CRDT entries under the key-family the vtable will extend.
+    replication.set("thing:a1",
+                    nlohmann::json{{"address", "10.0.0.1"}, {"role", "primary"}});
+    replication.set("thing:b2",
+                    nlohmann::json{{"address", "10.0.0.2"}, {"role", "replica"}});
+
+    Node node{config_for(tmp), &replication};
+    node.start();
+    QueryService svc{node};
+
+    auto created = svc.run(
+        "CREATE VIRTUAL TABLE my_things OVER CRDT 'thing:' ("
+        "  thing_id TEXT DURABLE KEY,"
+        "  address  TEXT DURABLE,"
+        "  status   TEXT EPHEMERAL LOCAL"
+        ");",
+        "");
+    ASSERT_TRUE(created.ok()) << created.error;
+
+    auto sel = svc.run("SELECT * FROM my_things;", "");
+    ASSERT_TRUE(sel.ok()) << sel.error;
+    ASSERT_EQ(sel.rows.size(), 2u);
+    const auto find = [&](const std::string& id) -> nlohmann::json {
+        for (const auto& row : sel.rows) {
+            if (row["thing_id"].get<std::string>() == id) return row;
+        }
+        return nlohmann::json::object();
+    };
+    const auto a1 = find("a1");
+    EXPECT_EQ(a1["thing_id"].get<std::string>(), "a1");     // KEY = id after prefix
+    EXPECT_EQ(a1["address"].get<std::string>(), "10.0.0.1"); // durable projected
+    EXPECT_TRUE(a1["status"].is_null());                     // ephemeral -> null
+    // A durable field not declared as a column is not surfaced.
+    EXPECT_FALSE(a1.contains("role"));
+    const auto b2 = find("b2");
+    EXPECT_EQ(b2["address"].get<std::string>(), "10.0.0.2");
+
+    // WHERE + projection work (reuses select_over_rows).
+    auto one = svc.run(
+        "SELECT thing_id, address FROM my_things WHERE thing_id = 'a1';", "");
+    ASSERT_TRUE(one.ok()) << one.error;
+    ASSERT_EQ(one.rows.size(), 1u);
+    EXPECT_TRUE(one.rows[0].contains("address"));
+    EXPECT_FALSE(one.rows[0].contains("status"));
+
+    // Read-only: writes to a virtual table are rejected.
+    EXPECT_FALSE(svc.run("INSERT INTO my_things (address) VALUES ('x');", "").ok());
+    EXPECT_FALSE(svc.run("UPDATE my_things SET address = 'x';", "").ok());
+    EXPECT_FALSE(svc.run("DELETE FROM my_things;", "").ok());
+
+    // The definition is durable, replicated catalog metadata.
+    ASSERT_TRUE(node.find_virtual_table("my_things").has_value());
+    EXPECT_EQ(node.virtual_tables().size(), 1u);
+
+    node.stop();
+}
+
+// A virtual table needs a CRDT to project over + store its definition in, so a
+// standalone (non-replicated) node rejects CREATE VIRTUAL TABLE.
+TEST(QueryService, VirtualTableNeedsAReplicatedNode) {
+    TempDir tmp;
+    Node node{config_for(tmp)};  // standalone — no ReplicationManager / CRDT
+    node.start();
+    QueryService svc{node};
+    auto r = svc.run(
+        "CREATE VIRTUAL TABLE t OVER CRDT 'thing:' (id TEXT DURABLE KEY);", "");
+    EXPECT_FALSE(r.ok());
+    node.stop();
+}
+
+// The name must not shadow a real table, and a virtual table definition survives
+// a node restart (durable, replicated catalog metadata) — the CRDT document is
+// reloaded from disk and the definition + its rows come back.
+TEST(QueryService, VirtualTableRejectsShadowAndSurvivesRestart) {
+    TempDir tmp;
+    const std::string node_id = zetta::util::new_uuid();
+    zetta::cluster::ReplicationManager replication{node_id};
+    replication.set("gadget:g1", nlohmann::json{{"label", "one"}});
+
+    {
+        Node node{config_for(tmp), &replication};
+        node.start();
+        QueryService svc{node};
+        svc.run("CREATE DATABASE shop; CREATE TABLE shop.widgets (a int);", "");
+        // A vtable name that shadows an existing table in the current database
+        // is rejected.
+        auto shadow = svc.run(
+            "CREATE VIRTUAL TABLE widgets OVER CRDT 'gadget:' "
+            "(id TEXT DURABLE KEY);",
+            /*current_database=*/"shop");
+        EXPECT_FALSE(shadow.ok());
+        // A fresh name is accepted.
+        auto ok = svc.run(
+            "CREATE VIRTUAL TABLE gadgets OVER CRDT 'gadget:' ("
+            "  id    TEXT DURABLE KEY,"
+            "  label TEXT DURABLE"
+            ");",
+            "");
+        ASSERT_TRUE(ok.ok()) << ok.error;
+        node.stop();
+    }
+
+    // A second node over the SAME persisted data_dir + a fresh manager reloads
+    // the CRDT document (which carries the vtable: key) from disk.
+    {
+        zetta::cluster::ReplicationManager reloaded{node_id};
+        Node node{config_for(tmp), &reloaded};
+        node.start();
+        QueryService svc{node};
+        auto defn = node.find_virtual_table("gadgets");
+        ASSERT_TRUE(defn.has_value());
+        EXPECT_EQ(defn->crdt_prefix, "gadget:");
+        auto sel = svc.run("SELECT * FROM gadgets;", "");
+        ASSERT_TRUE(sel.ok()) << sel.error;
+        ASSERT_EQ(sel.rows.size(), 1u);
+        EXPECT_EQ(sel.rows[0]["id"].get<std::string>(), "g1");
+        EXPECT_EQ(sel.rows[0]["label"].get<std::string>(), "one");
+        node.stop();
+    }
 }
 
 // ---- system.tables catalog (#684) -------------------------------------------

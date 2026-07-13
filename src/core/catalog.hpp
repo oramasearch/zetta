@@ -7,7 +7,10 @@
 // catalog into the replicated CRDT document. The CRDT is the source of truth;
 // the on-disk store + in-memory Node tree are a projection of these keys.
 //
-//   node:<node_id>     -> { address }                  (cluster membership)
+//   node:<node_id>     -> { address, reachability, node_type }  (cluster membership; #803/#809:
+//                          address is the node's dialable address, empty for a
+//                          dial-out-only node; reachability is "wan-accessible" or
+//                          "dial-out-only" — transitive learners never dial the latter)
 //   db:<db_uuid>       -> { name, replication? }        (a database; the optional
 //                          replication field is the per-db ReplicationStrategy —
 //                          ENT-35, omitted when the default ReplicateToAll; see
@@ -84,6 +87,14 @@
 //                          Postgres-style RLS: a USING read filter + a WITH CHECK
 //                          write filter, evaluated by the SQL WHERE engine against
 //                          the acting identity; see governance/policy.hpp / #748)
+//   vtable:<name>      -> { name, prefix, columns:[{name,type,tier,key}] }  (a
+//                          user-declared VIRTUAL TABLE over a CRDT key-family —
+//                          CREATE VIRTUAL TABLE (#809 slice 3). Keyed by its
+//                          human name (names are globally unique). Durable,
+//                          replicated catalog metadata: its rows are computed at
+//                          query time from the entries under `prefix`, so it
+//                          converges + survives restart like db:/tbl:; see
+//                          data/virtual_table.hpp / docs/data/virtual-tables.md)
 //   part:<uuid>        -> { table, blob_ref, row_range:{start,end}, stats,
 //                          owner_nodes }  (a dataset partition — a record of where
 //                          a slice of a table's data physically lives: its table
@@ -121,6 +132,7 @@ inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
 inline constexpr std::string_view kUserRolePrefix = "user_role:";
 inline constexpr std::string_view kPolicyPrefix = "policy:";
+inline constexpr std::string_view kVirtualTablePrefix = "vtable:";
 
 inline std::string node_key(const std::string& node_id) {
     return std::string(kNodePrefix) + node_id;
@@ -187,6 +199,10 @@ inline std::string user_role_key(const std::string& user_role_id) {
 }
 inline std::string policy_key(const std::string& policy_id) {
     return std::string(kPolicyPrefix) + policy_id;
+}
+// A virtual table is keyed by its human name (globally unique), not a UUID.
+inline std::string virtual_table_key(const std::string& name) {
+    return std::string(kVirtualTablePrefix) + name;
 }
 
 // If `key` starts with `prefix`, return the id that follows it; else empty.

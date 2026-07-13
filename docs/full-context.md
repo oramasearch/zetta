@@ -63,6 +63,33 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **Shipped (this branch) — reachability-aware dialer + unified full-membership `system.nodes`**:
+  [#803](https://github.com/oramasearch/zetta/issues/803) makes dial-out-only nodes
+  first-class — a node with no routable address (behind NAT / a private VNet: a home
+  node, an AKS pod on a private IP) starts with **`--dial-out-only`**, advertises an
+  empty dialable set (`advertised_endpoints()` → `{}`; HELLO endpoints `-` + a
+  `dial-out` reachability token), and is a pure initiator whose one outbound link
+  carries CRDT sync both ways; the dialer **never** dials it (skipping both HELLO-marked
+  peers and replicated `node:<id>` entries whose `reachability` is `dial-out-only`),
+  fixing the cross-cluster "7 not 9" undercount when two k8s clusters share a pod CIDR
+  (`10.244.0.x`). The node-list entry is now `node:<id> → { address, reachability, node_type }`
+  (`Cluster::primary_advertised_address()` computes the dialable address, empty when
+  dial-out-only; `node_type` is the self-declared durability class `permanent` | `ephemeral`,
+  set with the new **`--node-type`** flag — RF is maintained over the permanent set, a separate
+  concern). The full-membership view is now folded into a single unified **`system.nodes`**
+  (#809): the old `system.cluster_nodes` is gone, and `system.nodes` is a **virtual table over
+  the node-list CRDT** — every `node:<id>` the document knows (all N from any node, no "5 not 9"
+  undercount), composed at query time from a durable tier (`node_id`, `address`, `reachability`,
+  `node_type`) overlaid with ephemeral, never-written-back tiers: local liveness (`is_self`,
+  `directly_connected`, `status` live|unreachable, `last_seen_seconds`) and synced replication
+  status (`entries`, `version`, `in_sync`, `last_sync_seconds`, for self + direct peers). The
+  full-membership source (#800) and reachability-gated dialer (#803) still underpin it. See
+  [cluster/cluster.md](cluster/cluster.md) and [data/query.md](data/query.md). **Slice 3 (#809)**
+  generalizes the primitive into a user-facing DDL: **`CREATE VIRTUAL TABLE <name> OVER CRDT
+  '<prefix>' (col type TIER…)`** declares a read-only virtual table over *any* CRDT key-family
+  (durable KEY + durable/ephemeral columns), stored as durable `vtable:<name>` catalog metadata
+  and projected at query time. Ephemeral-column *resolvers* (`FROM <source>`) are the documented
+  follow-up. See [data/virtual-tables.md](data/virtual-tables.md).
 - **In flight 2026-07-03 (governed serving)**: [#648](https://github.com/oramasearch/zetta/issues/648)
   — models and indexes exposed as governed HTTP endpoints: `expose_model` /
   `expose_index` flip a replicated `exposed` flag on the entity value, the
@@ -204,8 +231,13 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   ([#466](https://github.com/oramasearch/zetta/issues/466),
   [docs/cluster/security.md](cluster/security.md)): mutual TLS 1.3 on every
   cluster link, per-node Ed25519 identities, token-gated join (the token
-  derives the cluster CA), secure by default with `--cluster-plaintext` the
-  opt-out. PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-up
+  derives the cluster CA), **always on** since #799 — which removed the
+  `--cluster-plaintext` opt-out (no plaintext peer mode) and made the default-deny
+  HTTP/MCP auth gate non-optional (there is no auth flag or toggle — the
+  `--require-auth` flag and `ZETTA_REQUIRE_AUTH` env were removed, and the built-in
+  `admin` role gained the orchestration atoms so the owner can drive orchestration
+  over HTTP/MCP; a never-locked-out node auto-seeds an owner token when no
+  `ZETTA_ADMIN_TOKEN` is supplied). PR [#667](https://github.com/oramasearch/zetta/pull/667); follow-up
   still open: [#669](https://github.com/oramasearch/zetta/issues/669) CSR
   enrollment / peer-cert pinning / revocation.
   [#670](https://github.com/oramasearch/zetta/issues/670) (provisioner

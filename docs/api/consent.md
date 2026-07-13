@@ -29,9 +29,9 @@ an agent auto-approves its own billable actions and the hard rule is hollow.
    accepts a decision from two surfaces only:
    - **An approver key** (`approve_consent {challenge_id}` over MCP): a
      NAMED key holding `orchestration:approve_consent` that belongs to a
-     **different principal** than the requester. The same key, a sibling key
-     of the same principal, and the unauthenticated-local session are all
-     refused — the calling key can never approve its own cloud action.
+     **different principal** than the requester. The same key and a sibling key
+     of the same principal are both refused — the calling key can never approve
+     its own cloud action.
    - **The headed app** (`ConsentSurface::HeadedApp`): the Admin panel's
      approval surface — the trusted human in front of the machine — set only
      by in-process code, never from request input.

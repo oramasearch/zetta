@@ -11,9 +11,10 @@ custom wherever AX demands it.
 ## The endpoints
 
 Served by the same embedded Beast2 server as `POST /mcp` (#615) — same bind,
-same flags (`--mcp-listen`, `--mcp-token`, `--no-mcp`), same bearer policy (a
-configured token gates these pages too; the loopback-no-token default is the
-audited local session):
+same flags (`--mcp-listen`, `--no-mcp`), same bearer policy: the always-on
+auth gate (#799) fronts these pages too, so every request needs a bearer that
+resolves to a user (the legacy `--mcp-token` shared secret was removed from the
+CLI):
 
 | Route | Serves |
 |---|---|

@@ -29,10 +29,9 @@ route, and an OpenAPI path with no further wiring.
 ## Same auth, same audit, same observability
 
 A REST call is `Registry::call` on the owning loop via the bridge — exactly
-the MCP path: bearer token = the acting `AccessKey` id (401 on a transport
-mismatch when a token is configured; loopback-no-token = the audited
-"unauthenticated local"), then validate → `Node::authorize` + audit → handler
-→ span. Inbound `traceparent` is honored. The response body is the same
+the MCP path: the always-on auth gate (#799) resolves the bearer to a **user**
+via the token store (else 401 — there is no unauthenticated path), then
+validate → `Node::authorize_user` + audit → handler → span. Inbound `traceparent` is honored. The response body is the same
 envelope `structuredContent` carries over MCP:
 
 ```json

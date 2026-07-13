@@ -64,9 +64,12 @@ zetta --peer 192.168.1.10:7777 --join-token <64-hex>
 `--join-token` is persisted in the joiner's own data dir on first use, so it is
 needed only once. Passing a *different* token to a node that already has one
 **re-keys** it: the new token wins, is persisted, and the node's identity is
-re-minted under the new CA. `--cluster-plaintext` disables the whole subsystem
-(debugging only — it prints a warning, and such a node cannot talk to a TLS
-cluster); it conflicts with `--join-token`.
+re-minted under the new CA. Inter-node mTLS is **always on** — there is **no
+plaintext peer mode**. The old `--cluster-plaintext` opt-out was **removed**
+(#799): it disabled the whole subsystem and was a silent-downgrade security
+hole. The only way to run an unsecured `Cluster` now is to embed a bare
+`Cluster` with an all-empty `ClusterSecurity` in a test or host process — no CLI
+flag or env selects it.
 
 ### Provisioned / burst nodes (#670)
 
@@ -76,15 +79,16 @@ address in **`ZETTA_SEED_PEER`** and — when the cluster is secure — its join
 in **`ZETTA_CLUSTER_TOKEN`**, on the same per-cloud delivery seam (an AWS instance
 tag / Azure cloud-init custom-data / GCP + OCI metadata / a Kubernetes pod env / a
 container `--env`), so the node's bootstrap comes up with the equivalent of
-`zetta --peer <seed> --join-token <token>` and joins the **mTLS** cluster instead
-of being stuck on `--cluster-plaintext`. Both are injected once, at fleet
+`zetta --peer <seed> --join-token <token>` and joins the **mTLS** cluster (the
+only kind — inter-node mTLS is always on, #799). Both are injected once, at fleet
 wire time, from this node's own live cluster security — `main.cpp` passes
 `ClusterConfig::security.join_token` to `ProvisionerFleet::wire`, which fills any
 per-cloud config that didn't set its own. The token is the cluster secret, so
 unlike the seed peer it is **never** part of the config's JSON boundary: it is not
 serialized into the node's detected provisioner config or the `system.provisioners`
-table, and rides only the bootstrap seam. A plaintext cluster has an empty token,
-so nothing is injected. (The reference control planes carry the token illustratively
+table, and rides only the bootstrap seam. A `Cluster` with empty security (an
+embedded bare `Cluster` in a test/host, the only unsecured path — #799) has an
+empty token, so nothing is injected. (The reference control planes carry the token illustratively
 on the same visible seam as the seed; a production control plane sources it from a
 per-cloud secret store rather than a describe-able tag / literal.)
 

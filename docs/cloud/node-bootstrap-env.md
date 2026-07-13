@@ -31,11 +31,10 @@ Env is applied as a **default beneath the flags already parsed**. `apply_bootstr
 fills only the fields the operator left unset:
 
 - `ZETTA_SEED_PEER` is used only when **no** `--peer` was given.
-- `ZETTA_CLUSTER_TOKEN` is used only when **no** `--join-token` was given **and**
-  the node is not running `--cluster-plaintext` — **env never forces security
-  on**. A plaintext cluster (no token flag, no token env) still boots plaintext.
-  The existing `--join-token` + `--cluster-plaintext` conflict check still guards
-  the result.
+- `ZETTA_CLUSTER_TOKEN` is used only when **no** `--join-token` was given.
+  Inter-node mTLS is always on (#799 — the `--cluster-plaintext` opt-out was
+  removed), so a node always needs a join token: an explicit `--join-token` wins,
+  otherwise this env supplies it.
 - `ZETTA_DATA_DIR` is used only when **no** `--data-dir` was given.
 
 Blank / unset env vars are ignored. A malformed `ZETTA_CLUSTER_TOKEN` is passed
@@ -52,8 +51,8 @@ zetta: applied provisioning env: ZETTA_SEED_PEER=10.0.0.4:7777 (--peer) ZETTA_CL
 
 `apply_bootstrap_env` takes a pluggable `EnvReader` (defaulting to `std::getenv`),
 so the mapping is unit-tested without touching the process environment —
-`tests/cloud/test_node_bootstrap_env.cpp` proves env fills seeds + token, that a
-CLI flag overrides env, and that a plaintext cluster ignores the token env.
+`tests/cloud/test_node_bootstrap_env.cpp` proves env fills seeds + token, and that
+a CLI flag overrides env.
 
 ## Not in scope (see the plan)
 

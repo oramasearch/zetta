@@ -26,6 +26,7 @@
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/virtual_table.hpp"
 #include "zetta/governance/permission.hpp"
 #include "zetta/ddf/data_frame.hpp"
 #include "zetta/ddf/group_by.hpp"
@@ -219,8 +220,10 @@ constexpr std::array kSystemTableCatalog = {
                     "this node's live host resource utilization, sampled at "
                     "query time"},
     SystemTableInfo{kNodesTable,
-                    "cluster membership + replication status (needs a "
-                    "cluster)"},
+                    "FULL cluster membership (virtual table over the node-list "
+                    "CRDT, #809): every node — incl. those not directly linked — "
+                    "with reachability, node_type, liveness + replication status "
+                    "(needs a cluster)"},
     SystemTableInfo{kPipelineJobsTable,
                     "recorded near-data compute jobs (ephemeral, not "
                     "replicated)"},
@@ -396,26 +399,70 @@ QueryResult error(std::string message) {
 
 // One JSON row per node for the nodes system table. Unknown replication
 // fields (e.g. a peer that hasn't reported yet, or self's sync state) are null.
-std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& cluster) {
+// system.nodes (#809) — the unified virtual table over the node-list CRDT. Its rows
+// are the FULL membership (every node:<id> the document knows — converging to all N
+// from any node, not just direct peers), composed at query time from three tiers:
+//   durable (CRDT node:<id>): node_id, address, reachability, node_type
+//   ephemeral-local: is_self, directly_connected, status, last_seen_seconds
+//   ephemeral-synced/local: replication status (self + direct peers, over STATUS
+//     gossip) and liveness from the telemetry plane (cluster-wide, TTL'd).
+// The ephemeral tiers are overlaid here and NEVER written to the CRDT, so a steady
+// cluster produces zero CRDT writes. (The `gone` status + node-list GC is #809
+// slice 2; user-facing CREATE VIRTUAL TABLE is slice 3.)
+std::vector<nlohmann::json> cluster_node_rows(const zetta::cluster::Cluster& cluster,
+                                              const Node& node) {
+    // Direct-peer replication status, keyed by node_id (the live peer table).
+    std::map<std::string, zetta::cluster::NodeReplication> replication_by_id;
+    for (const zetta::cluster::NodeStatus& n : cluster.nodes()) {
+        replication_by_id[n.node_id] = n.replication;
+    }
+    // Live telemetry, cluster-wide + TTL'd — the ephemeral liveness signal
+    // (node_id -> seconds since its last sample).
+    std::map<std::string, double> telemetry_age_by_id;
+    for (const zetta::cluster::NodeTelemetrySample& sample : node.telemetry_snapshot()) {
+        telemetry_age_by_id[sample.node_id] = sample.age_seconds;
+    }
+
     std::vector<nlohmann::json> rows;
-    for (const zetta::cluster::NodeStatus& node : cluster.nodes()) {
-        const zetta::cluster::NodeReplication& replication = node.replication;
+    for (const zetta::cluster::ClusterMember& member : cluster.membership()) {
         nlohmann::json row;
-        row["node_id"] = node.node_id;
-        row["address"] = node.address;
-        row["role"] = to_string(node.role);
-        row["is_self"] = node.is_self;
-        row["connected"] = node.connected;
-        row["entries"] = replication.known ? nlohmann::json(replication.entries)
-                                           : nlohmann::json();
-        row["version"] = replication.known ? nlohmann::json(replication.version)
-                                           : nlohmann::json();
-        row["in_sync"] = (replication.known && !node.is_self)
-                             ? nlohmann::json(replication.in_sync)
+        // --- durable (CRDT node:<id>) ---
+        row["node_id"] = member.node_id;
+        row["address"] = member.address;
+        row["reachability"] =
+            member.dial_out_only ? "dial-out-only" : "wan-accessible";
+        row["node_type"] =
+            member.node_type.empty() ? "permanent" : member.node_type;
+        // --- ephemeral-local ---
+        row["is_self"] = member.is_self;
+        row["directly_connected"] = member.directly_connected;
+        // Liveness: live if we hold a direct link OR fresh telemetry reached us
+        // within the TTL; else a declared member we can't currently see.
+        const auto telemetry = telemetry_age_by_id.find(member.node_id);
+        const bool has_telemetry = telemetry != telemetry_age_by_id.end();
+        const bool live =
+            member.is_self || member.directly_connected || has_telemetry;
+        row["status"] = live ? "live" : "unreachable";
+        if (member.is_self || member.directly_connected) {
+            row["last_seen_seconds"] = 0.0;  // now
+        } else if (has_telemetry) {
+            row["last_seen_seconds"] = telemetry->second;
+        } else {
+            row["last_seen_seconds"] = nlohmann::json();  // never seen here
+        }
+        // --- ephemeral-synced/local: replication status (self + direct peers) ---
+        const auto rep = replication_by_id.find(member.node_id);
+        const bool rep_known = rep != replication_by_id.end() && rep->second.known;
+        row["entries"] =
+            rep_known ? nlohmann::json(rep->second.entries) : nlohmann::json();
+        row["version"] =
+            rep_known ? nlohmann::json(rep->second.version) : nlohmann::json();
+        row["in_sync"] = (rep_known && !member.is_self)
+                             ? nlohmann::json(rep->second.in_sync)
                              : nlohmann::json();
         row["last_sync_seconds"] =
-            (replication.known && !node.is_self)
-                ? nlohmann::json(replication.seconds_since_sync)
+            (rep_known && !member.is_self)
+                ? nlohmann::json(rep->second.seconds_since_sync)
                 : nlohmann::json();
         rows.push_back(std::move(row));
     }
@@ -1997,6 +2044,19 @@ QueryResult Executor::execute(const Statement& stmt,
         return ref.database.empty() ? current_database : ref.database;
     };
 
+    // A virtual table (#809 slice 3) is referenced by its unqualified, global
+    // name; a real table in the current database takes precedence (a virtual
+    // table never shadows one). Resolves to the definition when `ref` is an
+    // unqualified name that is a virtual table and is NOT shadowed by a real
+    // table — used by SELECT (to project) and the write paths (to reject).
+    const auto resolve_virtual_table =
+        [&](const TableRef& ref) -> std::optional<zetta::data::VirtualTable> {
+        if (!ref.database.empty()) return std::nullopt;
+        auto current = node_.find_database(current_database);
+        if (current && current->find_table(ref.table)) return std::nullopt;
+        return node_.find_virtual_table(ref.table);
+    };
+
     return std::visit(
         overloaded{
             [&](const CreateDatabaseStmt& s) -> QueryResult {
@@ -2037,6 +2097,79 @@ QueryResult Executor::execute(const Statement& stmt,
                 }
                 return {.message = "CREATE TABLE"};
             },
+            [&](const CreateVirtualTableStmt& s) -> QueryResult {
+                // OVER CRDT is required (the must-extend-a-CRDT invariant). The
+                // grammar can't reach here without it, but a bare '' is possible.
+                if (s.crdt_prefix.empty()) {
+                    return error("CREATE VIRTUAL TABLE requires a non-empty OVER "
+                                 "CRDT '<prefix>' (a virtual table must extend a "
+                                 "CRDT key-family)");
+                }
+                // Exactly one DURABLE KEY column — the convergent row identity.
+                int key_count = 0;
+                std::unordered_set<std::string> seen;
+                for (const VirtualColumnDef& column : s.columns) {
+                    if (!seen.insert(column.name).second) {
+                        return error("duplicate column \"" + column.name +
+                                     "\" in CREATE VIRTUAL TABLE");
+                    }
+                    if (column.is_key) ++key_count;
+                }
+                if (key_count != 1) {
+                    return error("CREATE VIRTUAL TABLE needs exactly one DURABLE "
+                                 "KEY column (the CRDT key — the id after the "
+                                 "prefix)");
+                }
+                // The name must not shadow a system table (or the bare zetta_nodes
+                // alias), nor an existing table in the current database.
+                for (const std::string_view sys : kSystemTableNames) {
+                    if (s.name == sys) {
+                        return error("\"" + s.name +
+                                     "\" is a reserved system-table name");
+                    }
+                }
+                if (s.name == "zetta_nodes") {
+                    return error("\"zetta_nodes\" is a reserved system-table alias");
+                }
+                if (auto current = node_.find_database(current_database)) {
+                    if (current->find_table(s.name)) {
+                        return error("\"" + s.name +
+                                     "\" already names a table in \"" +
+                                     current_database + "\"");
+                    }
+                }
+                // Translate the parsed statement into the durable definition.
+                zetta::data::VirtualTable definition;
+                definition.name = s.name;
+                definition.crdt_prefix = s.crdt_prefix;
+                for (const VirtualColumnDef& column : s.columns) {
+                    zetta::data::VirtualColumn out;
+                    out.name = column.name;
+                    out.type = column.type;
+                    out.is_key = column.is_key;
+                    switch (column.tier) {
+                        case VirtualTableTier::Durable:
+                            out.tier = zetta::data::VirtualColumnTier::Durable;
+                            break;
+                        case VirtualTableTier::EphemeralLocal:
+                            out.tier =
+                                zetta::data::VirtualColumnTier::EphemeralLocal;
+                            break;
+                        case VirtualTableTier::EphemeralSynced:
+                            out.tier =
+                                zetta::data::VirtualColumnTier::EphemeralSynced;
+                            break;
+                    }
+                    definition.columns.push_back(std::move(out));
+                }
+                if (!node_.create_virtual_table(definition)) {
+                    return error("virtual table \"" + s.name +
+                                 "\" already exists, or this node has no replicated "
+                                 "CRDT to store the definition (needs a cluster / "
+                                 "ReplicationManager)");
+                }
+                return {.message = "CREATE VIRTUAL TABLE"};
+            },
             [&](const DropTableStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
@@ -2054,6 +2187,11 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const InsertStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {
@@ -2121,6 +2259,11 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +
@@ -2152,6 +2295,11 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
                 }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
+                }
                 auto db = resolve_db(s.table);
                 if (!db) {
                     return error("database \"" + db_name(s.table) +
@@ -2174,6 +2322,11 @@ QueryResult Executor::execute(const Statement& stmt,
             [&](const TruncateStmt& s) -> QueryResult {
                 if (db_name(s.table) == kSystemDatabase) {
                     return error("the \"system\" database is read-only");
+                }
+                if (resolve_virtual_table(s.table)) {
+                    return error("virtual table \"" + s.table.table +
+                                 "\" is read-only — durable writes go to the base "
+                                 "entity's own path");
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {
@@ -2305,7 +2458,19 @@ QueryResult Executor::execute(const Statement& stmt,
                         return error("system.nodes is unavailable here "
                                      "(no cluster)");
                     }
-                    return select_over_rows(s, cluster_node_rows(*cluster_));
+                    return select_over_rows(s,
+                                            cluster_node_rows(*cluster_, node_));
+                }
+                // Virtual table (#809 slice 3): a user-declared read-only table
+                // over a CRDT key-family, referenced by its unqualified global
+                // name (a real table takes precedence). Its durable rows are
+                // projected from the CRDT; WHERE/projection reuse select_over_rows.
+                if (auto vtable = resolve_virtual_table(s.table)) {
+                    if (s.grouped()) {
+                        return error(
+                            "GROUP BY is not supported over virtual tables");
+                    }
+                    return select_over_rows(s, node_.virtual_table_rows(*vtable));
                 }
                 auto db = resolve_db(s.table);
                 if (!db) {

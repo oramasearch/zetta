@@ -54,12 +54,16 @@ TEST(AuthorizeUser, ChecksEffectivePermissionsOfAssignedRoles) {
     const Operation write{CapabilityDomain::Data, "write"};
     const Operation create_project{CapabilityDomain::Orchestration,
                                    "create_project"};
+    // A right in no vocabulary atom — the deny-by-default probe (no wildcard).
+    const Operation phantom{CapabilityDomain::Data, "teleport"};
 
-    // admin: reaches query + write (granted), but a right no role grants is
-    // still denied (deny-by-default — no wildcard capability).
+    // admin: reaches query + write, and — since #799 — the Orchestration control
+    // surface too (create_project), so the owner can actually administer. But a
+    // right no atom grants is still denied (deny-by-default — no wildcard).
     EXPECT_TRUE(node.authorize_user(admin_user->id(), query).allowed);
     EXPECT_TRUE(node.authorize_user(admin_user->id(), write).allowed);
-    EXPECT_FALSE(node.authorize_user(admin_user->id(), create_project).allowed);
+    EXPECT_TRUE(node.authorize_user(admin_user->id(), create_project).allowed);
+    EXPECT_FALSE(node.authorize_user(admin_user->id(), phantom).allowed);
 
     // reader: query yes, write no.
     EXPECT_TRUE(node.authorize_user(reader_user->id(), query).allowed);
@@ -159,8 +163,7 @@ struct RequireAuthFixture : ::testing::Test {
         ASSERT_TRUE(boot.performed) << boot.reason;
 
         zetta::api::ServerOptions options;
-        options.port = 0;  // ephemeral
-        options.require_auth = true;  // the default-deny gate (#745)
+        options.port = 0;  // ephemeral — the default-deny gate is always on (#799)
         server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
         ASSERT_TRUE(server->start()) << server->reason();
         ASSERT_NE(server->port(), 0);
@@ -182,8 +185,12 @@ TEST_F(RequireAuthFixture, EveryRouteDeniesWithoutToken) {
     EXPECT_EQ(drive(*server, "GET", "/v1/server_info").status, 401);
     EXPECT_EQ(drive(*server, "GET", "/v1/specs").status, 401);
     EXPECT_EQ(drive(*server, "GET", "/llms.txt").status, 401);
-    // The gate fronts even an unmatched path: '/' is 401, not 404.
-    EXPECT_EQ(drive(*server, "GET", "/").status, 401);
+    // '/' serves the PUBLIC web-UI shell (an SPA login page — no secrets; its JS
+    // fetches the gated /v1/* data endpoints under a bearer), so it is 200 by
+    // design: it is the one deliberate public route (see the web_ui_page route in
+    // http_server.cpp). The gate still fronts any UNMATCHED path (401, not 404).
+    EXPECT_EQ(drive(*server, "GET", "/").status, 200);
+    EXPECT_EQ(drive(*server, "GET", "/no/such/path").status, 401);
     // A wrong token is no better than none.
     EXPECT_EQ(drive(*server, "GET", "/v1/server_info", {}, "not-the-secret").status,
               401);
@@ -227,25 +234,23 @@ TEST_F(RequireAuthFixture, CapabilityCheckRunsAgainstResolvedUser) {
     EXPECT_NE(denied.body.find("unauthorized"), std::string::npos);
 }
 
-// Back-compat: with the gate OFF, the unauthenticated-local session still works
-// (the loopback GUI default) — no token required.
-TEST(AuthGateBackCompat, LocalSessionWorksWithoutRequireAuth) {
+// Auth is unconditional (#799): there is NO unauthenticated-local HTTP mode and no
+// toggle to reach one. Even on a loopback bind with an empty token store, a gated
+// route is 401 — the only way in is a bearer that resolves to a user.
+TEST(AuthGateAlwaysOn, NoUnauthenticatedLocalHttpMode) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
 
     zetta::api::ServerOptions options;
     options.port = 0;
-    // require_auth defaults to false; no bearer_token — unauthenticated-local.
     zetta::api::ApiServer server(node, nullptr, options);
     ASSERT_TRUE(server.start()) << server.reason();
 
-    EXPECT_EQ(drive(server, "GET", "/v1/server_info").status, 200);
+    EXPECT_EQ(drive(server, "GET", "/v1/server_info").status, 401);
     const HttpResponse ping = drive(
         server, "POST", "/mcp", R"({"jsonrpc":"2.0","id":1,"method":"ping"})");
-    EXPECT_EQ(ping.status, 200);
-    const auto ping_json = nlohmann::json::parse(ping.body, nullptr, false);
-    EXPECT_TRUE(ping_json.contains("result"));
+    EXPECT_EQ(ping.status, 401);
 
     server.stop();
     node.stop();

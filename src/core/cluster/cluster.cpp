@@ -84,6 +84,10 @@ struct Cluster::State {
         std::string address;
         // The peer's full advertised candidate-endpoint set (from its HELLO).
         std::vector<std::string> endpoints;
+        // Reachability from its HELLO (#803): a dial-out-only peer advertises no
+        // dialable address — it is reached ONLY over the inbound link it opened, and
+        // must never be dialed (known_member_endpoints skips it).
+        bool dial_out_only = false;
         // Is a live link to this peer held right now? A record with connected=false
         // is retained only by membership hysteresis until its grace window lapses.
         bool connected = true;
@@ -121,6 +125,10 @@ struct Cluster::State {
     // (hysteresis, #739). Zero drops it immediately.
     std::chrono::steady_clock::duration membership_grace{};
     bool log_events = false;
+    // Reachability of THIS node (#803): when true we advertise no dialable address
+    // in our HELLO (an empty candidate set + the dial-out marker) — we are a pure
+    // initiator. Set from ClusterConfig::dial_out_only in start().
+    bool dial_out_only = false;
     mutable std::mutex mutex;
     std::vector<PeerRecord> peers;
     // At most one live connection per peer node_id (guarded by `mutex`). A reconnect
@@ -236,14 +244,19 @@ struct Cluster::State {
     // its address with a fresh node id, so a new HELLO from a known address evicts
     // the stale entry (and any same-id entry from a prior connection) — no ghost.
     void add_peer(std::string node_id, std::string address,
-                  std::vector<std::string> endpoints) {
+                  std::vector<std::string> endpoints, bool dial_out_only) {
         const std::lock_guard<std::mutex> lock(mutex);
         std::erase_if(peers, [&](const PeerRecord& p) {
-            return p.node_id == node_id || p.address == address;
+            // Dedup by node id, or by the reached address — but NEVER match on an
+            // empty address, which every dial-out-only peer shares (#803): matching
+            // it would evict an unrelated dial-out peer.
+            return p.node_id == node_id ||
+                   (!address.empty() && p.address == address);
         });
         peers.push_back(PeerRecord{.node_id = std::move(node_id),
                                    .address = std::move(address),
                                    .endpoints = std::move(endpoints),
+                                   .dial_out_only = dial_out_only,
                                    .connected = true,
                                    .last_seen = std::chrono::steady_clock::now()});
     }
@@ -384,6 +397,9 @@ struct Cluster::State {
         {
             const std::lock_guard<std::mutex> lock(mutex);
             for (const PeerRecord& peer : peers) {
+                // Never dial a dial-out-only peer (#803): it has no routable
+                // address; we reach it only over the inbound link it opened.
+                if (peer.dial_out_only) continue;
                 for (const std::string& endpoint : peer.endpoints) {
                     add_endpoint(peer.node_id, endpoint);
                 }
@@ -396,6 +412,14 @@ struct Cluster::State {
                 for (const auto& [key, value] : document.items()) {
                     if (!key.starts_with(zetta::catalog::kNodePrefix)) continue;
                     if (!value.is_object()) continue;
+                    // A dial-out-only member (transitively learned via the CRDT
+                    // node-list) advertises no dialable address — never dial it
+                    // (#803); it syncs over its own outbound link.
+                    const auto reachability = value.find("reachability");
+                    if (reachability != value.end() && reachability->is_string() &&
+                        reachability->get<std::string>() == "dial-out-only") {
+                        continue;
+                    }
                     const auto address = value.find("address");
                     if (address == value.end() || !address->is_string()) continue;
                     add_endpoint(key.substr(zetta::catalog::kNodePrefix.size()),
@@ -577,31 +601,42 @@ std::vector<std::string> split_endpoints(const std::string& text) {
     return parts;
 }
 
-// Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]>". The endpoints are a single
-// whitespace-delimited, comma-separated token — the peer's advertised candidate
-// SET (#739). A legacy single-address HELLO parses as a one-element set (backward
-// compatible). `address` defaults to the first advertised endpoint; the observer
-// overrides it with the endpoint it actually reached the peer on. Returns an empty
-// node_id on anything malformed.
+// Parse "ZETTA/1 HELLO <node_id> <ep1[,ep2,...]|-> [wan|dial-out]". The endpoints
+// are a single whitespace-delimited, comma-separated token — the peer's advertised
+// candidate SET (#739) — or "-" for the empty set of a dial-out-only node (#803).
+// The trailing reachability token is optional: absent (a legacy HELLO) or "wan"
+// means wan-accessible; "dial-out" marks a node that advertises no dialable
+// address and must never be dialed. A legacy single-address HELLO parses as a
+// one-element wan set (backward compatible). `address` defaults to the first
+// advertised endpoint; the observer overrides it with the endpoint it actually
+// reached the peer on. Returns an empty node_id on anything malformed.
 ClusterPeer parse_hello(const std::string& line) {
     std::istringstream parser(line);
-    std::string protocol, verb, endpoints_token;
+    std::string protocol, verb, endpoints_token, reachability_token;
     ClusterPeer peer;
-    parser >> protocol >> verb >> peer.node_id >> endpoints_token;
+    parser >> protocol >> verb >> peer.node_id >> endpoints_token >>
+        reachability_token;
     if (protocol != kProtocol || verb != "HELLO") return ClusterPeer{};
-    peer.endpoints = split_endpoints(endpoints_token);
+    if (endpoints_token != "-") peer.endpoints = split_endpoints(endpoints_token);
+    peer.dial_out_only = (reachability_token == "dial-out");
     if (!peer.endpoints.empty()) peer.address = peer.endpoints.front();
     return peer;
 }
 
 std::string hello_line(const std::string& node_id,
-                       const std::vector<std::string>& endpoints) {
+                       const std::vector<std::string>& endpoints,
+                       bool dial_out_only) {
     std::string joined;
     for (const std::string& endpoint : endpoints) {
         if (!joined.empty()) joined.push_back(',');
         joined += endpoint;
     }
-    return std::string(kProtocol) + " HELLO " + node_id + " " + joined;
+    // A dial-out-only node advertises an empty candidate set: send "-" for the
+    // endpoints and the "dial-out" reachability marker so peers never dial it
+    // (#803). A wan node sends its endpoints + "wan".
+    if (joined.empty()) joined = "-";
+    return std::string(kProtocol) + " HELLO " + node_id + " " + joined +
+           (dial_out_only ? " dial-out" : " wan");
 }
 
 // --- Replication gossip -----------------------------------------------------
@@ -888,11 +923,13 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     std::string pending;
     std::optional<std::string> their_hello;
     if (initiate) {
-        co_await write_line(link->stream, hello_line(my_node_id, my_endpoints));
+        co_await write_line(link->stream,
+                            hello_line(my_node_id, my_endpoints, self->dial_out_only));
         their_hello = co_await read_line(link->stream, pending);
     } else {
         their_hello = co_await read_line(link->stream, pending);
-        co_await write_line(link->stream, hello_line(my_node_id, my_endpoints));
+        co_await write_line(link->stream,
+                            hello_line(my_node_id, my_endpoints, self->dial_out_only));
     }
     if (!their_hello) {
         link->socket->close();
@@ -923,7 +960,7 @@ capy::task<> handshake_and_hold(Cluster::State* self, net::tcp_socket socket,
     // dialed (the reachable candidate) or, when we accepted, its advertised front.
     const std::string reached =
         !dialed_endpoint.empty() ? dialed_endpoint : peer.address;
-    self->add_peer(peer.node_id, reached, peer.endpoints);
+    self->add_peer(peer.node_id, reached, peer.endpoints, peer.dial_out_only);
     log_event(self, std::string("+ peer ") + short_id(peer.node_id) + " @ " +
                         reached + (initiate ? " (dialed)" : " (accepted)"));
 
@@ -1205,6 +1242,7 @@ Cluster::Cluster(std::string node_id, ClusterConfig config,
     state_->membership_grace =
         std::chrono::seconds(config_.membership_grace_seconds);
     state_->log_events = config_.log_events;
+    state_->dial_out_only = config_.dial_out_only;
 }
 
 Cluster::~Cluster() { stop(); }
@@ -1344,6 +1382,10 @@ std::string Cluster::peer_command() const {
 }
 
 std::vector<std::string> Cluster::advertised_endpoints() const {
+    // A dial-out-only node advertises NO dialable candidate (#803): it is a pure
+    // initiator, reached only over the outbound link it opens, so it must never
+    // gossip its (unroutable, cross-cluster-colliding) bound/private IP.
+    if (config_.dial_out_only) return {};
     // The reachable listen address(es) first (non-loopback ahead of loopback), then
     // any explicit --advertise extras a peer might dial (a NAT/LB public address),
     // deduped. This is the candidate set carried in the HELLO (#739).
@@ -1357,6 +1399,21 @@ std::vector<std::string> Cluster::advertised_endpoints() const {
     return endpoints;
 }
 
+bool Cluster::dial_out_only() const { return config_.dial_out_only; }
+
+std::string Cluster::node_type() const { return config_.node_type; }
+
+std::string Cluster::primary_advertised_address() const {
+    // The single most-dialable address recorded in the replicated node-list for
+    // transitive learners (#803/#800): empty for a dial-out-only node; else the
+    // operator-supplied --advertise front (a routable LB / public address) when
+    // set, falling back to the bound listen address (a LAN node dialable at its
+    // own IP).
+    if (config_.dial_out_only) return {};
+    if (!config_.advertise.empty()) return config_.advertise.front();
+    return listen_addresses().front();
+}
+
 std::vector<ClusterPeer> Cluster::peers() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
     std::vector<ClusterPeer> result;
@@ -1365,9 +1422,57 @@ std::vector<ClusterPeer> Cluster::peers() const {
         if (!peer.connected) continue;  // live-link view; hysteresis-only excluded
         result.push_back(ClusterPeer{.node_id = peer.node_id,
                                      .address = peer.address,
-                                     .endpoints = peer.endpoints});
+                                     .endpoints = peer.endpoints,
+                                     .dial_out_only = peer.dial_out_only});
     }
     return result;
+}
+
+std::vector<ClusterMember> Cluster::membership() const {
+    // The complete membership from the replicated node-list (#800): every node:<id>
+    // entry, annotated with reachability and whether we hold a live link to it now.
+    // On a spanning cluster no single node is directly linked to all N, but the CRDT
+    // node-list converges everywhere — so this is the full view from any node.
+    std::vector<std::string> connected;  // node_ids we hold a live link to
+    {
+        const std::lock_guard<std::mutex> lock(state_->mutex);
+        for (const State::PeerRecord& peer : state_->peers) {
+            if (peer.connected) connected.push_back(peer.node_id);
+        }
+    }
+    std::vector<ClusterMember> members;
+    if (!state_->replication) return members;
+    const nlohmann::json document = state_->replication->snapshot();
+    if (!document.is_object()) return members;
+    for (const auto& [key, value] : document.items()) {
+        if (!key.starts_with(zetta::catalog::kNodePrefix)) continue;
+        if (!value.is_object()) continue;
+        ClusterMember member;
+        member.node_id = key.substr(zetta::catalog::kNodePrefix.size());
+        if (const auto address = value.find("address");
+            address != value.end() && address->is_string()) {
+            member.address = address->get<std::string>();
+        }
+        if (const auto reach = value.find("reachability");
+            reach != value.end() && reach->is_string()) {
+            member.dial_out_only = reach->get<std::string>() == "dial-out-only";
+        }
+        if (const auto type = value.find("node_type");
+            type != value.end() && type->is_string()) {
+            member.node_type = type->get<std::string>();
+        }
+        member.is_self = member.node_id == node_id_;
+        member.directly_connected =
+            member.is_self ||
+            std::find(connected.begin(), connected.end(), member.node_id) !=
+                connected.end();
+        members.push_back(std::move(member));
+    }
+    std::sort(members.begin(), members.end(),
+              [](const ClusterMember& a, const ClusterMember& b) {
+                  return a.node_id < b.node_id;
+              });
+    return members;
 }
 
 std::size_t Cluster::peer_count() const {

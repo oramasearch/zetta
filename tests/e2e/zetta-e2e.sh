@@ -72,7 +72,14 @@ BASE="${BASE%/}"
 PEERS="$(printf '%s' "${ZETTA_E2E_PEER_URLS:-}" | tr ',' ' ')"
 LEVELS="${ZETTA_E2E_LEVELS:-2,3}"
 TOKEN="${ZETTA_E2E_TOKEN:-}"
-REQUIRE_AUTH="${ZETTA_E2E_REQUIRE_AUTH:-0}"
+# Auth is mandatory on every target (zetta#799): every HTTP/MCP/SQL request needs a
+# bearer that resolves to a user, so the e2e REQUIRES a token — fail fast rather than
+# 401 on the first call. (ZETTA_E2E_REQUIRE_AUTH is vestigial now; auth is always on.)
+if [ -z "$TOKEN" ]; then
+    printf 'FATAL: ZETTA_E2E_TOKEN (the seeded admin token) is required — the engine enforces auth on every request (zetta#799).\n' >&2
+    exit 2
+fi
+REQUIRE_AUTH=1
 DB="${ZETTA_E2E_DB:-e2e}"
 TIMEOUT="${ZETTA_E2E_TIMEOUT:-45}"
 RETRIES="${ZETTA_E2E_RETRIES:-10}"
@@ -611,11 +618,12 @@ if want_level 3; then
         [ "${_a1:-0}" -gt "${_a0:-0}" ] && pass "system.audit grew monotonically ($_a0 -> $_a1) across the e2e's writes" || skip "system.audit did not grow ($_a0 -> $_a1) — action may have been rejected"
     else skip "system.audit unavailable"; fi
 
-    # --- 3.13 authz enforcement under --require-auth [#780] ----------------
-    # The regression harness for the auth review findings #759–#769. On an
-    # unauthenticated-local target every enforcement path is inert, so the whole
-    # section SKIPs; it lights up on a --require-auth target profile (#88).
-    sec "LEVEL 3.13 — authz enforcement (--require-auth) [#759-#769]"
+    # --- 3.13 authz enforcement (auth is ALWAYS on, #799) [#780] -----------
+    # The regression harness for the auth review findings #759–#769. Auth is now
+    # mandatory on every target (zetta#799) and a token is required at startup, so
+    # this ALWAYS runs — the REQUIRE_AUTH / empty-token skips below are vestigial
+    # (they can never fire) and kept only for back-compat with an older runner.
+    sec "LEVEL 3.13 — authz enforcement (always on, #799) [#759-#769]"
     if [ "$REQUIRE_AUTH" != "1" ]; then
         skip "target is unauthenticated-local — authz enforcement inert (needs --require-auth target profile #88)"
     elif [ -z "$TOKEN" ]; then

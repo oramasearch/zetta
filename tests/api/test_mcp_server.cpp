@@ -20,7 +20,11 @@
 #include "journey.hpp"
 #include "journeys_canonical.hpp"
 #include "temp_dir.hpp"
+#include "zetta/api/capabilities.hpp"
+#include "zetta/api/registry.hpp"
 #include "zetta/api/server.hpp"
+#include "zetta/governance/capability.hpp"
+#include "zetta/governance/role.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/project.hpp"
@@ -28,6 +32,39 @@
 #include "zetta/version.hpp"
 
 namespace {
+
+// Drift guard for the always-on auth gate (#799): the bootstrap owner's built-in
+// `admin` role must authorize EVERY registry op. The capability model is
+// exact-match (no wildcards), so a registry op whose (domain, action) is missing
+// from the permission vocabulary (permission.cpp) is unreachable for every role —
+// which, with auth mandatory, would make that control surface dead in production.
+// This most often bites the Orchestration domain. If this fails, add the op's
+// (domain, action) to permission_vocabulary().
+TEST(AdminRoleCoversRegistry, EveryRegistryOpIsAuthorizedForTheOwner) {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    ASSERT_TRUE(node.start());
+    ASSERT_TRUE(node.bootstrap_owner("admin-secret").performed);
+
+    auto admin = node.find_role("admin");
+    ASSERT_TRUE(admin);
+    const zetta::governance::CapabilitySet& caps =
+        admin->permissions().capabilities;
+
+    zetta::api::Registry registry;
+    zetta::api::register_core_capabilities(registry);
+    // admin capabilities carry no TTL, so the reference time is immaterial.
+    const std::string now = "2099-01-01T00:00:00.000Z";
+    for (const auto& capability : registry.list()) {
+        EXPECT_TRUE(caps.permits(capability->required_operation, now))
+            << "admin cannot authorize registry op '" << capability->name
+            << "' (" << zetta::governance::to_string(
+                            capability->required_operation.domain)
+            << ":" << capability->required_operation.action
+            << ") — add it to permission_vocabulary()";
+    }
+    node.stop();
+}
 
 // A deliberately dumb blocking HTTP/1.1 client: one request, Connection:
 // close, returns the response body. Runs on a helper thread while the test
@@ -72,9 +109,13 @@ struct McpServerFixture : ::testing::Test {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     std::unique_ptr<zetta::api::ApiServer> server;
+    // Auth is always on (#799): seed the owner (admin) so this secret
+    // authenticates as it, and every fixture request carries it as the bearer.
+    std::string owner_secret = "mcp-owner-secret";
 
     void SetUp() override {
         ASSERT_TRUE(node.start());
+        ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
         zetta::api::ServerOptions options;
         options.port = 0;  // ephemeral
         server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
@@ -91,7 +132,7 @@ struct McpServerFixture : ::testing::Test {
         std::string body;
         std::atomic<bool> finished{false};
         std::thread client([&] {
-            body = http_post(server->port(), "/mcp", payload);
+            body = http_post(server->port(), "/mcp", payload, owner_secret);
             finished = true;
         });
         const auto deadline =
@@ -225,9 +266,11 @@ TEST(McpServerAuth, ConfiguredTokenIsRequired) {
     zetta::test::TempDir dir;
     zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
     ASSERT_TRUE(node.start());
+    // Auth is always on (#799): seed the owner from a known secret so that secret
+    // authenticates as the owner — there is no legacy shared-secret mode.
+    ASSERT_TRUE(node.bootstrap_owner("secret-key-id").performed);
     zetta::api::ServerOptions options;
     options.port = 0;
-    options.bearer_token = "secret-key-id";
     zetta::api::ApiServer server(node, nullptr, options);
     ASSERT_TRUE(server.start()) << server.reason();
 

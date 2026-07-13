@@ -205,6 +205,33 @@ struct CreateTableStmt {
     std::vector<ColumnDef> columns;
 };
 
+// The tier a CREATE VIRTUAL TABLE column draws from (#809 slice 3). DURABLE is a
+// field of the CRDT entry (replicated); the ephemeral tiers are enrichment.
+// Mirrors data::VirtualColumnTier; the executor translates one to the other so
+// the AST stays independent of the data layer.
+enum class VirtualTableTier { Durable, EphemeralLocal, EphemeralSynced };
+
+// One column of a CREATE VIRTUAL TABLE: a name + a captured (unenforced) type +
+// its tier, with `is_key` set for the DURABLE KEY column (the CRDT key — the id
+// after the prefix).
+struct VirtualColumnDef {
+    std::string name;
+    std::string type;
+    VirtualTableTier tier = VirtualTableTier::Durable;
+    bool is_key = false;
+};
+
+// CREATE VIRTUAL TABLE <name> OVER CRDT '<prefix>' ( <col> <type> <TIER…>, … )
+// — declare a read-only virtual table over the CRDT key-family `crdt_prefix`
+// (#809 slice 3). OVER CRDT is REQUIRED (the must-extend-a-CRDT invariant). The
+// executor persists it as durable catalog metadata (a `vtable:<name>` CRDT key)
+// and projects one row per CRDT entry under the prefix at query time.
+struct CreateVirtualTableStmt {
+    std::string name;
+    std::string crdt_prefix;
+    std::vector<VirtualColumnDef> columns;
+};
+
 struct DropTableStmt {
     TableRef table;
 };
@@ -263,6 +290,7 @@ using Statement = std::variant<CreateDatabaseStmt, DropDatabaseStmt,
                                GrantRoleStmt, RevokeRoleStmt,
                                CreatePolicyStmt, DropPolicyStmt,
                                CreateTableStmt, DropTableStmt, InsertStmt,
+                               CreateVirtualTableStmt,
                                UpdateStmt, DeleteStmt, TruncateStmt, SelectStmt>;
 
 // Wrap a statement's variant alternative into a Statement. Each is defined in its
@@ -292,5 +320,8 @@ Statement make_create_policy_statement(
     std::optional<PolicyPredicate> using_predicate,
     std::optional<PolicyPredicate> check_predicate);
 Statement make_drop_policy_statement(std::string name);
+Statement make_create_virtual_table_statement(
+    std::string name, std::string crdt_prefix,
+    std::vector<VirtualColumnDef> columns);
 
 }  // namespace zetta::query
