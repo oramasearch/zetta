@@ -62,17 +62,20 @@ form.inline{display:inline;margin:0;}
 .main{padding:20px 24px 56px;max-width:1080px;min-width:0;}
 
 /* Web shell — a terminal surface (charcoal), the one deliberately dark panel */
-.term{background:#221F1D;color:#ECEAE6;border-radius:10px;padding:14px 16px;font:13px/1.55 var(--font-mono);
+.term{background:var(--canvas);color:var(--ink-primary);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;font:14.5px/1.7 var(--font-mono);
   overflow-x:auto;}
-.term .prompt{color:var(--coral);}
-.term .out{margin-top:6px;color:#D6D4CF;overflow-x:auto;}
-.out .txt{margin:0;padding:0;background:none;border:none;white-space:pre;font:12px/1.55 var(--font-mono);color:inherit;}
-.out .err{color:#ff9b9b;}
-.out .rtab{border-collapse:collapse;font:12px/1.5 var(--font-mono);}
-.out .rtab th{text-align:left;padding:2px 18px 5px 0;color:#948f88;font-weight:400;white-space:nowrap;border-bottom:1px solid rgba(255,255,255,.16);}
-.out .rtab td{text-align:left;padding:2px 18px 2px 0;color:inherit;white-space:nowrap;}
-.out .rcount{color:#948f88;font-size:11px;margin-top:8px;}
-.term .cmd{color:#ECEAE6;}
+.term>div{margin-bottom:18px;}
+.term>div:last-child{margin-bottom:0;}
+.term .prompt{color:var(--coral);margin-right:4px;}
+.term .out{margin-top:10px;color:var(--ink-primary);overflow-x:auto;}
+.out .txt{margin:0;padding:0;background:none;border:none;white-space:pre-wrap;font:14px/1.7 var(--font-mono);color:inherit;}
+.out .err{color:var(--err-fg);}
+.out .rtab{border-collapse:collapse;font:14px/1.7 var(--font-mono);margin-top:2px;}
+.out .rtab th{text-align:left;padding:4px 26px 10px 0;color:var(--ink-muted);font-weight:500;white-space:nowrap;border-bottom:1px solid var(--rule-emph);}
+.out .rtab td{text-align:left;padding:8px 26px 8px 0;color:var(--ink-secondary);white-space:nowrap;border-bottom:1px solid var(--rule-hair);}
+.out .rtab tr:last-child td{border-bottom:none;}
+.out .rcount{color:var(--ink-quiet);font-size:12.5px;margin-top:12px;}
+.term .cmd{color:var(--ink-primary);}
 .shellrow{display:flex;gap:8px;margin-top:12px;}
 .shellrow input{font-family:var(--font-mono);}
 
@@ -85,7 +88,7 @@ form.inline{display:inline;margin:0;}
 .cell{border:1px solid var(--rule-card);border-radius:10px;padding:10px;margin-bottom:12px;}
 .cellbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;}
 .cell textarea{min-height:60px;}
-.cell .out{margin-top:8px;background:#221F1D;color:#ECEAE6;border-radius:8px;padding:12px;overflow-x:auto;}
+.cell .out{margin-top:8px;background:var(--canvas);color:var(--ink-primary);border:1px solid var(--rule-hair);border-radius:8px;padding:12px;overflow-x:auto;}
 .cell .out:empty{display:none;}
 
 @media (max-width:760px){
@@ -390,7 +393,7 @@ std::string web_ui_overview_cards(const nlohmann::json& info) {
 std::string web_ui_stylesheet() { return std::string(kCss); }
 
 std::string web_ui_favicon() {
-    return R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#E2545A"/><path d="M9 9 H23 V12 L14 20 H23 V23 H9 V20 L18 12 H9 Z" fill="#fff"/></svg>)SVG";
+    return R"SVG(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#E2545A"/><text x="16" y="22" font-family="Geist,-apple-system,Helvetica,Arial,sans-serif" font-size="15" font-weight="600" letter-spacing="-1" fill="#fff" text-anchor="middle">OZ</text></svg>)SVG";
 }
 
 namespace {
@@ -401,14 +404,23 @@ function zEsc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return
 async function zExec(q){var r=await fetch('/shell',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'q='+encodeURIComponent(q)});return r.json();}
 function zFmt(r){
   if(!r||r.error) return '<pre class="txt err">error: '+zEsc((r&&r.error)?r.error:'request failed')+'</pre>';
-  if(!r.columns) return '<pre class="txt">'+zEsc(JSON.stringify(r.value!==undefined?r.value:r,null,2))+'</pre>';
-  var cols=r.columns,rows=r.rows||[];
-  if(!rows.length) return '<div class="rcount">(0 rows)</div>';
+  var rows=r.rows||[];
+  var arr=rows.length>0&&Array.isArray(rows[0]);           // Python (repl::Result) rows are positional arrays; SQL rows are objects
+  var cols=(r.columns&&r.columns.length)?r.columns
+           :(!arr&&rows.length&&rows[0]&&typeof rows[0]==='object'?Object.keys(rows[0]):[]);
+  var msgs=r.messages||[];
+  var note=msgs.length?'<div class="rcount">'+zEsc(msgs.join(' · '))+'</div>':'';   // · = middle dot; \xC2\xB7 in a raw string ships literally and JS decodes it to "Â·"
+  if(!cols.length){
+    if(rows.length) return '<pre class="txt">'+zEsc(JSON.stringify(rows,null,2))+'</pre>'+note;
+    if(msgs.length) return '<pre class="txt">'+zEsc(msgs.join('\n'))+'</pre>';   // /help + status render as proper lines, not one ·-crammed row
+    return '<pre class="txt">'+zEsc(JSON.stringify(r.value!==undefined?r.value:r,null,2))+'</pre>';
+  }
+  if(!rows.length) return note||'<div class="rcount">(0 rows)</div>';
   var h='<table class="rtab"><thead><tr>';
   cols.forEach(function(c){h+='<th>'+zEsc(c)+'</th>';});
   h+='</tr></thead><tbody>';
-  rows.forEach(function(row){h+='<tr>';cols.forEach(function(c){var v=row[c];v=(v==null?'·':(typeof v==='object'?JSON.stringify(v):String(v)));h+='<td>'+zEsc(v)+'</td>';});h+='</tr>';});
-  return h+'</tbody></table><div class="rcount">('+rows.length+' row'+(rows.length===1?'':'s')+')</div>';
+  rows.forEach(function(row){h+='<tr>';cols.forEach(function(c,ci){var v=arr?row[ci]:row[c];v=(v==null?'·':(typeof v==='object'?JSON.stringify(v):String(v)));h+='<td>'+zEsc(v)+'</td>';});h+='</tr>';});
+  return h+'</tbody></table>'+note+'<div class="rcount">('+rows.length+' row'+(rows.length===1?'':'s')+')</div>';
 }
 )JS";
 }  // namespace
@@ -416,45 +428,31 @@ function zFmt(r){
 std::string web_ui_shell_repl() {
     std::string out =
         "<section class=\"panel\"><div class=\"phead\"><h2>Shell</h2>"
-        "<span class=\"psub\">SQL REPL over the read model \xC2\xB7 Enter runs \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 history</span></div>"
-        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta shell \xC2\xB7 type SQL, or <b>help</b>.</div></div>"
-        "<div class=\"shellrow\"><input id=\"cmd\" placeholder=\"SELECT * FROM system.nodes\" autocomplete=\"off\" spellcheck=\"false\" autofocus>"
+        "<span class=\"psub\">one box \xC2\xB7 SQL or Python, auto-detected \xC2\xB7 /help for commands \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 history</span></div>"
+        "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta console \xC2\xB7 type SQL or Python \xC2\xB7 <b>/help</b> for commands.</div></div>"
+        "<div class=\"shellrow\"><input id=\"cmd\" placeholder=\"SELECT * FROM system.nodes   \xE2\x80\x94 or /help\" autocomplete=\"off\" spellcheck=\"false\" autofocus>"
         "<button class=\"btn btn-primary\" id=\"run\">Run</button></div></section><script>";
     out += kSharedShellJs;
     out += R"JS(
 (function(){
   var term=document.getElementById('term'),cmd=document.getElementById('cmd'),run=document.getElementById('run'),hist=[],hi=-1;
-  var HELP='Orama Zetta shell — a SQL REPL over the read model (the ~30 system.* views).\n\n'
-    +'  <SQL>        run a statement, e.g. SELECT * FROM system.nodes\n'
-    +'  \\tables      list the system.* tables\n'
-    +'  \\d <table>   show a table (columns + rows)\n'
-    +'  help  or  ?  this help\n'
-    +'  clear        clear the screen\n\n'
-    +'Up / Down recall history.';
-  function meta(c){
-    var l=c.toLowerCase();
-    if(l==='help'||l==='\\help'||l==='.help'||l==='?') return {text:HELP};
-    if(l==='clear'||l==='\\clear'||l==='.clear'||l==='cls') return {clear:true};
-    if(l==='\\tables'||l==='.tables'||l==='\\dt') return {sql:'SELECT * FROM system.tables'};
-    if(l.indexOf('\\d ')===0||l.indexOf('.d ')===0) return {sql:'SELECT * FROM system.'+c.slice(3).trim().replace(/^system\./i,'')};
-    return null;
-  }
+  // One box: the server auto-detects SQL vs Python and handles /commands (/help,
+  // /sql, /py, /tables). Only /clear is a pure-UI command handled here.
   async function go(){
     var c=cmd.value.trim(); if(!c) return;
     hist.push(c); hi=hist.length; cmd.value='';
-    var m=meta(c);
-    if(m&&m.clear){ term.innerHTML=''; return; }
+    var lc=c.toLowerCase();
+    if(lc==='/clear'||lc==='clear'){ term.innerHTML=''; return; }
     var b=document.createElement('div');
     b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><div class="out"></div>';
     term.appendChild(b); var o=b.querySelector('.out');
-    if(m&&m.text){ o.innerHTML='<pre class="txt">'+zEsc(m.text)+'</pre>'; term.scrollTop=term.scrollHeight; return; }
     o.innerHTML='<span class="txt">running…</span>'; term.scrollTop=term.scrollHeight;
-    try{ o.innerHTML=zFmt(await zExec((m&&m.sql)?m.sql:c)); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
+    try{ o.innerHTML=zFmt(await zExec(c)); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
     term.scrollTop=term.scrollHeight;
   }
   run.onclick=go;
   cmd.addEventListener('keydown',function(e){
-    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();go();}
+    if(e.key==='Enter'){e.preventDefault();go();}  // Enter or Shift+Enter runs (single-line input)
     else if(e.key==='ArrowUp'){if(hi>0){hi--;cmd.value=hist[hi];}e.preventDefault();}
     else if(e.key==='ArrowDown'){if(hi<hist.length-1){hi++;cmd.value=hist[hi];}else{hi=hist.length;cmd.value='';}e.preventDefault();}
   });
@@ -467,7 +465,7 @@ std::string web_ui_shell_repl() {
 std::string web_ui_notebooks() {
     std::string out =
         "<section class=\"panel\"><div class=\"phead\"><h2>Notebooks</h2>"
-        "<span class=\"psub\">SQL cells \xC2\xB7 Cmd/Ctrl+Enter runs a cell \xC2\xB7 saved in this browser</span></div>"
+        "<span class=\"psub\">SQL or Python cells (auto-detected, /commands too) \xC2\xB7 Shift/Cmd/Ctrl+Enter runs a cell \xC2\xB7 saved in this browser</span></div>"
         "<div class=\"nbbar\"><select id=\"nbsel\"></select><input id=\"nbname\" placeholder=\"name\">"
         "<button class=\"btn small\" id=\"nbnew\">New</button><button class=\"btn small\" id=\"nbsave\">Save</button>"
         "<button class=\"btn small\" id=\"nbdel\">Delete</button><button class=\"btn small\" id=\"nbadd\">+ Cell</button></div>"
@@ -487,7 +485,7 @@ std::string web_ui_notebooks() {
       d.innerHTML='<div class="cellbar"><span class="q mono">['+(i+1)+']</span><button class="btn small run">Run</button><button class="btn small del">✕</button></div><textarea class="src" spellcheck="false"></textarea><div class="out">'+(cell.out||'')+'</div>';
       var ta=d.querySelector('.src');ta.value=cell.src;
       ta.addEventListener('input',function(){cell.src=this.value;});
-      ta.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey)&&e.key==='Enter'){e.preventDefault();runCell(i,d);}});
+      ta.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey||e.shiftKey)&&e.key==='Enter'){e.preventDefault();runCell(i,d);}});
       d.querySelector('.run').onclick=function(){runCell(i,d);};
       d.querySelector('.del').onclick=function(){book.splice(i,1);if(!book.length)book.push({src:'',out:''});render();};
       cellsEl.appendChild(d);

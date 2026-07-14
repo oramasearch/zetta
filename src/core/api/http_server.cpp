@@ -5,6 +5,7 @@
 #include "zetta/api/server.hpp"
 
 #include <atomic>
+#include <cctype>
 #include <thread>
 #include <utility>
 
@@ -30,6 +31,8 @@
 #include "zetta/api/web_ui.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/query/service.hpp"
+#include "zetta/repl/governed_console.hpp"
 #include "zetta/version.hpp"
 
 namespace zetta::api {
@@ -163,6 +166,120 @@ std::string query_param(const boost::http::route_params& route, std::string_view
     for (const auto& parameter : route.url.params())
         if (parameter.key == name) return std::string(parameter.value);
     return std::string(fallback);
+}
+
+// The unified console front-door (#647). One input box → one routing decision, shared by the
+// web Shell, Notebooks, and (later) the GUI Console: a leading '/' is a command; otherwise the
+// leading keyword auto-detects SQL vs simulated-Python. `/clear` is a pure-UI command handled in
+// the browser and never reaches here.
+struct ConsoleRoute {
+    enum class Kind { Sql, Python, Immediate } kind = Kind::Sql;
+    std::string source;          // the statement to run (Sql / Python)
+    std::string immediate_json;  // a ready JSON reply (help / unknown command) — no engine run
+};
+
+std::string console_help_json() {
+    return nlohmann::json{{"messages", nlohmann::json::array({
+        "Orama Zetta console \xE2\x80\x94 one box, auto-detected.",
+        "  type SQL directly        SELECT * FROM system.tables",
+        "  type Python directly     model = rank(customers)",
+        "  /sql <statement>         force SQL",
+        "  /py <code>               force Python (compiled, gated, audited)",
+        "  /tables                  list the system.* tables",
+        "  /help                    this message",
+        "  /clear                   clear the transcript (browser)",
+        "SQL runs through the query engine; Python lowers to the execution graph, passes the",
+        "correctness gate, then runs \xE2\x80\x94 every statement is audited."})}}.dump();
+}
+
+bool is_sql_leading_keyword(std::string word) {
+    for (char& character : word)
+        character = static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    static constexpr std::string_view keywords[] = {
+        "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP",   "ALTER",
+        "WITH",   "SHOW",   "EXPLAIN","TRUNCATE","DESCRIBE","DESC", "PRAGMA",
+        "USE",    "VALUES", "GRANT",  "REVOKE", "SET",    "TABLE",  "BEGIN",
+        "COMMIT", "ROLLBACK"};
+    for (std::string_view keyword : keywords)
+        if (word == keyword) return true;
+    return false;
+}
+
+ConsoleRoute route_console_input(const std::string& raw) {
+    ConsoleRoute route;
+    const auto begin = raw.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) {
+        route.kind = ConsoleRoute::Kind::Immediate;
+        route.immediate_json = R"({"messages":[]})";
+        return route;
+    }
+    const auto end = raw.find_last_not_of(" \t\r\n");
+    const std::string source = raw.substr(begin, end - begin + 1);
+
+    if (source[0] == '/') {
+        const auto space = source.find_first_of(" \t\r\n");
+        std::string command =
+            source.substr(1, (space == std::string::npos ? source.size() : space) - 1);
+        std::string rest;
+        if (space != std::string::npos) {
+            const auto rest_begin = source.find_first_not_of(" \t\r\n", space);
+            if (rest_begin != std::string::npos) rest = source.substr(rest_begin);
+        }
+        for (char& character : command)
+            character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+        if (command == "help") {
+            route.kind = ConsoleRoute::Kind::Immediate;
+            route.immediate_json = console_help_json();
+        } else if (command == "sql") {
+            route.kind = ConsoleRoute::Kind::Sql;
+            route.source = rest;
+        } else if (command == "py" || command == "python") {
+            route.kind = ConsoleRoute::Kind::Python;
+            route.source = rest;
+        } else if (command == "tables") {
+            route.kind = ConsoleRoute::Kind::Sql;
+            route.source = "SELECT * FROM system.tables";
+        } else if (command == "clear") {
+            route.kind = ConsoleRoute::Kind::Immediate;
+            route.immediate_json = R"({"messages":["clear runs in the browser"]})";
+        } else {
+            route.kind = ConsoleRoute::Kind::Immediate;
+            route.immediate_json =
+                nlohmann::json{{"error", "unknown command '/" + command +
+                                             "' \xE2\x80\x94 type /help for the list"}}
+                    .dump();
+        }
+        return route;
+    }
+
+    // A bare command word (no slash) is a friendly alias — "help" == "/help".
+    std::string bare = source;
+    for (char& character : bare)
+        character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
+    if (bare == "help" || bare == "?") {
+        route.kind = ConsoleRoute::Kind::Immediate;
+        route.immediate_json = console_help_json();
+        return route;
+    }
+    if (bare == "tables") {
+        route.kind = ConsoleRoute::Kind::Sql;
+        route.source = "SELECT * FROM system.tables";
+        return route;
+    }
+    if (bare == "clear") {
+        route.kind = ConsoleRoute::Kind::Immediate;
+        route.immediate_json = R"({"messages":["clear runs in the browser"]})";
+        return route;
+    }
+
+    // No leading slash → auto-detect from the leading token.
+    const auto token_end = source.find_first_of(" \t\r\n(");
+    const std::string leading =
+        source.substr(0, token_end == std::string::npos ? source.size() : token_end);
+    route.kind =
+        is_sql_leading_keyword(leading) ? ConsoleRoute::Kind::Sql : ConsoleRoute::Kind::Python;
+    route.source = source;
+    return route;
 }
 
 // Whether the request reached us over HTTPS (behind the ingress/Cloudflare) — decides the
@@ -957,17 +1074,57 @@ struct ApiServer::Impl {
         if (user_id.empty()) {
             json_body = R"({"error":"unauthorized"})";
         } else {
-            const std::string statement = form_field(parse_form(sink.data), "q");
-            co_await bridge.run_on_owner([&] {
-                ApiContext context{node, cluster, user_id,
-                                   zetta::observability::make_root_trace(), &node.span_recorder(),
-                                   &background};
-                context.acting_is_user = true;
-                ApiResult result = capability_registry.call(
-                    "sql", nlohmann::json{{"statement", statement}}, context);
-                json_body = result.ok ? result.value.dump()
-                                      : nlohmann::json{{"error", result.error.message}}.dump();
-            });
+            const ConsoleRoute route_decision =
+                route_console_input(form_field(parse_form(sink.data), "q"));
+            if (route_decision.kind == ConsoleRoute::Kind::Immediate) {
+                // /help, /clear echo, unknown command, or empty — no engine run.
+                json_body = route_decision.immediate_json;
+            } else if (route_decision.kind == ConsoleRoute::Kind::Sql) {
+                // SQL keeps the enforced + audited capability path (per-user column masking).
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, user_id,
+                                       zetta::observability::make_root_trace(),
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = true;
+                    ApiResult result = capability_registry.call(
+                        "sql", nlohmann::json{{"statement", route_decision.source}}, context);
+                    json_body = result.ok ? result.value.dump()
+                                          : nlohmann::json{{"error", result.error.message}}.dump();
+                });
+            } else {
+                // Python runs through the governed console (compile → correctness gate → run →
+                // audit), gated by an explicit per-user capability check (#745). Same governance
+                // chain as the desktop Console, reached over the web.
+                co_await bridge.run_on_owner([&] {
+                    const zetta::governance::Operation operation =
+                        zetta::repl::required_operation(zetta::repl::Frontend::SimPython);
+                    const zetta::governance::AccessDecision decision =
+                        node.authorize_user(user_id, operation);
+                    if (!decision.allowed) {
+                        json_body =
+                            nlohmann::json{
+                                {"error", "blocked: " +
+                                              (decision.reason.empty() ? std::string("not permitted")
+                                                                       : decision.reason) +
+                                              " \xE2\x80\x94 you lack orchestration:start_run"}}
+                                .dump();
+                        return;
+                    }
+                    zetta::query::QueryService query_service(node, cluster);
+                    zetta::repl::GovernedConsole console(node, query_service);
+                    // Enforcement is done above by authorize_user; the console runs unkeyed
+                    // (audited as the local web session) but still gates + audits every run.
+                    const zetta::repl::Result result =
+                        console.run(zetta::repl::Frontend::SimPython, route_decision.source);
+                    nlohmann::json body;
+                    body["columns"] = result.columns;
+                    body["rows"] = result.rows;
+                    body["messages"] = result.messages;
+                    if (!result.elapsed.empty()) body["elapsed"] = result.elapsed;
+                    if (!result.ok()) body["error"] = result.error;
+                    json_body = body.dump();
+                });
+            }
         }
         route.status(http::status::ok);
         route.res.set(http::field::content_type, "application/json");
