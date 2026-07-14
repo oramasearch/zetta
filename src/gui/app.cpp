@@ -867,6 +867,17 @@ bool App::on_sdl_event(void* userdata, SDL_Event* event) {
     return true;  // watchers don't filter; keep the event
 }
 
+void App::request_wake() {
+    // Push an empty user event so run()'s SDL_WaitEventTimeout returns at once and
+    // the next frame drains the API queue — the headed half of the #731 wake.
+    // SDL's event queue is thread-safe, so the API bridge may call this from the
+    // network thread on enqueue.
+    SDL_Event event;
+    SDL_zero(event);
+    event.type = SDL_EVENT_USER;
+    SDL_PushEvent(&event);
+}
+
 void App::run() {
     // Install our handlers last (after SDL_Init may have set its own) so
     // terminal Ctrl-C quits the headed app too, matching headless. The flag is

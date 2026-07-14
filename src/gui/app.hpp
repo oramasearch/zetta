@@ -103,6 +103,11 @@ public:
     // embedded API server's bridge drains through (docs/api/registry-design.md).
     void set_tick_hook(std::function<void()> hook) { tick_hook_ = std::move(hook); }
 
+    // Wake the frame loop from another thread (the API bridge on enqueue, #731):
+    // pushes an SDL event so run()'s SDL_WaitEventTimeout returns and the next
+    // frame drains at once. Thread-safe (SDL's event queue is).
+    void request_wake();
+
     // The node's span ring (the API server's recorder today) — lets GUI-driven
     // searches record their trace into the same ring MCP calls do, so
     // list_traces / the trace pane show one history. Null (the default) = GUI

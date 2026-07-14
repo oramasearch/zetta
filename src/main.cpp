@@ -579,13 +579,21 @@ int main(int argc, char** argv) {
     const auto drain_api = [&api_server] {
         if (api_server) api_server->drain();
     };
+    // The owning loop's idle wait — wakes the instant a request is enqueued so
+    // the drain above runs immediately instead of on the next 10 Hz tick (#731).
+    const auto wait_api = [&api_server](std::chrono::milliseconds max_idle) {
+        if (api_server) api_server->wait_for_work(max_idle);
+    };
 
     int rc = 0;
     if (opts.mode == Mode::Headless) {
-        rc = zetta::run_headless(node, cluster, drain_api);
+        rc = zetta::run_headless(node, cluster, drain_api, wait_api);
     } else {
         zetta::gui::App app(node, cluster);
         app.set_tick_hook(drain_api);
+        // Wake the frame loop on enqueue (#731): run_on_owner pushes an SDL event
+        // so App::run's SDL_WaitEventTimeout returns early and drains immediately.
+        if (api_server) api_server->set_wakeup([&app] { app.request_wake(); });
         // Live surfacing of externally-initiated actions (#620): every
         // successful mutating capability call (an MCP agent, a future REST
         // integration) lands in the headed app, which surfaces it above every

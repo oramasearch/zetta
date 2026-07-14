@@ -156,6 +156,7 @@ constexpr std::string_view kAuditTable = "audit";
 constexpr std::string_view kActivityTable = "activity";
 constexpr std::string_view kPartitionsTable = "dataset_partitions";
 constexpr std::string_view kDatasetsTable = "datasets";
+constexpr std::string_view kLargeObjectsTable = "large_objects";
 constexpr std::string_view kCheckpointsTable = "checkpoints";
 constexpr std::string_view kNodeMetricsTable = "node_metrics";
 constexpr std::string_view kPipelineJobsTable = "pipeline_jobs";
@@ -202,6 +203,9 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kDatasetsTable,
                     "datasets as a first-class primitive: schema, rows, size, "
                     "format, partition placement"},
+    SystemTableInfo{kLargeObjectsTable,
+                    "large objects (files / blobs) stored per database: name, "
+                    "size, sha256, and whether the body has synced to this node"},
     SystemTableInfo{kDeploymentsTable,
                     "recorded graph-to-target placements"},
     SystemTableInfo{kIndexesTable,
@@ -1485,6 +1489,28 @@ std::vector<nlohmann::json> partition_rows(const Node& node) {
 // for a non-partitioned, replicate-to-all dataset), and `owner_nodes` is the
 // de-duplicated set of nodes holding any of its partitions. It reads already-built
 // DatasetSummary values, so it adds no new JSON boundary.
+// One JSON row per stored large object (file / blob), across every database — computed
+// live from each Database's LargeObjectStore (RULE-7; no CRDT-backed copy). `body_present`
+// is false on a node that has the replicated metadata but not the transferred body yet.
+std::vector<nlohmann::json> large_object_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const std::string& database_name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(database_name);
+        if (!database) continue;
+        for (const zetta::data::LargeObject& object : database->large_objects().list()) {
+            nlohmann::json row;
+            row["object_id"] = object.id;
+            row["name"] = object.name;
+            row["database"] = database_name;
+            row["size_bytes"] = object.size;
+            row["sha256"] = object.sha256;
+            row["body_present"] = object.body_present;
+            rows.push_back(std::move(row));
+        }
+    }
+    return rows;
+}
+
 std::vector<nlohmann::json> dataset_rows(const Node& node) {
     std::vector<nlohmann::json> rows;
     for (const zetta::data::DatasetSummary& dataset : node.datasets()) {
@@ -2419,6 +2445,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kDatasetsTable) {
                         return select_over_rows(s, dataset_rows(node_));
+                    }
+                    if (sys == kLargeObjectsTable) {
+                        return select_over_rows(s, large_object_rows(node_));
                     }
                     if (sys == kCheckpointsTable) {
                         return select_over_rows(s, checkpoint_rows(node_));
