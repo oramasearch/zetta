@@ -86,10 +86,28 @@ CRDT metadata + on-disk paths (so it's safe to call from the network thread).
   non-owner never `LOREQ`s it. Plain large objects and model weights are unaffected.
   See [sharded-blob-placement.md](sharded-blob-placement.md).
 
+## Exposure — SQL read view + web routes
+
+- **`system.large_objects`** — a RULE-7 virtual read view (`executor.cpp`,
+  `large_object_rows`) computed live from each database's `LargeObjectStore.list()`:
+  one row per object across every database with `object_id`, `name`, `database`,
+  `size_bytes`, `sha256`, `body_present`. Filterable, e.g.
+  `SELECT * FROM system.large_objects WHERE database = 'shop'`.
+- **Web dashboard routes** (`src/core/api/http_server.cpp`, cookie-authed like the rest of
+  the web UI; the Data explorer's **Files** panel drives them):
+  - `POST /blob?db=<database>&name=<filename>` — the raw request body IS the file bytes
+    (no multipart); stores it via `LargeObjectStore::import_bytes`. Returns `{ok,id,name,size}`.
+  - `GET /blob/download?db=<database>&id=<object_id>` — streams the body back as an
+    `attachment` (`Content-Disposition`), reading via `LargeObjectStore::read` (404 until the
+    body has synced to this node).
+  - `POST /blob/delete?db=<database>&id=<object_id>` — `LargeObjectStore::unlink`.
+
 ## Limits / future
 
-- Whole-file in memory on import/read/export and per-transfer; streaming /
-  chunked transfer can come later. A single body is currently capped by the
-  cluster line size (~48 MiB after base64); larger objects need chunking.
-- No SQL `lo_*` functions yet (UI + C++ API only).
+- Whole-file in memory on import/read/export and per-transfer (the web upload/download
+  routes buffer the whole body too); streaming / chunked transfer can come later. A single
+  body is currently capped by the cluster line size (~48 MiB after base64); larger objects
+  need chunking.
+- No SQL `lo_*` mutation functions yet — `system.large_objects` is read-only; create/delete go
+  through the C++ API or the web `/blob` routes above.
 - Large-object content is not (yet) referenceable from table rows.
