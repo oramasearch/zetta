@@ -82,9 +82,9 @@ form.inline{display:inline;margin:0;}
 .out .rtab td{text-align:left;padding:8px 26px 8px 0;color:var(--ink-secondary);white-space:nowrap;border-bottom:1px solid var(--rule-hair);}
 .out .rtab tr:last-child td{border-bottom:none;}
 .out .rcount{color:var(--ink-quiet);font-size:12.5px;margin-top:12px;}
-.term .cmd{color:var(--ink-primary);}
-.shellrow{display:flex;gap:8px;margin-top:14px;position:relative;}
-.shellrow input{font:14.5px/1.5 var(--font-mono);padding:12px 14px;}
+.term .cmd{color:var(--ink-primary);white-space:pre-wrap;}
+.shellrow{display:flex;gap:8px;margin-top:14px;position:relative;align-items:flex-end;}
+.shellrow textarea{font:14.5px/1.6 var(--font-mono);padding:12px 14px;min-height:48px;max-height:240px;resize:none;overflow-y:auto;}
 .acmenu{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--white);border:1px solid var(--rule-emph);
   border-radius:11px;box-shadow:var(--shadow-pop);max-height:238px;overflow-y:auto;z-index:40;display:none;padding:6px;}
 .acmenu.show{display:block;}
@@ -623,9 +623,9 @@ std::string web_ui_shell_repl() {
     std::string out =
         "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" + web_ui_icon("shell") +
         "</span><h2>Shell</h2>"
-        "<span class=\"psub\">one box \xC2\xB7 SQL or Python, auto-detected \xC2\xB7 type / for commands \xC2\xB7 \xE2\x86\x91\xE2\x86\x93 history</span></div>"
+        "<span class=\"psub\">SQL or Python, multi-line \xC2\xB7 Enter = newline, Shift/\xE2\x8C\x98+Enter runs \xC2\xB7 type / for commands</span></div>"
         "<div class=\"term\" id=\"term\"><div class=\"q\">Orama Zetta console \xC2\xB7 type SQL or Python \xC2\xB7 <b>/</b> for commands.</div></div>"
-        "<div class=\"shellrow\"><input id=\"cmd\" placeholder=\"SELECT * FROM system.nodes   \xE2\x80\x94 or type /\" autocomplete=\"off\" spellcheck=\"false\" autofocus>"
+        "<div class=\"shellrow\"><textarea id=\"cmd\" rows=\"1\" placeholder=\"SELECT * FROM system.nodes   \xE2\x80\x94 or type /\" autocomplete=\"off\" spellcheck=\"false\" autofocus></textarea>"
         "<button class=\"btn btn-primary\" id=\"run\">Run</button>"
         "<div class=\"acmenu\" id=\"acmenu\"></div></div></section><script>";
     out += kSharedShellJs;
@@ -645,8 +645,10 @@ std::string web_ui_shell_repl() {
   var acRows=[],acSel=0;
   function acOpen(){return menu.classList.contains('show');}
   function acClose(){menu.classList.remove('show');}
+  function grow(){cmd.style.height='auto';cmd.style.height=Math.min(cmd.scrollHeight,240)+'px';}
   function acFilter(){
-    if(cmd.value.charAt(0)!=='/'){acClose();return;}
+    // Only offer the palette for a single-line /command (not inside a multi-line program).
+    if(cmd.value.charAt(0)!=='/'||cmd.value.indexOf('\n')>=0){acClose();return;}
     var q=cmd.value.trim().toLowerCase();
     acRows=CMDS.filter(function(x){return q==='/'||x.c.indexOf(q)===0;});
     if(!acRows.length){acClose();return;}
@@ -654,16 +656,17 @@ std::string web_ui_shell_repl() {
     menu.innerHTML=acRows.map(function(x,i){return '<div class="acitem'+(i===acSel?' sel':'')+'" data-i="'+i+'"><span class="acname">'+zEsc(x.c.trim())+'</span><span class="acdesc">'+zEsc(x.d)+'</span></div>';}).join('');
     menu.classList.add('show');
   }
-  menu.addEventListener('mousedown',function(e){var it=e.target.closest('.acitem');if(!it)return;e.preventDefault();var x=acRows[+it.getAttribute('data-i')];cmd.value=x.c;acClose();if(x.c.slice(-1)===' '){cmd.focus();var n=cmd.value.length;cmd.setSelectionRange(n,n);}else{go();}});
-  cmd.addEventListener('input',function(){acSel=0;acFilter();});
+  menu.addEventListener('mousedown',function(e){var it=e.target.closest('.acitem');if(!it)return;e.preventDefault();var x=acRows[+it.getAttribute('data-i')];cmd.value=x.c;acClose();grow();if(x.c.slice(-1)===' '){cmd.focus();var n=cmd.value.length;cmd.setSelectionRange(n,n);}else{go();}});
+  cmd.addEventListener('input',function(){acSel=0;grow();acFilter();});
   cmd.addEventListener('blur',function(){setTimeout(acClose,140);});
   async function go(){
     var c=cmd.value.trim(); if(!c) return;
-    acClose(); hist.push(c); hi=hist.length; cmd.value='';
+    acClose(); hist.push(c); hi=hist.length; cmd.value=''; grow();
     var lc=c.toLowerCase();
     if(lc==='/clear'||lc==='clear'){ term.innerHTML=''; return; }
     var b=document.createElement('div');
-    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd">'+zEsc(c)+'</span></div><div class="out"></div>';
+    b.innerHTML='<div><span class="prompt">zetta&gt;</span> <span class="cmd"></span></div><div class="out"></div>';
+    b.querySelector('.cmd').textContent=c;   // textContent keeps newlines + escapes safely
     term.appendChild(b); var o=b.querySelector('.out');
     o.innerHTML='<span class="txt">running…</span>'; term.scrollTop=term.scrollHeight;
     try{ o.innerHTML=zFmt(await zExec(c)); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
@@ -675,14 +678,19 @@ std::string web_ui_shell_repl() {
       if(e.key==='ArrowDown'){acSel=(acSel+1)%acRows.length;acFilter();e.preventDefault();return;}
       if(e.key==='ArrowUp'){acSel=(acSel-1+acRows.length)%acRows.length;acFilter();e.preventDefault();return;}
       if(e.key==='Escape'){acClose();e.preventDefault();return;}
-      if(e.key==='Tab'){var x=acRows[acSel];cmd.value=x.c;acClose();var n=cmd.value.length;cmd.setSelectionRange(n,n);e.preventDefault();return;}
-      if(e.key==='Enter'){var s=acRows[acSel];cmd.value=s.c;acClose();e.preventDefault();
+      if(e.key==='Tab'){var x=acRows[acSel];cmd.value=x.c;acClose();grow();var n=cmd.value.length;cmd.setSelectionRange(n,n);e.preventDefault();return;}
+      if(e.key==='Enter'){var s=acRows[acSel];cmd.value=s.c;acClose();grow();e.preventDefault();
         if(s.c.slice(-1)===' '){var n=cmd.value.length;cmd.setSelectionRange(n,n);}else{go();} return;}
     }
-    if(e.key==='Enter'){e.preventDefault();go();}
-    else if(e.key==='ArrowUp'){if(hi>0){hi--;cmd.value=hist[hi];}e.preventDefault();}
-    else if(e.key==='ArrowDown'){if(hi<hist.length-1){hi++;cmd.value=hist[hi];}else{hi=hist.length;cmd.value='';}e.preventDefault();}
+    // Shift / Cmd / Ctrl + Enter runs; plain Enter inserts a newline (multi-line editing).
+    if(e.key==='Enter'&&(e.shiftKey||e.metaKey||e.ctrlKey)){e.preventDefault();go();return;}
+    // History recall only at the text boundaries so it never hijacks multi-line cursor moves.
+    if(e.key==='ArrowUp'&&cmd.selectionStart===0&&cmd.selectionEnd===0){
+      if(hi>0){hi--;cmd.value=hist[hi];grow();}e.preventDefault();return;}
+    if(e.key==='ArrowDown'&&cmd.selectionStart===cmd.value.length&&cmd.selectionEnd===cmd.value.length){
+      if(hi<hist.length-1){hi++;cmd.value=hist[hi];}else{hi=hist.length;cmd.value='';}grow();e.preventDefault();return;}
   });
+  grow();
 })();
 )JS";
     out += "</script>";
