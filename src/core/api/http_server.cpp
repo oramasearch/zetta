@@ -785,10 +785,12 @@ struct ApiServer::Impl {
     // gathered on the owning loop; the HTML is built from the returned JSON.
 
     // One capability rendered as an action form (from its input_schema) that POSTs to /run.
+    // One capability as a collapsible action (native <details>): a compact summary row (name +
+    // description) that expands to its input form, laid out in a 2-column field grid.
     std::string render_capability_form(const Capability& capability) {
-        std::string form =
-            "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
-            web_ui_escape(capability.name) + "\">";
+        const bool write = capability.kind != CapabilityKind::Read;
+        std::string fields;
+        int field_count = 0;
         const auto& schema = capability.input_schema;
         if (schema.is_object() && schema.contains("properties") && schema["properties"].is_object()) {
             const nlohmann::json required = schema.value("required", nlohmann::json::array());
@@ -798,26 +800,44 @@ struct ApiServer::Impl {
                     if (item.is_string() && item.get<std::string>() == it.key()) is_required = true;
                 const std::string type = it.value().value("type", "string");
                 const std::string description = it.value().value("description", "");
-                form += "<label>" + web_ui_escape(it.key()) + (is_required ? " *" : "") + "</label>";
-                form += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
-                        web_ui_escape(type) +
-                        (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) + "\">";
+                const bool full = it.key() == "path" || it.key() == "statement" ||
+                                  it.key() == "source" || it.key() == "index" ||
+                                  it.key() == "description" || description.size() > 48;
+                fields += std::string("<div class=\"") + (full ? "full" : "") + "\"><label>" +
+                          web_ui_escape(it.key()) +
+                          (is_required ? "<span class=\"req\">*</span>" : "") + "</label>";
+                fields += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
+                          web_ui_escape(type) +
+                          (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) +
+                          "\"></div>";
+                ++field_count;
             }
         }
-        form += "<div style=\"margin-top:10px\"><button class=\"btn";
-        form += capability.kind == CapabilityKind::Read ? "" : " btn-primary";
-        form += "\">Run ";
-        form += to_string(capability.kind);
-        form += "</button></div></form>";
-        return web_ui_panel(capability.name, capability.description, form);
+        std::string out = "<details class=\"action\"><summary><span class=\"aico\">" +
+                          web_ui_icon(write ? "bolt" : "runs") + "</span><span class=\"an\">" +
+                          web_ui_escape(capability.name) + "</span><span class=\"ad\">" +
+                          web_ui_escape(capability.description) + "</span><span class=\"chev\">" +
+                          web_ui_icon("chevron") + "</span></summary><div class=\"abody\">";
+        out += "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
+               web_ui_escape(capability.name) + "\">";
+        if (field_count) out += "<div class=\"fgrid\">" + fields + "</div>";
+        out += "<div style=\"margin-top:14px\"><button class=\"btn";
+        out += write ? " btn-primary" : "";
+        out += "\">";
+        if (write) out += web_ui_icon("play");
+        out += "Run ";
+        out += to_string(capability.kind);
+        out += "</button></div></form></div></details>";
+        return out;
     }
 
     std::string render_capabilities(std::initializer_list<std::string_view> names) {
-        std::string out;
+        std::string items;
         for (std::string_view name : names)
             if (auto capability = capability_registry.find(std::string(name)))
-                out += render_capability_form(*capability);
-        return out;
+                items += render_capability_form(*capability);
+        if (items.empty()) return "";
+        return web_ui_panel("Actions", "run a capability \xC2\xB7 forms expand on click", items);
     }
 
     // A read table with server-side pagination — run the query, slice a 50-row page, add prev/next

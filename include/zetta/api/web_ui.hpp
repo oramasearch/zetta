@@ -21,10 +21,14 @@ namespace zetta::api {
 // HTML-escape text for safe interpolation into an element body or a double-quoted attribute.
 std::string web_ui_escape(std::string_view text);
 
+// A named inline line-icon (24x24 SVG, currentColor stroke) from the shared set — sized by CSS at the
+// use site (nav, panel/card headers, empty states, action forms). Unknown names render an empty SVG.
+std::string web_ui_icon(std::string_view name);
+
 // The stylesheet, served at its own cacheable GET /style.css endpoint (linked, not inlined).
 std::string web_ui_stylesheet();
 
-// The favicon — a self-contained SVG (coral tile + white Z), served at GET /favicon.svg.
+// The favicon — a self-contained SVG (accent-blue tile + white O), served at GET /favicon.svg.
 std::string web_ui_favicon();
 
 // The login page — a full HTML document. `error` shows a message when non-empty.
