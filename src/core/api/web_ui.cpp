@@ -115,7 +115,12 @@ form.inline{display:inline;margin:0;}
   .side{position:sticky;top:52px;min-height:0;display:flex;gap:2px;overflow-x:auto;
     -webkit-overflow-scrolling:touch;border-right:none;border-bottom:1px solid var(--rule-hair);padding:6px 10px;z-index:9;}
   .side .group{display:none;}
-  .main{padding:16px;}
+  .main{padding:14px;}
+  body{font-size:13.5px;}
+  .card .num{font-size:23px;}
+  .phead h2{font-size:14px;}
+  table{font-size:12px;} th,td{padding:8px 10px;}
+  .term{font-size:13px;padding:15px 16px;} .shellrow textarea{font-size:13px;}
 }
 .panel{background:var(--white);border:1px solid var(--rule-card);border-radius:14px;padding:18px 20px;margin-bottom:18px;box-shadow:var(--shadow-sm);}
 .phead{display:flex;align-items:center;gap:11px;margin-bottom:15px;flex-wrap:wrap;}
@@ -138,9 +143,10 @@ form.inline{display:inline;margin:0;}
 .err-box{color:var(--err-fg);background:var(--err-bg);border:1px solid rgba(180,35,24,.14);border-radius:9px;padding:11px 13px;font:12px/1.5 var(--font-mono);margin-bottom:12px;}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px;}
-.card{background:var(--white);border:1px solid var(--rule-card);border-radius:13px;padding:16px;box-shadow:var(--shadow-sm);
-  transition:box-shadow .14s ease,transform .14s ease;}
-.card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px);}
+.card{display:block;color:inherit;text-decoration:none;background:var(--white);border:1px solid var(--rule-card);border-radius:13px;padding:16px;box-shadow:var(--shadow-sm);
+  transition:box-shadow .14s ease,transform .14s ease,border-color .14s ease;}
+.card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px);border-color:var(--rule-emph);}
+.card:hover .cico{background:var(--accent);color:#fff;}
 .card .chd{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;}
 .card .cico{width:31px;height:31px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
   background:var(--accent-wash);color:var(--accent);}
@@ -148,6 +154,18 @@ form.inline{display:inline;margin:0;}
 .card .num{font:29px/1 var(--font-mono);font-weight:500;color:var(--ink-primary);letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
 .card .lbl{margin-top:8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
 .metaline{margin-top:14px;font-size:11px;color:var(--ink-quiet);}
+
+/* Explanatory legend (e.g. the pipeline model on the Pipeline view) */
+.legend{background:var(--accent-wash);border:1px solid var(--rule-card);border-radius:14px;padding:16px 18px;margin-bottom:18px;}
+.legendhd{display:flex;align-items:center;gap:10px;margin-bottom:12px;}
+.legendhd .ico{width:26px;height:26px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;background:var(--white);color:var(--accent);flex:none;}
+.legendhd .ico svg{width:15px;height:15px;}
+.legendhd b{font-size:14px;color:var(--ink-primary);}
+.legendflow{display:flex;flex-wrap:wrap;align-items:center;font:13px/1.9 var(--font-mono);color:var(--ink-secondary);margin-bottom:12px;}
+.legendflow em{font-style:normal;font-weight:600;color:var(--accent);}
+.legendflow span{color:var(--ink-quiet);margin:0 4px;}
+.legenddefs{display:grid;gap:7px;font-size:12.5px;color:var(--ink-muted);line-height:1.55;}
+.legenddefs b{color:var(--ink-primary);font-weight:600;margin-right:5px;}
 
 .twrap{overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid var(--rule-hair);border-radius:11px;}
 table{width:100%;border-collapse:collapse;font-size:13px;}
@@ -181,6 +199,26 @@ code.j{font-size:11px;color:var(--ink-muted);}
 .exphint{padding:16px 13px;color:var(--ink-quiet);font-size:12.5px;}
 @media(max-width:820px){.explorer{grid-template-columns:1fr;}
   .expcol{border-right:none;border-bottom:1px solid var(--rule-hair);} .expbody{max-height:240px;}}
+
+/* Files (large objects / blobs) panel */
+.filebar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap;}
+.filebar input[type=file]{width:auto;flex:1;min-width:200px;}
+.filelist{display:flex;flex-direction:column;}
+.filerow{display:flex;align-items:center;gap:12px;padding:10px 2px;border-bottom:1px solid var(--rule-hair);}
+.filerow:last-child{border-bottom:none;}
+.filerow .fname{flex:1;font:13px var(--font-mono);color:var(--ink-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.filerow .fsize{font:12px var(--font-mono);color:var(--ink-quiet);flex:none;}
+
+/* Projects: index list, detail breadcrumb + metadata grid */
+.prjlist{border:1px solid var(--rule-hair);border-radius:11px;overflow:hidden;}
+.prjlist .exprow{padding:12px 14px;font-size:13.5px;}
+.crumb{margin-bottom:16px;font-size:13px;color:var(--ink-quiet);}
+.crumb a{color:var(--ink-secondary);border-bottom:1px dotted var(--rule-emph);}
+.crumb b{color:var(--ink-primary);}
+.kvs{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px 22px;}
+.kv{display:flex;flex-direction:column;gap:3px;min-width:0;}
+.kv span{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-quiet);}
+.kv b{font-size:13px;font-weight:500;color:var(--ink-primary);word-break:break-all;}
 
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
@@ -485,8 +523,23 @@ std::string web_ui_login(std::string_view error) {
 
 std::string web_ui_shell(std::string_view active, std::string_view user, std::string_view meta,
                          std::string_view content) {
+    auto nav_title = [](std::string_view key) -> std::string_view {
+        if (key == "overview") return "Cluster health + counts at a glance";
+        if (key == "cluster") return "Nodes, metrics, and deployments; add capacity";
+        if (key == "projects") return "AI projects: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy \xE2\x86\x92 run";
+        if (key == "data") return "Databases, tables, rows, and files (blobs)";
+        if (key == "models") return "Trained models + serving";
+        if (key == "pipeline") return "Graphs, deployments, runs, and jobs \xE2\x80\x94 the execution pipeline";
+        if (key == "observability") return "Traces, spans, and crashes";
+        if (key == "governance") return "Users, roles, policies, tokens, consent, and audit";
+        if (key == "shell") return "SQL + Python REPL, auto-detected";
+        if (key == "notebooks") return "SQL / Python cells, saved in your browser";
+        return "";
+    };
     auto link = [&](std::string_view key, std::string_view label) -> std::string {
-        std::string anchor = "<a class=\"";
+        std::string anchor = "<a title=\"";
+        anchor += web_ui_escape(nav_title(key));
+        anchor += "\" class=\"";
         if (key == active) anchor += "active";
         anchor += "\" href=\"/?view=";
         anchor += key;
@@ -504,7 +557,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
     if (!user.empty()) out += "<span class=\"user\">" + web_ui_escape(user) + "</span>";
     out += "<form class=\"inline\" method=\"post\" action=\"/logout\"><button class=\"btn small\">Sign out</button></form></div>";
     out += "<div class=\"layout\"><nav class=\"side\">";
-    out += "<div class=\"group\">Cluster</div>" + link("overview", "Overview") + link("cluster", "Cluster");
+    out += "<div class=\"group\">Cluster</div>" + link("overview", "Overview") +
+           link("cluster", "Cluster") + link("projects", "Projects");
     out += "<div class=\"group\">Workloads</div>" + link("data", "Data") + link("models", "Models") +
            link("pipeline", "Pipeline");
     out += "<div class=\"group\">Operate</div>" + link("observability", "Observability") +
@@ -520,7 +574,8 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 std::string panel_icon_for(std::string_view title) {
     const std::string t = lower(std::string(title));
     auto has = [&](const char* s) { return t.find(s) != std::string::npos; };
-    if (has("dataset") || has("data") || has("index")) return web_ui_icon("data");
+    if (has("dataset") || has("data") || has("index") || has("file") || has("explorer"))
+        return web_ui_icon("data");
     if (has("node") || has("cluster") || has("member")) return web_ui_icon("cluster");
     if (has("model")) return web_ui_icon("models");
     if (has("deployment") || has("run") || has("job") || has("pipeline")) return web_ui_icon("pipeline");
@@ -591,18 +646,19 @@ std::string web_ui_overview_cards(const nlohmann::json& info) {
     long long nodes = (info.contains("cluster_members") && info["cluster_members"].is_array())
                           ? static_cast<long long>(info["cluster_members"].size())
                           : 0;
-    struct Card { const char* label; const char* icon; std::string value; };
-    const std::array<Card, 6> cards = {{{"Nodes", "nodes", fmt_int(nodes)},
-                                        {"Databases", "data", count("databases")},
-                                        {"Projects", "projects", count("projects")},
-                                        {"Models", "models", count("models")},
-                                        {"Runs", "runs", count("runs")},
-                                        {"Jobs", "jobs", count("jobs")}}};
+    struct Card { const char* label; const char* icon; const char* view; std::string value; };
+    const std::array<Card, 6> cards = {{{"Nodes", "nodes", "cluster", fmt_int(nodes)},
+                                        {"Databases", "data", "data", count("databases")},
+                                        {"Projects", "projects", "projects", count("projects")},
+                                        {"Models", "models", "models", count("models")},
+                                        {"Runs", "runs", "pipeline", count("runs")},
+                                        {"Jobs", "jobs", "pipeline", count("jobs")}}};
     std::string out = "<div class=\"cards\">";
     for (const auto& c : cards)
-        out += "<div class=\"card\"><div class=\"chd\"><span class=\"cico\">" + web_ui_icon(c.icon) +
+        out += "<a class=\"card\" href=\"/?view=" + std::string(c.view) +
+               "\"><div class=\"chd\"><span class=\"cico\">" + web_ui_icon(c.icon) +
                "</span></div><div class=\"num\">" + c.value + "</div><div class=\"lbl\">" +
-               c.label + "</div></div>";
+               c.label + "</div></a>";
     out += "</div>";
     return out;
 }

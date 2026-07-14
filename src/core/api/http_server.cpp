@@ -29,6 +29,7 @@
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
+#include "zetta/data/database.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
 #include "zetta/query/service.hpp"
@@ -965,8 +966,215 @@ struct ApiServer::Impl {
         }
         rcol += "</div></div>";
 
-        return web_ui_panel("Explorer", "databases \xC2\xB7 tables \xC2\xB7 rows",
-                            "<div class=\"explorer\">" + dbcol + tcol + rcol + "</div>");
+        std::string out = web_ui_panel("Explorer", "databases \xC2\xB7 tables \xC2\xB7 rows",
+                                       "<div class=\"explorer\">" + dbcol + tcol + rcol + "</div>");
+        // A Files (large objects / blobs) panel for a selected user database.
+        if (!sel_db.empty() && sel_db != "system" && safe_ident(sel_db))
+            out += render_files_panel(context, sel_db);
+        return out;
+    }
+
+    // The Files panel for one database: upload (raw POST /blob), list from system.large_objects,
+    // download links, and delete buttons.
+    std::string render_files_panel(ApiContext& context, const std::string& db) {
+        auto human = [](unsigned long long n) -> std::string {
+            if (n < 1024) return std::to_string(n) + " B";
+            const char* unit[] = {"KB", "MB", "GB", "TB"};
+            double v = static_cast<double>(n) / 1024.0;
+            int i = 0;
+            while (v >= 1024.0 && i < 3) { v /= 1024.0; ++i; }
+            const long long whole = static_cast<long long>(v);
+            const long long frac = static_cast<long long>((v - whole) * 10 + 0.5);
+            return std::to_string(whole) + "." + std::to_string(frac) + " " + unit[i];
+        };
+        ApiResult r = capability_registry.call(
+            "sql",
+            nlohmann::json{{"statement", "SELECT object_id, name, size_bytes, body_present FROM "
+                                         "system.large_objects WHERE database = '" + db + "'"}},
+            context);
+        const nlohmann::json blobs =
+            r.ok ? r.value.value("rows", nlohmann::json::array()) : nlohmann::json::array();
+        std::string list;
+        if (blobs.empty()) {
+            list = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("inbox") +
+                   "</span><span class=\"et\">No files yet</span><span class=\"eh\">Upload a file "
+                   "above; its bytes sync to the other nodes in the background.</span></div>";
+        } else {
+            for (const auto& b : blobs) {
+                if (!b.is_object()) continue;
+                const std::string oid = b.value("object_id", "");
+                const std::string name = b.value("name", "");
+                std::string size;
+                if (b.contains("size_bytes") && b["size_bytes"].is_number())
+                    size = human(b["size_bytes"].get<unsigned long long>());
+                const bool present = b.value("body_present", true);
+                list += "<div class=\"filerow\"><span class=\"fname\">" + web_ui_escape(name) +
+                        "</span><span class=\"fsize\">" + size + "</span>" +
+                        (present ? "" : "<span class=\"pill warn\">syncing</span>") +
+                        "<a class=\"btn small\" href=\"/blob/download?db=" + web_ui_escape(db) +
+                        "&id=" + web_ui_escape(oid) +
+                        "\">Download</a><button class=\"btn small blobdel\" data-id=\"" +
+                        web_ui_escape(oid) + "\" data-name=\"" + web_ui_escape(name) +
+                        "\">Delete</button></div>";
+            }
+        }
+        const std::string body =
+            "<div class=\"filebar\"><input type=\"file\" id=\"blobfile\">"
+            "<button class=\"btn btn-primary\" id=\"blobup\">Upload</button>"
+            "<span id=\"blobmsg\" class=\"actionsub\"></span></div><div class=\"filelist\">" +
+            list + "</div><script>(function(){var db=" + nlohmann::json(db).dump() +
+            ",f=document.getElementById('blobfile'),up=document.getElementById('blobup'),"
+            "msg=document.getElementById('blobmsg');"
+            "up.onclick=async function(){var file=f.files[0];if(!file){msg.textContent='choose a "
+            "file first';return;}msg.textContent='uploading '+file.name+'\\u2026';try{var buf=await "
+            "file.arrayBuffer();var r=await fetch('/blob?db='+encodeURIComponent(db)+'&name='+"
+            "encodeURIComponent(file.name),{method:'POST',body:buf});var j=await r.json();if(j&&j.ok)"
+            "{location.reload();}else{msg.textContent=(j&&j.error)||'upload failed';}}catch(e)"
+            "{msg.textContent='error: '+e;}};"
+            "document.querySelectorAll('.blobdel').forEach(function(b){b.onclick=async function(){if"
+            "(!confirm('Delete '+b.getAttribute('data-name')+'?'))return;try{await "
+            "fetch('/blob/delete?db='+encodeURIComponent(db)+'&id='+encodeURIComponent("
+            "b.getAttribute('data-id')),{method:'POST'});location.reload();}catch(e){}};});})();"
+            "</script>";
+        return web_ui_panel("Files", "large objects in " + db, body);
+    }
+
+    // A UUID-ish token (hex + hyphens) — gates an engine-issued project id before it goes into a
+    // WHERE clause (defense in depth; the id comes from get_project, not raw user input).
+    static bool safe_uuid(const std::string& s) {
+        if (s.empty() || s.size() > 40) return false;
+        for (char c : s)
+            if (!(std::isxdigit(static_cast<unsigned char>(c)) || c == '-')) return false;
+        return true;
+    }
+
+    // Projects — the central object. Index (list) at ?view=projects; a rich detail at
+    // ?view=projects&p=<name>: overview + inputs + graphs (from get_project) + related runs/models
+    // (system.* filtered by the project uuid) + the lifecycle action forms.
+    std::string render_projects(ApiContext& context, const boost::http::route_params& route) {
+        const std::string sel = query_param(route, "p", "");
+
+        if (sel.empty()) {
+            ApiResult r =
+                capability_registry.call("list_projects", nlohmann::json::object(), context);
+            std::string list;
+            const nlohmann::json names =
+                r.ok ? r.value.value("projects", nlohmann::json::array()) : nlohmann::json::array();
+            for (const auto& n : names) {
+                if (!n.is_string()) continue;
+                const std::string name = n.get<std::string>();
+                list += "<a class=\"exprow\" href=\"/?view=projects&p=" + web_ui_escape(name) +
+                        "\"><span>" + web_ui_escape(name) + "</span></a>";
+            }
+            if (list.empty())
+                list = "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("projects") +
+                       "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
+                       "project below, then capture an intent, compile it, gate, deploy, and "
+                       "run.</span></div>";
+            std::string out = web_ui_panel(
+                "Projects",
+                "an AI project: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy "
+                "\xE2\x86\x92 run",
+                "<div class=\"prjlist\">" + list + "</div>");
+            out += render_capabilities({"create_project"});
+            return out;
+        }
+
+        // ----- detail -----
+        ApiResult r = capability_registry.call("get_project", nlohmann::json{{"name", sel}}, context);
+        if (!r.ok)
+            return "<div class=\"crumb\"><a href=\"/?view=projects\">Projects</a> / " +
+                   web_ui_escape(sel) + "</div><div class=\"err-box\">" +
+                   web_ui_escape(r.error.message) + "</div>";
+        const nlohmann::json project = r.value;
+        const std::string uuid = project.value("id", "");
+        const std::string name = project.value("name", sel);
+        auto ptable = [&](const std::string& statement, const std::string& key) -> std::string {
+            return render_paged_table(context, statement, key, "projects", route, "p=" + sel + "&");
+        };
+
+        std::string meta =
+            "<div class=\"kv\"><span>id</span><b class=\"mono\">" + web_ui_escape(uuid) +
+            "</b></div><div class=\"kv\"><span>owner</span><b>" +
+            web_ui_escape(project.value("owner", "\xC2\xB7")) +
+            "</b></div><div class=\"kv\"><span>created</span><b class=\"mono\">" +
+            web_ui_escape(project.value("created", "")) +
+            "</b></div><div class=\"kv\"><span>updated</span><b class=\"mono\">" +
+            web_ui_escape(project.value("updated", "")) + "</b></div>";
+
+        std::string out = "<div class=\"crumb\"><a href=\"/?view=projects\">Projects</a> / <b>" +
+                          web_ui_escape(name) + "</b></div>";
+        out += web_ui_panel(name, "project overview", "<div class=\"kvs\">" + meta + "</div>");
+        out += web_ui_panel(
+            "Inputs", "captured intents + imported artifacts",
+            web_ui_table(nlohmann::json::array(), project.value("inputs", nlohmann::json::array())));
+        out += web_ui_panel(
+            "Graphs", "compiled execution graphs",
+            web_ui_table(nlohmann::json::array(), project.value("graphs", nlohmann::json::array())));
+        if (safe_uuid(uuid)) {
+            out += web_ui_panel("Runs", "",
+                                ptable("SELECT * FROM system.runs WHERE project = '" + uuid + "'", "r"));
+            out += web_ui_panel(
+                "Models", "",
+                ptable("SELECT * FROM system.models WHERE project = '" + uuid + "'", "m"));
+        }
+        out += render_capabilities({"capture_intent", "import_n8n", "compile_intent",
+                                    "compile_python", "gate", "deploy", "run"});
+        return out;
+    }
+
+    // An explanatory legend for the pipeline model — the answer to "what's a run vs a job".
+    std::string pipeline_legend() {
+        return "<div class=\"legend\"><div class=\"legendhd\"><span class=\"ico\">" +
+               web_ui_icon("pipeline") +
+               "</span><b>How a pipeline works</b></div>"
+               "<div class=\"legendflow\">Project <span>\xE2\x86\x92</span> Intent <span>\xE2\x86\x92"
+               "</span> <em>Graph</em> <span>\xE2\x86\x92</span> Gate <span>\xE2\x86\x92</span> Deploy "
+               "<span>\xE2\x86\x92</span> <em>Run</em> <span>\xE2\x86\x92</span> <em>Jobs</em> "
+               "<span>\xE2\x86\x92</span> Model</div>"
+               "<div class=\"legenddefs\">"
+               "<div><b>Graph</b> the compiled pipeline (connect \xE2\x86\x92 clean \xE2\x86\x92 model "
+               "\xE2\x86\x92 serve) a project's intent lowers to.</div>"
+               "<div><b>Run</b> one end-to-end execution of a graph; produces a Model + outputs. One "
+               "row per run.</div>"
+               "<div><b>Job</b> a unit of native distributed compute a run fans out into (featurize / "
+               "train / score) across the cluster \xE2\x80\x94 many jobs per run.</div>"
+               "</div></div>";
+    }
+
+    // The Graphs panel — aggregates every project's compiled execution graphs (there is no
+    // system.graphs view; graphs are owned by projects, reached via get_project).
+    std::string render_graphs_panel(ApiContext& context) {
+        ApiResult lp = capability_registry.call("list_projects", nlohmann::json::object(), context);
+        std::string rows;
+        if (lp.ok)
+            for (const auto& name : lp.value.value("projects", nlohmann::json::array())) {
+                if (!name.is_string()) continue;
+                const std::string pname = name.get<std::string>();
+                ApiResult gp =
+                    capability_registry.call("get_project", nlohmann::json{{"name", pname}}, context);
+                if (!gp.ok) continue;
+                for (const auto& g : gp.value.value("graphs", nlohmann::json::array())) {
+                    if (!g.is_object()) continue;
+                    const std::string gid = g.value("id", "");
+                    rows += "<tr><td>" + web_ui_escape(g.value("name", "")) +
+                            "</td><td><a class=\"mono\" href=\"/?view=projects&p=" +
+                            web_ui_escape(pname) + "\">" + web_ui_escape(pname) +
+                            "</a></td><td class=\"mono\">" + web_ui_escape(gid.substr(0, 8)) +
+                            "</td></tr>";
+                }
+            }
+        std::string html =
+            rows.empty()
+                ? "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
+                      "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">A graph is "
+                      "created when you compile a project's intent (Projects \xE2\x86\x92 open a "
+                      "project \xE2\x86\x92 compile). Then gate, deploy, and run it.</span></div>"
+                : "<div class=\"twrap\"><table><thead><tr><th>Graph</th><th>Project</th><th>id</th>"
+                  "</tr></thead><tbody>" + rows + "</tbody></table></div>";
+        return web_ui_panel("Graphs",
+                            "compiled execution pipelines \xC2\xB7 what a project's intent lowers to",
+                            html);
     }
 
     std::string render_dashboard_content(ApiContext& context, const std::string& view,
@@ -987,35 +1195,62 @@ struct ApiServer::Impl {
             out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
                                 ptable("SELECT * FROM system.nodes", "n"));
         } else if (view == "cluster") {
-            out += web_ui_panel("Nodes", "", ptable("SELECT * FROM system.nodes", "n"));
-            out += web_ui_panel("Node metrics", "", ptable("SELECT * FROM system.node_metrics", "nm"));
-            out += web_ui_panel("Deployments", "", ptable("SELECT * FROM system.deployments", "dep"));
+            out += web_ui_panel("Nodes", "cluster members Â· reachability, liveness, and CRDT replication sync", ptable("SELECT * FROM system.nodes", "n"));
+            out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
+            out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
             out += render_capabilities({"add_nodes", "detect_provisioners", "cloud_inspect"});
+        } else if (view == "projects") {
+            out += render_projects(context, route);
         } else if (view == "data") {
             out += render_data_explorer(context, route);
-            out += web_ui_panel("Indexes", "", ptable("SELECT * FROM system.indexes", "idx"));
+            out += web_ui_panel("Indexes", "full-text / vector indexes over a table Â· expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
             out += render_capabilities({"add_dataset", "expose_index", "unexpose_index"});
         } else if (view == "models") {
-            out += web_ui_panel("Models", "", ptable("SELECT * FROM system.models", "m"));
+            out += web_ui_panel(
+                "Models",
+                "trained models produced by runs \xC2\xB7 weights, metrics + ranked drivers; expose "
+                "one to serve predictions",
+                ptable("SELECT * FROM system.models", "m"));
             out += render_capabilities({"expose_model", "unexpose_model"});
         } else if (view == "pipeline") {
-            out += web_ui_panel("Runs", "", ptable("SELECT * FROM system.runs", "runs"));
-            out += web_ui_panel("Jobs", "", ptable("SELECT * FROM system.jobs", "jobs"));
+            out += pipeline_legend();
+            out += render_graphs_panel(context);
+            out += web_ui_panel(
+                "Deployments",
+                "a graph placed onto a target (local / kubernetes / cloud) and made runnable",
+                ptable("SELECT * FROM system.deployments", "dep"));
+            out += web_ui_panel(
+                "Runs", "each row is ONE end-to-end execution of a graph \xC2\xB7 produces a model + outputs",
+                ptable("SELECT * FROM system.runs", "runs"));
+            out += web_ui_panel(
+                "Jobs",
+                "the native distributed-compute units a run fans out into (featurize / train / "
+                "score) \xC2\xB7 many jobs per run",
+                ptable("SELECT * FROM system.jobs", "jobs"));
             out += render_capabilities({"create_project", "capture_intent", "import_n8n",
                                         "compile_intent", "compile_n8n", "compile_python", "gate",
                                         "deploy", "run"});
         } else if (view == "observability") {
-            out += web_ui_panel("Traces", "", ptable("SELECT * FROM system.traces", "tr"));
-            out += web_ui_panel("Spans", "", ptable("SELECT * FROM system.spans", "sp"));
-            out += web_ui_panel("Crashes", "", ptable("SELECT * FROM system.crashes", "cr"));
+            out += web_ui_panel(
+                "Traces", "one row per operation (an MCP/REST call, a run) \xC2\xB7 its intent, timing + result",
+                ptable("SELECT * FROM system.traces", "tr"));
+            out += web_ui_panel("Spans", "the timed steps inside a trace (parent \xE2\x86\x92 child), with durations",
+                                ptable("SELECT * FROM system.spans", "sp"));
+            out += web_ui_panel("Crashes", "captured crash reports, with stacktraces",
+                                ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
-            out += web_ui_panel("Users", "", ptable("SELECT * FROM system.users", "u"));
-            out += web_ui_panel("Roles", "", ptable("SELECT * FROM system.roles", "r"));
-            out += web_ui_panel("Policies", "", ptable("SELECT * FROM system.policies", "pol"));
-            out += web_ui_panel("Tokens", "", ptable("SELECT * FROM system.tokens", "tok"));
-            out += web_ui_panel("Consent requests", "",
+            out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
+                                ptable("SELECT * FROM system.users", "u"));
+            out += web_ui_panel("Roles", "named capability bundles assigned to users",
+                                ptable("SELECT * FROM system.roles", "r"));
+            out += web_ui_panel("Policies", "row / column access rules",
+                                ptable("SELECT * FROM system.policies", "pol"));
+            out += web_ui_panel("Tokens", "issued bearer access tokens + their scope",
+                                ptable("SELECT * FROM system.tokens", "tok"));
+            out += web_ui_panel("Consent requests", "pending cloud-action approvals (deny-by-default)",
                                 ptable("SELECT * FROM system.consent_requests", "cons"));
-            out += web_ui_panel("Audit", "", ptable("SELECT * FROM system.audit", "aud"));
+            out += web_ui_panel("Audit", "the immutable, append-only record of every governed action",
+                                ptable("SELECT * FROM system.audit", "aud"));
             out += render_capabilities({"approve_consent", "deny_consent", "submit_feedback"});
         } else if (view == "shell") {
             out += web_ui_shell_repl();
@@ -1251,6 +1486,148 @@ struct ApiServer::Impl {
         co_return http::route_done;
     }
 
+    // POST /blob?db=<database>&name=<filename> — store the raw request body as a large object
+    // (file/blob) in the database's LargeObjectStore. Cookie-authed like the rest of the web UI;
+    // the body IS the file bytes (the client reads the File and posts it raw — no multipart parser).
+    boost::http::route_task serve_blob_upload(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        const std::string db = query_param(route, "db", "");
+        const std::string name = query_param(route, "name", "");
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"error":"unauthorized"})";
+        } else if (db.empty() || name.empty()) {
+            json_body = R"({"error":"db and name query params are required"})";
+        } else if (sink.data.empty()) {
+            json_body = R"({"error":"empty file"})";
+        } else {
+            co_await bridge.run_on_owner([&] {
+                const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
+                if (!database) {
+                    json_body = nlohmann::json{{"error", "no such database '" + db + "'"}}.dump();
+                    return;
+                }
+                const std::optional<zetta::data::LargeObject> stored =
+                    database->large_objects().import_bytes(name, sink.data);
+                json_body = stored ? nlohmann::json{{"ok", true},
+                                                    {"id", stored->id},
+                                                    {"name", stored->name},
+                                                    {"size", stored->size}}
+                                         .dump()
+                                   : R"({"error":"could not store the file"})";
+            });
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // POST /blob/delete?db=<database>&id=<object_id> — unlink a large object.
+    boost::http::route_task serve_blob_delete(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        const std::string db = query_param(route, "db", "");
+        const std::string id = query_param(route, "id", "");
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"error":"unauthorized"})";
+        } else {
+            co_await bridge.run_on_owner([&] {
+                const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
+                if (!database) {
+                    json_body = R"({"error":"no such database"})";
+                    return;
+                }
+                const bool ok = database->large_objects().unlink(id);
+                json_body = nlohmann::json{{"ok", ok}}.dump();
+            });
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
+    // GET /blob/download?db=<database>&id=<object_id> — stream a stored blob back as an attachment.
+    boost::http::route_task serve_blob_download(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        const std::string db = query_param(route, "db", "");
+        const std::string id = query_param(route, "id", "");
+        std::string bytes, filename, error;
+        if (!user_id.empty())
+            co_await bridge.run_on_owner([&] {
+                const std::shared_ptr<zetta::data::Database> database = node.find_database(db);
+                if (!database) {
+                    error = "no such database";
+                    return;
+                }
+                const std::optional<std::string> data = database->large_objects().read(id);
+                if (!data) {
+                    error = "not found, or the body has not synced to this node";
+                    return;
+                }
+                bytes = *data;
+                filename = "download";
+                for (const zetta::data::LargeObject& object : database->large_objects().list())
+                    if (object.id == id) {
+                        filename = object.name;
+                        break;
+                    }
+            });
+        if (user_id.empty()) {
+            const std::string body = R"({"error":"unauthorized"})";
+            route.status(http::status::unauthorized);
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        if (!error.empty()) {
+            const std::string body = nlohmann::json{{"error", error}}.dump();
+            route.status(http::status::not_found);
+            route.res.set(http::field::content_type, "application/json");
+            stamp_response_headers(route, body);
+            auto [send_error] = co_await route.send(body);
+            if (send_error) co_return http::route_error(send_error);
+            co_return http::route_done;
+        }
+        // Sanitize the filename for the header (strip quotes / control chars).
+        std::string safe_name;
+        for (char c : filename)
+            safe_name += (c == '"' || c == '\\' || c == '\r' || c == '\n') ? '_' : c;
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/octet-stream");
+        route.res.set("Content-Disposition", "attachment; filename=\"" + safe_name + "\"");
+        stamp_response_headers(route, bytes);
+        auto [send_error] = co_await route.send(bytes);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     // GET /style.css — the cacheable stylesheet (linked from every page instead of inlined).
     boost::http::route_task serve_style(boost::http::route_params& route) {
         namespace http = boost::http;
@@ -1313,6 +1690,17 @@ bool ApiServer::start() {
     router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_shell(route);
     });
+    router.add(http::method::post, "/blob", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_blob_upload(route);
+    });
+    router.add(http::method::post, "/blob/delete",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_blob_delete(route);
+               });
+    router.add(http::method::get, "/blob/download",
+               [&impl](http::route_params& route) -> http::route_task {
+                   return impl.serve_blob_download(route);
+               });
     router.add(http::method::get, "/style.css", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_style(route);
     });
