@@ -10,10 +10,16 @@ lens on a cluster that is primarily driven programmatically
 - **The headed desktop app** — itself a cluster member: the spatial cluster
   view with live gauges, the algorithm-at-work animation, the graph canvas,
   master-detail panels over the `system.*` read model.
-- **The web interface** (planned, [#647](https://github.com/oramasearch/zetta/issues/647))
-  — the same read model + registry rendered in a browser for operators away
-  from the desktop and for sharing a cluster view across a team. Strictly a
-  rendering; never a fourth behavior path.
+- **The web interface** ([#647](https://github.com/oramasearch/zetta/issues/647), served by
+  the node's own `:4800` HTTP server, `src/core/api/web_ui.cpp`) — the same read model +
+  registry rendered **server-side as straight HTML** in a browser, for operators away from the
+  desktop and for sharing a cluster view across a team. Cookie-authed (`zetta_session`); strictly
+  a rendering/invocation of the existing capability surface, never a fourth behavior path. Nav:
+  **Overview** (clickable stat tiles), **Cluster**, **Projects** (index + rich detail: overview,
+  inputs, graphs, runs, models + the lifecycle actions), **Data** (a databases → tables → rows
+  explorer plus a **Files** panel over `system.large_objects` — upload/download/delete), **Models**,
+  **Pipeline** (a run-vs-job legend, graphs, deployments, runs, jobs), **Observability**,
+  **Governance**, **Shell** (a unified SQL/Python REPL with `/` commands), and **Notebooks**.
 - **A coding agent (Claude Code first)** — for many users the primary way to
   operate zetta: they say what they want in their own words, the agent drives
   the MCP surface on their behalf, and the desktop/web lens shows them what

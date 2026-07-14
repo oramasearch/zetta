@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -65,6 +67,15 @@ public:
 
     // Called by the loop that owns the Node, each tick/frame.
     void drain();
+
+    // The owning loop's idle wait (headless): blocks up to `max_idle` but wakes
+    // the instant a request is enqueued, so its drain runs immediately instead of
+    // on the next 10 Hz tick (#731). Use in place of an unconditional sleep.
+    void wait_for_work(std::chrono::milliseconds max_idle);
+
+    // Register a wakeup the owning loop provides so it drains on enqueue (headed:
+    // push an SDL event so its event wait returns early). Call before start().
+    void set_wakeup(std::function<void()> wakeup);
 
     Registry& registry();
     // The node's span ring (convenience passthrough to Node::span_recorder()).
