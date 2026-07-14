@@ -25,7 +25,6 @@ constexpr std::string_view kPage = R"HTML(<!doctype html>
   header{ display:flex; align-items:center; gap:14px; padding:14px 20px;
           border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--bg); z-index:5; }
   .brand{ font-weight:700; font-size:20px; letter-spacing:.5px; }
-  .brand .z{ color:var(--accent); }
   .meta{ color:var(--dim); font-family:var(--mono); font-size:12px; }
   .spacer{ flex:1; }
   button{ background:var(--panel); color:var(--fg); border:1px solid var(--line);
@@ -66,7 +65,7 @@ constexpr std::string_view kPage = R"HTML(<!doctype html>
 </head>
 <body>
 <header>
-  <div class="brand"><span class="z">z</span>etta</div>
+  <div class="brand">zetta</div>
   <span class="dot" id="status"></span>
   <div class="meta" id="meta">connecting...</div>
   <div class="spacer"></div>
