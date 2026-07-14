@@ -82,7 +82,8 @@ form.inline{display:inline;margin:0;}
 .out .rtab td{text-align:left;padding:8px 26px 8px 0;color:var(--ink-secondary);white-space:nowrap;border-bottom:1px solid var(--rule-hair);}
 .out .rtab tr:last-child td{border-bottom:none;}
 .out .rcount{color:var(--ink-quiet);font-size:12.5px;margin-top:12px;}
-.exectime{text-align:right;color:var(--ink-quiet);font:11px/1 var(--font-mono);margin-top:8px;}
+.exectime{text-align:right;color:var(--ink-quiet);font:11px/1 var(--font-mono);margin-top:8px;padding-right:8px;}
+.exectime:empty{display:none;}
 .term .cmd{color:var(--ink-primary);white-space:pre-wrap;}
 .shellrow{display:flex;gap:8px;margin-top:14px;position:relative;align-items:flex-end;}
 .shellrow textarea{font:14.5px/1.6 var(--font-mono);padding:12px 14px;min-height:48px;max-height:240px;resize:none;overflow-y:auto;}
@@ -618,12 +619,13 @@ namespace {
 constexpr std::string_view kSharedShellJs = R"JS(
 function zEsc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
 async function zExec(q){var t0=performance.now();var res=await fetch('/shell',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'q='+encodeURIComponent(q)});var j=await res.json();if(j&&typeof j==='object')j.__ms=Math.round(performance.now()-t0);return j;}
-// The formatted execution time, shown bottom-right after each run: the engine's own
-// elapsed when it reports it (Python), else the measured round-trip.
-function zTime(r){
+// The formatted execution time shown bottom-right after each run: the engine's own
+// elapsed when it reports it (Python), else the measured round-trip. Returns just the
+// label — the caller places it OUTSIDE the horizontally-scrolling output so it stays
+// pinned to the right edge (doesn't drift when a wide table is scrolled).
+function zTimeLabel(r){
   if(!r) return '';
-  var lbl=r.elapsed?r.elapsed:(typeof r.__ms==='number'?(r.__ms<1000?r.__ms+' ms':(r.__ms/1000).toFixed(2)+' s'):'');
-  return lbl?'<div class="exectime">'+zEsc(lbl)+'</div>':'';
+  return r.elapsed?r.elapsed:(typeof r.__ms==='number'?(r.__ms<1000?r.__ms+' ms':(r.__ms/1000).toFixed(2)+' s'):'');
 }
 // When column order isn't given by the server (SELECT * yields keys in map order),
 // lead with the identifier-ish columns (name/table/id/…) so the row's subject reads first.
@@ -705,7 +707,7 @@ std::string web_ui_shell_repl() {
     b.querySelector('.cmd').textContent=c;   // textContent keeps newlines + escapes safely
     term.appendChild(b); var o=b.querySelector('.out');
     o.innerHTML='<span class="txt">running…</span>'; term.scrollTop=term.scrollHeight;
-    try{ var res=await zExec(c); o.innerHTML=zFmt(res)+zTime(res); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
+    try{ var res=await zExec(c); o.innerHTML=zFmt(res); var lbl=zTimeLabel(res); if(lbl) b.insertAdjacentHTML('beforeend','<div class="exectime">'+zEsc(lbl)+'</div>'); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
     term.scrollTop=term.scrollHeight;
   }
   run.onclick=go;
@@ -749,12 +751,12 @@ std::string web_ui_notebooks() {
   function load(){try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};}}
   function save(nb){localStorage.setItem(KEY,JSON.stringify(nb));}
   var book=[{src:'SELECT * FROM system.nodes',out:''}];
-  async function runCell(i,d){var o=d.querySelector('.out');o.innerHTML='<span class="txt">running…</span>';try{var res=await zExec(book[i].src);book[i].out=zFmt(res)+zTime(res);o.innerHTML=book[i].out;}catch(e){o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>';book[i].out='';}}
+  async function runCell(i,d){var o=d.querySelector('.out');o.innerHTML='<span class="txt">running…</span>';try{var res=await zExec(book[i].src);book[i].out=zFmt(res);o.innerHTML=book[i].out;var tt=d.querySelector('.exectime');if(tt)tt.textContent=zTimeLabel(res);}catch(e){o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>';book[i].out='';}}
   function render(){
     cellsEl.innerHTML='';
     book.forEach(function(cell,i){
       var d=document.createElement('div');d.className='cell';
-      d.innerHTML='<div class="cellbar"><span class="q mono">['+(i+1)+']</span><button class="btn small run">Run</button><button class="btn small del">✕</button></div><textarea class="src" spellcheck="false"></textarea><div class="out">'+(cell.out||'')+'</div>';
+      d.innerHTML='<div class="cellbar"><span class="q mono">['+(i+1)+']</span><button class="btn small run">Run</button><button class="btn small del">✕</button></div><textarea class="src" spellcheck="false"></textarea><div class="out">'+(cell.out||'')+'</div><div class="exectime"></div>';
       var ta=d.querySelector('.src');ta.value=cell.src;
       ta.addEventListener('input',function(){cell.src=this.value;});
       ta.addEventListener('keydown',function(e){if((e.metaKey||e.ctrlKey||e.shiftKey)&&e.key==='Enter'){e.preventDefault();runCell(i,d);}});
