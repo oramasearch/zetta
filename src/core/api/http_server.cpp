@@ -844,7 +844,8 @@ struct ApiServer::Impl {
     // links. Each table on a view uses a distinct query key so several can page independently.
     std::string render_paged_table(ApiContext& context, const std::string& statement,
                                    const std::string& key, const std::string& view,
-                                   const boost::http::route_params& route) {
+                                   const boost::http::route_params& route,
+                                   const std::string& extra_qs = "") {
         constexpr int page_size = 50;
         ApiResult result =
             capability_registry.call("sql", nlohmann::json{{"statement", statement}}, context);
@@ -872,6 +873,102 @@ struct ApiServer::Impl {
         return out;
     }
 
+    // A plain SQL identifier (letters/digits/underscore). Gates db/table names before they
+    // are interpolated into SQL — no injection, and it keeps hostile syntax away from the
+    // crash-prone parser (#819).
+    static bool safe_ident(const std::string& s) {
+        if (s.empty() || s.size() > 128) return false;
+        for (char c : s)
+            if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_')) return false;
+        return true;
+    }
+
+    // The Data explorer: databases -> tables -> rows, navigated by ?db= & ?tbl= query params.
+    std::string render_data_explorer(ApiContext& context, const boost::http::route_params& route) {
+        const std::string sel_db = query_param(route, "db", "");
+        const std::string sel_tbl = query_param(route, "tbl", "");
+        auto rows_of = [&](const std::string& sql) -> nlohmann::json {
+            ApiResult r =
+                capability_registry.call("sql", nlohmann::json{{"statement", sql}}, context);
+            return r.ok ? r.value.value("rows", nlohmann::json::array()) : nlohmann::json::array();
+        };
+        auto field = [](const nlohmann::json& row, const char* key) -> std::string {
+            if (row.is_object() && row.contains(key) && row.at(key).is_string())
+                return row.at(key).get<std::string>();
+            return {};
+        };
+
+        // ----- databases column (deduped; empty databases aren't in system.datasets yet) -----
+        std::vector<std::string> dbs;
+        for (const auto& row : rows_of("SELECT database FROM system.datasets")) {
+            const std::string d = field(row, "database");
+            if (!d.empty() && std::find(dbs.begin(), dbs.end(), d) == dbs.end()) dbs.push_back(d);
+        }
+        std::sort(dbs.begin(), dbs.end());
+        std::string dbcol =
+            "<div class=\"expcol\"><div class=\"exphd\">Databases</div><div class=\"expbody\">";
+        for (const std::string& d : dbs)
+            dbcol += "<a class=\"exprow" + std::string(d == sel_db ? " on" : "") +
+                     "\" href=\"/?view=data&db=" + web_ui_escape(d) + "\"><span>" + web_ui_escape(d) +
+                     "</span></a>";
+        dbcol += "<a class=\"exprow" + std::string(sel_db == "system" ? " on" : "") +
+                 "\" href=\"/?view=data&db=system\"><span>system</span><span class=\"ct\">virtual</span></a>"
+                 "</div></div>";
+
+        // ----- tables column -----
+        std::string tcol =
+            "<div class=\"expcol\"><div class=\"exphd\">Tables</div><div class=\"expbody\">";
+        if (sel_db.empty()) {
+            tcol += "<div class=\"exphint\">Select a database</div>";
+        } else if (sel_db == "system") {
+            for (const auto& row : rows_of("SELECT table FROM system.tables")) {
+                const std::string t = field(row, "table");
+                if (t.empty()) continue;
+                tcol += "<a class=\"exprow" + std::string(t == sel_tbl ? " on" : "") +
+                        "\" href=\"/?view=data&db=system&tbl=" + web_ui_escape(t) + "\"><span>" +
+                        web_ui_escape(t) + "</span></a>";
+            }
+        } else if (!safe_ident(sel_db)) {
+            tcol += "<div class=\"exphint\">Invalid database name</div>";
+        } else {
+            const auto trows =
+                rows_of("SELECT dataset, rows FROM system.datasets WHERE database = '" + sel_db + "'");
+            if (trows.empty()) tcol += "<div class=\"exphint\">No tables in this database</div>";
+            for (const auto& row : trows) {
+                const std::string t = field(row, "dataset");
+                if (t.empty()) continue;
+                std::string count;
+                if (row.is_object() && row.contains("rows") && row["rows"].is_number())
+                    count = "<span class=\"ct\">" + std::to_string(row["rows"].get<long long>()) +
+                            "</span>";
+                tcol += "<a class=\"exprow" + std::string(t == sel_tbl ? " on" : "") +
+                        "\" href=\"/?view=data&db=" + web_ui_escape(sel_db) + "&tbl=" + web_ui_escape(t) +
+                        "\"><span>" + web_ui_escape(t) + "</span>" + count + "</a>";
+            }
+        }
+        tcol += "</div></div>";
+
+        // ----- rows column (fills the remaining width) -----
+        std::string rcol =
+            "<div class=\"expcol expcol-wide\"><div class=\"exphd\">Rows</div>"
+            "<div class=\"expbody expbody-rows\">";
+        if (sel_db.empty() || sel_tbl.empty()) {
+            rcol += "<div class=\"exphint\">Select a table to view its rows</div>";
+        } else if (sel_db == "system" && safe_ident(sel_tbl)) {
+            rcol += render_paged_table(context, "SELECT * FROM system." + sel_tbl, "p", "data", route,
+                                       "db=system&tbl=" + sel_tbl + "&");
+        } else if (safe_ident(sel_db) && safe_ident(sel_tbl)) {
+            rcol += render_paged_table(context, "SELECT * FROM " + sel_db + "." + sel_tbl, "p", "data",
+                                       route, "db=" + sel_db + "&tbl=" + sel_tbl + "&");
+        } else {
+            rcol += "<div class=\"exphint\">Invalid table name</div>";
+        }
+        rcol += "</div></div>";
+
+        return web_ui_panel("Explorer", "databases \xC2\xB7 tables \xC2\xB7 rows",
+                            "<div class=\"explorer\">" + dbcol + tcol + rcol + "</div>");
+    }
+
     std::string render_dashboard_content(ApiContext& context, const std::string& view,
                                          const boost::http::route_params& route) {
         auto ptable = [&](const std::string& statement, const std::string& key) -> std::string {
@@ -895,7 +992,7 @@ struct ApiServer::Impl {
             out += web_ui_panel("Deployments", "", ptable("SELECT * FROM system.deployments", "dep"));
             out += render_capabilities({"add_nodes", "detect_provisioners", "cloud_inspect"});
         } else if (view == "data") {
-            out += web_ui_panel("Datasets", "", ptable("SELECT * FROM system.datasets", "ds"));
+            out += render_data_explorer(context, route);
             out += web_ui_panel("Indexes", "", ptable("SELECT * FROM system.indexes", "idx"));
             out += render_capabilities({"add_dataset", "expose_index", "unexpose_index"});
         } else if (view == "models") {

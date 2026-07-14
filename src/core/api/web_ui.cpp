@@ -66,7 +66,7 @@ form.inline{display:inline;margin:0;}
 .side a:hover{background:var(--wash-hover);color:var(--ink-primary);}
 .side a.active{background:var(--white);color:var(--ink-primary);font-weight:500;box-shadow:var(--shadow-sm);}
 .side a.active svg{opacity:1;color:var(--accent);}
-.main{padding:24px 28px 60px;max-width:1120px;min-width:0;}
+.main{padding:24px 28px 60px;min-width:0;}  /* fill all available width — no max cap */
 
 /* Web shell — a terminal surface (charcoal), the one deliberately dark panel */
 .term{background:var(--canvas);color:var(--ink-primary);border:1px solid var(--rule-card);border-radius:12px;padding:20px 22px;font:14.5px/1.7 var(--font-mono);
@@ -82,6 +82,7 @@ form.inline{display:inline;margin:0;}
 .out .rtab td{text-align:left;padding:8px 26px 8px 0;color:var(--ink-secondary);white-space:nowrap;border-bottom:1px solid var(--rule-hair);}
 .out .rtab tr:last-child td{border-bottom:none;}
 .out .rcount{color:var(--ink-quiet);font-size:12.5px;margin-top:12px;}
+.exectime{text-align:right;color:var(--ink-quiet);font:11px/1 var(--font-mono);margin-top:8px;}
 .term .cmd{color:var(--ink-primary);white-space:pre-wrap;}
 .shellrow{display:flex;gap:8px;margin-top:14px;position:relative;align-items:flex-end;}
 .shellrow textarea{font:14.5px/1.6 var(--font-mono);padding:12px 14px;min-height:48px;max-height:240px;resize:none;overflow-y:auto;}
@@ -158,6 +159,27 @@ tbody tr:hover{background:var(--wash-hover);}
 td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;}
 td .mono,td.mono{font-family:var(--font-mono);color:var(--ink-primary);font-size:12px;}
 code.j{font-size:11px;color:var(--ink-muted);}
+
+/* Data explorer: databases | tables | rows (rows fills the remaining width) */
+.explorer{display:grid;grid-template-columns:minmax(150px,180px) minmax(180px,230px) 1fr;
+  border:1px solid var(--rule-hair);border-radius:11px;overflow:hidden;min-height:300px;}
+.expcol{border-right:1px solid var(--rule-hair);min-width:0;display:flex;flex-direction:column;}
+.expcol:last-child{border-right:none;}
+.exphd{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.07em;color:var(--ink-quiet);
+  padding:11px 13px;border-bottom:1px solid var(--rule-hair);background:var(--canvas);}
+.expbody{overflow-y:auto;max-height:540px;}
+.expbody-rows{padding:12px;}
+.exprow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 13px;font-size:13px;
+  color:var(--ink-secondary);border-bottom:1px solid var(--rule-hair);cursor:pointer;}
+.exprow>span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.exprow:last-child{border-bottom:none;}
+.exprow:hover{background:var(--wash-hover);color:var(--ink-primary);}
+.exprow.on{background:var(--accent-wash);color:var(--accent);font-weight:500;}
+.exprow .ct{font:11px/1 var(--font-mono);color:var(--ink-quiet);flex:none;}
+.exprow.on .ct{color:var(--accent);}
+.exphint{padding:16px 13px;color:var(--ink-quiet);font-size:12.5px;}
+@media(max-width:820px){.explorer{grid-template-columns:1fr;}
+  .expcol{border-right:none;border-bottom:1px solid var(--rule-hair);} .expbody{max-height:240px;}}
 
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
@@ -595,13 +617,27 @@ namespace {
 // cookie-authed /shell endpoint and format a SQL result as a monospace text table.
 constexpr std::string_view kSharedShellJs = R"JS(
 function zEsc(s){return String(s==null?'':s).replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
-async function zExec(q){var r=await fetch('/shell',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'q='+encodeURIComponent(q)});return r.json();}
+async function zExec(q){var t0=performance.now();var res=await fetch('/shell',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'q='+encodeURIComponent(q)});var j=await res.json();if(j&&typeof j==='object')j.__ms=Math.round(performance.now()-t0);return j;}
+// The formatted execution time, shown bottom-right after each run: the engine's own
+// elapsed when it reports it (Python), else the measured round-trip.
+function zTime(r){
+  if(!r) return '';
+  var lbl=r.elapsed?r.elapsed:(typeof r.__ms==='number'?(r.__ms<1000?r.__ms+' ms':(r.__ms/1000).toFixed(2)+' s'):'');
+  return lbl?'<div class="exectime">'+zEsc(lbl)+'</div>':'';
+}
+// When column order isn't given by the server (SELECT * yields keys in map order),
+// lead with the identifier-ish columns (name/table/id/…) so the row's subject reads first.
+function zOrder(keys){
+  var lead=keys.filter(function(c){return /^(name|table|dataset|id|key|project|run|model|node|user|role)$/i.test(c)||/_id$|_name$/i.test(c);});
+  var rest=keys.filter(function(c){return lead.indexOf(c)<0;});
+  return lead.concat(rest);
+}
 function zFmt(r){
   if(!r||r.error) return '<pre class="txt err">error: '+zEsc((r&&r.error)?r.error:'request failed')+'</pre>';
   var rows=r.rows||[];
   var arr=rows.length>0&&Array.isArray(rows[0]);           // Python (repl::Result) rows are positional arrays; SQL rows are objects
   var cols=(r.columns&&r.columns.length)?r.columns
-           :(!arr&&rows.length&&rows[0]&&typeof rows[0]==='object'?Object.keys(rows[0]):[]);
+           :(!arr&&rows.length&&rows[0]&&typeof rows[0]==='object'?zOrder(Object.keys(rows[0])):[]);
   var msgs=r.messages||[];
   var note=msgs.length?'<div class="rcount">'+zEsc(msgs.join(' · '))+'</div>':'';   // · = middle dot; \xC2\xB7 in a raw string ships literally and JS decodes it to "Â·"
   if(!cols.length){
@@ -669,7 +705,7 @@ std::string web_ui_shell_repl() {
     b.querySelector('.cmd').textContent=c;   // textContent keeps newlines + escapes safely
     term.appendChild(b); var o=b.querySelector('.out');
     o.innerHTML='<span class="txt">running…</span>'; term.scrollTop=term.scrollHeight;
-    try{ o.innerHTML=zFmt(await zExec(c)); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
+    try{ var res=await zExec(c); o.innerHTML=zFmt(res)+zTime(res); }catch(e){ o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>'; }
     term.scrollTop=term.scrollHeight;
   }
   run.onclick=go;
@@ -713,7 +749,7 @@ std::string web_ui_notebooks() {
   function load(){try{return JSON.parse(localStorage.getItem(KEY))||{};}catch(e){return {};}}
   function save(nb){localStorage.setItem(KEY,JSON.stringify(nb));}
   var book=[{src:'SELECT * FROM system.nodes',out:''}];
-  async function runCell(i,d){var o=d.querySelector('.out');o.innerHTML='<span class="txt">running…</span>';try{book[i].out=zFmt(await zExec(book[i].src));o.innerHTML=book[i].out;}catch(e){o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>';book[i].out='';}}
+  async function runCell(i,d){var o=d.querySelector('.out');o.innerHTML='<span class="txt">running…</span>';try{var res=await zExec(book[i].src);book[i].out=zFmt(res)+zTime(res);o.innerHTML=book[i].out;}catch(e){o.innerHTML='<pre class="txt err">error: '+zEsc(''+e)+'</pre>';book[i].out='';}}
   function render(){
     cellsEl.innerHTML='';
     book.forEach(function(cell,i){
