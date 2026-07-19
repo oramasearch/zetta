@@ -100,6 +100,12 @@ struct AddDatasetOptions {
     std::vector<std::string> members;      // cluster membership for placement
     std::string table_name;                // override the derived table name
     bool partition_only = false;           // rows never captured into the CRDT (#833)
+    // When non-empty, place every partition on THIS node id instead of hashing
+    // it onto the roster — [fetch affinity](fetch_affinity_placement.hpp), #833
+    // section 6. The distributed connector ingest sets it to the fetching node's
+    // own id so the slice it just pulled is never shuffled somewhere else;
+    // replicas (a factor above 1) still spread by rendezvous over the rest.
+    std::string fetch_affinity_owner;
 };
 
 // The outcome of adding a dataset. On success `error` is empty, `table` is the

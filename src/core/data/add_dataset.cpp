@@ -22,6 +22,7 @@
 #include "zetta/parquet/reader.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/data/partition_writer.hpp"
+#include "zetta/data/fetch_affinity_placement.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
 #include "zetta/data/table.hpp"
 
@@ -394,8 +395,17 @@ void partition_target_table(Node& node, const AddDatasetOptions& options,
         options.members.empty() ? std::size_t{1} : options.members.size();
     const std::size_t replication_factor =
         std::min(std::max<std::size_t>(options.replication_factor, 1), roster);
-    result.table->set_partitioner(std::make_shared<RendezvousPlacement>(
-        options.partition_count, replication_factor));
+    // Fetch affinity (#833 section 6) when the caller pulled this slice itself:
+    // the partitions stay on the node that produced them, so nothing shuffles
+    // after the write. Otherwise HRW, which spreads a locally-loaded dataset.
+    if (options.fetch_affinity_owner.empty()) {
+        result.table->set_partitioner(std::make_shared<RendezvousPlacement>(
+            options.partition_count, replication_factor));
+    } else {
+        result.table->set_partitioner(std::make_shared<FetchAffinityPlacement>(
+            options.partition_count, options.fetch_affinity_owner,
+            replication_factor));
+    }
     PartitionWriteResult written = write_partitioned(
         node, *result.database, *result.table, options.members);
     if (!written.ok()) {
