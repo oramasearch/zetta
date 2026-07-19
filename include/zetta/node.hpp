@@ -36,6 +36,7 @@
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/query/distributed_select.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/role.hpp"
@@ -349,6 +350,15 @@ public:
     // torn down in stop_coordinator(). Search goes through search(), not this.
     zetta::index::DistributedFulltextIndex* distributed_fulltext() {
         return distributed_fulltext_.get();
+    }
+
+    // The scatter-gather SELECT plane over the attached cluster (#833 section 5),
+    // or nullptr when no cluster is attached (standalone / before attach_cluster).
+    // Owned by the node: wired in start_coordinator() chained over the search
+    // plane's signal handler, torn down in stop_coordinator(). SQL goes through
+    // the Executor, not this. See query/distributed_select.hpp.
+    zetta::query::DistributedSelect* distributed_select() {
+        return distributed_select_.get();
     }
 
     // The IndexBackend the distributed fulltext machinery builds its
@@ -1091,6 +1101,7 @@ private:
     // fingerprint last built).
     std::shared_ptr<zetta::index::IndexBackend> search_backend_;
     std::unique_ptr<zetta::index::DistributedFulltextIndex> distributed_fulltext_;
+    std::unique_ptr<zetta::query::DistributedSelect> distributed_select_;
     std::map<std::string, std::string> search_build_fingerprints_;
 };
 

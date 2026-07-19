@@ -560,6 +560,8 @@ add_library(zetta-core STATIC
   src/core/repl/governed_console.cpp
   src/core/query/postgres.cpp
   src/core/query/statement_builders.cpp
+  src/core/query/predicate.cpp
+  src/core/query/distributed_select.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
   src/core/headless.cpp

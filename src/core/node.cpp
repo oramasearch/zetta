@@ -316,6 +316,11 @@ void Node::tick() {
     //     `fulltext.query` scatter. Fingerprint-guarded (cheap when unchanged);
     //     local machinery only, nothing is captured.
     reconcile_search_indexes();
+    // 2c. SELECT plane (#833): refresh the network-thread-readable snapshot of
+    //     the partition-only partitions this node owns, so a peer's `sql.scan`
+    //     is answered from the current catalog without touching the Node tree
+    //     off the owner thread. Fingerprint-guarded; nothing is captured.
+    if (distributed_select_) distributed_select_->refresh();
     // 3. Persist if the document moved (a peer merge in step 1 or a run started
     //    in step 2), and remember the version we have now reflected on disk.
     if (replication_) {
@@ -488,11 +493,21 @@ void Node::start_coordinator() {
     distributed_fulltext_ = std::make_unique<zetta::index::DistributedFulltextIndex>(
         *cluster_, std::move(search_backend), cluster_->signal_handler());
     search_build_fingerprints_.clear();  // a fresh plane holds no sub-indexes yet
+
+    // The scatter-gather SELECT plane (#833) chains over the search plane:
+    // `sql.scan` is served here, everything else routes on. Wired on EVERY
+    // clustered node — that is what lets any node answer for the partitions it
+    // owns — with its snapshot of those partitions refreshed by tick().
+    distributed_select_ = std::make_unique<zetta::query::DistributedSelect>(
+        *this, *cluster_, cluster_->signal_handler());
+    distributed_select_->refresh();
 }
 
 void Node::stop_coordinator() {
-    // Unwind in reverse wiring order: the search plane restores the compute
-    // plane's handler first, then the coordinator restores its own fallback.
+    // Unwind in reverse wiring order: the SELECT plane restores the search
+    // plane's handler, the search plane the compute plane's, then the
+    // coordinator restores its own fallback.
+    distributed_select_.reset();
     distributed_fulltext_.reset();
     search_build_fingerprints_.clear();
     if (!coordinator_) return;

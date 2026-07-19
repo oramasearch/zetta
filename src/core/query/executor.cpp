@@ -36,6 +36,8 @@
 #include "zetta/observability/crash.hpp"
 #include "zetta/pipeline/deployment.hpp"
 #include "zetta/node.hpp"
+#include "zetta/query/distributed_select.hpp"
+#include "zetta/query/predicate.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/util/timestamp.hpp"
@@ -594,54 +596,6 @@ std::vector<nlohmann::json> compute_job_rows(const Node& node) {
         rows.push_back(std::move(row));
     }
     return rows;
-}
-
-// Whether `cell` <op> `target` holds. Equality/inequality work over any JSON
-// value (nlohmann compares numbers across int/float); the ordering comparisons
-// apply numerically when both sides are numbers and lexicographically when both
-// are strings, and otherwise do not match (mixed/unsupported types).
-bool compare_cell(const nlohmann::json& cell, CompareOp op,
-                  const nlohmann::json& target) {
-    switch (op) {
-        case CompareOp::Equal:
-            return cell == target;
-        case CompareOp::NotEqual:
-            return cell != target;
-        default:
-            break;
-    }
-    if (cell.is_number() && target.is_number()) {
-        const double left = cell.get<double>();
-        const double right = target.get<double>();
-        switch (op) {
-            case CompareOp::Less:         return left < right;
-            case CompareOp::LessEqual:    return left <= right;
-            case CompareOp::Greater:      return left > right;
-            case CompareOp::GreaterEqual: return left >= right;
-            default:                      return false;
-        }
-    }
-    if (cell.is_string() && target.is_string()) {
-        const std::string& left = cell.get_ref<const std::string&>();
-        const std::string& right = target.get_ref<const std::string&>();
-        switch (op) {
-            case CompareOp::Less:         return left < right;
-            case CompareOp::LessEqual:    return left <= right;
-            case CompareOp::Greater:      return left > right;
-            case CompareOp::GreaterEqual: return left >= right;
-            default:                      return false;
-        }
-    }
-    return false;
-}
-
-// Whether a row satisfies an optional WHERE clause. A row lacking the column never
-// matches (it is excluded), preserving the original equality behavior.
-bool row_matches(const nlohmann::json& row,
-                 const std::optional<WhereClause>& where) {
-    if (!where) return true;
-    if (!row.contains(where->column)) return false;
-    return compare_cell(row.at(where->column), where->op, where->value);
 }
 
 // Join strings with ", " for the flat, scalar cells a SELECT row shows.
@@ -2592,6 +2546,42 @@ QueryResult Executor::execute(const Statement& stmt,
                 // which filters numerically and can't apply a row-security
                 // predicate — refuse it on a policy-protected table (for a
                 // non-bypass caller) rather than leak aggregates over hidden rows.
+                // A partition-only table (#833) holds its rows in the partition
+                // bodies its owners hold, not in this node's store — so the
+                // answer is scattered to the owners and merged, never read
+                // locally. A node-local scan would silently answer from
+                // whatever slice happened to be here.
+                if (table->partition_only()) {
+                    if (!read_filter.bypass && read_filter.engaged) {
+                        return error("row-level security is enabled on \"" +
+                                     db_name(s.table) + "." + s.table.table +
+                                     "\": it is a partition-only dataset, whose "
+                                     "rows are filtered on their owner — query a "
+                                     "replicated table instead");
+                    }
+                    const SelectOutcome scattered = select_over_partitions(
+                        node_, node_.distributed_select(), s, table->id());
+                    if (!scattered.ok()) return error(scattered.error);
+                    QueryResult r;
+                    r.columns = s.grouped() ? scattered.columns
+                                            : (s.all ? std::vector<std::string>{}
+                                                     : s.columns);
+                    r.rows = scattered.rows;
+                    // Column-level access stays with the coordinator: the owner
+                    // filtered + projected, this node knows the caller.
+                    if (!read_access.all_columns) {
+                        for (nlohmann::json& row : r.rows) {
+                            for (auto field = row.begin(); field != row.end();
+                                 ++field) {
+                                if (!read_access.allows(field.key())) {
+                                    field.value() = nlohmann::json();
+                                }
+                            }
+                        }
+                    }
+                    r.message = "SELECT " + std::to_string(r.rows.size());
+                    return r;
+                }
                 if (s.grouped()) {
                     if (!read_filter.bypass && read_filter.engaged) {
                         return error("row-level security is enabled on \"" +

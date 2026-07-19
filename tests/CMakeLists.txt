@@ -74,6 +74,7 @@ add_executable(zetta-tests
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp
   index/test_distributed_fulltext.cpp
+  query/test_distributed_select.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp

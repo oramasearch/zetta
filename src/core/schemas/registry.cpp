@@ -65,6 +65,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
+#include "zetta/query/distributed_select.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -100,6 +101,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::index::fulltext_query_schema},
         {"fulltext_hits", "fulltext_hits.schema.json",
          &zetta::index::fulltext_hits_schema},
+        {"partition_scan_request", "partition_scan_request.schema.json",
+         &zetta::query::partition_scan_request_schema},
+        {"partition_scan_response", "partition_scan_response.schema.json",
+         &zetta::query::partition_scan_response_schema},
         // compute
         {"compute_job", "compute_job.schema.json",
          &zetta::compute::compute_job_value_schema},

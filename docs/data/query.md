@@ -88,6 +88,12 @@ result-column name follows DDF's convention — `count`, `sum_amount`,
   ascending key order. (Not supported over `system` tables — they are computed,
   non-numeric rows.) Building a new table from a grouped result (`CREATE TABLE AS`)
   is a later slice.
+- A `SELECT` over a **[partition-only table](partition-only-tables.md)** is not
+  answered from the local store at all: it is
+  **[scattered to the partition owners and merged](scatter-gather-select.md)**,
+  with `WHERE` + projection pushed near the data, aggregates merged rather than
+  concatenated, and an unreachable owner failing the query. The SQL is identical
+  and the result columns are named identically — only the path differs.
 - Statements run in order; the first failure stops the batch and is reported.
 
 ## The `system` database
