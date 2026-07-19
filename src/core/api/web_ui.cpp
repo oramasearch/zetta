@@ -243,7 +243,15 @@ dialog.dlg form{padding:22px 24px 20px;margin:0;}
 .dlghd h3{margin:0;font:17px var(--font-sans);font-weight:600;color:var(--ink-primary);}
 .dlgx{background:none;border:none;font-size:22px;line-height:1;color:var(--ink-quiet);cursor:pointer;padding:0 4px;}
 .dlgsub{margin:6px 0 16px;font-size:13px;color:var(--ink-muted);}
-.dlgact{display:flex;justify-content:flex-end;gap:9px;margin-top:20px;}
+.dlgact{display:flex;justify-content:flex-end;gap:9px;margin-top:22px;}
+dialog.dlg .fgrid{gap:12px 18px;}
+dialog.dlg label{display:block;font:11px/1.5 var(--font-mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink-muted);margin-bottom:5px;}
+dialog.dlg select,dialog.dlg input{width:100%;}
+/* Per-section header actions (icon + task label buttons). */
+.pactions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;}
+.btn.small{display:inline-flex;align-items:center;gap:6px;}
+.btn svg{width:14px;height:14px;flex:none;opacity:.75;}
+.btn-primary svg{opacity:1;}
 
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}

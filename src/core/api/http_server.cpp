@@ -842,59 +842,119 @@ struct ApiServer::Impl {
     // description) that expands to its input form, laid out in a 2-column field grid.
     // The schema-driven input fields (a 2-column grid) for a capability — shared
     // by the inline action form and the modal action dialog.
-    std::string capability_form_fields(const Capability& capability) {
+    std::string form_option(const std::string& text, const std::string& value, bool selected) {
+        return "<option value=\"" + web_ui_escape(value) + "\"" +
+               (selected ? " selected" : "") + ">" + web_ui_escape(text) + "</option>";
+    }
+
+    // Live-populated <option> lists so a dialog offers a real picker, never a raw
+    // id / name text box.
+    std::string table_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select a table\xE2\x80\xA6</option>";
+        for (const std::string& db_name : context.node.database_names()) {
+            const auto database = context.node.find_database(db_name);
+            if (!database) continue;
+            for (const std::string& table : database->table_names())
+                options += form_option(table, table, false);
+        }
+        return options;
+    }
+    std::string index_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select an index\xE2\x80\xA6</option>";
+        for (const auto& index : context.node.indexes()) {
+            if (!index) continue;
+            std::string fields;
+            for (std::size_t i = 0; i < index->fields().size(); ++i) {
+                if (i) fields += ", ";
+                fields += index->fields()[i];
+            }
+            options += form_option(index->table() + " \xC2\xB7 " + fields, index->id(), false);
+        }
+        return options;
+    }
+    std::string model_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select a model\xE2\x80\xA6</option>";
+        const ApiResult result = capability_registry.call(
+            "sql", nlohmann::json{{"statement", "SELECT name FROM system.models"}}, context);
+        if (result.ok)
+            for (const auto& row : result.value.value("rows", nlohmann::json::array()))
+                if (row.is_array() && !row.empty() && row[0].is_string())
+                    options += form_option(row[0].get<std::string>(), row[0].get<std::string>(), false);
+        return options;
+    }
+    std::string database_options(ApiContext& context) {
+        std::string options = "<option value=\"\">(default)</option>";
+        for (const std::string& db_name : context.node.database_names())
+            options += form_option(db_name, db_name, false);
+        return options;
+    }
+
+    // A section's icon for its action buttons.
+    std::string action_icon(const std::string& name) {
+        if (name == "add_dataset") return web_ui_icon("dataset");
+        if (name == "create_index") return web_ui_icon("index");
+        if (name == "expose_model" || name == "unexpose_model") return web_ui_icon("models");
+        if (name == "add_nodes") return web_ui_icon("nodes");
+        return web_ui_icon("bolt");
+    }
+
+    // The dialog's input fields: a <select> picker where one fits (an enum, or a
+    // table / index / model / database / backend reference), else a text input.
+    std::string capability_form_fields(const Capability& capability, ApiContext& context) {
         std::string fields;
         const auto& schema = capability.input_schema;
-        if (schema.is_object() && schema.contains("properties") && schema["properties"].is_object()) {
-            const nlohmann::json required = schema.value("required", nlohmann::json::array());
-            for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
-                bool is_required = false;
-                for (const auto& item : required)
-                    if (item.is_string() && item.get<std::string>() == it.key()) is_required = true;
-                const std::string type = it.value().value("type", "string");
-                const std::string description = it.value().value("description", "");
-                const bool full = it.key() == "path" || it.key() == "statement" ||
-                                  it.key() == "source" || it.key() == "index" ||
-                                  it.key() == "description" || description.size() > 48;
-                fields += std::string("<div class=\"") + (full ? "full" : "") + "\"><label>" +
-                          web_ui_escape(it.key()) +
-                          (is_required ? "<span class=\"req\">*</span>" : "") + "</label>";
-                fields += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
-                          web_ui_escape(type) +
-                          (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) +
-                          "\"></div>";
+        if (!schema.is_object() || !schema.contains("properties") ||
+            !schema["properties"].is_object())
+            return fields;
+        const nlohmann::json required = schema.value("required", nlohmann::json::array());
+        for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
+            const std::string key = it.key();
+            bool is_required = false;
+            for (const auto& item : required)
+                if (item.is_string() && item.get<std::string>() == key) is_required = true;
+            const std::string description = it.value().value("description", "");
+            const std::string type = it.value().value("type", "string");
+            const bool full = key == "path" || key == "statement" || key == "source" ||
+                              key == "description" || description.size() > 52;
+
+            std::string options;
+            if (it.value().contains("enum")) {
+                for (const auto& choice : it.value()["enum"])
+                    if (choice.is_string())
+                        options += form_option(choice.get<std::string>(),
+                                               choice.get<std::string>(), false);
+            } else if (key == "table") {
+                options = table_options(context);
+            } else if (key == "index") {
+                options = index_options(context);
+            } else if (key == "model") {
+                options = model_options(context);
+            } else if (key == "database") {
+                options = database_options(context);
+            } else if (key == "backend") {
+                options = form_option("oramacore_fulltext (BM25F)", "oramacore_fulltext", true) +
+                          form_option("memory_search (exact match)", "memory_search", false);
             }
+
+            fields += std::string("<div class=\"") + (full ? "full" : "") + "\"><label>" +
+                      web_ui_escape(key) +
+                      (is_required ? "<span class=\"req\">*</span>" : "") + "</label>";
+            if (!options.empty())
+                fields += "<select name=\"" + web_ui_escape(key) + "\">" + options + "</select>";
+            else
+                fields += "<input name=\"" + web_ui_escape(key) + "\" placeholder=\"" +
+                          web_ui_escape(description.empty() ? type : description) + "\">";
+            fields += "</div>";
         }
         return fields;
     }
 
-    std::string render_capability_form(const Capability& capability) {
-        const bool write = capability.kind != CapabilityKind::Read;
-        const std::string fields = capability_form_fields(capability);
-        std::string out = "<details class=\"action\"><summary><span class=\"aico\">" +
-                          web_ui_icon(write ? "bolt" : "runs") + "</span><span class=\"an\">" +
-                          web_ui_escape(capability.name) + "</span><span class=\"ad\">" +
-                          web_ui_escape(capability.description) + "</span><span class=\"chev\">" +
-                          web_ui_icon("chevron") + "</span></summary><div class=\"abody\">";
-        out += "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
-               web_ui_escape(capability.name) + "\">";
-        if (!fields.empty()) out += "<div class=\"fgrid\">" + fields + "</div>";
-        out += "<div style=\"margin-top:14px\"><button class=\"btn";
-        out += write ? " btn-primary" : "";
-        out += "\">";
-        if (write) out += web_ui_icon("play");
-        out += "Run ";
-        out += to_string(capability.kind);
-        out += "</button></div></form></div></details>";
-        return out;
-    }
-
-    // A capability as a modal dialog: a real affordance opened from a toolbar
-    // button, not an always-expanded form. Its form POSTs to /run and, on success,
-    // returns to `view` so the page reflects the new state.
-    std::string render_action_dialog(const Capability& capability, const std::string& view,
-                                     const std::string& dialog_id, const std::string& label) {
-        const std::string fields = capability_form_fields(capability);
+    // A capability as a modal dialog with real controls. Its form POSTs to /run
+    // and, on success, returns to `view` so the page reflects the new state.
+    std::string render_action_dialog(const Capability& capability, ApiContext& context,
+                                     const std::string& view, const std::string& dialog_id,
+                                     const std::string& label) {
+        const std::string fields = capability_form_fields(capability, context);
         std::string out =
             "<dialog id=\"" + dialog_id + "\" class=\"dlg\"><form method=\"post\" action=\"/run\">"
             "<input type=\"hidden\" name=\"cap\" value=\"" + web_ui_escape(capability.name) +
@@ -911,33 +971,46 @@ struct ApiServer::Impl {
         return out;
     }
 
-    // A toolbar of task-labelled buttons, each opening its capability in a modal
-    // dialog — the real-application replacement for a bottom stack of forms.
-    std::string render_action_bar(const std::string& view,
-                                  std::initializer_list<std::string_view> names) {
-        std::string toolbar = "<div class=\"toolbar\">";
-        std::string dialogs;
-        bool any = false;
+    // Header action buttons (icon + task label) for a section, each opening its
+    // capability dialog. Returns {buttons, dialogs}.
+    std::pair<std::string, std::string> section_actions(
+        ApiContext& context, const std::string& view,
+        std::initializer_list<std::string_view> names) {
+        std::string buttons, dialogs;
         for (std::string_view name : names)
             if (auto capability = capability_registry.find(std::string(name))) {
-                any = true;
                 const std::string dialog_id = "dlg-" + capability->name;
                 const std::string label = humanize_action(capability->name);
-                toolbar += "<button type=\"button\" class=\"btn\" onclick=\"document.getElementById('" +
-                           dialog_id + "').showModal()\">" + web_ui_escape(label) + "</button>";
-                dialogs += render_action_dialog(*capability, view, dialog_id, label);
+                buttons += "<button type=\"button\" class=\"btn small\" "
+                           "onclick=\"document.getElementById('" + dialog_id + "').showModal()\">" +
+                           action_icon(capability->name) + web_ui_escape(label) + "</button>";
+                dialogs += render_action_dialog(*capability, context, view, dialog_id, label);
             }
-        toolbar += "</div>";
-        return any ? toolbar + dialogs : std::string();
+        return {buttons, dialogs};
     }
 
-    std::string render_capabilities(std::initializer_list<std::string_view> names) {
-        std::string items;
-        for (std::string_view name : names)
-            if (auto capability = capability_registry.find(std::string(name)))
-                items += render_capability_form(*capability);
-        if (items.empty()) return "";
-        return web_ui_panel("Actions", "run a capability \xC2\xB7 forms expand on click", items);
+    // A panel with header action buttons (right-aligned) that open dialogs — the
+    // real-application replacement for a bottom stack of forms.
+    std::string render_action_panel(ApiContext& context, const std::string& view,
+                                    const std::string& icon, const std::string& title,
+                                    const std::string& sub,
+                                    std::initializer_list<std::string_view> names,
+                                    const std::string& body) {
+        auto [buttons, dialogs] = section_actions(context, view, names);
+        std::string out = "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
+                          web_ui_icon(icon) + "</span><h2>" + web_ui_escape(title) + "</h2>";
+        if (!sub.empty()) out += "<span class=\"psub\">" + web_ui_escape(sub) + "</span>";
+        if (!buttons.empty()) out += "<div class=\"pactions\">" + buttons + "</div>";
+        out += "</div>" + body + dialogs + "</section>";
+        return out;
+    }
+
+    // A top toolbar of action buttons (where actions aren't tied to one panel).
+    std::string render_action_bar(ApiContext& context, const std::string& view,
+                                  std::initializer_list<std::string_view> names) {
+        auto [buttons, dialogs] = section_actions(context, view, names);
+        if (buttons.empty()) return "";
+        return "<div class=\"toolbar\">" + buttons + "</div>" + dialogs;
     }
 
     // A read table with server-side pagination — run the query, slice a 50-row page, add prev/next
@@ -1170,7 +1243,7 @@ struct ApiServer::Impl {
                        "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
                        "project below, then capture an intent, compile it, gate, deploy, and "
                        "run.</span></div>";
-            std::string out = render_action_bar("projects", {"create_project"});
+            std::string out = render_action_bar(context, "projects", {"create_project"});
             out += web_ui_panel(
                 "Projects",
                 "an AI project: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy "
@@ -1203,8 +1276,8 @@ struct ApiServer::Impl {
 
         std::string out = "<div class=\"crumb\"><a href=\"/?view=projects\">Projects</a> / <b>" +
                           web_ui_escape(name) + "</b></div>";
-        out += render_action_bar("projects", {"capture_intent", "import_n8n", "compile_intent",
-                                              "compile_python", "gate", "deploy", "run"});
+        out += render_action_bar(context, "projects", {"capture_intent", "import_n8n", "compile_intent",
+                                                       "compile_python", "gate", "deploy", "run"});
         out += web_ui_panel(name, "project overview", "<div class=\"kvs\">" + meta + "</div>");
         out += web_ui_panel(
             "Inputs", "captured intents + imported artifacts",
@@ -1403,29 +1476,38 @@ struct ApiServer::Impl {
             out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
                                 ptable("SELECT * FROM system.nodes", "n"));
         } else if (view == "cluster") {
-            out += render_action_bar(view, {"add_nodes", "detect_provisioners", "cloud_inspect"});
-            out += web_ui_panel("Nodes", "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync", ptable("SELECT * FROM system.nodes", "n"));
+            out += render_action_panel(
+                context, view, "cluster", "Nodes",
+                "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync",
+                {"add_nodes", "detect_provisioners", "cloud_inspect"},
+                ptable("SELECT * FROM system.nodes", "n"));
             out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
             out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
         } else if (view == "projects") {
             out += render_projects(context, route);
         } else if (view == "data") {
-            out += render_action_bar(view, {"add_dataset", "create_index",
-                                            "expose_index", "unexpose_index"});
             out += render_search_panel(context, route);
+            out += render_action_panel(
+                context, view, "dataset", "Datasets",
+                "tables loaded into the node \xC2\xB7 the source for search + training",
+                {"add_dataset"}, ptable("SELECT * FROM system.datasets", "ds"));
+            out += render_action_panel(
+                context, view, "index", "Indexes",
+                "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable",
+                {"create_index", "expose_index", "unexpose_index"},
+                ptable("SELECT * FROM system.indexes", "idx"));
             out += render_data_explorer(context, route);
-            out += web_ui_panel("Indexes", "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable, expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
         } else if (view == "models") {
-            out += render_action_bar(view, {"expose_model", "unexpose_model"});
-            out += web_ui_panel(
-                "Models",
+            out += render_action_panel(
+                context, view, "models", "Models",
                 "trained models produced by runs \xC2\xB7 weights, metrics + ranked drivers; expose "
                 "one to serve predictions",
+                {"expose_model", "unexpose_model"},
                 ptable("SELECT * FROM system.models", "m"));
         } else if (view == "pipeline") {
-            out += render_action_bar(view, {"create_project", "capture_intent", "import_n8n",
-                                            "compile_intent", "compile_n8n", "compile_python",
-                                            "gate", "deploy", "run"});
+            out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
+                                                     "compile_intent", "compile_n8n", "compile_python",
+                                                     "gate", "deploy", "run"});
             out += pipeline_legend();
             out += render_graphs_panel(context);
             out += web_ui_panel(
@@ -1449,7 +1531,7 @@ struct ApiServer::Impl {
             out += web_ui_panel("Crashes", "captured crash reports, with stacktraces",
                                 ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
-            out += render_action_bar(view, {"approve_consent", "deny_consent", "submit_feedback"});
+            out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
             out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
                                 ptable("SELECT * FROM system.users", "u"));
             out += web_ui_panel("Roles", "named capability bundles assigned to users",
