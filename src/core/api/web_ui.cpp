@@ -280,6 +280,9 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .geghost{stroke:var(--accent);stroke-dasharray:4 4;pointer-events:none;}
 .gehint{margin-top:10px;font-size:11.5px;color:var(--ink-quiet);}
 .genameedit{position:absolute;width:132px;font:13px var(--font-sans);padding:4px 7px;border:1.5px solid var(--accent);border-radius:7px;background:var(--white);color:var(--ink-primary);z-index:5;box-shadow:var(--shadow-pop);}
+.getoast{position:fixed;right:24px;bottom:24px;background:var(--ink-primary);color:var(--white);font:13px var(--font-sans);font-weight:500;padding:11px 17px;border-radius:11px;box-shadow:var(--shadow-pop);opacity:0;transform:translateY(8px);transition:opacity .2s ease,transform .2s ease;pointer-events:none;z-index:60;}
+.getoast.show{opacity:1;transform:translateY(0);}
+.getoast.err{background:var(--err-fg);}
 .gk-connect .generect{stroke:#2563EB;} .gk-clean .generect{stroke:#0F6E56;}
 .gk-model .generect{stroke:#7C3AED;} .gk-index .generect{stroke:#B45309;}
 .gk-serve .generect{stroke:#0891B2;} .gk-act .generect{stroke:#BE185D;}

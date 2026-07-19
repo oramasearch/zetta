@@ -214,7 +214,8 @@ constexpr const char* kGraphEditorJs = R"JS(
   var sel=document.getElementById('ge-graph'),canvas=document.getElementById('ge-canvas');
   var saveBtn=document.getElementById('ge-save'),addBtn=document.getElementById('ge-add');
   var NS='http://www.w3.org/2000/svg',NW=158,NH=54,XG=216,YG=94;
-  var G=null,svg=null,drag=null,link=null,uid=0,addk=0;
+  var G=null,svg=null,drag=null,link=null,uid=0,curIdx=0;
+  function toast(msg,ok){var t=document.getElementById('ge-toast');if(!t)return;t.textContent=msg;t.className='getoast show'+(ok===false?' err':'');clearTimeout(t._to);t._to=setTimeout(function(){t.className='getoast';},2400);}
   function byId(id){for(var i=0;i<G.nodes.length;i++)if(G.nodes[i].id===id)return G.nodes[i];return null;}
   function el(t,a){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);return e;}
   function layout(){
@@ -268,24 +269,33 @@ constexpr const char* kGraphEditorJs = R"JS(
       if(t&&t.id!==link.from&&!G.edges.some(function(e){return e.from===link.from&&e.to===t.id;}))G.edges.push({from:link.from,to:t.id,kind:'data_flow'});
       link=null;render();}
     drag=null;});
-  function loadIndex(i){var d=DATA.graphs[i];if(!d)return;
-    G={project:d.project,name:d.name,nodes:(d.nodes||[]).map(function(n){return{id:n.id,kind:n.kind,name:n.name,x:0,y:0};}),edges:(d.edges||[]).map(function(e){return{from:e.from,to:e.to,kind:e.kind||'data_flow'};})};
+  function loadIndex(i){var d=DATA.graphs[i];if(!d)return;curIdx=i;
+    G={project:d.project,name:d.name,nodes:(d.nodes||[]).map(function(n){
+        var at=(n.attributes&&typeof n.attributes==='object')?n.attributes:{};var ui=at.ui||{};
+        var has=(typeof ui.x==='number'&&typeof ui.y==='number');
+        return{id:n.id,kind:n.kind,name:n.name,attributes:at,x:has?ui.x:0,y:has?ui.y:0,placed:has};}),
+      edges:(d.edges||[]).map(function(e){return{from:e.from,to:e.to,kind:e.kind||'data_flow'};})};
     uid=0;G.nodes.forEach(function(n){var m=(''+n.id).match(/(\d+)$/);if(m)uid=Math.max(uid,+m[1]);});
-    layout();render();}
+    if(!G.nodes.some(function(n){return n.placed;}))layout();
+    else{var maxY=0;G.nodes.forEach(function(n){if(n.placed)maxY=Math.max(maxY,n.y);});var k=1;
+      G.nodes.forEach(function(n){if(!n.placed){n.x=30;n.y=maxY+YG*k;k++;n.placed=true;}});}
+    render();}
   var kindSel=document.getElementById('ge-kind');
   if(addBtn)addBtn.addEventListener('click',function(){
     var kind=(kindSel&&kindSel.value)||KINDS[0];uid++;
     var maxY=0;G.nodes.forEach(function(n){maxY=Math.max(maxY,n.y);});
-    G.nodes.push({id:'n'+uid,kind:kind,name:kind,x:30,y:(G.nodes.length?maxY+YG:30)});
+    G.nodes.push({id:'n'+uid,kind:kind,name:kind,attributes:{},x:30,y:(G.nodes.length?maxY+YG:30),placed:true});
     render();});
   if(saveBtn)saveBtn.addEventListener('click',function(){
     var payload={project:G.project,graph:G.name,
-      nodes:G.nodes.map(function(n){return{id:n.id,kind:n.kind,name:n.name};}),
+      nodes:G.nodes.map(function(n){var a={};for(var k in n.attributes)a[k]=n.attributes[k];a.ui={x:Math.round(n.x),y:Math.round(n.y)};return{id:n.id,kind:n.kind,name:n.name,attributes:a};}),
       edges:G.edges.map(function(e){return{from:e.from,to:e.to,kind:e.kind};})};
     var lbl=saveBtn.querySelector('.gelbl');if(lbl)lbl.textContent='Saving…';
     fetch('/graph-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
-      .then(function(r){return r.json();}).then(function(j){if(lbl)lbl.textContent=(j&&j.ok===false)?'Save failed':'Saved';setTimeout(function(){location.reload();},600);})
-      .catch(function(){if(lbl)lbl.textContent='Save failed';});});
+      .then(function(r){return r.json();}).then(function(j){if(lbl)lbl.textContent='Save';
+        if(j&&j.ok===false){toast('Save failed: '+(j.error||''),false);}
+        else{if(DATA.graphs[curIdx]){DATA.graphs[curIdx].nodes=payload.nodes;DATA.graphs[curIdx].edges=payload.edges;}toast('Graph saved',true);}})
+      .catch(function(){if(lbl)lbl.textContent='Save';toast('Save failed',false);});});
   if(sel)sel.addEventListener('change',function(){loadIndex(+sel.value);});
   window.addEventListener('resize',function(){if(G)render();});
   loadIndex(0);
@@ -1477,6 +1487,7 @@ struct ApiServer::Impl {
             "<div class=\"gehint\">drag a step to move it \xC2\xB7 double-click to rename \xC2\xB7 drag "
             "from a step's right dot onto another to connect \xC2\xB7 click a link to remove it "
             "\xC2\xB7 \xC3\x97 deletes a step</div>"
+            "<div id=\"ge-toast\" class=\"getoast\"></div>"
             "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
             "<script>" + std::string(kGraphEditorJs) + "</script>";
         return web_ui_panel("Graph editor",
