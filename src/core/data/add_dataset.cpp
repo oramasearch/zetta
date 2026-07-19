@@ -339,12 +339,13 @@ std::vector<nlohmann::json> decode_dataset_file(
     return rows;
 }
 
-// Create (or find) the target database + a uniquely named table for `path`
-// (the first, cheap materialize step). Fills result.database / result.table;
-// on failure sets result.error.
-void create_target_table(Node& node, const fs::path& path,
-                         const AddDatasetOptions& options,
-                         AddDatasetResult& result) {
+// Create (or find) the target database + a uniquely named table with base name
+// `base` (the shared, cheap materialize step for both the file and the
+// in-memory-rows paths). Fills result.database / result.table; on failure sets
+// result.error.
+void create_named_target_table(Node& node, const std::string& base,
+                               const AddDatasetOptions& options,
+                               AddDatasetResult& result) {
     std::shared_ptr<Database> database = node.find_database(options.database);
     if (!database) database = node.create_database(options.database);
     if (!database) {
@@ -353,8 +354,6 @@ void create_target_table(Node& node, const fs::path& path,
     }
     result.database = database;
 
-    const std::string base =
-        options.table_name.empty() ? derive_table_name(path) : options.table_name;
     const std::string table_name = unique_table_name(*database, base);
     std::shared_ptr<Table> table = database->create_table(table_name);
     if (!table) {
@@ -362,6 +361,17 @@ void create_target_table(Node& node, const fs::path& path,
         return;
     }
     result.table = table;
+}
+
+// Create (or find) the target database + a uniquely named table for `path`
+// (the file path's base name, unless overridden). Fills result.database /
+// result.table; on failure sets result.error.
+void create_target_table(Node& node, const fs::path& path,
+                         const AddDatasetOptions& options,
+                         AddDatasetResult& result) {
+    const std::string base =
+        options.table_name.empty() ? derive_table_name(path) : options.table_name;
+    create_named_target_table(node, base, options, result);
 }
 
 // Partition the populated table so its slices are placed across the cluster.
@@ -415,6 +425,27 @@ AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
 
     // Materialize into a table on the node.
     create_target_table(node, path, options, result);
+    if (!result.table) return result;
+
+    for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
+    result.rows = result.table->row_count();
+
+    partition_target_table(node, options, result);
+    audit_dataset_added(node, result);
+    return result;
+}
+
+AddDatasetResult add_dataset_rows(Node& node, std::vector<nlohmann::json> rows,
+                                  const AddDatasetOptions& options) {
+    AddDatasetResult result;
+    // In-memory rows are JSON documents — the same shape a jsonl file decodes
+    // to — so the dataset records the jsonl format (only the audit note reads
+    // it; there is no file to classify).
+    result.format = dataset_file::Format::Jsonl;
+
+    const std::string base =
+        options.table_name.empty() ? "dataset" : options.table_name;
+    create_named_target_table(node, base, options, result);
     if (!result.table) return result;
 
     for (nlohmann::json& row : rows) result.table->add_row(std::move(row));

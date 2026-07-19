@@ -108,6 +108,20 @@ struct AddDatasetResult {
 AddDatasetResult add_dataset_file(Node& node, const std::filesystem::path& path,
                                   const AddDatasetOptions& options = {});
 
+// Load already-decoded in-memory `rows` (JSON documents) into a new partitioned
+// table on `node` per `options` — the **in-memory sibling** of add_dataset_file
+// (which decodes a file to exactly these rows first). This is the landing path a
+// **connector query** (or any row producer) uses: the producer's only job is to
+// yield rows; this shards + places them across the cluster through the same
+// validated `write_partitioned` path. Creates the target database + a uniquely
+// named table (`options.table_name`, else "dataset"), adds the rows, and — when
+// partitioned and non-empty — writes the partitions across the cluster. Records
+// a `dataset_added` audit event on success. Non-throwing: any failure returns a
+// result whose `error` says why (the table is still created + visible if only
+// the partition write fails, so the failure is observable rather than silent).
+AddDatasetResult add_dataset_rows(Node& node, std::vector<nlohmann::json> rows,
+                                  const AddDatasetOptions& options = {});
+
 // --- Add a dataset WITHOUT blocking the caller's thread (#624) ---------------
 //
 // AsyncDatasetAdd splits add_dataset_file into its two natural phases and runs

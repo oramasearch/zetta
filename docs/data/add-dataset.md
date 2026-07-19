@@ -14,7 +14,10 @@ split:
 
 - **`zetta::data::add_dataset_file`** (`include/zetta/data/add_dataset.hpp`,
   `src/core/data/add_dataset.cpp`) — the reusable engine backend. No SDL, so it is
-  headless-testable (`tests/data/test_add_dataset.cpp`).
+  headless-testable (`tests/data/test_add_dataset.cpp`). Its in-memory sibling
+  **`add_dataset_rows`** takes already-decoded rows instead of a file — the landing
+  path a [connector query](#add_dataset_rows--the-in-memory-sibling-the-connector-query-landing-path)
+  uses.
 - The headed affordance (`src/gui/app.cpp` + `src/gui/app_datasets.cpp`) — a
   button + drag-drop + a File-menu item that start an **`AsyncDatasetAdd`**
   off the UI thread (#624; see "The headed affordance" below).
@@ -106,6 +109,38 @@ The table name is derived from the file's basename (extension stripped, lowercas
 runs of non-alphanumerics folded to `_`, fallback `dataset`) and made unique within
 the database (`accounts`, then `accounts_2`, …) so loading the same file twice does
 not collide. `AddDatasetOptions::table_name` overrides it.
+
+## `add_dataset_rows` — the in-memory sibling (the connector-query landing path)
+
+Not every dataset starts as a file. `add_dataset_rows` takes **already-decoded
+rows** (JSON documents — exactly what `add_dataset_file` decodes a file into) and
+materializes them through the *same* create-table → add-rows → `write_partitioned`
+→ audit path:
+
+```cpp
+#include "zetta/data/add_dataset.hpp"
+
+AddDatasetResult add_dataset_rows(Node& node,
+                                  std::vector<nlohmann::json> rows,
+                                  const AddDatasetOptions& options = {});
+```
+
+This is the landing path a **connector query** uses
+([#827](https://github.com/oramasearch/zetta/issues/827)): the row producer's only
+job is to yield rows — Zetta shards and places them across the cluster. One
+logical dataset in, a distributed table out. Everything downstream is identical to
+the file path: the rows land in a uniquely named table, the partitions are
+HRW-placed via [`RendezvousPlacement`](partitioned-write-path.md), and the dataset
+shows up in `system.datasets` / `system.dataset_partitions` with a
+`dataset_added` audit event.
+
+Two small differences from the file path:
+
+- **Naming** — there is no filename to derive from, so `options.table_name` is used
+  directly (falling back to `dataset`), still made unique within the database.
+- **Format** — the result reports `Format::Jsonl`, since in-memory rows are JSON
+  documents (the same shape a `.jsonl` file decodes to). Only the audit note reads
+  it; there is no file to classify.
 
 ## The headed affordance
 
