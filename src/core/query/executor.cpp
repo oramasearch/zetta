@@ -2335,9 +2335,11 @@ QueryResult Executor::execute(const Statement& stmt,
                 std::vector<std::pair<std::string, nlohmann::json>> edits;
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
-                    const nlohmann::json& row = store.at(i);
-                    if (!row_matches(row, s.where)) continue;
-                    nlohmann::json updated = row;
+                    const zetta::storage::ParquetLazyPtr row = store.at(i);
+                    if (!row) return error("row " + store.id_at(i) +
+                                           " could not be read: " + row.error());
+                    if (!row_matches(*row, s.where)) continue;
+                    nlohmann::json updated = *row;
                     for (const Assignment& a : s.assignments) {
                         updated[a.column] = a.value;
                     }
@@ -2369,9 +2371,10 @@ QueryResult Executor::execute(const Statement& stmt,
                 std::vector<std::string> ids;
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
-                    if (row_matches(store.at(i), s.where)) {
-                        ids.push_back(store.id_at(i));
-                    }
+                    const zetta::storage::ParquetLazyPtr row = store.at(i);
+                    if (!row) return error("row " + store.id_at(i) +
+                                           " could not be read: " + row.error());
+                    if (row_matches(*row, s.where)) ids.push_back(store.id_at(i));
                 }
                 for (const std::string& id : ids) table->delete_row(id);
                 return {.message = "DELETE " + std::to_string(ids.size())};
@@ -2602,7 +2605,10 @@ QueryResult Executor::execute(const Statement& stmt,
                 if (!s.all) r.columns = s.columns;
                 const zetta::storage::StorageEngine& store = table->store();
                 for (std::size_t i = 0; i < store.size(); ++i) {
-                    const nlohmann::json& row = store.at(i);
+                    const zetta::storage::ParquetLazyPtr handle = store.at(i);
+                    if (!handle) return error("row " + store.id_at(i) +
+                                              " could not be read: " + handle.error());
+                    const nlohmann::json& row = *handle;
                     if (!row_matches(row, s.where)) continue;
                     if (!rls_row_permitted(read_filter, row, rls)) continue;
                     if (s.all) {

@@ -8,7 +8,8 @@ touching storage, ingestion, partitioning/placement, the query layer, or the `sy
 views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) and
 [../compute/](../compute/compute-near-data.md).
 
-- [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine seam (`zetta::storage::StorageEngine`).
+- [storage.md](storage.md) — on-disk format (UUID folders, JSONL chunks) and the storage-engine interface (`zetta::storage::StorageEngine`).
+- [lazy-rows.md](lazy-rows.md) — the row handle `StorageEngine::at()` returns: refcounted pages that survive a reap, a borrowed (allocation-free) state for in-memory engines, and a failed read that reports a reason instead of null (`zetta::storage::ParquetLazyPtr`, #833).
 - [large-objects.md](large-objects.md) — storing files as large objects (metadata in the CRDT, bodies peer-to-peer) and importing JSON/JSONL records.
 - [query.md](query.md) — the dialect-agnostic query layer: the Postgres subset, `GROUP BY` through the [DDF engine](../ddf/ddf.md), and the virtual `system` tables.
 - [virtual-tables.md](virtual-tables.md) — `CREATE VIRTUAL TABLE <name> OVER CRDT '<prefix>' (…)`: a user-declared, read-only table over any CRDT key-family (durable/ephemeral tiers), stored as durable `vtable:` catalog metadata (`zetta::data::VirtualTable`, #809 slice 3).

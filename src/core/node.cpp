@@ -149,9 +149,9 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
             // engine is schemaless, so a dataset's schema is whatever its rows carry.
             std::unordered_set<std::string> seen;
             for (std::size_t i = 0; i < store.size(); ++i) {
-                const nlohmann::json& row = store.at(i);
-                if (!row.is_object()) continue;
-                for (auto field = row.begin(); field != row.end(); ++field) {
+                const zetta::storage::ParquetLazyPtr row = store.at(i);
+                if (!row || !row->is_object()) continue;
+                for (auto field = row->begin(); field != row->end(); ++field) {
                     if (seen.insert(field.key()).second) {
                         dataset.columns.push_back(field.key());
                     }
@@ -2956,12 +2956,15 @@ void Node::migrate_to_replication() {
             const zetta::storage::StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
                 const std::string& row_id = store.id_at(i);
-                if (!snapshot.contains(catalog::row_key(row_id))) {
-                    replication_->set(
-                        catalog::row_key(row_id),
-                        nlohmann::json{{"tbl", table->id()},
-                                       {"data", store.at(i)}});
-                }
+                if (snapshot.contains(catalog::row_key(row_id))) continue;
+                // A row that cannot be read cannot be captured — leaving it out
+                // of the document is recoverable (the next capture retries it),
+                // capturing an empty row would replicate the loss.
+                const zetta::storage::ParquetLazyPtr row = store.at(i);
+                if (!row) continue;
+                replication_->set(catalog::row_key(row_id),
+                                  nlohmann::json{{"tbl", table->id()},
+                                                 {"data", *row}});
             }
         }
         for (const zetta::data::LargeObject& lo : db->large_objects().list()) {

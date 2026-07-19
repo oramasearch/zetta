@@ -65,9 +65,15 @@ std::vector<IndexPartition> read_index_partitions(const zetta::storage::StorageE
         partition.id = chunk_id(start / kPartitionRows);
         const std::size_t end = std::min(start + kPartitionRows, total);
         partition.documents.reserve(end - start);
+        static const nlohmann::json kUnreadable = nlohmann::json::object();
         for (std::size_t row = start; row < end; ++row) {
+            // The engines feeding this path are always-resident, so the handle
+            // is dereferenceable; a paging engine's failed page read would index
+            // an empty document rather than drop the row's id, until this path
+            // grows a status of its own.
+            const zetta::storage::ParquetLazyPtr stored = store.at(row);
             partition.documents.push_back(
-                IndexDocument{store.id_at(row), store.at(row)});
+                IndexDocument{store.id_at(row), stored.value_or(kUnreadable)});
         }
         partitions.push_back(std::move(partition));
     }

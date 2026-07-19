@@ -83,7 +83,7 @@ TEST(Node, PersistsAndReloadsAcrossInstances) {
     auto items = db->find_table("items");
     ASSERT_TRUE(items);
     EXPECT_EQ(items->row_count(), 2u);
-    EXPECT_EQ(items->store().at(0)["sku"].get<std::string>(), "A1");
+    EXPECT_EQ(items->store().at(0)->at("sku").get<std::string>(), "A1");
     b.stop();
 }
 

@@ -65,7 +65,7 @@ fs::path write_file(const fs::path& dir, const std::string& name,
 std::vector<nlohmann::json> table_rows(const Table& table) {
     std::vector<nlohmann::json> rows;
     const auto& store = table.store();
-    for (std::size_t i = 0; i < store.size(); ++i) rows.push_back(store.at(i));
+    for (std::size_t i = 0; i < store.size(); ++i) rows.push_back(*store.at(i));
     return rows;
 }
 

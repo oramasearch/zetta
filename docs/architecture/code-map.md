@@ -75,7 +75,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     connector.hpp           zetta::connect::ConnectorConfig/ConnectorRows/ConnectorResult/run_connector_query — run a read-only query against an external system and return typed rows for data::add_dataset_rows to shard across the cluster; Snowflake (SQL API v2) first; read-only single-statement guard at the boundary, token never serialized, no warehouse driver in-engine (ADR-17) (#827)
     http_transport.hpp      zetta::connect::HttpRequest/HttpResponse/HttpTransport + AsyncHttpTransport — the injected outbound-HTTP seam in both a synchronous and a coroutine (io_task) shape, so every connector is unit-testable against a fake with no network/credentials AND a distributed fetch can fan N exchanges out under runtime::when_all; secret_headers marks values no transport may put in a reason/log/argv; set_default_http_transport/default_http_transport hold the pair the zetta-api client installs at startup — zetta-core links no HTTP library (#827)
   storage/
-    engine.hpp              zetta::storage::StorageEngine interface
+    engine.hpp              zetta::storage::StorageEngine interface — at(i) returns a ParquetLazyPtr handle, not a json& (#833)
+    lazy_row.hpp            zetta::storage::ParquetLazyPtr/RowPage/RowKey/RowPageSource — the row handle: a refcounted page that survives the store reaping it, a borrowed (allocation-free) state for always-resident engines, a failed read reported as a reason not null (docs/data/lazy-rows.md, #833)
     json_store.hpp          zetta::storage::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::storage::JsonlStore — JSONL on disk, 10k/chunk
   query/                    zetta::query — the SQL layer: dialect frontends over a dialect-neutral AST (docs/data/query.md)
@@ -253,6 +254,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   data/
     database.cpp
     table.cpp
+    lazy_row.cpp            ParquetLazyPtr::materialize/release — the lazy re-read and the give-up-residency half of the row handle (#833)
     jsonl_store.cpp
     partitioner.cpp         zetta::data::HashPartitioner/RoundRobinPartitioner assign_partition (FNV-1a key hash / surrogate mod) + to_json + partitioner_from_json config boundary (#513)
     rendezvous_placement.cpp  zetta::data::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)

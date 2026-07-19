@@ -82,8 +82,9 @@ std::vector<std::string> rows_matching(const Table& table,
     std::vector<std::string> ids;
     const auto& store = table.store();
     for (std::size_t i = 0; i < store.size(); ++i) {
-        const auto& doc = store.at(i);
-        if (doc.is_object() && doc.contains(field) && doc[field] == value) {
+        const auto doc = store.at(i);
+        if (doc && doc->is_object() && doc->contains(field) &&
+            (*doc)[field] == value) {
             ids.push_back(store.id_at(i));
         }
     }

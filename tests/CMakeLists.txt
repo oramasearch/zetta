@@ -40,6 +40,7 @@ add_executable(zetta-tests
   util/test_duration.cpp
   util/test_timestamp.cpp
   data/test_jsonl_store.cpp
+  data/test_lazy_row.cpp
   data/test_partitioner.cpp
   data/test_rendezvous_placement.cpp
   data/test_database.cpp

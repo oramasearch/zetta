@@ -384,7 +384,9 @@ void App::draw_rows() {
     const std::size_t shown = std::min(store.size(), kMaxShown);
     if (mono_font_) ImGui::PushFont(mono_font_);
     for (std::size_t i = 0; i < shown; ++i) {
-        ImGui::TextWrapped("%zu  %s", i, store.at(i).dump().c_str());
+        const zetta::storage::ParquetLazyPtr row = store.at(i);
+        ImGui::TextWrapped("%zu  %s", i,
+                           row ? row->dump().c_str() : row.error().c_str());
     }
     if (mono_font_) ImGui::PopFont();
     if (store.size() > shown) {

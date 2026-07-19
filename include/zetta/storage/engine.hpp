@@ -5,19 +5,21 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/storage/lazy_row.hpp"
+
 namespace zetta::storage {
 
 // Interface for a node's storage engine.
 //
-// A node will eventually be able to use different engines (in-memory, on-disk,
-// replicated, ...). This is the seam they share. Keep it small — add methods as
-// real engines actually need them, rather than guessing up front.
+// A node can use different engines (in-memory, on-disk, disk-backed and paging,
+// replicated, ...). This is the boundary they share. Keep it small — add methods
+// as real engines actually need them, rather than guessing up front.
 //
 // Every row carries a stable string id (a UUID): it is the row's key in the
 // replicated CRDT document (see src/core/catalog.hpp), so the same logical row
 // has the same id on every node. The id lets reconciliation add a replicated row
 // exactly once (`contains`) and lets a node enumerate its rows to replicate them
-// (`id_at`). `at(i)` returns just the row data, never the id.
+// (`id_at`).
 class StorageEngine {
 public:
     virtual ~StorageEngine() = default;
@@ -42,10 +44,27 @@ public:
     // Number of rows currently held.
     virtual std::size_t size() const = 0;
 
-    // The row data at index i. Precondition: i < size().
-    virtual const nlohmann::json& at(std::size_t i) const = 0;
+    // The row at index i — its data and its id — as a handle that keeps the row
+    // alive for as long as the caller holds it (`ParquetLazyPtr`, which for an
+    // always-resident engine is two borrowed pointers and no allocation).
+    //
+    // A scan stays a scan:
+    //
+    //     for (std::size_t i = 0; i < store.size(); ++i) {
+    //         const auto row = store.at(i);
+    //         if (!row) continue;          // row.error() says why
+    //         use(*row, row.id());
+    //     }
+    //
+    // A disk-backed engine reads to answer this, and a read can fail: the
+    // returned handle is then not dereferenceable and carries a path-qualified
+    // `error()`. It is never null-for-absence — `i < size()` is the caller's
+    // precondition, so anything short of a row here is a failure, not absence.
+    virtual ParquetLazyPtr at(std::size_t i) const = 0;
 
-    // The id of the row at index i. Precondition: i < size().
+    // The id of the row at index i. Precondition: i < size(). An engine that
+    // pages row *data* still keeps ids resident — `contains` and reconciliation
+    // ask for them by index without wanting the row.
     virtual const std::string& id_at(std::size_t i) const = 0;
 };
 

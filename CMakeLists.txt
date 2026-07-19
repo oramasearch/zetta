@@ -466,6 +466,7 @@ add_library(zetta-core STATIC
   src/core/governance/policy.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
+  src/core/storage/lazy_row.cpp
   src/core/storage/jsonl_store.cpp
   src/core/util/uuid.cpp
   src/core/util/sha256.cpp

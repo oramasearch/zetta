@@ -31,8 +31,10 @@ std::string serialize_partition(const zetta::storage::StorageEngine& store,
                                 const std::vector<std::size_t>& ordinals) {
     std::string blob;
     for (const std::size_t ordinal : ordinals) {
+        const zetta::storage::ParquetLazyPtr row = store.at(ordinal);
+        if (!row) continue;
         const nlohmann::json line{{"_zid", store.id_at(ordinal)},
-                                  {"doc", store.at(ordinal)}};
+                                  {"doc", *row}};
         blob += line.dump();
         blob += '\n';
     }
@@ -66,7 +68,13 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
         // Stamp the monotonic surrogate (the row ordinal) onto the assignment
         // record when absent — enables RoundRobinPartitioner without mutating the
         // stored/blob row. assign_partition is pure, so this copy is assignment-only.
-        nlohmann::json assignment = store.at(ordinal);
+        const zetta::storage::ParquetLazyPtr stored = store.at(ordinal);
+        if (!stored) {
+            result.error = "row " + store.id_at(ordinal) +
+                           " could not be read: " + stored.error();
+            return result;
+        }
+        nlohmann::json assignment = *stored;
         if (assignment.is_object() && !assignment.contains(kSurrogateField)) {
             assignment[kSurrogateField] = ordinal;
         }

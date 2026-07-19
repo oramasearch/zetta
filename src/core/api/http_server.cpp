@@ -367,8 +367,14 @@ nlohmann::json row_document(zetta::Node& node, const std::string& table,
         const std::shared_ptr<zetta::data::Table> found = database->find_table(table);
         if (!found) continue;
         const zetta::storage::StorageEngine& store = found->store();
-        for (std::size_t i = 0; i < store.size(); ++i)
-            if (store.id_at(i) == row_id) return store.at(i);
+        for (std::size_t i = 0; i < store.size(); ++i) {
+            if (store.id_at(i) != row_id) continue;
+            // An unreadable row (a paging engine's failed page read) renders as
+            // the empty object here, the same as a row that isn't there — this
+            // endpoint has no error channel for a row-level read failure.
+            const zetta::storage::ParquetLazyPtr row = store.at(i);
+            return row.value_or(nlohmann::json::object());
+        }
         return nlohmann::json::object();
     }
     return nlohmann::json::object();

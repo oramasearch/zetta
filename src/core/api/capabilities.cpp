@@ -1018,9 +1018,9 @@ ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) 
     // row) when none are named — indexing everything is the sane default; a
     // caller passes fields only to narrow it.
     if (fields.empty() && source_table->store().size() > 0) {
-        const nlohmann::json& first_row = source_table->store().at(0);
-        if (first_row.is_object())
-            for (auto it = first_row.begin(); it != first_row.end(); ++it)
+        const zetta::storage::ParquetLazyPtr first_row = source_table->store().at(0);
+        if (first_row && first_row->is_object())
+            for (auto it = first_row->begin(); it != first_row->end(); ++it)
                 fields.push_back(it.key());
     }
     if (fields.empty()) {

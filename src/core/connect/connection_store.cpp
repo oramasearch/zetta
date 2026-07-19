@@ -54,10 +54,10 @@ std::optional<SavedConnection> connection_from_row(const nlohmann::json& row) {
 std::string row_id_of(const data::Table& table, const std::string& name) {
     const zetta::storage::StorageEngine& store = table.store();
     for (std::size_t index = 0; index < store.size(); ++index) {
-        const nlohmann::json& row = store.at(index);
-        if (!row.is_object()) continue;
-        const auto stored = row.find("name");
-        if (stored == row.end() || !stored->is_string()) continue;
+        const zetta::storage::ParquetLazyPtr row = store.at(index);
+        if (!row || !row->is_object()) continue;
+        const auto stored = row->find("name");
+        if (stored == row->end() || !stored->is_string()) continue;
         if (stored->get<std::string>() == name) return store.id_at(index);
     }
     return {};
@@ -142,8 +142,9 @@ std::optional<SavedConnection> find_connection(const Node& node,
     if (!table) return std::nullopt;
     const zetta::storage::StorageEngine& store = table->store();
     for (std::size_t index = 0; index < store.size(); ++index) {
-        const std::optional<SavedConnection> saved =
-            connection_from_row(store.at(index));
+        const zetta::storage::ParquetLazyPtr row = store.at(index);
+        if (!row) continue;
+        const std::optional<SavedConnection> saved = connection_from_row(*row);
         if (saved && saved->name == name) return saved;
     }
     return std::nullopt;
@@ -155,8 +156,9 @@ std::vector<SavedConnection> list_connections(const Node& node) {
     if (!table) return connections;
     const zetta::storage::StorageEngine& store = table->store();
     for (std::size_t index = 0; index < store.size(); ++index) {
-        std::optional<SavedConnection> saved =
-            connection_from_row(store.at(index));
+        const zetta::storage::ParquetLazyPtr row = store.at(index);
+        if (!row) continue;
+        std::optional<SavedConnection> saved = connection_from_row(*row);
         if (saved) connections.push_back(std::move(*saved));
     }
     return connections;
