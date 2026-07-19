@@ -238,6 +238,35 @@ Names are validated at the boundary: 1–64 characters of `[A-Za-z0-9_-]` starti
 with a letter or digit. Saving an existing name **replaces** it in place, so
 rotating a credential does not leave two rows racing to answer one lookup.
 
+## In the dashboard
+
+The web dashboard renders every action dialog straight from the capability
+registry, so a new capability gets a form for free — but the renderer only ever
+handled **flat scalar** properties. `create_dataset_from_query`'s `connector` is
+a nested object, which meant it had no usable dialog at all: one opaque text box
+where a structured input belongs.
+
+`Data → Datasets → Load from a source` now renders it properly:
+
+- a nested object property becomes its **own labelled group** of `parent.child`
+  controls inside the dialog's grid, so the shape of the input is visible;
+- an enum sub-property (the connector `type`) becomes a **picker**, not free
+  text;
+- the credential is a **masked** input (`token` / `secret` / `password` /
+  `api_key` render as `type="password"`);
+- a **saved-connection picker** sits above it — pick a name and leave the
+  connector group blank, and the credential never enters the browser at all.
+
+Decoding is the mirror image (`web_form_input`): scalar fields are coerced by
+the schema exactly as the REST query-string path does, and an object property is
+reassembled from its `parent.child` fields and coerced against its sub-schema.
+**Empty fields are dropped**, which is what makes the either/or work from one
+form — leave the connector group blank and only `connection` is sent; fill it in
+and leave the picker on "none" and only `connector` is sent.
+
+`Data → Source connections` is the management surface (save / delete), rendering
+`system.connections` — names and settings, never a token.
+
 ## Read-only by construction
 
 `run_connector_query` accepts only a **single `SELECT` (or `WITH`)** statement.
