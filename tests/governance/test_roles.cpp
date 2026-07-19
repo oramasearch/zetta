@@ -99,7 +99,7 @@ TEST(PermissionVocabulary, MapsAtomsOntoCapabilityDomainAction) {
                   {CapabilityDomain::Orchestration, "deny_consent"}}));
     // pipelines:manage expands to the full authoring/deploy/run flow
     // (create_index joined it, #825).
-    EXPECT_EQ(permission_operations("pipelines:manage").size(), 14u);
+    EXPECT_EQ(permission_operations("pipelines:manage").size(), 15u);
 
     EXPECT_EQ(permission_operations("nope"), std::vector<Operation>{});
 

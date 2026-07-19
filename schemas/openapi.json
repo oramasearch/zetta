@@ -1103,6 +1103,231 @@
         ]
       }
     },
+    "/v1/create_dataset_from_query": {
+      "post": {
+        "description": "Run a read-only query against an external source (Snowflake) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. Reaches the source over the network with your credentials, so it is consent-gated (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: never executes on a plain call (#621).",
+        "operationId": "create_dataset_from_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connector": {
+                    "additionalProperties": false,
+                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "properties": {
+                      "account": {
+                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "auth": {
+                        "default": "pat",
+                        "description": "How to present the bearer token.",
+                        "enum": [
+                          "pat",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "database": {
+                        "description": "Session database.",
+                        "type": "string"
+                      },
+                      "role": {
+                        "description": "Optional session role.",
+                        "type": "string"
+                      },
+                      "schema": {
+                        "description": "Session schema.",
+                        "type": "string"
+                      },
+                      "token": {
+                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": {
+                        "description": "Which connector implementation to use.",
+                        "enum": [
+                          "snowflake"
+                        ],
+                        "type": "string"
+                      },
+                      "warehouse": {
+                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "account",
+                      "token"
+                    ],
+                    "title": "ConnectorConfig",
+                    "type": "object"
+                  },
+                  "database": {
+                    "description": "target database, created if absent (default datasets)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_rows": {
+                    "description": "cap on rows pulled from the source (default 100000)",
+                    "maximum": 10000000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "partition_count": {
+                    "description": "partitions to write (default 8)",
+                    "maximum": 4096,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "partitioned": {
+                    "description": "shard + place the rows across the cluster (default true)",
+                    "type": "boolean"
+                  },
+                  "query": {
+                    "description": "a single read-only SELECT (or WITH) to run against the source",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "replication_factor": {
+                    "description": "owners per partition (default 1)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "table_name": {
+                    "description": "name for the new table (default 'dataset')",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "connector",
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "columns": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "database": {
+                          "type": "string"
+                        },
+                        "partitions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "owner_nodes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "partition_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "partition_id",
+                              "owner_nodes"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "rows": {
+                          "type": "integer"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "table",
+                        "rows",
+                        "columns",
+                        "partitions"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a dataset from a connector query",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_index": {
       "post": {
         "description": "Build a full-text index over a loaded table: records the Search index entity and builds the per-partition BM25F sub-indexes so `search` returns ranked hits (load the table first with add_dataset). Requires orchestration:create_index.",

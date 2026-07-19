@@ -35,6 +35,37 @@ Because the landing path is the same `write_partitioned` +
 connector-loaded table is indistinguishable downstream from a file-loaded one: it
 featurizes [compute-near-data](../compute/compute-near-data.md) exactly the same way.
 
+## The capability: `create_dataset_from_query`
+
+One registry entry renders as an MCP tool, `POST /v1/create_dataset_from_query`,
+and an OpenAPI operation (`src/core/api/capabilities.cpp`):
+
+```jsonc
+{
+  "connector": {                       // the ConnectorConfig, embedded
+    "type": "snowflake",
+    "account": "ab12345.us-east-1",
+    "token": "<PAT>",                  // input-only, never echoed back
+    "warehouse": "COMPUTE_WH",
+    "database": "ANALYTICS", "schema": "PUBLIC"
+  },
+  "query": "SELECT account_id, mrr, churned FROM churn",
+  "database": "churn", "table_name": "accounts",   // where it lands in Zetta
+  "max_rows": 100000,                              // cap pulled from the source
+  "partitioned": true, "partition_count": 8        // how it spreads
+}
+```
+
+It returns the landed dataset — `{database, table, rows, columns, partitions[]}`
+— with each partition's `owner_nodes`, so the caller sees the placement across
+the cluster immediately.
+
+**Consent-gated** (`requires_consent = true`): unlike `add_dataset`, this reaches
+an external system over the network *with your credentials*, so it routes through
+the consent gate rather than running silently. Governance-wise it is an
+`Orchestration / create_dataset_from_query` operation carried by the
+`pipelines:manage` permission.
+
 ## No foreign runtime (ADR-17)
 
 There is **no warehouse driver or SDK in the engine**. A connector builds plain

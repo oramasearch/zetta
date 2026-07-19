@@ -14,6 +14,7 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/connect/connector.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
@@ -2191,6 +2192,146 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
+// --- create_dataset_from_query ------------------------------------------------------
+
+// The connector config as an embeddable sub-schema: the code-owned
+// connector_config_schema() minus its document-level keys, so it nests cleanly
+// inside this capability's input schema (and therefore inside the OpenAPI doc).
+const nlohmann::json& connector_property_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json nested = zetta::connect::connector_config_schema();
+        nested.erase("$schema");
+        nested.erase("$id");
+        return nested;
+    }();
+    return schema;
+}
+
+const nlohmann::json& create_dataset_from_query_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"connector", "query"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"connector", connector_property_schema()},
+          {"query",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "a single read-only SELECT (or WITH) to run against the source"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "target database, created if absent (default datasets)"}}},
+          {"table_name",
+           {{"type", "string"},
+            {"description", "name for the new table (default 'dataset')"}}},
+          {"max_rows",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 10000000},
+            {"description", "cap on rows pulled from the source (default "
+                            "100000)"}}},
+          {"partitioned",
+           {{"type", "boolean"},
+            {"description",
+             "shard + place the rows across the cluster (default true)"}}},
+          {"partition_count",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 4096},
+            {"description", "partitions to write (default 8)"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description", "owners per partition (default 1)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_dataset_from_query_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"database", "table", "rows", "columns", "partitions"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"rows", {{"type", "integer"}}},
+          {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"partitions",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"partition_id", "owner_nodes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"partition_id", {{"type", "string"}}},
+                {"owner_nodes",
+                 {{"type", "array"},
+                  {"items", {{"type", "string"}}}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
+                                           ApiContext& context) {
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        zetta::connect::ConnectorConfig::from_json(input.at("connector"));
+    if (!config) {
+        return ApiResult::failure(
+            "invalid_input",
+            "connector: expected {type, account, token} with a known type "
+            "(and an optional auth of pat|oauth, database, schema, warehouse, "
+            "role)");
+    }
+
+    const std::string query = input.at("query").get<std::string>();
+    const std::size_t max_rows =
+        input.value("max_rows", static_cast<std::size_t>(100000));
+
+    // Reaches the external source over the network (consent-gated above).
+    zetta::connect::ConnectorResult queried =
+        zetta::connect::run_connector_query(*config, query, max_rows);
+    if (!queried.ok()) {
+        return ApiResult::failure("engine_error", queried.error);
+    }
+    if (queried.data.rows.empty()) {
+        return ApiResult::failure(
+            "engine_error",
+            "the query returned no rows — nothing to load as a dataset");
+    }
+
+    zetta::data::AddDatasetOptions options;
+    options.database = input.value("database", options.database);
+    options.table_name = input.value("table_name", options.table_name);
+    options.partitioned = input.value("partitioned", options.partitioned);
+    options.partition_count =
+        input.value("partition_count", options.partition_count);
+    options.replication_factor =
+        input.value("replication_factor", options.replication_factor);
+    options.members = context.node.cluster_members();  // live placement roster
+
+    const zetta::data::AddDatasetResult added = zetta::data::add_dataset_rows(
+        context.node, std::move(queried.data.rows), options);
+    if (!added.ok()) {
+        return ApiResult::failure("engine_error", added.error);
+    }
+
+    nlohmann::json partitions = nlohmann::json::array();
+    for (const auto& partition : added.partitions) {
+        if (!partition) continue;
+        partitions.push_back({{"partition_id", partition->id()},
+                              {"owner_nodes", partition->owner_nodes()}});
+    }
+    nlohmann::json output;
+    output["database"] = added.database ? added.database->name() : options.database;
+    output["table"] = added.table ? added.table->name() : "";
+    output["rows"] = added.rows;
+    output["columns"] = queried.data.columns;
+    output["partitions"] = std::move(partitions);
+    return ApiResult::success(std::move(output));
+}
+
 // --- testsuite_run (kind: job) ------------------------------------------------------
 
 const nlohmann::json& testsuite_run_schema() {
@@ -2997,6 +3138,23 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_add_dataset});
+
+    registry.add(Capability{
+        "create_dataset_from_query",
+        "Create a dataset from a connector query",
+        "Run a read-only query against an external source (Snowflake) and load "
+        "its rows into a new partitioned table placed across the cluster — the "
+        "in-product path from a warehouse to a featurizable dataset, with no "
+        "manual export. Only a single SELECT/WITH may run. Reaches the source "
+        "over the network with your credentials, so it is consent-gated "
+        "(audited as dataset_added; visible in system.datasets).",
+        create_dataset_from_query_schema(),
+        create_dataset_from_query_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_dataset_from_query"},
+        /*mutates=*/true,
+        /*requires_consent=*/true,
+        handle_create_dataset_from_query});
 
     registry.add(Capability{
         "testsuite_run",
