@@ -144,6 +144,7 @@ add_executable(zetta-tests
   data/test_parquet_snappy.cpp
   data/test_parquet_column_decoder.cpp
   data/test_parquet_reader.cpp
+  data/test_parquet_writer.cpp
   pipeline/test_python_frontend.cpp
   pipeline/test_python_engine_bindings.cpp
   pipeline/test_datasets_bindings.cpp

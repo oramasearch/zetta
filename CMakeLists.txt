@@ -500,6 +500,7 @@ add_library(zetta-core STATIC
   src/core/parquet/snappy.cpp
   src/core/parquet/column_decoder.cpp
   src/core/parquet/reader.cpp
+  src/core/parquet/writer.cpp
   src/core/input/python_frontend.cpp
   src/core/input/cluster_bindings.cpp
   src/core/input/datasets_bindings.cpp

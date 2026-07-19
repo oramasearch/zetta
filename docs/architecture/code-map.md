@@ -89,6 +89,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     metadata.hpp            zetta::parquet::parse_parquet_metadata — read a file's Thrift FileMetaData (schema + row-group/column-chunk layout, incl. per-leaf max def/rep levels); Thrift compact decoder, non-throwing, JSON projection + schema boundary (#505)
     column_decoder.hpp      zetta::parquet::decode_column/decode_column_chunk — read a column's data pages into typed values + a validity bitmap: PLAIN (int/float/bool/byte_array) + dictionary (RLE/bit-packed indices) + definition levels; uncompressed + snappy codecs (zstd/gzip rejected); non-throwing, JSON projection + schema boundary (#506)
     reader.hpp              zetta::parquet::read_parquet_rows — assemble metadata+decoders into a whole-file reader: decode every leaf column → one JSON object per row (the inverse of the JsonlStore row shape); the untyped-rows reader the churn loader uses (#508)
+    writer.hpp              zetta::parquet::write_parquet_rows/infer_parquet_schema — the native Parquet WRITER (inverse of the reader): Thrift compact footer + v1 data pages, PLAIN values + RLE definition levels, SNAPPY page bodies, schema inferred from JSON rows; non-throwing, round-trips through read_parquet_rows (#833)
   ir/
     step_kind.hpp           zetta::ir::StepKind — connect→…→act taxonomy (header-only)
     execution_graph.hpp     zetta::ir::ExecutionGraph — typed step nodes + edges
@@ -276,11 +277,12 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     executor.cpp            zetta::query::Executor — statement execution against the Node (incl. CREATE USER / CREATE TOKEN returning the plaintext once) + the read-only system.* observability tables (tables / nodes / deployments / runs / models / indexes / jobs / principals / keys / users / roles / tokens / audit / activity / datasets / dataset_partitions / checkpoints / node_metrics / pipeline_jobs / collective_rounds / spans / traces / crashes / cloud_providers / cloud_status / provisioners); kSystemTableCatalog is the one list they all derive from (system.tables + system_table_names() + the unknown-table error, #684)
     service.cpp             zetta::query::QueryService — parse-with-Postgres + execute-each-statement facade (the Outcome the REPL/GUI render)
   parquet/
-    thrift_compact.hpp      zetta::parquet::detail::CompactReader — the shared, non-throwing Thrift compact-protocol cursor (used by both the footer and page-header parsers; internal header)
+    thrift_compact.hpp      zetta::parquet::detail::CompactReader/CompactWriter — the shared Thrift compact-protocol cursor (non-throwing, bounds-checked; used by both the footer and page-header parsers) plus its inverse emitter, which owns the field-id delta + nested-struct id stack (internal header; #833)
     metadata.cpp            zetta::parquet — Thrift compact-protocol decoder + FileMetaData footer decode + to_json + parquet_metadata_schema/validate boundary (zetta-core; #505)
     snappy.cpp              zetta::parquet — Snappy raw-block codec: decoder (preamble varint + literal/copy elements, bounds-checked) for Parquet data pages (#507) + the encoder the Parquet writer emits pages with (#833)
     column_decoder.cpp      zetta::parquet — page-header parse + RLE/bit-packed-hybrid + PLAIN/dictionary value decode + definition levels → DecodedColumn (dense values + validity); parquet_columns_schema/validate boundary (zetta-core; #506)
     reader.cpp              zetta::parquet::read_parquet_rows — decode every leaf column + transpose to one JSON object per row (the untyped whole-file reader; powers load_churn_dataset Parquet) (zetta-core; #508)
+    writer.cpp              zetta::parquet::write_parquet_rows/infer_parquet_schema — emit PAR1 + v1 data pages (definition levels + PLAIN values, snappy-compressed) + the Thrift FileMetaData footer; JSON-row schema inference, path-qualified failures (zetta-core; #833)
   ir/
     execution_graph.cpp     ExecutionGraph IR build + traversal
     serialization.cpp       ExecutionGraph IR ↔ JSON (+ boundary validation)
