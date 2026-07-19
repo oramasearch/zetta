@@ -423,6 +423,9 @@ Project skills live in `.claude/skills/` (committed, shared):
   FedEx-test rule, the nine-step recipe).
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
+- **new-connector** — add a new source connector (pull rows from a warehouse /
+  API into a partitioned dataset; the read-only guard, the injected transport,
+  typed cells, no vendor SDK).
 - **github-ops** — issues/PRs/CI via `gh` (priority `p1`–`p4` + area labels).
 - **skill-writer** — author new skills.
 - **perplexity** — generate a deep-research prompt from a topic.

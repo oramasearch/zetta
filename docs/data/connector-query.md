@@ -316,6 +316,18 @@ from the source, and a malformed response all come back as a
 - Async polling waits on the **caller's thread** — this is a synchronous data-load
   action, like `add_dataset`.
 
+## Adding another connector
+
+Snowflake is the reference implementation, not a special case — a second
+connector is a new entry in `connector_types()`, a `<vendor>_protocol.hpp/.cpp`
+holding that source's wire details, and a dispatch branch in
+`run_connector_query`. Everything else (the read-only guard, the credential
+contract, the landing path, the capability, the dialog) is shared and needs no
+change.
+
+Follow the **new-connector** skill (`.claude/skills/new-connector/SKILL.md`) — it
+carries the recipe plus the five non-negotiables every connector must satisfy.
+
 See also [add-dataset.md](add-dataset.md) (the landing path),
 [partitioned-write-path.md](partitioned-write-path.md) (how rows spread across the
 cluster), and [ddf-featurize.md](../ddf/ddf-featurize.md) (what you do with the
