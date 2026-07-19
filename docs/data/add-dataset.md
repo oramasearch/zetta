@@ -106,7 +106,7 @@ of recording owners that do not exist.
 The deliberate exception is a **connector result set**: a cache, re-pullable from
 its source, which [`create_dataset_from_query`](connector-query.md) passes at
 **RF=1** explicitly. Promoting one to the durable factor is a separate,
-deliberate act.
+deliberate act ([promote-dataset.md](promote-dataset.md)).
 
 `RendezvousPlacement` is chosen over `RoundRobinPartitioner` / `HashPartitioner`
 precisely because *their* `place_partition` is replicate-to-all (every node owns

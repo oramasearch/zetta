@@ -23,6 +23,8 @@
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/scope.hpp"
 #include "zetta/ml/model.hpp"
+#include "zetta/data/add_dataset.hpp"
+#include "zetta/data/dataset_partition.hpp"
 #include "zetta/node.hpp"
 #include "zetta/pipeline/run.hpp"
 #include "zetta/observability/trace.hpp"
@@ -57,7 +59,7 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 49u);
+    EXPECT_EQ(registry.size(), 50u);
     EXPECT_TRUE(registry.find("server_info"));
     // The #825 create path for a full-text index over a loaded table.
     EXPECT_TRUE(registry.find("create_index"));
@@ -463,6 +465,41 @@ TEST_F(RegistryFixture, JourneyDatasetReadsReturnComputedSummaries) {
                                                         {"database", "data"}});
     ASSERT_TRUE(qualified.ok) << qualified.error.message;
     EXPECT_EQ(qualified.value.at("rows"), 2u);
+}
+
+// #833 section 9: promote_dataset raises a cached result set's replication
+// factor through the registry — the surface that makes "promote this cache to
+// permanent" real, resolving the dataset the way get_dataset does. The fixture
+// is a single node, so the interesting assertion here is the honest clamp: it
+// reports the factor it could actually apply rather than claiming three copies
+// on a cluster of one. Growing the owner set is covered by
+// tests/data/test_promote_dataset.cpp.
+TEST_F(RegistryFixture, PromoteDatasetReportsTheFactorItCouldApply) {
+    std::vector<nlohmann::json> rows;
+    for (int i = 0; i < 16; ++i) rows.push_back(nlohmann::json{{"n", i}});
+    zetta::data::AddDatasetOptions options;
+    options.table_name = "cached";
+    options.partition_count = 4;
+    options.replication_factor = 1;  // a cache, as the connector path lands it
+    const zetta::data::AddDatasetResult added =
+        zetta::data::add_dataset_rows(node, rows, options);
+    ASSERT_TRUE(added.ok()) << added.error;
+    ASSERT_FALSE(added.partitions.empty());
+
+    auto promoted = call("promote_dataset",
+                         nlohmann::json{{"dataset", "cached"},
+                                        {"database", "datasets"},
+                                        {"replication_factor", 3}});
+    ASSERT_TRUE(promoted.ok) << promoted.error.message;
+    EXPECT_EQ(promoted.value.at("table"), "cached");
+    EXPECT_EQ(promoted.value.at("partitions"), added.partitions.size());
+    EXPECT_EQ(promoted.value.at("replication_factor"), 1u)
+        << "a one-node cluster cannot hold three copies, and must not say it does";
+    EXPECT_EQ(promoted.value.at("promoted"), 0u);
+
+    auto missing = call("promote_dataset", nlohmann::json{{"dataset", "nope"}});
+    EXPECT_FALSE(missing.ok);
+    EXPECT_EQ(missing.error.code, "not_found");
 }
 
 // Every call is a span with intent + result shape, and the result carries the

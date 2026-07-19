@@ -1371,7 +1371,7 @@
                     "type": "string"
                   },
                   "replication_factor": {
-                    "description": "owners per partition (default 1 — a connector result set is a cache, re-pullable from its source)",
+                    "description": "owners per partition (default 1 — a connector result set is a cache, re-pullable from its source; promote_dataset raises it)",
                     "minimum": 1,
                     "type": "integer"
                   },
@@ -5773,6 +5773,169 @@
         "summary": "Predict (served model endpoint)",
         "tags": [
           "serving"
+        ]
+      }
+    },
+    "/v1/promote_dataset": {
+      "post": {
+        "description": "Raise a dataset's replication factor (default 3, clamped to the node count) so a connector result set that landed as a cache at RF=1 stops being one copy with no backup. Adds owners to each partition in the catalog; the bodies then move to them over the existing large-object transport. Never removes an owner, so it can only make a dataset safer. Visible in system.dataset_partitions. Requires orchestration:promote_dataset.",
+        "operationId": "promote_dataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "database": {
+                    "description": "the owning database (default datasets) — required when the same dataset name exists in several databases",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset": {
+                    "description": "the dataset name (= the table name)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "replication_factor": {
+                    "description": "target owners per partition (default 3), clamped to the node count; a partition that already has at least this many owners is left alone — promotion never removes one",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dataset"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "database": {
+                          "type": "string"
+                        },
+                        "partitions": {
+                          "type": "integer"
+                        },
+                        "promoted": {
+                          "description": "partitions whose owner set grew",
+                          "type": "integer"
+                        },
+                        "promotions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "owner_nodes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "partition": {
+                                "type": "integer"
+                              },
+                              "partition_id": {
+                                "type": "string"
+                              },
+                              "previous_owner_nodes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "partition_id",
+                              "owner_nodes"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "replication_factor": {
+                          "description": "the factor actually applied (clamped to the roster)",
+                          "type": "integer"
+                        },
+                        "table": {
+                          "type": "string"
+                        },
+                        "table_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "table",
+                        "replication_factor",
+                        "partitions",
+                        "promoted"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Promote a cached dataset to durable",
+        "tags": [
+          "action"
         ]
       }
     },

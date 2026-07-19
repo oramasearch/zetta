@@ -51,8 +51,9 @@ answering short.
 With RF=1 on connector data there is no replica to read instead. Answering from
 four shards out of five — with no error, and a number that looks plausible — is
 the one outcome that must never ship. The query fails with the partition id and
-its recorded owners; the remedy is re-running the ingest, or promoting the
-dataset to a higher replication factor first so a lost node has a fallback.
+its recorded owners; the remedy is re-running the ingest, or
+[promoting the dataset](promote-dataset.md) to a higher replication factor first
+so a lost node has a fallback.
 
 ## Aggregates merge, they do not concatenate
 

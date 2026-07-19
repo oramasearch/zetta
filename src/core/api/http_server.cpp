@@ -228,6 +228,7 @@ std::string query_param(const boost::http::route_params& route, std::string_view
 std::string humanize_action(const std::string& name) {
     if (name == "add_dataset") return "Load dataset";
     if (name == "create_dataset_from_query") return "Load from a source";
+    if (name == "promote_dataset") return "Make durable";
     if (name == "create_connection") return "Save a connection";
     if (name == "delete_connection") return "Delete connection";
     if (name == "create_index") return "Create index";
@@ -1147,6 +1148,7 @@ struct ApiServer::Impl {
     std::string action_icon(const std::string& name) {
         if (name == "add_dataset") return web_ui_icon("dataset");
         if (name == "create_dataset_from_query") return web_ui_icon("dataset");
+        if (name == "promote_dataset") return web_ui_icon("dataset");
         if (name == "create_connection" || name == "delete_connection")
             return web_ui_icon("nodes");
         if (name == "create_index") return web_ui_icon("index");
@@ -1824,7 +1826,7 @@ struct ApiServer::Impl {
             out += render_action_panel(
                 context, view, "dataset", "Datasets",
                 "tables loaded into the node \xC2\xB7 the source for search + training",
-                {"add_dataset", "create_dataset_from_query"},
+                {"add_dataset", "create_dataset_from_query", "promote_dataset"},
                 ptable("SELECT * FROM system.datasets", "ds"));
             out += render_action_panel(
                 context, view, "nodes", "Source connections",

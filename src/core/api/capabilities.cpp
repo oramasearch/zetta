@@ -17,6 +17,7 @@
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -2389,7 +2390,7 @@ const nlohmann::json& create_dataset_from_query_schema() {
             {"minimum", 1},
             {"description",
              "owners per partition (default 1 — a connector result set is a "
-             "cache, re-pullable from its source)"}}}}}};
+             "cache, re-pullable from its source; promote_dataset raises it)"}}}}}};
     return schema;
 }
 
@@ -2510,6 +2511,127 @@ ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
     output["rows"] = added.rows;
     output["columns"] = queried.data.columns;
     output["partitions"] = std::move(partitions);
+    return ApiResult::success(std::move(output));
+}
+
+// --- promote_dataset ----------------------------------------------------------------
+
+const nlohmann::json& promote_dataset_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"dataset"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"dataset",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the dataset name (= the table name)"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the owning database (default datasets) — required when the same "
+             "dataset name exists in several databases"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "target owners per partition (default 3), clamped to the node "
+             "count; a partition that already has at least this many owners is "
+             "left alone — promotion never removes one"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& promote_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"database", "table", "replication_factor", "partitions", "promoted"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"table_id", {{"type", "string"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"description", "the factor actually applied (clamped to the roster)"}}},
+          {"partitions", {{"type", "integer"}}},
+          {"promoted",
+           {{"type", "integer"},
+            {"description", "partitions whose owner set grew"}}},
+          {"promotions",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"partition_id", "owner_nodes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"partition_id", {{"type", "string"}}},
+                {"partition", {{"type", "integer"}}},
+                {"previous_owner_nodes",
+                 {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"owner_nodes",
+                 {{"type", "array"}, {"items", {{"type", "string"}}}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_promote_dataset(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("dataset").get<std::string>();
+    const std::string requested_database = input.value("database", std::string{});
+    // Resolve the dataset the same way get_dataset does: by name, with the
+    // database required only when the name is ambiguous.
+    std::vector<std::string> databases;
+    for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
+        if (dataset.name != name) continue;
+        if (!requested_database.empty() && dataset.database != requested_database) {
+            continue;
+        }
+        databases.push_back(dataset.database);
+    }
+    if (databases.empty()) {
+        return ApiResult::failure(
+            "not_found",
+            "no dataset named '" + name + "'" +
+                (requested_database.empty()
+                     ? ""
+                     : " in database '" + requested_database + "'"));
+    }
+    if (databases.size() > 1) {
+        std::string names;
+        for (const std::string& database : databases) {
+            if (!names.empty()) names += ", ";
+            names += database;
+        }
+        return ApiResult::failure(
+            "engine_error", "dataset '" + name + "' exists in several databases (" +
+                                names + ") — pass \"database\" to pick one");
+    }
+
+    const std::size_t replication_factor = input.value(
+        "replication_factor",
+        static_cast<std::size_t>(zetta::data::kDefaultReplicationFactor));
+    const zetta::data::PromoteDatasetResult promoted = zetta::data::promote_dataset(
+        context.node, databases.front(), name, replication_factor,
+        context.node.cluster_members());
+    if (!promoted.ok()) {
+        return ApiResult::failure("engine_error", promoted.error);
+    }
+
+    nlohmann::json promotions = nlohmann::json::array();
+    for (const zetta::data::PartitionPromotion& promotion : promoted.promotions) {
+        promotions.push_back({{"partition_id", promotion.partition_uuid},
+                              {"partition", promotion.partition},
+                              {"previous_owner_nodes", promotion.from},
+                              {"owner_nodes", promotion.to}});
+    }
+    nlohmann::json output;
+    output["database"] = promoted.database;
+    output["table"] = promoted.table;
+    output["table_id"] = promoted.table_id;
+    output["replication_factor"] = promoted.replication_factor;
+    output["partitions"] = promoted.partitions;
+    output["promoted"] = promoted.promoted;
+    output["promotions"] = std::move(promotions);
     return ApiResult::success(std::move(output));
 }
 
@@ -3381,6 +3503,23 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/true,
         handle_create_dataset_from_query});
+
+    registry.add(Capability{
+        "promote_dataset",
+        "Promote a cached dataset to durable",
+        "Raise a dataset's replication factor (default 3, clamped to the node "
+        "count) so a connector result set that landed as a cache at RF=1 stops "
+        "being one copy with no backup. Adds owners to each partition in the "
+        "catalog; the bodies then move to them over the existing large-object "
+        "transport. Never removes an owner, so it can only make a dataset "
+        "safer. Visible in system.dataset_partitions.",
+        promote_dataset_schema(),
+        promote_dataset_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "promote_dataset"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_promote_dataset});
 
     registry.add(Capability{
         "testsuite_run",

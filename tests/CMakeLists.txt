@@ -82,6 +82,7 @@ add_executable(zetta-tests
   data/test_partition_body.cpp
   data/test_partition_only.cpp
   data/test_partition_writer.cpp
+  data/test_promote_dataset.cpp
   data/test_partition_rebalance.cpp
   governance/test_access_control.cpp
   governance/test_users_roles_tokens.cpp

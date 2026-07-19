@@ -450,6 +450,7 @@ add_library(zetta-core STATIC
   src/core/data/rendezvous_placement.cpp
   src/core/data/partition_writer.cpp
   src/core/data/partition_rebalance.cpp
+  src/core/data/promote_dataset.cpp
   src/core/governance/principal.cpp
   src/core/governance/access_key.cpp
   src/core/governance/scope.cpp

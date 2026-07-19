@@ -80,7 +80,8 @@ cache is paying three times for something the source already holds. If a
 partition's owner is lost, the remedy is re-running the ingest; a `SELECT` says
 so rather than answering short (see
 [scatter-gather-select.md](scatter-gather-select.md)). A result set that turns
-out to be worth keeping is upgraded deliberately, not by default.
+out to be worth keeping is upgraded deliberately with
+[`promote_dataset`](promote-dataset.md), not by default.
 
 **Consent-gated** (`requires_consent = true`): unlike `add_dataset`, this reaches
 an external system over the network *with your credentials*, so it routes through
