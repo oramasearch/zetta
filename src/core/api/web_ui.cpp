@@ -150,9 +150,9 @@ form.inline{display:inline;margin:0;}
 .card:hover{border-color:var(--rule-emph);background:var(--wash-hover);}
 .card:hover .cico{background:var(--accent);color:#fff;}
 .card .chd{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;}
-.card .cico{width:31px;height:31px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
-  background:var(--accent-wash);color:var(--accent);}
-.card .cico svg{width:16px;height:16px;}
+.card .cico{width:32px;height:32px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
+  background:rgba(37,99,235,.13);color:var(--accent);}
+.card .cico svg{width:17px;height:17px;stroke-width:2;}
 .card .num{font:29px/1 var(--font-mono);font-weight:500;color:var(--ink-primary);letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
 .card .lbl{margin-top:8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
 .metaline{margin-top:14px;font-size:11px;color:var(--ink-quiet);}
@@ -530,7 +530,8 @@ std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
     const std::string s = value.get<std::string>();
     if (s.empty()) return "<span class=\"q\">&middot;</span>";
     // Timestamp columns render as a relative age, full value on hover.
-    if (contains_any(col, {"created", "updated", "_at", "started", "expires", "time"}) &&
+    if (contains_any(col, {"created", "updated", "_at", "started", "expires", "time", "fresh",
+                           "seen", "last_"}) &&
         s.size() >= 19 && s[4] == '-' && s[10] == 'T')
         return fmt_relative_time(s);
     // Opaque ids: mono, truncated to a readable head with the full id on hover.
