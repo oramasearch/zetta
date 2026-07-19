@@ -30,8 +30,11 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/storage/engine.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/repl/governed_console.hpp"
 #include "zetta/version.hpp"
@@ -167,6 +170,25 @@ std::string query_param(const boost::http::route_params& route, std::string_view
     for (const auto& parameter : route.url.params())
         if (parameter.key == name) return std::string(parameter.value);
     return std::string(fallback);
+}
+
+// Resolve a search hit's row id to its document json for display — a table's
+// store holds its rows even when partitioned. Presentation-only lookup on the
+// owning loop; empty object when the row can't be found.
+nlohmann::json row_document(zetta::Node& node, const std::string& table,
+                            const std::string& row_id) {
+    for (const std::string& database_name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(database_name);
+        if (!database) continue;
+        const std::shared_ptr<zetta::data::Table> found = database->find_table(table);
+        if (!found) continue;
+        const zetta::storage::StorageEngine& store = found->store();
+        for (std::size_t i = 0; i < store.size(); ++i)
+            if (store.id_at(i) == row_id) return store.at(i);
+        return nlohmann::json::object();
+    }
+    return nlohmann::json::object();
 }
 
 // The unified console front-door (#647). One input box → one routing decision, shared by the
@@ -1177,6 +1199,115 @@ struct ApiServer::Impl {
                             html);
     }
 
+    // A real search experience (not a raw capability form): an index picker + a
+    // query box, results rendered as a ranked list of the matching documents with
+    // their score and a scatter-gather summary. Reads sq / sq_target from the query
+    // string and runs the same `search` capability the MCP/REST surfaces do.
+    std::string render_search_panel(ApiContext& context,
+                                    const boost::http::route_params& route) {
+        std::vector<std::shared_ptr<zetta::index::Index>> search_indexes;
+        for (const auto& index : context.node.indexes())
+            if (index && index->kind() == zetta::index::IndexKind::Search)
+                search_indexes.push_back(index);
+        if (search_indexes.empty())
+            return web_ui_panel(
+                "Search", "full-text search over a table",
+                "<div class=\"emptybox\">No search indexes yet \xE2\x80\x94 create one "
+                "below to make a table searchable.</div>");
+
+        const std::string query = query_param(route, "sq", "");
+        std::string target = query_param(route, "sq_target", "");
+        if (target.empty()) target = search_indexes.front()->id();
+
+        auto index_fields = [](const std::shared_ptr<zetta::index::Index>& index) {
+            std::string fields;
+            for (std::size_t i = 0; i < index->fields().size(); ++i) {
+                if (i) fields += ", ";
+                fields += index->fields()[i];
+            }
+            return fields;
+        };
+
+        std::string form =
+            "<form class=\"searchbar\" method=\"get\" action=\"/\">"
+            "<input type=\"hidden\" name=\"view\" value=\"data\">"
+            "<select name=\"sq_target\">";
+        for (const auto& index : search_indexes)
+            form += "<option value=\"" + web_ui_escape(index->id()) + "\"" +
+                    (index->id() == target ? " selected" : "") + ">" +
+                    web_ui_escape(index->table() + " \xC2\xB7 " + index_fields(index)) +
+                    "</option>";
+        form += "</select><input name=\"sq\" value=\"" + web_ui_escape(query) +
+                "\" placeholder=\"Search documents\xE2\x80\xA6\" autofocus>"
+                "<button class=\"btn btn-primary\">Search</button></form>";
+
+        std::string results;
+        if (!query.empty()) {
+            ApiResult result = capability_registry.call(
+                "search", nlohmann::json{{"target", target}, {"query", query}}, context);
+            if (!result.ok) {
+                results = "<div class=\"err-box\">" + web_ui_escape(result.error.message) +
+                          "</div>";
+            } else {
+                const nlohmann::json& value = result.value;
+                const nlohmann::json hits = value.value("hits", nlohmann::json::array());
+                const std::string table = value.value("table", "");
+                const double ms = value.value("duration_ms", 0.0);
+                char timing[32];
+                if (ms < 10.0)
+                    std::snprintf(timing, sizeof(timing), "%.0f \xC2\xB5s", ms * 1000.0);
+                else
+                    std::snprintf(timing, sizeof(timing), "%.1f ms", ms);
+                const std::size_t node_count =
+                    value.contains("nodes") ? value["nodes"].size() : 0;
+                results += "<div class=\"metaline\" style=\"margin:16px 0 10px\">" +
+                           std::to_string(hits.size()) +
+                           (hits.size() == 1 ? " result" : " results") + " \xC2\xB7 " +
+                           web_ui_escape(value.value("path", "")) + " \xC2\xB7 " +
+                           std::to_string(node_count) +
+                           (node_count == 1 ? " node" : " nodes") + " \xC2\xB7 " + timing +
+                           "</div>";
+                if (hits.empty()) {
+                    results += "<div class=\"emptybox\">No documents matched \xE2\x80\x9C" +
+                               web_ui_escape(query) + "\xE2\x80\x9D.</div>";
+                } else {
+                    results += "<div class=\"hits\">";
+                    int rank = 0;
+                    for (const nlohmann::json& hit : hits) {
+                        ++rank;
+                        const std::string row_id = hit.value("id", "");
+                        char score[16];
+                        std::snprintf(score, sizeof(score), "%.3f", hit.value("score", 0.0));
+                        results += "<div class=\"hit\"><div class=\"hitmeta\"><span "
+                                   "class=\"rank\">#" +
+                                   std::to_string(rank) + "</span><span>score " + score +
+                                   "</span></div>";
+                        const nlohmann::json document =
+                            row_document(context.node, table, row_id);
+                        if (document.is_object() && !document.empty()) {
+                            for (auto it = document.begin(); it != document.end(); ++it) {
+                                const std::string text = it.value().is_string()
+                                                             ? it.value().get<std::string>()
+                                                             : it.value().dump();
+                                results += "<div class=\"fld\"><span class=\"lbl\">" +
+                                           web_ui_escape(it.key()) + "</span><span>" +
+                                           web_ui_escape(text) + "</span></div>";
+                            }
+                        } else {
+                            results += "<div class=\"sub mono\">" + web_ui_escape(row_id) +
+                                       "</div>";
+                        }
+                        results += "</div>";
+                    }
+                    results += "</div>";
+                }
+            }
+        }
+        return web_ui_panel("Search",
+                            "full-text search over a table \xC2\xB7 ranked by relevance",
+                            form + results);
+    }
+
     std::string render_dashboard_content(ApiContext& context, const std::string& view,
                                          const boost::http::route_params& route) {
         auto ptable = [&](const std::string& statement, const std::string& key) -> std::string {
@@ -1195,16 +1326,18 @@ struct ApiServer::Impl {
             out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
                                 ptable("SELECT * FROM system.nodes", "n"));
         } else if (view == "cluster") {
-            out += web_ui_panel("Nodes", "cluster members Â· reachability, liveness, and CRDT replication sync", ptable("SELECT * FROM system.nodes", "n"));
+            out += web_ui_panel("Nodes", "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync", ptable("SELECT * FROM system.nodes", "n"));
             out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
             out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
             out += render_capabilities({"add_nodes", "detect_provisioners", "cloud_inspect"});
         } else if (view == "projects") {
             out += render_projects(context, route);
         } else if (view == "data") {
+            out += render_search_panel(context, route);
             out += render_data_explorer(context, route);
-            out += web_ui_panel("Indexes", "full-text / vector indexes over a table Â· expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
-            out += render_capabilities({"add_dataset", "expose_index", "unexpose_index"});
+            out += web_ui_panel("Indexes", "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable, expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
+            out += render_capabilities({"add_dataset", "create_index",
+                                        "expose_index", "unexpose_index"});
         } else if (view == "models") {
             out += web_ui_panel(
                 "Models",

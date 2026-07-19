@@ -220,6 +220,19 @@ code.j{font-size:11px;color:var(--ink-muted);}
 .kv span{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-quiet);}
 .kv b{font-size:13px;font-weight:500;color:var(--ink-primary);word-break:break-all;}
 
+/* Search: an index picker + query bar, and a ranked list of matching documents. */
+.searchbar{display:flex;gap:9px;align-items:center;}
+.searchbar select{width:auto;flex:none;max-width:260px;}
+.searchbar input{flex:1;width:auto;}
+.searchbar .btn{flex:none;}
+.hits{display:flex;flex-direction:column;gap:11px;}
+.hit{background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow-sm);}
+.hitmeta{display:flex;align-items:baseline;gap:10px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink-quiet);margin-bottom:8px;}
+.hitmeta .rank{font-weight:600;color:var(--ink-secondary);}
+.fld{display:flex;gap:12px;padding:4px 0;font-size:13.5px;line-height:1.5;}
+.fld .lbl{flex:0 0 64px;font:10px/1.6 var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
+.fld span:last-child{color:var(--ink-primary);min-width:0;word-break:break-word;}
+
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}
