@@ -132,6 +132,7 @@ add_executable(zetta-tests
   data/test_large_object.cpp
   data/test_import.cpp
   data/test_add_dataset.cpp
+  connect/test_connector.cpp
   usecases/churn/test_churn_dataset.cpp
   pipeline/test_n8n_import.cpp
   pipeline/test_n8n_compile.cpp
