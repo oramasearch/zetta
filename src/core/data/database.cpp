@@ -55,7 +55,8 @@ void Database::load() {
         tables_.push_back(std::make_shared<Table>(
             entry.path().filename().string(),
             meta["name"].get<std::string>(), entry.path(), replication_,
-            replication_strategy_from_meta(meta)));
+            replication_strategy_from_meta(meta),
+            meta.value("partition_only", false)));
     }
     // Stable order for the UI (directory iteration order is unspecified).
     std::sort(tables_.begin(), tables_.end(),
@@ -63,7 +64,8 @@ void Database::load() {
 }
 
 std::shared_ptr<Table> Database::create_table(
-    std::string name, std::optional<ReplicationStrategy> replication_strategy) {
+    std::string name, std::optional<ReplicationStrategy> replication_strategy,
+    bool partition_only) {
     if (name.empty() || find_table(name)) return nullptr;
     // No explicit strategy → inherit this database's (ENT-35).
     const ReplicationStrategy strategy =
@@ -71,16 +73,19 @@ std::shared_ptr<Table> Database::create_table(
     const std::string id = zetta::util::new_uuid();
     if (replication_) {
         // The default (ReplicateToAll) is omitted, so the tbl: value is unchanged
-        // from before tables carried a strategy.
+        // from before tables carried a strategy. `partition_only` is likewise
+        // omitted when false (#833).
         nlohmann::json value{{"db", id_}, {"name", name}};
         if (!strategy.is_default()) value["replication"] = strategy.to_json();
+        if (partition_only) value["partition_only"] = true;
         replication_->set(catalog::table_key(id), value);
     }
-    return materialize_table(id, std::move(name), strategy);
+    return materialize_table(id, std::move(name), strategy, partition_only);
 }
 
 std::shared_ptr<Table> Database::materialize_table(
-    std::string id, std::string name, ReplicationStrategy strategy) {
+    std::string id, std::string name, ReplicationStrategy strategy,
+    bool partition_only) {
     if (auto existing = find_table_by_id(id)) return existing;
     const fs::path table_dir = dir_ / id;
     std::error_code ec;
@@ -88,7 +93,7 @@ std::shared_ptr<Table> Database::materialize_table(
     if (ec) return nullptr;
     auto table = std::make_shared<Table>(std::move(id), std::move(name),
                                          table_dir, replication_,
-                                         std::move(strategy));
+                                         std::move(strategy), partition_only);
     table->persist_meta();
     tables_.push_back(table);
     return table;

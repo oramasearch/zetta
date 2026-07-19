@@ -13,18 +13,22 @@ namespace zetta::data {
 
 Table::Table(std::string id, std::string name, std::filesystem::path dir,
              zetta::cluster::ReplicationManager* replication,
-             ReplicationStrategy replication_strategy)
+             ReplicationStrategy replication_strategy, bool partition_only)
     : id_(std::move(id)),
       name_(std::move(name)),
       dir_(std::move(dir)),
       store_(std::make_unique<zetta::storage::JsonlStore>(dir_)),
       replication_(replication),
-      replication_strategy_(std::move(replication_strategy)) {}
+      replication_strategy_(std::move(replication_strategy)),
+      partition_only_(partition_only) {}
 
 std::size_t Table::add_row(nlohmann::json doc) {
     const std::string row_id = zetta::util::new_uuid();
-    // CRDT first (the source of truth), then the local store projection.
-    if (replication_) {
+    // CRDT first (the source of truth), then the local store projection. A
+    // partition-only table (#833) skips the capture: its rows belong to the
+    // partition bodies its owners hold, and replicating them would put the same
+    // data on the wire a second time.
+    if (replication_ && !partition_only_) {
         replication_->set(catalog::row_key(row_id),
                           nlohmann::json{{"tbl", id_}, {"data", doc}});
     }
@@ -35,7 +39,7 @@ std::size_t Table::add_row(nlohmann::json doc) {
 void Table::update_row(const std::string& row_id, nlohmann::json doc) {
     if (!store_->contains(row_id)) return;
     // CRDT first (the source of truth), then the local store projection.
-    if (replication_) {
+    if (replication_ && !partition_only_) {
         replication_->set(catalog::row_key(row_id),
                           nlohmann::json{{"tbl", id_}, {"data", doc}});
     }
@@ -46,7 +50,8 @@ void Table::delete_row(const std::string& row_id) {
     if (!store_->contains(row_id)) return;
     // A TOMBSTONE value (not a key removal) so the delete replicates as a normal
     // value change; a reconciling peer sees `deleted` and drops its local row.
-    if (replication_) {
+    // A partition-only row was never captured, so there is nothing to tombstone.
+    if (replication_ && !partition_only_) {
         replication_->set(catalog::row_key(row_id),
                           nlohmann::json{{"tbl", id_}, {"deleted", true}});
     }
@@ -79,6 +84,8 @@ void Table::persist_meta() const {
     if (!replication_strategy_.is_default()) {
         meta["replication"] = replication_strategy_.to_json();
     }
+    // Likewise omitted when false, so a normal table's table.json is unchanged.
+    if (partition_only_) meta["partition_only"] = true;
     std::ofstream out(dir_ / "table.json", std::ios::trunc);
     out << meta.dump(2) << '\n';
 }

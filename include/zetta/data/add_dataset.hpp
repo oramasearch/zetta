@@ -73,6 +73,13 @@ std::string dialog_extensions();
 // (genuinely *across the cluster*, vs. replicate-to-all). `members` is the cluster
 // membership placement is computed over (empty = this node only). `table_name`
 // overrides the name derived from the file (empty = derive it).
+//
+// `partition_only` (#833) marks the table as one whose rows are **never captured
+// into the replicated document** — the partition bodies and the replicate-to-all
+// catalog are the dataset, and a `SELECT` over it is answered by scatter-gather
+// across the partition owners. Use it for data a node lands as partitions it
+// owns (a connector result set); capturing those rows would put them on the wire
+// a second time. See `Table::partition_only`.
 struct AddDatasetOptions {
     std::string database = "datasets";
     bool partitioned = true;
@@ -80,6 +87,7 @@ struct AddDatasetOptions {
     std::size_t replication_factor = 1;    // owners per partition (primary + replicas)
     std::vector<std::string> members;      // cluster membership for placement
     std::string table_name;                // override the derived table name
+    bool partition_only = false;           // rows never captured into the CRDT (#833)
 };
 
 // The outcome of adding a dataset. On success `error` is empty, `table` is the

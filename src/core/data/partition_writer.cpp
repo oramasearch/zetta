@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <map>
+#include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -117,10 +119,28 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
         value.row_range = {offset, offset + ordinals.size()};
         value.owner_nodes = partitioner->place_partition(partition, placement_members);
         // The body's format is recorded, so a reader knows what it is holding
-        // without opening it (the read path still sniffs the bytes).
+        // without opening it (the read path still sniffs the bytes). The column
+        // names go in beside it: a partition-only table (#833) has no local copy
+        // of the dataset on a node that did not produce it, so system.datasets
+        // reads the schema off the replicate-to-all catalog rather than off a
+        // store that is empty there.
+        nlohmann::json columns = nlohmann::json::array();
+        {
+            std::unordered_set<std::string> seen;
+            for (const PartitionRow& row : rows) {
+                if (!row.doc.is_object()) continue;
+                for (auto field = row.doc.begin(); field != row.doc.end();
+                     ++field) {
+                    if (seen.insert(field.key()).second) {
+                        columns.push_back(field.key());
+                    }
+                }
+            }
+        }
         value.stats = nlohmann::json{{"partition", partition},
                                      {"rows", ordinals.size()},
-                                     {"format", to_string(serialized.format)}};
+                                     {"format", to_string(serialized.format)},
+                                     {"columns", std::move(columns)}};
 
         std::shared_ptr<DatasetPartition> recorded =
             node.create_dataset_partition(std::move(value));

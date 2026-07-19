@@ -143,17 +143,42 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
             dataset.format = store.name();
             dataset.replication =
                 std::string(to_string(table->replication_strategy().kind()));
-            dataset.rows = store.size();
 
             // Schema: the union of each row's object keys in first-seen order — the
             // engine is schemaless, so a dataset's schema is whatever its rows carry.
             std::unordered_set<std::string> seen;
-            for (std::size_t i = 0; i < store.size(); ++i) {
-                const zetta::storage::ParquetLazyPtr row = store.at(i);
-                if (!row || !row->is_object()) continue;
-                for (auto field = row->begin(); field != row->end(); ++field) {
-                    if (seen.insert(field.key()).second) {
-                        dataset.columns.push_back(field.key());
+            const auto note_column = [&](const std::string& column) {
+                if (seen.insert(column).second) dataset.columns.push_back(column);
+            };
+
+            // Row count + schema.
+            //
+            // A **partition-only** table (#833) does not hold the dataset in its
+            // local store: each node has only the slice it produced, and on a node
+            // that produced none the store is empty. Its row count and schema come
+            // from the partition catalog instead — replicate-to-all, so every node
+            // reports the same dataset, which is the whole point of the view.
+            if (table->partition_only()) {
+                for (const auto& partition : dataset_partitions_) {
+                    if (partition->table() != table->id()) continue;
+                    const zetta::data::PartitionRowRange& range =
+                        partition->row_range();
+                    if (range.end > range.start) dataset.rows += range.end - range.start;
+                    const nlohmann::json& stats = partition->stats();
+                    if (!stats.is_object()) continue;
+                    const auto columns = stats.find("columns");
+                    if (columns == stats.end() || !columns->is_array()) continue;
+                    for (const nlohmann::json& column : *columns) {
+                        if (column.is_string()) note_column(column.get<std::string>());
+                    }
+                }
+            } else {
+                dataset.rows = store.size();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    const zetta::storage::ParquetLazyPtr row = store.at(i);
+                    if (!row || !row->is_object()) continue;
+                    for (auto field = row->begin(); field != row->end(); ++field) {
+                        note_column(field.key());
                     }
                 }
             }
@@ -2951,8 +2976,13 @@ void Node::migrate_to_replication() {
                     value["replication"] =
                         table->replication_strategy().to_json();
                 }
+                if (table->partition_only()) value["partition_only"] = true;
                 replication_->set(catalog::table_key(table->id()), value);
             }
+            // A partition-only table's rows are deliberately absent from the
+            // document (#833) — migrating them in would undo exactly what the
+            // marker exists to prevent.
+            if (table->partition_only()) continue;
             const zetta::storage::StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
                 const std::string& row_id = store.id_at(i);
@@ -3102,6 +3132,7 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         std::string database_id;
         std::string name;
         zetta::data::ReplicationStrategy strategy;
+        bool partition_only = false;  // #833; rows are never captured
     };
     std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; bool tombstone = false; };
@@ -3127,7 +3158,8 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             tables.emplace(std::move(table_id),
                            TableEntry{value["db"].get<std::string>(),
                                       value["name"].get<std::string>(),
-                                      zetta::data::replication_strategy_from_meta(value)});
+                                      zetta::data::replication_strategy_from_meta(value),
+                                      value.value("partition_only", false)});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -3198,7 +3230,8 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     for (const auto& [id, entry] : tables) {
         auto db = find_database_by_id(entry.database_id);
         if (db && !db->find_table_by_id(id)) {
-            db->materialize_table(id, entry.name, entry.strategy);
+            db->materialize_table(id, entry.name, entry.strategy,
+                                  entry.partition_only);
         }
     }
     for (auto& [id, entry] : rows) {

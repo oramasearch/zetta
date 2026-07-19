@@ -51,15 +51,20 @@ public:
     // Create a table (folder + table.json on disk + captured into the CRDT);
     // returns an empty handle if the name is empty or already taken. With no
     // explicit strategy the table inherits this database's replication strategy
-    // (ENT-35); pass one to override per table.
+    // (ENT-35); pass one to override per table. `partition_only` marks the table
+    // as one whose ROWS are never captured (#833; see Table::partition_only) —
+    // the flag itself rides in the `tbl:` value so every node reads the table the
+    // same way.
     std::shared_ptr<Table> create_table(
         std::string name,
-        std::optional<ReplicationStrategy> replication_strategy = std::nullopt);
+        std::optional<ReplicationStrategy> replication_strategy = std::nullopt,
+        bool partition_only = false);
     // Apply a replicated table (from a peer) with a given id, without capturing.
-    // Returns the existing handle if already present. The strategy carried in the
-    // replicated value is passed through (default ReplicateToAll).
+    // Returns the existing handle if already present. The strategy and the
+    // partition-only marker carried in the replicated value are passed through.
     std::shared_ptr<Table> materialize_table(
-        std::string id, std::string name, ReplicationStrategy strategy = {});
+        std::string id, std::string name, ReplicationStrategy strategy = {},
+        bool partition_only = false);
     // Find a table by name, or an empty handle.
     std::shared_ptr<Table> find_table(const std::string& name) const;
     // Find a table by its id (UUID), or an empty handle.

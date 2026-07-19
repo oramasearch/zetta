@@ -5,6 +5,7 @@
 #include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -355,7 +356,11 @@ void create_named_target_table(Node& node, const std::string& base,
     result.database = database;
 
     const std::string table_name = unique_table_name(*database, base);
-    std::shared_ptr<Table> table = database->create_table(table_name);
+    // A partition-only dataset (#833) is marked at create time: the marker rides
+    // in the tbl: value, so every node knows the rows live in the partition
+    // bodies rather than in the document before any row is written.
+    std::shared_ptr<Table> table = database->create_table(
+        table_name, std::nullopt, options.partition_only);
     if (!table) {
         result.error = "could not create table '" + table_name + "'";
         return;
