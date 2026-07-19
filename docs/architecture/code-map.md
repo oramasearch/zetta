@@ -79,6 +79,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     lazy_row.hpp            zetta::storage::ParquetLazyPtr/RowPage/RowKey/RowPageSource — the row handle: a refcounted page that survives the store reaping it, a borrowed (allocation-free) state for always-resident engines, a failed read reported as a reason not null (docs/data/lazy-rows.md, #833)
     json_store.hpp          zetta::storage::JsonStore — in-memory vector<json> (header-only)
     jsonl_store.hpp         zetta::storage::JsonlStore — JSONL on disk, 10k/chunk
+    parquet_store.hpp       zetta::storage::ParquetStore/ParquetStoreOptions — disk-backed paging StorageEngine over a Parquet body: footer-only open, a row group per page, byte-budgeted cache, refused mutations (docs/data/parquet-store.md, #833)
   query/                    zetta::query — the SQL layer: dialect frontends over a dialect-neutral AST (docs/data/query.md)
     ast.hpp                 the generic, dialect-neutral query AST (CreateDatabase/DropDatabase/CreateTable/DropTable/Insert/Select statements + TableRef/WhereClause/AggregateExpr) every frontend parses into and the executor runs — support a new dialect by writing a frontend, never by touching execution
     dialect.hpp             zetta::query::Dialect/ParseResult — the frontend interface: dialect text → generic statements
@@ -255,6 +256,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     database.cpp
     table.cpp
     lazy_row.cpp            ParquetLazyPtr::materialize/release — the lazy re-read and the give-up-residency half of the row handle (#833)
+    parquet_store.cpp       ParquetStore + the internal ParquetPager (RowPageSource): tail-only footer read, per-row-group decode against rebased chunk offsets, LRU page cache with weak_ptr re-adoption + a decode counter (#833)
     jsonl_store.cpp
     partitioner.cpp         zetta::data::HashPartitioner/RoundRobinPartitioner assign_partition (FNV-1a key hash / surrogate mod) + to_json + partitioner_from_json config boundary (#513)
     rendezvous_placement.cpp  zetta::data::RendezvousPlacement/rendezvous_owners — rendezvous (HRW) partition→node placement: FNV-1a weight, top-k by weight, ~1/N moved on membership change (#514)
