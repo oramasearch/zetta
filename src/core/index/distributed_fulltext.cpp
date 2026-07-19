@@ -11,6 +11,7 @@
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/partition_body.hpp"
 #include "zetta/index/oramacore_fulltext_index.hpp"
 #include "zetta/data/large_object.hpp"
 #include "zetta/node.hpp"
@@ -94,44 +95,21 @@ std::string resolve_table_id(Node& node, const std::string& table) {
     return table;
 }
 
-// Parse a partition body's JsonLines rows into IndexDocuments. The body is one
-// `{"_zid": <id>, "doc": <row>}` object per line (the JsonlStore on-disk shape the
-// partitioned write path emits) — read the same tolerant way JsonlStore::load does,
-// but **fail fast** on a line that is not valid JSON or not a JSON object (a silent
-// drop would diverge from the single-index oracle). Returns false + a reason on the
-// first malformed line.
+// Parse a partition body into IndexDocuments through the shared partition-body
+// reader, which sniffs Parquet vs the legacy JSON Lines from the bytes. **Fails
+// fast** on a body it cannot read (a silent drop would diverge from the
+// single-index oracle): returns false + a reason.
 bool parse_body_documents(const std::string& body, const std::string& partition_id,
                           std::vector<IndexDocument>& documents,
                           std::uint64_t& rows, std::string* error) {
-    std::istringstream in(body);
-    std::string line;
-    std::size_t line_no = 0;
-    while (std::getline(in, line)) {
-        ++line_no;
-        if (line.empty()) continue;
-        nlohmann::json parsed =
-            nlohmann::json::parse(line, /*cb=*/nullptr, /*allow_exceptions=*/false);
-        if (parsed.is_discarded()) {
-            set_error(error, "partition '" + partition_id + "' line " +
-                                 std::to_string(line_no) + " is not valid JSON");
-            return false;
-        }
-        std::string id;
-        nlohmann::json doc;
-        if (parsed.is_object() && parsed.contains("_zid") && parsed.contains("doc")) {
-            const nlohmann::json& zid = parsed["_zid"];
-            id = zid.is_string() ? zid.get<std::string>()
-                                 : partition_id + "#" + std::to_string(line_no);
-            doc = std::move(parsed["doc"]);
-        } else if (parsed.is_object()) {
-            id = partition_id + "#" + std::to_string(line_no);
-            doc = std::move(parsed);
-        } else {
-            set_error(error, "partition '" + partition_id + "' line " +
-                                 std::to_string(line_no) + " is not a JSON object");
-            return false;
-        }
-        documents.push_back(IndexDocument{std::move(id), std::move(doc)});
+    zetta::data::PartitionBodyReadResult read =
+        zetta::data::read_partition_body(body, partition_id);
+    if (!read.ok()) {
+        set_error(error, read.error);
+        return false;
+    }
+    for (zetta::data::PartitionRow& row : read.rows) {
+        documents.push_back(IndexDocument{std::move(row.id), std::move(row.doc)});
         ++rows;
     }
     return true;

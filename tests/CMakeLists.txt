@@ -78,6 +78,7 @@ add_executable(zetta-tests
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp
   data/test_dataset_partition.cpp
+  data/test_partition_body.cpp
   data/test_partition_writer.cpp
   data/test_partition_rebalance.cpp
   governance/test_access_control.cpp

@@ -13,6 +13,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
+#include "zetta/data/partition_body.hpp"
 #include "zetta/node.hpp"
 #include "zetta/storage/json_store.hpp"
 
@@ -36,51 +37,21 @@ std::optional<std::string> read_blob_body(Node& node, const std::string& blob_re
     return std::nullopt;
 }
 
-// Append a partition body's rows to `store`. The body is JSON Lines, one
-// `{"_zid": <id>, "doc": <row>}` object per line (the JsonlStore on-disk shape the
-// partitioned write path emits) — read the same tolerant way JsonlStore::load
-// does, but **fail fast** on a line that is not valid JSON or not a JSON object,
-// since a silently-dropped row would diverge from the single-node oracle. Returns
-// false (and a reason in `error`) on the first malformed line.
+// Append a partition body's rows to `store`. The body is read through the shared
+// partition-body reader, which sniffs Parquet vs the legacy JSON Lines from the
+// bytes — and **fails fast** on a body it cannot read, since a silently short
+// shard would diverge from the single-node oracle.
 bool append_partition_rows(const std::string& body, const std::string& partition_id,
                            zetta::storage::JsonStore& store, std::uint64_t& rows,
                            std::string* error) {
-    std::istringstream in(body);
-    std::string line;
-    std::size_t line_no = 0;
-    while (std::getline(in, line)) {
-        ++line_no;
-        if (line.empty()) continue;
-        nlohmann::json parsed =
-            nlohmann::json::parse(line, /*cb=*/nullptr, /*allow_exceptions=*/false);
-        if (parsed.is_discarded()) {
-            if (error) {
-                *error = "partition '" + partition_id + "' line " +
-                         std::to_string(line_no) + " is not valid JSON";
-            }
-            return false;
-        }
-        // Current format: { "_zid": id, "doc": data }. A bare object is read as the
-        // row itself (legacy / tolerant, matching JsonlStore); only the `doc` is
-        // needed for a DataFrame, so a synthetic id suffices when one is absent.
-        std::string id;
-        nlohmann::json doc;
-        if (parsed.is_object() && parsed.contains("_zid") && parsed.contains("doc")) {
-            const nlohmann::json& zid = parsed["_zid"];
-            id = zid.is_string() ? zid.get<std::string>()
-                                 : partition_id + "#" + std::to_string(line_no);
-            doc = std::move(parsed["doc"]);
-        } else if (parsed.is_object()) {
-            id = partition_id + "#" + std::to_string(line_no);
-            doc = std::move(parsed);
-        } else {
-            if (error) {
-                *error = "partition '" + partition_id + "' line " +
-                         std::to_string(line_no) + " is not a JSON object";
-            }
-            return false;
-        }
-        store.add(std::move(id), std::move(doc));
+    zetta::data::PartitionBodyReadResult read =
+        zetta::data::read_partition_body(body, partition_id);
+    if (!read.ok()) {
+        if (error) *error = read.error;
+        return false;
+    }
+    for (zetta::data::PartitionRow& row : read.rows) {
+        store.add(std::move(row.id), std::move(row.doc));
         ++rows;
     }
     return true;

@@ -70,17 +70,23 @@ with an `error`):
    so a `HashPartitioner` (which reads its key columns) and `SinglePartitioner`
    simply ignore the extra field.
 
-2. **Serialize each non-empty partition's rows to bytes** — a **JSON Lines** blob,
-   one `{"_zid": <row-id>, "doc": <row>}` line per row, the same shape
-   [`JsonlStore`](storage.md) writes on disk, so a partition body is a
-   **self-describing slice of the table** (the row's CRDT id is preserved).
+2. **Serialize each non-empty partition's rows to bytes** — a
+   [**Parquet body**](partition-body.md): the rows' fields as columns, with each
+   row's CRDT id in a `_zid` column beside them, so a partition body is a
+   **self-describing slice of the table** that can be read a page at a time
+   ([`ParquetStore`](parquet-store.md)) and projected column by column. Rows a
+   flat, scalar Parquet schema cannot express (a nested value, a column mixing
+   types) fall back to the previous **JSON Lines** shape rather than being
+   coerced — `PartitionBodyWriteResult::format` says which, and the catalog
+   records it.
 
 3. **Store each partition's bytes as a large object** via the new
    `LargeObjectStore::import_bytes(name, bytes)` — so the body is fingerprinted
    (SHA-256), its `lo:<uuid>` metadata rides in the CRDT, and it transfers
    peer-to-peer + is verified against size + sha256 like any other
    [large-object body](large-objects.md). The blob is named
-   `partition-<table-id>-<partition>.jsonl`.
+   `partition-<table-id>-<partition>.parquet` (or `….jsonl` for a fallback body),
+   so its format is visible without opening it.
 
 4. **Record placement** as a [`DatasetPartition`](dataset-partitions.md) catalog
    entry per partition (`Node::create_dataset_partition` → captured into
@@ -92,7 +98,7 @@ with an `error`):
    | `blob_ref` | the large object's id (the body holding this partition's rows) |
    | `row_range` | the partition's `[start, end)` slice (see below) |
    | `owner_nodes` | `partitioner->place_partition(partition, members)` — primary first, then replicas |
-   | `stats` | `{ "partition": <id>, "rows": <count> }` (provenance; richer per-column pruning stats are a later slice) |
+   | `stats` | `{ "partition": <id>, "rows": <count>, "format": "parquet"\|"jsonl" }` (provenance; richer per-column pruning stats are a later slice) |
 
 ## Row ranges — the cumulative slice
 

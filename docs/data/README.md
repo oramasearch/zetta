@@ -17,6 +17,7 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [partitioner.md](partitioner.md) — the `Partitioner` seam: record→partition (Hash/RoundRobin) + partition→node (`RendezvousPlacement` HRW) over a fixed P >> nodes (ADR-31 / #512–#514).
 - [dataset-partitions.md](dataset-partitions.md) — the replicate-to-all partition catalog: where each slice of a table's data lives (`zetta::data::DatasetPartition`, ENT-36 / #510).
 - [partitioned-write-path.md](partitioned-write-path.md) — rows → partition → blob, placement recorded in the catalog (`zetta::data::write_partitioned`, #511).
+- [partition-body.md](partition-body.md) — the body format of a partition: Parquet for every dataset (`_zid` as a column), format sniffed from the bytes so legacy `.jsonl` bodies still read, JSON Lines fallback for rows Parquet cannot express (`zetta::data::serialize_partition_body`/`read_partition_body`, #833).
 - [sharded-blob-placement.md](sharded-blob-placement.md) — a partition body is held only by its owner node(s), not replicate-to-all (`zetta::data::ReplicatedBlobStore`, #515).
 - [partition-rebalance.md](partition-rebalance.md) — between-jobs rebalance on a membership change: ≈rf/N partitions move onto a new node, bodies follow (`zetta::data::rebalance_partitions`, #517).
 - [system-datasets.md](system-datasets.md) — datasets as a first-class observability primitive: the computed `system.datasets` view over the live tree + catalog (`Node::datasets()`, #585).

@@ -37,9 +37,13 @@ struct PartitionWriteResult {
 //      a `RoundRobinPartitioner` with its default surrogate field distributes
 //      evenly without the caller pre-stamping it (the doc's "the write path stamps
 //      the monotonic surrogate"). Other partitioners ignore the extra field.
-//   2. **serializes each non-empty partition's rows to bytes** — a JSON Lines blob,
-//      one `{"_zid": <row-id>, "doc": <row>}` line per row (the `JsonlStore`
-//      on-disk shape), so the body is a self-describing slice of the table.
+//   2. **serializes each non-empty partition's rows to bytes** — a **Parquet**
+//      body (`zetta::data::serialize_partition_body`): the rows' fields as
+//      columns with each row's CRDT id in a `_zid` column beside them, so the
+//      body is a self-describing slice of the table that can be read a page at a
+//      time and projected column by column. Rows a flat scalar schema cannot
+//      express fall back to the previous JSON Lines shape, recorded in the
+//      catalog's `stats.format`. See docs/data/partition-body.md.
 //   3. **stores each partition's bytes as a LargeObject** in `database`'s LO store
 //      (`LargeObjectStore::import_bytes`) — so the body is fingerprinted (SHA-256),
 //      its `lo:` metadata rides in the CRDT, and it gossips peer-to-peer like any

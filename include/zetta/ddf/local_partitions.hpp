@@ -24,14 +24,14 @@
 // the partitions of a table whose `owner_nodes` include its own id and reads those
 // bodies **from local disk** — no `LOREQ`, no full-dataset pull.
 //
-// **The body format is the existing JsonlStore line shape** — one
-// `{"_zid": <id>, "doc": <row>}` JSON object per line — exactly what the
-// [partitioned write path](../partitioned-write-path.md) (#511) emits, and what
-// `JsonlStore` reads off disk. It is **not** a new JSON format, and the blob is
-// already SHA-256-verified at the large-object layer; this loader parses it with
-// the same tolerant `{_zid,doc}` / bare-row reading JsonlStore uses, but **fails
-// fast** (rather than silently skipping) on a body line that is not valid JSON or
-// not a JSON object — a silent drop would diverge from the single-node oracle.
+// **The body format is whatever the partitioned write path emitted** — Parquet
+// today, JSON Lines for legacy bodies and for rows Parquet cannot express — and
+// this loader reads it through the shared `zetta::data::read_partition_body`
+// (docs/data/partition-body.md), which sniffs the format from the bytes. It is
+// **not** a new format of its own, and the blob is already SHA-256-verified at
+// the large-object layer; the reader **fails fast** (rather than silently
+// skipping) on a body it cannot read — a silent drop would diverge from the
+// single-node oracle.
 //
 // Non-throwing throughout (zetta-core's no-exceptions convention): every entry
 // point returns a ComputeStatus alongside its result. See docs/compute/compute-near-data.md.
