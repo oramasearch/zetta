@@ -12,12 +12,15 @@ string but materializes nothing, and the only `DatasetResolver` reads local path
 
 ```
 include/zetta/connect/connector.hpp          ConnectorConfig / ConnectorRows / run_connector_query
+include/zetta/connect/connection_store.hpp   SavedConnection — the replicate-to-all credential store
+src/core/connect/connection_store.cpp        save/find/list/remove over the reserved zetta_connect.connections table
 include/zetta/connect/http_transport.hpp     HttpRequest / HttpResponse / HttpTransport + AsyncHttpTransport seam
 src/core/connect/connector.cpp               the config boundary, the read-only guard, the Snowflake connector
 src/core/connect/http_transport.cpp          the installed-default transport registry (no HTTP library in zetta-core)
 include/zetta/api/native_http_transport.hpp  install/shutdown the native client
 src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (zetta-api target)
 tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
+tests/connect/test_connection_store.cpp      the store, its boundary, and the no-leak contract
 tests/connect/test_native_http_transport.cpp the native client against a real loopback server
 ```
 
@@ -103,6 +106,66 @@ port, and the OS/TLS error only — never from a header — and there is no
 subprocess, so nothing is visible in the process table.
 `ConnectorConfig::to_json()` likewise **never emits the token**, so a config is
 safe to echo back to a caller or log.
+
+## Saved connections (the credential lives on every node)
+
+Passing a token inline on every call is fine for a one-off, but it puts the
+secret on the wire each time and — more importantly — it gives the *coordinating*
+node the only copy. The distributed fetch needs **every** node to hold the
+credential, because every node pulls its own stripe of the result straight from
+the source. So a connection can be **saved by name**:
+
+```jsonc
+// create_connection
+{"name": "warehouse", "connector": {"type": "snowflake", "account": "…", "token": "<PAT>", "warehouse": "COMPUTE_WH"}}
+
+// then, per query — no credential in the request at all
+{"connection": "warehouse", "query": "SELECT … FROM churn", "database": "churn"}
+```
+
+`create_dataset_from_query` takes **either** `connection` **or** `connector`,
+never both; the handler says which when a call gives neither or gives both.
+
+### Where it lives, and why that is a plain table
+
+The store is an ordinary `data::Table` in a reserved database
+(`zetta_connect.connections`). A table's `ReplicationStrategy` defaults to
+**ReplicateToAll**, so the row reaches every member through the same CRDT gossip
+as any other row — which is exactly the property a credential every node must
+present needs. It is deliberately **not** partitioned.
+
+| Capability | Kind | What it does |
+| --- | --- | --- |
+| `create_connection` | action | save (or replace) a named connection; returns it **redacted** |
+| `list_connections` | read | every saved connection, credentials **absent** |
+| `delete_connection` | action | remove one from every node |
+
+All three are `Orchestration` operations under the `pipelines:manage` permission,
+alongside `create_dataset_from_query`. `system.connections` renders the same
+source as a read view.
+
+### The token is in exactly one place
+
+The credential is written into the store row — that *is* the feature. Everything
+derived from it redacts:
+
+| Surface | Carries the token? |
+| --- | --- |
+| the store row (`ConnectorConfig::to_storage_json()`) | **yes** — the one serialization that does, and the only reason it exists |
+| `ConnectorConfig::to_json()` | no — cannot emit it |
+| `SavedConnection::to_redacted_json()` | no — built from `to_json()`, so the redaction is structural, not a field someone must remember to strip |
+| `create_connection` / `list_connections` output | no |
+| `system.connections` | no |
+| audit event details, log lines, error reasons | no |
+
+`tests/connect/test_connection_store.cpp` asserts this directly rather than
+trusting it: it searches every read surface — including a real
+`SELECT * FROM system.connections` — for the secret and requires a miss, and
+requires a hit in `to_storage_json()` alone.
+
+Names are validated at the boundary: 1–64 characters of `[A-Za-z0-9_-]` starting
+with a letter or digit. Saving an existing name **replaces** it in place, so
+rotating a credential does not leave two rows racing to answer one lookup.
 
 ## Read-only by construction
 

@@ -1103,6 +1103,173 @@
         ]
       }
     },
+    "/v1/create_connection": {
+      "post": {
+        "description": "Save a named connector configuration (credential included) so a connector query can reference it by name instead of carrying the token in every request. The connection is stored replicate-to-all — every node holds it, which is what lets each node fetch its own stripe of a distributed query straight from the source. Saving an existing name replaces it. The token is never returned by any surface (list_connections and system.connections omit it). Requires orchestration:create_connection.",
+        "operationId": "create_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connector": {
+                    "additionalProperties": false,
+                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "properties": {
+                      "account": {
+                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "auth": {
+                        "default": "pat",
+                        "description": "How to present the bearer token.",
+                        "enum": [
+                          "pat",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "database": {
+                        "description": "Session database.",
+                        "type": "string"
+                      },
+                      "role": {
+                        "description": "Optional session role.",
+                        "type": "string"
+                      },
+                      "schema": {
+                        "description": "Session schema.",
+                        "type": "string"
+                      },
+                      "token": {
+                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": {
+                        "description": "Which connector implementation to use.",
+                        "enum": [
+                          "snowflake"
+                        ],
+                        "type": "string"
+                      },
+                      "warehouse": {
+                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "account",
+                      "token"
+                    ],
+                    "title": "ConnectorConfig",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "the name to save this connection under (letters, digits, '_' and '-'); saving an existing name replaces it",
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "connector"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connector": {
+                          "description": "the saved connector settings WITHOUT the credential — the token is never returned by any surface",
+                          "type": "object"
+                        },
+                        "created": {
+                          "description": "when the connection was last saved (ISO-8601 UTC)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "connector"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Save a source connection",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_dataset_from_query": {
       "post": {
         "description": "Run a read-only query against an external source (Snowflake) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. Reaches the source over the network with your credentials, so it is consent-gated (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: never executes on a plain call (#621).",
@@ -1113,6 +1280,11 @@
               "schema": {
                 "additionalProperties": false,
                 "properties": {
+                  "connection": {
+                    "description": "the name of a saved connection (create_connection / list_connections) — use this instead of an inline connector so the credential never travels with the request",
+                    "minLength": 1,
+                    "type": "string"
+                  },
                   "connector": {
                     "additionalProperties": false,
                     "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
@@ -1209,7 +1381,6 @@
                   }
                 },
                 "required": [
-                  "connector",
                   "query"
                 ],
                 "type": "object"
@@ -1584,6 +1755,110 @@
           }
         },
         "summary": "Create project",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_connection": {
+      "post": {
+        "description": "Remove a saved source connection (and its stored credential) from every node. Returns removed=false when no connection had that name. Requires orchestration:delete_connection.",
+        "operationId": "delete_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete a saved connection",
         "tags": [
           "action"
         ]
@@ -4028,6 +4303,114 @@
         "summary": "Search (served index endpoint)",
         "tags": [
           "serving"
+        ]
+      }
+    },
+    "/v1/list_connections": {
+      "get": {
+        "description": "The saved source connections, credentials REDACTED — name, connector settings, and when each was saved. Same source as system.connections. Requires orchestration:list_connections.",
+        "operationId": "list_connections",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connections": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "connector": {
+                                "description": "the saved connector settings WITHOUT the credential — the token is never returned by any surface",
+                                "type": "object"
+                              },
+                              "created": {
+                                "description": "when the connection was last saved (ISO-8601 UTC)",
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "connector"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "connections"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List saved connections",
+        "tags": [
+          "read"
         ]
       }
     },

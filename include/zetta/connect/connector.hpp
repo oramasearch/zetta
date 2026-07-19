@@ -50,8 +50,18 @@ struct ConnectorConfig {
     std::string warehouse;         // compute warehouse (required for token auth)
     std::string role;              // optional session role
 
-    // The JSON form (token omitted — see above).
+    // The JSON form (token omitted — see above). This is the OUTWARD-facing
+    // shape: what a capability returns, what a system view renders, what a log
+    // line may carry.
     nlohmann::json to_json() const;
+
+    // The INTERNAL storage form — **includes the token**. Deliberately distinct
+    // from `to_json()`: the saved-connection store
+    // ([connection_store.hpp](connection_store.hpp)) must persist the credential
+    // so every node can present it, and that is the only thing this is for.
+    // Never hand its output to a caller, a log, an audit detail, or a
+    // `system.*` view. Round-trips through `from_json`.
+    nlohmann::json to_storage_json() const;
 
     // Parse + validate at the boundary. Returns std::nullopt (never throws)
     // unless `value` is an object with a known non-empty `type`, a non-empty

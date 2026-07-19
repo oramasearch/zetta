@@ -488,6 +488,7 @@ add_library(zetta-core STATIC
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
   src/core/data/add_dataset.cpp
+  src/core/connect/connection_store.cpp
   src/core/connect/connector.cpp
   src/core/connect/http_transport.cpp
   src/core/usecases/churn/churn_dataset.cpp

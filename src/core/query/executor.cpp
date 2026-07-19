@@ -24,6 +24,7 @@
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
+#include "zetta/connect/connection_store.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/virtual_table.hpp"
@@ -144,6 +145,7 @@ constexpr std::string_view kCloudProvidersTable = "cloud_providers";
 constexpr std::string_view kCloudStatusTable = "cloud_status";
 constexpr std::string_view kProvisionersTable = "provisioners";
 constexpr std::string_view kConsentRequestsTable = "consent_requests";
+constexpr std::string_view kConnectionsTable = "connections";
 constexpr std::string_view kRunsTable = "runs";
 constexpr std::string_view kPrincipalsTable = "principals";
 constexpr std::string_view kKeysTable = "keys";
@@ -194,6 +196,9 @@ constexpr std::array kSystemTableCatalog = {
     SystemTableInfo{kCollectiveRoundsTable,
                     "this node's live collective-plane counters (ephemeral, "
                     "not replicated)"},
+    SystemTableInfo{kConnectionsTable,
+                    "the saved source connections held on every node — "
+                    "settings only, credentials never exposed"},
     SystemTableInfo{kCrashesTable,
                     "crash reports found under this node's data_dir "
                     "(ephemeral, local)"},
@@ -1383,6 +1388,32 @@ bool rls_row_permitted(const RlsFilter& filter, const nlohmann::json& row,
     return false;
 }
 
+// One JSON row per saved source connection for the connections system table
+// (#827). Sourced from connect::list_connections(). Like system.tokens this view
+// deliberately exposes NO credential: the token lives only in the replicated
+// store row that lets every node present it, and every read surface renders it
+// through SavedConnection::to_redacted_json(), which is built from
+// ConnectorConfig::to_json() — a serialization that cannot emit the token.
+std::vector<nlohmann::json> connection_rows(const Node& node) {
+    std::vector<nlohmann::json> rows;
+    for (const zetta::connect::SavedConnection& saved :
+         zetta::connect::list_connections(node)) {
+        const nlohmann::json connector = saved.config.to_json();
+        nlohmann::json row;
+        row["name"] = saved.name;
+        row["type"] = saved.config.type;
+        row["account"] = saved.config.account;
+        row["auth"] = saved.config.auth;
+        row["database"] = saved.config.database;
+        row["schema"] = saved.config.schema;
+        row["warehouse"] = saved.config.warehouse;
+        row["role"] = saved.config.role;
+        row["created"] = saved.created;
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+
 // One JSON row per token for the tokens system table — the bearer credentials
 // (FEAT-9 / #744). Sourced from Node::tokens(). This view deliberately exposes
 // NO secret material: only the token id, its owning user, type, created, optional
@@ -2433,6 +2464,9 @@ QueryResult Executor::execute(const Statement& stmt,
                     }
                     if (sys == kTokensTable) {
                         return select_over_rows(s, token_rows(node_));
+                    }
+                    if (sys == kConnectionsTable) {
+                        return select_over_rows(s, connection_rows(node_));
                     }
                     if (sys == kAuditTable) {
                         return select_over_rows(s, audit_rows(node_));

@@ -307,6 +307,15 @@ nlohmann::json ConnectorConfig::to_json() const {
     return value;
 }
 
+nlohmann::json ConnectorConfig::to_storage_json() const {
+    // The ONE serialization that carries the credential — see the header. It is
+    // written only into the replicated connection store, whose whole purpose is
+    // to put the token on every node that has to present it.
+    nlohmann::json value = to_json();
+    value["token"] = token;
+    return value;
+}
+
 std::optional<ConnectorConfig> ConnectorConfig::from_json(
     const nlohmann::json& value) {
     if (!value.is_object()) return std::nullopt;

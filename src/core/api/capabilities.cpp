@@ -14,6 +14,7 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/database.hpp"
@@ -2192,7 +2193,7 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     return ApiResult::success(std::move(output));
 }
 
-// --- create_dataset_from_query ------------------------------------------------------
+// --- saved connections + create_dataset_from_query ----------------------------------
 
 // The connector config as an embeddable sub-schema: the code-owned
 // connector_config_schema() minus its document-level keys, so it nests cleanly
@@ -2207,13 +2208,153 @@ const nlohmann::json& connector_property_schema() {
     return schema;
 }
 
+// The shape every connection read surface returns — note the absence of a
+// `token` anywhere in it. `SavedConnection::to_redacted_json()` produces it from
+// `ConnectorConfig::to_json()`, which never emits the credential, so the
+// redaction is structural rather than a field someone must remember to strip.
+const nlohmann::json& saved_connection_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "connector"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"connector",
+           {{"type", "object"},
+            {"description",
+             "the saved connector settings WITHOUT the credential — the token "
+             "is never returned by any surface"}}},
+          {"created",
+           {{"type", "string"},
+            {"description", "when the connection was last saved (ISO-8601 UTC)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_connection_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "connector"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"maxLength", 64},
+            {"description",
+             "the name to save this connection under (letters, digits, '_' and "
+             "'-'); saving an existing name replaces it"}}},
+          {"connector", connector_property_schema()}}}};
+    return schema;
+}
+
+const nlohmann::json& create_connection_output_schema() {
+    return saved_connection_schema();
+}
+
+const nlohmann::json& list_connections_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"additionalProperties", false},
+                                          {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_connections_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"connections"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"connections",
+           {{"type", "array"}, {"items", saved_connection_schema()}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_connection_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_connection_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}}, {"removed", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_connection(const nlohmann::json& input,
+                                   ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        zetta::connect::ConnectorConfig::from_json(input.at("connector"));
+    if (!config) {
+        return ApiResult::failure(
+            "invalid_input",
+            "connector: expected {type, account, token} with a known type "
+            "(and an optional auth of pat|oauth, database, schema, warehouse, "
+            "role)");
+    }
+    const std::string rejection =
+        zetta::connect::save_connection(context.node, name, *config);
+    if (!rejection.empty()) {
+        return ApiResult::failure("invalid_input", rejection);
+    }
+    const std::optional<zetta::connect::SavedConnection> saved =
+        zetta::connect::find_connection(context.node, name);
+    if (!saved) {
+        return ApiResult::failure("engine_error",
+                                  "connection '" + name + "' did not persist");
+    }
+    // Redacted on the way out — a create call never echoes the credential back.
+    return ApiResult::success(saved->to_redacted_json());
+}
+
+ApiResult handle_list_connections(const nlohmann::json& input,
+                                  ApiContext& context) {
+    (void)input;
+    nlohmann::json connections = nlohmann::json::array();
+    for (const zetta::connect::SavedConnection& saved :
+         zetta::connect::list_connections(context.node)) {
+        connections.push_back(saved.to_redacted_json());
+    }
+    nlohmann::json output;
+    output["connections"] = std::move(connections);
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_delete_connection(const nlohmann::json& input,
+                                   ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    nlohmann::json output;
+    output["name"] = name;
+    output["removed"] = zetta::connect::remove_connection(context.node, name);
+    return ApiResult::success(std::move(output));
+}
+
 const nlohmann::json& create_dataset_from_query_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"connector", "query"}},
+        // Exactly one of `connection` / `connector` is required; the schema
+        // cannot say "exactly one" without oneOf (which the query-string REST
+        // coercion does not model), so the handler enforces it and says which.
+        {"required", {"query"}},
         {"additionalProperties", false},
         {"properties",
-         {{"connector", connector_property_schema()},
+         {{"connection",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the name of a saved connection (create_connection / "
+             "list_connections) — use this instead of an inline connector so "
+             "the credential never travels with the request"}}},
+          {"connector", connector_property_schema()},
           {"query",
            {{"type", "string"},
             {"minLength", 1},
@@ -2273,16 +2414,50 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
     return schema;
 }
 
-ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
-                                           ApiContext& context) {
-    const std::optional<zetta::connect::ConnectorConfig> config =
+// Resolve the connector this call should use: either a saved connection by name
+// (the credential stays on the cluster) or an inline connector object. Exactly
+// one; `reason` explains the rejection.
+std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
+    const nlohmann::json& input, ApiContext& context, std::string& reason) {
+    const bool has_connection = input.contains("connection");
+    const bool has_connector = input.contains("connector");
+    if (has_connection == has_connector) {
+        reason = has_connection
+                     ? "give either a saved 'connection' name or an inline "
+                       "'connector' object, not both"
+                     : "give either a saved 'connection' name or an inline "
+                       "'connector' object";
+        return std::nullopt;
+    }
+    if (has_connection) {
+        const std::string name = input.at("connection").get<std::string>();
+        const std::optional<zetta::connect::SavedConnection> saved =
+            zetta::connect::find_connection(context.node, name);
+        if (!saved) {
+            reason = "connection: no saved connection named '" + name +
+                     "' (list them with list_connections)";
+            return std::nullopt;
+        }
+        return saved->config;
+    }
+    std::optional<zetta::connect::ConnectorConfig> config =
         zetta::connect::ConnectorConfig::from_json(input.at("connector"));
     if (!config) {
-        return ApiResult::failure(
-            "invalid_input",
+        reason =
             "connector: expected {type, account, token} with a known type "
             "(and an optional auth of pat|oauth, database, schema, warehouse, "
-            "role)");
+            "role)";
+    }
+    return config;
+}
+
+ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
+                                           ApiContext& context) {
+    std::string reason;
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        resolve_query_connector(input, context, reason);
+    if (!config) {
+        return ApiResult::failure("invalid_input", reason);
     }
 
     const std::string query = input.at("query").get<std::string>();
@@ -3138,6 +3313,51 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_add_dataset});
+
+    registry.add(Capability{
+        "create_connection",
+        "Save a source connection",
+        "Save a named connector configuration (credential included) so a "
+        "connector query can reference it by name instead of carrying the "
+        "token in every request. The connection is stored replicate-to-all — "
+        "every node holds it, which is what lets each node fetch its own "
+        "stripe of a distributed query straight from the source. Saving an "
+        "existing name replaces it. The token is never returned by any "
+        "surface (list_connections and system.connections omit it).",
+        create_connection_schema(),
+        create_connection_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_connection"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_connection});
+
+    registry.add(Capability{
+        "list_connections",
+        "List saved connections",
+        "The saved source connections, credentials REDACTED — name, connector "
+        "settings, and when each was saved. Same source as "
+        "system.connections.",
+        list_connections_schema(),
+        list_connections_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Orchestration, "list_connections"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_connections});
+
+    registry.add(Capability{
+        "delete_connection",
+        "Delete a saved connection",
+        "Remove a saved source connection (and its stored credential) from "
+        "every node. Returns removed=false when no connection had that name.",
+        delete_connection_schema(),
+        delete_connection_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_connection"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_connection});
 
     registry.add(Capability{
         "create_dataset_from_query",
