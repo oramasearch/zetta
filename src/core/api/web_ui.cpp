@@ -538,7 +538,41 @@ std::string web_ui_icon(std::string_view name) {
     if (name == "bolt") return svg("<path d='M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z'/>");
     if (name == "chevron") return svg("<path d='m9 6 6 6-6 6'/>");
     if (name == "play") return svg("<path d='m7 4.5 12 7.5-12 7.5z'/>");
-    return svg("");
+    if (name == "dataset" || name == "datasets" || name == "database" || name == "databases")
+        return svg("<ellipse cx='12' cy='5.5' rx='7.5' ry='2.8'/>"
+                   "<path d='M4.5 5.5v13c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-13'/>"
+                   "<path d='M4.5 12c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8'/>");
+    if (name == "index" || name == "indexes")
+        return svg("<path d='M4 5.5h11M4 10h11M4 14.5h6'/>"
+                   "<circle cx='16.5' cy='16.5' r='3'/><path d='m18.8 18.8 2.2 2.2'/>");
+    if (name == "search")
+        return svg("<circle cx='10.5' cy='10.5' r='6.5'/><path d='m15.4 15.4 5.1 5.1'/>");
+    if (name == "deployment" || name == "deployments")
+        return svg("<path d='M12 2.5 20.5 7v10L12 21.5 3.5 17V7z'/><path d='m8 12 3 3 5-6'/>");
+    if (name == "model") return web_ui_icon("models");
+    if (name == "node") return web_ui_icon("nodes");
+    if (name == "user" || name == "users" || name == "member" || name == "principal")
+        return svg("<circle cx='12' cy='8' r='3.6'/><path d='M5 20a7 7 0 0 1 14 0'/>");
+    if (name == "role" || name == "roles")
+        return svg("<circle cx='11' cy='8' r='3.3'/><path d='M4.7 20a6.3 6.3 0 0 1 12.6 0'/>"
+                   "<path d='m17.5 5 1.4 1.4L21.5 3.8'/>");
+    if (name == "token" || name == "tokens")
+        return svg("<circle cx='8' cy='12' r='3.6'/><path d='M11.5 12H21M18 12v3M21 12v2.6'/>");
+    if (name == "trace" || name == "traces" || name == "span")
+        return svg("<path d='M4 6.5h8M4 12h12M4 17.5h6'/><circle cx='15' cy='6.5' r='1.5'/>"
+                   "<circle cx='19' cy='12' r='1.5'/><circle cx='11' cy='17.5' r='1.5'/>");
+    if (name == "audit")
+        return svg("<path d='M6 3.5h8l5 5V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z'/>"
+                   "<path d='M14 3.5V8.5h5M8.5 13.5l2 2 3.5-4'/>");
+    if (name == "consent")
+        return svg("<path d='M12 2.5 20 6v6c0 5-3.4 8-8 9.5C8 20 4.6 17 4.6 12V6z'/>"
+                   "<path d='m9 12 2.2 2.2L15.5 10'/>");
+    if (name == "policy" || name == "policies" || name == "metric")
+        return svg("<rect x='4' y='4' width='16' height='16' rx='2.2'/><path d='M8 15.5v-3.5M12 15.5V9M16 15.5v-5.5'/>");
+    if (name == "crash")
+        return svg("<path d='M10.3 3.2 2.4 17a1.6 1.6 0 0 0 1.4 2.4h16.4A1.6 1.6 0 0 0 21.6 17L13.7 3.2a1.6 1.6 0 0 0-2.8 0z'/>"
+                   "<path d='M12 9v4.5M12 17h.01'/>");
+    return svg("<circle cx='12' cy='12' r='3'/>");  // generic — never blank
 }
 
 std::string web_ui_login(std::string_view error) {
@@ -607,16 +641,23 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 std::string panel_icon_for(std::string_view title) {
     const std::string t = lower(std::string(title));
     auto has = [&](const char* s) { return t.find(s) != std::string::npos; };
-    if (has("dataset") || has("data") || has("index") || has("file") || has("explorer"))
-        return web_ui_icon("data");
+    if (has("search")) return web_ui_icon("search");
+    if (has("index")) return web_ui_icon("index");
+    if (has("dataset") || has("data") || has("explorer") || has("file"))
+        return web_ui_icon("dataset");
     if (has("node") || has("cluster") || has("member")) return web_ui_icon("cluster");
     if (has("model")) return web_ui_icon("models");
-    if (has("deployment") || has("run") || has("job") || has("pipeline")) return web_ui_icon("pipeline");
-    if (has("trace") || has("span") || has("crash") || has("metric") || has("observ"))
-        return web_ui_icon("observability");
-    if (has("user") || has("role") || has("polic") || has("token") || has("consent") || has("audit") ||
-        has("govern"))
-        return web_ui_icon("governance");
+    if (has("deployment")) return web_ui_icon("deployment");
+    if (has("graph") || has("run") || has("job") || has("pipeline")) return web_ui_icon("pipeline");
+    if (has("trace") || has("span")) return web_ui_icon("trace");
+    if (has("crash")) return web_ui_icon("crash");
+    if (has("metric") || has("observ")) return web_ui_icon("observability");
+    if (has("user")) return web_ui_icon("user");
+    if (has("role")) return web_ui_icon("role");
+    if (has("token")) return web_ui_icon("token");
+    if (has("polic")) return web_ui_icon("policy");
+    if (has("consent")) return web_ui_icon("consent");
+    if (has("audit") || has("govern")) return web_ui_icon("audit");
     return web_ui_icon("overview");
 }
 

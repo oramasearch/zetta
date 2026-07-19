@@ -1124,7 +1124,7 @@
                     "type": "string"
                   },
                   "fields": {
-                    "description": "the fields to index (>= 1, unique)",
+                    "description": "the fields to index (default: all of the table's columns)",
                     "items": {
                       "minLength": 1,
                       "type": "string"
@@ -1153,8 +1153,7 @@
                   }
                 },
                 "required": [
-                  "table",
-                  "fields"
+                  "table"
                 ],
                 "type": "object"
               }

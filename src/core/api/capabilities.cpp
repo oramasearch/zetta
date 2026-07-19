@@ -19,6 +19,7 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/storage/engine.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/search.hpp"
 #include "zetta/input/python_frontend.hpp"
@@ -918,7 +919,7 @@ ApiResult handle_unexpose_index(const nlohmann::json& input,
 const nlohmann::json& create_index_schema() {
     static const nlohmann::json schema = {
         {"type", "object"},
-        {"required", {"table", "fields"}},
+        {"required", {"table"}},
         {"additionalProperties", false},
         {"properties",
          {{"table",
@@ -931,7 +932,7 @@ const nlohmann::json& create_index_schema() {
             {"minItems", 1},
             {"uniqueItems", true},
             {"items", {{"type", "string"}, {"minLength", 1}}},
-            {"description", "the fields to index (>= 1, unique)"}}},
+            {"description", "the fields to index (default: all of the table's columns)"}}},
           {"kind",
            {{"type", "string"},
             {"enum", {"search", "vector", "feature"}},
@@ -993,18 +994,36 @@ std::shared_ptr<zetta::data::Table> resolve_index_source_table(
 
 ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) {
     const std::string table = input.at("table").get<std::string>();
-    const std::vector<std::string> fields =
-        input.at("fields").get<std::vector<std::string>>();
+    std::vector<std::string> fields =
+        input.value("fields", std::vector<std::string>{});
     const std::string kind_name = input.value("kind", std::string{"search"});
     const std::string backend =
         input.value("backend", std::string{"oramacore_fulltext"});
     const std::string database_hint = input.value("database", std::string{});
 
     // (1) The source table must exist — an index is built over its partitions.
-    if (!resolve_index_source_table(context.node, table, database_hint)) {
+    const std::shared_ptr<zetta::data::Table> source_table =
+        resolve_index_source_table(context.node, table, database_hint);
+    if (!source_table) {
         return ApiResult::failure(
             "not_found",
             "table '" + table + "' not found — load it first with add_dataset");
+    }
+
+    // Default the indexed fields to ALL of the table's columns (from its first
+    // row) when none are named — indexing everything is the sane default; a
+    // caller passes fields only to narrow it.
+    if (fields.empty() && source_table->store().size() > 0) {
+        const nlohmann::json& first_row = source_table->store().at(0);
+        if (first_row.is_object())
+            for (auto it = first_row.begin(); it != first_row.end(); ++it)
+                fields.push_back(it.key());
+    }
+    if (fields.empty()) {
+        return ApiResult::failure(
+            "invalid_input",
+            "no fields to index — the table has no rows yet; load data first or "
+            "pass fields explicitly");
     }
 
     // (2) The kind is schema-constrained; parse it back to the enum.
