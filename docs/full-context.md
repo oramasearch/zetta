@@ -63,6 +63,26 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **In flight (branch `feat/dataset-from-connector-query`) — Parquet bodies, partition-only
+  datasets, scatter-gather SQL**: [#833](https://github.com/oramasearch/zetta/issues/833)
+  makes a connector result set a **cache the cluster holds on disk** rather than rows in the
+  document. Landed so far: a native Parquet **writer** (Thrift compact emitter, PLAIN pages,
+  Snappy) and `ParquetStore`/`ParquetLazyPtr`, a disk-backed paging `StorageEngine` whose row
+  handle survives the cache reaping its page ([data/parquet-writer.md](data/parquet-writer.md),
+  [data/parquet-store.md](data/parquet-store.md)); **partition bodies written as Parquet for
+  every dataset**, format sniffed from the bytes so legacy `.jsonl` bodies still read
+  ([data/partition-body.md](data/partition-body.md)); **partition-only tables**, whose rows are
+  never captured into the CRDT — the bodies plus the replicate-to-all catalog are the dataset,
+  and `system.datasets` counts from the catalog's row ranges
+  ([data/partition-only-tables.md](data/partition-only-tables.md)); **scatter-gather `SELECT`**
+  over them — one reachable owner per partition (exactly-once at RF>1), `WHERE` + projection
+  pushed near the data, aggregates merged (`avg` weighted by row count), an unreachable owner
+  **fails** the query ([data/scatter-gather-select.md](data/scatter-gather-select.md)); the
+  durable replication factor raised to **3, clamped to the node count** with connector result
+  sets explicitly at **1**; and **`promote_dataset`**, which raises a cache to the durable
+  factor by adding owners to the catalog and letting the bodies follow
+  ([data/promote-dataset.md](data/promote-dataset.md)). Still open on the issue: fetch-affinity
+  placement, cross-node co-launch, and replacing the fetch's `sleep_for` poll with an awaitable.
 - **Shipped (this branch) — reachability-aware dialer + unified full-membership `system.nodes`**:
   [#803](https://github.com/oramasearch/zetta/issues/803) makes dial-out-only nodes
   first-class — a node with no routable address (behind NAT / a private VNet: a home
