@@ -30,8 +30,8 @@ now" is not one.**
 
 - **Native, modern C++26.** No foreign runtime, no vendor SDK, no driver — and
   **no shelling out to a CLI to do work the engine should do** (ADR-17). If a
-  capability needs a protocol, implement the protocol. If the runtime seam
-  lacks a primitive, *extend the seam* — never route around it with a
+  capability needs a protocol, implement the protocol. If `zetta::runtime`
+  lacks a primitive you need, *add it there* — never route around it with a
   subprocess. And **modern** is not decoration: coroutines over callbacks,
   ranges and algorithms over index loops, concepts over SFINAE, value semantics
   and RAII over manual lifetimes, `std::string`/`string_view`/`span` over raw
@@ -40,15 +40,15 @@ now" is not one.**
   [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/); the full
   statement is [C++ conventions](#c-conventions) below.
 - **Coroutine-based.** zetta is a coroutine-native codebase, not a threaded one
-  with coroutines bolted on. Async work is an awaitable through the
-  `zetta::runtime` seam (`task<T>` / `io_task<T>`, `spawn`, `when_all`,
+  with coroutines bolted on. Async work is an awaitable from
+  `zetta::runtime` (`task<T>` / `io_task<T>`, `spawn`, `when_all`,
   `timeout`, `async_event`) — never a blocking mutex/condition-variable
   surface, never a thread-per-request, never a sleep-poll loop. Concurrency is
   expressed by composing awaitables (`when_all` over N in-flight operations),
   which is also how a single node saturates its own link while the cluster
   saturates all of them. A raw `std::mutex` is permitted only as the lowest
-  cross-thread handoff *inside* a seam adapter — contained, commented, never in
-  a public API.
+  cross-thread handoff *inside* a backend adapter (the one TU that names the
+  backend library) — contained, commented, never in a public API.
 - **Cluster-native.** A node is an equal peer in a cluster, not a server that
   happens to replicate. State is replicated state; work is *placed*, not
   centralized.
@@ -74,7 +74,7 @@ depends on it.)
 
 | Looks done | Why it isn't |
 | --- | --- |
-| Shelling out to `curl` for an HTTP request | A subprocess is not native C++. The runtime seam already has sockets + TLS + an HTTP engine — extend it. |
+| Shelling out to `curl` for an HTTP request | A subprocess is not native C++. `zetta::runtime::net` already has sockets + TLS, and Boost.HTTP is vendored — use them. |
 | Tiling work across N nodes, then running every tile on the coordinator | That is a parallel loop, not a distributed algorithm. It spends one node's bandwidth and N times nothing. |
 | "Single-node now, distribute later" | Valid ONLY as a reference implementation with the distributed path designed behind the same API — never as the shipped answer. |
 | Pulling a whole result set to one node, then sharding it | The data crosses the wire twice and the ingest is bounded by one link. Fetch where it lands. |
@@ -394,6 +394,31 @@ status, sentence case, no em-dashes in product copy (use `·`/colons).
 or changing GUI**, and the load-bearing rendering notes in
 [`docs/gui/README.md`](docs/gui/README.md) (per-monitor scaling, render scale,
 idle loop + live resize, font rebuild).
+
+### Say what you mean — do not write "seam"
+
+**Never use the word "seam"** — in code comments, docs, commit messages, issues,
+PR text, or conversation. It reads as precise and carries no information: in
+this repo alone it has been used for at least four different things, so a
+sentence containing it cannot be acted on without going to read the code.
+
+Name the actual thing instead:
+
+| Instead of "seam", say… | When you mean | Examples here |
+| --- | --- | --- |
+| **interface** (or abstract base class) | a type with virtuals that implementations derive from | `StorageEngine`, `ComputeDevice`, `Partitioner`, `Provisioner`, `IndexBackend`, `Dialect`, `StepExecutor` |
+| **injection point** (or "an injected callback") | a `std::function` the caller supplies, so a test can pass a fake | `CommandRunner`, `HttpTransport`, `DatasetResolver`, `FleetSource` |
+| **boundary** | where untrusted input is validated, or where exceptions must not cross | the `from_json` validators; "no exceptions across the zetta-core **boundary**" |
+| **module split** (or "which target owns this") | which library/TU is allowed to name a backend | only `cluster.cpp` + `native_http_transport.cpp` name Corosio; `zetta-api` owns the HTTP libraries |
+
+The same applies to any word that sounds architectural but does not say what
+changes: prefer the concrete noun (the class, the function, the target) over the
+metaphor. If you cannot name the concrete thing, you do not yet understand the
+change well enough to describe it.
+
+**Legacy occurrences:** the word appears ~750 times across `docs/` and the
+source comments. Do **not** do a big-bang rename — replace it with the accurate
+word whenever you touch a file for another reason.
 
 ### C++ conventions
 

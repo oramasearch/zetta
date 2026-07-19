@@ -149,7 +149,7 @@ loudly and are easy to forget:
 
 ```
 include/zetta/connect/connector.hpp            ConnectorConfig / ConnectorRows / run_connector_query
-include/zetta/connect/http_transport.hpp       HttpRequest / HttpResponse / the transport seam
+include/zetta/connect/http_transport.hpp       HttpRequest / HttpResponse / the injected transport
 include/zetta/connect/distributed_fetch.hpp    result-set tiling + concurrent chunk read
 include/zetta/connect/connection_store.hpp     SavedConnection — the replicate-to-all credential store
 src/core/connect/connector.cpp                 config boundary, read-only guard, per-vendor dispatch
@@ -167,10 +167,10 @@ shows up as an undefined-symbol link error, not a compile error.
 - Non-throwing boundaries: return `ConnectorResult` with a path-qualified
   `error`; parse with
   `nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false)` and check
-  `is_discarded()`. Nothing throws across a zetta-core seam.
+  `is_discarded()`. Nothing throws across a zetta-core public boundary.
 - Never name `boost::capy` / `boost::corosio` / `openssl` outside the runtime
-  seam. `zetta-core` links no HTTP library — that is why the real client lives in
-  the `zetta-api` target and installs itself into the seam at startup.
+  headers and the two adapter TUs that are allowed to. `zetta-core` links no HTTP library — that is why the real client lives in
+  the `zetta-api` target and installs itself as the transport at startup.
 - The repo's IDE/LSP diagnostics are **false positives** (the IDE clang does not
   understand `-std=c++26`). Only `cmake --build build` is authoritative.
 
@@ -184,4 +184,4 @@ shows up as an undefined-symbol link error, not a compile error.
 - **A token in an error string.** Build failure reasons from host/port/status and
   the transport error only — never from a header or the config.
 - **Opening a socket in the connector.** Instantly untestable offline, and it
-  bypasses the seam that lets the transport be swapped.
+  bypasses the injection point that lets the transport be swapped.
