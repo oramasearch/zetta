@@ -538,8 +538,17 @@ std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
         return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
     }
     if (contains_any(col, {"node", "address", "path", "endpoint", "version", "ref", "token",
-                           "owner", "columns", "fields", "scope", "permissions", "roles"}))
+                           "owner", "columns", "fields", "scope", "permissions", "roles"})) {
+        if (s.size() > 64)
+            return "<span class=\"mono\" title=\"" + web_ui_escape(s) + "\">" +
+                   web_ui_escape(s.substr(0, 64)) + "\xE2\x80\xA6</span>";
         return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
+    }
+    // Long free text (e.g. a capabilities list) truncates with the full value on
+    // hover so one wide cell can't blow out the table.
+    if (s.size() > 76)
+        return "<span title=\"" + web_ui_escape(s) + "\">" +
+               web_ui_escape(s.substr(0, 76)) + "\xE2\x80\xA6</span>";
     return web_ui_escape(s);
 }
 
