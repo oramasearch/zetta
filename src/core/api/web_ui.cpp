@@ -253,6 +253,35 @@ dialog.dlg select,dialog.dlg input{width:100%;}
 .btn svg{width:14px;height:14px;flex:none;opacity:.75;}
 .btn-primary svg{opacity:1;}
 
+/* Visual graph editor — an interactive execution-graph canvas. */
+.getoolbar{display:flex;align-items:center;gap:9px;margin-bottom:14px;}
+.getoolbar select{width:auto;max-width:340px;}
+.getoolbar .gekind{max-width:132px;color:var(--ink-secondary);}
+.gespring{flex:1;}
+.gecanvas{position:relative;overflow:auto;border:1px solid var(--rule-card);border-radius:12px;
+  background-color:var(--canvas);background-image:radial-gradient(circle,rgba(0,0,0,.06) 1px,transparent 1.3px);
+  background-size:22px 22px;min-height:340px;max-height:600px;}
+.gesvg{display:block;}
+.genode{cursor:grab;}
+.genode:active{cursor:grabbing;}
+.generect{fill:var(--white);stroke:var(--rule-emph);stroke-width:1.4;}
+.genode:hover .generect{stroke:var(--accent);}
+.genkind{font:10px var(--font-mono);text-transform:uppercase;letter-spacing:.06em;fill:var(--ink-quiet);}
+.genname{font:13px var(--font-sans);font-weight:500;fill:var(--ink-primary);}
+.geport{fill:var(--accent);stroke:var(--white);stroke-width:2;cursor:crosshair;}
+.gedel{font:15px var(--font-sans);fill:var(--ink-quiet);cursor:pointer;opacity:0;text-anchor:middle;}
+.genode:hover .gedel{opacity:1;}
+.gedel:hover{fill:var(--err-fg);}
+.geedge{fill:none;stroke:#9aa1ad;stroke-width:1.8;cursor:pointer;}
+.geedge:hover{stroke:var(--err-fg);stroke-width:2.4;}
+.geedge.ctrl{stroke-dasharray:5 4;}
+.geghost{stroke:var(--accent);stroke-dasharray:4 4;pointer-events:none;}
+.gehint{margin-top:10px;font-size:11.5px;color:var(--ink-quiet);}
+.genameedit{position:absolute;width:132px;font:13px var(--font-sans);padding:4px 7px;border:1.5px solid var(--accent);border-radius:7px;background:var(--white);color:var(--ink-primary);z-index:5;box-shadow:var(--shadow-pop);}
+.gk-connect .generect{stroke:#2563EB;} .gk-clean .generect{stroke:#0F6E56;}
+.gk-model .generect{stroke:#7C3AED;} .gk-index .generect{stroke:#B45309;}
+.gk-serve .generect{stroke:#0891B2;} .gk-act .generect{stroke:#BE185D;}
+
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}

@@ -22,6 +22,8 @@
 #include "zetta/storage/engine.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/search.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/serialization.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
@@ -1330,6 +1332,125 @@ nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
                           {"edges", graph.graph().edge_count()}};
 }
 
+// --- get_graph / save_graph: the visual graph workspace's read + write path ---
+
+const nlohmann::json& graph_ref_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the owning project's name or uuid"}}},
+          {"graph",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the graph's name or uuid"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& graph_structure_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"graph_id", "name", "project", "nodes", "edges"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"graph_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"project", {{"type", "string"}}},
+          {"nodes",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"description", "a step: { id, kind, name }"}}}}},
+          {"edges",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"description", "a connection: { from, to, kind }"}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
+    const std::string project_name = input.at("project").get<std::string>();
+    const auto project = resolve_project(context, project_name);
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + project_name + "'");
+    }
+    const std::string graph_name = input.at("graph").get<std::string>();
+    const auto graph = resolve_graph(*project, graph_name);
+    if (!graph) {
+        return ApiResult::failure("not_found",
+                                  "no graph named '" + graph_name +
+                                      "' on project '" + project->name() + "'");
+    }
+    nlohmann::json output = zetta::ir::to_json(graph->graph());  // { nodes, edges }
+    output["graph_id"] = graph->id();
+    output["name"] = graph->name();
+    output["project"] = project->name();
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& save_graph_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph", "nodes", "edges"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the owning project's name or uuid"}}},
+          {"graph",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the graph's name or uuid (created if absent)"}}},
+          {"nodes",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"description", "the steps: each { id, kind, name }"}}},
+          {"edges",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"description", "the connections: each { from, to, kind }"}}},
+          {"new_name",
+           {{"type", "string"}, {"description", "rename the graph (optional)"}}}}}};
+    return schema;
+}
+
+ApiResult handle_save_graph(const nlohmann::json& input, ApiContext& context) {
+    const std::string project_name = input.at("project").get<std::string>();
+    const auto project = resolve_project(context, project_name);
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + project_name + "'");
+    }
+    nlohmann::json document;
+    document["nodes"] = input.at("nodes");
+    document["edges"] = input.at("edges");
+    std::string parse_error;
+    std::optional<zetta::ir::ExecutionGraph> parsed =
+        zetta::ir::from_json(document, &parse_error);
+    if (!parsed) {
+        return ApiResult::failure("invalid_input", "invalid graph: " + parse_error);
+    }
+    const std::string graph_name = input.at("graph").get<std::string>();
+    const std::string new_name = input.value("new_name", std::string{});
+    std::shared_ptr<zetta::pipeline::ProjectGraph> saved;
+    if (const auto existing = resolve_graph(*project, graph_name)) {
+        saved = project->update_graph(existing->name(), std::move(*parsed), new_name);
+    } else {
+        saved = project->create_graph(graph_name, std::move(*parsed));
+    }
+    if (!saved) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not save the graph (empty name, or a name collision)");
+    }
+    nlohmann::json output = graph_json(*saved);
+    output["project"] = project->name();
+    return ApiResult::success(std::move(output));
+}
+
 // The schema of input_json + the owning project — the output of the two
 // input-producing actions (capture_intent, import_n8n).
 const nlohmann::json& project_input_output_schema() {
@@ -2488,6 +2609,34 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/false,
         /*requires_consent=*/false,
         handle_get_project});
+
+    registry.add(Capability{
+        "get_graph",
+        "Get one graph",
+        "Read one execution graph's full structure — its typed step nodes "
+        "{id, kind, name} and directed edges {from, to, kind} — by project + "
+        "graph name or uuid. No side effects.",
+        graph_ref_schema(),
+        graph_structure_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_graph});
+
+    registry.add(Capability{
+        "save_graph",
+        "Save a graph",
+        "Persist an edited execution graph — its nodes + edges — back to a "
+        "project graph, creating it when absent or replacing the existing one "
+        "(replicated + audited, the visual editor's save path).",
+        save_graph_schema(),
+        project_graph_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "save_graph"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_save_graph});
 
     registry.add(Capability{
         "get_run",

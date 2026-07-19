@@ -202,6 +202,96 @@ std::string humanize_action(const std::string& name) {
     return out;
 }
 
+// The client-side visual graph editor: reads the embedded graphs, renders an
+// interactive SVG canvas (drag steps, drag a step's right port onto another to
+// connect, click a link to remove it, x to delete a step, Add step, Save), and
+// saves via POST /graph-save. Vanilla JS, no external deps (CSP-safe inline).
+constexpr const char* kGraphEditorJs = R"JS(
+(function(){
+  var raw=document.getElementById('ge-data'); if(!raw) return;
+  var DATA=JSON.parse(raw.textContent||'{}');
+  var KINDS=DATA.kinds||['connect','clean','model','index','serve','act'];
+  var sel=document.getElementById('ge-graph'),canvas=document.getElementById('ge-canvas');
+  var saveBtn=document.getElementById('ge-save'),addBtn=document.getElementById('ge-add');
+  var NS='http://www.w3.org/2000/svg',NW=158,NH=54,XG=216,YG=94;
+  var G=null,svg=null,drag=null,link=null,uid=0,addk=0;
+  function byId(id){for(var i=0;i<G.nodes.length;i++)if(G.nodes[i].id===id)return G.nodes[i];return null;}
+  function el(t,a){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);return e;}
+  function layout(){
+    var idx={};G.nodes.forEach(function(n,i){idx[n.id]=i;});
+    var adj=G.nodes.map(function(){return[];}),ind=G.nodes.map(function(){return 0;});
+    G.edges.forEach(function(e){if(idx[e.from]!=null&&idx[e.to]!=null){adj[idx[e.from]].push(idx[e.to]);ind[idx[e.to]]++;}});
+    var lay=G.nodes.map(function(){return 0;}),deg=ind.slice(),q=[];
+    G.nodes.forEach(function(n,i){if(deg[i]===0)q.push(i);});
+    while(q.length){var u=q.shift();adj[u].forEach(function(v){lay[v]=Math.max(lay[v],lay[u]+1);if(--deg[v]===0)q.push(v);});}
+    var byL={};G.nodes.forEach(function(n,i){(byL[lay[i]]=byL[lay[i]]||[]).push(i);});
+    Object.keys(byL).forEach(function(l){byL[l].forEach(function(ni,k){G.nodes[ni].x=30+(+l)*XG;G.nodes[ni].y=30+k*YG;});});
+  }
+  function cursor(ev){var r=svg.getBoundingClientRect();return{x:ev.clientX-r.left,y:ev.clientY-r.top};}
+  function path(a,b){var x1=a.x+NW,y1=a.y+NH/2,x2=b.x,y2=b.y+NH/2,mx=(x1+x2)/2;return 'M'+x1+' '+y1+' C'+mx+' '+y1+' '+mx+' '+y2+' '+x2+' '+y2;}
+  function render(){
+    canvas.innerHTML='';
+    var W=Math.max(canvas.clientWidth||600,600),H=380;
+    G.nodes.forEach(function(n){W=Math.max(W,n.x+NW+40);H=Math.max(H,n.y+NH+40);});
+    svg=el('svg',{'class':'gesvg',width:W,height:H});
+    var defs=el('defs',{});defs.innerHTML='<marker id="gearw" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 9 4.5 0 9z" fill="#9aa1ad"/></marker>';svg.appendChild(defs);
+    G.edges.forEach(function(e){var a=byId(e.from),b=byId(e.to);if(!a||!b)return;
+      var p=el('path',{d:path(a,b),'class':'geedge'+(e.kind==='control'?' ctrl':''),'marker-end':'url(#gearw)'});
+      p.addEventListener('click',function(ev){ev.stopPropagation();G.edges=G.edges.filter(function(x){return!(x.from===e.from&&x.to===e.to);});render();});
+      svg.appendChild(p);});
+    if(link)svg.appendChild(el('path',{d:'M'+link.x1+' '+link.y1+' L'+link.x2+' '+link.y2,'class':'geedge geghost'}));
+    G.nodes.forEach(function(n){
+      var g=el('g',{transform:'translate('+n.x+','+n.y+')','class':'genode gk-'+n.kind});
+      g.appendChild(el('rect',{width:NW,height:NH,rx:11,'class':'generect'}));
+      var kt=el('text',{x:15,y:22,'class':'genkind'});kt.textContent=n.kind;g.appendChild(kt);
+      var nt=el('text',{x:15,y:40,'class':'genname'});nt.textContent=(n.name||'').slice(0,20);g.appendChild(nt);
+      var port=el('circle',{cx:NW,cy:NH/2,r:6,'class':'geport'});g.appendChild(port);
+      var del=el('text',{x:NW-13,y:20,'class':'gedel'});del.textContent='×';g.appendChild(del);
+      del.addEventListener('mousedown',function(ev){ev.stopPropagation();});
+      del.addEventListener('click',function(ev){ev.stopPropagation();G.nodes=G.nodes.filter(function(x){return x.id!==n.id;});G.edges=G.edges.filter(function(x){return x.from!==n.id&&x.to!==n.id;});render();});
+      g.addEventListener('mousedown',function(ev){if(ev.target===port||ev.target===del)return;var p=cursor(ev);drag={n:n,ox:p.x-n.x,oy:p.y-n.y};ev.preventDefault();});
+      g.addEventListener('dblclick',function(ev){ev.stopPropagation();drag=null;
+        var inp=document.createElement('input');inp.className='genameedit';inp.value=n.name||'';
+        inp.style.left=(n.x+13)+'px';inp.style.top=(n.y+27)+'px';canvas.appendChild(inp);inp.focus();inp.select();
+        var done=false;function commit(){if(done)return;done=true;n.name=inp.value.trim()||n.name;if(inp.parentNode)inp.parentNode.removeChild(inp);render();}
+        inp.addEventListener('blur',commit);
+        inp.addEventListener('keydown',function(e){if(e.key==='Enter')commit();else if(e.key==='Escape'){done=true;if(inp.parentNode)inp.parentNode.removeChild(inp);}});});
+      port.addEventListener('mousedown',function(ev){ev.stopPropagation();ev.preventDefault();var p=cursor(ev);link={from:n.id,x1:n.x+NW,y1:n.y+NH/2,x2:p.x,y2:p.y};});
+      svg.appendChild(g);});
+    canvas.appendChild(svg);
+  }
+  document.addEventListener('mousemove',function(ev){if(!svg)return;
+    if(drag){var p=cursor(ev);drag.n.x=Math.max(0,p.x-drag.ox);drag.n.y=Math.max(0,p.y-drag.oy);render();}
+    else if(link){var p=cursor(ev);link.x2=p.x;link.y2=p.y;render();}});
+  document.addEventListener('mouseup',function(ev){
+    if(link){var p=cursor(ev),t=null;G.nodes.forEach(function(n){if(p.x>=n.x&&p.x<=n.x+NW&&p.y>=n.y&&p.y<=n.y+NH)t=n;});
+      if(t&&t.id!==link.from&&!G.edges.some(function(e){return e.from===link.from&&e.to===t.id;}))G.edges.push({from:link.from,to:t.id,kind:'data_flow'});
+      link=null;render();}
+    drag=null;});
+  function loadIndex(i){var d=DATA.graphs[i];if(!d)return;
+    G={project:d.project,name:d.name,nodes:(d.nodes||[]).map(function(n){return{id:n.id,kind:n.kind,name:n.name,x:0,y:0};}),edges:(d.edges||[]).map(function(e){return{from:e.from,to:e.to,kind:e.kind||'data_flow'};})};
+    uid=0;G.nodes.forEach(function(n){var m=(''+n.id).match(/(\d+)$/);if(m)uid=Math.max(uid,+m[1]);});
+    layout();render();}
+  var kindSel=document.getElementById('ge-kind');
+  if(addBtn)addBtn.addEventListener('click',function(){
+    var kind=(kindSel&&kindSel.value)||KINDS[0];uid++;
+    var maxY=0;G.nodes.forEach(function(n){maxY=Math.max(maxY,n.y);});
+    G.nodes.push({id:'n'+uid,kind:kind,name:kind,x:30,y:(G.nodes.length?maxY+YG:30)});
+    render();});
+  if(saveBtn)saveBtn.addEventListener('click',function(){
+    var payload={project:G.project,graph:G.name,
+      nodes:G.nodes.map(function(n){return{id:n.id,kind:n.kind,name:n.name};}),
+      edges:G.edges.map(function(e){return{from:e.from,to:e.to,kind:e.kind};})};
+    var lbl=saveBtn.querySelector('.gelbl');if(lbl)lbl.textContent='Saving…';
+    fetch('/graph-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json();}).then(function(j){if(lbl)lbl.textContent=(j&&j.ok===false)?'Save failed':'Saved';setTimeout(function(){location.reload();},600);})
+      .catch(function(){if(lbl)lbl.textContent='Save failed';});});
+  if(sel)sel.addEventListener('change',function(){loadIndex(+sel.value);});
+  window.addEventListener('resize',function(){if(G)render();});
+  loadIndex(0);
+})();
+)JS";
+
 // Resolve a search hit's row id to its document json for display — a table's
 // store holds its rows even when partitioned. Presentation-only lookup on the
 // owning loop; empty object when the row can't be found.
@@ -906,20 +996,35 @@ struct ApiServer::Impl {
         if (!schema.is_object() || !schema.contains("properties") ||
             !schema["properties"].is_object())
             return fields;
+        const nlohmann::json& properties = schema["properties"];
         const nlohmann::json required = schema.value("required", nlohmann::json::array());
-        for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
-            const std::string key = it.key();
-            bool is_required = false;
-            for (const auto& item : required)
-                if (item.is_string() && item.get<std::string>() == key) is_required = true;
-            const std::string description = it.value().value("description", "");
-            const std::string type = it.value().value("type", "string");
+        // Required fields first (in declared order), then the rest — the primary
+        // inputs lead the form instead of alphabetical property order.
+        std::vector<std::string> order;
+        auto has_key = [&](const std::string& k) {
+            for (const std::string& o : order)
+                if (o == k) return true;
+            return false;
+        };
+        for (const auto& item : required)
+            if (item.is_string() && properties.contains(item.get<std::string>()))
+                order.push_back(item.get<std::string>());
+        const std::size_t required_count = order.size();
+        for (auto it = properties.begin(); it != properties.end(); ++it)
+            if (!has_key(it.key())) order.push_back(it.key());
+
+        for (std::size_t oi = 0; oi < order.size(); ++oi) {
+            const std::string& key = order[oi];
+            const nlohmann::json& prop = properties[key];
+            const bool is_required = oi < required_count;
+            const std::string description = prop.value("description", "");
+            const std::string type = prop.value("type", "string");
             const bool full = key == "path" || key == "statement" || key == "source" ||
                               key == "description" || description.size() > 52;
 
             std::string options;
-            if (it.value().contains("enum")) {
-                for (const auto& choice : it.value()["enum"])
+            if (prop.contains("enum")) {
+                for (const auto& choice : prop["enum"])
                     if (choice.is_string())
                         options += form_option(choice.get<std::string>(),
                                                choice.get<std::string>(), false);
@@ -1316,6 +1421,70 @@ struct ApiServer::Impl {
 
     // The Graphs panel — aggregates every project's compiled execution graphs (there is no
     // system.graphs view; graphs are owned by projects, reached via get_project).
+    // The visual graph editor panel: embeds every project graph's structure (via
+    // get_graph) and mounts the interactive SVG editor over it (kGraphEditorJs),
+    // which saves through POST /graph-save -> the save_graph capability.
+    std::string render_graph_editor(ApiContext& context) {
+        nlohmann::json data;
+        data["kinds"] = {"connect", "clean", "model", "index", "serve", "act"};
+        nlohmann::json graphs = nlohmann::json::array();
+        ApiResult projects =
+            capability_registry.call("list_projects", nlohmann::json::object(), context);
+        if (projects.ok)
+            for (const auto& pname : projects.value.value("projects", nlohmann::json::array())) {
+                if (!pname.is_string()) continue;
+                ApiResult detail = capability_registry.call(
+                    "get_project", nlohmann::json{{"name", pname}}, context);
+                if (!detail.ok) continue;
+                for (const auto& g : detail.value.value("graphs", nlohmann::json::array())) {
+                    if (!g.is_object()) continue;
+                    ApiResult full = capability_registry.call(
+                        "get_graph",
+                        nlohmann::json{{"project", pname}, {"graph", g.value("name", "")}},
+                        context);
+                    if (full.ok) graphs.push_back(full.value);
+                }
+            }
+        data["graphs"] = graphs;
+
+        if (graphs.empty())
+            return web_ui_panel(
+                "Graph editor",
+                "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean \xE2\x86\x92 model "
+                "\xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+                "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
+                    "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">Compile a "
+                    "project's intent (Projects \xE2\x86\x92 open one \xE2\x86\x92 compile) to get an "
+                    "editable graph here.</span></div>");
+
+        std::string options;
+        for (std::size_t i = 0; i < graphs.size(); ++i)
+            options += "<option value=\"" + std::to_string(i) + "\">" +
+                       web_ui_escape(graphs[i].value("project", "") + " \xC2\xB7 " +
+                                     graphs[i].value("name", "")) + "</option>";
+        const std::string body =
+            "<div class=\"getoolbar\"><select id=\"ge-graph\">" + options +
+            "</select><span class=\"gespring\"></span>"
+            "<select id=\"ge-kind\" class=\"gekind\"><option value=\"connect\">connect</option>"
+            "<option value=\"clean\">clean</option><option value=\"model\">model</option>"
+            "<option value=\"index\">index</option><option value=\"serve\">serve</option>"
+            "<option value=\"act\">act</option></select>"
+            "<button type=\"button\" class=\"btn small\" id=\"ge-add\">" + web_ui_icon("bolt") +
+            "Add step</button>"
+            "<button type=\"button\" class=\"btn small btn-primary\" id=\"ge-save\">" +
+            web_ui_icon("play") + "<span class=\"gelbl\">Save</span></button></div>"
+            "<div id=\"ge-canvas\" class=\"gecanvas\"></div>"
+            "<div class=\"gehint\">drag a step to move it \xC2\xB7 double-click to rename \xC2\xB7 drag "
+            "from a step's right dot onto another to connect \xC2\xB7 click a link to remove it "
+            "\xC2\xB7 \xC3\x97 deletes a step</div>"
+            "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
+            "<script>" + std::string(kGraphEditorJs) + "</script>";
+        return web_ui_panel("Graph editor",
+                            "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean "
+                            "\xE2\x86\x92 model \xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+                            body);
+    }
+
     std::string render_graphs_panel(ApiContext& context) {
         ApiResult lp = capability_registry.call("list_projects", nlohmann::json::object(), context);
         std::string rows;
@@ -1509,7 +1678,7 @@ struct ApiServer::Impl {
                                                      "compile_intent", "compile_n8n", "compile_python",
                                                      "gate", "deploy", "run"});
             out += pipeline_legend();
-            out += render_graphs_panel(context);
+            out += render_graph_editor(context);
             out += web_ui_panel(
                 "Deployments",
                 "a graph placed onto a target (local / kubernetes / cloud) and made runnable",
@@ -1720,6 +1889,48 @@ struct ApiServer::Impl {
 
     // POST /shell — run one command (SQL) for the Shell/Notebooks REPL; returns JSON (columns/rows or
     // an error). Cookie-authed and audited as the signed-in user, exactly like the REST sql capability.
+    // POST /graph-save — the visual editor's save path: a cookie-authed JSON body
+    // {project, graph, nodes, edges} invoked through the save_graph capability.
+    boost::http::route_task serve_graph_save(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"ok":false,"error":"unauthorized"})";
+        } else {
+            nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
+            if (input.is_discarded()) {
+                json_body = R"({"ok":false,"error":"malformed json"})";
+            } else {
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, user_id,
+                                       zetta::observability::make_root_trace(),
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = true;
+                    ApiResult result =
+                        capability_registry.call("save_graph", input, context);
+                    json_body = result.ok
+                                    ? result.value.dump()
+                                    : nlohmann::json{{"ok", false},
+                                                     {"error", result.error.message}}
+                                          .dump();
+                });
+            }
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     boost::http::route_task serve_web_shell(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -1996,6 +2207,9 @@ bool ApiServer::start() {
     });
     router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_shell(route);
+    });
+    router.add(http::method::post, "/graph-save", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_graph_save(route);
     });
     router.add(http::method::post, "/blob", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_blob_upload(route);
