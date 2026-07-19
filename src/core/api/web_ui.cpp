@@ -233,6 +233,17 @@ code.j{font-size:11px;color:var(--ink-muted);}
 .fld .lbl{flex:0 0 64px;font:10px/1.6 var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
 .fld span:last-child{color:var(--ink-primary);min-width:0;word-break:break-word;}
 
+/* Action toolbar + modal dialogs — real affordances, not a stack of open forms. */
+.toolbar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:16px;}
+dialog.dlg{border:none;border-radius:16px;padding:0;box-shadow:0 16px 48px rgba(18,20,26,.24);width:min(520px,92vw);color:var(--ink-primary);background:var(--white);}
+dialog.dlg::backdrop{background:rgba(18,20,26,.42);}
+dialog.dlg form{padding:22px 24px 20px;margin:0;}
+.dlghd{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.dlghd h3{margin:0;font:17px var(--font-sans);font-weight:600;color:var(--ink-primary);}
+.dlgx{background:none;border:none;font-size:22px;line-height:1;color:var(--ink-quiet);cursor:pointer;padding:0 4px;}
+.dlgsub{margin:6px 0 16px;font-size:13px;color:var(--ink-muted);}
+.dlgact{display:flex;justify-content:flex-end;gap:9px;margin-top:20px;}
+
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}

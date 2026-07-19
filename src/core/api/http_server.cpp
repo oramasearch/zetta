@@ -172,6 +172,36 @@ std::string query_param(const boost::http::route_params& route, std::string_view
     return std::string(fallback);
 }
 
+// A task-oriented button label for a capability (the API verb is not what a
+// user should read on a button). Falls back to the de-underscored, capitalized
+// name for anything unmapped.
+std::string humanize_action(const std::string& name) {
+    if (name == "add_dataset") return "Load dataset";
+    if (name == "create_index") return "Create index";
+    if (name == "expose_index") return "Expose index";
+    if (name == "unexpose_index") return "Un-expose index";
+    if (name == "expose_model") return "Expose model";
+    if (name == "unexpose_model") return "Un-expose model";
+    if (name == "create_project") return "New project";
+    if (name == "capture_intent") return "Capture intent";
+    if (name == "import_n8n") return "Import n8n";
+    if (name == "compile_intent") return "Compile intent";
+    if (name == "compile_n8n") return "Compile n8n";
+    if (name == "compile_python") return "Compile Python";
+    if (name == "add_nodes") return "Add nodes";
+    if (name == "detect_provisioners") return "Detect providers";
+    if (name == "cloud_inspect") return "Inspect cloud";
+    if (name == "approve_consent") return "Approve consent";
+    if (name == "deny_consent") return "Deny consent";
+    if (name == "submit_feedback") return "Send feedback";
+    std::string out = name;
+    for (char& character : out)
+        if (character == '_') character = ' ';
+    if (!out.empty())
+        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    return out;
+}
+
 // Resolve a search hit's row id to its document json for display — a table's
 // store holds its rows even when partitioned. Presentation-only lookup on the
 // owning loop; empty object when the row can't be found.
@@ -810,10 +840,10 @@ struct ApiServer::Impl {
     // One capability rendered as an action form (from its input_schema) that POSTs to /run.
     // One capability as a collapsible action (native <details>): a compact summary row (name +
     // description) that expands to its input form, laid out in a 2-column field grid.
-    std::string render_capability_form(const Capability& capability) {
-        const bool write = capability.kind != CapabilityKind::Read;
+    // The schema-driven input fields (a 2-column grid) for a capability — shared
+    // by the inline action form and the modal action dialog.
+    std::string capability_form_fields(const Capability& capability) {
         std::string fields;
-        int field_count = 0;
         const auto& schema = capability.input_schema;
         if (schema.is_object() && schema.contains("properties") && schema["properties"].is_object()) {
             const nlohmann::json required = schema.value("required", nlohmann::json::array());
@@ -833,9 +863,14 @@ struct ApiServer::Impl {
                           web_ui_escape(type) +
                           (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) +
                           "\"></div>";
-                ++field_count;
             }
         }
+        return fields;
+    }
+
+    std::string render_capability_form(const Capability& capability) {
+        const bool write = capability.kind != CapabilityKind::Read;
+        const std::string fields = capability_form_fields(capability);
         std::string out = "<details class=\"action\"><summary><span class=\"aico\">" +
                           web_ui_icon(write ? "bolt" : "runs") + "</span><span class=\"an\">" +
                           web_ui_escape(capability.name) + "</span><span class=\"ad\">" +
@@ -843,7 +878,7 @@ struct ApiServer::Impl {
                           web_ui_icon("chevron") + "</span></summary><div class=\"abody\">";
         out += "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
                web_ui_escape(capability.name) + "\">";
-        if (field_count) out += "<div class=\"fgrid\">" + fields + "</div>";
+        if (!fields.empty()) out += "<div class=\"fgrid\">" + fields + "</div>";
         out += "<div style=\"margin-top:14px\"><button class=\"btn";
         out += write ? " btn-primary" : "";
         out += "\">";
@@ -852,6 +887,48 @@ struct ApiServer::Impl {
         out += to_string(capability.kind);
         out += "</button></div></form></div></details>";
         return out;
+    }
+
+    // A capability as a modal dialog: a real affordance opened from a toolbar
+    // button, not an always-expanded form. Its form POSTs to /run and, on success,
+    // returns to `view` so the page reflects the new state.
+    std::string render_action_dialog(const Capability& capability, const std::string& view,
+                                     const std::string& dialog_id, const std::string& label) {
+        const std::string fields = capability_form_fields(capability);
+        std::string out =
+            "<dialog id=\"" + dialog_id + "\" class=\"dlg\"><form method=\"post\" action=\"/run\">"
+            "<input type=\"hidden\" name=\"cap\" value=\"" + web_ui_escape(capability.name) +
+            "\"><input type=\"hidden\" name=\"_return\" value=\"/?view=" + web_ui_escape(view) +
+            "\"><div class=\"dlghd\"><h3>" + web_ui_escape(label) +
+            "</h3><button type=\"button\" class=\"dlgx\" aria-label=\"Close\" "
+            "onclick=\"this.closest('dialog').close()\">\xC3\x97</button></div>"
+            "<p class=\"dlgsub\">" + web_ui_escape(capability.description) + "</p>";
+        if (!fields.empty()) out += "<div class=\"fgrid\">" + fields + "</div>";
+        out += "<div class=\"dlgact\"><button type=\"button\" class=\"btn\" "
+               "onclick=\"this.closest('dialog').close()\">Cancel</button>"
+               "<button class=\"btn btn-primary\">" + web_ui_escape(label) +
+               "</button></div></form></dialog>";
+        return out;
+    }
+
+    // A toolbar of task-labelled buttons, each opening its capability in a modal
+    // dialog — the real-application replacement for a bottom stack of forms.
+    std::string render_action_bar(const std::string& view,
+                                  std::initializer_list<std::string_view> names) {
+        std::string toolbar = "<div class=\"toolbar\">";
+        std::string dialogs;
+        bool any = false;
+        for (std::string_view name : names)
+            if (auto capability = capability_registry.find(std::string(name))) {
+                any = true;
+                const std::string dialog_id = "dlg-" + capability->name;
+                const std::string label = humanize_action(capability->name);
+                toolbar += "<button type=\"button\" class=\"btn\" onclick=\"document.getElementById('" +
+                           dialog_id + "').showModal()\">" + web_ui_escape(label) + "</button>";
+                dialogs += render_action_dialog(*capability, view, dialog_id, label);
+            }
+        toolbar += "</div>";
+        return any ? toolbar + dialogs : std::string();
     }
 
     std::string render_capabilities(std::initializer_list<std::string_view> names) {
@@ -1333,11 +1410,11 @@ struct ApiServer::Impl {
         } else if (view == "projects") {
             out += render_projects(context, route);
         } else if (view == "data") {
+            out += render_action_bar(view, {"add_dataset", "create_index",
+                                            "expose_index", "unexpose_index"});
             out += render_search_panel(context, route);
             out += render_data_explorer(context, route);
             out += web_ui_panel("Indexes", "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable, expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
-            out += render_capabilities({"add_dataset", "create_index",
-                                        "expose_index", "unexpose_index"});
         } else if (view == "models") {
             out += web_ui_panel(
                 "Models",
@@ -1497,7 +1574,9 @@ struct ApiServer::Impl {
         } else {
             const auto fields = parse_form(sink.data);
             const std::string cap_name = form_field(fields, "cap");
+            const std::string return_url = form_field(fields, "_return");
             std::string content;
+            bool succeeded = false;
             co_await bridge.run_on_owner([&] {
                 auto capability = capability_registry.find(cap_name);
                 if (!capability) {
@@ -1520,6 +1599,7 @@ struct ApiServer::Impl {
                                    &background};
                 context.acting_is_user = true;
                 ApiResult result = capability_registry.call(cap_name, input, context);
+                succeeded = result.ok;
                 std::string result_html;
                 if (result.ok) {
                     result_html = "<div class=\"pill ok\" style=\"margin-bottom:10px\">ok</div><pre>" +
@@ -1533,6 +1613,18 @@ struct ApiServer::Impl {
                 result_html += "<div style=\"margin-top:12px\"><a class=\"btn small\" href=\"/?view=console\">Back to Console</a></div>";
                 content = web_ui_panel(cap_name, capability->description, result_html);
             });
+            // A dialog-launched mutation returns to the view it came from so the
+            // page reflects the new state, instead of a standalone result page
+            // (relative same-origin targets only — never an open redirect).
+            if (succeeded && return_url.size() > 1 && return_url[0] == '/' &&
+                return_url[1] != '/') {
+                route.status(http::status::found);
+                route.res.set(http::field::location, return_url);
+                stamp_response_headers(route, "");
+                auto [redirect_error] = co_await route.send("");
+                if (redirect_error) co_return http::route_error(redirect_error);
+                co_return http::route_done;
+            }
             body = web_ui_shell("console",
                                 user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content);
         }
