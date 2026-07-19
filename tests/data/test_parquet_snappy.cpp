@@ -384,3 +384,84 @@ TEST(ParquetSnappyCompress, LiteralReferenceNeverShrinksItsInput) {
         EXPECT_GT(compressed.data.size(), input.size());
     }
 }
+
+// The shipped encoder must actually compress — otherwise a partition body is
+// larger on disk than the rows it holds and the SNAPPY codec is a lie. Checked
+// against the literals-only reference on the same input, which is the honest
+// "no compression at all" number.
+TEST(ParquetSnappyCompress, MatchEncoderShrinksRepetitiveInput) {
+    struct Case {
+        std::string name;
+        std::string input;
+        double max_ratio;  // compressed / uncompressed the encoder must beat
+    };
+    std::vector<Case> cases;
+
+    // A single copy element spans at most 64 bytes, so even an infinitely
+    // repetitive input costs ~3 bytes per 64 — ~4.7% is the format's floor here,
+    // not a weakness of the search.
+    cases.push_back({"one byte repeated", std::string(100000, 'a'), 0.06});
+
+    {
+        // A column-shaped body: the same 16-byte value repeated, the way a
+        // low-cardinality parquet page packs.
+        std::string body;
+        while (body.size() < 64000) body += "ABCDEFGHIJKLMNOP";
+        cases.push_back({"repeated pattern", body, 0.05});
+    }
+    {
+        // PLAIN-encoded int64s of a slowly increasing counter: seven of every
+        // eight bytes are zero, the realistic numeric-column shape.
+        std::string body;
+        for (std::int64_t value = 0; value < 8000; ++value) {
+            for (unsigned byte_index = 0; byte_index < 8; ++byte_index) {
+                body.push_back(static_cast<char>((value >> (8 * byte_index)) & 0xff));
+            }
+        }
+        cases.push_back({"plain int64 column", body, 0.60});
+    }
+    {
+        // Length-prefixed strings from a small vocabulary — a byte_array column.
+        std::string body;
+        const std::vector<std::string> vocabulary = {"active", "churned", "trial", "paused"};
+        for (int index = 0; index < 4000; ++index) {
+            const std::string& value = vocabulary[static_cast<std::size_t>(index) % vocabulary.size()];
+            const auto length = static_cast<std::uint32_t>(value.size());
+            for (unsigned byte_index = 0; byte_index < 4; ++byte_index) {
+                body.push_back(static_cast<char>((length >> (8 * byte_index)) & 0xff));
+            }
+            body += value;
+        }
+        cases.push_back({"byte_array column", body, 0.10});
+    }
+
+    for (const Case& test_case : cases) {
+        const auto compressed = snappy_compress(test_case.input);
+        ASSERT_TRUE(compressed.ok()) << test_case.name << ": " << compressed.error;
+        const auto literals = snappy_compress_literals(test_case.input);
+        ASSERT_TRUE(literals.ok()) << test_case.name;
+
+        EXPECT_LT(compressed.data.size(), literals.data.size()) << test_case.name;
+        EXPECT_LT(static_cast<double>(compressed.data.size()) /
+                      static_cast<double>(test_case.input.size()),
+                  test_case.max_ratio)
+            << test_case.name;
+
+        const auto restored = snappy_decompress(compressed.data);
+        ASSERT_TRUE(restored.ok()) << test_case.name << ": " << restored.error;
+        EXPECT_EQ(restored.data, test_case.input) << test_case.name;
+    }
+}
+
+// Incompressible input must not blow up in size: the encoder falls back to the
+// literal framing rather than paying for copy elements that buy nothing.
+TEST(ParquetSnappyCompress, IncompressibleInputStaysNearItsOriginalSize) {
+    DeterministicBytes noise(0x13579bdfu);
+    const std::string input = noise.take(50000);
+    const auto compressed = snappy_compress(input);
+    ASSERT_TRUE(compressed.ok()) << compressed.error;
+    EXPECT_LT(compressed.data.size(), input.size() + input.size() / 16);
+    const auto restored = snappy_decompress(compressed.data);
+    ASSERT_TRUE(restored.ok()) << restored.error;
+    EXPECT_EQ(restored.data, input);
+}

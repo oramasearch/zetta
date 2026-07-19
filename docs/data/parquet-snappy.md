@@ -79,9 +79,19 @@ or decoder bug, while a failure only the compressor shows is in the match search
 This is the relationship `CpuDevice` has to `CudaDevice` — a slow, obviously
 correct implementation kept as the numerical reference for a fast one.
 
-> Status: the literals-only layer is in; `snappy_compress` currently delegates to
-> it, and the hash-match search lands behind the same function and the same
-> round-trip tests.
+`snappy_compress` finds matches with a hash table over 4-byte windows (google/
+snappy's multiplicative hash, at most 2^14 buckets, sized down for a small page).
+A bucket hit is only a *candidate*: the four bytes are compared before a copy is
+emitted, so a hash collision can only cost a missed match, never a wrong byte.
+After a match, the windows it skipped are indexed too, so a long match does not
+blind the table. If the result would still be bigger than the literal framing of
+the same bytes — possible on pathological input — the literal form is shipped
+instead, so a "compressed" page is never larger than an uncompressed one.
+
+Two limits are the format's, not the encoder's: a single copy element spans at
+most **64 bytes**, so even an infinitely repetitive input costs ~3 bytes per 64
+(≈4.7%); and a block's length preamble is **32-bit**, so an input above 4 GiB is
+rejected with a reason rather than truncated.
 
 ## Testing — byte-identical decode
 
@@ -117,6 +127,11 @@ they are differentially compared:
   to "one byte repeated".
 - The declared preamble length is asserted to equal the input length in every
   case, so a page header's `uncompressed_page_size` can be trusted.
+- **It actually compresses** — four page-shaped bodies (one byte repeated, a
+  repeated 16-byte pattern, PLAIN-encoded int64s of a counter, length-prefixed
+  strings from a four-word vocabulary) must each beat both the literals-only
+  reference and a stated ratio; and 50 KB of pseudo-random noise must *not* grow
+  by more than the framing overhead.
 
 ## How it fits
 
