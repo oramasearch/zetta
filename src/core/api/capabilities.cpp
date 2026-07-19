@@ -1,10 +1,13 @@
 #include "zetta/api/capabilities.hpp"
 
 #include <chrono>
+#include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "zetta/api/background.hpp"
 #include "zetta/api/serving.hpp"
@@ -901,6 +904,152 @@ ApiResult handle_expose_index(const nlohmann::json& input,
 ApiResult handle_unexpose_index(const nlohmann::json& input,
                                 ApiContext& context) {
     return set_index_exposure(input, context, /*exposed=*/false);
+}
+
+// --- create_index (https://github.com/oramasearch/zetta/issues/825) ----------
+//
+// The public create path for an index over a loaded table: it records the Index
+// entity (Node::create_index) then reconciles so this node's per-partition BM25F
+// sub-indexes build immediately. With add_dataset's default (partitioned)
+// placement the table has placed partitions the node owns, so `search` then takes
+// the distributed path and returns ranked hits. This is the tool search()'s own
+// resolution names ("create one with create_index").
+
+const nlohmann::json& create_index_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"table", "fields"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"table",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the source table to index (load it first with add_dataset)"}}},
+          {"fields",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"uniqueItems", true},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"description", "the fields to index (>= 1, unique)"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", {"search", "vector", "feature"}},
+            {"description",
+             "index kind (default search — the only kind with a built-in "
+             "backend today)"}}},
+          {"backend",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the IndexBackend that builds it (default oramacore_fulltext, "
+             "BM25F full-text; memory_search is the exact-match reference)"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the table's database — needed only when the same table name "
+             "exists in several databases"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_index_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"index_id", "table", "kind", "backend", "fields", "exposed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"index_id", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"kind", {{"type", "string"}}},
+          {"backend", {{"type", "string"}}},
+          {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"exposed", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+// Resolve a table by name — within `database` when named, else the first database
+// holding a table of that name (the index_step_executor resolution).
+std::shared_ptr<zetta::data::Table> resolve_index_source_table(
+    Node& node, const std::string& table, const std::string& database_hint) {
+    if (!database_hint.empty()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(database_hint);
+        return database ? database->find_table(table) : nullptr;
+    }
+    for (const std::string& name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(name);
+        if (database) {
+            if (const std::shared_ptr<zetta::data::Table> found =
+                    database->find_table(table)) {
+                return found;
+            }
+        }
+    }
+    return nullptr;
+}
+
+ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) {
+    const std::string table = input.at("table").get<std::string>();
+    const std::vector<std::string> fields =
+        input.at("fields").get<std::vector<std::string>>();
+    const std::string kind_name = input.value("kind", std::string{"search"});
+    const std::string backend =
+        input.value("backend", std::string{"oramacore_fulltext"});
+    const std::string database_hint = input.value("database", std::string{});
+
+    // (1) The source table must exist — an index is built over its partitions.
+    if (!resolve_index_source_table(context.node, table, database_hint)) {
+        return ApiResult::failure(
+            "not_found",
+            "table '" + table + "' not found — load it first with add_dataset");
+    }
+
+    // (2) The kind is schema-constrained; parse it back to the enum.
+    const std::optional<zetta::index::IndexKind> kind =
+        zetta::index::index_kind_from_name(kind_name);
+    if (!kind) {
+        return ApiResult::failure("invalid_input",
+                                  "unknown index kind '" + kind_name + "'");
+    }
+
+    zetta::index::IndexValue value;
+    value.table = table;
+    value.kind = *kind;
+    value.backend = backend;
+    value.fields = fields;
+
+    // (3) The backend must resolve for this kind, or the recorded index could
+    // never build — fail with the reason rather than persist a dead entity.
+    if (!context.node.index_registry().resolve(value.spec())) {
+        return ApiResult::failure(
+            "invalid_input", "no index backend named '" + backend +
+                                 "' implements kind '" + kind_name +
+                                 "' on this node");
+    }
+
+    // (4) Record the entity, then reconcile so this node's per-partition
+    // sub-indexes build now (search would also reconcile before querying).
+    const std::shared_ptr<zetta::index::Index> index =
+        context.node.create_index(std::move(value));
+    if (!index) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not record the index (needs a table, a backend, and >= 1 "
+            "field)");
+    }
+    context.node.reconcile_search_indexes();
+
+    nlohmann::json output;
+    output["index_id"] = index->id();
+    output["table"] = index->table();
+    output["kind"] = std::string(index->kind_name());
+    output["backend"] = index->backend();
+    output["fields"] = index->fields();
+    output["exposed"] = index->exposed();
+    return ApiResult::success(std::move(output));
 }
 
 // --- list_traces / get_trace ---------------------------------------------
@@ -2539,6 +2688,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_unexpose_index});
+
+    registry.add(Capability{
+        "create_index",
+        "Create index",
+        "Build a full-text index over a loaded table: records the Search index "
+        "entity and builds the per-partition BM25F sub-indexes so `search` "
+        "returns ranked hits (load the table first with add_dataset).",
+        create_index_schema(),
+        create_index_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_index"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_index});
 
     // --- governed action parity (#617): the rest of the product loop ---------
 

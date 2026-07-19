@@ -1103,6 +1103,160 @@
         ]
       }
     },
+    "/v1/create_index": {
+      "post": {
+        "description": "Build a full-text index over a loaded table: records the Search index entity and builds the per-partition BM25F sub-indexes so `search` returns ranked hits (load the table first with add_dataset). Requires orchestration:create_index.",
+        "operationId": "create_index",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "backend": {
+                    "description": "the IndexBackend that builds it (default oramacore_fulltext, BM25F full-text; memory_search is the exact-match reference)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "the table's database — needed only when the same table name exists in several databases",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "fields": {
+                    "description": "the fields to index (>= 1, unique)",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "index kind (default search — the only kind with a built-in backend today)",
+                    "enum": [
+                      "search",
+                      "vector",
+                      "feature"
+                    ],
+                    "type": "string"
+                  },
+                  "table": {
+                    "description": "the source table to index (load it first with add_dataset)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table",
+                  "fields"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "backend": {
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "fields": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "table",
+                        "kind",
+                        "backend",
+                        "fields",
+                        "exposed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_project": {
       "post": {
         "description": "Create a new AI project (the central user-managed artifact); the project replicates to every node. Requires orchestration:create_project.",

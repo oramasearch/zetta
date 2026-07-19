@@ -156,6 +156,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
 | `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
+| `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |
 | `testsuite_run` | job | orchestration:testsuite_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
 | `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
 | `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated** re-detect of the local CLIs' deployment contexts → `system.provisioners` |

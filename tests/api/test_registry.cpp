@@ -57,8 +57,10 @@ struct RegistryFixture : ::testing::Test {
 };
 
 TEST_F(RegistryFixture, RegistersTheCoreCapabilities) {
-    EXPECT_EQ(registry.size(), 42u);
+    EXPECT_EQ(registry.size(), 43u);
     EXPECT_TRUE(registry.find("server_info"));
+    // The #825 create path for a full-text index over a loaded table.
+    EXPECT_TRUE(registry.find("create_index"));
     // The #646 spec-index slice.
     EXPECT_TRUE(registry.find("list_specs"));
     EXPECT_TRUE(registry.find("get_spec"));
