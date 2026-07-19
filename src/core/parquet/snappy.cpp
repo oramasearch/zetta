@@ -3,7 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
-// Snappy raw-block decoder. The block layout (google/snappy
+// Snappy raw-block codec — decoder plus the encoder the native Parquet writer
+// (#833) emits pages with. The block layout (google/snappy
 // format_description.txt) is:
 //
 //   <preamble>          uncompressed length, little-endian varint
@@ -71,12 +72,63 @@ SnappyResult fail(std::string reason) {
     return result;
 }
 
+// --- encoder --------------------------------------------------------------
+
+// The largest block the format's 32-bit length preamble can describe.
+constexpr std::size_t kMaxBlockBytes = 0xffffffffu;
+
+// Append `value` as a little-endian varint (the preamble form).
+void append_varint(std::string& out, std::uint32_t value) {
+    while (value >= 0x80) {
+        out.push_back(static_cast<char>((value & 0x7f) | 0x80));
+        value >>= 7;
+    }
+    out.push_back(static_cast<char>(value));
+}
+
+// Append one literal element covering `bytes`. Lengths 1..60 ride in the tag;
+// longer ones put (length - 1) in the following 1..4 little-endian bytes and
+// set the tag's length field to 59 + that byte count — exactly what the
+// decoder's `length > 60` branch above reverses.
+void append_literal(std::string& out, std::string_view bytes) {
+    if (bytes.empty()) return;
+    const std::size_t length = bytes.size();
+    if (length <= 60) {
+        out.push_back(static_cast<char>((length - 1) << 2));
+    } else {
+        const std::uint32_t length_minus_one = static_cast<std::uint32_t>(length - 1);
+        unsigned extra_bytes = 1;
+        while (extra_bytes < 4 && (length_minus_one >> (8 * extra_bytes)) != 0) ++extra_bytes;
+        out.push_back(static_cast<char>((59u + extra_bytes) << 2));
+        for (unsigned byte_index = 0; byte_index < extra_bytes; ++byte_index) {
+            out.push_back(static_cast<char>((length_minus_one >> (8 * byte_index)) & 0xff));
+        }
+    }
+    out.append(bytes);
+}
+
 }  // namespace
 
 std::optional<std::uint32_t> snappy_uncompressed_length(std::string_view compressed) {
     std::size_t offset = 0;
     return read_preamble_length(compressed, offset);
 }
+
+SnappyResult snappy_compress_literals(std::string_view input) {
+    if (input.size() > kMaxBlockBytes) {
+        return fail("snappy: input exceeds the 32-bit block length preamble");
+    }
+    std::string output;
+    output.reserve(input.size() + 8);
+    append_varint(output, static_cast<std::uint32_t>(input.size()));
+    append_literal(output, input);
+
+    SnappyResult result;
+    result.data = std::move(output);
+    return result;
+}
+
+SnappyResult snappy_compress(std::string_view input) { return snappy_compress_literals(input); }
 
 SnappyResult snappy_decompress(std::string_view compressed) {
     std::size_t offset = 0;

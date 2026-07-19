@@ -22,6 +22,6 @@ views; the compute that runs *over* this data lives in [../ddf/](../ddf/ddf.md) 
 - [add-dataset.md](add-dataset.md) — the "Add dataset" affordance backend: load a parquet/jsonl/json/csv file as a partitioned table placed across the cluster (`zetta::data::add_dataset_file`, #587; `AsyncDatasetAdd` with progress/cancel + audit, #624; `add_dataset_rows` for in-memory rows, #827).
 - [connector-query.md](connector-query.md) — source connectors: run a read-only query against an external system (Snowflake's SQL API v2 first) and land its rows as a partitioned dataset; the injected `HttpTransport` seam, no foreign runtime (#827).
 - [parquet-metadata.md](parquet-metadata.md) — the native (no Arrow) Parquet footer/metadata parser via a self-contained Thrift compact decoder (`parse_parquet_metadata`, ADR-32 / #505).
-- [parquet-snappy.md](parquet-snappy.md) — the self-contained Snappy raw-block decoder for Parquet's default-codec data pages (`snappy_decompress`, #507).
+- [parquet-snappy.md](parquet-snappy.md) — the self-contained Snappy raw-block codec for Parquet's default-codec data pages: `snappy_decompress` (#507) plus the write-side `snappy_compress` and its literals-only reference (#833).
 - [parquet-column-decoders.md](parquet-column-decoders.md) — column-chunk decoders: PLAIN + dictionary pages, definition levels → typed values + validity bitmap (`decode_column`, #506).
 - [parquet-reader.md](parquet-reader.md) — the capstone reader → DDF columns with column projection (drop `embedding_*` unread) + the untyped `read_parquet_rows` (#508, TC-9).
