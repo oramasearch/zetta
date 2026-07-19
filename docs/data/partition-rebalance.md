@@ -38,6 +38,13 @@ const std::vector<std::string>& previous_members = {})`
 pure, non-throwing function — a sibling of [`write_partitioned`](partitioned-write-path.md).
 For each **placed** partition in the catalog (`owner_nodes` non-empty):
 
+0. **Skip a fetch-affinity partition.** The write path records the placing
+   partitioner in `stats.placement`; an entry placed by
+   [`FetchAffinityPlacement`](fetch-affinity-placement.md) is left alone. Its
+   owner is the node whose disk holds the bytes — chosen because that node
+   *pulled* them — so recomputing a hash here would order a shuffle of a dataset
+   placed precisely to avoid one. A cached result set runs at RF=1, where an
+   owner leaving means "re-run the ingest", not "re-place the catalog entry".
 1. **Read its partition id** from the catalog entry's `stats.partition` (recorded by
    the [write path](partitioned-write-path.md)). An entry with no recorded id can't
    be HRW-recomputed, so it is skipped.

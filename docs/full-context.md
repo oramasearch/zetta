@@ -81,8 +81,19 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   durable replication factor raised to **3, clamped to the node count** with connector result
   sets explicitly at **1**; and **`promote_dataset`**, which raises a cache to the durable
   factor by adding owners to the catalog and letting the bodies follow
-  ([data/promote-dataset.md](data/promote-dataset.md)). Still open on the issue: fetch-affinity
-  placement, cross-node co-launch, and replacing the fetch's `sleep_for` poll with an awaitable.
+  ([data/promote-dataset.md](data/promote-dataset.md)); **fetch-affinity placement**, a
+  `Partitioner` whose owner is the node that pulled the slice, so a distributed ingest never
+  shuffles what it just wrote ([data/fetch-affinity-placement.md](data/fetch-affinity-placement.md));
+  the **cross-node co-launch** of the fetch — one node submits, the roster co-launches over
+  `run.launch`, every participant derives the same tiling and pulls ONLY its own tile straight
+  from the source, landing it as partition-only partitions it owns, with one `allreduce` making
+  the ingest all-or-nothing
+  ([data/distributed-connector-ingest.md](data/distributed-connector-ingest.md)); and the 202
+  poll turned into a `runtime::delay` **timer** instead of a `sleep_for` (#832). All ten
+  sections of the issue are now implemented. Known residue, worth its own issue: a `remove`
+  (a dropped `part:`/`lo:` key) can be undone by a peer's gossip merge, so a failed ingest can
+  leave orphaned catalog keys behind a table that no longer exists — a replication-layer
+  delete-versus-merge property, untested anywhere in the tree today.
 - **Shipped (this branch) — reachability-aware dialer + unified full-membership `system.nodes`**:
   [#803](https://github.com/oramasearch/zetta/issues/803) makes dial-out-only nodes
   first-class — a node with no routable address (behind NAT / a private VNet: a home

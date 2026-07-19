@@ -16,6 +16,7 @@
 #include "zetta/compute/compute_job.hpp"
 #include "zetta/connect/connection_store.hpp"
 #include "zetta/connect/connector.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
 #include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
@@ -2414,7 +2415,16 @@ const nlohmann::json& create_dataset_from_query_output_schema() {
                {{"partition_id", {{"type", "string"}}},
                 {"owner_nodes",
                  {{"type", "array"},
-                  {"items", {{"type", "string"}}}}}}}}}}}}}};
+                  {"items", {{"type", "string"}}}}}}}}}}},
+          {"coordinated",
+           {{"type", "boolean"},
+            {"description",
+             "true when the fetch was co-launched across the cluster (every "
+             "participant pulled its own tile straight from the source)"}}},
+          {"participants",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "the nodes that fetched a tile"}}}}}};
     return schema;
 }
 
@@ -2464,26 +2474,17 @@ ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
         return ApiResult::failure("invalid_input", reason);
     }
 
-    const std::string query = input.at("query").get<std::string>();
-    const std::size_t max_rows =
-        input.value("max_rows", static_cast<std::size_t>(100000));
-
-    // Reaches the external source over the network (consent-gated above).
-    zetta::connect::ConnectorResult queried =
-        zetta::connect::run_connector_query(*config, query, max_rows);
-    if (!queried.ok()) {
-        return ApiResult::failure("engine_error", queried.error);
-    }
-    if (queried.data.rows.empty()) {
-        return ApiResult::failure(
-            "engine_error",
-            "the query returned no rows — nothing to load as a dataset");
-    }
-
-    zetta::data::AddDatasetOptions options;
+    zetta::connect::DistributedIngestOptions options;
+    // The SAVED CONNECTION name, when that is how the caller identified the
+    // source. It is what makes the cross-node co-launch possible: every node
+    // resolves the credential from its own replicated copy, so nothing secret
+    // rides the launch. An inline `connector` block leaves it empty, which
+    // degrades the ingest to this node alone.
+    options.connection = input.value("connection", std::string{});
+    options.query = input.at("query").get<std::string>();
+    options.max_rows = input.value("max_rows", static_cast<std::size_t>(100000));
     options.database = input.value("database", options.database);
     options.table_name = input.value("table_name", options.table_name);
-    options.partitioned = input.value("partitioned", options.partitioned);
     options.partition_count =
         input.value("partition_count", options.partition_count);
     // A connector result set is a CACHE — re-pullable from its source and cheap
@@ -2491,26 +2492,36 @@ ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
     // durable default of 3 (#833 section 8). promote_dataset upgrades one that
     // turns out to be worth keeping.
     options.replication_factor = input.value("replication_factor", std::size_t{1});
-    options.members = context.node.cluster_members();  // live placement roster
 
-    const zetta::data::AddDatasetResult added = zetta::data::add_dataset_rows(
-        context.node, std::move(queried.data.rows), options);
-    if (!added.ok()) {
-        return ApiResult::failure("engine_error", added.error);
+    // Reaches the external source over the network (consent-gated above), from
+    // every participating node at once (#833 section 7).
+    const zetta::connect::DistributedIngestResult ingested =
+        zetta::connect::run_distributed_connector_ingest(context.node, *config,
+                                                         options);
+    if (!ingested.ok()) {
+        return ApiResult::failure("engine_error", ingested.error);
+    }
+    if (ingested.rows == 0) {
+        return ApiResult::failure(
+            "engine_error",
+            "the query returned no rows — nothing to load as a dataset");
     }
 
     nlohmann::json partitions = nlohmann::json::array();
-    for (const auto& partition : added.partitions) {
+    for (const auto& partition : ingested.partitions) {
         if (!partition) continue;
         partitions.push_back({{"partition_id", partition->id()},
                               {"owner_nodes", partition->owner_nodes()}});
     }
     nlohmann::json output;
-    output["database"] = added.database ? added.database->name() : options.database;
-    output["table"] = added.table ? added.table->name() : "";
-    output["rows"] = added.rows;
-    output["columns"] = queried.data.columns;
+    output["database"] =
+        ingested.database ? ingested.database->name() : options.database;
+    output["table"] = ingested.table ? ingested.table->name() : "";
+    output["rows"] = ingested.rows;
+    output["columns"] = ingested.columns;
     output["partitions"] = std::move(partitions);
+    output["coordinated"] = ingested.coordinated;
+    output["participants"] = ingested.participants;
     return ApiResult::success(std::move(output));
 }
 

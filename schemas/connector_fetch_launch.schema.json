@@ -1,0 +1,88 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/connector_fetch_launch.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "The cross-node connector fetch run.launch payload (#833 section 7): the statement handle, the result set's shape and per-partition row counts (from which every participant derives the SAME tiling), and the target table the initiator already minted. It names a SAVED CONNECTION rather than carrying a credential — saved connections are replicate-to-all so each node presents the token itself.",
+  "properties": {
+    "column_types": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "columns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "connection": {
+      "description": "the saved connection each node resolves locally",
+      "maxLength": 64,
+      "minLength": 1,
+      "type": "string"
+    },
+    "coordination_timeout_ms": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "database": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "database_name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "handle": {
+      "description": "the source's statement handle the result partitions are read off",
+      "minLength": 1,
+      "type": "string"
+    },
+    "max_rows": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "partition_count": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "partition_rows": {
+      "description": "rows per result partition, in partition order — the tiling's weights",
+      "items": {
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": "array"
+    },
+    "replication_factor": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "table": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "table_name": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "connection",
+    "handle",
+    "columns",
+    "column_types",
+    "partition_rows",
+    "database",
+    "database_name",
+    "table",
+    "table_name",
+    "partition_count",
+    "max_rows",
+    "replication_factor",
+    "coordination_timeout_ms"
+  ],
+  "title": "zetta.ConnectorFetchLaunch",
+  "type": "object"
+}

@@ -31,6 +31,7 @@ enum class JobKind {
     Explain,    // explain a model (e.g. SHAP drivers)
     Score,      // batch-score entities against a model
     Ddf,        // a distributed dataframe (DDF) op (compute-near-data)
+    Ingest,     // pull data into the cluster (a distributed connector fetch)
 };
 
 // The canonical lowercase wire names of a status / kind, and their inverses.

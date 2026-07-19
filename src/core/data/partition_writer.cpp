@@ -137,9 +137,14 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
                 }
             }
         }
+        // The partitioner that PLACED this entry is recorded beside the rest.
+        // The between-jobs rebalance reads it: recomputing a hash is right for a
+        // rendezvous-placed partition and wrong for a fetch-affinity one, whose
+        // owner is "the node holding the bytes", not a hash of its index.
         value.stats = nlohmann::json{{"partition", partition},
                                      {"rows", ordinals.size()},
                                      {"format", to_string(serialized.format)},
+                                     {"placement", partitioner->name()},
                                      {"columns", std::move(columns)}};
 
         std::shared_ptr<DatasetPartition> recorded =

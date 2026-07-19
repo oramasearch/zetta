@@ -98,7 +98,7 @@ with an `error`):
    | `blob_ref` | the large object's id (the body holding this partition's rows) |
    | `row_range` | the partition's `[start, end)` slice (see below) |
    | `owner_nodes` | `partitioner->place_partition(partition, members)` — primary first, then replicas |
-   | `stats` | `{ "partition": <id>, "rows": <count>, "format": "parquet"\|"jsonl" }` (provenance; richer per-column pruning stats are a later slice) |
+   | `stats` | `{ "partition": <id>, "rows": <count>, "format": "parquet"\|"jsonl", "placement": <partitioner name>, "columns": [...] }` (provenance; richer per-column pruning stats are a later slice) |
 
 ## Row ranges — the cumulative slice
 
@@ -108,6 +108,14 @@ on — so the ranges **tile `[0, rows_written)`** with no gaps or overlaps. For 
 [`SinglePartitioner`](partitioner.md#singlepartitioner--the-trivial-baseline)
 baseline (one partition holding everything) this reduces to the whole table
 `[0, total)`.
+
+The range is **this call's** row space. When several nodes write into the same
+table — the [cross-node connector ingest](distributed-connector-ingest.md), where
+each participant lands its own tile — each node's ranges start at 0, so ranges
+from different nodes overlap. Nothing depends on them being globally unique:
+`system.datasets` sums range *sizes*, and the
+[scatter-gather SELECT](scatter-gather-select.md) uses `row_range.start` only to
+order the partitions it plans.
 
 This is deliberate. A [`HashPartitioner`](partitioner.md#hashpartitioner--hashkey-columns--p)
 **scatters** a partition's rows across the table's *original* ordinals (rows with

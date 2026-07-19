@@ -63,6 +63,26 @@ std::vector<PartitionAssignment> plan_partition_assignments(
     return plan;
 }
 
+std::vector<PartitionAssignment> plan_fetch_assignments(
+    const std::vector<std::string>& roster,
+    const std::vector<std::uint64_t>& partition_rows) {
+    // Partition 0 belongs to the initiator by construction — it came inline with
+    // the submission. Tile only what is still to be fetched.
+    const std::vector<std::uint64_t> fetchable =
+        partition_rows.empty()
+            ? std::vector<std::uint64_t>{}
+            : std::vector<std::uint64_t>(partition_rows.begin() + 1,
+                                         partition_rows.end());
+    std::vector<PartitionAssignment> plan =
+        plan_partition_assignments(roster, fetchable);
+    // Back into the original partition space, so a slice names the indices the
+    // source is actually read by.
+    for (PartitionAssignment& assignment : plan) {
+        for (std::size_t& partition : assignment.partitions) ++partition;
+    }
+    return plan;
+}
+
 runtime::task<StatementSubmission> submit_connector_statement_async(
     ConnectorConfig config, std::string sql, std::size_t max_rows,
     HttpTransport transport) {
@@ -157,6 +177,50 @@ StatementSubmission submit_connector_statement(const ConnectorConfig& config,
     // that can await should call submit_connector_statement_async directly.
     return runtime::block_on(
         submit_connector_statement_async(config, sql, max_rows, transport));
+}
+
+PartitionFetchResult fetch_result_partitions_serially(
+    const ConnectorConfig& config, const StatementPlan& plan,
+    const std::vector<std::size_t>& partitions, std::size_t max_rows,
+    const HttpTransport& transport) {
+    PartitionFetchResult result;
+    if (partitions.empty()) return result;
+    if (!transport) {
+        result.error =
+            "no outbound HTTP transport is installed in this build — a "
+            "connector query cannot reach an external source";
+        return result;
+    }
+    if (plan.handle.empty()) {
+        result.error = "snowflake: the statement carried no handle to fetch by";
+        return result;
+    }
+
+    for (const std::size_t partition : partitions) {
+        if (result.rows.size() >= max_rows) break;
+        const HttpResponse page = transport(snowflake::partition_request(
+            config, plan.handle, static_cast<long long>(partition)));
+        if (!page.error.empty()) {
+            result.error = "snowflake: partition " + std::to_string(partition) +
+                           ": " + page.error;
+            return result;
+        }
+        if (!page.ok()) {
+            result.error = snowflake::status_error(page);
+            return result;
+        }
+        const auto body =
+            nlohmann::json::parse(page.body, nullptr, /*allow_exceptions=*/false);
+        if (!body.is_object()) {
+            result.error = "snowflake: partition " + std::to_string(partition) +
+                           " body is not a JSON object";
+            return result;
+        }
+        snowflake::append_data(body, plan.columns, plan.column_types, max_rows,
+                               result.rows);
+        ++result.partitions_fetched;
+    }
+    return result;
 }
 
 PartitionFetchResult fetch_result_partitions(const ConnectorConfig& config,

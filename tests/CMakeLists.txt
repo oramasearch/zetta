@@ -142,6 +142,7 @@ add_executable(zetta-tests
   connect/test_connector.cpp
   connect/test_connection_store.cpp
   connect/test_distributed_fetch.cpp
+  connect/test_distributed_ingest.cpp
   connect/test_native_http_transport.cpp
   usecases/churn/test_churn_dataset.cpp
   pipeline/test_n8n_import.cpp

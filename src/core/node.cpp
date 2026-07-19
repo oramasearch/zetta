@@ -2,6 +2,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/pipeline/executor.hpp"
@@ -461,6 +462,8 @@ void Node::start_coordinator() {
         *cluster_, telemetry_.get());
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
+    zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
+                                                          *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
                                                              launch_listener_.get());
     // Every job this coordinator runs (and every stolen task it executes for a
@@ -817,6 +820,45 @@ std::shared_ptr<zetta::data::Database> Node::materialize_database(
     db->persist_meta();
     databases_.push_back(db);
     return db;
+}
+
+std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
+    const std::string& database_id, const std::string& database_name,
+    const std::string& table_id, const std::string& table_name,
+    bool partition_only) {
+    // The keys are **captured**, not merely materialized — under the initiator's
+    // ids, with the value `create_database`/`create_table` would have written.
+    //
+    // Materializing alone deletes itself: a launch is a signal and arrives at
+    // once, while the `db:`/`tbl:` keys merge on the next gossip round up to
+    // half a second later, and `reconcile_databases` prunes a local database or
+    // table the document does not have — taking the directory, the rows and the
+    // partition bodies underneath it with it. Writing the identical value under
+    // the identical key is idempotent: when the initiator's copy merges there is
+    // nothing to reconcile. Only written when this node's document does not
+    // already carry the key, so an existing entry (with, say, a non-default
+    // replication strategy) is never overwritten with a narrower one.
+    if (replication_) {
+        const nlohmann::json snapshot = replication_->snapshot();
+        const std::string database_key = catalog::database_key(database_id);
+        if (!snapshot.contains(database_key)) {
+            replication_->set(database_key, nlohmann::json{{"name", database_name}});
+        }
+        const std::string table_key = catalog::table_key(table_id);
+        if (!snapshot.contains(table_key)) {
+            nlohmann::json value{{"db", database_id}, {"name", table_name}};
+            if (partition_only) value["partition_only"] = true;
+            replication_->set(table_key, value);
+        }
+    }
+    std::shared_ptr<zetta::data::Database> database =
+        find_database_by_id(database_id);
+    if (!database) database = materialize_database(database_id, database_name);
+    if (!database) return nullptr;
+    if (auto existing = database->find_table_by_id(table_id)) return existing;
+    return database->materialize_table(table_id, table_name,
+                                       database->replication_strategy(),
+                                       partition_only);
 }
 
 std::shared_ptr<zetta::data::Database> Node::find_database(const std::string& name) const {

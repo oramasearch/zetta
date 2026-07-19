@@ -51,6 +51,19 @@ RebalanceResult rebalance_partitions(
         }
         const std::set<std::string> current_set = owner_set(current);
 
+        // **Fetch-affinity partitions never rebalance** (#833 section 6). Their
+        // owner is the node whose disk holds the bytes, chosen because it is the
+        // node that pulled them — recomputing a hash here would order a shuffle
+        // of a dataset that was placed precisely to avoid one, and the dataset
+        // is a cache at RF=1 anyway (an owner that leaves means re-run the
+        // ingest, not re-place the catalog entry).
+        if (partition->stats().is_object() &&
+            partition->stats().value("placement", std::string{}) ==
+                "fetch_affinity") {
+            ++result.skipped;
+            continue;
+        }
+
         // Replicate-to-all detection: a partition owned by exactly the previous
         // full membership is replicate-to-all (SinglePartitioner / Hash /
         // RoundRobin), not sharded — leave it untouched (growth is out of scope).

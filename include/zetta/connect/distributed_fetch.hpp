@@ -35,7 +35,7 @@
 //      and no assignment has to travel.
 //   3. **Fetch concurrently.** Each node pulls its own slice with several
 //      requests in flight at once (`fetch_result_partitions`), through the
-//      coroutine transport seam — `runtime::when_all` over a bounded batch, each
+//      injected coroutine transport — `runtime::when_all` over a bounded batch, each
 //      exchange under `runtime::timeout`. The bound matters: a TLS handshake
 //      with full chain verification is not free, and an unbounded fan-out would
 //      open a socket per partition.
@@ -89,6 +89,25 @@ std::vector<PartitionAssignment> plan_partition_assignments(
     const std::vector<std::string>& nodes,
     const std::vector<std::uint64_t>& partition_rows);
 
+// Tile the **fetchable** result partitions across `roster` — what the cross-node
+// co-launch actually runs on (#833 section 7).
+//
+// The difference from `plan_partition_assignments` is partition **0**: it
+// arrives *inline with the submission*, so the node that submitted the statement
+// already holds it. Tiling it would mean either fetching those bytes a second
+// time (they crossed the wire once already) or discarding them. So partition 0
+// is excluded here and stays with the initiator, and `[1, N)` is split by the
+// same row-balanced longest-processing-time-first rule over the whole roster.
+//
+// Pure and deterministic, like the function it wraps: every participant derives
+// the identical tiling from (roster, row counts) and nothing has to be sent. The
+// returned indices are in the ORIGINAL partition space (so `1` means result
+// partition 1); `rows` counts only the partitions in the slice. A result with
+// one partition (or none) yields empty slices for every node.
+std::vector<PartitionAssignment> plan_fetch_assignments(
+    const std::vector<std::string>& roster,
+    const std::vector<std::uint64_t>& partition_rows);
+
 // The outcome of submitting a statement: the plan, plus partition 0's rows
 // (which the source returns inline with the submission).
 struct StatementSubmission {
@@ -133,7 +152,7 @@ struct PartitionFetchResult {
 // come back typed by the plan's column types, in partition order within a wave.
 //
 // Requires the async transport (an empty one is a clean failure, not a crash):
-// this is the seam's coroutine shape precisely so the requests overlap. Every
+// the transport's coroutine shape exists precisely so the requests overlap. Every
 // exchange carries the request's own timeout, so one stuck partition cannot pin
 // the wave.
 PartitionFetchResult fetch_result_partitions(const ConnectorConfig& config,
@@ -142,6 +161,16 @@ PartitionFetchResult fetch_result_partitions(const ConnectorConfig& config,
                                              std::size_t max_rows,
                                              std::size_t max_in_flight,
                                              const AsyncHttpTransport& transport);
+
+// The **degrade path**: walk `partitions` one after another over the synchronous
+// transport. Correct, just not concurrent — used when no async client is
+// installed (a unit test, an egress-free build) or when the caller injected its
+// own transport, which must then be the only thing that speaks. Same result
+// shape and same fail-fast-on-one-partition contract as the concurrent form.
+PartitionFetchResult fetch_result_partitions_serially(
+    const ConnectorConfig& config, const StatementPlan& plan,
+    const std::vector<std::size_t>& partitions, std::size_t max_rows,
+    const HttpTransport& transport);
 
 // How many partition fetches one node keeps in flight by default. Small on
 // purpose: each is a fresh TLS handshake plus a large body, so the win flattens

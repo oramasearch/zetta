@@ -1417,8 +1417,19 @@
                           },
                           "type": "array"
                         },
+                        "coordinated": {
+                          "description": "true when the fetch was co-launched across the cluster (every participant pulled its own tile straight from the source)",
+                          "type": "boolean"
+                        },
                         "database": {
                           "type": "string"
+                        },
+                        "participants": {
+                          "description": "the nodes that fetched a tile",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
                         },
                         "partitions": {
                           "items": {
@@ -3138,7 +3149,8 @@
                             "train",
                             "explain",
                             "score",
-                            "ddf"
+                            "ddf",
+                            "ingest"
                           ],
                           "type": "string"
                         },

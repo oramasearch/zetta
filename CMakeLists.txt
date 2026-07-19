@@ -496,6 +496,7 @@ add_library(zetta-core STATIC
   src/core/connect/connection_store.cpp
   src/core/connect/connector.cpp
   src/core/connect/distributed_fetch.cpp
+  src/core/connect/distributed_ingest.cpp
   src/core/connect/snowflake_protocol.cpp
   src/core/connect/http_transport.cpp
   src/core/usecases/churn/churn_dataset.cpp

@@ -13,11 +13,13 @@ string but materializes nothing, and the only `DatasetResolver` reads local path
 ```
 include/zetta/connect/connector.hpp          ConnectorConfig / ConnectorRows / run_connector_query
 include/zetta/connect/distributed_fetch.hpp  the result-set tiling + the concurrent partition read
-src/core/connect/distributed_fetch.cpp       plan_partition_assignments / submit / fetch_result_partitions
+src/core/connect/distributed_fetch.cpp       plan_partition_assignments / plan_fetch_assignments / submit / fetch_result_partitions
+include/zetta/connect/distributed_ingest.hpp the CROSS-NODE ingest: co-launch, fetch a tile, land it, agree
+src/core/connect/distributed_ingest.cpp      run_distributed_connector_ingest + the connector_fetch launch runner
 src/core/connect/snowflake_protocol.hpp/.cpp the SQL API v2 wire details, shared by both fetch paths (internal)
 include/zetta/connect/connection_store.hpp   SavedConnection — the replicate-to-all credential store
 src/core/connect/connection_store.cpp        save/find/list/remove over the reserved zetta_connect.connections table
-include/zetta/connect/http_transport.hpp     HttpRequest / HttpResponse / HttpTransport + AsyncHttpTransport seam
+include/zetta/connect/http_transport.hpp     HttpRequest / HttpResponse / HttpTransport + AsyncHttpTransport (the injected transport)
 src/core/connect/connector.cpp               the config boundary, the read-only guard, the Snowflake connector
 src/core/connect/http_transport.cpp          the installed-default transport registry (no HTTP library in zetta-core)
 include/zetta/api/native_http_transport.hpp  install/shutdown the native client
@@ -25,6 +27,7 @@ src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (
 tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
 tests/connect/test_connection_store.cpp      the store, its boundary, and the no-leak contract
 tests/connect/test_distributed_fetch.cpp     the tiling's exactly-once property + the bounded concurrent read
+tests/connect/test_distributed_ingest.cpp    the cross-node ingest over a real loopback cluster
 tests/connect/test_native_http_transport.cpp the native client against a real loopback server
 ```
 
@@ -40,10 +43,14 @@ data::add_dataset_rows(node, rows, options)             ← shard + place across
 system.datasets / system.dataset_partitions             ← a partitioned, featurizable dataset
 ```
 
-Because the landing path is the same `write_partitioned` +
-[`RendezvousPlacement`](partitioned-write-path.md) used by every other dataset, a
-connector-loaded table is indistinguishable downstream from a file-loaded one: it
-featurizes [compute-near-data](../compute/compute-near-data.md) exactly the same way.
+Because the landing path is the same [`write_partitioned`](partitioned-write-path.md)
+used by every other dataset, a connector-loaded table is indistinguishable
+downstream from a file-loaded one: it featurizes
+[compute-near-data](../compute/compute-near-data.md) exactly the same way. The
+placement differs — a result set lands by
+[fetch affinity](fetch-affinity-placement.md), on the node that pulled it, rather
+than by the hash a locally-loaded dataset uses — and the whole cross-node flow is
+[distributed-connector-ingest.md](distributed-connector-ingest.md).
 
 ## The capability: `create_dataset_from_query`
 
@@ -66,9 +73,10 @@ and an OpenAPI operation (`src/core/api/capabilities.cpp`):
 }
 ```
 
-It returns the landed dataset — `{database, table, rows, columns, partitions[]}`
-— with each partition's `owner_nodes`, so the caller sees the placement across
-the cluster immediately.
+It returns the landed dataset — `{database, table, rows, columns, partitions[],
+coordinated, participants[]}` — with each partition's `owner_nodes`, so the
+caller sees the placement across the cluster immediately, and `coordinated` /
+`participants` say whether the fetch fanned out and over which nodes.
 
 ### A result set is a cache: RF=1
 
@@ -93,7 +101,7 @@ the consent gate rather than running silently. Governance-wise it is an
 
 There is **no warehouse driver or SDK in the engine**. A connector builds plain
 HTTP requests against the source's public REST API and parses JSON. Even the HTTP
-exchange is injected, through the `HttpTransport` seam:
+exchange is injected, through the `HttpTransport` injection point:
 
 ```cpp
 using HttpTransport      = std::function<HttpResponse(const HttpRequest&)>;
@@ -108,7 +116,8 @@ keeps the real egress path in one replaceable place.
 
 The real transport is a **native coroutine HTTPS client**, not a subprocess —
 see [../api/native-http-transport.md](../api/native-http-transport.md). It lives
-in the `zetta-api` target and installs itself into this seam at startup, so
+in the `zetta-api` target and installs itself as the process-wide default at
+startup, so
 zetta-core still links no HTTP library and no connector ever sees an HTTP type.
 The async shape is what the distributed fetch fans out with
 (`runtime::when_all` over N in-flight partition reads).
@@ -175,21 +184,24 @@ directly: tile a result across 1–5 nodes, fetch every slice, and the union mus
 be the whole result set **exactly once** — no duplication, no loss — with each
 partition read from the source exactly once across the whole cluster.
 
-### What is not wired yet
+### The cross-node launch
 
-The **cross-node** launch is not: today the tiling and the concurrent read are
-used to parallelize the fetch *within* the coordinating node, and the
-`plan_partition_assignments` tiling is the piece a multi-node co-launch will fan
-out over (the `run.launch` signal, `docs/compute/coordinated-launch.md`, exactly
-as the churn solution does). What blocks it is the **landing** half, not the
-fetch: `add_dataset_rows` captures every row into the CRDT, so a peer that
-fetched a slice would replicate those rows to the coordinator anyway — which
-would put the rows on the wire a second time and negate the point. Landing a
-peer's slice as partitions *it* owns without capturing the rows needs a
-non-capturing partition-write path whose durability story (a table whose rows
-live only in partition bodies) is a design decision in its own right. Saved
-connections (below) exist so that when the launch lands, each node can present
-the credential itself and the token never rides the launch envelope.
+The tiling is not only used *within* the coordinating node: it is what a
+**cluster-wide co-launch** runs on. One node submits, fans a `run.launch` task
+out over the roster, and every participant derives the same tiling, pulls only
+its own tile straight from the source, and lands it as partitions **it** owns —
+so the cluster's uplinks are all spent and no row crosses the wire twice.
+
+The landing half is what used to block it, and it is now built: a
+[partition-only table](partition-only-tables.md) does not capture rows into the
+CRDT, and [fetch-affinity placement](fetch-affinity-placement.md) keeps each
+node's slice where that node pulled it. Saved connections (below) are how each
+participant presents the credential itself, so the token never rides the launch
+envelope.
+
+The whole flow — submit, launch, fetch, land, agree, and what happens when a
+node dies mid-fetch — is
+[distributed-connector-ingest.md](distributed-connector-ingest.md).
 
 ## Saved connections (the credential lives on every node)
 
@@ -310,7 +322,7 @@ Key-pair/JWT auth is not supported; a PAT or OAuth token is the credential.
 `from_json` mirroring `connector_config_schema()` (draft-07). It rejects an
 unknown connector type, a missing/empty `account` or `token`, an `auth` other than
 `pat`/`oauth`, a non-string field, and any unknown key. Nothing throws across the
-seam: an unknown type, a rejected statement, a transport failure, an error status
+boundary: an unknown type, a rejected statement, a transport failure, an error status
 from the source, and a malformed response all come back as a
 `ConnectorResult::error`.
 
@@ -322,7 +334,7 @@ from the source, and a malformed response all come back as a
   wired yet* above for the landing-path decision it waits on.
 - The native client does **no connection pooling**: one connection per exchange
   with `Connection: close`, so a fan-out pays one TLS handshake per request. A
-  pooled variant is a change behind the same seam.
+  pooled variant is a change behind the same injection point.
 - **TLS is not covered by a test** — verifying it needs a certificate authority
   and a real peer; the loopback suite exercises the same coroutine over a plain
   socket, and the mTLS peer transport covers the Corosio TLS surface separately.

@@ -93,43 +93,18 @@ ConnectorResult run_snowflake_query(const ConnectorConfig& config,
         rest.push_back(index);
     }
 
-    if (!async_transport) {
-        // Degrade gracefully: with only a synchronous transport (an injected
-        // fake, or a build with no async client) walk the partitions in order.
-        // Correct, just not concurrent — the fan-out is an optimization, never
-        // a correctness requirement.
-        for (const std::size_t partition : rest) {
-            if (result.data.rows.size() >= max_rows) break;
-            const HttpResponse page = transport(
-                snowflake::partition_request(config, submitted.plan.handle,
-                                             static_cast<long long>(partition)));
-            if (!page.error.empty()) {
-                result.error = "snowflake: partition " +
-                               std::to_string(partition) + ": " + page.error;
-                return result;
-            }
-            if (!page.ok()) {
-                result.error = snowflake::status_error(page);
-                return result;
-            }
-            const auto page_body =
-                nlohmann::json::parse(page.body, nullptr, /*allow_exceptions=*/false);
-            if (!page_body.is_object()) {
-                result.error = "snowflake: partition " +
-                               std::to_string(partition) +
-                               " body is not a JSON object";
-                return result;
-            }
-            snowflake::append_data(page_body, submitted.plan.columns,
-                                   submitted.plan.column_types, max_rows,
-                                   result.data.rows);
-        }
-        return result;
-    }
-
-    PartitionFetchResult fetched = fetch_result_partitions(
-        config, submitted.plan, rest, max_rows - result.data.rows.size(),
-        kDefaultPartitionsInFlight, async_transport);
+    // Degrade gracefully: with only a synchronous transport (an injected fake,
+    // or a build with no async client) walk the partitions in order. Correct,
+    // just not concurrent — the fan-out is an optimization, never a correctness
+    // requirement.
+    PartitionFetchResult fetched =
+        async_transport
+            ? fetch_result_partitions(config, submitted.plan, rest,
+                                      max_rows - result.data.rows.size(),
+                                      kDefaultPartitionsInFlight, async_transport)
+            : fetch_result_partitions_serially(config, submitted.plan, rest,
+                                               max_rows - result.data.rows.size(),
+                                               transport);
     if (!fetched.ok()) {
         result.error = fetched.error;
         return result;

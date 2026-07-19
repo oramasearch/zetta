@@ -30,6 +30,7 @@
 #include "zetta/compute/distributed_scheduler.hpp"
 #include "zetta/compute/job_autoscaler.hpp"
 #include "zetta/compute/scaling_policy.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/replication_strategy.hpp"
@@ -196,6 +197,9 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"k8s_config", "k8s_config.schema.json", &zetta::cloud::k8s_config_schema},
         {"bare_metal_config", "bare_metal_config.schema.json",
          &zetta::cloud::bare_metal_config_schema},
+        // connect (the distributed connector ingest, #833)
+        {"connector_fetch_launch", "connector_fetch_launch.schema.json",
+         &zetta::connect::connector_fetch_launch_schema},
         // usecases/churn
         {"churn_coordinated_run", "churn_coordinated_run.schema.json",
          &zetta::usecases::churn::churn_coordinated_run_schema},

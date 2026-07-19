@@ -188,6 +188,24 @@ public:
         std::string name, zetta::data::ReplicationStrategy replication_strategy = {});
     std::shared_ptr<zetta::data::Database> find_database(const std::string& name) const;
     bool drop_database(const std::string& name);
+
+    // Adopt a database + table another node already created and captured, by
+    // their ids and **without capturing them again** — the reconcile path, made
+    // reachable ahead of the gossip that will deliver the same `db:`/`tbl:`
+    // keys. Returns the table (the existing handle when it is already present),
+    // or an empty handle if the database could not be materialized.
+    //
+    // The distributed connector ingest (#833 section 7) is why this is public:
+    // every participant must land its tile into the SAME table the initiator
+    // minted, and a participant executing a `run.launch` runs on the very
+    // thread that would otherwise deliver the `tbl:` key — so it cannot wait
+    // for gossip, and creating its own table would mint a second id for one
+    // logical dataset. Idempotent; safe to call after the key has arrived.
+    std::shared_ptr<zetta::data::Table> adopt_replicated_table(
+        const std::string& database_id, const std::string& database_name,
+        const std::string& table_id, const std::string& table_name,
+        bool partition_only);
+
     bool rename_database(const std::string& from, const std::string& to);
     std::vector<std::string> database_names() const;
     std::size_t database_count() const { return databases_.size(); }
