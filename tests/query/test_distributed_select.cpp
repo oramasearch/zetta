@@ -378,6 +378,7 @@ TEST(ScatterGatherSelect, MultiNodeAggregatesMatchTheSingleNodeAnswer) {
     AddDatasetOptions options;
     options.table_name = "cached";
     options.partition_count = 8;
+    options.replication_factor = 1;  // one owner each, so the scan must split
     options.partition_only = true;
     options.members = {kNodeA, kNodeB};
     const AddDatasetResult added = add_dataset_rows(a, sample_rows(), options);
@@ -534,7 +535,8 @@ TEST(ScatterGatherSelect, AnUnreachableOwnerFailsTheQuery) {
     AddDatasetOptions options;
     options.table_name = "cached";
     options.partition_count = 8;
-    options.partition_only = true;  // RF=1: no replica to fall back on
+    options.replication_factor = 1;  // no replica to fall back on
+    options.partition_only = true;
     options.members = {kNodeA, kNodeB};
     const AddDatasetResult added = add_dataset_rows(a, sample_rows(), options);
     ASSERT_TRUE(added.ok()) << added.error;

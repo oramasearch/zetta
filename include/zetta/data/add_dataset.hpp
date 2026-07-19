@@ -10,6 +10,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/replication_strategy.hpp"
+
 namespace zetta { class Node; }
 
 namespace zetta::data {
@@ -74,6 +76,15 @@ std::string dialog_extensions();
 // membership placement is computed over (empty = this node only). `table_name`
 // overrides the name derived from the file (empty = derive it).
 //
+// **`replication_factor` defaults to 3, clamped to the node count** (#833
+// section 8). It used to default to 1, which was harmless only because a
+// partitioned table ALSO replicated every row through the CRDT — belt and
+// braces. The moment rows stop being captured (`partition_only`), the factor is
+// the only thing standing between a dataset and "one copy, no backup". A
+// connector result set is the deliberate exception: it is a cache, re-pullable
+// from its source, so that path passes 1 explicitly. The clamp is what keeps a
+// single-node cluster placing successfully.
+//
 // `partition_only` (#833) marks the table as one whose rows are **never captured
 // into the replicated document** — the partition bodies and the replicate-to-all
 // catalog are the dataset, and a `SELECT` over it is answered by scatter-gather
@@ -84,7 +95,8 @@ struct AddDatasetOptions {
     std::string database = "datasets";
     bool partitioned = true;
     std::uint32_t partition_count = 8;     // P (chosen P >> nodes)
-    std::size_t replication_factor = 1;    // owners per partition (primary + replicas)
+    std::size_t replication_factor =       // owners per partition (see below)
+        kDefaultReplicationFactor;
     std::vector<std::string> members;      // cluster membership for placement
     std::string table_name;                // override the derived table name
     bool partition_only = false;           // rows never captured into the CRDT (#833)

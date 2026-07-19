@@ -386,8 +386,16 @@ void create_target_table(Node& node, const fs::path& path,
 void partition_target_table(Node& node, const AddDatasetOptions& options,
                             AddDatasetResult& result) {
     if (!options.partitioned || result.rows == 0 || !result.table) return;
+    // Clamp the replication factor to the roster placement is computed over
+    // (#833 section 8): the default is 3, and a one- or two-node cluster must
+    // still place successfully rather than record owners that do not exist.
+    // write_partitioned falls back to this node alone when `members` is empty.
+    const std::size_t roster =
+        options.members.empty() ? std::size_t{1} : options.members.size();
+    const std::size_t replication_factor =
+        std::min(std::max<std::size_t>(options.replication_factor, 1), roster);
     result.table->set_partitioner(std::make_shared<RendezvousPlacement>(
-        options.partition_count, options.replication_factor));
+        options.partition_count, replication_factor));
     PartitionWriteResult written = write_partitioned(
         node, *result.database, *result.table, options.members);
     if (!written.ok()) {

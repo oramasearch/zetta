@@ -83,7 +83,7 @@ placement overlay and `system.dataset_partitions` then surface. So
 `add_dataset_file` configures the table with a
 [`RendezvousPlacement`](partitioner.md) partitioner
 (`AddDatasetOptions::partition_count` partitions, default 8; `replication_factor`
-owners each, default 1) and writes it through
+owners each, **default 3, clamped to the node count**) and writes it through
 [`write_partitioned`](partitioned-write-path.md):
 
 - the **record→partition** half shards rows across the `P` partitions (FNV-1a of
@@ -91,6 +91,22 @@ owners each, default 1) and writes it through
 - the **partition→node** half is rendezvous / highest-random-weight placement, so
   each partition is owned by a deterministic subset of `AddDatasetOptions::members`
   (the cluster membership) — adding/removing a node moves only ~1/N of partitions.
+
+### Why the replication factor defaults to 3
+
+It defaulted to **1** until #833. That was harmless only because a partitioned
+table *also* replicated every row through the CRDT — belt and braces, and the
+belt was doing the work. The moment rows stop being captured
+([partition-only tables](partition-only-tables.md)), the factor is the only thing
+standing between a dataset and "one copy, no backup", so the durable default is
+**3, clamped to the roster** (`min(rf, members)`, and `members` falls back to
+this node alone) — a one- or two-node cluster still places successfully instead
+of recording owners that do not exist.
+
+The deliberate exception is a **connector result set**: a cache, re-pullable from
+its source, which [`create_dataset_from_query`](connector-query.md) passes at
+**RF=1** explicitly. Promoting one to the durable factor is a separate,
+deliberate act.
 
 `RendezvousPlacement` is chosen over `RoundRobinPartitioner` / `HashPartitioner`
 precisely because *their* `place_partition` is replicate-to-all (every node owns

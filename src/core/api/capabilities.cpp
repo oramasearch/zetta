@@ -2134,7 +2134,8 @@ const nlohmann::json& add_dataset_schema() {
           {"replication_factor",
            {{"type", "integer"},
             {"minimum", 1},
-            {"description", "owners per partition (default 1)"}}}}}};
+            {"description",
+             "owners per partition (default 3, clamped to the node count)"}}}}}};
     return schema;
 }
 
@@ -2386,7 +2387,9 @@ const nlohmann::json& create_dataset_from_query_schema() {
           {"replication_factor",
            {{"type", "integer"},
             {"minimum", 1},
-            {"description", "owners per partition (default 1)"}}}}}};
+            {"description",
+             "owners per partition (default 1 — a connector result set is a "
+             "cache, re-pullable from its source)"}}}}}};
     return schema;
 }
 
@@ -2482,8 +2485,11 @@ ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
     options.partitioned = input.value("partitioned", options.partitioned);
     options.partition_count =
         input.value("partition_count", options.partition_count);
-    options.replication_factor =
-        input.value("replication_factor", options.replication_factor);
+    // A connector result set is a CACHE — re-pullable from its source and cheap
+    // to lose — so it is RF=1 by default, explicitly, against the engine's
+    // durable default of 3 (#833 section 8). promote_dataset upgrades one that
+    // turns out to be worth keeping.
+    options.replication_factor = input.value("replication_factor", std::size_t{1});
     options.members = context.node.cluster_members();  // live placement roster
 
     const zetta::data::AddDatasetResult added = zetta::data::add_dataset_rows(

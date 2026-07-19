@@ -602,4 +602,57 @@ TEST(AddDataset, SyncAddRecordsTheAuditEvent) {
     node.stop();
 }
 
+// #833 section 8 — a durable dataset is RF=3 by default, clamped to the node
+// count. It used to be RF=1, which was harmless only while a partitioned table
+// also replicated every row through the CRDT; once rows stop being captured the
+// factor is the only thing between a dataset and one copy with no backup.
+TEST(AddDataset, ReplicationFactorDefaultsToThreeClampedToTheNodeCount) {
+    EXPECT_EQ(AddDatasetOptions{}.replication_factor, 3u);
+
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    std::vector<nlohmann::json> rows;
+    for (int i = 0; i < 24; ++i) rows.push_back(nlohmann::json{{"n", i}});
+
+    // A five-node roster: the default places three owners per partition.
+    AddDatasetOptions five;
+    five.table_name = "wide";
+    five.partition_count = 4;
+    five.members = {"node-1", "node-2", "node-3", "node-4", "node-5"};
+    const AddDatasetResult placed = add_dataset_rows(node, rows, five);
+    ASSERT_TRUE(placed.ok()) << placed.error;
+    ASSERT_FALSE(placed.partitions.empty());
+    for (const auto& partition : placed.partitions) {
+        EXPECT_EQ(partition->owner_nodes().size(), 3u);
+    }
+
+    // A two-node roster clamps to two — recording three owners where only two
+    // nodes exist would be a placement onto a node that is not there.
+    AddDatasetOptions two;
+    two.table_name = "narrow";
+    two.partition_count = 4;
+    two.members = {"node-1", "node-2"};
+    const AddDatasetResult clamped = add_dataset_rows(node, rows, two);
+    ASSERT_TRUE(clamped.ok()) << clamped.error;
+    ASSERT_FALSE(clamped.partitions.empty());
+    for (const auto& partition : clamped.partitions) {
+        EXPECT_EQ(partition->owner_nodes().size(), 2u);
+    }
+
+    // A single-node cluster (no roster given) still places successfully.
+    AddDatasetOptions alone;
+    alone.table_name = "solo";
+    alone.partition_count = 4;
+    const AddDatasetResult single = add_dataset_rows(node, rows, alone);
+    ASSERT_TRUE(single.ok()) << single.error;
+    ASSERT_FALSE(single.partitions.empty());
+    for (const auto& partition : single.partitions) {
+        EXPECT_EQ(partition->owner_nodes().size(), 1u);
+    }
+
+    node.stop();
+}
+
 }  // namespace

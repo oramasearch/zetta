@@ -95,7 +95,7 @@
                     "type": "string"
                   },
                   "replication_factor": {
-                    "description": "owners per partition (default 1)",
+                    "description": "owners per partition (default 3, clamped to the node count)",
                     "minimum": 1,
                     "type": "integer"
                   },
@@ -1371,7 +1371,7 @@
                     "type": "string"
                   },
                   "replication_factor": {
-                    "description": "owners per partition (default 1)",
+                    "description": "owners per partition (default 1 — a connector result set is a cache, re-pullable from its source)",
                     "minimum": 1,
                     "type": "integer"
                   },

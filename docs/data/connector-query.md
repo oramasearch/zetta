@@ -70,6 +70,18 @@ It returns the landed dataset — `{database, table, rows, columns, partitions[]
 — with each partition's `owner_nodes`, so the caller sees the placement across
 the cluster immediately.
 
+### A result set is a cache: RF=1
+
+`create_dataset_from_query` passes `replication_factor = 1` explicitly, against
+the engine's durable default of **3** ([add-dataset.md](add-dataset.md)). That is
+not an oversight — a connector result set exists for processing, is always
+re-pullable from its source, and is cheap to lose. Paying for three copies of a
+cache is paying three times for something the source already holds. If a
+partition's owner is lost, the remedy is re-running the ingest; a `SELECT` says
+so rather than answering short (see
+[scatter-gather-select.md](scatter-gather-select.md)). A result set that turns
+out to be worth keeping is upgraded deliberately, not by default.
+
 **Consent-gated** (`requires_consent = true`): unlike `add_dataset`, this reaches
 an external system over the network *with your credentials*, so it routes through
 the consent gate rather than running silently. Governance-wise it is an
