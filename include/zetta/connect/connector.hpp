@@ -108,8 +108,24 @@ std::string read_only_query_rejection(const std::string& sql);
 // Non-throwing: an unknown type, a non-read-only statement, a transport failure,
 // an error status from the source, or a malformed response all come back as a
 // result whose `error` explains why.
+// A large result arrives as several independently-fetchable partitions; they
+// are pulled **concurrently** through the installed async transport (see
+// [distributed_fetch.hpp](distributed_fetch.hpp)). Passing an explicit
+// `transport` opts out of that — an injected fake is then the only thing that
+// speaks, and the partitions are walked serially — so a unit test can never
+// reach the network through the async default.
 ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const std::string& sql, std::size_t max_rows,
                                     const HttpTransport& transport = {});
+
+// The same, with the coroutine transport named explicitly: the submission (and
+// any 202 poll) goes through `transport`, and the result partitions are fetched
+// concurrently through `async_transport`. An empty `async_transport` degrades to
+// the serial walk. This is the overload a test uses to exercise the concurrent
+// path against a fake.
+ConnectorResult run_connector_query(const ConnectorConfig& config,
+                                    const std::string& sql, std::size_t max_rows,
+                                    const HttpTransport& transport,
+                                    const AsyncHttpTransport& async_transport);
 
 }  // namespace zetta::connect

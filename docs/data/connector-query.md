@@ -12,6 +12,9 @@ string but materializes nothing, and the only `DatasetResolver` reads local path
 
 ```
 include/zetta/connect/connector.hpp          ConnectorConfig / ConnectorRows / run_connector_query
+include/zetta/connect/distributed_fetch.hpp  the result-set tiling + the concurrent partition read
+src/core/connect/distributed_fetch.cpp       plan_partition_assignments / submit / fetch_result_partitions
+src/core/connect/snowflake_protocol.hpp/.cpp the SQL API v2 wire details, shared by both fetch paths (internal)
 include/zetta/connect/connection_store.hpp   SavedConnection — the replicate-to-all credential store
 src/core/connect/connection_store.cpp        save/find/list/remove over the reserved zetta_connect.connections table
 include/zetta/connect/http_transport.hpp     HttpRequest / HttpResponse / HttpTransport + AsyncHttpTransport seam
@@ -21,6 +24,7 @@ include/zetta/api/native_http_transport.hpp  install/shutdown the native client
 src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (zetta-api target)
 tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
 tests/connect/test_connection_store.cpp      the store, its boundary, and the no-leak contract
+tests/connect/test_distributed_fetch.cpp     the tiling's exactly-once property + the bounded concurrent read
 tests/connect/test_native_http_transport.cpp the native client against a real loopback server
 ```
 
@@ -106,6 +110,73 @@ port, and the OS/TLS error only — never from a header — and there is no
 subprocess, so nothing is visible in the process table.
 `ConnectorConfig::to_json()` likewise **never emits the token**, so a config is
 safe to echo back to a caller or log.
+
+## Using the cluster's bandwidth, not one node's
+
+A large result does not come back as one document. Snowflake's SQL API v2 returns
+a statement handle plus `resultSetMetaData.partitionInfo[]` — **N independently
+fetchable result partitions**, each read with
+`GET /statements/{handle}?partition=i`. Reading them one after another makes the
+whole ingest as slow as the coordinating node's single link to the source, which
+is precisely the shape the repo's distributed-first rule forbids.
+
+So the result set is treated as a **work set to be tiled**:
+
+```
+submit once            POST /statements  →  handle + partitionInfo[] (+ partition 0 inline)
+        ↓
+tile deterministically plan_partition_assignments(roster, rowCounts)
+        ↓                 disjoint slices, balanced BY ROW COUNT
+fetch concurrently     each node pulls its own slice, several requests in flight
+        ↓                 runtime::when_all over a bounded wave, each under runtime::timeout
+land where you pulled  the rows a node fetched become partitions that node owns
+```
+
+**Balanced by rows, not by index.** Result partitions are uneven, so a
+round-robin over indices leaves one node holding the tail and the fetch takes as
+long as that node's link. The tiling is longest-processing-time-first: the
+biggest remaining partition goes to whichever node is currently carrying the
+fewest rows.
+
+**Deterministic, so no plan travels.** `plan_partition_assignments` is a pure
+function of (roster, row counts). Every node computes the identical tiling from
+the same inputs, which is the same agreement-by-construction the SPMD compute
+jobs get from the collective participant roster.
+
+**Bounded.** The fan-out runs in waves of `kDefaultPartitionsInFlight` (4, capped
+at 32), so a thousand-partition result costs a fixed number of sockets. Each
+exchange is a fresh TLS handshake with full chain verification — the win from
+more concurrency flattens quickly while the cost does not.
+
+### Degrading
+
+| Situation | What happens |
+| --- | --- |
+| a single partition (small result) | it arrived inline with the submission; no second request is ever made |
+| no async transport installed (a test, an egress-free build) | the partitions are walked **serially** over the synchronous transport — correct, just not concurrent |
+| an explicitly injected transport (a fake) | the same serial walk, so a unit test can never reach the network through the installed async default |
+| one partition fetch fails | the whole fetch fails cleanly with the partition index and the reason; nothing partial is landed |
+
+`tests/connect/test_distributed_fetch.cpp` asserts the load-bearing property
+directly: tile a result across 1–5 nodes, fetch every slice, and the union must
+be the whole result set **exactly once** — no duplication, no loss — with each
+partition read from the source exactly once across the whole cluster.
+
+### What is not wired yet
+
+The **cross-node** launch is not: today the tiling and the concurrent read are
+used to parallelize the fetch *within* the coordinating node, and the
+`plan_partition_assignments` tiling is the piece a multi-node co-launch will fan
+out over (the `run.launch` signal, `docs/compute/coordinated-launch.md`, exactly
+as the churn solution does). What blocks it is the **landing** half, not the
+fetch: `add_dataset_rows` captures every row into the CRDT, so a peer that
+fetched a slice would replicate those rows to the coordinator anyway — which
+would put the rows on the wire a second time and negate the point. Landing a
+peer's slice as partitions *it* owns without capturing the rows needs a
+non-capturing partition-write path whose durability story (a table whose rows
+live only in partition bodies) is a design decision in its own right. Saved
+connections (below) exist so that when the launch lands, each node can present
+the credential itself and the token never rides the launch envelope.
 
 ## Saved connections (the credential lives on every node)
 
@@ -205,6 +276,8 @@ from the source, and a malformed response all come back as a
 
 - **Snowflake is the only connector** in this slice; a second one is a new branch
   in `run_connector_query` plus an entry in `connector_types()`.
+- The **cross-node co-launch** of the fetch is a later slice — see *What is not
+  wired yet* above for the landing-path decision it waits on.
 - The native client does **no connection pooling**: one connection per exchange
   with `Connection: close`, so a fan-out pays one TLS handshake per request. A
   pooled variant is a change behind the same seam.

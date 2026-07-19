@@ -1,5 +1,8 @@
 #include "zetta/connect/connector.hpp"
 
+#include "snowflake_protocol.hpp"
+#include "zetta/connect/distributed_fetch.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -52,244 +55,89 @@ bool has_trailing_statement(std::string_view sql) {
 }
 
 // --- Snowflake (SQL API v2 over HTTPS) ---------------------------------------
-
-std::string snowflake_statements_url(const ConnectorConfig& config) {
-    return "https://" + config.account + ".snowflakecomputing.com/api/v2/statements";
-}
-
-std::vector<std::pair<std::string, std::string>> snowflake_headers(
-    const ConnectorConfig& config) {
-    // PAT and OAuth are both bearer credentials; only the token-type header
-    // differs (the SQL API rejects a bearer whose type it was not told).
-    const std::string token_type =
-        config.auth == "oauth" ? "OAUTH" : "PROGRAMMATIC_ACCESS_TOKEN";
-    return {{"Authorization", "Bearer " + config.token},
-            {"X-Snowflake-Authorization-Token-Type", token_type},
-            {"Content-Type", "application/json"},
-            {"Accept", "application/json"}};
-}
-
-// Coerce one SQL-API cell to a real JSON type using its declared column type.
-// The SQL API returns every value as a JSON string (or null), so without this a
-// landed dataset would be all strings and nothing downstream could featurize it.
-nlohmann::json snowflake_cell(const nlohmann::json& raw, const std::string& type) {
-    if (raw.is_null()) return nullptr;
-    if (!raw.is_string()) return raw;  // already typed — pass through
-    const std::string text = raw.get<std::string>();
-    if (text.empty()) return nullptr;
-
-    if (type == "boolean") {
-        const std::string lowered = to_lower(text);
-        if (lowered == "true" || lowered == "1") return true;
-        if (lowered == "false" || lowered == "0") return false;
-        return text;
-    }
-    if (type == "fixed" || type == "real" || type == "number" ||
-        type == "float" || type == "double" || type == "integer") {
-        // Parse through the JSON number grammar: locale-independent and
-        // whole-token by construction, so "12abc" stays a string.
-        const auto parsed =
-            nlohmann::json::parse(text, nullptr, /*allow_exceptions=*/false);
-        if (parsed.is_number()) return parsed;
-        return text;
-    }
-    return text;  // text / date / timestamp / variant — keep verbatim
-}
-
-// Pull `resultSetMetaData.rowType` into column names + declared types.
-bool read_row_types(const nlohmann::json& body, std::vector<std::string>& columns,
-                    std::vector<std::string>& types, std::string& error) {
-    const auto metadata = body.find("resultSetMetaData");
-    if (metadata == body.end() || !metadata->is_object()) {
-        error = "snowflake: response has no resultSetMetaData";
-        return false;
-    }
-    const auto row_type = metadata->find("rowType");
-    if (row_type == metadata->end() || !row_type->is_array()) {
-        error = "snowflake: response has no resultSetMetaData.rowType";
-        return false;
-    }
-    for (const nlohmann::json& column : *row_type) {
-        if (!column.is_object()) continue;
-        const auto name = column.find("name");
-        if (name == column.end() || !name->is_string()) {
-            error = "snowflake: a rowType entry has no name";
-            return false;
-        }
-        columns.push_back(name->get<std::string>());
-        const auto type = column.find("type");
-        types.push_back(type != column.end() && type->is_string()
-                            ? to_lower(type->get<std::string>())
-                            : std::string());
-    }
-    return true;
-}
-
-// Append one `data` array (an array of row arrays) onto the accumulating rows,
-// stopping at `max_rows`.
-void append_data(const nlohmann::json& body,
-                 const std::vector<std::string>& columns,
-                 const std::vector<std::string>& types, std::size_t max_rows,
-                 ConnectorRows& out) {
-    const auto data = body.find("data");
-    if (data == body.end() || !data->is_array()) return;
-    for (const nlohmann::json& row : *data) {
-        if (out.rows.size() >= max_rows) return;
-        if (!row.is_array()) continue;
-        nlohmann::json object = nlohmann::json::object();
-        for (std::size_t index = 0; index < columns.size(); ++index) {
-            object[columns[index]] =
-                index < row.size() ? snowflake_cell(row[index], types[index])
-                                   : nlohmann::json(nullptr);
-        }
-        out.rows.push_back(std::move(object));
-    }
-}
-
-// The error text a non-2xx SQL API response carries (`message`, else the body).
-std::string snowflake_status_error(const HttpResponse& response) {
-    const auto body =
-        nlohmann::json::parse(response.body, nullptr, /*allow_exceptions=*/false);
-    std::string detail;
-    if (body.is_object()) {
-        const auto message = body.find("message");
-        if (message != body.end() && message->is_string()) {
-            detail = message->get<std::string>();
-        }
-    }
-    if (detail.empty()) detail = response.body.substr(0, 400);
-    return "snowflake: HTTP " + std::to_string(response.status) +
-           (detail.empty() ? std::string() : " — " + detail);
-}
-
-// How long to wait for an asynchronously-executing statement before giving up.
-// The SQL API answers 202 while a statement is still running; we poll its
-// handle. This is a synchronous data-load action (like add_dataset), so the
-// wait happens on the caller's thread.
-constexpr int kMaxAsyncPolls = 40;
-constexpr int kAsyncPollMillis = 500;
+//
+// Submitting + framing lives in snowflake_protocol.hpp (shared with the tiled
+// concurrent fetch in distributed_fetch.cpp); what remains here is the
+// single-node orchestration: submit once, then pull the result partitions.
 
 ConnectorResult run_snowflake_query(const ConnectorConfig& config,
                                     const std::string& sql, std::size_t max_rows,
-                                    const HttpTransport& transport) {
+                                    const HttpTransport& transport,
+                                    const AsyncHttpTransport& async_transport) {
     ConnectorResult result;
 
-    HttpRequest request;
-    request.method = "POST";
-    request.url = snowflake_statements_url(config);
-    request.headers = snowflake_headers(config);
-    request.secret_headers = {"Authorization"};
-    nlohmann::json payload{{"statement", sql}, {"timeout", 60}};
-    if (!config.database.empty()) payload["database"] = config.database;
-    if (!config.schema.empty()) payload["schema"] = config.schema;
-    if (!config.warehouse.empty()) payload["warehouse"] = config.warehouse;
-    if (!config.role.empty()) payload["role"] = config.role;
-    request.body = payload.dump();
-
-    HttpResponse response = transport(request);
-    if (!response.error.empty()) {
-        result.error = "snowflake: " + response.error;
+    StatementSubmission submitted =
+        submit_connector_statement(config, sql, max_rows, transport);
+    if (!submitted.ok()) {
+        result.error = submitted.error;
         return result;
     }
+    result.data.columns = std::move(submitted.plan.columns);
+    submitted.plan.columns = result.data.columns;  // the plan still needs them
+    result.data.rows = std::move(submitted.inline_rows.rows);
 
-    // 202 => still executing: poll the statement handle until it completes.
-    int polls = 0;
-    while (response.status == 202) {
-        const auto body =
-            nlohmann::json::parse(response.body, nullptr, /*allow_exceptions=*/false);
-        std::string handle;
-        if (body.is_object()) {
-            const auto found = body.find("statementHandle");
-            if (found != body.end() && found->is_string()) {
-                handle = found->get<std::string>();
+    // A single-partition (or partition-less) result arrived wholly inline —
+    // there is nothing to fan out, so degrade to what we already have. This is
+    // the small-result path and it never opens a second socket.
+    if (submitted.plan.fetchable_partitions() == 0) return result;
+    if (result.data.rows.size() >= max_rows) return result;
+
+    // Everything past partition 0 is an independently-fetchable slice. On one
+    // node that means CONCURRENT reads rather than a serial walk; across a
+    // cluster the same indices are tiled by plan_partition_assignments so each
+    // node pulls a disjoint slice with its own link.
+    std::vector<std::size_t> rest;
+    rest.reserve(submitted.plan.fetchable_partitions());
+    for (std::size_t index = 1; index < submitted.plan.partition_rows.size();
+         ++index) {
+        rest.push_back(index);
+    }
+
+    if (!async_transport) {
+        // Degrade gracefully: with only a synchronous transport (an injected
+        // fake, or a build with no async client) walk the partitions in order.
+        // Correct, just not concurrent — the fan-out is an optimization, never
+        // a correctness requirement.
+        for (const std::size_t partition : rest) {
+            if (result.data.rows.size() >= max_rows) break;
+            const HttpResponse page = transport(
+                snowflake::partition_request(config, submitted.plan.handle,
+                                             static_cast<long long>(partition)));
+            if (!page.error.empty()) {
+                result.error = "snowflake: partition " +
+                               std::to_string(partition) + ": " + page.error;
+                return result;
             }
-        }
-        if (handle.empty()) {
-            result.error = "snowflake: async response carried no statementHandle";
-            return result;
-        }
-        if (++polls > kMaxAsyncPolls) {
-            result.error =
-                "snowflake: statement still running after " +
-                std::to_string(kMaxAsyncPolls * kAsyncPollMillis / 1000) +
-                "s (narrow the query, or pre-materialize it in the warehouse)";
-            return result;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(kAsyncPollMillis));
-
-        HttpRequest poll;
-        poll.method = "GET";
-        poll.url = snowflake_statements_url(config) + "/" + handle;
-        poll.headers = snowflake_headers(config);
-        poll.secret_headers = {"Authorization"};
-        response = transport(poll);
-        if (!response.error.empty()) {
-            result.error = "snowflake: " + response.error;
-            return result;
-        }
-    }
-
-    if (!response.ok()) {
-        result.error = snowflake_status_error(response);
-        return result;
-    }
-
-    const auto body =
-        nlohmann::json::parse(response.body, nullptr, /*allow_exceptions=*/false);
-    if (!body.is_object()) {
-        result.error = "snowflake: response body is not a JSON object";
-        return result;
-    }
-
-    std::vector<std::string> types;
-    if (!read_row_types(body, result.data.columns, types, result.error)) {
-        return result;
-    }
-    append_data(body, result.data.columns, types, max_rows, result.data);
-
-    // A large result set is split across partitions; the first arrives inline,
-    // the rest are fetched by index off the same statement handle.
-    const auto metadata = body.find("resultSetMetaData");
-    std::string handle;
-    const auto handle_value = body.find("statementHandle");
-    if (handle_value != body.end() && handle_value->is_string()) {
-        handle = handle_value->get<std::string>();
-    }
-    if (metadata != body.end() && metadata->is_object() && !handle.empty()) {
-        const auto partitions = metadata->find("partitionInfo");
-        if (partitions != metadata->end() && partitions->is_array()) {
-            for (std::size_t index = 1;
-                 index < partitions->size() && result.data.rows.size() < max_rows;
-                 ++index) {
-                HttpRequest fetch;
-                fetch.method = "GET";
-                fetch.url = snowflake_statements_url(config) + "/" + handle +
-                            "?partition=" + std::to_string(index);
-                fetch.headers = snowflake_headers(config);
-                fetch.secret_headers = {"Authorization"};
-                const HttpResponse page = transport(fetch);
-                if (!page.error.empty()) {
-                    result.error = "snowflake: partition " + std::to_string(index) +
-                                   ": " + page.error;
-                    return result;
-                }
-                if (!page.ok()) {
-                    result.error = snowflake_status_error(page);
-                    return result;
-                }
-                const auto page_body = nlohmann::json::parse(
-                    page.body, nullptr, /*allow_exceptions=*/false);
-                if (!page_body.is_object()) {
-                    result.error = "snowflake: partition " + std::to_string(index) +
-                                   " body is not a JSON object";
-                    return result;
-                }
-                append_data(page_body, result.data.columns, types, max_rows,
-                            result.data);
+            if (!page.ok()) {
+                result.error = snowflake::status_error(page);
+                return result;
             }
+            const auto page_body =
+                nlohmann::json::parse(page.body, nullptr, /*allow_exceptions=*/false);
+            if (!page_body.is_object()) {
+                result.error = "snowflake: partition " +
+                               std::to_string(partition) +
+                               " body is not a JSON object";
+                return result;
+            }
+            snowflake::append_data(page_body, submitted.plan.columns,
+                                   submitted.plan.column_types, max_rows,
+                                   result.data.rows);
         }
+        return result;
     }
 
+    PartitionFetchResult fetched = fetch_result_partitions(
+        config, submitted.plan, rest, max_rows - result.data.rows.size(),
+        kDefaultPartitionsInFlight, async_transport);
+    if (!fetched.ok()) {
+        result.error = fetched.error;
+        return result;
+    }
+    for (nlohmann::json& row : fetched.rows) {
+        if (result.data.rows.size() >= max_rows) break;
+        result.data.rows.push_back(std::move(row));
+    }
     return result;
 }
 
@@ -430,6 +278,19 @@ std::string read_only_query_rejection(const std::string& sql) {
 ConnectorResult run_connector_query(const ConnectorConfig& config,
                                     const std::string& sql, std::size_t max_rows,
                                     const HttpTransport& transport) {
+    // An INJECTED transport (a test fake) must be the only thing that speaks:
+    // pairing it with the installed async client would let a unit test reach
+    // the network. So the concurrent path is used only when the caller took the
+    // installed defaults; an injected transport degrades to the serial walk.
+    return run_connector_query(config, sql, max_rows, transport,
+                               transport ? AsyncHttpTransport{}
+                                         : default_async_http_transport());
+}
+
+ConnectorResult run_connector_query(const ConnectorConfig& config,
+                                    const std::string& sql, std::size_t max_rows,
+                                    const HttpTransport& transport,
+                                    const AsyncHttpTransport& async_transport) {
     ConnectorResult result;
 
     const std::string rejection = read_only_query_rejection(sql);
@@ -453,7 +314,8 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
         return result;
     }
     if (config.type == "snowflake") {
-        return run_snowflake_query(config, sql, max_rows, exchange);
+        return run_snowflake_query(config, sql, max_rows, exchange,
+                                   async_transport);
     }
     result.error = "unknown connector type '" + config.type + "'";
     return result;

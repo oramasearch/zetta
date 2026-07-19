@@ -1,0 +1,139 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "zetta/connect/connector.hpp"
+#include "zetta/connect/http_transport.hpp"
+
+// **The distributed connector fetch** — pull one query's result with the
+// cluster's aggregate bandwidth instead of one node's
+// ([#827](https://github.com/oramasearch/zetta/issues/827)).
+//
+// A warehouse hands a large result back as **N independently-fetchable result
+// partitions** (Snowflake's SQL API v2 returns `resultSetMetaData.partitionInfo[]`
+// beside the statement handle, each partition fetched with
+// `GET /statements/{handle}?partition=i`). Reading them one after another on one
+// node makes the ingest as slow as that node's single link to the source — the
+// exact shape the repo's distributed-first rule forbids ("never add an algorithm
+// that structurally can't distribute").
+//
+// The result set is therefore treated as a **work set to be tiled**:
+//
+//   1. **Submit once.** One node POSTs the statement and reads back the handle
+//      plus the per-partition row counts (`StatementPlan`).
+//   2. **Tile it deterministically.** `plan_partition_assignments` splits the
+//      partition indices into disjoint per-node slices **balanced by row count**,
+//      not by index — result partitions are uneven, so round-robin would leave
+//      one node holding the tail. The plan is a pure function of (roster, row
+//      counts), so every node computes the identical tiling from the same inputs
+//      and no assignment has to travel.
+//   3. **Fetch concurrently.** Each node pulls its own slice with several
+//      requests in flight at once (`fetch_result_partitions`), through the
+//      coroutine transport seam — `runtime::when_all` over a bounded batch, each
+//      exchange under `runtime::timeout`. The bound matters: a TLS handshake
+//      with full chain verification is not free, and an unbounded fan-out would
+//      open a socket per partition.
+//
+// **Bounded, not unbounded.** The fan-out runs in waves of `max_in_flight`, so a
+// thousand-partition result costs a fixed number of concurrent sockets.
+//
+// See docs/data/connector-query.md.
+namespace zetta::connect {
+
+// What a submitted statement hands back: the handle its partitions are fetched
+// off, and the shape of the result set.
+struct StatementPlan {
+    std::string handle;
+    // Row count per result partition, in partition order. Partition 0's rows
+    // arrive inline with the submission; the rest are fetched by index.
+    std::vector<std::uint64_t> partition_rows;
+    std::vector<std::string> columns;
+    std::vector<std::string> column_types;  // declared rowType.type, lowercased
+
+    // The partitions that still have to be fetched (everything past 0).
+    std::size_t fetchable_partitions() const {
+        return partition_rows.size() > 1 ? partition_rows.size() - 1 : 0;
+    }
+};
+
+// One node's slice of the result set: a disjoint set of partition indices and
+// the rows they are expected to carry.
+struct PartitionAssignment {
+    std::string node;
+    std::vector<std::size_t> partitions;  // ascending
+    std::uint64_t rows = 0;               // the slice's expected row count
+};
+
+// Tile `partition_rows`' indices across `nodes`, balanced by row count.
+//
+// **Deterministic**: a pure function of its inputs, so every node computes the
+// same tiling and the assignment never has to be sent. **Disjoint and total**:
+// every index in `[0, partition_rows.size())` appears in exactly one node's
+// slice — no duplication, no loss. Partition 0 is included; a caller that
+// already has it inline drops it from its own slice.
+//
+// The balance is longest-processing-time-first (largest partition to the
+// currently-lightest node), which is the standard greedy makespan heuristic —
+// the right one here because a node's fetch time tracks the rows it pulls, and
+// partitions are uneven. Ties break on node order so the result stays stable.
+//
+// An empty `nodes` yields an empty plan; every node gets an entry even when its
+// slice is empty, so a caller can report the full tiling.
+std::vector<PartitionAssignment> plan_partition_assignments(
+    const std::vector<std::string>& nodes,
+    const std::vector<std::uint64_t>& partition_rows);
+
+// The outcome of submitting a statement: the plan, plus partition 0's rows
+// (which the source returns inline with the submission).
+struct StatementSubmission {
+    StatementPlan plan;
+    ConnectorRows inline_rows;
+    std::string error;
+
+    bool ok() const { return error.empty(); }
+};
+
+// POST `sql` to the source described by `config` and read back the plan +
+// partition 0. Polls the statement handle while the source answers 202. Applies
+// no read-only guard of its own — `run_connector_query` has already run it.
+// Non-throwing; a failure comes back in `error`.
+StatementSubmission submit_connector_statement(const ConnectorConfig& config,
+                                               const std::string& sql,
+                                               std::size_t max_rows,
+                                               const HttpTransport& transport);
+
+// Rows pulled from a set of result partitions.
+struct PartitionFetchResult {
+    std::vector<nlohmann::json> rows;
+    std::size_t partitions_fetched = 0;
+    std::string error;
+
+    bool ok() const { return error.empty(); }
+};
+
+// Fetch `partitions` of `plan` from `config`'s source **concurrently**, in waves
+// of at most `max_in_flight`, stopping once `max_rows` rows are in hand. Rows
+// come back typed by the plan's column types, in partition order within a wave.
+//
+// Requires the async transport (an empty one is a clean failure, not a crash):
+// this is the seam's coroutine shape precisely so the requests overlap. Every
+// exchange carries the request's own timeout, so one stuck partition cannot pin
+// the wave.
+PartitionFetchResult fetch_result_partitions(const ConnectorConfig& config,
+                                             const StatementPlan& plan,
+                                             const std::vector<std::size_t>& partitions,
+                                             std::size_t max_rows,
+                                             std::size_t max_in_flight,
+                                             const AsyncHttpTransport& transport);
+
+// How many partition fetches one node keeps in flight by default. Small on
+// purpose: each is a fresh TLS handshake plus a large body, so the win flattens
+// quickly while the socket and memory cost keeps climbing.
+inline constexpr std::size_t kDefaultPartitionsInFlight = 4;
+
+}  // namespace zetta::connect
