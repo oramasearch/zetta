@@ -434,6 +434,15 @@ ConnectorResult run_connector_query(const ConnectorConfig& config,
     }
 
     const HttpTransport& exchange = transport ? transport : default_http_transport();
+    if (!exchange) {
+        // Nothing installed the native client (api::install_native_http_transport)
+        // — a unit test, or a tool built without the API target. Fail cleanly
+        // rather than pretending the source was unreachable.
+        result.error =
+            "no outbound HTTP transport is installed in this build — a connector "
+            "query cannot reach an external source";
+        return result;
+    }
     if (config.type == "snowflake") {
         return run_snowflake_query(config, sql, max_rows, exchange);
     }

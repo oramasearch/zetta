@@ -628,17 +628,24 @@ endif()
 # -----------------------------------------------------------------------------
 # zetta-api — the embedded MCP server (docs/api/registry-design.md, #615).
 # The registry/bridge/observability core lives in zetta-core (HTTP-free); this
-# library holds the ONE Beast2 adapter TU. beast2/http/Boost.JSON link PRIVATE
-# so no HTTP type reaches consumers — the same isolation SDL/CUDA get.
+# library holds the HTTP adapter TUs — the Beast2 server (inbound) and the
+# native coroutine HTTPS client behind connect::HttpTransport (outbound, #827).
+# beast2/http/Boost.JSON link PRIVATE so no HTTP type reaches consumers — the
+# same isolation SDL/CUDA get. Corosio + its OpenSSL TLS provider are PRIVATE
+# here too: the client dials sockets through zetta::runtime::net exactly as the
+# cluster adapter does, and neither backend reaches zetta-core's surface.
 # -----------------------------------------------------------------------------
 add_library(zetta-api STATIC
-  src/core/api/http_server.cpp)
+  src/core/api/http_server.cpp
+  src/core/api/native_http_transport.cpp)
 target_compile_features(zetta-api PUBLIC cxx_std_26)
 target_link_libraries(zetta-api PUBLIC zetta-core)
 target_link_libraries(zetta-api PRIVATE
   Boost::beast2
   Boost::http
-  Boost::json)
+  Boost::json
+  Boost::corosio
+  Boost::corosio_openssl)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

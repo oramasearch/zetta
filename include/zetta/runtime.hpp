@@ -26,6 +26,40 @@ namespace zetta::runtime {
 template <class Value = void>
 using task = boost::capy::task<Value>;
 
+// The `(error_code, values…)` pair every I/O awaitable in the stack yields, so a
+// caller writes `auto [error, value] = co_await …` and never throws across the
+// boundary — the async mirror of zetta-core's non-throwing status returns.
+template <class... Values>
+using io_result = boost::capy::io_result<Values...>;
+
+// A coroutine yielding an `io_result<Values…>` (i.e. `task<io_result<Values…>>`).
+// This is the shape the composition primitives below require, so an async seam
+// meant to be fanned out (connect::AsyncHttpTransport) returns an io_task rather
+// than a bare task.
+template <class... Values>
+using io_task = boost::capy::io_task<Values...>;
+
+// --- Structured concurrency: fan out, then join -------------------------------
+//
+// Run every awaitable CONCURRENTLY and resume once they have all finished. The
+// range overload takes a `std::vector<io_task<Value>>` and yields
+// `io_result<std::vector<Value>>` (results in submission order); the variadic
+// overload takes heterogeneous awaitables and yields a matching tuple. The first
+// error wins and requests stop on its siblings.
+//
+// This is how zetta gets *aggregate* bandwidth out of one node: N in-flight
+// requests on one thread of control instead of N sequential round-trips. Callers
+// must still BOUND the fan-out (a slice at a time) — an unbounded when_all over
+// thousands of awaitables opens thousands of sockets.
+using boost::capy::when_all;
+
+// Race an awaitable against a wall-clock deadline. The awaitable's own result is
+// returned when it wins; otherwise the result carries `error::timeout` and a
+// default-constructed payload, and the loser is cancelled. Every outbound
+// exchange zetta makes should be wrapped in one, so a hung peer cannot pin a
+// coroutine (and, transitively, a fan-out slot) forever.
+using boost::capy::timeout;
+
 // A pool of worker threads exposing an executor (`pool.get_executor()`).
 using thread_pool = boost::capy::thread_pool;
 

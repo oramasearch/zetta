@@ -168,8 +168,12 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
 
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,
-  included **only** by the adapter `src/core/cluster/cluster.cpp`. **Never name
-  `boost::capy` / `boost::corosio` directly** outside those seams.
+  included **only** by the two networking adapters —
+  `src/core/cluster/cluster.cpp` (inbound/peer traffic) and
+  `src/core/api/native_http_transport.cpp` (outbound client traffic, the
+  connector transport, #827). **Never name `boost::capy` / `boost::corosio`
+  directly** outside those seams — if the seam lacks a primitive, extend
+  `runtime.hpp` (that is where `when_all` / `timeout` came from).
 
 - **Coroutines first.** zetta is a coroutine-native codebase: async APIs are
   expressed as awaitables through the `zetta::runtime` seam (`task<T>`,

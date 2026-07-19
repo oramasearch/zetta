@@ -55,8 +55,13 @@ New capability = a new implementation of an existing seam: `StorageEngine`,
 (`FleetSource`, `IdentityHooks`, `NarratorCompletion`, `DatasetResolver`) keeps
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
-- Only `src/core/cluster/cluster.cpp` names Corosio (via `zetta::runtime::net`
-  — including the TLS surface, #466); OpenSSL libcrypto is named by exactly two
+- Exactly two TUs name Corosio (via `zetta::runtime::net`):
+  `src/core/cluster/cluster.cpp` for inbound/peer traffic — including the TLS
+  surface, #466 — and `src/core/api/native_http_transport.cpp` for outbound
+  client traffic (the native coroutine HTTPS client behind
+  `connect::HttpTransport`, #827; it lives in the `zetta-api` target because it
+  also needs Boost.HTTP, which zetta-core must never link).
+  OpenSSL libcrypto is named by exactly two
   TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
   `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/constant-time
   compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.

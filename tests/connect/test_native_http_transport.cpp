@@ -1,0 +1,193 @@
+// Protocol-layer coverage of the native coroutine HTTP client that fills the
+// connector transport seam (#827, docs/api/native-http-transport.md).
+//
+// The client is exercised against the engine's own REST server on loopback —
+// real sockets, real HTTP/1.1 framing through Boost.HTTP's serializer/parser —
+// so this is the outbound mirror of tests/api/test_rest_server.cpp. TLS is not
+// exercised here (that needs a certificate authority and a real peer); the TLS
+// path is the same coroutine with an `openssl_stream` in place of the socket.
+//
+// The test thread plays the owning loop (drain()), and client work runs on a
+// helper thread — the same layer-2 discipline the REST tests use.
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "temp_dir.hpp"
+#include "zetta/api/native_http_transport.hpp"
+#include "zetta/api/server.hpp"
+#include "zetta/connect/http_transport.hpp"
+#include "zetta/node.hpp"
+#include "zetta/runtime.hpp"
+
+namespace {
+
+struct NativeHttpTransportFixture : ::testing::Test {
+    zetta::test::TempDir dir;
+    zetta::Node node{zetta::NodeConfig{dir.path().string(), /*preflight=*/false}};
+    std::unique_ptr<zetta::api::ApiServer> server;
+    std::string owner_secret = "native-transport-owner-secret";
+
+    void SetUp() override {
+        ASSERT_TRUE(node.start());
+        ASSERT_TRUE(node.bootstrap_owner(owner_secret).performed);
+        zetta::api::ServerOptions options;
+        options.port = 0;  // ephemeral
+        server = std::make_unique<zetta::api::ApiServer>(node, nullptr, options);
+        ASSERT_TRUE(server->start()) << server->reason();
+        ASSERT_NE(server->port(), 0);
+        zetta::api::install_native_http_transport();
+    }
+
+    void TearDown() override {
+        zetta::api::shutdown_native_http_transport();
+        server->stop();
+        node.stop();
+    }
+
+    std::string base_url() const {
+        return "http://127.0.0.1:" + std::to_string(server->port());
+    }
+
+    zetta::connect::HttpRequest get(const std::string& path,
+                                    const std::string& bearer) const {
+        zetta::connect::HttpRequest request;
+        request.method = "GET";
+        request.url = base_url() + path;
+        request.timeout_seconds = 20;
+        if (!bearer.empty()) {
+            request.headers.push_back({"Authorization", "Bearer " + bearer});
+            request.secret_headers.push_back("Authorization");
+        }
+        return request;
+    }
+
+    // Run `work` on a helper thread while this thread drains the server's
+    // bridge, so a capability that must execute on the owning loop can answer.
+    void drive(const std::function<void()>& work) {
+        std::atomic<bool> finished{false};
+        std::thread worker([&] {
+            work();
+            finished = true;
+        });
+        const auto deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (!finished && std::chrono::steady_clock::now() < deadline) {
+            server->drain();
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        worker.join();
+    }
+};
+
+TEST_F(NativeHttpTransportFixture, InstallsItselfAsTheDefaultTransport) {
+    EXPECT_TRUE(static_cast<bool>(zetta::connect::default_http_transport()));
+    EXPECT_TRUE(static_cast<bool>(zetta::connect::default_async_http_transport()));
+
+    zetta::api::shutdown_native_http_transport();
+    EXPECT_FALSE(static_cast<bool>(zetta::connect::default_http_transport()));
+    EXPECT_FALSE(
+        static_cast<bool>(zetta::connect::default_async_http_transport()));
+}
+
+TEST_F(NativeHttpTransportFixture, PerformsARealLoopbackExchange) {
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(
+            get("/v1/server_info", owner_secret));
+    });
+    EXPECT_TRUE(response.error.empty()) << response.error;
+    EXPECT_EQ(response.status, 200);
+    EXPECT_NE(response.body.find("\"node_id\""), std::string::npos)
+        << response.body;
+}
+
+TEST_F(NativeHttpTransportFixture, APeerErrorStatusIsNotATransportError) {
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(
+            get("/v1/server_info", /*bearer=*/{}));
+    });
+    // The exchange completed: no transport error, and a real status from the
+    // peer for the caller to interpret.
+    EXPECT_TRUE(response.error.empty()) << response.error;
+    EXPECT_GE(response.status, 400);
+    EXPECT_LT(response.status, 500);
+}
+
+TEST_F(NativeHttpTransportFixture, ReportsAnUnreachableHostWithoutLeakingTheToken) {
+    zetta::connect::HttpRequest request;
+    request.method = "GET";
+    // Port 1 on loopback: nothing listens, so the connect fails fast.
+    request.url = "http://127.0.0.1:1/v1/server_info";
+    request.timeout_seconds = 10;
+    request.headers.push_back({"Authorization", "Bearer super-secret-token"});
+    request.secret_headers.push_back("Authorization");
+
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(request);
+    });
+    EXPECT_FALSE(response.error.empty());
+    EXPECT_EQ(response.status, 0);
+    EXPECT_EQ(response.error.find("super-secret-token"), std::string::npos)
+        << response.error;
+}
+
+TEST_F(NativeHttpTransportFixture, RejectsAUrlThatIsNotAbsoluteHttp) {
+    zetta::connect::HttpRequest request;
+    request.method = "GET";
+    request.url = "ftp://example.invalid/thing";
+
+    zetta::connect::HttpResponse response;
+    drive([&] {
+        response = zetta::connect::default_http_transport()(request);
+    });
+    EXPECT_FALSE(response.error.empty());
+    EXPECT_EQ(response.status, 0);
+}
+
+// The property Part 3's distributed fetch rests on: N exchanges in flight at
+// once on one node, joined through the runtime seam's when_all.
+TEST_F(NativeHttpTransportFixture, FansOutConcurrentExchangesThroughWhenAll) {
+    constexpr int kRequests = 8;
+    std::vector<zetta::connect::HttpResponse> responses;
+
+    drive([&] {
+        responses = zetta::runtime::block_on(
+            [](zetta::connect::AsyncHttpTransport transport,
+               std::vector<zetta::connect::HttpRequest> requests)
+                -> zetta::runtime::task<
+                    std::vector<zetta::connect::HttpResponse>> {
+                std::vector<zetta::runtime::io_task<zetta::connect::HttpResponse>>
+                    exchanges;
+                exchanges.reserve(requests.size());
+                for (const zetta::connect::HttpRequest& request : requests) {
+                    exchanges.push_back(transport(request));
+                }
+                auto [error, gathered] =
+                    co_await zetta::runtime::when_all(std::move(exchanges));
+                if (error) co_return {};
+                co_return std::move(gathered);
+            }(zetta::connect::default_async_http_transport(), [&] {
+                std::vector<zetta::connect::HttpRequest> requests;
+                for (int index = 0; index < kRequests; ++index) {
+                    requests.push_back(get("/v1/server_info", owner_secret));
+                }
+                return requests;
+            }()));
+    });
+
+    ASSERT_EQ(responses.size(), static_cast<std::size_t>(kRequests));
+    for (const zetta::connect::HttpResponse& response : responses) {
+        EXPECT_TRUE(response.error.empty()) << response.error;
+        EXPECT_EQ(response.status, 200);
+    }
+}
+
+}  // namespace

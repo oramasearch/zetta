@@ -11,11 +11,14 @@ warehouse had to be exported by hand first. `StepKind::Connect` records a lineag
 string but materializes nothing, and the only `DatasetResolver` reads local paths.
 
 ```
-include/zetta/connect/connector.hpp        ConnectorConfig / ConnectorRows / run_connector_query
-include/zetta/connect/http_transport.hpp   HttpRequest / HttpResponse / HttpTransport seam
-src/core/connect/connector.cpp             the config boundary, the read-only guard, the Snowflake connector
-src/core/connect/http_transport.cpp        the default transport (curl via CommandRunner)
-tests/connect/test_connector.cpp           the boundary, the guard, and Snowflake against a fake transport
+include/zetta/connect/connector.hpp          ConnectorConfig / ConnectorRows / run_connector_query
+include/zetta/connect/http_transport.hpp     HttpRequest / HttpResponse / HttpTransport + AsyncHttpTransport seam
+src/core/connect/connector.cpp               the config boundary, the read-only guard, the Snowflake connector
+src/core/connect/http_transport.cpp          the installed-default transport registry (no HTTP library in zetta-core)
+include/zetta/api/native_http_transport.hpp  install/shutdown the native client
+src/core/api/native_http_transport.cpp       the native coroutine HTTPS client (zetta-api target)
+tests/connect/test_connector.cpp             the boundary, the guard, and Snowflake against a fake transport
+tests/connect/test_native_http_transport.cpp the native client against a real loopback server
 ```
 
 ## The shape
@@ -73,7 +76,8 @@ HTTP requests against the source's public REST API and parses JSON. Even the HTT
 exchange is injected, through the `HttpTransport` seam:
 
 ```cpp
-using HttpTransport = std::function<HttpResponse(const HttpRequest&)>;
+using HttpTransport      = std::function<HttpResponse(const HttpRequest&)>;
+using AsyncHttpTransport = std::function<runtime::io_task<HttpResponse>(const HttpRequest&)>;
 ```
 
 This is the same **injected-transport** pattern as the
@@ -82,20 +86,23 @@ keeps connectors unit-testable against a fake (no network, no credentials, no
 warehouse — every case in `tests/connect/test_connector.cpp` runs that way), and
 keeps the real egress path in one replaceable place.
 
-The default transport shells **`curl`** through the shared `CommandRunner`. A
-native, coroutine-backed transport behind `zetta::runtime::net` can replace it
-later without touching a single connector, since both sides only ever exchange
-`HttpRequest` / `HttpResponse`.
+The real transport is a **native coroutine HTTPS client**, not a subprocess —
+see [../api/native-http-transport.md](../api/native-http-transport.md). It lives
+in the `zetta-api` target and installs itself into this seam at startup, so
+zetta-core still links no HTTP library and no connector ever sees an HTTP type.
+The async shape is what the distributed fetch fans out with
+(`runtime::when_all` over N in-flight partition reads).
 
-### Credentials never ride in argv
+### Credentials never leak
 
 `HttpRequest::secret_headers` names the headers whose values are secret (the
-`Authorization` bearer). The default transport writes exactly those to a private
-**0600 temp config file** consumed via `curl --config`, so a token is never
-visible in the process table. The request body goes to its own file too, so a
-large statement cannot hit the argv size limit. Both are removed after the
-exchange. `ConnectorConfig::to_json()` likewise **never emits the token**, so a
-config is safe to echo back to a caller or log.
+`Authorization` bearer). A transport must send them and then forget them: no
+secret value may appear in a reason string, a log line, a span attribute, or a
+process argument. The native client builds every failure reason from the host,
+port, and the OS/TLS error only — never from a header — and there is no
+subprocess, so nothing is visible in the process table.
+`ConnectorConfig::to_json()` likewise **never emits the token**, so a config is
+safe to echo back to a caller or log.
 
 ## Read-only by construction
 
@@ -135,8 +142,12 @@ from the source, and a malformed response all come back as a
 
 - **Snowflake is the only connector** in this slice; a second one is a new branch
   in `run_connector_query` plus an entry in `connector_types()`.
-- The **native HTTP transport** (coroutine-backed, behind `zetta::runtime::net`)
-  replaces the curl default behind the same seam.
+- The native client does **no connection pooling**: one connection per exchange
+  with `Connection: close`, so a fan-out pays one TLS handshake per request. A
+  pooled variant is a change behind the same seam.
+- **TLS is not covered by a test** — verifying it needs a certificate authority
+  and a real peer; the loopback suite exercises the same coroutine over a plain
+  socket, and the mTLS peer transport covers the Corosio TLS surface separately.
 - Async polling waits on the **caller's thread** — this is a synchronous data-load
   action, like `add_dataset`.
 
