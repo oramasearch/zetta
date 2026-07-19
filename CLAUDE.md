@@ -22,6 +22,71 @@ instance. It runs in two modes:
 
 C++26, macOS-first, single statically-linked binary.
 
+## The first principle — native modern C++26, coroutine-based, cluster-native, distributed. ALWAYS
+
+**Every solution zetta ships is (1) native, modern C++26, (2) coroutine-based,
+(3) cluster-native, and (4) distributed. There are no exceptions, and "just for
+now" is not one.**
+
+- **Native, modern C++26.** No foreign runtime, no vendor SDK, no driver — and
+  **no shelling out to a CLI to do work the engine should do** (ADR-17). If a
+  capability needs a protocol, implement the protocol. If the runtime seam
+  lacks a primitive, *extend the seam* — never route around it with a
+  subprocess. And **modern** is not decoration: coroutines over callbacks,
+  ranges and algorithms over index loops, concepts over SFINAE, value semantics
+  and RAII over manual lifetimes, `std::string`/`string_view`/`span` over raw
+  buffers and pointer arithmetic. C-with-classes is as much a violation of this
+  rule as a subprocess is. Follow the
+  [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/); the full
+  statement is [C++ conventions](#c-conventions) below.
+- **Coroutine-based.** zetta is a coroutine-native codebase, not a threaded one
+  with coroutines bolted on. Async work is an awaitable through the
+  `zetta::runtime` seam (`task<T>` / `io_task<T>`, `spawn`, `when_all`,
+  `timeout`, `async_event`) — never a blocking mutex/condition-variable
+  surface, never a thread-per-request, never a sleep-poll loop. Concurrency is
+  expressed by composing awaitables (`when_all` over N in-flight operations),
+  which is also how a single node saturates its own link while the cluster
+  saturates all of them. A raw `std::mutex` is permitted only as the lowest
+  cross-thread handoff *inside* a seam adapter — contained, commented, never in
+  a public API.
+- **Cluster-native.** A node is an equal peer in a cluster, not a server that
+  happens to replicate. State is replicated state; work is *placed*, not
+  centralized.
+- **Distributed.** The unit of execution is the **cluster**, not the node.
+  Work fans out over owned partitions and combines through the collectives,
+  and the aggregate resource of N nodes — CPU, memory, disk, **and network
+  bandwidth** — is the resource being spent.
+
+**This includes AI — especially AI.** Featurization, training, scoring,
+explanation and search are native distributed C++ exactly like everything else:
+the histogram-GBDT trains by **gradient-histogram allreduce** across nodes,
+TreeSHAP explains natively, point-in-time featurize runs **compute-near-data**
+over owned partitions, and fulltext is **per-partition scatter-gather**. zetta
+does **not** embed Python / XGBoost / PyTorch to train, and it does **not** call
+a hosted model API to compute an answer (ADR-17). *"Just call an LLM for this
+part"* is the same violation as *"just shell out to curl"* — the model is the
+product, not a dependency. (The one sanctioned LLM use is the **optional,
+user-managed** playbook layer that writes narrative and picks a play from
+numbers the engine already computed — it never produces a number, and nothing
+depends on it.)
+
+**Anti-patterns that have actually shipped here. Do not repeat them:**
+
+| Looks done | Why it isn't |
+| --- | --- |
+| Shelling out to `curl` for an HTTP request | A subprocess is not native C++. The runtime seam already has sockets + TLS + an HTTP engine — extend it. |
+| Tiling work across N nodes, then running every tile on the coordinator | That is a parallel loop, not a distributed algorithm. It spends one node's bandwidth and N times nothing. |
+| "Single-node now, distribute later" | Valid ONLY as a reference implementation with the distributed path designed behind the same API — never as the shipped answer. |
+| Pulling a whole result set to one node, then sharding it | The data crosses the wire twice and the ingest is bounded by one link. Fetch where it lands. |
+| `std::this_thread::sleep_for` to poll a remote operation | Blocks a thread to wait. Compose an awaitable with a timer/`timeout` instead — a coroutine that is waiting should cost nothing. |
+| Embedding Python / XGBoost / PyTorch, or calling a model API, to train or infer | The model is the product. Implement it natively and distribute it (histogram-allreduce GBDT, native TreeSHAP). |
+
+**If you cannot see how a design distributes, it is not ready to build.** Say
+so and stop — do not ship the single-node version and call it done. The
+detailed statement of this rule, with the precedents to copy, is
+**Distributed-first — every algorithm scales at both levels** under
+[Conventions](#conventions).
+
 ## How these docs work — progressive disclosure
 
 This file holds only **identity, the load-bearing rules, build/test, and
@@ -300,6 +365,12 @@ ADR-17) and structured to exploit ALL available hardware at BOTH levels:**
   and the cluster itself is elastic (the `Provisioner` seam can add local or
   cloud nodes, consent- and cost-gated), so "available hardware" includes
   hardware zetta can provision.
+- **Aggregate bandwidth counts as hardware.** Ingest and egress scale the same
+  way compute does: N nodes have N uplinks. Pulling an external result set
+  through one node wastes N-1 of them *and* puts the rows on the wire twice
+  (once to the coordinator, once to their eventual owner). Tile the work set,
+  fetch each tile on the node that will own it, and land it there — the
+  write-side mirror of compute-near-data.
 - **Machine level**: heavy numerics target the `ComputeDevice` seam
   (accelerator when present, CPU backend always) and data-parallel work fans
   across cores via `runtime::parallel_for` / the work-stealing scheduler.
