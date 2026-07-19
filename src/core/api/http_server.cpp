@@ -1170,12 +1170,12 @@ struct ApiServer::Impl {
                        "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
                        "project below, then capture an intent, compile it, gate, deploy, and "
                        "run.</span></div>";
-            std::string out = web_ui_panel(
+            std::string out = render_action_bar("projects", {"create_project"});
+            out += web_ui_panel(
                 "Projects",
                 "an AI project: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy "
                 "\xE2\x86\x92 run",
                 "<div class=\"prjlist\">" + list + "</div>");
-            out += render_capabilities({"create_project"});
             return out;
         }
 
@@ -1203,6 +1203,8 @@ struct ApiServer::Impl {
 
         std::string out = "<div class=\"crumb\"><a href=\"/?view=projects\">Projects</a> / <b>" +
                           web_ui_escape(name) + "</b></div>";
+        out += render_action_bar("projects", {"capture_intent", "import_n8n", "compile_intent",
+                                              "compile_python", "gate", "deploy", "run"});
         out += web_ui_panel(name, "project overview", "<div class=\"kvs\">" + meta + "</div>");
         out += web_ui_panel(
             "Inputs", "captured intents + imported artifacts",
@@ -1217,8 +1219,6 @@ struct ApiServer::Impl {
                 "Models", "",
                 ptable("SELECT * FROM system.models WHERE project = '" + uuid + "'", "m"));
         }
-        out += render_capabilities({"capture_intent", "import_n8n", "compile_intent",
-                                    "compile_python", "gate", "deploy", "run"});
         return out;
     }
 
@@ -1403,10 +1403,10 @@ struct ApiServer::Impl {
             out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
                                 ptable("SELECT * FROM system.nodes", "n"));
         } else if (view == "cluster") {
+            out += render_action_bar(view, {"add_nodes", "detect_provisioners", "cloud_inspect"});
             out += web_ui_panel("Nodes", "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync", ptable("SELECT * FROM system.nodes", "n"));
             out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
             out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
-            out += render_capabilities({"add_nodes", "detect_provisioners", "cloud_inspect"});
         } else if (view == "projects") {
             out += render_projects(context, route);
         } else if (view == "data") {
@@ -1416,13 +1416,16 @@ struct ApiServer::Impl {
             out += render_data_explorer(context, route);
             out += web_ui_panel("Indexes", "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable, expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
         } else if (view == "models") {
+            out += render_action_bar(view, {"expose_model", "unexpose_model"});
             out += web_ui_panel(
                 "Models",
                 "trained models produced by runs \xC2\xB7 weights, metrics + ranked drivers; expose "
                 "one to serve predictions",
                 ptable("SELECT * FROM system.models", "m"));
-            out += render_capabilities({"expose_model", "unexpose_model"});
         } else if (view == "pipeline") {
+            out += render_action_bar(view, {"create_project", "capture_intent", "import_n8n",
+                                            "compile_intent", "compile_n8n", "compile_python",
+                                            "gate", "deploy", "run"});
             out += pipeline_legend();
             out += render_graphs_panel(context);
             out += web_ui_panel(
@@ -1437,9 +1440,6 @@ struct ApiServer::Impl {
                 "the native distributed-compute units a run fans out into (featurize / train / "
                 "score) \xC2\xB7 many jobs per run",
                 ptable("SELECT * FROM system.jobs", "jobs"));
-            out += render_capabilities({"create_project", "capture_intent", "import_n8n",
-                                        "compile_intent", "compile_n8n", "compile_python", "gate",
-                                        "deploy", "run"});
         } else if (view == "observability") {
             out += web_ui_panel(
                 "Traces", "one row per operation (an MCP/REST call, a run) \xC2\xB7 its intent, timing + result",
@@ -1449,6 +1449,7 @@ struct ApiServer::Impl {
             out += web_ui_panel("Crashes", "captured crash reports, with stacktraces",
                                 ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
+            out += render_action_bar(view, {"approve_consent", "deny_consent", "submit_feedback"});
             out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
                                 ptable("SELECT * FROM system.users", "u"));
             out += web_ui_panel("Roles", "named capability bundles assigned to users",
@@ -1461,7 +1462,6 @@ struct ApiServer::Impl {
                                 ptable("SELECT * FROM system.consent_requests", "cons"));
             out += web_ui_panel("Audit", "the immutable, append-only record of every governed action",
                                 ptable("SELECT * FROM system.audit", "aud"));
-            out += render_capabilities({"approve_consent", "deny_consent", "submit_feedback"});
         } else if (view == "shell") {
             out += web_ui_shell_repl();
         } else if (view == "notebooks") {
