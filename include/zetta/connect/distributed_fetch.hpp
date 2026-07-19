@@ -9,6 +9,7 @@
 
 #include "zetta/connect/connector.hpp"
 #include "zetta/connect/http_transport.hpp"
+#include "zetta/runtime.hpp"
 
 // **The distributed connector fetch** — pull one query's result with the
 // cluster's aggregate bandwidth instead of one node's
@@ -99,9 +100,20 @@ struct StatementSubmission {
 };
 
 // POST `sql` to the source described by `config` and read back the plan +
-// partition 0. Polls the statement handle while the source answers 202. Applies
-// no read-only guard of its own — `run_connector_query` has already run it.
-// Non-throwing; a failure comes back in `error`.
+// partition 0. Applies no read-only guard of its own — `run_connector_query` has
+// already run it. Non-throwing; a failure comes back in `error`.
+//
+// **The 202 poll is a timer, not a sleep** (#832). The SQL API answers 202 while
+// a statement is still executing, so the handle has to be re-read until it
+// completes. The coroutine below suspends on `runtime::delay` between reads, so
+// a waiting caller occupies a timer slot rather than a thread; the synchronous
+// entry point is the one explicit `runtime::block_on` bridge for callers that
+// are not themselves coroutines (the same shape `fetch_result_partitions` uses).
+// Parameters are by value: they live in the coroutine frame.
+runtime::task<StatementSubmission> submit_connector_statement_async(
+    ConnectorConfig config, std::string sql, std::size_t max_rows,
+    HttpTransport transport);
+
 StatementSubmission submit_connector_statement(const ConnectorConfig& config,
                                                const std::string& sql,
                                                std::size_t max_rows,

@@ -326,8 +326,12 @@ from the source, and a malformed response all come back as a
 - **TLS is not covered by a test** — verifying it needs a certificate authority
   and a real peer; the loopback suite exercises the same coroutine over a plain
   socket, and the mTLS peer transport covers the Corosio TLS surface separately.
-- Async polling waits on the **caller's thread** — this is a synchronous data-load
-  action, like `add_dataset`.
+- A statement the source is still executing (a `202`) is polled on a
+  **`runtime::delay` timer**, not a `sleep_for` ([#832](https://github.com/oramasearch/zetta/issues/832)):
+  `submit_connector_statement_async` is a coroutine that suspends between reads,
+  so a waiting poll occupies a timer slot instead of a thread. The synchronous
+  `submit_connector_statement` is the one explicit `runtime::block_on` bridge for
+  callers that are not coroutines.
 
 ## Adding another connector
 

@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <thread>
 #include <utility>
 
 #include "snowflake_protocol.hpp"
@@ -64,16 +63,15 @@ std::vector<PartitionAssignment> plan_partition_assignments(
     return plan;
 }
 
-StatementSubmission submit_connector_statement(const ConnectorConfig& config,
-                                               const std::string& sql,
-                                               std::size_t max_rows,
-                                               const HttpTransport& transport) {
+runtime::task<StatementSubmission> submit_connector_statement_async(
+    ConnectorConfig config, std::string sql, std::size_t max_rows,
+    HttpTransport transport) {
     StatementSubmission submission;
     if (!transport) {
         submission.error =
             "no outbound HTTP transport is installed in this build — a "
             "connector query cannot reach an external source";
-        return submission;
+        co_return submission;
     }
 
     HttpRequest request;
@@ -91,7 +89,7 @@ StatementSubmission submit_connector_statement(const ConnectorConfig& config,
     HttpResponse response = transport(request);
     if (!response.error.empty()) {
         submission.error = "snowflake: " + response.error;
-        return submission;
+        co_return submission;
     }
 
     // 202 => still executing: poll the statement handle until it completes.
@@ -103,38 +101,43 @@ StatementSubmission submit_connector_statement(const ConnectorConfig& config,
         if (handle.empty()) {
             submission.error =
                 "snowflake: async response carried no statementHandle";
-            return submission;
+            co_return submission;
         }
         if (++polls > kMaxAsyncPolls) {
             submission.error =
                 "snowflake: statement still running after " +
                 std::to_string(kMaxAsyncPolls * kAsyncPollMillis / 1000) +
                 "s (narrow the query, or pre-materialize it in the warehouse)";
-            return submission;
+            co_return submission;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(kAsyncPollMillis));
+        // A TIMER, not a sleep (#832): the coroutine suspends on the shared
+        // timer service and its thread goes back to other work. A blocking
+        // sleep_for here pinned a thread for the whole duration of a slow
+        // warehouse statement doing nothing at all.
+        [[maybe_unused]] const auto waited =
+            co_await runtime::delay(std::chrono::milliseconds(kAsyncPollMillis));
         response = transport(snowflake::partition_request(config, handle, -1));
         if (!response.error.empty()) {
             submission.error = "snowflake: " + response.error;
-            return submission;
+            co_return submission;
         }
     }
 
     if (!response.ok()) {
         submission.error = snowflake::status_error(response);
-        return submission;
+        co_return submission;
     }
 
     const auto body =
         nlohmann::json::parse(response.body, nullptr, /*allow_exceptions=*/false);
     if (!body.is_object()) {
         submission.error = "snowflake: response body is not a JSON object";
-        return submission;
+        co_return submission;
     }
     if (!snowflake::read_row_types(body, submission.plan.columns,
                                    submission.plan.column_types,
                                    submission.error)) {
-        return submission;
+        co_return submission;
     }
     submission.plan.handle = snowflake::statement_handle(body);
     submission.plan.partition_rows = snowflake::partition_row_counts(body);
@@ -143,7 +146,17 @@ StatementSubmission submit_connector_statement(const ConnectorConfig& config,
     snowflake::append_data(body, submission.plan.columns,
                            submission.plan.column_types, max_rows,
                            submission.inline_rows.rows);
-    return submission;
+    co_return submission;
+}
+
+StatementSubmission submit_connector_statement(const ConnectorConfig& config,
+                                               const std::string& sql,
+                                               std::size_t max_rows,
+                                               const HttpTransport& transport) {
+    // The one explicit bridge for callers that are not coroutines. Everything
+    // that can await should call submit_connector_statement_async directly.
+    return runtime::block_on(
+        submit_connector_statement_async(config, sql, max_rows, transport));
 }
 
 PartitionFetchResult fetch_result_partitions(const ConnectorConfig& config,

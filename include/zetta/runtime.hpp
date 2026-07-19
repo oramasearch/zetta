@@ -60,6 +60,15 @@ using boost::capy::when_all;
 // coroutine (and, transitively, a fan-out slot) forever.
 using boost::capy::timeout;
 
+// Suspend the awaiting coroutine for `duration`, then resume it — a timer, not a
+// sleep. **This is what a wait costs nothing means**: the coroutine's frame sits
+// on a shared timer service and its thread goes back to running other work,
+// where `std::this_thread::sleep_for` would have pinned the thread doing
+// nothing (the anti-pattern CLAUDE.md names by hand). Any poll of a remote
+// operation — a warehouse statement still executing, a peer not yet ready —
+// composes this instead of sleeping. `co_await runtime::delay(500ms)`.
+using boost::capy::delay;
+
 // A pool of worker threads exposing an executor (`pool.get_executor()`).
 using thread_pool = boost::capy::thread_pool;
 

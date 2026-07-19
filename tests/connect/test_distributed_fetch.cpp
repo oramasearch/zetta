@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <map>
 #include <set>
 #include <string>
@@ -211,6 +212,51 @@ TEST(DistributedFetch, SubmitReadsBackThePlanAndTheInlinePartition) {
     EXPECT_EQ(source.partition_requests.load(), 0);
     // …and typed by the declared rowType, not left as strings.
     EXPECT_TRUE(submitted.inline_rows.rows.front().at("id").is_number());
+}
+
+// A source that answers 202 (still executing) for the first `pending` reads of
+// the handle, then completes. The poll between reads is a `runtime::delay`
+// timer, not a blocking sleep (#832) — the whole submit is driven as a
+// coroutine, so this also proves the coroutine shape actually runs.
+struct SlowSource : FakeSource {
+    std::atomic<int> pending{2};
+
+    HttpResponse answer_slow(const HttpRequest& request) {
+        HttpResponse response;
+        if (request.method == "POST" || pending.fetch_sub(1) > 0) {
+            response.status = 202;
+            response.body =
+                nlohmann::json{{"statementHandle", "handle-1"}}.dump();
+            return response;
+        }
+        // Completed: the handle read now answers exactly like the submit would
+        // have, metadata and inline partition 0 included.
+        response.status = 200;
+        response.body = nlohmann::json{{"statementHandle", "handle-1"},
+                                       {"resultSetMetaData", metadata()},
+                                       {"data", rows_for(0)}}
+                            .dump();
+        return response;
+    }
+};
+
+TEST(DistributedFetch, PollsAnAsynchronouslyExecutingStatementWithoutSleeping) {
+    SlowSource source;
+    source.partition_count = 2;
+    const auto started = std::chrono::steady_clock::now();
+    const auto submitted = zetta::connect::submit_connector_statement(
+        config(), "SELECT 1", 1000,
+        [&source](const HttpRequest& request) {
+            return source.answer_slow(request);
+        });
+    ASSERT_TRUE(submitted.ok()) << submitted.error;
+    EXPECT_EQ(submitted.plan.handle, "handle-1");
+    EXPECT_EQ(submitted.plan.partition_rows.size(), 2u);
+    EXPECT_EQ(submitted.inline_rows.rows.size(), source.rows_per_partition);
+    // Polls really elapsed on the timer (500ms apiece) rather than the statement
+    // being read straight through.
+    EXPECT_GE(std::chrono::steady_clock::now() - started,
+              std::chrono::milliseconds(900));
 }
 
 TEST(DistributedFetch, FetchesASliceConcurrentlyAndExactlyOnce) {
