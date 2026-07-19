@@ -4,6 +4,8 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -450,6 +452,29 @@ std::string fmt_duration_seconds(double seconds) {
     return (negative ? "-" : "") + out;
 }
 
+// An ISO-8601 UTC timestamp rendered as a compact relative age ("3m ago",
+// "2h ago", "5d ago"), with the full timestamp on hover; older than 30 days
+// falls back to the calendar date.
+std::string fmt_relative_time(const std::string& iso) {
+    std::tm parsed{};
+    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &parsed.tm_year, &parsed.tm_mon,
+                    &parsed.tm_mday, &parsed.tm_hour, &parsed.tm_min, &parsed.tm_sec) != 6)
+        return "<span class=\"mono\">" + web_ui_escape(iso) + "</span>";
+    parsed.tm_year -= 1900;
+    parsed.tm_mon -= 1;
+    const std::time_t then = timegm(&parsed);
+    const std::time_t now = std::time(nullptr);
+    const long diff = static_cast<long>(now - then);
+    std::string rel;
+    if (diff < 0) rel = "just now";
+    else if (diff < 60) rel = std::to_string(diff) + "s ago";
+    else if (diff < 3600) rel = std::to_string(diff / 60) + "m ago";
+    else if (diff < 86400) rel = std::to_string(diff / 3600) + "h ago";
+    else if (diff < 30 * 86400) rel = std::to_string(diff / 86400) + "d ago";
+    else rel = iso.substr(0, 10);
+    return "<span class=\"mono\" title=\"" + web_ui_escape(iso) + "\">" + rel + "</span>";
+}
+
 std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
     if (value.is_null()) return "<span class=\"q\">&middot;</span>";
     const std::string col = lower(column);
@@ -499,10 +524,19 @@ std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
     }
     const std::string s = value.get<std::string>();
     if (s.empty()) return "<span class=\"q\">&middot;</span>";
-    if (contains_any(col, {"_id", "node", "address", "path", "sha256", "endpoint", "version",
-                           "hash", "trace", "span", "ref", "token", "created", "updated", "_at",
-                           "owner", "columns", "fields", "scope", "permissions", "roles"}) ||
-        col == "id")
+    // Timestamp columns render as a relative age, full value on hover.
+    if (contains_any(col, {"created", "updated", "_at", "started", "expires", "time"}) &&
+        s.size() >= 19 && s[4] == '-' && s[10] == 'T')
+        return fmt_relative_time(s);
+    // Opaque ids: mono, truncated to a readable head with the full id on hover.
+    if (contains_any(col, {"_id", "trace", "span", "hash", "sha256"}) || col == "id") {
+        if (s.size() > 18)
+            return "<span class=\"mono\" title=\"" + web_ui_escape(s) + "\">" +
+                   web_ui_escape(s.substr(0, 12)) + "\xE2\x80\xA6</span>";
+        return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
+    }
+    if (contains_any(col, {"node", "address", "path", "endpoint", "version", "ref", "token",
+                           "owner", "columns", "fields", "scope", "permissions", "roles"}))
         return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
     return web_ui_escape(s);
 }
