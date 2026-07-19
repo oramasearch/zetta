@@ -37,8 +37,8 @@ const std::string& page_bytes = result.data;
 ```
 
 Decompression can fail on a truncated or malformed page, and zetta-core is
-compiled `-fexperimental-library` (no exceptions across the seam), so the decoder
-is **non-throwing**: it returns a result + reason rather than throwing or reading
+compiled `-fexperimental-library` (nothing may unwind across its boundary), so the
+decoder is **non-throwing**: it returns a result + reason rather than throwing or reading
 out of bounds. The compressed bytes arrive from disk or a peer, so the decoder
 treats them as a **trust boundary** — every read (the preamble varint, each tag,
 every literal length and back-reference) is bounds-checked, and the produced
@@ -143,4 +143,5 @@ call `snappy_decompress` on each compressed page before decoding PLAIN /
 dictionary / RLE values; and the
 [reader → DDF wiring (#508)](https://github.com/oramasearch/zetta/issues/508)
 turns those into typed [DDF](../ddf/ddf.md) columns. zstd page decompression is the
-sibling codec to add behind the same per-page seam when a target file needs it.
+sibling codec to add behind the same per-page codec dispatch when a target file
+needs it.

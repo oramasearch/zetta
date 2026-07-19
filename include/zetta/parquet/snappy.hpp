@@ -35,9 +35,9 @@
 //     round-trip property against `snappy_decompress`.
 //
 // Decompression can fail on a truncated or malformed page, and zetta-core is
-// compiled `-fexperimental-library` (no exceptions across the seam), so every
-// entry point is **non-throwing**: malformed input is rejected at the boundary
-// with a clear reason rather than reading out of bounds or unwinding.
+// compiled `-fexperimental-library` (nothing may unwind across its boundary), so
+// every entry point is **non-throwing**: malformed input is rejected at the
+// boundary with a clear reason rather than reading out of bounds or unwinding.
 namespace zetta::parquet {
 
 // The result of decompressing a Snappy raw block. On success `error` is empty
