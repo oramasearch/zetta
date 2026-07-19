@@ -1,10 +1,13 @@
 #include "zetta/api/capabilities.hpp"
 
 #include <chrono>
+#include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "zetta/api/background.hpp"
 #include "zetta/api/serving.hpp"
@@ -16,8 +19,11 @@
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/storage/engine.hpp"
 #include "zetta/index/index.hpp"
 #include "zetta/index/search.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/serialization.hpp"
 #include "zetta/input/python_frontend.hpp"
 #include "zetta/ml/model.hpp"
 #include "zetta/node.hpp"
@@ -903,6 +909,170 @@ ApiResult handle_unexpose_index(const nlohmann::json& input,
     return set_index_exposure(input, context, /*exposed=*/false);
 }
 
+// --- create_index (https://github.com/oramasearch/zetta/issues/825) ----------
+//
+// The public create path for an index over a loaded table: it records the Index
+// entity (Node::create_index) then reconciles so this node's per-partition BM25F
+// sub-indexes build immediately. With add_dataset's default (partitioned)
+// placement the table has placed partitions the node owns, so `search` then takes
+// the distributed path and returns ranked hits. This is the tool search()'s own
+// resolution names ("create one with create_index").
+
+const nlohmann::json& create_index_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"table"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"table",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the source table to index (load it first with add_dataset)"}}},
+          {"fields",
+           {{"type", "array"},
+            {"minItems", 1},
+            {"uniqueItems", true},
+            {"items", {{"type", "string"}, {"minLength", 1}}},
+            {"description", "the fields to index (default: all of the table's columns)"}}},
+          {"kind",
+           {{"type", "string"},
+            {"enum", {"search", "vector", "feature"}},
+            {"description",
+             "index kind (default search — the only kind with a built-in "
+             "backend today)"}}},
+          {"backend",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the IndexBackend that builds it (default oramacore_fulltext, "
+             "BM25F full-text; memory_search is the exact-match reference)"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the table's database — needed only when the same table name "
+             "exists in several databases"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_index_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"index_id", "table", "kind", "backend", "fields", "exposed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"index_id", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"kind", {{"type", "string"}}},
+          {"backend", {{"type", "string"}}},
+          {"fields", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"exposed", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+// Resolve a table by name — within `database` when named, else the first database
+// holding a table of that name (the index_step_executor resolution).
+std::shared_ptr<zetta::data::Table> resolve_index_source_table(
+    Node& node, const std::string& table, const std::string& database_hint) {
+    if (!database_hint.empty()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(database_hint);
+        return database ? database->find_table(table) : nullptr;
+    }
+    for (const std::string& name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(name);
+        if (database) {
+            if (const std::shared_ptr<zetta::data::Table> found =
+                    database->find_table(table)) {
+                return found;
+            }
+        }
+    }
+    return nullptr;
+}
+
+ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) {
+    const std::string table = input.at("table").get<std::string>();
+    std::vector<std::string> fields =
+        input.value("fields", std::vector<std::string>{});
+    const std::string kind_name = input.value("kind", std::string{"search"});
+    const std::string backend =
+        input.value("backend", std::string{"oramacore_fulltext"});
+    const std::string database_hint = input.value("database", std::string{});
+
+    // (1) The source table must exist — an index is built over its partitions.
+    const std::shared_ptr<zetta::data::Table> source_table =
+        resolve_index_source_table(context.node, table, database_hint);
+    if (!source_table) {
+        return ApiResult::failure(
+            "not_found",
+            "table '" + table + "' not found — load it first with add_dataset");
+    }
+
+    // Default the indexed fields to ALL of the table's columns (from its first
+    // row) when none are named — indexing everything is the sane default; a
+    // caller passes fields only to narrow it.
+    if (fields.empty() && source_table->store().size() > 0) {
+        const nlohmann::json& first_row = source_table->store().at(0);
+        if (first_row.is_object())
+            for (auto it = first_row.begin(); it != first_row.end(); ++it)
+                fields.push_back(it.key());
+    }
+    if (fields.empty()) {
+        return ApiResult::failure(
+            "invalid_input",
+            "no fields to index — the table has no rows yet; load data first or "
+            "pass fields explicitly");
+    }
+
+    // (2) The kind is schema-constrained; parse it back to the enum.
+    const std::optional<zetta::index::IndexKind> kind =
+        zetta::index::index_kind_from_name(kind_name);
+    if (!kind) {
+        return ApiResult::failure("invalid_input",
+                                  "unknown index kind '" + kind_name + "'");
+    }
+
+    zetta::index::IndexValue value;
+    value.table = table;
+    value.kind = *kind;
+    value.backend = backend;
+    value.fields = fields;
+
+    // (3) The backend must resolve for this kind, or the recorded index could
+    // never build — fail with the reason rather than persist a dead entity.
+    if (!context.node.index_registry().resolve(value.spec())) {
+        return ApiResult::failure(
+            "invalid_input", "no index backend named '" + backend +
+                                 "' implements kind '" + kind_name +
+                                 "' on this node");
+    }
+
+    // (4) Record the entity, then reconcile so this node's per-partition
+    // sub-indexes build now (search would also reconcile before querying).
+    const std::shared_ptr<zetta::index::Index> index =
+        context.node.create_index(std::move(value));
+    if (!index) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not record the index (needs a table, a backend, and >= 1 "
+            "field)");
+    }
+    context.node.reconcile_search_indexes();
+
+    nlohmann::json output;
+    output["index_id"] = index->id();
+    output["table"] = index->table();
+    output["kind"] = std::string(index->kind_name());
+    output["backend"] = index->backend();
+    output["fields"] = index->fields();
+    output["exposed"] = index->exposed();
+    return ApiResult::success(std::move(output));
+}
+
 // --- list_traces / get_trace ---------------------------------------------
 
 const nlohmann::json& list_traces_schema() {
@@ -1160,6 +1330,125 @@ nlohmann::json graph_json(const zetta::pipeline::ProjectGraph& graph) {
                           {"name", graph.name()},
                           {"steps", graph.graph().node_count()},
                           {"edges", graph.graph().edge_count()}};
+}
+
+// --- get_graph / save_graph: the visual graph workspace's read + write path ---
+
+const nlohmann::json& graph_ref_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the owning project's name or uuid"}}},
+          {"graph",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the graph's name or uuid"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& graph_structure_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"graph_id", "name", "project", "nodes", "edges"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"graph_id", {{"type", "string"}}},
+          {"name", {{"type", "string"}}},
+          {"project", {{"type", "string"}}},
+          {"nodes",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"description", "a step: { id, kind, name }"}}}}},
+          {"edges",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"description", "a connection: { from, to, kind }"}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_get_graph(const nlohmann::json& input, ApiContext& context) {
+    const std::string project_name = input.at("project").get<std::string>();
+    const auto project = resolve_project(context, project_name);
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + project_name + "'");
+    }
+    const std::string graph_name = input.at("graph").get<std::string>();
+    const auto graph = resolve_graph(*project, graph_name);
+    if (!graph) {
+        return ApiResult::failure("not_found",
+                                  "no graph named '" + graph_name +
+                                      "' on project '" + project->name() + "'");
+    }
+    nlohmann::json output = zetta::ir::to_json(graph->graph());  // { nodes, edges }
+    output["graph_id"] = graph->id();
+    output["name"] = graph->name();
+    output["project"] = project->name();
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& save_graph_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"project", "graph", "nodes", "edges"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"project",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the owning project's name or uuid"}}},
+          {"graph",
+           {{"type", "string"}, {"minLength", 1},
+            {"description", "the graph's name or uuid (created if absent)"}}},
+          {"nodes",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"description", "the steps: each { id, kind, name }"}}},
+          {"edges",
+           {{"type", "array"},
+            {"items", {{"type", "object"}}},
+            {"description", "the connections: each { from, to, kind }"}}},
+          {"new_name",
+           {{"type", "string"}, {"description", "rename the graph (optional)"}}}}}};
+    return schema;
+}
+
+ApiResult handle_save_graph(const nlohmann::json& input, ApiContext& context) {
+    const std::string project_name = input.at("project").get<std::string>();
+    const auto project = resolve_project(context, project_name);
+    if (!project) {
+        return ApiResult::failure("not_found",
+                                  "no project named '" + project_name + "'");
+    }
+    nlohmann::json document;
+    document["nodes"] = input.at("nodes");
+    document["edges"] = input.at("edges");
+    std::string parse_error;
+    std::optional<zetta::ir::ExecutionGraph> parsed =
+        zetta::ir::from_json(document, &parse_error);
+    if (!parsed) {
+        return ApiResult::failure("invalid_input", "invalid graph: " + parse_error);
+    }
+    const std::string graph_name = input.at("graph").get<std::string>();
+    const std::string new_name = input.value("new_name", std::string{});
+    std::shared_ptr<zetta::pipeline::ProjectGraph> saved;
+    if (const auto existing = resolve_graph(*project, graph_name)) {
+        saved = project->update_graph(existing->name(), std::move(*parsed), new_name);
+    } else {
+        saved = project->create_graph(graph_name, std::move(*parsed));
+    }
+    if (!saved) {
+        return ApiResult::failure(
+            "engine_error",
+            "could not save the graph (empty name, or a name collision)");
+    }
+    nlohmann::json output = graph_json(*saved);
+    output["project"] = project->name();
+    return ApiResult::success(std::move(output));
 }
 
 // The schema of input_json + the owning project — the output of the two
@@ -2322,6 +2611,34 @@ void register_core_capabilities(Registry& registry) {
         handle_get_project});
 
     registry.add(Capability{
+        "get_graph",
+        "Get one graph",
+        "Read one execution graph's full structure — its typed step nodes "
+        "{id, kind, name} and directed edges {from, to, kind} — by project + "
+        "graph name or uuid. No side effects.",
+        graph_ref_schema(),
+        graph_structure_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Api, "query"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_get_graph});
+
+    registry.add(Capability{
+        "save_graph",
+        "Save a graph",
+        "Persist an edited execution graph — its nodes + edges — back to a "
+        "project graph, creating it when absent or replacing the existing one "
+        "(replicated + audited, the visual editor's save path).",
+        save_graph_schema(),
+        project_graph_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "save_graph"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_save_graph});
+
+    registry.add(Capability{
         "get_run",
         "Get one run",
         "Read one run's full validated record — status, logs, outputs, "
@@ -2539,6 +2856,20 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_unexpose_index});
+
+    registry.add(Capability{
+        "create_index",
+        "Create index",
+        "Build a full-text index over a loaded table: records the Search index "
+        "entity and builds the per-partition BM25F sub-indexes so `search` "
+        "returns ranked hits (load the table first with add_dataset).",
+        create_index_schema(),
+        create_index_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_index"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_index});
 
     // --- governed action parity (#617): the rest of the product loop ---------
 

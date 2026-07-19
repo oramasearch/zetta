@@ -4,6 +4,8 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -20,7 +22,7 @@ namespace {
 // top bar wraps, the nav scrolls horizontally, content is one full-width column, tables scroll.
 constexpr std::string_view kCss = R"CSS(
 :root{
-  --accent:#2563EB; --accent-wash:rgba(37,99,235,.09);
+  --accent:#2563EB; --accent-wash:rgba(37,99,235,.09); --accent-hover:#1D4FD8;
   --ink-primary:#1C1C1A; --ink-secondary:#444441; --ink-muted:#5F5F5C; --ink-quiet:#7D7D7A;
   --white:#FFFFFF; --canvas:#FAFAF8; --sidebar:#F5F4F2; --border:#E0E0E0;
   --rule-hair:rgba(0,0,0,.06); --rule-card:rgba(0,0,0,.08); --rule-emph:rgba(0,0,0,.12);
@@ -64,7 +66,7 @@ form.inline{display:inline;margin:0;}
   font-size:13.5px;white-space:nowrap;transition:background .12s,color .12s;}
 .side a svg{width:16px;height:16px;flex:none;opacity:.72;}
 .side a:hover{background:var(--wash-hover);color:var(--ink-primary);}
-.side a.active{background:var(--white);color:var(--ink-primary);font-weight:500;box-shadow:var(--shadow-sm);}
+.side a.active{background:var(--wash-selected);color:var(--ink-primary);font-weight:500;}
 .side a.active svg{opacity:1;color:var(--accent);}
 .main{padding:24px 28px 60px;min-width:0;}  /* fill all available width — no max cap */
 
@@ -122,12 +124,12 @@ form.inline{display:inline;margin:0;}
   table{font-size:12px;} th,td{padding:8px 10px;}
   .term{font-size:13px;padding:15px 16px;} .shellrow textarea{font-size:13px;}
 }
-.panel{background:var(--white);border:1px solid var(--rule-card);border-radius:14px;padding:18px 20px;margin-bottom:18px;box-shadow:var(--shadow-sm);}
+.panel{background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:18px 20px;margin-bottom:16px;}
 .phead{display:flex;align-items:center;gap:11px;margin-bottom:15px;flex-wrap:wrap;}
 .phead .ico{width:27px;height:27px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;
   background:var(--accent-wash);color:var(--accent);flex:none;}
 .phead .ico svg{width:15px;height:15px;}
-.phead h2{margin:0;font-size:15.5px;font-weight:600;letter-spacing:-.01em;color:var(--ink-primary);}
+.phead h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.015em;color:var(--ink-primary);}
 .phead .psub{font-size:11.5px;color:var(--ink-muted);}
 .phead .hcount{margin-left:auto;font:11px/1 var(--font-mono);color:var(--ink-quiet);background:var(--wash-hover);
   padding:5px 10px;border-radius:20px;}
@@ -143,14 +145,14 @@ form.inline{display:inline;margin:0;}
 .err-box{color:var(--err-fg);background:var(--err-bg);border:1px solid rgba(180,35,24,.14);border-radius:9px;padding:11px 13px;font:12px/1.5 var(--font-mono);margin-bottom:12px;}
 
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:14px;}
-.card{display:block;color:inherit;text-decoration:none;background:var(--white);border:1px solid var(--rule-card);border-radius:13px;padding:16px;box-shadow:var(--shadow-sm);
-  transition:box-shadow .14s ease,transform .14s ease,border-color .14s ease;}
-.card:hover{box-shadow:var(--shadow-md);transform:translateY(-1px);border-color:var(--rule-emph);}
+.card{display:block;color:inherit;text-decoration:none;background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:16px;
+  transition:border-color .14s ease,background .14s ease;}
+.card:hover{border-color:var(--rule-emph);background:var(--wash-hover);}
 .card:hover .cico{background:var(--accent);color:#fff;}
 .card .chd{display:flex;align-items:center;justify-content:space-between;margin-bottom:13px;}
-.card .cico{width:31px;height:31px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
-  background:var(--accent-wash);color:var(--accent);}
-.card .cico svg{width:16px;height:16px;}
+.card .cico{width:32px;height:32px;border-radius:9px;display:inline-flex;align-items:center;justify-content:center;
+  background:rgba(37,99,235,.13);color:var(--accent);}
+.card .cico svg{width:17px;height:17px;stroke-width:2;}
 .card .num{font:29px/1 var(--font-mono);font-weight:500;color:var(--ink-primary);letter-spacing:-.02em;font-variant-numeric:tabular-nums;}
 .card .lbl{margin-top:8px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
 .metaline{margin-top:14px;font-size:11px;color:var(--ink-quiet);}
@@ -220,6 +222,71 @@ code.j{font-size:11px;color:var(--ink-muted);}
 .kv span{font:10.5px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-quiet);}
 .kv b{font-size:13px;font-weight:500;color:var(--ink-primary);word-break:break-all;}
 
+/* Search: an index picker + query bar, and a ranked list of matching documents. */
+.searchbar{display:flex;gap:9px;align-items:center;}
+.searchbar select{width:auto;flex:none;max-width:260px;}
+.searchbar input{flex:1;width:auto;}
+.searchbar .btn{flex:none;}
+.hits{display:flex;flex-direction:column;gap:11px;}
+.hit{background:var(--white);border:1px solid var(--rule-card);border-radius:12px;padding:14px 16px;transition:border-color .14s ease;}
+.hit:hover{border-color:var(--rule-emph);}
+.hitmeta{display:flex;align-items:baseline;gap:10px;font:11px/1 var(--font-mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink-quiet);margin-bottom:8px;}
+.hitmeta .rank{font-weight:600;color:var(--ink-secondary);}
+.fld{display:flex;gap:12px;padding:4px 0;font-size:13.5px;line-height:1.5;}
+.fld .lbl{flex:0 0 64px;font:10px/1.6 var(--font-mono);text-transform:uppercase;letter-spacing:.05em;color:var(--ink-muted);}
+.fld span:last-child{color:var(--ink-primary);min-width:0;word-break:break-word;}
+
+/* Action toolbar + modal dialogs — real affordances, not a stack of open forms. */
+.toolbar{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:16px;}
+dialog.dlg{border:none;border-radius:16px;padding:0;box-shadow:0 16px 48px rgba(18,20,26,.24);width:min(520px,92vw);color:var(--ink-primary);background:var(--white);}
+dialog.dlg::backdrop{background:rgba(18,20,26,.42);}
+dialog.dlg form{padding:22px 24px 20px;margin:0;}
+.dlghd{display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.dlghd h3{margin:0;font:17px var(--font-sans);font-weight:600;color:var(--ink-primary);}
+.dlgx{background:none;border:none;font-size:22px;line-height:1;color:var(--ink-quiet);cursor:pointer;padding:0 4px;}
+.dlgsub{margin:6px 0 16px;font-size:13px;color:var(--ink-muted);}
+.dlgact{display:flex;justify-content:flex-end;gap:9px;margin-top:22px;}
+dialog.dlg .fgrid{gap:12px 18px;}
+dialog.dlg label{display:block;font:11px/1.5 var(--font-mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink-muted);margin-bottom:5px;}
+dialog.dlg select,dialog.dlg input{width:100%;}
+/* Per-section header actions (icon + task label buttons). */
+.pactions{margin-left:auto;display:flex;gap:8px;flex-wrap:wrap;}
+.btn.small{display:inline-flex;align-items:center;gap:6px;}
+.btn svg{width:14px;height:14px;flex:none;opacity:.75;}
+.btn-primary svg{opacity:1;}
+
+/* Visual graph editor — an interactive execution-graph canvas. */
+.getoolbar{display:flex;align-items:center;gap:9px;margin-bottom:14px;}
+.getoolbar select{width:auto;max-width:340px;}
+.getoolbar .gekind{max-width:132px;color:var(--ink-secondary);}
+.gespring{flex:1;}
+.gecanvas{position:relative;overflow:auto;border:1px solid var(--rule-card);border-radius:12px;
+  background-color:var(--canvas);background-image:radial-gradient(circle,rgba(0,0,0,.06) 1px,transparent 1.3px);
+  background-size:22px 22px;min-height:340px;max-height:600px;}
+.gesvg{display:block;}
+.genode{cursor:grab;}
+.genode:active{cursor:grabbing;}
+.generect{fill:var(--white);stroke:var(--rule-emph);stroke-width:1.4;}
+.genode:hover .generect{stroke:var(--accent);}
+.genkind{font:10px var(--font-mono);text-transform:uppercase;letter-spacing:.06em;fill:var(--ink-quiet);}
+.genname{font:13px var(--font-sans);font-weight:500;fill:var(--ink-primary);}
+.geport{fill:var(--accent);stroke:var(--white);stroke-width:2;cursor:crosshair;}
+.gedel{font:15px var(--font-sans);fill:var(--ink-quiet);cursor:pointer;opacity:0;text-anchor:middle;}
+.genode:hover .gedel{opacity:1;}
+.gedel:hover{fill:var(--err-fg);}
+.geedge{fill:none;stroke:#9aa1ad;stroke-width:1.8;cursor:pointer;}
+.geedge:hover{stroke:var(--err-fg);stroke-width:2.4;}
+.geedge.ctrl{stroke-dasharray:5 4;}
+.geghost{stroke:var(--accent);stroke-dasharray:4 4;pointer-events:none;}
+.gehint{margin-top:10px;font-size:11.5px;color:var(--ink-quiet);}
+.genameedit{position:absolute;width:132px;font:13px var(--font-sans);padding:4px 7px;border:1.5px solid var(--accent);border-radius:7px;background:var(--white);color:var(--ink-primary);z-index:5;box-shadow:var(--shadow-pop);}
+.getoast{position:fixed;right:24px;bottom:24px;background:var(--ink-primary);color:var(--white);font:13px var(--font-sans);font-weight:500;padding:11px 17px;border-radius:11px;box-shadow:var(--shadow-pop);opacity:0;transform:translateY(8px);transition:opacity .2s ease,transform .2s ease;pointer-events:none;z-index:60;}
+.getoast.show{opacity:1;transform:translateY(0);}
+.getoast.err{background:var(--err-fg);}
+.gk-connect .generect{stroke:#2563EB;} .gk-clean .generect{stroke:#0F6E56;}
+.gk-model .generect{stroke:#7C3AED;} .gk-index .generect{stroke:#B45309;}
+.gk-serve .generect{stroke:#0891B2;} .gk-act .generect{stroke:#BE185D;}
+
 .pill{display:inline-flex;align-items:center;font:11px/1 var(--font-mono);font-weight:500;text-transform:uppercase;
   letter-spacing:.04em;border-radius:8px;padding:3px 7px;color:var(--ink-secondary);background:var(--wash-hover);}
 .pill.ok{color:var(--ok-fg);background:var(--ok-bg);} .pill.warn{color:var(--warn-fg);background:var(--warn-bg);}
@@ -232,8 +299,8 @@ code.j{font-size:11px;color:var(--ink-muted);}
   border-radius:9px;padding:10px 15px;cursor:pointer;transition:background .12s,border-color .12s,box-shadow .12s;}
 .btn:hover{background:var(--wash-hover);}
 .btn.small{padding:6px 11px;font-size:12px;border-radius:8px;}
-.btn-primary{display:inline-flex;align-items:center;gap:7px;background:var(--ink-primary);color:var(--white);border-color:var(--ink-primary);box-shadow:var(--shadow-sm);}
-.btn-primary:hover{background:#000;}
+.btn-primary{display:inline-flex;align-items:center;gap:7px;background:var(--accent);color:#fff;border-color:var(--accent);}
+.btn-primary:hover{background:var(--accent-hover);border-color:var(--accent-hover);}
 .btn-primary svg{width:14px;height:14px;}
 input,textarea,select{font:14px var(--font-sans);padding:10px 12px;border:1px solid var(--rule-emph);border-radius:9px;
   background:var(--canvas);color:var(--ink-primary);width:100%;transition:border-color .12s,box-shadow .12s,background .12s;}
@@ -388,6 +455,29 @@ std::string fmt_duration_seconds(double seconds) {
     return (negative ? "-" : "") + out;
 }
 
+// An ISO-8601 UTC timestamp rendered as a compact relative age ("3m ago",
+// "2h ago", "5d ago"), with the full timestamp on hover; older than 30 days
+// falls back to the calendar date.
+std::string fmt_relative_time(const std::string& iso) {
+    std::tm parsed{};
+    if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &parsed.tm_year, &parsed.tm_mon,
+                    &parsed.tm_mday, &parsed.tm_hour, &parsed.tm_min, &parsed.tm_sec) != 6)
+        return "<span class=\"mono\">" + web_ui_escape(iso) + "</span>";
+    parsed.tm_year -= 1900;
+    parsed.tm_mon -= 1;
+    const std::time_t then = timegm(&parsed);
+    const std::time_t now = std::time(nullptr);
+    const long diff = static_cast<long>(now - then);
+    std::string rel;
+    if (diff < 0) rel = "just now";
+    else if (diff < 60) rel = std::to_string(diff) + "s ago";
+    else if (diff < 3600) rel = std::to_string(diff / 60) + "m ago";
+    else if (diff < 86400) rel = std::to_string(diff / 3600) + "h ago";
+    else if (diff < 30 * 86400) rel = std::to_string(diff / 86400) + "d ago";
+    else rel = iso.substr(0, 10);
+    return "<span class=\"mono\" title=\"" + web_ui_escape(iso) + "\">" + rel + "</span>";
+}
+
 std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
     if (value.is_null()) return "<span class=\"q\">&middot;</span>";
     const std::string col = lower(column);
@@ -431,17 +521,38 @@ std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
         return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
     }
     if (value.is_object()) {
-        std::string s = value.dump();
-        if (s.size() > 140) s = s.substr(0, 140) + "\xE2\x80\xA6";
-        return "<code class=\"j\">" + web_ui_escape(s) + "</code>";
+        const std::string full = value.dump();
+        std::string s = full;
+        if (s.size() > 88) s = s.substr(0, 88) + "\xE2\x80\xA6";
+        return "<code class=\"j\" title=\"" + web_ui_escape(full) + "\">" +
+               web_ui_escape(s) + "</code>";
     }
     const std::string s = value.get<std::string>();
     if (s.empty()) return "<span class=\"q\">&middot;</span>";
-    if (contains_any(col, {"_id", "node", "address", "path", "sha256", "endpoint", "version",
-                           "hash", "trace", "span", "ref", "token", "created", "updated", "_at",
-                           "owner", "columns", "fields", "scope", "permissions", "roles"}) ||
-        col == "id")
+    // Timestamp columns render as a relative age, full value on hover.
+    if (contains_any(col, {"created", "updated", "_at", "started", "expires", "time", "fresh",
+                           "seen", "last_"}) &&
+        s.size() >= 19 && s[4] == '-' && s[10] == 'T')
+        return fmt_relative_time(s);
+    // Opaque ids: mono, truncated to a readable head with the full id on hover.
+    if (contains_any(col, {"_id", "trace", "span", "hash", "sha256"}) || col == "id") {
+        if (s.size() > 18)
+            return "<span class=\"mono\" title=\"" + web_ui_escape(s) + "\">" +
+                   web_ui_escape(s.substr(0, 12)) + "\xE2\x80\xA6</span>";
         return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
+    }
+    if (contains_any(col, {"node", "address", "path", "endpoint", "version", "ref", "token",
+                           "owner", "columns", "fields", "scope", "permissions", "roles"})) {
+        if (s.size() > 64)
+            return "<span class=\"mono\" title=\"" + web_ui_escape(s) + "\">" +
+                   web_ui_escape(s.substr(0, 64)) + "\xE2\x80\xA6</span>";
+        return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
+    }
+    // Long free text (e.g. a capabilities list) truncates with the full value on
+    // hover so one wide cell can't blow out the table.
+    if (s.size() > 76)
+        return "<span title=\"" + web_ui_escape(s) + "\">" +
+               web_ui_escape(s.substr(0, 76)) + "\xE2\x80\xA6</span>";
     return web_ui_escape(s);
 }
 
@@ -505,7 +616,41 @@ std::string web_ui_icon(std::string_view name) {
     if (name == "bolt") return svg("<path d='M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z'/>");
     if (name == "chevron") return svg("<path d='m9 6 6 6-6 6'/>");
     if (name == "play") return svg("<path d='m7 4.5 12 7.5-12 7.5z'/>");
-    return svg("");
+    if (name == "dataset" || name == "datasets" || name == "database" || name == "databases")
+        return svg("<ellipse cx='12' cy='5.5' rx='7.5' ry='2.8'/>"
+                   "<path d='M4.5 5.5v13c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8v-13'/>"
+                   "<path d='M4.5 12c0 1.55 3.36 2.8 7.5 2.8s7.5-1.25 7.5-2.8'/>");
+    if (name == "index" || name == "indexes")
+        return svg("<path d='M4 5.5h11M4 10h11M4 14.5h6'/>"
+                   "<circle cx='16.5' cy='16.5' r='3'/><path d='m18.8 18.8 2.2 2.2'/>");
+    if (name == "search")
+        return svg("<circle cx='10.5' cy='10.5' r='6.5'/><path d='m15.4 15.4 5.1 5.1'/>");
+    if (name == "deployment" || name == "deployments")
+        return svg("<path d='M12 2.5 20.5 7v10L12 21.5 3.5 17V7z'/><path d='m8 12 3 3 5-6'/>");
+    if (name == "model") return web_ui_icon("models");
+    if (name == "node") return web_ui_icon("nodes");
+    if (name == "user" || name == "users" || name == "member" || name == "principal")
+        return svg("<circle cx='12' cy='8' r='3.6'/><path d='M5 20a7 7 0 0 1 14 0'/>");
+    if (name == "role" || name == "roles")
+        return svg("<circle cx='11' cy='8' r='3.3'/><path d='M4.7 20a6.3 6.3 0 0 1 12.6 0'/>"
+                   "<path d='m17.5 5 1.4 1.4L21.5 3.8'/>");
+    if (name == "token" || name == "tokens")
+        return svg("<circle cx='8' cy='12' r='3.6'/><path d='M11.5 12H21M18 12v3M21 12v2.6'/>");
+    if (name == "trace" || name == "traces" || name == "span")
+        return svg("<path d='M4 6.5h8M4 12h12M4 17.5h6'/><circle cx='15' cy='6.5' r='1.5'/>"
+                   "<circle cx='19' cy='12' r='1.5'/><circle cx='11' cy='17.5' r='1.5'/>");
+    if (name == "audit")
+        return svg("<path d='M6 3.5h8l5 5V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1z'/>"
+                   "<path d='M14 3.5V8.5h5M8.5 13.5l2 2 3.5-4'/>");
+    if (name == "consent")
+        return svg("<path d='M12 2.5 20 6v6c0 5-3.4 8-8 9.5C8 20 4.6 17 4.6 12V6z'/>"
+                   "<path d='m9 12 2.2 2.2L15.5 10'/>");
+    if (name == "policy" || name == "policies" || name == "metric")
+        return svg("<rect x='4' y='4' width='16' height='16' rx='2.2'/><path d='M8 15.5v-3.5M12 15.5V9M16 15.5v-5.5'/>");
+    if (name == "crash")
+        return svg("<path d='M10.3 3.2 2.4 17a1.6 1.6 0 0 0 1.4 2.4h16.4A1.6 1.6 0 0 0 21.6 17L13.7 3.2a1.6 1.6 0 0 0-2.8 0z'/>"
+                   "<path d='M12 9v4.5M12 17h.01'/>");
+    return svg("<circle cx='12' cy='12' r='3'/>");  // generic — never blank
 }
 
 std::string web_ui_login(std::string_view error) {
@@ -574,16 +719,23 @@ std::string web_ui_shell(std::string_view active, std::string_view user, std::st
 std::string panel_icon_for(std::string_view title) {
     const std::string t = lower(std::string(title));
     auto has = [&](const char* s) { return t.find(s) != std::string::npos; };
-    if (has("dataset") || has("data") || has("index") || has("file") || has("explorer"))
-        return web_ui_icon("data");
+    if (has("search")) return web_ui_icon("search");
+    if (has("index")) return web_ui_icon("index");
+    if (has("dataset") || has("data") || has("explorer") || has("file"))
+        return web_ui_icon("dataset");
     if (has("node") || has("cluster") || has("member")) return web_ui_icon("cluster");
     if (has("model")) return web_ui_icon("models");
-    if (has("deployment") || has("run") || has("job") || has("pipeline")) return web_ui_icon("pipeline");
-    if (has("trace") || has("span") || has("crash") || has("metric") || has("observ"))
-        return web_ui_icon("observability");
-    if (has("user") || has("role") || has("polic") || has("token") || has("consent") || has("audit") ||
-        has("govern"))
-        return web_ui_icon("governance");
+    if (has("deployment")) return web_ui_icon("deployment");
+    if (has("graph") || has("run") || has("job") || has("pipeline")) return web_ui_icon("pipeline");
+    if (has("trace") || has("span")) return web_ui_icon("trace");
+    if (has("crash")) return web_ui_icon("crash");
+    if (has("metric") || has("observ")) return web_ui_icon("observability");
+    if (has("user")) return web_ui_icon("user");
+    if (has("role")) return web_ui_icon("role");
+    if (has("token")) return web_ui_icon("token");
+    if (has("polic")) return web_ui_icon("policy");
+    if (has("consent")) return web_ui_icon("consent");
+    if (has("audit") || has("govern")) return web_ui_icon("audit");
     return web_ui_icon("overview");
 }
 

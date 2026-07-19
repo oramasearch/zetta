@@ -41,6 +41,8 @@ const std::vector<PermissionEntry>& vocabulary() {
         {"pipelines:manage",
          {{CapabilityDomain::Orchestration, "create_project"},
           {CapabilityDomain::Orchestration, "add_dataset"},
+          {CapabilityDomain::Orchestration, "create_index"},
+          {CapabilityDomain::Orchestration, "save_graph"},
           {CapabilityDomain::Orchestration, "capture_intent"},
           {CapabilityDomain::Orchestration, "import_n8n"},
           {CapabilityDomain::Orchestration, "compile_intent"},

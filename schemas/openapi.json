@@ -1103,6 +1103,159 @@
         ]
       }
     },
+    "/v1/create_index": {
+      "post": {
+        "description": "Build a full-text index over a loaded table: records the Search index entity and builds the per-partition BM25F sub-indexes so `search` returns ranked hits (load the table first with add_dataset). Requires orchestration:create_index.",
+        "operationId": "create_index",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "backend": {
+                    "description": "the IndexBackend that builds it (default oramacore_fulltext, BM25F full-text; memory_search is the exact-match reference)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "the table's database — needed only when the same table name exists in several databases",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "fields": {
+                    "description": "the fields to index (default: all of the table's columns)",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "index kind (default search — the only kind with a built-in backend today)",
+                    "enum": [
+                      "search",
+                      "vector",
+                      "feature"
+                    ],
+                    "type": "string"
+                  },
+                  "table": {
+                    "description": "the source table to index (load it first with add_dataset)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "backend": {
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "fields": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "table",
+                        "kind",
+                        "backend",
+                        "fields",
+                        "exposed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_project": {
       "post": {
         "description": "Create a new AI project (the central user-managed artifact); the project replicates to every node. Requires orchestration:create_project.",
@@ -2143,6 +2296,139 @@
           }
         },
         "summary": "Get one dataset",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_graph": {
+      "get": {
+        "description": "Read one execution graph's full structure — its typed step nodes {id, kind, name} and directed edges {from, to, kind} — by project + graph name or uuid. No side effects. Requires api:query.",
+        "operationId": "get_graph",
+        "parameters": [
+          {
+            "description": "the graph's name or uuid",
+            "in": "query",
+            "name": "graph",
+            "required": true,
+            "schema": {
+              "description": "the graph's name or uuid",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the owning project's name or uuid",
+            "in": "query",
+            "name": "project",
+            "required": true,
+            "schema": {
+              "description": "the owning project's name or uuid",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "edges": {
+                          "items": {
+                            "description": "a connection: { from, to, kind }",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "nodes": {
+                          "items": {
+                            "description": "a step: { id, kind, name }",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "graph_id",
+                        "name",
+                        "project",
+                        "nodes",
+                        "edges"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one graph",
         "tags": [
           "read"
         ]
@@ -5029,6 +5315,149 @@
         "summary": "Run a graph",
         "tags": [
           "job"
+        ]
+      }
+    },
+    "/v1/save_graph": {
+      "post": {
+        "description": "Persist an edited execution graph — its nodes + edges — back to a project graph, creating it when absent or replacing the existing one (replicated + audited, the visual editor's save path). Requires orchestration:save_graph.",
+        "operationId": "save_graph",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "edges": {
+                    "description": "the connections: each { from, to, kind }",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "graph": {
+                    "description": "the graph's name or uuid (created if absent)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "new_name": {
+                    "description": "rename the graph (optional)",
+                    "type": "string"
+                  },
+                  "nodes": {
+                    "description": "the steps: each { id, kind, name }",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "project": {
+                    "description": "the owning project's name or uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph",
+                  "nodes",
+                  "edges"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "edges": {
+                          "type": "integer"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "steps": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "graph_id",
+                        "name",
+                        "steps",
+                        "edges",
+                        "project"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Save a graph",
+        "tags": [
+          "action"
         ]
       }
     },

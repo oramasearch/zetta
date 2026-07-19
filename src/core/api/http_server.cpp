@@ -30,8 +30,11 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/table.hpp"
+#include "zetta/index/index.hpp"
 #include "zetta/node.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/storage/engine.hpp"
 #include "zetta/query/service.hpp"
 #include "zetta/repl/governed_console.hpp"
 #include "zetta/version.hpp"
@@ -167,6 +170,155 @@ std::string query_param(const boost::http::route_params& route, std::string_view
     for (const auto& parameter : route.url.params())
         if (parameter.key == name) return std::string(parameter.value);
     return std::string(fallback);
+}
+
+// A task-oriented button label for a capability (the API verb is not what a
+// user should read on a button). Falls back to the de-underscored, capitalized
+// name for anything unmapped.
+std::string humanize_action(const std::string& name) {
+    if (name == "add_dataset") return "Load dataset";
+    if (name == "create_index") return "Create index";
+    if (name == "expose_index") return "Expose index";
+    if (name == "unexpose_index") return "Un-expose index";
+    if (name == "expose_model") return "Expose model";
+    if (name == "unexpose_model") return "Un-expose model";
+    if (name == "create_project") return "New project";
+    if (name == "capture_intent") return "Capture intent";
+    if (name == "import_n8n") return "Import n8n";
+    if (name == "compile_intent") return "Compile intent";
+    if (name == "compile_n8n") return "Compile n8n";
+    if (name == "compile_python") return "Compile Python";
+    if (name == "add_nodes") return "Add nodes";
+    if (name == "detect_provisioners") return "Detect providers";
+    if (name == "cloud_inspect") return "Inspect cloud";
+    if (name == "approve_consent") return "Approve consent";
+    if (name == "deny_consent") return "Deny consent";
+    if (name == "submit_feedback") return "Send feedback";
+    std::string out = name;
+    for (char& character : out)
+        if (character == '_') character = ' ';
+    if (!out.empty())
+        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
+    return out;
+}
+
+// The client-side visual graph editor: reads the embedded graphs, renders an
+// interactive SVG canvas (drag steps, drag a step's right port onto another to
+// connect, click a link to remove it, x to delete a step, Add step, Save), and
+// saves via POST /graph-save. Vanilla JS, no external deps (CSP-safe inline).
+constexpr const char* kGraphEditorJs = R"JS(
+(function(){
+  var raw=document.getElementById('ge-data'); if(!raw) return;
+  var DATA=JSON.parse(raw.textContent||'{}');
+  var KINDS=DATA.kinds||['connect','clean','model','index','serve','act'];
+  var sel=document.getElementById('ge-graph'),canvas=document.getElementById('ge-canvas');
+  var saveBtn=document.getElementById('ge-save'),addBtn=document.getElementById('ge-add');
+  var NS='http://www.w3.org/2000/svg',NW=158,NH=54,XG=216,YG=94;
+  var G=null,svg=null,drag=null,link=null,uid=0,curIdx=0;
+  function toast(msg,ok){var t=document.getElementById('ge-toast');if(!t)return;t.textContent=msg;t.className='getoast show'+(ok===false?' err':'');clearTimeout(t._to);t._to=setTimeout(function(){t.className='getoast';},2400);}
+  function byId(id){for(var i=0;i<G.nodes.length;i++)if(G.nodes[i].id===id)return G.nodes[i];return null;}
+  function el(t,a){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);return e;}
+  function layout(){
+    var idx={};G.nodes.forEach(function(n,i){idx[n.id]=i;});
+    var adj=G.nodes.map(function(){return[];}),ind=G.nodes.map(function(){return 0;});
+    G.edges.forEach(function(e){if(idx[e.from]!=null&&idx[e.to]!=null){adj[idx[e.from]].push(idx[e.to]);ind[idx[e.to]]++;}});
+    var lay=G.nodes.map(function(){return 0;}),deg=ind.slice(),q=[];
+    G.nodes.forEach(function(n,i){if(deg[i]===0)q.push(i);});
+    while(q.length){var u=q.shift();adj[u].forEach(function(v){lay[v]=Math.max(lay[v],lay[u]+1);if(--deg[v]===0)q.push(v);});}
+    var byL={};G.nodes.forEach(function(n,i){(byL[lay[i]]=byL[lay[i]]||[]).push(i);});
+    Object.keys(byL).forEach(function(l){byL[l].forEach(function(ni,k){G.nodes[ni].x=30+(+l)*XG;G.nodes[ni].y=30+k*YG;});});
+  }
+  function cursor(ev){var r=svg.getBoundingClientRect();return{x:ev.clientX-r.left,y:ev.clientY-r.top};}
+  function path(a,b){var x1=a.x+NW,y1=a.y+NH/2,x2=b.x,y2=b.y+NH/2,mx=(x1+x2)/2;return 'M'+x1+' '+y1+' C'+mx+' '+y1+' '+mx+' '+y2+' '+x2+' '+y2;}
+  function render(){
+    canvas.innerHTML='';
+    var W=Math.max(canvas.clientWidth||600,600),H=380;
+    G.nodes.forEach(function(n){W=Math.max(W,n.x+NW+40);H=Math.max(H,n.y+NH+40);});
+    svg=el('svg',{'class':'gesvg',width:W,height:H});
+    var defs=el('defs',{});defs.innerHTML='<marker id="gearw" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0 0 9 4.5 0 9z" fill="#9aa1ad"/></marker>';svg.appendChild(defs);
+    G.edges.forEach(function(e){var a=byId(e.from),b=byId(e.to);if(!a||!b)return;
+      var p=el('path',{d:path(a,b),'class':'geedge'+(e.kind==='control'?' ctrl':''),'marker-end':'url(#gearw)'});
+      p.addEventListener('click',function(ev){ev.stopPropagation();G.edges=G.edges.filter(function(x){return!(x.from===e.from&&x.to===e.to);});render();});
+      svg.appendChild(p);});
+    if(link)svg.appendChild(el('path',{d:'M'+link.x1+' '+link.y1+' L'+link.x2+' '+link.y2,'class':'geedge geghost'}));
+    G.nodes.forEach(function(n){
+      var g=el('g',{transform:'translate('+n.x+','+n.y+')','class':'genode gk-'+n.kind});
+      g.appendChild(el('rect',{width:NW,height:NH,rx:11,'class':'generect'}));
+      var kt=el('text',{x:15,y:22,'class':'genkind'});kt.textContent=n.kind;g.appendChild(kt);
+      var nt=el('text',{x:15,y:40,'class':'genname'});nt.textContent=(n.name||'').slice(0,20);g.appendChild(nt);
+      var port=el('circle',{cx:NW,cy:NH/2,r:6,'class':'geport'});g.appendChild(port);
+      var del=el('text',{x:NW-13,y:20,'class':'gedel'});del.textContent='×';g.appendChild(del);
+      del.addEventListener('mousedown',function(ev){ev.stopPropagation();});
+      del.addEventListener('click',function(ev){ev.stopPropagation();G.nodes=G.nodes.filter(function(x){return x.id!==n.id;});G.edges=G.edges.filter(function(x){return x.from!==n.id&&x.to!==n.id;});render();});
+      g.addEventListener('mousedown',function(ev){if(ev.target===port||ev.target===del)return;var p=cursor(ev);drag={n:n,ox:p.x-n.x,oy:p.y-n.y};ev.preventDefault();});
+      g.addEventListener('dblclick',function(ev){ev.stopPropagation();drag=null;
+        var inp=document.createElement('input');inp.className='genameedit';inp.value=n.name||'';
+        inp.style.left=(n.x+13)+'px';inp.style.top=(n.y+27)+'px';canvas.appendChild(inp);inp.focus();inp.select();
+        var done=false;function commit(){if(done)return;done=true;n.name=inp.value.trim()||n.name;if(inp.parentNode)inp.parentNode.removeChild(inp);render();}
+        inp.addEventListener('blur',commit);
+        inp.addEventListener('keydown',function(e){if(e.key==='Enter')commit();else if(e.key==='Escape'){done=true;if(inp.parentNode)inp.parentNode.removeChild(inp);}});});
+      port.addEventListener('mousedown',function(ev){ev.stopPropagation();ev.preventDefault();var p=cursor(ev);link={from:n.id,x1:n.x+NW,y1:n.y+NH/2,x2:p.x,y2:p.y};});
+      svg.appendChild(g);});
+    canvas.appendChild(svg);
+  }
+  document.addEventListener('mousemove',function(ev){if(!svg)return;
+    if(drag){var p=cursor(ev);drag.n.x=Math.max(0,p.x-drag.ox);drag.n.y=Math.max(0,p.y-drag.oy);render();}
+    else if(link){var p=cursor(ev);link.x2=p.x;link.y2=p.y;render();}});
+  document.addEventListener('mouseup',function(ev){
+    if(link){var p=cursor(ev),t=null;G.nodes.forEach(function(n){if(p.x>=n.x&&p.x<=n.x+NW&&p.y>=n.y&&p.y<=n.y+NH)t=n;});
+      if(t&&t.id!==link.from&&!G.edges.some(function(e){return e.from===link.from&&e.to===t.id;}))G.edges.push({from:link.from,to:t.id,kind:'data_flow'});
+      link=null;render();}
+    drag=null;});
+  function loadIndex(i){var d=DATA.graphs[i];if(!d)return;curIdx=i;
+    G={project:d.project,name:d.name,nodes:(d.nodes||[]).map(function(n){
+        var at=(n.attributes&&typeof n.attributes==='object')?n.attributes:{};var ui=at.ui||{};
+        var has=(typeof ui.x==='number'&&typeof ui.y==='number');
+        return{id:n.id,kind:n.kind,name:n.name,attributes:at,x:has?ui.x:0,y:has?ui.y:0,placed:has};}),
+      edges:(d.edges||[]).map(function(e){return{from:e.from,to:e.to,kind:e.kind||'data_flow'};})};
+    uid=0;G.nodes.forEach(function(n){var m=(''+n.id).match(/(\d+)$/);if(m)uid=Math.max(uid,+m[1]);});
+    if(!G.nodes.some(function(n){return n.placed;}))layout();
+    else{var maxY=0;G.nodes.forEach(function(n){if(n.placed)maxY=Math.max(maxY,n.y);});var k=1;
+      G.nodes.forEach(function(n){if(!n.placed){n.x=30;n.y=maxY+YG*k;k++;n.placed=true;}});}
+    render();}
+  var kindSel=document.getElementById('ge-kind');
+  if(addBtn)addBtn.addEventListener('click',function(){
+    var kind=(kindSel&&kindSel.value)||KINDS[0];uid++;
+    var maxY=0;G.nodes.forEach(function(n){maxY=Math.max(maxY,n.y);});
+    G.nodes.push({id:'n'+uid,kind:kind,name:kind,attributes:{},x:30,y:(G.nodes.length?maxY+YG:30),placed:true});
+    render();});
+  if(saveBtn)saveBtn.addEventListener('click',function(){
+    var payload={project:G.project,graph:G.name,
+      nodes:G.nodes.map(function(n){var a={};for(var k in n.attributes)a[k]=n.attributes[k];a.ui={x:Math.round(n.x),y:Math.round(n.y)};return{id:n.id,kind:n.kind,name:n.name,attributes:a};}),
+      edges:G.edges.map(function(e){return{from:e.from,to:e.to,kind:e.kind};})};
+    var lbl=saveBtn.querySelector('.gelbl');if(lbl)lbl.textContent='Saving…';
+    fetch('/graph-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)})
+      .then(function(r){return r.json();}).then(function(j){if(lbl)lbl.textContent='Save';
+        if(j&&j.ok===false){toast('Save failed: '+(j.error||''),false);}
+        else{if(DATA.graphs[curIdx]){DATA.graphs[curIdx].nodes=payload.nodes;DATA.graphs[curIdx].edges=payload.edges;}toast('Graph saved',true);}})
+      .catch(function(){if(lbl)lbl.textContent='Save';toast('Save failed',false);});});
+  if(sel)sel.addEventListener('change',function(){loadIndex(+sel.value);});
+  window.addEventListener('resize',function(){if(G)render();});
+  loadIndex(0);
+})();
+)JS";
+
+// Resolve a search hit's row id to its document json for display — a table's
+// store holds its rows even when partitioned. Presentation-only lookup on the
+// owning loop; empty object when the row can't be found.
+nlohmann::json row_document(zetta::Node& node, const std::string& table,
+                            const std::string& row_id) {
+    for (const std::string& database_name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database =
+            node.find_database(database_name);
+        if (!database) continue;
+        const std::shared_ptr<zetta::data::Table> found = database->find_table(table);
+        if (!found) continue;
+        const zetta::storage::StorageEngine& store = found->store();
+        for (std::size_t i = 0; i < store.size(); ++i)
+            if (store.id_at(i) == row_id) return store.at(i);
+        return nlohmann::json::object();
+    }
+    return nlohmann::json::object();
 }
 
 // The unified console front-door (#647). One input box → one routing decision, shared by the
@@ -788,57 +940,192 @@ struct ApiServer::Impl {
     // One capability rendered as an action form (from its input_schema) that POSTs to /run.
     // One capability as a collapsible action (native <details>): a compact summary row (name +
     // description) that expands to its input form, laid out in a 2-column field grid.
-    std::string render_capability_form(const Capability& capability) {
-        const bool write = capability.kind != CapabilityKind::Read;
-        std::string fields;
-        int field_count = 0;
-        const auto& schema = capability.input_schema;
-        if (schema.is_object() && schema.contains("properties") && schema["properties"].is_object()) {
-            const nlohmann::json required = schema.value("required", nlohmann::json::array());
-            for (auto it = schema["properties"].begin(); it != schema["properties"].end(); ++it) {
-                bool is_required = false;
-                for (const auto& item : required)
-                    if (item.is_string() && item.get<std::string>() == it.key()) is_required = true;
-                const std::string type = it.value().value("type", "string");
-                const std::string description = it.value().value("description", "");
-                const bool full = it.key() == "path" || it.key() == "statement" ||
-                                  it.key() == "source" || it.key() == "index" ||
-                                  it.key() == "description" || description.size() > 48;
-                fields += std::string("<div class=\"") + (full ? "full" : "") + "\"><label>" +
-                          web_ui_escape(it.key()) +
-                          (is_required ? "<span class=\"req\">*</span>" : "") + "</label>";
-                fields += "<input name=\"" + web_ui_escape(it.key()) + "\" placeholder=\"" +
-                          web_ui_escape(type) +
-                          (description.empty() ? "" : " \xC2\xB7 " + web_ui_escape(description)) +
-                          "\"></div>";
-                ++field_count;
-            }
+    // The schema-driven input fields (a 2-column grid) for a capability — shared
+    // by the inline action form and the modal action dialog.
+    std::string form_option(const std::string& text, const std::string& value, bool selected) {
+        return "<option value=\"" + web_ui_escape(value) + "\"" +
+               (selected ? " selected" : "") + ">" + web_ui_escape(text) + "</option>";
+    }
+
+    // Live-populated <option> lists so a dialog offers a real picker, never a raw
+    // id / name text box.
+    std::string table_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select a table\xE2\x80\xA6</option>";
+        for (const std::string& db_name : context.node.database_names()) {
+            const auto database = context.node.find_database(db_name);
+            if (!database) continue;
+            for (const std::string& table : database->table_names())
+                options += form_option(table, table, false);
         }
-        std::string out = "<details class=\"action\"><summary><span class=\"aico\">" +
-                          web_ui_icon(write ? "bolt" : "runs") + "</span><span class=\"an\">" +
-                          web_ui_escape(capability.name) + "</span><span class=\"ad\">" +
-                          web_ui_escape(capability.description) + "</span><span class=\"chev\">" +
-                          web_ui_icon("chevron") + "</span></summary><div class=\"abody\">";
-        out += "<form method=\"post\" action=\"/run\"><input type=\"hidden\" name=\"cap\" value=\"" +
-               web_ui_escape(capability.name) + "\">";
-        if (field_count) out += "<div class=\"fgrid\">" + fields + "</div>";
-        out += "<div style=\"margin-top:14px\"><button class=\"btn";
-        out += write ? " btn-primary" : "";
-        out += "\">";
-        if (write) out += web_ui_icon("play");
-        out += "Run ";
-        out += to_string(capability.kind);
-        out += "</button></div></form></div></details>";
+        return options;
+    }
+    std::string index_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select an index\xE2\x80\xA6</option>";
+        for (const auto& index : context.node.indexes()) {
+            if (!index) continue;
+            std::string fields;
+            for (std::size_t i = 0; i < index->fields().size(); ++i) {
+                if (i) fields += ", ";
+                fields += index->fields()[i];
+            }
+            options += form_option(index->table() + " \xC2\xB7 " + fields, index->id(), false);
+        }
+        return options;
+    }
+    std::string model_options(ApiContext& context) {
+        std::string options = "<option value=\"\">select a model\xE2\x80\xA6</option>";
+        const ApiResult result = capability_registry.call(
+            "sql", nlohmann::json{{"statement", "SELECT name FROM system.models"}}, context);
+        if (result.ok)
+            for (const auto& row : result.value.value("rows", nlohmann::json::array()))
+                if (row.is_array() && !row.empty() && row[0].is_string())
+                    options += form_option(row[0].get<std::string>(), row[0].get<std::string>(), false);
+        return options;
+    }
+    std::string database_options(ApiContext& context) {
+        std::string options = "<option value=\"\">(default)</option>";
+        for (const std::string& db_name : context.node.database_names())
+            options += form_option(db_name, db_name, false);
+        return options;
+    }
+
+    // A section's icon for its action buttons.
+    std::string action_icon(const std::string& name) {
+        if (name == "add_dataset") return web_ui_icon("dataset");
+        if (name == "create_index") return web_ui_icon("index");
+        if (name == "expose_model" || name == "unexpose_model") return web_ui_icon("models");
+        if (name == "add_nodes") return web_ui_icon("nodes");
+        return web_ui_icon("bolt");
+    }
+
+    // The dialog's input fields: a <select> picker where one fits (an enum, or a
+    // table / index / model / database / backend reference), else a text input.
+    std::string capability_form_fields(const Capability& capability, ApiContext& context) {
+        std::string fields;
+        const auto& schema = capability.input_schema;
+        if (!schema.is_object() || !schema.contains("properties") ||
+            !schema["properties"].is_object())
+            return fields;
+        const nlohmann::json& properties = schema["properties"];
+        const nlohmann::json required = schema.value("required", nlohmann::json::array());
+        // Required fields first (in declared order), then the rest — the primary
+        // inputs lead the form instead of alphabetical property order.
+        std::vector<std::string> order;
+        auto has_key = [&](const std::string& k) {
+            for (const std::string& o : order)
+                if (o == k) return true;
+            return false;
+        };
+        for (const auto& item : required)
+            if (item.is_string() && properties.contains(item.get<std::string>()))
+                order.push_back(item.get<std::string>());
+        const std::size_t required_count = order.size();
+        for (auto it = properties.begin(); it != properties.end(); ++it)
+            if (!has_key(it.key())) order.push_back(it.key());
+
+        for (std::size_t oi = 0; oi < order.size(); ++oi) {
+            const std::string& key = order[oi];
+            const nlohmann::json& prop = properties[key];
+            const bool is_required = oi < required_count;
+            const std::string description = prop.value("description", "");
+            const std::string type = prop.value("type", "string");
+            const bool full = key == "path" || key == "statement" || key == "source" ||
+                              key == "description" || description.size() > 52;
+
+            std::string options;
+            if (prop.contains("enum")) {
+                for (const auto& choice : prop["enum"])
+                    if (choice.is_string())
+                        options += form_option(choice.get<std::string>(),
+                                               choice.get<std::string>(), false);
+            } else if (key == "table") {
+                options = table_options(context);
+            } else if (key == "index") {
+                options = index_options(context);
+            } else if (key == "model") {
+                options = model_options(context);
+            } else if (key == "database") {
+                options = database_options(context);
+            } else if (key == "backend") {
+                options = form_option("oramacore_fulltext (BM25F)", "oramacore_fulltext", true) +
+                          form_option("memory_search (exact match)", "memory_search", false);
+            }
+
+            fields += std::string("<div class=\"") + (full ? "full" : "") + "\"><label>" +
+                      web_ui_escape(key) +
+                      (is_required ? "<span class=\"req\">*</span>" : "") + "</label>";
+            if (!options.empty())
+                fields += "<select name=\"" + web_ui_escape(key) + "\">" + options + "</select>";
+            else
+                fields += "<input name=\"" + web_ui_escape(key) + "\" placeholder=\"" +
+                          web_ui_escape(description.empty() ? type : description) + "\">";
+            fields += "</div>";
+        }
+        return fields;
+    }
+
+    // A capability as a modal dialog with real controls. Its form POSTs to /run
+    // and, on success, returns to `view` so the page reflects the new state.
+    std::string render_action_dialog(const Capability& capability, ApiContext& context,
+                                     const std::string& view, const std::string& dialog_id,
+                                     const std::string& label) {
+        const std::string fields = capability_form_fields(capability, context);
+        std::string out =
+            "<dialog id=\"" + dialog_id + "\" class=\"dlg\"><form method=\"post\" action=\"/run\">"
+            "<input type=\"hidden\" name=\"cap\" value=\"" + web_ui_escape(capability.name) +
+            "\"><input type=\"hidden\" name=\"_return\" value=\"/?view=" + web_ui_escape(view) +
+            "\"><div class=\"dlghd\"><h3>" + web_ui_escape(label) +
+            "</h3><button type=\"button\" class=\"dlgx\" aria-label=\"Close\" "
+            "onclick=\"this.closest('dialog').close()\">\xC3\x97</button></div>"
+            "<p class=\"dlgsub\">" + web_ui_escape(capability.description) + "</p>";
+        if (!fields.empty()) out += "<div class=\"fgrid\">" + fields + "</div>";
+        out += "<div class=\"dlgact\"><button type=\"button\" class=\"btn\" "
+               "onclick=\"this.closest('dialog').close()\">Cancel</button>"
+               "<button class=\"btn btn-primary\">" + web_ui_escape(label) +
+               "</button></div></form></dialog>";
         return out;
     }
 
-    std::string render_capabilities(std::initializer_list<std::string_view> names) {
-        std::string items;
+    // Header action buttons (icon + task label) for a section, each opening its
+    // capability dialog. Returns {buttons, dialogs}.
+    std::pair<std::string, std::string> section_actions(
+        ApiContext& context, const std::string& view,
+        std::initializer_list<std::string_view> names) {
+        std::string buttons, dialogs;
         for (std::string_view name : names)
-            if (auto capability = capability_registry.find(std::string(name)))
-                items += render_capability_form(*capability);
-        if (items.empty()) return "";
-        return web_ui_panel("Actions", "run a capability \xC2\xB7 forms expand on click", items);
+            if (auto capability = capability_registry.find(std::string(name))) {
+                const std::string dialog_id = "dlg-" + capability->name;
+                const std::string label = humanize_action(capability->name);
+                buttons += "<button type=\"button\" class=\"btn small\" "
+                           "onclick=\"document.getElementById('" + dialog_id + "').showModal()\">" +
+                           action_icon(capability->name) + web_ui_escape(label) + "</button>";
+                dialogs += render_action_dialog(*capability, context, view, dialog_id, label);
+            }
+        return {buttons, dialogs};
+    }
+
+    // A panel with header action buttons (right-aligned) that open dialogs — the
+    // real-application replacement for a bottom stack of forms.
+    std::string render_action_panel(ApiContext& context, const std::string& view,
+                                    const std::string& icon, const std::string& title,
+                                    const std::string& sub,
+                                    std::initializer_list<std::string_view> names,
+                                    const std::string& body) {
+        auto [buttons, dialogs] = section_actions(context, view, names);
+        std::string out = "<section class=\"panel\"><div class=\"phead\"><span class=\"ico\">" +
+                          web_ui_icon(icon) + "</span><h2>" + web_ui_escape(title) + "</h2>";
+        if (!sub.empty()) out += "<span class=\"psub\">" + web_ui_escape(sub) + "</span>";
+        if (!buttons.empty()) out += "<div class=\"pactions\">" + buttons + "</div>";
+        out += "</div>" + body + dialogs + "</section>";
+        return out;
+    }
+
+    // A top toolbar of action buttons (where actions aren't tied to one panel).
+    std::string render_action_bar(ApiContext& context, const std::string& view,
+                                  std::initializer_list<std::string_view> names) {
+        auto [buttons, dialogs] = section_actions(context, view, names);
+        if (buttons.empty()) return "";
+        return "<div class=\"toolbar\">" + buttons + "</div>" + dialogs;
     }
 
     // A read table with server-side pagination — run the query, slice a 50-row page, add prev/next
@@ -1071,12 +1358,12 @@ struct ApiServer::Impl {
                        "</span><span class=\"et\">No projects yet</span><span class=\"eh\">Create a "
                        "project below, then capture an intent, compile it, gate, deploy, and "
                        "run.</span></div>";
-            std::string out = web_ui_panel(
+            std::string out = render_action_bar(context, "projects", {"create_project"});
+            out += web_ui_panel(
                 "Projects",
                 "an AI project: intent \xE2\x86\x92 graph \xE2\x86\x92 gate \xE2\x86\x92 deploy "
                 "\xE2\x86\x92 run",
                 "<div class=\"prjlist\">" + list + "</div>");
-            out += render_capabilities({"create_project"});
             return out;
         }
 
@@ -1104,6 +1391,8 @@ struct ApiServer::Impl {
 
         std::string out = "<div class=\"crumb\"><a href=\"/?view=projects\">Projects</a> / <b>" +
                           web_ui_escape(name) + "</b></div>";
+        out += render_action_bar(context, "projects", {"capture_intent", "import_n8n", "compile_intent",
+                                                       "compile_python", "gate", "deploy", "run"});
         out += web_ui_panel(name, "project overview", "<div class=\"kvs\">" + meta + "</div>");
         out += web_ui_panel(
             "Inputs", "captured intents + imported artifacts",
@@ -1118,8 +1407,6 @@ struct ApiServer::Impl {
                 "Models", "",
                 ptable("SELECT * FROM system.models WHERE project = '" + uuid + "'", "m"));
         }
-        out += render_capabilities({"capture_intent", "import_n8n", "compile_intent",
-                                    "compile_python", "gate", "deploy", "run"});
         return out;
     }
 
@@ -1144,6 +1431,71 @@ struct ApiServer::Impl {
 
     // The Graphs panel — aggregates every project's compiled execution graphs (there is no
     // system.graphs view; graphs are owned by projects, reached via get_project).
+    // The visual graph editor panel: embeds every project graph's structure (via
+    // get_graph) and mounts the interactive SVG editor over it (kGraphEditorJs),
+    // which saves through POST /graph-save -> the save_graph capability.
+    std::string render_graph_editor(ApiContext& context) {
+        nlohmann::json data;
+        data["kinds"] = {"connect", "clean", "model", "index", "serve", "act"};
+        nlohmann::json graphs = nlohmann::json::array();
+        ApiResult projects =
+            capability_registry.call("list_projects", nlohmann::json::object(), context);
+        if (projects.ok)
+            for (const auto& pname : projects.value.value("projects", nlohmann::json::array())) {
+                if (!pname.is_string()) continue;
+                ApiResult detail = capability_registry.call(
+                    "get_project", nlohmann::json{{"name", pname}}, context);
+                if (!detail.ok) continue;
+                for (const auto& g : detail.value.value("graphs", nlohmann::json::array())) {
+                    if (!g.is_object()) continue;
+                    ApiResult full = capability_registry.call(
+                        "get_graph",
+                        nlohmann::json{{"project", pname}, {"graph", g.value("name", "")}},
+                        context);
+                    if (full.ok) graphs.push_back(full.value);
+                }
+            }
+        data["graphs"] = graphs;
+
+        if (graphs.empty())
+            return web_ui_panel(
+                "Graph editor",
+                "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean \xE2\x86\x92 model "
+                "\xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+                "<div class=\"emptybox\"><span class=\"eico\">" + web_ui_icon("pipeline") +
+                    "</span><span class=\"et\">No graphs yet</span><span class=\"eh\">Compile a "
+                    "project's intent (Projects \xE2\x86\x92 open one \xE2\x86\x92 compile) to get an "
+                    "editable graph here.</span></div>");
+
+        std::string options;
+        for (std::size_t i = 0; i < graphs.size(); ++i)
+            options += "<option value=\"" + std::to_string(i) + "\">" +
+                       web_ui_escape(graphs[i].value("project", "") + " \xC2\xB7 " +
+                                     graphs[i].value("name", "")) + "</option>";
+        const std::string body =
+            "<div class=\"getoolbar\"><select id=\"ge-graph\">" + options +
+            "</select><span class=\"gespring\"></span>"
+            "<select id=\"ge-kind\" class=\"gekind\"><option value=\"connect\">connect</option>"
+            "<option value=\"clean\">clean</option><option value=\"model\">model</option>"
+            "<option value=\"index\">index</option><option value=\"serve\">serve</option>"
+            "<option value=\"act\">act</option></select>"
+            "<button type=\"button\" class=\"btn small\" id=\"ge-add\">" + web_ui_icon("bolt") +
+            "Add step</button>"
+            "<button type=\"button\" class=\"btn small btn-primary\" id=\"ge-save\">" +
+            web_ui_icon("play") + "<span class=\"gelbl\">Save</span></button></div>"
+            "<div id=\"ge-canvas\" class=\"gecanvas\"></div>"
+            "<div class=\"gehint\">drag a step to move it \xC2\xB7 double-click to rename \xC2\xB7 drag "
+            "from a step's right dot onto another to connect \xC2\xB7 click a link to remove it "
+            "\xC2\xB7 \xC3\x97 deletes a step</div>"
+            "<div id=\"ge-toast\" class=\"getoast\"></div>"
+            "<script id=\"ge-data\" type=\"application/json\">" + data.dump() + "</script>"
+            "<script>" + std::string(kGraphEditorJs) + "</script>";
+        return web_ui_panel("Graph editor",
+                            "the visual execution graph \xC2\xB7 connect \xE2\x86\x92 clean "
+                            "\xE2\x86\x92 model \xE2\x86\x92 index \xE2\x86\x92 serve \xE2\x86\x92 act",
+                            body);
+    }
+
     std::string render_graphs_panel(ApiContext& context) {
         ApiResult lp = capability_registry.call("list_projects", nlohmann::json::object(), context);
         std::string rows;
@@ -1177,6 +1529,115 @@ struct ApiServer::Impl {
                             html);
     }
 
+    // A real search experience (not a raw capability form): an index picker + a
+    // query box, results rendered as a ranked list of the matching documents with
+    // their score and a scatter-gather summary. Reads sq / sq_target from the query
+    // string and runs the same `search` capability the MCP/REST surfaces do.
+    std::string render_search_panel(ApiContext& context,
+                                    const boost::http::route_params& route) {
+        std::vector<std::shared_ptr<zetta::index::Index>> search_indexes;
+        for (const auto& index : context.node.indexes())
+            if (index && index->kind() == zetta::index::IndexKind::Search)
+                search_indexes.push_back(index);
+        if (search_indexes.empty())
+            return web_ui_panel(
+                "Search", "full-text search over a table",
+                "<div class=\"emptybox\">No search indexes yet \xE2\x80\x94 create one "
+                "below to make a table searchable.</div>");
+
+        const std::string query = query_param(route, "sq", "");
+        std::string target = query_param(route, "sq_target", "");
+        if (target.empty()) target = search_indexes.front()->id();
+
+        auto index_fields = [](const std::shared_ptr<zetta::index::Index>& index) {
+            std::string fields;
+            for (std::size_t i = 0; i < index->fields().size(); ++i) {
+                if (i) fields += ", ";
+                fields += index->fields()[i];
+            }
+            return fields;
+        };
+
+        std::string form =
+            "<form class=\"searchbar\" method=\"get\" action=\"/\">"
+            "<input type=\"hidden\" name=\"view\" value=\"data\">"
+            "<select name=\"sq_target\">";
+        for (const auto& index : search_indexes)
+            form += "<option value=\"" + web_ui_escape(index->id()) + "\"" +
+                    (index->id() == target ? " selected" : "") + ">" +
+                    web_ui_escape(index->table() + " \xC2\xB7 " + index_fields(index)) +
+                    "</option>";
+        form += "</select><input name=\"sq\" value=\"" + web_ui_escape(query) +
+                "\" placeholder=\"Search documents\xE2\x80\xA6\" autofocus>"
+                "<button class=\"btn btn-primary\">Search</button></form>";
+
+        std::string results;
+        if (!query.empty()) {
+            ApiResult result = capability_registry.call(
+                "search", nlohmann::json{{"target", target}, {"query", query}}, context);
+            if (!result.ok) {
+                results = "<div class=\"err-box\">" + web_ui_escape(result.error.message) +
+                          "</div>";
+            } else {
+                const nlohmann::json& value = result.value;
+                const nlohmann::json hits = value.value("hits", nlohmann::json::array());
+                const std::string table = value.value("table", "");
+                const double ms = value.value("duration_ms", 0.0);
+                char timing[32];
+                if (ms < 10.0)
+                    std::snprintf(timing, sizeof(timing), "%.0f \xC2\xB5s", ms * 1000.0);
+                else
+                    std::snprintf(timing, sizeof(timing), "%.1f ms", ms);
+                const std::size_t node_count =
+                    value.contains("nodes") ? value["nodes"].size() : 0;
+                results += "<div class=\"metaline\" style=\"margin:16px 0 10px\">" +
+                           std::to_string(hits.size()) +
+                           (hits.size() == 1 ? " result" : " results") + " \xC2\xB7 " +
+                           web_ui_escape(value.value("path", "")) + " \xC2\xB7 " +
+                           std::to_string(node_count) +
+                           (node_count == 1 ? " node" : " nodes") + " \xC2\xB7 " + timing +
+                           "</div>";
+                if (hits.empty()) {
+                    results += "<div class=\"emptybox\">No documents matched \xE2\x80\x9C" +
+                               web_ui_escape(query) + "\xE2\x80\x9D.</div>";
+                } else {
+                    results += "<div class=\"hits\">";
+                    int rank = 0;
+                    for (const nlohmann::json& hit : hits) {
+                        ++rank;
+                        const std::string row_id = hit.value("id", "");
+                        char score[16];
+                        std::snprintf(score, sizeof(score), "%.3f", hit.value("score", 0.0));
+                        results += "<div class=\"hit\"><div class=\"hitmeta\"><span "
+                                   "class=\"rank\">#" +
+                                   std::to_string(rank) + "</span><span>score " + score +
+                                   "</span></div>";
+                        const nlohmann::json document =
+                            row_document(context.node, table, row_id);
+                        if (document.is_object() && !document.empty()) {
+                            for (auto it = document.begin(); it != document.end(); ++it) {
+                                const std::string text = it.value().is_string()
+                                                             ? it.value().get<std::string>()
+                                                             : it.value().dump();
+                                results += "<div class=\"fld\"><span class=\"lbl\">" +
+                                           web_ui_escape(it.key()) + "</span><span>" +
+                                           web_ui_escape(text) + "</span></div>";
+                            }
+                        } else {
+                            results += "<div class=\"sub mono\">" + web_ui_escape(row_id) +
+                                       "</div>";
+                        }
+                        results += "</div>";
+                    }
+                    results += "</div>";
+                }
+            }
+        }
+        return web_ui_panel("Search",
+                            "full-text search over a table \xC2\xB7 ranked by relevance",
+                            form + results);
+    }
+
     std::string render_dashboard_content(ApiContext& context, const std::string& view,
                                          const boost::http::route_params& route) {
         auto ptable = [&](const std::string& statement, const std::string& key) -> std::string {
@@ -1195,26 +1656,40 @@ struct ApiServer::Impl {
             out += web_ui_panel("Cluster", "membership \xC2\xB7 reachability \xC2\xB7 sync",
                                 ptable("SELECT * FROM system.nodes", "n"));
         } else if (view == "cluster") {
-            out += web_ui_panel("Nodes", "cluster members Â· reachability, liveness, and CRDT replication sync", ptable("SELECT * FROM system.nodes", "n"));
+            out += render_action_panel(
+                context, view, "cluster", "Nodes",
+                "cluster members \xC2\xB7 reachability, liveness, and CRDT replication sync",
+                {"add_nodes", "detect_provisioners", "cloud_inspect"},
+                ptable("SELECT * FROM system.nodes", "n"));
             out += web_ui_panel("Node metrics", "per-node resource + throughput metrics", ptable("SELECT * FROM system.node_metrics", "nm"));
             out += web_ui_panel("Deployments", "graphs placed onto targets, made runnable", ptable("SELECT * FROM system.deployments", "dep"));
-            out += render_capabilities({"add_nodes", "detect_provisioners", "cloud_inspect"});
         } else if (view == "projects") {
             out += render_projects(context, route);
         } else if (view == "data") {
+            out += render_search_panel(context, route);
+            out += render_action_panel(
+                context, view, "dataset", "Datasets",
+                "tables loaded into the node \xC2\xB7 the source for search + training",
+                {"add_dataset"}, ptable("SELECT * FROM system.datasets", "ds"));
+            out += render_action_panel(
+                context, view, "index", "Indexes",
+                "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable",
+                {"create_index", "expose_index", "unexpose_index"},
+                ptable("SELECT * FROM system.indexes", "idx"));
             out += render_data_explorer(context, route);
-            out += web_ui_panel("Indexes", "full-text / vector indexes over a table Â· expose one to serve search", ptable("SELECT * FROM system.indexes", "idx"));
-            out += render_capabilities({"add_dataset", "expose_index", "unexpose_index"});
         } else if (view == "models") {
-            out += web_ui_panel(
-                "Models",
+            out += render_action_panel(
+                context, view, "models", "Models",
                 "trained models produced by runs \xC2\xB7 weights, metrics + ranked drivers; expose "
                 "one to serve predictions",
+                {"expose_model", "unexpose_model"},
                 ptable("SELECT * FROM system.models", "m"));
-            out += render_capabilities({"expose_model", "unexpose_model"});
         } else if (view == "pipeline") {
+            out += render_action_bar(context, view, {"create_project", "capture_intent", "import_n8n",
+                                                     "compile_intent", "compile_n8n", "compile_python",
+                                                     "gate", "deploy", "run"});
             out += pipeline_legend();
-            out += render_graphs_panel(context);
+            out += render_graph_editor(context);
             out += web_ui_panel(
                 "Deployments",
                 "a graph placed onto a target (local / kubernetes / cloud) and made runnable",
@@ -1227,9 +1702,6 @@ struct ApiServer::Impl {
                 "the native distributed-compute units a run fans out into (featurize / train / "
                 "score) \xC2\xB7 many jobs per run",
                 ptable("SELECT * FROM system.jobs", "jobs"));
-            out += render_capabilities({"create_project", "capture_intent", "import_n8n",
-                                        "compile_intent", "compile_n8n", "compile_python", "gate",
-                                        "deploy", "run"});
         } else if (view == "observability") {
             out += web_ui_panel(
                 "Traces", "one row per operation (an MCP/REST call, a run) \xC2\xB7 its intent, timing + result",
@@ -1239,6 +1711,7 @@ struct ApiServer::Impl {
             out += web_ui_panel("Crashes", "captured crash reports, with stacktraces",
                                 ptable("SELECT * FROM system.crashes", "cr"));
         } else if (view == "governance") {
+            out += render_action_bar(context, view, {"approve_consent", "deny_consent", "submit_feedback"});
             out += web_ui_panel("Users", "principals that authenticate \xC2\xB7 each holds roles",
                                 ptable("SELECT * FROM system.users", "u"));
             out += web_ui_panel("Roles", "named capability bundles assigned to users",
@@ -1251,7 +1724,6 @@ struct ApiServer::Impl {
                                 ptable("SELECT * FROM system.consent_requests", "cons"));
             out += web_ui_panel("Audit", "the immutable, append-only record of every governed action",
                                 ptable("SELECT * FROM system.audit", "aud"));
-            out += render_capabilities({"approve_consent", "deny_consent", "submit_feedback"});
         } else if (view == "shell") {
             out += web_ui_shell_repl();
         } else if (view == "notebooks") {
@@ -1364,7 +1836,9 @@ struct ApiServer::Impl {
         } else {
             const auto fields = parse_form(sink.data);
             const std::string cap_name = form_field(fields, "cap");
+            const std::string return_url = form_field(fields, "_return");
             std::string content;
+            bool succeeded = false;
             co_await bridge.run_on_owner([&] {
                 auto capability = capability_registry.find(cap_name);
                 if (!capability) {
@@ -1387,6 +1861,7 @@ struct ApiServer::Impl {
                                    &background};
                 context.acting_is_user = true;
                 ApiResult result = capability_registry.call(cap_name, input, context);
+                succeeded = result.ok;
                 std::string result_html;
                 if (result.ok) {
                     result_html = "<div class=\"pill ok\" style=\"margin-bottom:10px\">ok</div><pre>" +
@@ -1400,6 +1875,18 @@ struct ApiServer::Impl {
                 result_html += "<div style=\"margin-top:12px\"><a class=\"btn small\" href=\"/?view=console\">Back to Console</a></div>";
                 content = web_ui_panel(cap_name, capability->description, result_html);
             });
+            // A dialog-launched mutation returns to the view it came from so the
+            // page reflects the new state, instead of a standalone result page
+            // (relative same-origin targets only — never an open redirect).
+            if (succeeded && return_url.size() > 1 && return_url[0] == '/' &&
+                return_url[1] != '/') {
+                route.status(http::status::found);
+                route.res.set(http::field::location, return_url);
+                stamp_response_headers(route, "");
+                auto [redirect_error] = co_await route.send("");
+                if (redirect_error) co_return http::route_error(redirect_error);
+                co_return http::route_done;
+            }
             body = web_ui_shell("console",
                                 user_id.size() > 12 ? user_id.substr(0, 12) : user_id, "", content);
         }
@@ -1413,6 +1900,48 @@ struct ApiServer::Impl {
 
     // POST /shell — run one command (SQL) for the Shell/Notebooks REPL; returns JSON (columns/rows or
     // an error). Cookie-authed and audited as the signed-in user, exactly like the REST sql capability.
+    // POST /graph-save — the visual editor's save path: a cookie-authed JSON body
+    // {project, graph, nodes, edges} invoked through the save_graph capability.
+    boost::http::route_task serve_graph_save(boost::http::route_params& route) {
+        namespace http = boost::http;
+        const std::string token = cookie_value(route, "zetta_session");
+        std::string user_id;
+        if (!token.empty())
+            co_await bridge.run_on_owner(
+                [&] { if (auto user = node.authenticate_token(token)) user_id = user->id(); });
+        StringBodySink sink;
+        co_await boost::capy::push_to(route.req_body, sink);
+        std::string json_body;
+        if (user_id.empty()) {
+            json_body = R"({"ok":false,"error":"unauthorized"})";
+        } else {
+            nlohmann::json input = nlohmann::json::parse(sink.data, nullptr, false);
+            if (input.is_discarded()) {
+                json_body = R"({"ok":false,"error":"malformed json"})";
+            } else {
+                co_await bridge.run_on_owner([&] {
+                    ApiContext context{node, cluster, user_id,
+                                       zetta::observability::make_root_trace(),
+                                       &node.span_recorder(), &background};
+                    context.acting_is_user = true;
+                    ApiResult result =
+                        capability_registry.call("save_graph", input, context);
+                    json_body = result.ok
+                                    ? result.value.dump()
+                                    : nlohmann::json{{"ok", false},
+                                                     {"error", result.error.message}}
+                                          .dump();
+                });
+            }
+        }
+        route.status(http::status::ok);
+        route.res.set(http::field::content_type, "application/json");
+        stamp_response_headers(route, json_body);
+        auto [send_error] = co_await route.send(json_body);
+        if (send_error) co_return http::route_error(send_error);
+        co_return http::route_done;
+    }
+
     boost::http::route_task serve_web_shell(boost::http::route_params& route) {
         namespace http = boost::http;
         const std::string token = cookie_value(route, "zetta_session");
@@ -1689,6 +2218,9 @@ bool ApiServer::start() {
     });
     router.add(http::method::post, "/shell", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_web_shell(route);
+    });
+    router.add(http::method::post, "/graph-save", [&impl](http::route_params& route) -> http::route_task {
+        return impl.serve_graph_save(route);
     });
     router.add(http::method::post, "/blob", [&impl](http::route_params& route) -> http::route_task {
         return impl.serve_blob_upload(route);
