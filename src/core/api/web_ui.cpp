@@ -518,9 +518,11 @@ std::string fmt_cell(const std::string& column, const nlohmann::json& value) {
         return "<span class=\"mono\">" + web_ui_escape(s) + "</span>";
     }
     if (value.is_object()) {
-        std::string s = value.dump();
-        if (s.size() > 140) s = s.substr(0, 140) + "\xE2\x80\xA6";
-        return "<code class=\"j\">" + web_ui_escape(s) + "</code>";
+        const std::string full = value.dump();
+        std::string s = full;
+        if (s.size() > 88) s = s.substr(0, 88) + "\xE2\x80\xA6";
+        return "<code class=\"j\" title=\"" + web_ui_escape(full) + "\">" +
+               web_ui_escape(s) + "</code>";
     }
     const std::string s = value.get<std::string>();
     if (s.empty()) return "<span class=\"q\">&middot;</span>";
