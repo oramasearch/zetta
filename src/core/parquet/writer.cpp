@@ -1,5 +1,6 @@
 #include "zetta/parquet/writer.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -8,6 +9,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -464,16 +466,17 @@ ParquetSchemaResult infer_parquet_schema(const std::vector<nlohmann::json>& rows
     ParquetSchemaResult result;
     result.columns.reserve(observed.size());
     for (const auto& [name, observation] : observed) {
-        const std::string where =
-            "parquet writer: column \"" + name + "\" row " + std::to_string(observation.first_row);
+        const std::string column_prefix = "parquet writer: column \"" + name + "\"";
         if (observation.unsupported) {
-            return schema_failure(where + ": cannot store a JSON " + observation.unsupported_kind +
-                                  " in a flat Parquet column");
+            return schema_failure(column_prefix + " row " +
+                                  std::to_string(observation.first_row) + ": cannot store a JSON " +
+                                  observation.unsupported_kind + " in a flat Parquet column");
         }
         const bool numeric = observation.integer || observation.real;
         if ((observation.string && (numeric || observation.boolean)) ||
             (observation.boolean && numeric)) {
-            return schema_failure(where +
+            // No row is named: the conflict is between rows, not in one of them.
+            return schema_failure(column_prefix +
                                   ": mixed value types in one column (no physical type would "
                                   "round-trip it) — write it with an explicit schema instead");
         }
