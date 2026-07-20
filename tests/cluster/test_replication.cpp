@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <random>
+#include <string>
+#include <vector>
+
 #include "zetta/cluster/replication.hpp"
 #include "zetta/util/uuid.hpp"
 
@@ -82,5 +87,57 @@ TEST(Replication, ConcurrentEditsMergeConflictFree) {
         EXPECT_EQ(snapshot["shared"], 1);
         EXPECT_EQ(snapshot["from_a"], "alpha");
         EXPECT_EQ(snapshot["from_b"], "beta");
+    }
+}
+
+// A three-node mesh gossiping whole documents, driven entirely in-process — no
+// sockets, no threads, no timing. Each round every node writes locally and a few
+// one-way merges fire, which is exactly the shape the cluster's 500 ms SYNC
+// produces; then mutation stops and the nodes gossip to a fixed point.
+//
+// Convergence after quiescence is the CRDT's defining promise, and it is what
+// ClusterSecurity.MeshConvergesOverMutualTlsUnderSustainedLoad asserts over real
+// mTLS. This is the same property with the transport removed, so a failure here
+// is unambiguously a merge bug rather than a networking or timing one (#835).
+TEST(Replication, AMeshOfThreeConvergesAfterConcurrentWrites) {
+    constexpr int kNodes = 3;
+    std::vector<std::unique_ptr<ReplicationManager>> nodes;
+    for (int n = 0; n < kNodes; ++n) {
+        nodes.push_back(std::make_unique<ReplicationManager>(zetta::util::new_uuid()));
+    }
+
+    // Deterministic: a fixed seed, so a failure is reproducible rather than a
+    // story about a busy machine.
+    std::mt19937 rng(20250718u);
+    const std::string blob(512, 'x');
+
+    for (int round = 0; round < 300; ++round) {
+        for (int n = 0; n < kNodes; ++n) {
+            nodes[n]->set("k" + std::to_string(rng() % 4) + ":" + std::to_string(n),
+                          nlohmann::json{{"n", round}, {"blob", blob}});
+        }
+        // Independent link timers: a handful of one-way merges in arbitrary
+        // directions, so nodes routinely see partial views of each other.
+        for (int fired = 0; fired < kNodes; ++fired) {
+            const int to = static_cast<int>(rng() % kNodes);
+            const int from = (to + 1 + static_cast<int>(rng() % (kNodes - 1))) % kNodes;
+            nodes[to]->merge(nodes[from]->save());
+        }
+    }
+
+    // Quiesce: no more local writes, gossip until it settles.
+    for (int round = 0; round < 20; ++round) {
+        for (int to = 0; to < kNodes; ++to) {
+            for (int from = 0; from < kNodes; ++from) {
+                if (from != to) nodes[to]->merge(nodes[from]->save());
+            }
+        }
+    }
+
+    for (int n = 1; n < kNodes; ++n) {
+        EXPECT_EQ(nodes[n]->version(), nodes[0]->version())
+            << "node " << n << " did not converge with node 0 after quiescence";
+        EXPECT_EQ(nodes[n]->snapshot(), nodes[0]->snapshot())
+            << "node " << n << " holds different content than node 0";
     }
 }

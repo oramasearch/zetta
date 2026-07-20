@@ -25,6 +25,21 @@ global leader and no global election** — the cluster is equal peers (see
 [cluster.md](cluster.md)). This is the right default for the overwhelming
 majority of data (DDL, rows, metadata): it just merges.
 
+**That promise is asserted with the transport removed.**
+`Replication.AMeshOfThreeConvergesAfterConcurrentWrites`
+(`tests/cluster/test_replication.cpp`) drives three `ReplicationManager`s through
+300 rounds of concurrent local writes interleaved with one-way whole-document
+merges in arbitrary directions — the shape the cluster's 500 ms `SYNC` produces,
+including the partial views a mesh routinely delivers — then gossips to a fixed
+point and requires identical versions *and* identical content. It is
+deterministic (fixed seed), has no sockets, no threads and no clocks, so a
+failure there is unambiguously a merge bug. That matters because the equivalent
+property over real mTLS
+([`ClusterSecurity.MeshConvergesOverMutualTlsUnderSustainedLoad`](security.md))
+does intermittently fail, and this test is what separates "the CRDT lost a
+change" from "the link stopped carrying it" — currently the latter, see
+[#835](https://github.com/oramasearch/zetta/issues/835).
+
 A leader is needed **only for structures that require exclusivity** — locks,
 sequences, and other single-writer resources where "two holders at once" is
 incorrect. Those are the exception, not the rule, and they get a scoped
