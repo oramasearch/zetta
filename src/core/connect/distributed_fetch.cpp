@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <limits>
 #include <utility>
 
 #include "snowflake_protocol.hpp"
@@ -23,7 +24,8 @@ constexpr std::size_t kMaxPartitionsInFlight = 32;
 
 std::vector<PartitionAssignment> plan_partition_assignments(
     const std::vector<std::string>& nodes,
-    const std::vector<std::uint64_t>& partition_rows) {
+    const std::vector<std::uint64_t>& partition_rows,
+    const std::vector<double>& node_weights) {
     std::vector<PartitionAssignment> plan;
     if (nodes.empty()) return plan;
 
@@ -32,11 +34,27 @@ std::vector<PartitionAssignment> plan_partition_assignments(
         plan.push_back(PartitionAssignment{node, {}, 0});
     }
 
+    // The share each node is meant to end up with. Equal by default; the
+    // partition plan's per-node primary count when the caller passed one, which
+    // is what lands the fetch directly in the target shape. A weight set that is
+    // the wrong length, or all zeros, is ignored rather than obeyed — a fetch
+    // nobody is assigned anything in is worse than an even one.
+    std::vector<double> weights(nodes.size(), 1.0);
+    if (node_weights.size() == nodes.size()) {
+        double total = 0.0;
+        for (const double weight : node_weights) total += std::max(weight, 0.0);
+        if (total > 0.0) {
+            for (std::size_t index = 0; index < nodes.size(); ++index) {
+                weights[index] = std::max(node_weights[index], 0.0);
+            }
+        }
+    }
+
     // Longest-processing-time-first: hand the biggest partition to whichever
-    // node is currently carrying the fewest rows. Balancing by ROW COUNT rather
-    // than by index is the whole point — result partitions are uneven, so a
-    // round-robin over indices leaves one node holding the tail and the fetch
-    // takes as long as that node's link.
+    // node is currently carrying the fewest rows *relative to its share*.
+    // Balancing by ROW COUNT rather than by index is the whole point — result
+    // partitions are uneven, so a round-robin over indices leaves one node
+    // holding the tail and the fetch takes as long as that node's link.
     std::vector<std::size_t> order(partition_rows.size());
     for (std::size_t index = 0; index < order.size(); ++index) order[index] = index;
     std::stable_sort(order.begin(), order.end(),
@@ -44,12 +62,22 @@ std::vector<PartitionAssignment> plan_partition_assignments(
                          return partition_rows[left] > partition_rows[right];
                      });
 
+    // A zero-weighted node is not a candidate at all (the plan gave it no
+    // partitions to own, so pulling rows onto it would land them nowhere).
+    const auto load_of = [&](std::size_t index) {
+        return weights[index] <= 0.0
+                   ? std::numeric_limits<double>::max()
+                   : static_cast<double>(plan[index].rows) / weights[index];
+    };
     for (const std::size_t partition : order) {
         // Ties break on the first (lowest) node, so the plan is stable and
-        // identical on every node that computes it.
+        // identical on every node that computes it from the same inputs.
         std::size_t lightest = 0;
         for (std::size_t candidate = 1; candidate < plan.size(); ++candidate) {
-            if (plan[candidate].rows < plan[lightest].rows) lightest = candidate;
+            if (load_of(candidate) < load_of(lightest)) lightest = candidate;
+        }
+        if (load_of(lightest) == std::numeric_limits<double>::max()) {
+            lightest = 0;  // every weight was zero: fall back to node order
         }
         plan[lightest].partitions.push_back(partition);
         plan[lightest].rows += partition_rows[partition];
@@ -65,7 +93,8 @@ std::vector<PartitionAssignment> plan_partition_assignments(
 
 std::vector<PartitionAssignment> plan_fetch_assignments(
     const std::vector<std::string>& roster,
-    const std::vector<std::uint64_t>& partition_rows) {
+    const std::vector<std::uint64_t>& partition_rows,
+    const std::vector<double>& node_weights) {
     // Partition 0 belongs to the initiator by construction — it came inline with
     // the submission. Tile only what is still to be fetched.
     const std::vector<std::uint64_t> fetchable =
@@ -74,7 +103,7 @@ std::vector<PartitionAssignment> plan_fetch_assignments(
             : std::vector<std::uint64_t>(partition_rows.begin() + 1,
                                          partition_rows.end());
     std::vector<PartitionAssignment> plan =
-        plan_partition_assignments(roster, fetchable);
+        plan_partition_assignments(roster, fetchable, node_weights);
     // Back into the original partition space, so a slice names the indices the
     // source is actually read by.
     for (PartitionAssignment& assignment : plan) {

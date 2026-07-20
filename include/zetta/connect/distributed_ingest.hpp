@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/connect/connector.hpp"
+#include "zetta/data/partition_scheduler.hpp"
 
 namespace zetta { class Node; }
 namespace zetta::compute { class CoordinatedLaunchListener; }
@@ -38,10 +40,21 @@ class Table;
 //      co-launch machinery, not a second synchronization path. **No credential
 //      travels**: the launch names a *saved connection*, and saved connections
 //      are replicate-to-all precisely so each node presents the token itself.
-//   3. **FETCH** — every participant derives the SAME tiling from
-//      `plan_fetch_assignments(roster, row counts)` — a pure function, so no
-//      plan is sent — and pulls **only its own tile**, several requests in
-//      flight (`fetch_result_partitions`, bounded).
+//   3. **FETCH** — the launch carries the **partition plan** the coordinator's
+//      [`PartitionScheduler`](../data/partition_scheduler.hpp) computed. Every
+//      participant tiles the result with `plan_fetch_assignments(roster, row
+//      counts, the plan's per-node shares)` and pulls **only its own tile**,
+//      several requests in flight (`fetch_result_partitions`, bounded).
+//
+//      The tiling used to be derived independently on each node — a pure
+//      function of (roster, row counts), so nothing travelled. Capacity-aware
+//      placement reads live telemetry, which differs per node by construction,
+//      so the plan is now **computed once by the coordinator and transmitted**.
+//      Participants use what they received; nobody recomputes.
+//
+//      A Snowflake result set is a **flexible** source (its chunks are freely
+//      assignable), so the fetch lands directly in the target shape and there is
+//      **no rebalance** afterwards — see docs/data/partition-scheduler.md.
 //   4. **LAND** — each node writes its slice as
 //      [partition-only](../data/partition_only) partitions **it** owns
 //      ([fetch affinity](../data/fetch_affinity_placement.hpp)). Rows never
@@ -87,10 +100,16 @@ struct DistributedIngestOptions {
     std::string query;
     std::string database = "datasets";
     std::string table_name;
-    std::uint32_t partition_count = 8;   // P per node's own slice
+    // **How many partitions the whole dataset gets — `nullopt` = auto** (#833).
+    // The [`PartitionScheduler`](../data/partition_scheduler.hpp) decides it from
+    // a target body size and a per-node floor, weighted by live telemetry; a
+    // value here is a manual override, honoured exactly.
+    std::optional<std::uint32_t> partition_count;
     std::size_t max_rows = 100000;       // cap pulled from the source, per node
     std::size_t replication_factor = 1;  // a result set is a cache: RF=1
     std::chrono::milliseconds coordination_timeout = kDefaultIngestCoordination;
+    // The policy that decides the plan; null = `default_partition_scheduler()`.
+    const data::PartitionScheduler* scheduler = nullptr;
 };
 
 // The outcome on the node that ran the ingest.
@@ -104,6 +123,11 @@ struct DistributedIngestResult {
     std::shared_ptr<data::Table> table;
     // The catalog entries this node wrote (a peer's are its own).
     std::vector<std::shared_ptr<data::DatasetPartition>> partitions;
+    // The plan the scheduler emitted and the initiator SHIPPED to every
+    // participant — the count, the size targets, the owners, and the rationale.
+    // Returned so the decision is observable rather than a number nobody can
+    // account for. On a peer this is the plan it received, byte for byte.
+    data::PartitionPlan plan;
     std::string job;    // the ComputeJob id (system.jobs)
     std::string error;  // empty on success
 

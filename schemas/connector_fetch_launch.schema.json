@@ -2,7 +2,7 @@
   "$id": "https://oramasearch.github.io/zetta/schemas/connector_fetch_launch.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
-  "description": "The cross-node connector fetch run.launch payload (#833 section 7): the statement handle, the result set's shape and per-partition row counts (from which every participant derives the SAME tiling), and the target table the initiator already minted. It names a SAVED CONNECTION rather than carrying a credential — saved connections are replicate-to-all so each node presents the token itself.",
+  "description": "The cross-node connector fetch run.launch payload (#833 section 7): the statement handle, the result set's shape and per-partition row counts, the PARTITION PLAN the coordinator's scheduler computed (which every participant uses rather than recomputing — capacity-aware placement reads live telemetry, which differs per node), and the target table the initiator already minted. It names a SAVED CONNECTION rather than carrying a credential — saved connections are replicate-to-all so each node presents the token itself.",
   "properties": {
     "column_types": {
       "items": {
@@ -43,10 +43,6 @@
       "minimum": 1,
       "type": "integer"
     },
-    "partition_count": {
-      "minimum": 1,
-      "type": "integer"
-    },
     "partition_rows": {
       "description": "rows per result partition, in partition order — the tiling's weights",
       "items": {
@@ -55,9 +51,49 @@
       },
       "type": "array"
     },
-    "replication_factor": {
-      "minimum": 1,
-      "type": "integer"
+    "plan": {
+      "additionalProperties": false,
+      "description": "The shape a dataset is written in, as the PartitionScheduler decided it (#833): how many partitions, the size each targets, which nodes own each one, and WHY. Capacity-aware placement reads live per-node telemetry, which differs per node, so the plan can no longer be derived independently on each participant — the coordinator computes it once and ships it in the connector-fetch launch payload.",
+      "properties": {
+        "owners": {
+          "description": "owners per partition, primary first; one entry per partition",
+          "items": {
+            "items": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "type": "array"
+        },
+        "partition_count": {
+          "maximum": 4096,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "replication_factor": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "target_bytes_per_partition": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "target_rows_per_partition": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "partition_count",
+        "owners",
+        "replication_factor"
+      ],
+      "title": "zetta.PartitionPlan",
+      "type": "object"
     },
     "table": {
       "minLength": 1,
@@ -78,9 +114,8 @@
     "database_name",
     "table",
     "table_name",
-    "partition_count",
+    "plan",
     "max_rows",
-    "replication_factor",
     "coordination_timeout_ms"
   ],
   "title": "zetta.ConnectorFetchLaunch",

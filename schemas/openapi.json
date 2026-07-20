@@ -80,7 +80,7 @@
                     "type": "string"
                   },
                   "partition_count": {
-                    "description": "partitions to write (default 8)",
+                    "description": "partitions to write; omit to let the partition scheduler size them (a target body size, with a floor of partitions per node) instead of fixing a count",
                     "maximum": 4096,
                     "minimum": 1,
                     "type": "integer"
@@ -1356,7 +1356,7 @@
                     "type": "integer"
                   },
                   "partition_count": {
-                    "description": "partitions to write (default 8)",
+                    "description": "partitions to write; omit to let the partition scheduler size them (a target body size, with a floor of partitions per node) instead of fixing a count",
                     "maximum": 4096,
                     "minimum": 1,
                     "type": "integer"

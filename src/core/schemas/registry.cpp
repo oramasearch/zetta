@@ -33,6 +33,7 @@
 #include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/partition_scheduler.hpp"
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/ddf/as_of.hpp"
@@ -131,6 +132,8 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::data::dataset_manifest_value_schema},
         {"dataset_partition", "dataset_partition.schema.json",
          &zetta::data::dataset_partition_value_schema},
+        {"partition_plan", "partition_plan.schema.json",
+         &zetta::data::partition_plan_schema},
         {"partitioner", "partitioner.schema.json", &zetta::data::partitioner_schema},
         {"replication_strategy", "replication_strategy.schema.json",
          &zetta::data::replication_strategy_schema},

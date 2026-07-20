@@ -50,6 +50,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
+#include "zetta/data/partition_rebalance.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
@@ -578,6 +579,50 @@ TEST(DistributedIngest, CoLaunchFetchesEachChunkOnceAndLandsWhereItPulled) {
     EXPECT_EQ(catalogued, kTotalRows);
     // …which is also what the cluster agreed on through the allreduce.
     EXPECT_EQ(result.rows, kTotalRows);
+
+    // --- The fetch landed in the TARGET shape, with NO rebalance --------------
+    // A Snowflake result set is a FLEXIBLE source: its chunks are freely
+    // assignable, so the fetch was tiled by the plan's per-node shares and every
+    // node wrote exactly the partitions the plan gave it. Nothing has to move
+    // afterwards, and nothing did.
+    ASSERT_TRUE(result.plan.ok()) << "the ingest ran without a plan";
+    EXPECT_EQ(result.plan.owners.size(), result.plan.partition_count);
+    std::size_t written_cluster_wide = 0;
+    for (std::size_t index = 0; index < members.size(); ++index) {
+        std::size_t written = 0;
+        for (const auto& partition : members[index]->node.dataset_partitions()) {
+            if (partition->table() != table_id) continue;
+            if (partition->owner_nodes().front() != members[index]->id) continue;
+            ++written;
+        }
+        written_cluster_wide += written;
+        // Never MORE than planned. Fewer is legal and expected at this scale:
+        // only non-empty partitions get a catalog entry, and 54 rows over a
+        // plan's worth of partitions leaves some empty.
+        EXPECT_LE(written, result.plan.primary_partitions_of(members[index]->id))
+            << "node " << index << " wrote more partitions than the plan gave it: "
+            << result.plan.rationale;
+    }
+    EXPECT_GT(written_cluster_wide, 0u);
+
+    // **No partition movement.** Every catalog entry still names exactly the node
+    // that wrote it (asserted above), and the placement recorded on each entry is
+    // still fetch affinity — a rebalance would have rewritten it to rendezvous.
+    for (std::size_t index = 0; index < members.size(); ++index) {
+        for (const auto& partition : members[index]->node.dataset_partitions()) {
+            if (partition->table() != table_id) continue;
+            EXPECT_EQ(partition->stats().value("placement", std::string{}),
+                      "fetch_affinity")
+                << "a partition was re-placed — a flexible source must need no "
+                   "rebalance";
+        }
+    }
+    // …and running the opportunistic rebalance over the live membership moves
+    // nothing, which is the property in its own words.
+    const zetta::data::RebalanceResult idle = zetta::data::rebalance_partitions(
+        members[0]->node, members[0]->node.cluster_members(),
+        members[0]->node.cluster_members());
+    EXPECT_EQ(idle.moved, 0u) << "the ingest's placement was disturbed";
 
     // --- Property 3: the rows never crossed the wire twice --------------------
     // The table is partition-only, so the replicated document holds NO row

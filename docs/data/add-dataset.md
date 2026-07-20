@@ -82,15 +82,25 @@ The whole point of "as a partitioned table" is that the dataset's slices land on
 placement overlay and `system.dataset_partitions` then surface. So
 `add_dataset_file` configures the table with a
 [`RendezvousPlacement`](partitioner.md) partitioner
-(`AddDatasetOptions::partition_count` partitions, default 8; `replication_factor`
-owners each, **default 3, clamped to the node count**) and writes it through
-[`write_partitioned`](partitioned-write-path.md):
+(`replication_factor` owners each, **default 3, clamped to the node count**) and
+writes it through [`write_partitioned`](partitioned-write-path.md):
 
 - the **record→partition** half shards rows across the `P` partitions (FNV-1a of
   the row), and
 - the **partition→node** half is rendezvous / highest-random-weight placement, so
   each partition is owned by a deterministic subset of `AddDatasetOptions::members`
   (the cluster membership) — adding/removing a node moves only ~1/N of partitions.
+
+**How many partitions comes from the [partition
+scheduler](partition-scheduler.md), not from a constant.** It used to be
+`AddDatasetOptions::partition_count = 8` — eight because eight, which is wrong in
+both directions at once (eight footers and eight replicated catalog entries for a
+4 KB dataset; 25 GB blobs for a 200 GB one). The scheduler targets a partition
+*size*, with a floor of partitions per node so every node gets work, and weights
+placement by live node telemetry. `partition_count` is now
+`std::optional<std::uint32_t>`: absent means auto, a value is a manual override
+honoured exactly. The plan it emitted — count, size targets, owners, and its
+**rationale** — comes back on `AddDatasetResult::plan`.
 
 ### Why the replication factor defaults to 3
 

@@ -85,12 +85,28 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
   `Partitioner` whose owner is the node that pulled the slice, so a distributed ingest never
   shuffles what it just wrote ([data/fetch-affinity-placement.md](data/fetch-affinity-placement.md));
   the **cross-node co-launch** of the fetch — one node submits, the roster co-launches over
-  `run.launch`, every participant derives the same tiling and pulls ONLY its own tile straight
-  from the source, landing it as partition-only partitions it owns, with one `allreduce` making
-  the ingest all-or-nothing
+  `run.launch`, every participant pulls ONLY its own tile straight from the source, landing it
+  as partition-only partitions it owns, with one `allreduce` making the ingest all-or-nothing
   ([data/distributed-connector-ingest.md](data/distributed-connector-ingest.md)); and the 202
   poll turned into a `runtime::delay` **timer** instead of a `sleep_for` (#832). All ten
-  sections of the issue are now implemented. Known residue, worth its own issue: a `remove`
+  sections of the issue are now implemented.
+
+  Since then, three more: the **partition manifest**, a table-level `mfst:<table-id>` record of
+  how many partitions a dataset HAS, so a reader can tell "I can see 6 of 8" from "there are 6"
+  and **fail** the query instead of answering a plausible fraction
+  ([#837](https://github.com/oramasearch/zetta/issues/837),
+  [data/partition-manifest.md](data/partition-manifest.md)) — which in turn surfaced a
+  **projection bug in `Node::tick`**: it recorded the CRDT version read at the *end* of the
+  tick as reflected, claiming credit for a peer merge the reconcile never saw, so the
+  projection stalled permanently short of the document (the root cause of #837's flake). And
+  the **partition scheduler**, which replaces `partition_count = 8` with a policy above
+  `Partitioner`: a 64 MiB target body size with a floor of partitions per node, capacity-aware
+  placement from live telemetry, and a `SourceLayout` that says whether a source's units are
+  flexible (fetch straight into the target shape — **no rebalance**) or fixed (fetch
+  source-shaped, then rebalance). Because a capacity-aware plan is not derivable per node, the
+  coordinator now **computes the plan once and ships it** in the launch payload, so
+  derive-don't-transmit is no longer a property of this path
+  ([data/partition-scheduler.md](data/partition-scheduler.md)). Known residue, worth its own issue: a `remove`
   (a dropped `part:`/`lo:` key) can be undone by a peer's gossip merge, so a failed ingest can
   leave orphaned catalog keys behind a table that no longer exists — a replication-layer
   delete-versus-merge property, untested anywhere in the tree today.

@@ -2144,7 +2144,10 @@ const nlohmann::json& add_dataset_schema() {
            {{"type", "integer"},
             {"minimum", 1},
             {"maximum", 4096},
-            {"description", "partitions to write (default 8)"}}},
+            {"description",
+            "partitions to write; omit to let the partition scheduler "
+            "size them (a target body size, with a floor of partitions per "
+            "node) instead of fixing a count"}}},
           {"replication_factor",
            {{"type", "integer"},
             {"minimum", 1},
@@ -2182,8 +2185,11 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     options.database = input.value("database", options.database);
     options.table_name = input.value("table_name", options.table_name);
     options.partitioned = input.value("partitioned", options.partitioned);
-    options.partition_count =
-        input.value("partition_count", options.partition_count);
+    // Absent means AUTO — the scheduler targets a partition size instead of a
+    // constant (#833). A value present is a manual override, honoured exactly.
+    if (const auto it = input.find("partition_count"); it != input.end()) {
+        options.partition_count = it->get<std::uint32_t>();
+    }
     options.replication_factor =
         input.value("replication_factor", options.replication_factor);
     options.members = context.node.cluster_members();  // live placement roster
@@ -2397,7 +2403,10 @@ const nlohmann::json& create_dataset_from_query_schema() {
            {{"type", "integer"},
             {"minimum", 1},
             {"maximum", 4096},
-            {"description", "partitions to write (default 8)"}}},
+            {"description",
+            "partitions to write; omit to let the partition scheduler "
+            "size them (a target body size, with a floor of partitions per "
+            "node) instead of fixing a count"}}},
           {"replication_factor",
            {{"type", "integer"},
             {"minimum", 1},
@@ -2497,8 +2506,11 @@ ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
     options.max_rows = input.value("max_rows", static_cast<std::size_t>(100000));
     options.database = input.value("database", options.database);
     options.table_name = input.value("table_name", options.table_name);
-    options.partition_count =
-        input.value("partition_count", options.partition_count);
+    // Absent means AUTO — the scheduler targets a partition size instead of a
+    // constant (#833). A value present is a manual override, honoured exactly.
+    if (const auto it = input.find("partition_count"); it != input.end()) {
+        options.partition_count = it->get<std::uint32_t>();
+    }
     // A connector result set is a CACHE — re-pullable from its source and cheap
     // to lose — so it is RF=1 by default, explicitly, against the engine's
     // durable default of 3 (#833 section 8). promote_dataset upgrades one that

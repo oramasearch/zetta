@@ -5,11 +5,13 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/partition_scheduler.hpp"
 #include "zetta/data/replication_strategy.hpp"
 
 namespace zetta { class Node; }
@@ -69,12 +71,19 @@ std::string dialog_extensions();
 // How to materialize the loaded rows. The `database` is created if absent (default
 // "datasets"). When `partitioned`, the table is written through the
 // [partitioned write path](partition_writer.hpp) with a
-// [`RendezvousPlacement`](rendezvous_placement.hpp) partitioner of `partition_count`
-// partitions and `replication_factor` owners each — so the rows shard across the
-// partitions and each partition is HRW-placed onto specific cluster node(s)
-// (genuinely *across the cluster*, vs. replicate-to-all). `members` is the cluster
-// membership placement is computed over (empty = this node only). `table_name`
-// overrides the name derived from the file (empty = derive it).
+// [`RendezvousPlacement`](rendezvous_placement.hpp) partitioner — so the rows
+// shard across the partitions and each partition is HRW-placed onto specific
+// cluster node(s) (genuinely *across the cluster*, vs. replicate-to-all).
+// `members` is the cluster membership placement is computed over (empty = this
+// node only). `table_name` overrides the name derived from the file (empty =
+// derive it).
+//
+// **How many partitions is decided by the
+// [`PartitionScheduler`](partition_scheduler.hpp), not by a constant** (#833):
+// it targets a partition SIZE (per-blob overhead below it, lost parallelism and
+// decode memory above it) with a floor of partitions per node so every node gets
+// work. `partition_count` here is a manual override, honoured exactly. The plan
+// it emitted — including its rationale — comes back in `AddDatasetResult::plan`.
 //
 // **`replication_factor` defaults to 3, clamped to the node count** (#833
 // section 8). It used to default to 1, which was harmless only because a
@@ -94,7 +103,14 @@ std::string dialog_extensions();
 struct AddDatasetOptions {
     std::string database = "datasets";
     bool partitioned = true;
-    std::uint32_t partition_count = 8;     // P (chosen P >> nodes)
+    // **How many partitions — `nullopt` means let the scheduler decide** (#833).
+    // This used to be a hard-coded 8 (eight because eight), which is wrong in
+    // both directions at once: eight footers + eight replicated catalog entries
+    // for a 4 KB dataset, and 25 GB bodies for a 200 GB one. The
+    // [`PartitionScheduler`](partition_scheduler.hpp) targets a partition SIZE
+    // and a floor of partitions per node instead. A value here is a **manual
+    // override, honoured exactly**.
+    std::optional<std::uint32_t> partition_count;
     std::size_t replication_factor =       // owners per partition (see below)
         kDefaultReplicationFactor;
     std::vector<std::string> members;      // cluster membership for placement
@@ -106,6 +122,19 @@ struct AddDatasetOptions {
     // own id so the slice it just pulled is never shuffled somewhere else;
     // replicas (a factor above 1) still spread by rendezvous over the rest.
     std::string fetch_affinity_owner;
+    // The source's natural shape (#833), passed through to the scheduler so the
+    // plan's rationale records what it was planning over. A local file or a
+    // block of in-memory rows is flexible by construction — the caller holds all
+    // the rows and lays them out however the plan says — so the default is
+    // right for both `add_dataset_file` and `add_dataset_rows`.
+    SourceLayout source;
+    // Serialized size of the dataset, when the caller already knows it (0 ⇒
+    // `add_dataset_rows` estimates it from the rows; the file path uses the
+    // file's size). The scheduler needs BYTES, not rows, to target a size.
+    std::size_t approx_bytes = 0;
+    // The policy that decides the plan; null = `default_partition_scheduler()`.
+    // A non-owning back-reference: the scheduler outlives the call.
+    const PartitionScheduler* scheduler = nullptr;
 };
 
 // The outcome of adding a dataset. On success `error` is empty, `table` is the
@@ -117,6 +146,11 @@ struct AddDatasetResult {
     dataset_file::Format format = dataset_file::Format::Unknown;
     std::size_t rows = 0;
     std::vector<std::shared_ptr<DatasetPartition>> partitions;  // when partitioned
+    // The plan the scheduler emitted for this write — the count it chose, the
+    // sizes it targeted, the owners, and the RATIONALE. Surfaced so the decision
+    // is observable rather than a number that appeared from nowhere. Empty
+    // (partition_count 0) when the dataset was not partitioned.
+    PartitionPlan plan;
     std::string error;  // empty on success
 
     bool ok() const { return error.empty(); }

@@ -93,9 +93,8 @@ TileOutcome fetch_and_land_tile(Node& node, data::Database& database,
                                 const StatementPlan& plan,
                                 const std::vector<std::size_t>& slice,
                                 std::vector<Json> carried,
-                                std::uint32_t partition_count,
+                                const data::PartitionPlan& partition_plan,
                                 std::size_t max_rows,
-                                std::size_t replication_factor,
                                 const std::vector<std::string>& members,
                                 bool coordinated) {
     TileOutcome outcome;
@@ -132,10 +131,22 @@ TileOutcome fetch_and_land_tile(Node& node, data::Database& database,
     for (Json& row : rows) table.add_row(std::move(row));
     outcome.rows = table.row_count() - before;
 
-    // Fetch affinity: every partition this node writes is owned by this node.
+    // Fetch affinity: every partition this node writes is owned by this node —
+    // and **how many** it writes is this node's share of the plan the
+    // coordinator shipped. That is what makes the landed layout the target
+    // layout: the fetch above already pulled this node's proportional slice of
+    // the rows (`plan_fetch_assignments` weighted by the same shares), so the
+    // bodies come out the size the scheduler was aiming for and **nothing has to
+    // be rebalanced afterwards** — a Snowflake result set is a flexible source.
+    //
+    // A node the plan gave no primaries (it was weighted down, or the roster
+    // moved under us) still writes one partition rather than none: it may hold
+    // the inline chunk 0, and dropping rows on the floor is never the answer.
+    const std::size_t share = partition_plan.primary_partitions_of(node.node_id());
     table.set_partitioner(std::make_shared<data::FetchAffinityPlacement>(
-        partition_count, node.node_id(),
-        std::min(std::max<std::size_t>(replication_factor, 1),
+        static_cast<data::PartitionId>(std::max<std::size_t>(share, 1)),
+        node.node_id(),
+        std::min(std::max<std::size_t>(partition_plan.replication_factor, 1),
                  members.empty() ? std::size_t{1} : members.size())));
     // A tile records no manifest: it knows only its own share, and a manifest
     // describing a third of the dataset would fail every read of a healthy one
@@ -307,9 +318,24 @@ LaunchOutcome run_connector_fetch_launch(
     plan.column_types = string_array(payload.at("column_types"));
     plan.partition_rows = row_count_array(payload.at("partition_rows"));
 
-    // The SAME pure tiling every other participant derives — no plan travelled.
-    const std::vector<PartitionAssignment> tiling =
-        plan_fetch_assignments(request.participants, plan.partition_rows);
+    // **The partition plan the coordinator computed and shipped.** This node
+    // does not recompute it: capacity-aware placement reads live telemetry,
+    // which differs per node, so a locally-derived plan would disagree with
+    // every peer's. Re-validated here anyway — a launch envelope is untrusted
+    // input like any other, and the outer schema has already checked its shape.
+    std::string plan_error;
+    const std::optional<data::PartitionPlan> partition_plan =
+        data::partition_plan_from_json(payload.at("plan"), &plan_error);
+    if (!partition_plan) {
+        return decline("connector fetch partition plan: " + plan_error);
+    }
+
+    // Tile the source by the plan's per-node shares, so this node pulls exactly
+    // the rows it is meant to end up owning — the fetch lands in the target
+    // shape, which is what makes the post-download rebalance unnecessary.
+    const std::vector<PartitionAssignment> tiling = plan_fetch_assignments(
+        request.participants, plan.partition_rows,
+        partition_plan->fetch_weights(request.participants));
     const std::vector<std::size_t> slice =
         *rank < tiling.size() ? tiling[*rank].partitions
                               : std::vector<std::size_t>{};
@@ -320,9 +346,7 @@ LaunchOutcome run_connector_fetch_launch(
 
     const TileOutcome outcome = fetch_and_land_tile(
         node, *database, *table, saved->config, plan, slice, /*carried=*/{},
-        static_cast<std::uint32_t>(payload.at("partition_count").get<std::uint32_t>()),
-        payload.at("max_rows").get<std::size_t>(),
-        payload.at("replication_factor").get<std::size_t>(),
+        *partition_plan, payload.at("max_rows").get<std::size_t>(),
         node.cluster_members(), /*coordinated=*/true);
 
     const Agreement agreement = agree_on_the_ingest(
@@ -362,16 +386,17 @@ LaunchOutcome run_connector_fetch_launch(
 }  // namespace
 
 const nlohmann::json& connector_fetch_launch_schema() {
-    static const nlohmann::json schema = nlohmann::json::parse(R"JSONSCHEMA({
+    static const nlohmann::json schema = [] {
+        nlohmann::json document = nlohmann::json::parse(R"JSONSCHEMA({
       "$schema": "http://json-schema.org/draft-07/schema#",
       "$id": "https://oramasearch.github.io/zetta/schemas/connector_fetch_launch.schema.json",
       "title": "zetta.ConnectorFetchLaunch",
-      "description": "The cross-node connector fetch run.launch payload (#833 section 7): the statement handle, the result set's shape and per-partition row counts (from which every participant derives the SAME tiling), and the target table the initiator already minted. It names a SAVED CONNECTION rather than carrying a credential — saved connections are replicate-to-all so each node presents the token itself.",
+      "description": "The cross-node connector fetch run.launch payload (#833 section 7): the statement handle, the result set's shape and per-partition row counts, the PARTITION PLAN the coordinator's scheduler computed (which every participant uses rather than recomputing — capacity-aware placement reads live telemetry, which differs per node), and the target table the initiator already minted. It names a SAVED CONNECTION rather than carrying a credential — saved connections are replicate-to-all so each node presents the token itself.",
       "type": "object",
       "required": ["connection", "handle", "columns", "column_types",
                    "partition_rows", "database", "database_name", "table",
-                   "table_name", "partition_count", "max_rows",
-                   "replication_factor", "coordination_timeout_ms"],
+                   "table_name", "plan", "max_rows",
+                   "coordination_timeout_ms"],
       "additionalProperties": false,
       "properties": {
         "connection":     { "type": "string", "minLength": 1, "maxLength": 64,
@@ -386,12 +411,21 @@ const nlohmann::json& connector_fetch_launch_schema() {
         "database_name":  { "type": "string", "minLength": 1 },
         "table":          { "type": "string", "minLength": 1 },
         "table_name":     { "type": "string", "minLength": 1 },
-        "partition_count":     { "type": "integer", "minimum": 1 },
         "max_rows":            { "type": "integer", "minimum": 1 },
-        "replication_factor":  { "type": "integer", "minimum": 1 },
         "coordination_timeout_ms": { "type": "integer", "minimum": 1 }
       }
     })JSONSCHEMA");
+        // The plan's shape is owned by partition_scheduler.hpp — embed it rather
+        // than restate it, so the payload and the type can never drift apart.
+        // (`partition_count` and `replication_factor` used to be separate fields
+        // here; both now live in the plan, which is the single place those
+        // decisions are made.)
+        nlohmann::json plan = zetta::data::partition_plan_schema();
+        plan.erase("$schema");
+        plan.erase("$id");
+        document["properties"]["plan"] = std::move(plan);
+        return document;
+    }();
     return schema;
 }
 
@@ -484,6 +518,45 @@ DistributedIngestResult run_distributed_connector_ingest(
         job->set_status(compute::JobStatus::Running);
     }
 
+    // **The plan, computed once, here.** How many partitions the dataset gets,
+    // how big each targets, and which node owns each one — from a target body
+    // size and a per-node floor, weighted by this node's live view of the
+    // cluster's telemetry. It replaces the fixed `partition_count = 8`.
+    //
+    // It is computed on the initiator and SHIPPED (below) rather than derived on
+    // each participant, because telemetry differs per node by construction: a
+    // plan each node derived for itself would not agree with any other's.
+    data::PartitionRequest ask;
+    ask.row_count = static_cast<std::size_t>(
+        std::min<std::uint64_t>(submitted.plan.source_rows(), options.max_rows));
+    // The rows the submission already returned inline are a free, unbiased
+    // sample of the whole result — use them to size it rather than guessing.
+    ask.approx_bytes =
+        submitted.inline_rows.rows.empty()
+            ? 0
+            : (data::estimate_rows_bytes(submitted.inline_rows.rows) /
+               std::max<std::size_t>(submitted.inline_rows.rows.size(), 1)) *
+                  ask.row_count;
+    ask.members = coordinate ? roster : (members.empty() ? std::vector<std::string>{
+                                                               node.node_id()}
+                                                         : members);
+    ask.replication_factor = options.replication_factor;
+    ask.cache = true;  // a connector result set is re-fetchable from its source
+    // Snowflake's result chunks are freely assignable to whichever node should
+    // own those rows: a FLEXIBLE source, so the fetch is shaped to the target
+    // and no rebalance follows. (A fixed-unit source — a dataset published as N
+    // files — is the case that would earn one; that slice is designed for here
+    // and not built.)
+    ask.source = data::SourceLayout{data::SourceShape::Flexible,
+                                    submitted.plan.partition_rows,
+                                    "snowflake.result_partitions"};
+    ask.partition_count = options.partition_count;
+    ask.telemetry = node.telemetry_snapshot();
+    const data::PartitionScheduler& scheduler =
+        options.scheduler ? *options.scheduler
+                          : data::default_partition_scheduler();
+    result.plan = scheduler.plan(ask);
+
     const auto fail = [&](std::string reason) {
         discard_ingest(node, *database, table->id());
         database->drop_table(table->name());
@@ -500,9 +573,8 @@ DistributedIngestResult run_distributed_connector_ingest(
         // cluster and an N-node cluster produce the same dataset.
         const TileOutcome outcome = fetch_and_land_tile(
             node, *database, *table, config, submitted.plan, rest,
-            std::move(submitted.inline_rows.rows), options.partition_count,
-            options.max_rows, options.replication_factor, members,
-            /*coordinated=*/false);
+            std::move(submitted.inline_rows.rows), result.plan,
+            options.max_rows, members, /*coordinated=*/false);
         if (!outcome.ok) return fail(outcome.detail);
         result.partitions = outcome.partitions;
         result.partitions_fetched = outcome.partitions_fetched;
@@ -534,9 +606,11 @@ DistributedIngestResult run_distributed_connector_ingest(
              {"database_name", database->name()},
              {"table", table->id()},
              {"table_name", table->name()},
-             {"partition_count", options.partition_count},
+             // THE PLAN travels — this is the one thing that is no longer
+             // derivable, because capacity-aware placement reads telemetry that
+             // differs per node.
+             {"plan", data::to_json(result.plan)},
              {"max_rows", options.max_rows},
-             {"replication_factor", options.replication_factor},
              {"coordination_timeout_ms", options.coordination_timeout.count()}};
     listener->fan_out(request);
     result.coordinated = true;
@@ -544,18 +618,19 @@ DistributedIngestResult run_distributed_connector_ingest(
 
     // 3+4) FETCH + LAND — this node's own tile, plus the inline partition 0 it
     // already holds (which is why plan_fetch_assignments never tiles index 0).
+    // Tiled by the plan's per-node shares, so each node pulls the rows it will
+    // own and the fetch lands in the target shape.
     const std::size_t rank =
         compute::participant_rank(request, listener->node_id()).value_or(0);
-    const std::vector<PartitionAssignment> tiling =
-        plan_fetch_assignments(roster, submitted.plan.partition_rows);
+    const std::vector<PartitionAssignment> tiling = plan_fetch_assignments(
+        roster, submitted.plan.partition_rows, result.plan.fetch_weights(roster));
     const std::vector<std::size_t> slice =
         rank < tiling.size() ? tiling[rank].partitions : std::vector<std::size_t>{};
 
     const TileOutcome outcome = fetch_and_land_tile(
         node, *database, *table, config, submitted.plan, slice,
-        std::move(submitted.inline_rows.rows), options.partition_count,
-        options.max_rows, options.replication_factor, members,
-        /*coordinated=*/true);
+        std::move(submitted.inline_rows.rows), result.plan, options.max_rows,
+        members, /*coordinated=*/true);
 
     // All or nothing, cluster-wide.
     const Agreement agreement =

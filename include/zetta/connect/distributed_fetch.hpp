@@ -60,6 +60,15 @@ struct StatementPlan {
     std::size_t fetchable_partitions() const {
         return partition_rows.size() > 1 ? partition_rows.size() - 1 : 0;
     }
+
+    // Rows the SOURCE says the whole result set carries, across every partition
+    // — known before a single one is pulled, which is what lets the partition
+    // scheduler size the dataset up front rather than after the fact.
+    std::uint64_t source_rows() const {
+        std::uint64_t total = 0;
+        for (const std::uint64_t rows : partition_rows) total += rows;
+        return total;
+    }
 };
 
 // One node's slice of the result set: a disjoint set of partition indices and
@@ -85,9 +94,18 @@ struct PartitionAssignment {
 //
 // An empty `nodes` yields an empty plan; every node gets an entry even when its
 // slice is empty, so a caller can report the full tiling.
+//
+// `node_weights` is the **share of the dataset each node is meant to end up
+// with**, in `nodes` order — the [partition plan](../data/partition_scheduler.hpp)'s
+// per-node primary count. It is what makes the fetch land in the target shape
+// rather than in an evenly-tiled one that then has to be shuffled: a node that
+// will own a fifth of the partitions pulls a fifth of the rows. Empty (the
+// default) means equal shares, which is the previous behaviour exactly. A node
+// weighted 0 is given nothing; if every weight is 0 the weights are ignored.
 std::vector<PartitionAssignment> plan_partition_assignments(
     const std::vector<std::string>& nodes,
-    const std::vector<std::uint64_t>& partition_rows);
+    const std::vector<std::uint64_t>& partition_rows,
+    const std::vector<double>& node_weights = {});
 
 // Tile the **fetchable** result partitions across `roster` — what the cross-node
 // co-launch actually runs on (#833 section 7).
@@ -99,14 +117,24 @@ std::vector<PartitionAssignment> plan_partition_assignments(
 // is excluded here and stays with the initiator, and `[1, N)` is split by the
 // same row-balanced longest-processing-time-first rule over the whole roster.
 //
-// Pure and deterministic, like the function it wraps: every participant derives
-// the identical tiling from (roster, row counts) and nothing has to be sent. The
-// returned indices are in the ORIGINAL partition space (so `1` means result
-// partition 1); `rows` counts only the partitions in the slice. A result with
-// one partition (or none) yields empty slices for every node.
+// **`node_weights` shapes the fetch to the target layout** — the partition
+// plan's per-node primary count, in roster order. A Snowflake result set is a
+// *flexible* source: its chunks can go to whichever node should own those rows,
+// so the fetch itself is laid out in the resting shape and there is **nothing to
+// rebalance afterwards**. Empty weights mean equal shares (the pre-plan
+// behaviour), which is what the local, single-node path uses.
+//
+// Deterministic given its inputs. It is no longer *derivable independently*,
+// though: the weights come from a capacity-aware plan computed against live
+// telemetry, which differs per node, so the coordinator computes the plan once
+// and ships it in the launch payload and participants pass the received weights
+// in here. The returned indices are in the ORIGINAL partition space (so `1`
+// means result partition 1); `rows` counts only the partitions in the slice. A
+// result with one partition (or none) yields empty slices for every node.
 std::vector<PartitionAssignment> plan_fetch_assignments(
     const std::vector<std::string>& roster,
-    const std::vector<std::uint64_t>& partition_rows);
+    const std::vector<std::uint64_t>& partition_rows,
+    const std::vector<double>& node_weights = {});
 
 // The outcome of submitting a statement: the plan, plus partition 0's rows
 // (which the source returns inline with the submission).

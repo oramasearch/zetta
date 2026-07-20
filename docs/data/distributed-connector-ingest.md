@@ -23,10 +23,10 @@ tests/connect/test_distributed_ingest.cpp     the five properties, over a real l
 ```
 1. SUBMIT   one node POSTs the statement  ->  statementHandle + partitionInfo[]
                                               (partition 0 arrives inline)
-2. LAUNCH   carry (handle, roster, row counts) to every participant
-                                              — a `run.launch` task, no credential
-3. FETCH    each node derives the SAME tiling and pulls ONLY its own tile,
-            several requests in flight (bounded)
+2. LAUNCH   carry (handle, roster, row counts, THE PARTITION PLAN) to every
+            participant                       — a `run.launch` task, no credential
+3. FETCH    each node takes its own tile from the SHIPPED plan and pulls ONLY
+            that, several requests in flight (bounded)
 4. LAND     each node writes its slice as partition-only partitions IT owns
             — no re-shuffle, rows never cross the wire twice
 ```
@@ -42,14 +42,35 @@ member), creates the target database + table, and fans out one `run.launch` task
 per peer through the existing
 [coordinated-launch](../compute/coordinated-launch.md) machinery — a registered
 runner (`connector_fetch`), not a second synchronization path. The envelope
-carries the handle, the row counts, the target ids, and a **saved-connection
-name**. It does not carry a token, an account, or a URL.
+carries the handle, the row counts, the target ids, the **partition plan**, and a
+**saved-connection name**. It does not carry a token, an account, or a URL.
 
-**FETCH.** Each participant derives the tiling itself with
-`plan_fetch_assignments(roster, partition_rows)` — a pure function, so no
-assignment travels — takes the slice at its own rank, and reads only that.
-Within a node the reads overlap (`runtime::when_all` over a bounded wave); with
-no async client installed the same slice is walked serially.
+**FETCH.** The plan comes from the coordinator's
+[partition scheduler](partition-scheduler.md) — how many partitions the dataset
+gets, what size each targets, and which node owns each one. Each participant
+re-validates it at the boundary, tiles the result with
+`plan_fetch_assignments(roster, partition_rows, the plan's per-node shares)`,
+takes the slice at its own rank, and reads only that. Within a node the reads
+overlap (`runtime::when_all` over a bounded wave); with no async client installed
+the same slice is walked serially.
+
+**The tiling used to be derived, not transmitted** — a pure function of (roster,
+row counts), identical on every node, so nothing crossed the wire. That property
+is **gone, deliberately**: capacity-aware placement reads live telemetry, which
+differs per node by construction, so a plan each participant derived for itself
+would not agree with any other's. The coordinator computes it once and ships it;
+participants use what they received and nobody recomputes. `partition_count` and
+`replication_factor` are no longer separate payload fields — both live in the
+plan.
+
+**Right-sized, so nothing is rebalanced.** A Snowflake result set is a
+**flexible** source: its chunks are freely assignable, so weighting the tiling by
+the plan's per-node shares makes each node pull exactly the rows it will own and
+write exactly the partitions the plan gave it. The bodies land at the size the
+scheduler targeted and there is no post-download shuffle. The automatic
+rebalance only fires when the source genuinely forces a mismatch — a
+**fixed**-unit source, which is a later slice. See
+[partition-scheduler.md](partition-scheduler.md).
 
 **LAND.** Each node adds its rows to the shared table and writes them out with
 [`FetchAffinityPlacement`](fetch-affinity-placement.md), so every partition it

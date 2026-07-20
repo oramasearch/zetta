@@ -30,15 +30,25 @@ that shuffle rather than by the cluster's aggregate uplink.
 4-node roster, HRW would relocate most of the partitions this partitioner keeps
 in place.
 
-## Still deterministic — no plan travels
+## Agreed by construction — but the plan is transmitted, not derived
 
 Ownership is not an arbitrary runtime choice. **Which node fetches which source
-chunk** is fixed by `connect::plan_fetch_assignments`, a pure function of
-(roster, per-chunk row counts); every participant derives the identical tiling
-from identical inputs. Each node then constructs this partitioner with **its
-own** node id, and the resulting catalog entries tile the dataset with no
-overlap and no gaps. "The fetcher owns it" is as agreed-by-construction as a
+chunk** is fixed by `connect::plan_fetch_assignments` over (roster, per-chunk row
+counts, the plan's per-node shares). Each node then constructs this partitioner
+with **its own** node id, and the resulting catalog entries tile the dataset with
+no overlap and no gaps. "The fetcher owns it" is as agreed-by-construction as a
 hash — it just agrees on a better answer.
+
+**What changed** ([#833](https://github.com/oramasearch/zetta/issues/833), the
+[partition scheduler](partition-scheduler.md)): the tiling used to be *derived
+independently* on each participant — a pure function of its inputs, so no
+assignment ever travelled. Capacity-aware placement reads live telemetry, which
+differs per node by construction, so a plan each node derived for itself would
+not agree with any other's. The **coordinator now computes the plan once and
+ships it** in the `run.launch` payload; participants re-validate it at the
+boundary and use it, and nobody recomputes. How many partitions a node writes is
+its share of that plan, which is also what its fetch was weighted by — so the
+bodies land at the target size and **nothing is rebalanced afterwards**.
 
 It is also **better balanced for what comes next**: the tiling is
 longest-processing-time-first *by row count*, so slices are near-equal in rows.
