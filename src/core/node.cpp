@@ -206,6 +206,20 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                                      partition->owner_nodes()});
             }
 
+            // Degraded (#837): the manifest says how many catalog entries the
+            // finished dataset has. When fewer are visible here, `rows` above is
+            // a fraction of the truth — say so rather than under-report it. The
+            // planner fails the same query for the same reason, from the same
+            // rule (zetta::data::catalog_shortfall).
+            if (const auto& manifest = table->partition_manifest(); manifest) {
+                dataset.expected_partitions = manifest->partitions;
+                dataset.expected_rows = manifest->rows;
+                dataset.degraded_reason = zetta::data::catalog_shortfall(
+                    *manifest,
+                    static_cast<std::uint64_t>(dataset.partitions.size()));
+                dataset.degraded = !dataset.degraded_reason.empty();
+            }
+
             result.push_back(std::move(dataset));
         }
     }
@@ -300,7 +314,21 @@ void Node::tick() {
     //    capture or a peer's gossip merged in on the network thread), reconcile
     //    the on-disk projection to match it. Reconcile only materializes (never
     //    captures), so it doesn't move the version — no feedback loop.
-    if (replication_ && replication_->version() != last_seen_version_) {
+    //
+    //    **The version is read BEFORE the snapshot, and that is the watermark
+    //    step 3 records** (#837). A peer's gossip merges on the *network*
+    //    thread, so a merge can land at any point during this tick. Reading the
+    //    version at the END (as this did) and recording it as reflected claims
+    //    credit for a merge this tick never saw: the projection skips it, and —
+    //    with no further write to move the version — never revisits it. The
+    //    partition catalog then stalls permanently short of the document, which
+    //    is exactly the "a peer sees 8 of 12 partitions forever" failure behind
+    //    #837. Recording the EARLIER version is the conservative direction: at
+    //    worst the next tick reconciles a snapshot it has already seen, which is
+    //    idempotent (reconcile only materializes).
+    const std::string version_at_pull =
+        replication_ ? replication_->version() : std::string{};
+    if (replication_ && version_at_pull != last_seen_version_) {
         const nlohmann::json snapshot = replication_->snapshot();
         reconcile_from_replication(snapshot);
         // 1b. Between jobs: when the cluster membership (node:<id> keys) changed,
@@ -323,12 +351,12 @@ void Node::tick() {
     //     off the owner thread. Fingerprint-guarded; nothing is captured.
     if (distributed_select_) distributed_select_->refresh();
     // 3. Persist if the document moved (a peer merge in step 1 or a run started
-    //    in step 2), and remember the version we have now reflected on disk.
+    //    in step 2), and remember the version we have now reflected on disk —
+    //    the one read at the TOP of the tick, never the current one (see step 1).
     if (replication_) {
-        std::string version = replication_->version();
-        if (version != last_seen_version_) {
+        if (replication_->version() != last_seen_version_) {
             persist_replication();
-            last_seen_version_ = std::move(version);
+            last_seen_version_ = version_at_pull;
         }
     }
     // 4. Telemetry plane (#584): sample this node's live host utilization and
@@ -3036,6 +3064,15 @@ void Node::migrate_to_replication() {
                 if (table->partition_only()) value["partition_only"] = true;
                 replication_->set(catalog::table_key(table->id()), value);
             }
+            // The partition manifest (#837) migrates with the table. Without
+            // this, a manifest loaded from table.json on a node that has just
+            // gained replication would be pruned by the very next reconcile —
+            // and every read of that dataset would then plan with no authority.
+            if (table->partition_manifest() &&
+                !snapshot.contains(catalog::manifest_key(table->id()))) {
+                replication_->set(catalog::manifest_key(table->id()),
+                                  to_json(*table->partition_manifest()));
+            }
             // A partition-only table's rows are deliberately absent from the
             // document (#833) — migrating them in would undo exactly what the
             // marker exists to prevent.
@@ -3194,6 +3231,8 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; bool tombstone = false; };
     std::map<std::string, RowEntry> rows;                     // id -> entry
+    // Partition manifests (#837), keyed by the table they describe.
+    std::map<std::string, zetta::data::DatasetManifestValue> manifests;
     struct LargeObjectEntry {
         std::string database_id;
         std::string name;
@@ -3229,6 +3268,15 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
                                   tombstone ? nlohmann::json()
                                             : value.value("data", nlohmann::json()),
                                   tombstone});
+        } else if (std::string manifest_table =
+                       catalog::id_after(key, catalog::kManifestPrefix);
+                   !manifest_table.empty()) {
+            // Validated at the boundary: a malformed manifest is ignored rather
+            // than adopted as the authority reads are failed against.
+            if (std::optional<zetta::data::DatasetManifestValue> parsed =
+                    zetta::data::parse_dataset_manifest_value(value)) {
+                manifests.emplace(std::move(manifest_table), std::move(*parsed));
+            }
         } else if (std::string lo_id =
                        catalog::id_after(key, catalog::kLargeObjectPrefix);
                    !lo_id.empty() && value.is_object() && value.contains("db")) {
@@ -3290,6 +3338,20 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             db->materialize_table(id, entry.name, entry.strategy,
                                   entry.partition_only);
         }
+    }
+    // Partition manifests (#837): the document is the source of truth, so a table
+    // whose `mfst:` key is absent has its local copy cleared — the same
+    // materialize-only rule every other reconcile path follows.
+    for (const auto& [table_id, entry] : tables) {
+        auto db = find_database_by_id(entry.database_id);
+        if (!db) continue;
+        auto table = db->find_table_by_id(table_id);
+        if (!table) continue;
+        const auto manifest = manifests.find(table_id);
+        table->apply_partition_manifest(
+            manifest == manifests.end()
+                ? std::nullopt
+                : std::optional<zetta::data::DatasetManifestValue>(manifest->second));
     }
     for (auto& [id, entry] : rows) {
         auto db_table = [&]() -> std::shared_ptr<zetta::data::Table> {

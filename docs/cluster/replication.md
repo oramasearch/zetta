@@ -206,6 +206,18 @@ are a materialized *projection* of it.** Concretely:
   document — creating missing databases/tables/rows (and dropping removed ones).
   Reconcile reads the CRDT and writes only disk, so it never loops back into the
   CRDT, and it is idempotent.
+
+  **The watermark is the version read at the TOP of the tick, never the current
+  one.** Peers merge on the network thread, so a merge can land at any moment
+  during a tick. `tick()` used to read `version()` again at the end and record
+  *that* as reflected — claiming credit for a merge the reconcile had never seen.
+  The projection then skipped it and, with no later write to move the version
+  again, **never revisited it**: the on-disk/in-memory view stalled permanently
+  short of the document. That is silent data loss at the projection layer, and it
+  is what made a peer see 8 of 12 partitions forever
+  ([#837](https://github.com/oramasearch/zetta/issues/837)). Recording the
+  earlier version is the conservative direction — at worst the next tick
+  reconciles a snapshot it has already applied, which is idempotent.
 - **Persistence:** the CRDT document is saved to `data_dir/replication.automerge`
   (Automerge `save()`), and `merge()`d back on startup, so replicated state
   survives restarts. On first run with pre-existing on-disk data, that data is
