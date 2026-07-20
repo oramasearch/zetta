@@ -183,6 +183,14 @@ TEST(Testkit, ConnectorCasesRunOnARealCluster) {
         o.set_int("rows", 4);
     });
     EXPECT_EQ(import.outcome, TestOutcome::Pass) << import.error;
+
+    // #840: the all-or-nothing property, in-app. A node that stays in the roster
+    // but never drains the launch must fail the whole ingest and leave nothing
+    // behind — and the case must do that without wedging anything, which is why
+    // "dead" here is the absence of a tick loop on a node the case owns.
+    const TestResult lost = run("cluster.import_participant_loss",
+                                [](TestOptions& o) { o.set_int("nodes", 2); });
+    EXPECT_EQ(lost.outcome, TestOutcome::Pass) << lost.error;
 }
 
 TEST(Testkit, ExampleScriptCasesRunGreen) {

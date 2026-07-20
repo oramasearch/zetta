@@ -719,6 +719,166 @@ TestResult run_distributed_import(const TestOptions& options, TestContext& conte
     return result;
 }
 
+// A participant that never does the work fails the WHOLE ingest — the all-or-
+// nothing property (#840).
+//
+// The obvious way to model a dead participant is to wedge a node, and that would
+// indeed be a poor thing to do from a panel someone is running. It is also
+// unnecessary. This case owns its cluster: `LoopbackCluster` stands up its own
+// nodes in their own temp directories and tears them all down on destruction, and
+// the host process's live node is never touched. Within that, "dead" needs no
+// fault injection at all — a node participates by running a tick loop, so a node
+// that is simply never given one is a node that never drains the launch, never
+// fetches its tile and never reports in. Nothing is broken, so nothing needs
+// healing; the mechanism is the absence of a thread, and it is exactly what the
+// L1 test does (tests/connect/test_distributed_ingest.cpp).
+TestResult run_import_participant_loss(const TestOptions& options,
+                                       TestContext& context) {
+    const std::size_t nodes = node_option(options, 3);
+    const std::size_t chunks = nodes + 1;
+    const std::size_t rows_per_chunk = 6;
+    const std::string secret = "pat-" + zetta::util::new_uuid();
+
+    FakeWarehouse source(chunks, rows_per_chunk);
+    const InstalledTransport installed(
+        [&source](const HttpRequest& request) { return source.answer(request); });
+
+    LoopbackOptions wiring;
+    wiring.attached = true;
+    context.emit("bringing up a " + std::to_string(nodes) +
+                 "-node cluster wired the way a live process is");
+    LoopbackCluster cluster(nodes, wiring);
+    if (!cluster.connected()) {
+        return TestResult::fail("cluster did not fully connect within the bring-up window");
+    }
+
+    if (const std::string rejection = zetta::connect::save_connection(
+            cluster.node(0), "warehouse", warehouse_config(secret));
+        !rejection.empty()) {
+        return TestResult::fail("save_connection: " + rejection);
+    }
+    if (!wait_until(
+            [&] {
+                for (std::size_t index = 0; index < cluster.size(); ++index) {
+                    cluster.node(index).tick();
+                    if (!zetta::connect::find_connection(cluster.node(index), "warehouse")) {
+                        return false;
+                    }
+                }
+                return true;
+            },
+            std::chrono::seconds(30))) {
+        return TestResult::fail("the saved connection did not reach every node");
+    }
+
+    // Every peer but the last gets a loop. The last is a full member of the
+    // roster — connected, counted, a collective participant — and does no work.
+    std::vector<std::unique_ptr<TickLoop>> peers;
+    for (std::size_t index = 1; index + 1 < cluster.size(); ++index) {
+        peers.push_back(std::make_unique<TickLoop>(cluster.node(index)));
+    }
+    context.emit("node " + std::to_string(cluster.size() - 1) +
+                 " stays in the roster but never drains the launch");
+
+    zetta::connect::DistributedIngestOptions ingest;
+    ingest.connection = "warehouse";
+    ingest.query = "SELECT id, chunk, amount FROM source";
+    ingest.table_name = "cached";
+    ingest.partition_count = static_cast<std::uint32_t>(nodes * 2);
+    ingest.replication_factor = 1;
+    // Short, because the expected outcome is the timeout: the missing node's
+    // contribution to the agreement never arrives.
+    ingest.coordination_timeout = std::chrono::seconds(8);
+
+    const zetta::connect::DistributedIngestResult imported =
+        zetta::connect::run_distributed_connector_ingest(
+            cluster.node(0), warehouse_config(secret), ingest);
+
+    if (imported.ok()) {
+        return TestResult::fail("the ingest succeeded with a participant that never "
+                                "fetched — a partial result set was reported as a "
+                                "complete dataset");
+    }
+    if (imported.error.find("re-run the ingest") == std::string::npos) {
+        return TestResult::fail("the failure does not tell the caller what to do: " +
+                                imported.error);
+    }
+    if (imported.table) {
+        return TestResult::fail("a failed ingest reported a dataset");
+    }
+    context.emit("the ingest failed as it must: " + imported.error);
+
+    // Join the loops before reading the nodes' trees: a peer's own copy of the
+    // launch must have finished for that read to mean anything.
+    peers.clear();
+
+    // The node that never ran landed nothing in the first place — it never fetched
+    // a tile, so there is nothing for it to have kept.
+    {
+        const std::size_t idle = cluster.size() - 1;
+        const auto database = cluster.node(idle).find_database("datasets");
+        if (database && database->find_table("cached")) {
+            return TestResult::fail("the node that never drained the launch somehow "
+                                    "landed a tile");
+        }
+    }
+
+    // And nothing partial survives on the nodes that DID run. Each participant
+    // discards what it had landed once the agreement comes up short.
+    //
+    // Patiently: the idle node is exactly the node that has not been reconciling,
+    // so it learns of the drop only from the ticks below — the cleanup has to
+    // reach it, and asserting on one tick would be asserting on a race rather
+    // than on the property.
+    // Only the nodes that were RUNNING are ticked. Ticking the idle one would be
+    // modelling something else: a node that was merely paused, which on waking
+    // still drains the launch it queued and re-adopts the table AFTER the cleanup
+    // ran. That is a real behaviour and a real race — a late launch beating a
+    // completed cleanup — but it is the behaviour of a node that came back, not
+    // of a node that died, and this case is about the latter.
+    const auto discarded_everywhere = [&] {
+        for (std::size_t index = 0; index + 1 < cluster.size(); ++index) {
+            cluster.node(index).tick();
+        }
+        for (std::size_t index = 0; index < cluster.size(); ++index) {
+            const auto database = cluster.node(index).find_database("datasets");
+            if (database && database->find_table("cached")) return false;
+            for (const auto& summary : cluster.node(index).datasets()) {
+                if (summary.name == "cached") return false;
+            }
+        }
+        return true;
+    };
+    if (!wait_until(discarded_everywhere, std::chrono::seconds(30))) {
+        for (std::size_t index = 0; index < cluster.size(); ++index) {
+            const auto database = cluster.node(index).find_database("datasets");
+            if (database && database->find_table("cached")) {
+                return TestResult::fail("node " + std::to_string(index) +
+                                        " kept the table of a failed ingest");
+            }
+            for (const auto& summary : cluster.node(index).datasets()) {
+                if (summary.name == "cached") {
+                    return TestResult::fail("node " + std::to_string(index) +
+                                            " still lists 'cached' in system.datasets");
+                }
+            }
+        }
+        return TestResult::fail("the failed ingest left residue on some node");
+    }
+    context.emit("no node kept a table or a system.datasets entry for the failed ingest");
+
+    TestResult result = TestResult::pass(
+        "a participant that never fetched failed the whole ingest, with a reason that "
+        "says to re-run it, no dataset reported, and no partial table or catalog entry "
+        "left on any node");
+    result.metric("nodes", std::to_string(nodes))
+        .metric("nodes doing work", std::to_string(nodes - 1))
+        .metric("source chunks", std::to_string(chunks))
+        .metric("coordination timeout", "8s")
+        .metric("statement submissions", std::to_string(source.submits.load()));
+    return result;
+}
+
 }  // namespace
 
 void register_connect_cases(TestSuite& suite) {
@@ -760,6 +920,23 @@ void register_connect_cases(TestSuite& suite) {
                                         "since chunk 0 arrives inline."),
                     TestOption::integer("rows", "Rows per chunk", 6, 1, 2000)},
         .run = run_distributed_import,
+    });
+    suite.add(TestCase{
+        .id = "cluster.import_participant_loss",
+        .category = TestCategory::Distributed,
+        .name = "Distributed import: a lost participant fails the whole ingest",
+        .description =
+            "All-or-nothing, demonstrated in-app rather than only at L1 (#840). One "
+            "node of a real multi-node cluster stays in the roster but never drains "
+            "the launch — the shape of a node that stopped doing work mid-ingest — so "
+            "its tile is never fetched and it never reports in. Asserts the ingest "
+            "FAILS rather than reporting a partial result set as a dataset, that the "
+            "reason tells the caller to re-run it, and that no node keeps a table or "
+            "a system.datasets entry for it. Nothing is wedged: the case owns its own "
+            "loopback nodes and a node is made idle by not giving it a tick loop, so "
+            "the panel leaves nothing behind.",
+        .options = {TestOption::integer("nodes", "Nodes", 3, 2, 6)},
+        .run = run_import_participant_loss,
     });
 }
 

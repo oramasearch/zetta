@@ -232,8 +232,11 @@ The first four of those are also an **in-app test-suite case** —
 [`cluster.distributed_import`](../testing/runbooks/test-cases/cluster.distributed_import.md),
 runnable from Operations → Test suite and over the `testsuite_run` capability, so
 the ingest can be demonstrated on a live cluster rather than only in CI. Property 5
-stays here: modelling a half-dead peer means leaving a node deliberately wedged,
-which is a poor thing to do to a panel run.
+has its own in-app case,
+[`cluster.import_participant_loss`](../testing/runbooks/test-cases/cluster.import_participant_loss.md)
+— and it needs no fault injection, because the case owns its own loopback nodes and
+a node is made idle by not giving it a tick loop rather than by wedging it
+([#840](https://github.com/oramasearch/zetta/issues/840)).
 
 See also [connector-query.md](connector-query.md) (the connector + the credential
 contract), [partition-only-tables.md](partition-only-tables.md) (why nothing

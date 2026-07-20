@@ -64,6 +64,7 @@ case is headless-runnable.
 Also `TestCategory::Distributed`; both run against an injected fake transport (no network, no credentials, no warehouse).
 - [`cluster.connections`](cluster.connections.md) — a saved connection reaches every node; writes refused before egress; the token on no read surface; typed cells (#827)
 - [`cluster.distributed_import`](cluster.distributed_import.md) — the co-launched ingest: each chunk fetched once cluster-wide, landed where it was pulled, zero rows re-replicated (#833)
+- [`cluster.import_participant_loss`](cluster.import_participant_loss.md) — all-or-nothing: a node that never drains the launch fails the whole ingest and leaves no residue (#840)
 
 ### Governance — `GovernanceCasesPass`
 - [`governance.access_control`](governance.access_control.md) — key-scoped access decisions (deny-by-default)

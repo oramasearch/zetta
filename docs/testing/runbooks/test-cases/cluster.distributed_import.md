@@ -93,11 +93,12 @@ ctest --test-dir build -R 'Testkit.ConnectorCasesRunOnARealCluster' --output-on-
 
 ## Not asserted here (deliberately)
 
-- **A node dying mid-fetch fails the whole ingest.** That path needs a participant
-  that joins the roster and then stops draining its launch queue; it is pinned by
+- **A node dying mid-fetch fails the whole ingest.** Not asserted *here*, because
+  this case is the success path — but it is now demonstrable in-app too, as
+  [`cluster.import_participant_loss`](cluster.import_participant_loss.md). It needs
+  no fault injection: the case owns its loopback nodes, and a node is made idle by
+  not giving it a tick loop rather than by wedging it (#840). Also pinned at L1 by
   `tests/connect/test_distributed_ingest.cpp::AParticipantThatStopsMidFetchFailsTheWholeIngest`.
-  Modelling a half-dead peer inside a GUI-runnable case would mean leaving a node
-  deliberately wedged, which is a poor thing to do to a panel run.
 - **The concurrent, several-in-flight fetch within one node.** The fake transport
   is installed with no async half, so every node takes the documented serial
   degrade — which is what keeps each node's reads attributable to its own thread.
