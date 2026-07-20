@@ -69,13 +69,26 @@ one (path B). Both must pass.
     addresses. If you deployed to an existing cluster (path B), that cluster is still there
     and healthy, with Zetta's parts removed and nothing else disturbed.*
 
+## Steps — the document
+
+Run this part with a **second tester who has never seen the app**, working only from the
+single setup document.
+
+12. **Hand them the document and nothing else.** Give them a cloud account with the CLI
+    logged in, and no other help.
+    → *They reach a working, queryable Zetta by following it start to finish.*
+
+13. **Note every question they had to ask you.**
+    → *There should be none. Each one is a hole in the document.*
+
 ## Passes if
 
 They got a working, queryable Zetta on a managed cloud **without ever running `kubectl`,
 editing a YAML file, or following a manual install guide** — having chosen the size, the
 replica count, the elasticity limits and seen the cost **before** anything was created — and
 teardown left nothing behind that is still billing. **Both** path A (new cluster) and path B
-(existing cluster) pass.
+(existing cluster) pass. **And** a second tester, given only the setup document, got there
+without asking a single question.
 
 ## Notes for the tester
 
