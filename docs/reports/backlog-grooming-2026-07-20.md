@@ -5,8 +5,13 @@ oldest first, one issue at a time. Every issue reviewed got a comment citing evi
 `file:line` references, sibling-issue states, and quotes from headers and docs — whether it
 closed or stayed open.
 
-**Status: in progress.** 41 of ~104 issues resolved at the time of writing. This report is
-the durable record; the per-issue reasoning lives in the GitHub comments.
+**Status: first pass complete.** The open backlog went from **105 to 93**. 58 issues were
+resolved — 18 closed, 33 kept and sharpened, 7 created — and 12 remain queued for a second
+pass because they need a decision rather than research. This report is the durable record;
+the per-issue reasoning lives in the GitHub comments.
+
+Every blueprint-generated artifact from the 2026-06-24 sync is now resolved. What remains
+open is engineering work.
 
 ## Why the record matters
 
@@ -42,7 +47,7 @@ Three durable conventions came out of the work and now live in the skills and in
 3. **The word "seam" is banned org-wide** — ambiguous between interface, extension point,
    injected dependency, and boundary. Name the mechanism.
 
-Twelve test scripts were written during the pass and are committed under
+Eleven test scripts were written during the pass and are committed under
 [`docs/testing/test-scripts/`](../testing/test-scripts/README.md).
 
 ## Verdicts
@@ -64,6 +69,15 @@ script. Priority changes are noted.
 | #657 DistributedFulltext global statistics | duplicate of #851 | re-filed as the user-visible recall defect it is |
 | #670 join token through burst provisioners | completed | all six control planes carry it; plaintext caveat obsolete |
 | #850 mount web UI at public root | **filed in error** | premise was a stale comment; the ingress already proxies to the node |
+| #687 macOS LLVM 22 `from_chars` | completed | `e7642ce` — CMake availability-disable, call site rewritten, documented |
+| #688 same, filed 2.5 min later | duplicate of #687 | identical file:line, toolchain and error |
+| #768 orchestration ungrantable | completed | `7b1ac08` added three orchestration atoms; `admin` = whole vocabulary; drift-guard test |
+| #787 remove `--cluster-plaintext` | completed | `7b1ac08` — flag, env var, struct field and raw-socket branch all gone |
+| #799 plaintext + auth toggles | completed | same commit, names the issue; no `require_auth` anywhere |
+| #800 full CRDT membership | completed | `ad0a103` + `3bb4116`; `executor.cpp:234`; asserted in `test_cluster_routing.cpp:400` |
+| #803 reachability-aware dialer | completed | `cluster.cpp:400-402` *"Never dial a dial-out-only peer (#803)"* |
+| #784 clusters don't form on dev | superseded | both causes gone (#785 DNS-at-dial-time, #799 removed the toggles); residual → #786/#835 |
+| #841 live-cluster canary failure | duplicate of #835 | an A/B across two digests reclassified it as pre-existing, on real hardware |
 
 ### Kept, with a priority change
 
@@ -131,6 +145,40 @@ warning for the corosio accessor)
   ($0.004 vs $0.023 per GB-month).
 - **`DeploymentKind`'s non-local values are vestigial.** Under the operator model you deploy
   the cluster; a graph runs on the cluster. #845 removes them.
+
+## Three issues that got worse while open
+
+Worth separating from the ordinary backlog, because in each case the passage of time made the
+problem larger rather than staler:
+
+- **#766** — tool/policy catalogue disclosure. `src/core/api/http_server.cpp:2398-2415` now
+  registers `/llms.txt`, `/llms-full.txt`, `/llms/:topic` and `/v1/openapi.json` as
+  *"Discovery docs are PUBLIC (registered before the gate)"*. The full tool catalogue is
+  unauthenticated **by design** now, not merely over-permissive.
+- **#681** — one shared attached-node test fixture. The duplication it exists to remove has
+  grown to **12** copies of `struct ComputeNode` across the test suite.
+- **#74 / #830** — secrets at rest. `docs/architecture/code-audit.md:38` still records
+  *"✅ No inline secrets found"*, written 2026-07-12; the connector store landed 2026-07-19
+  writing source tokens in cleartext into a `ReplicateToAll` row.
+
+## Queued for a second pass
+
+Twelve issues need a decision rather than research. Each has a verified current state
+recorded in its GitHub comment; what is missing is a judgement call.
+
+| Issue | The open question |
+|---|---|
+| #683 | Is the `system.zetta_*` deprecation cycle over? Aliases still live at `executor.cpp:300,318,322` |
+| #695 | The bind-failure path predates the issue, so is not the fix; confirming it needs a runtime check. Separately, `--mcp-listen HOST:0` is refused despite 0 documenting as ephemeral |
+| #739 | Only RTT-ranked candidate ordering remains unbuilt. Rescope the residual so this p2 can close? |
+| #740 | The busy-spin is fixed and the submodule repointed. Residual is no-pending-op quiesce plus reconnect backoff — still p1? |
+| #762 | Part 1 fixed by #799. Is any non-user `AccessKey` still reachable over HTTP/MCP, or is the residual purely the in-process local-session path? |
+| #777 | Shape asserted for 5 of ~29 `system.*` views. Sufficient? |
+| #778 | Action/job tools are exercised over REST rather than MCP. Equivalent? |
+| #780 | Its remaining skips are gated on #760/#767/#793. Do those assertions belong here or inside those issues? |
+| #786 / #835 | Consolidate into one convergence-stall issue, or keep #786 as the transport fix with #835 as the diagnosis of record? |
+| #793 / #819 | Merge into one "the SQL boundary must never throw"? Both block #252 |
+| #823 | Its one concrete item is a `build.sh` digest-capture bug in **zetta-bridge**. Move it there so the bucket closes? |
 
 ## Method
 
