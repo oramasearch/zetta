@@ -50,6 +50,51 @@ One unambiguous statement. The tester answers yes or no.
 Known rough edges, what to capture if it fails, who to ask.
 ```
 
+## Status vocabulary
+
+Four values, and the first two are **not** the same thing:
+
+| Status | Means |
+|---|---|
+| **not yet runnable** | The capability does not exist. The script states what "done" will look like. (`env-5-managed-cloud` — creating a managed cluster is unbuilt.) |
+| **not yet run** | The capability ships. Nobody has walked it. (`rel-7-gui-journey` — every panel exists; no one has tried it cold.) |
+| **failed \<date\>** | Someone ran it and it did not pass. Say which step and link the issue that now carries the failure. |
+| **passed \<date\> by \<who\>** | The only status that lets an issue close as implemented. |
+
+The distinction matters when triaging: *not yet runnable* is engineering work, *not yet run*
+is an afternoon and a willing person. They should not sit in the same queue.
+
+## Designing the measurement
+
+A script that only asks "did it work?" wastes the run. Decide in advance what you are
+counting, and make it something a tester can report without interpretation:
+
+- **Count the questions the tester had to ask.** Zero is a pass; each one is a specific
+  finding. This is the single most useful measurement for any first-use journey.
+- **Record stalls even when solved.** "Worked it out after two minutes" is a finding, not a
+  pass.
+- **Record anything they could not verify.** An answer the tester had no way to check is a
+  failure of the step that produced it, even if the answer was right.
+- **Record the number, not the impression** — time to first answer, actual cost, actual
+  latency. These become the evidence for the claims we make publicly.
+
+## Craft rules learned the hard way
+
+- **A fresh tester each time.** For any first-use journey, a second run by the same person
+  tests nothing — they now know the app. Value comes entirely from ignorance of it.
+- **If nothing breaks naturally, break it on purpose.** Every script should exercise at least
+  one failure path — a malformed input, an interrupted run — and read what the product said.
+  Error copy is where polish passes quietly fail.
+- **Check the world, not just the product.** Where the product's claim is about cost or
+  cleanup, the step is "open the cloud console and look", not "ask the app what it did". No
+  automated test can check a bill.
+- **Compose; don't duplicate.** A release-gate script says "run these scripts, in these
+  conditions, and here is the extra bar" — it does not restate them. Keep each journey in one
+  place so it is maintained in one place.
+- **A partial script is legitimate.** When scope is genuinely undefined, write the script for
+  what *is* defined and say so. Testing the known escalations beats writing nothing while
+  waiting for a design.
+
 ## Rules
 
 - **User language only.** No class names, file paths, function names, API endpoints, or
