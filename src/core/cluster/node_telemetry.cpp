@@ -204,7 +204,15 @@ std::vector<NodeTelemetrySample> NodeTelemetryExchange::snapshot(
     std::lock_guard<std::mutex> lock(mutex_);
     for (const auto& [node_id, entry] : entries_) {  // std::map → node-id ascending
         const std::chrono::duration<double> age = now - entry.received;
-        if (age > ttl) continue;  // stale peer — drop it so its gauges don't dangle
+        // Stale peer — drop it so its gauges don't dangle. The comparison is `>=`,
+        // not `>`, so the window is half-open: an entry is kept only while its age is
+        // strictly *inside* it. That makes `ttl == 0` mean "keep nothing", which is the
+        // only reading of a zero-length freshness window that says anything; with `>`
+        // it instead meant "keep whatever was recorded in this same clock tick", so the
+        // result depended on whether the steady clock happened to advance between the
+        // record and the snapshot (#834). No caller passes a ttl an entry can land on
+        // exactly other than 0, so nothing else changes.
+        if (age >= ttl) continue;
         NodeTelemetrySample sample;
         sample.node_id = node_id;
         sample.metrics = entry.metrics;

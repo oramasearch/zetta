@@ -153,8 +153,20 @@ TEST(NodeTelemetryExchange, ExpiresStaleEntries) {
     zetta::cluster::NodeTelemetryExchange exchange;
     exchange.record_local("node-a", make_full_sample());
 
-    // A zero-length freshness window drops everything (every entry is already
-    // older than 0); a generous window keeps it.
+    // The freshness window is half-open — kept while `age < ttl`, dropped at
+    // `age >= ttl` — so a zero-length window keeps nothing and a generous one keeps
+    // the entry. Both hold for *any* age the steady clock can report, including the
+    // 0 you get when the record and the snapshot land in the same tick. Under `>`
+    // the first assertion was a coin flip on exactly that (#834).
     EXPECT_TRUE(exchange.snapshot(std::chrono::duration<double>(0.0)).empty());
     EXPECT_EQ(exchange.snapshot(std::chrono::hours(1)).size(), 1u);
+
+    // The window is evaluated per entry against its own age, not against the cache
+    // as a whole: a second entry recorded later is no fresher than zero either.
+    exchange.record_local("node-b", make_full_sample());
+    EXPECT_TRUE(exchange.snapshot(std::chrono::duration<double>(0.0)).empty());
+    EXPECT_EQ(exchange.snapshot(std::chrono::hours(1)).size(), 2u);
+
+    // A negative window is degenerate but must not resurrect anything.
+    EXPECT_TRUE(exchange.snapshot(std::chrono::duration<double>(-1.0)).empty());
 }
