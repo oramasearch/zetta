@@ -62,10 +62,18 @@ public:
     // precondition, so anything short of a row here is a failure, not absence.
     virtual ParquetLazyPtr at(std::size_t i) const = 0;
 
-    // The id of the row at index i. Precondition: i < size(). An engine that
-    // pages row *data* still keeps ids resident — `contains` and reconciliation
-    // ask for them by index without wanting the row.
-    virtual const std::string& id_at(std::size_t i) const = 0;
+    // The id of the row at index i. Precondition: i < size().
+    //
+    // BY VALUE, deliberately. Returning a reference obliged every engine to keep
+    // a `std::string` per row alive somewhere durable, so an engine that pages
+    // row *data* still had memory scaling with row COUNT regardless of its cache
+    // budget — the binding constraint before any genuinely large pull (#836). By
+    // value, an engine is free to *derive* an id instead of storing one: a
+    // partition-body row is identified by (blob, row index), so its id is a
+    // computation, not a lookup. Engines that do hold ids still just return a
+    // copy, and nearly every caller copied already (a CRDT key, an error string,
+    // an element pushed into a vector).
+    virtual std::string id_at(std::size_t i) const = 0;
 };
 
 }  // namespace zetta::storage

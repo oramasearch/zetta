@@ -43,8 +43,35 @@ namespace zetta::storage {
 // dereferencing a dead one.
 class ParquetPager;
 
+// How a ParquetStore answers identity questions — `contains(id)` and `id_at(i)`.
+//
+// This is the memory decision, not a formatting one. Row *data* pages, so it is
+// bounded by `page_cache_bytes`; ids were not, so they scaled with row COUNT and
+// became the binding constraint before any genuinely large pull (#836). Tens of
+// bytes times N resident, whatever the cache budget says.
+enum class ParquetIdMode {
+    // Derive each id from its position: `<body name>#<row index>`. Nothing is
+    // stored per row, `contains()` is a parse rather than a lookup, and `open()`
+    // reads only the footer instead of decoding every id chunk in the file.
+    //
+    // Sound because a partition body **is** identified by (blob, row index): the
+    // body is immutable, so a row's position is as stable as any stored key. The
+    // right mode for connector data, and the default.
+    Positional,
+
+    // Read `id_column` and keep every id resident, plus the lookup index. Memory
+    // scales with row count. Ask for this only when the stored ids are what a
+    // caller genuinely needs — a foreign body whose keys mean something outside
+    // zetta, or a table that must be addressed by the ids it was written with.
+    Indexed,
+};
+
 // How a ParquetStore pages.
 struct ParquetStoreOptions {
+    // Whether ids are derived from position or read and held. See ParquetIdMode
+    // — Positional costs nothing per row and is the default.
+    ParquetIdMode id_mode = ParquetIdMode::Positional;
+
     // The decoded-page cache budget, in bytes of page footprint (an estimate:
     // the row group's uncompressed body plus a per-row overhead). Pages are
     // evicted least-recently-used until the resident total fits. A budget
@@ -52,9 +79,9 @@ struct ParquetStoreOptions {
     // reaped, so a scan costs one page of memory rather than the dataset.
     std::size_t page_cache_bytes = 64u * 1024u * 1024u;
 
-    // The column carrying each row's stable id. When the body has no such
-    // column, ids are synthesized as `<file stem>#<row index>` — stable for the
-    // life of the body, since a body is immutable.
+    // The column carrying each row's stable id, read only in
+    // ParquetIdMode::Indexed. When the body has no such column, ids fall back to
+    // the positional `<body name>#<row index>` form.
     std::string id_column = "_zid";
 
     // Whether the id column is part of the row data handed back by `at()`. A
@@ -75,8 +102,9 @@ struct ParquetStoreResult {
 
 class ParquetStore final : public StorageEngine {
 public:
-    // Open `path` as a storage engine. Reads the footer and the id column only —
-    // row data is decoded lazily, a row group at a time.
+    // Open `path` as a storage engine. Reads the footer — plus, in
+    // ParquetIdMode::Indexed only, every id chunk in the file. Row data is
+    // decoded lazily, a row group at a time.
     static ParquetStoreResult open(const std::filesystem::path& path,
                                    ParquetStoreOptions options = {});
 
@@ -100,7 +128,7 @@ public:
     bool contains(const std::string& id) const override;
     std::size_t size() const override;
     ParquetLazyPtr at(std::size_t i) const override;
-    const std::string& id_at(std::size_t i) const override;
+    std::string id_at(std::size_t i) const override;
 
     // --- paging observability + control ------------------------------------
 
@@ -119,6 +147,12 @@ public:
 
     // Number of pages (row groups) the body has.
     std::size_t page_count() const;
+
+    // Bytes held by the id table and its lookup index — the cost that scales with
+    // row COUNT rather than with the cache budget. Zero in
+    // ParquetIdMode::Positional, where there is no id table at all. Exposed so
+    // "ids do not scale with rows" is an assertion rather than a claim (#836).
+    std::size_t id_index_bytes() const;
 
     // Drop every page the cache holds — exactly what an over-budget insert does,
     // exposed so a caller (and a test) can force it. Handles already given out

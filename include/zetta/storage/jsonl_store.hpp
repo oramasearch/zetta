@@ -47,9 +47,7 @@ public:
         }
         return ParquetLazyPtr(records_[i], ids_[i]);
     }
-    const std::string& id_at(std::size_t i) const override {
-        return ids_.at(i);
-    }
+    std::string id_at(std::size_t i) const override { return ids_.at(i); }
 
 private:
     static constexpr std::size_t kMissing = static_cast<std::size_t>(-1);

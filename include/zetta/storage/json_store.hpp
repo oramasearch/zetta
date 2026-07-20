@@ -50,7 +50,7 @@ public:
         }
         return ParquetLazyPtr(docs_[i], ids_[i]);
     }
-    const std::string& id_at(std::size_t i) const override { return ids_.at(i); }
+    std::string id_at(std::size_t i) const override { return ids_.at(i); }
 
     // Engine-specific full view, handy for callers that hold a JsonStore&.
     const std::vector<nlohmann::json>& all() const { return docs_; }

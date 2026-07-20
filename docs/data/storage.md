@@ -61,6 +61,14 @@ later). Corrupt lines are skipped on load. Every row carries a stable id (its
 CRDT key): `add(id, doc)` stores it, `contains(id)` lets reconciliation apply a
 replicated row exactly once, and `id_at(i)` enumerates rows to replicate them.
 
+`id_at` returns a `std::string` **by value**, not a reference. A reference obliged
+every engine to keep a string per row alive somewhere durable, so an engine that
+pages row *data* still had memory scaling with row count regardless of its cache
+budget ([#836](https://github.com/oramasearch/zetta/issues/836)). By value, an
+engine may *derive* an id instead of storing one — see
+[parquet-store.md](parquet-store.md) → *Ids are derived, not stored*. An
+always-resident engine just returns a copy.
+
 To add an engine, implement `StorageEngine` (`name`, `add`, `update`, `remove`,
 `contains`, `size`, `at`, `id_at`) and construct it where a `Table` builds its
 store. An engine that pages rows off disk also implements

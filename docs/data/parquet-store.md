@@ -25,16 +25,59 @@ for (std::size_t i = 0; i < opened.store->size(); ++i) {
 | Resident for the store's life | Paged |
 |---|---|
 | the footer (schema + row-group layout) | **row data** — one row group at a time |
-| the row **ids** + the id→index map | |
 
-Ids are resident deliberately: `contains(id)` and `id_at(i)` are asked *without*
-wanting the row, and answering either from a page would mean decoding row data to
-look up a key. That is a fixed cost proportional to the row **count** (a string
-per row), not to the row **size** — the 3072-column embedding body pages exactly
+Nothing per row. Row data pages, so it is bounded by `page_cache_bytes`, and the
+row **size** never enters into it — a 3072-column embedding body pages exactly
 like a two-column one.
 
-A body without an id column (any foreign `.parquet` file) gets ids synthesized as
-`<file name>#<row index>` — stable, because a body is immutable.
+### Ids are derived, not stored (`ParquetIdMode`)
+
+Ids used to be resident too — a `std::string` per row plus a lookup index, on the
+argument that `contains(id)` and `id_at(i)` are asked *without* wanting the row.
+The argument was right and the conclusion was wrong: it made memory scale with row
+**count** regardless of the cache budget, on the order of 110–150 bytes × N. At
+warehouse scale — the pulls this whole design exists to support — that is tens of
+gigabytes resident to answer questions about rows nobody asked for, which
+partially defeats the disk-backed model
+([#836](https://github.com/oramasearch/zetta/issues/836)).
+
+The fix is to stop treating an id as data to be kept and start treating it as a
+question to be answered. **A partition-body row *is* identified by (blob, row
+index)** — the body is immutable, so its position is as stable a key as any
+string. So `ParquetIdMode::Positional`, the **default**:
+
+| | `Positional` (default) | `Indexed` |
+|---|---|---|
+| id of row *i* | computed: `<body name>#<i>` | read from `id_column`, held |
+| `contains(id)` | a parse | a hash lookup |
+| memory | **nothing per row** | ~110–150 bytes × rows |
+| `open()` reads | the footer | the footer **+ every id chunk in the file** |
+
+`Indexed` still exists and is still right when the stored ids are what a caller
+genuinely needs — a foreign body whose keys mean something outside zetta, or a
+table that must be addressed by the ids it was written with. It is a request, not
+a default, and the cost is now visible at the call site.
+
+Two consequences worth naming:
+
+- **`open()` is footer-only again.** In `Indexed` mode it decodes every id chunk
+  in the file, so the open is O(file), not O(footer) — the thing the *Opening by
+  the footer alone* section below is about. `Positional` restores that property.
+- **Identity survives data loss even better.** `id_at(i)` on a truncated body
+  answers without touching disk at all, because there is no disk to touch.
+
+`id_index_bytes()` reports what the id table costs — zero in `Positional` — so the
+property is asserted, not claimed: `ParquetStore.IdsDoNotScaleWithRowCount` opens
+the same body at 100 and 8000 rows and requires the figure not to move.
+
+`StorageEngine::id_at` returns `std::string` **by value** for this reason. A
+reference obliged *every* engine to keep a string per row alive somewhere durable;
+by value, an engine may derive. Almost every caller copied already (a CRDT key, an
+error string, an element pushed into a vector).
+
+A page still materializes the ids of *its* rows, because `ParquetLazyPtr::id()`
+hands out a reference — but that is bounded by the page, charged to the cache
+budget, and reclaimed with it.
 
 ## Opening by the footer alone
 
@@ -112,6 +155,9 @@ asserts:
 - a released handle re-reading the page (the decode counter proves the re-read);
 - a **4000-row / 80-page scan under a 4 KiB budget**: one resident page at a
   time, every page decoded exactly once, the sum still correct;
+- **the same body at 100 and at 8000 rows costing the same id state** (zero), so
+  "ids do not scale with row count" is an assertion — and `Indexed`, asked for
+  explicitly, growing with rows as it must;
 - every mutation refused, counted, and leaving the body untouched;
 - a missing / malformed / too-small body failing to open with a reason, and a
   body truncated under a live store returning a failed handle — while `id_at`

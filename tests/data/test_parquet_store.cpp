@@ -13,6 +13,7 @@
 
 using zetta::parquet::WriterOptions;
 using zetta::parquet::write_parquet_rows;
+using zetta::storage::ParquetIdMode;
 using zetta::storage::ParquetLazyPtr;
 using zetta::storage::ParquetStore;
 using zetta::storage::ParquetStoreOptions;
@@ -52,6 +53,15 @@ std::size_t write_body(const std::filesystem::path& path,
 
 }  // namespace
 
+// Options that read and hold the body's `_zid` column. The DEFAULT is
+// ParquetIdMode::Positional — ids derived from row position, nothing stored per
+// row (#836) — so a test that wants to assert the *stored* ids has to ask.
+ParquetStoreOptions indexed() {
+    ParquetStoreOptions options;
+    options.id_mode = ParquetIdMode::Indexed;
+    return options;
+}
+
 // ---- the acceptance: a Parquet body read as a storage engine ----------------
 
 TEST(ParquetStore, ReadsRowsIdsAndMembership) {
@@ -59,7 +69,7 @@ TEST(ParquetStore, ReadsRowsIdsAndMembership) {
     const std::filesystem::path body = tmp.path() / "partition.parquet";
     write_body(body, sample_rows(10), /*rows_per_group=*/4);
 
-    const ParquetStoreResult opened = ParquetStore::open(body);
+    const ParquetStoreResult opened = ParquetStore::open(body, indexed());
     ASSERT_TRUE(opened.ok()) << opened.error;
     const ParquetStore& store = *opened.store;
 
@@ -151,7 +161,7 @@ TEST(ParquetStore, AHandleStaysValidAcrossAReap) {
     // The page is still alive because this handle holds it — the refcount
     // decided, nothing arbitrated.
     ASSERT_TRUE(held.ok());
-    EXPECT_EQ(held.id(), "row-5");
+    EXPECT_EQ(held.id(), "reaped.parquet#5");
     EXPECT_EQ((*held)["n"].get<std::int64_t>(), 5);
     EXPECT_EQ((*held)["label"].get<std::string>(), "value-5");
     EXPECT_EQ(store.decode_count(), 1u) << "reading a held handle reads no disk";
@@ -175,7 +185,7 @@ TEST(ParquetStore, TwoRowsOfALivePageCostOneDecode) {
     store.reap();
     const ParquetLazyPtr second = store.at(6);
     ASSERT_TRUE(second.ok()) << second.error();
-    EXPECT_EQ(second.id(), "row-6");
+    EXPECT_EQ(second.id(), "shared-page.parquet#6");
     EXPECT_EQ(store.decode_count(), 1u)
         << "a page a handle still holds is re-adopted, never decoded twice";
 
@@ -201,7 +211,7 @@ TEST(ParquetStore, ALazyHandleReReadsAfterEveryoneLetsGo) {
     EXPECT_TRUE(row.lazy());
 
     ASSERT_TRUE(row.materialize()) << row.error();
-    EXPECT_EQ(row.id(), "row-4");
+    EXPECT_EQ(row.id(), "lazy.parquet#4");
     EXPECT_EQ((*row)["n"].get<std::int64_t>(), 4);
     EXPECT_EQ(store.decode_count(), 2u) << "the page was read off disk again";
 }
@@ -241,6 +251,65 @@ TEST(ParquetStore, AScanMuchLargerThanTheBudgetStaysWithinIt) {
     EXPECT_EQ(store.decode_count(), 80u) << "each page decoded exactly once";
 }
 
+// The other half of "memory is bounded" (#836). The test above proves row DATA
+// pages; this one proves ids do not quietly scale with row count behind it.
+//
+// It compares the same body at two sizes, because the absolute number is not the
+// claim — the claim is that the number does not grow with rows. Under the old
+// design it grew strictly linearly: a std::string per row plus an index node,
+// roughly 110-150 bytes each, resident whatever the page budget said.
+TEST(ParquetStore, IdsDoNotScaleWithRowCount) {
+    TempDir tmp;
+    const std::filesystem::path small_body = tmp.path() / "small.parquet";
+    const std::filesystem::path large_body = tmp.path() / "large.parquet";
+    write_body(small_body, sample_rows(100), /*rows_per_group=*/50);
+    write_body(large_body, sample_rows(8000), /*rows_per_group=*/50);
+
+    ParquetStoreOptions options;
+    options.page_cache_bytes = 4096;  // far smaller than either body
+    const ParquetStoreResult small = ParquetStore::open(small_body, options);
+    const ParquetStoreResult large = ParquetStore::open(large_body, options);
+    ASSERT_TRUE(small.ok()) << small.error;
+    ASSERT_TRUE(large.ok()) << large.error;
+    ASSERT_EQ(small.store->size(), 100u);
+    ASSERT_EQ(large.store->size(), 8000u);
+
+    // 80x the rows, and not one byte more of id state.
+    EXPECT_EQ(small.store->id_index_bytes(), 0u);
+    EXPECT_EQ(large.store->id_index_bytes(), 0u);
+
+    // The ids are still real ids: unique, round-tripping through contains(),
+    // matching what a row handle reports, and answerable without reading a page.
+    EXPECT_EQ(large.store->id_at(0), "large.parquet#0");
+    EXPECT_EQ(large.store->id_at(7999), "large.parquet#7999");
+    EXPECT_TRUE(large.store->contains("large.parquet#7999"));
+    EXPECT_FALSE(large.store->contains("large.parquet#8000")) << "past the end";
+    EXPECT_FALSE(large.store->contains("small.parquet#0")) << "another body's id";
+    EXPECT_FALSE(large.store->contains("large.parquet#")) << "no row named";
+    EXPECT_FALSE(large.store->contains("large.parquet#1x")) << "not a row number";
+    EXPECT_EQ(large.store->decode_count(), 0u)
+        << "identity questions read no page — the whole point of deriving them";
+
+    const ParquetLazyPtr row = large.store->at(7999);
+    ASSERT_TRUE(row.ok()) << row.error();
+    EXPECT_EQ(row.id(), large.store->id_at(7999));
+
+    // And asking for the STORED ids is what costs: opting into Indexed puts the
+    // per-row table back, which is the trade being made explicit rather than
+    // being the only option.
+    ParquetStoreOptions stored = indexed();
+    stored.page_cache_bytes = 4096;
+    const ParquetStoreResult small_indexed = ParquetStore::open(small_body, stored);
+    const ParquetStoreResult large_indexed = ParquetStore::open(large_body, stored);
+    ASSERT_TRUE(small_indexed.ok()) << small_indexed.error;
+    ASSERT_TRUE(large_indexed.ok()) << large_indexed.error;
+    EXPECT_GT(small_indexed.store->id_index_bytes(), 0u);
+    EXPECT_GT(large_indexed.store->id_index_bytes(),
+              20 * small_indexed.store->id_index_bytes())
+        << "Indexed is the mode whose memory tracks row count";
+    EXPECT_EQ(large_indexed.store->id_at(7999), "row-7999");
+}
+
 // ---- mutations are refused, loudly ------------------------------------------
 
 TEST(ParquetStore, RefusesMutationsInsteadOfNoOppingThem) {
@@ -248,7 +317,7 @@ TEST(ParquetStore, RefusesMutationsInsteadOfNoOppingThem) {
     const std::filesystem::path body = tmp.path() / "immutable.parquet";
     write_body(body, sample_rows(3), /*rows_per_group=*/8);
 
-    const ParquetStoreResult opened = ParquetStore::open(body);
+    const ParquetStoreResult opened = ParquetStore::open(body, indexed());
     ASSERT_TRUE(opened.ok()) << opened.error;
     ParquetStore& store = *opened.store;
     EXPECT_EQ(store.rejected_mutations(), 0u);
@@ -297,7 +366,7 @@ TEST(ParquetStore, AnUnreadablePageIsAFailedHandleWithAReason) {
     const std::filesystem::path body = tmp.path() / "truncated.parquet";
     const std::size_t size = write_body(body, sample_rows(200), /*rows_per_group=*/50);
 
-    const ParquetStoreResult opened = ParquetStore::open(body);
+    const ParquetStoreResult opened = ParquetStore::open(body, indexed());
     ASSERT_TRUE(opened.ok()) << opened.error;
     ParquetStore& store = *opened.store;
     ASSERT_TRUE(store.at(0).ok());

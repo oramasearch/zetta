@@ -7,6 +7,7 @@
 #include <iostream>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <utility>
 
 #include "zetta/parquet/column_decoder.hpp"
@@ -47,10 +48,59 @@ public:
 
     // --- the store's queries ------------------------------------------------
 
-    std::size_t rows() const { return ids_.size(); }
+    std::size_t rows() const { return rows_; }
     std::size_t page_count() const { return pages_.size(); }
-    const std::string& id_at(std::size_t row) const { return ids_[row]; }
-    bool contains(const std::string& id) const { return id_index_.contains(id); }
+
+    // Positional: compute the id, store nothing. Indexed: hand back the stored
+    // one. Either way by value — see StorageEngine::id_at (#836).
+    std::string id_at(std::size_t row) const {
+        if (options_.id_mode == ParquetIdMode::Indexed) return ids_[row];
+        return positional_id(row);
+    }
+
+    bool contains(const std::string& id) const {
+        if (options_.id_mode == ParquetIdMode::Indexed) return id_index_.contains(id);
+        // A positional id names its own row, so membership is a parse: the id
+        // belongs to this body and its row is in range. No lookup table.
+        const std::optional<std::size_t> row = positional_row(id);
+        return row && *row < rows_;
+    }
+
+    // `<body name>#<row index>` — the identity of a row in an immutable body.
+    std::string positional_id(std::size_t row) const {
+        return display_name_ + "#" + std::to_string(row);
+    }
+
+    // The inverse: the row a positional id names, or nothing if the id is not one
+    // of ours (a different body, or no `#<digits>` suffix at all).
+    std::optional<std::size_t> positional_row(const std::string& id) const {
+        if (id.size() <= display_name_.size() + 1) return std::nullopt;
+        if (!id.starts_with(display_name_)) return std::nullopt;
+        if (id[display_name_.size()] != '#') return std::nullopt;
+        std::size_t row = 0;
+        for (std::size_t at = display_name_.size() + 1; at < id.size(); ++at) {
+            const char digit = id[at];
+            if (digit < '0' || digit > '9') return std::nullopt;
+            if (row > (std::numeric_limits<std::size_t>::max() - 9) / 10) return std::nullopt;
+            row = row * 10 + static_cast<std::size_t>(digit - '0');
+        }
+        return row;
+    }
+
+    // Bytes the id table and its index hold — zero when ids are positional.
+    std::size_t id_index_bytes() const {
+        if (options_.id_mode != ParquetIdMode::Indexed) return 0;
+        std::size_t bytes = ids_.capacity() * sizeof(std::string);
+        for (const std::string& id : ids_) {
+            // Only a heap-allocated id costs beyond the vector slot; short ones
+            // live inside it. 22 is libc++'s small-string capacity.
+            if (id.size() > 22) bytes += id.capacity();
+        }
+        // One node plus a bucket slot per entry, approximately.
+        bytes += id_index_.size() * (sizeof(std::string_view) + sizeof(std::size_t) +
+                                     2 * sizeof(void*));
+        return bytes;
+    }
 
     // The page holding `row`, and the row's index inside it.
     RowKey key_for(std::size_t row) const {
@@ -148,6 +198,9 @@ private:
     std::vector<zetta::parquet::LeafColumn> leaves_;
     std::size_t id_column_ = std::numeric_limits<std::size_t>::max();  // none
     std::vector<PageSpan> pages_;
+    std::size_t rows_ = 0;
+    // Both EMPTY in ParquetIdMode::Positional — that is the point of the mode
+    // (#836). Populated only when a caller asked for the stored ids.
     std::vector<std::string> ids_;
     std::unordered_map<std::string_view, std::size_t> id_index_;
 
@@ -288,6 +341,14 @@ std::string ParquetPager::open() {
         }
     }
 
+    rows_ = first_row;
+
+    // Positional ids are computed, never stored, so there is nothing to build and
+    // nothing to read: the open stops at the footer. In Indexed mode the loop
+    // below decodes every id chunk in the file, which is why that mode costs an
+    // O(file) open as well as O(rows) memory (#836).
+    if (options_.id_mode != ParquetIdMode::Indexed) return {};
+
     // Ids are resident for the store's lifetime: `contains(id)` and `id_at(i)`
     // are asked without wanting the row, and answering either from a page would
     // mean decoding row data to look up a key. Row *data* is what pages.
@@ -368,9 +429,26 @@ RowPageResult ParquetPager::decode_page(std::uint32_t page) const {
 
     auto decoded = std::make_shared<RowPage>();
     decoded->rows.assign(span.rows, nlohmann::json::object());
-    decoded->ids.assign(ids_.begin() + static_cast<std::ptrdiff_t>(span.first_row),
-                        ids_.begin() + static_cast<std::ptrdiff_t>(span.first_row + span.rows));
+    if (options_.id_mode == ParquetIdMode::Indexed) {
+        decoded->ids.assign(
+            ids_.begin() + static_cast<std::ptrdiff_t>(span.first_row),
+            ids_.begin() + static_cast<std::ptrdiff_t>(span.first_row + span.rows));
+    } else {
+        // Derived per page, not per store: `ParquetLazyPtr::id()` hands out a
+        // reference, so the page is where these have to live. That cost is
+        // bounded by the page and reclaimed with it — unlike a store-wide id
+        // table, which is not bounded by anything.
+        decoded->ids.reserve(span.rows);
+        for (std::size_t row = 0; row < span.rows; ++row) {
+            decoded->ids.push_back(positional_id(span.first_row + row));
+        }
+    }
+    // Charge the page's ids to the budget along with its rows. They were free
+    // before only because the store was already paying for them once, globally.
     decoded->resident_bytes = span.footprint;
+    for (const std::string& id : decoded->ids) {
+        decoded->resident_bytes += sizeof(std::string) + id.size();
+    }
 
     for (std::size_t index = 0; index < leaves_.size(); ++index) {
         // The id column is not row data — it is the key, already resident.
@@ -564,9 +642,8 @@ ParquetLazyPtr ParquetStore::at(std::size_t i) const {
                           std::weak_ptr<const RowPageSource>(pager_));
 }
 
-const std::string& ParquetStore::id_at(std::size_t i) const {
-    static const std::string kNone;
-    if (i >= pager_->rows()) return kNone;
+std::string ParquetStore::id_at(std::size_t i) const {
+    if (i >= pager_->rows()) return {};
     return pager_->id_at(i);
 }
 
@@ -574,6 +651,7 @@ std::size_t ParquetStore::resident_bytes() const { return pager_->resident_bytes
 std::size_t ParquetStore::resident_pages() const { return pager_->resident_pages(); }
 std::uint64_t ParquetStore::decode_count() const { return pager_->decodes(); }
 std::size_t ParquetStore::page_count() const { return pager_->page_count(); }
+std::size_t ParquetStore::id_index_bytes() const { return pager_->id_index_bytes(); }
 void ParquetStore::reap() { pager_->reap(); }
 std::string ParquetStore::last_mutation_error() const {
     return pager_->last_mutation_error();
