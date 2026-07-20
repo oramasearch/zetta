@@ -118,3 +118,4 @@ counting, and make it something a tester can report without interpretation:
 | [`env-5-managed-cloud`](env-5-managed-cloud.md) | [#114](https://github.com/oramasearch/zetta/issues/114) — `[ENV-5]` Managed cloud | not yet runnable — creating a managed cluster does not exist |
 | [`feat-7-tiered-storage`](feat-7-tiered-storage.md) | [#138](https://github.com/oramasearch/zetta/issues/138) — `[FEAT-7]` Tiered storage | not yet runnable — no tiering exists; step 1 is today's hard wall |
 | [`rel-7-gui-journey`](rel-7-gui-journey.md) | [#192](https://github.com/oramasearch/zetta/issues/192) — `[REL-7]` GUI as product surface | not yet run — all panels ship; nobody has walked it cold |
+| [`rel-8-agent-learning`](rel-8-agent-learning.md) | [#193](https://github.com/oramasearch/zetta/issues/193) — `[REL-8]` the agent program | not yet runnable — no training loop in the engine |
