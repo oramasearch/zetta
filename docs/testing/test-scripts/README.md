@@ -69,3 +69,4 @@ Known rough edges, what to capture if it fails, who to ask.
 | Script | Issue | Status |
 |---|---|---|
 | [`env-3-on-prem-cluster`](env-3-on-prem-cluster.md) | [#112](https://github.com/oramasearch/zetta/issues/112) — `[ENV-3]` Customer VPC / on-prem | not yet runnable |
+| [`env-4-ephemeral-burst`](env-4-ephemeral-burst.md) | [#113](https://github.com/oramasearch/zetta/issues/113) — `[ENV-4]` Ephemeral burst | not yet runnable — step 9 known flaky ([#824](https://github.com/oramasearch/zetta/issues/824)) |
