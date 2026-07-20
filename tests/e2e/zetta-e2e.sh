@@ -95,7 +95,7 @@ RUN="$(tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 12 || true)"
 [ -z "$RUN" ] && RUN="$$"
 
 # Built-in testkit catalog (fallback when system.test_cases isn't served).
-TESTKIT_FALLBACK="compute.cpu.elementwise compute.cpu.reduce_sort compute.cuda.conformance ddf.scan_filter ddf.group_by ddf.parquet_reader_parity ml.gbdt_train ml.tree_shap ml.calibration cluster.membership cluster.allreduce cluster.group_by_consistency cluster.compute_near_data cluster.partition_rebalance cluster.fulltext_index cluster.uc1_at_scale governance.access_control governance.audit governance.entity_resolution_gate governance.burst_identity pipeline.uc1_end_to_end examples.churn_pipeline examples.minimal_train examples.method_chain examples.unterminated_string examples.no_pipeline_steps"
+TESTKIT_FALLBACK="compute.cpu.elementwise compute.cpu.reduce_sort compute.cuda.conformance ddf.scan_filter ddf.group_by ddf.parquet_reader_parity ml.gbdt_train ml.tree_shap ml.calibration cluster.membership cluster.allreduce cluster.group_by_consistency cluster.compute_near_data cluster.partition_rebalance cluster.fulltext_index cluster.connections cluster.distributed_import cluster.import_participant_loss cluster.uc1_at_scale governance.access_control governance.audit governance.entity_resolution_gate governance.burst_identity pipeline.uc1_end_to_end examples.churn_pipeline examples.minimal_train examples.method_chain examples.unterminated_string examples.no_pipeline_steps"
 
 # The observability + governance system.* views the engine serves. The last six
 # (policies/roles/tokens/users/user_roles/test_cases) shipped with the authz +
