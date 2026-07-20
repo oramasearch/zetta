@@ -452,7 +452,14 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"rows", dataset.rows},
                           {"size_bytes", dataset.size_bytes},
                           {"columns", dataset.columns},
-                          {"partitions", std::move(partitions)}};
+                          {"partitions", std::move(partitions)},
+                          // #837: whether this node can see the WHOLE dataset.
+                          // An agent that reads `rows` must be able to tell a
+                          // total from a fraction.
+                          {"degraded", dataset.degraded},
+                          {"degraded_reason", dataset.degraded_reason},
+                          {"expected_partitions", dataset.expected_partitions},
+                          {"expected_rows", dataset.expected_rows}};
 }
 
 // The schema of dataset_summary_json — shared by get_dataset (the value) and
@@ -462,7 +469,8 @@ const nlohmann::json& dataset_summary_schema() {
         {"type", "object"},
         {"required",
          {"name", "database", "table_id", "format", "replication", "rows",
-          "size_bytes", "columns", "partitions"}},
+          "size_bytes", "columns", "partitions", "degraded", "degraded_reason",
+          "expected_partitions", "expected_rows"}},
         {"additionalProperties", false},
         {"properties",
          {{"name", {{"type", "string"}}},
@@ -488,7 +496,11 @@ const nlohmann::json& dataset_summary_schema() {
                 {"row_end", {{"type", "integer"}}},
                 {"owner_nodes",
                  {{"type", "array"},
-                  {"items", {{"type", "string"}}}}}}}}}}}}}};
+                  {"items", {{"type", "string"}}}}}}}}}}},
+          {"degraded", {{"type", "boolean"}}},
+          {"degraded_reason", {{"type", "string"}}},
+          {"expected_partitions", {{"type", "integer"}}},
+          {"expected_rows", {{"type", "integer"}}}}}};
     return schema;
 }
 

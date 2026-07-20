@@ -52,12 +52,30 @@ struct PartitionRow {
     nlohmann::json doc;
 };
 
+// One column of a body's own schema, as the partition catalog records it (#837).
+// `type` is the Parquet **physical type** the column was written as
+// (`boolean` / `int32` / `int64` / `float` / `double` / `byte_array`) for a
+// Parquet body, and the JSON family (`boolean` / `integer` / `number` /
+// `string` / `object` / `array` / `null` / `mixed`) for a JSON Lines one —
+// there is no Parquet type for a body Parquet could not express.
+//
+// Recording it in the catalog is what lets a node **plan** over a partition
+// without reading its body: the CRDT replicates the metadata describing these
+// blobs, never the blobs.
+struct PartitionBodyColumn {
+    std::string name;
+    std::string type;
+    bool optional = true;  // the column may hold nulls
+};
+
 // The result of serializing a body: on success `error` is empty, `bytes` holds
-// the body and `format` says which format it ended up in (Parquet, or JSON Lines
-// when the rows could not be expressed as flat columns).
+// the body, `format` says which format it ended up in (Parquet, or JSON Lines
+// when the rows could not be expressed as flat columns) and `schema` names the
+// body's columns and their types, in the order the body carries them.
 struct PartitionBodyWriteResult {
     std::string bytes;
     PartitionBodyFormat format = PartitionBodyFormat::Parquet;
+    std::vector<PartitionBodyColumn> schema;
     std::string error;
 
     bool ok() const { return error.empty(); }

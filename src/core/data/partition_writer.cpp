@@ -10,6 +10,7 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
 #include "zetta/data/partition_body.hpp"
@@ -17,6 +18,7 @@
 #include "zetta/data/partitioner.hpp"
 #include "zetta/storage/engine.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/util/timestamp.hpp"
 
 namespace zetta::data {
 namespace {
@@ -50,7 +52,8 @@ std::string collect_partition_rows(const zetta::storage::StorageEngine& store,
 
 PartitionWriteResult write_partitioned(Node& node, Database& database,
                                        Table& table,
-                                       const std::vector<std::string>& members) {
+                                       const std::vector<std::string>& members,
+                                       bool record_manifest) {
     PartitionWriteResult result;
 
     const std::shared_ptr<Partitioner> partitioner = table.partitioner();
@@ -137,6 +140,18 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
                 }
             }
         }
+        // The blob's OWN schema — column names with the physical type each was
+        // written as — and its byte size, recorded beside the row count (#837).
+        // Together with `columns` and `row_range` that is everything a planner
+        // needs: a node can plan, prune, and report `system.datasets` for a
+        // partition it does not hold a byte of. The CRDT replicates the metadata
+        // describing these blobs; it never replicates the blobs.
+        nlohmann::json schema = nlohmann::json::array();
+        for (const PartitionBodyColumn& column : serialized.schema) {
+            schema.push_back(nlohmann::json{{"name", column.name},
+                                            {"type", column.type},
+                                            {"optional", column.optional}});
+        }
         // The partitioner that PLACED this entry is recorded beside the rest.
         // The between-jobs rebalance reads it: recomputing a hash is right for a
         // rendezvous-placed partition and wrong for a fetch-affinity one, whose
@@ -145,7 +160,9 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
                                      {"rows", ordinals.size()},
                                      {"format", to_string(serialized.format)},
                                      {"placement", partitioner->name()},
-                                     {"columns", std::move(columns)}};
+                                     {"columns", std::move(columns)},
+                                     {"schema", std::move(schema)},
+                                     {"bytes", serialized.bytes.size()}};
 
         std::shared_ptr<DatasetPartition> recorded =
             node.create_dataset_partition(std::move(value));
@@ -155,9 +172,28 @@ PartitionWriteResult write_partitioned(Node& node, Database& database,
             return result;
         }
 
+        result.bytes_written += serialized.bytes.size();
         result.partitions.push_back(std::move(recorded));
         offset += ordinals.size();
         result.rows_written += ordinals.size();
+    }
+
+    // The manifest (#837): how many partitions this dataset HAS, recorded once
+    // the write has finished, so a reader can tell "I can see 6 of 8" from
+    // "there are 6". Suppressed for one tile of a cluster-wide write — the
+    // manifest must describe the whole dataset, and only the coordinator knows
+    // that total (the ingest's allreduce), so it writes the manifest itself.
+    if (record_manifest) {
+        DatasetManifestValue manifest;
+        manifest.table = table.id();
+        manifest.partitions = result.partitions.size();
+        manifest.rows = result.rows_written;
+        manifest.bytes = result.bytes_written;
+        for (const std::shared_ptr<DatasetPartition>& recorded : result.partitions) {
+            manifest.partition_ids.push_back(recorded->id());
+        }
+        manifest.created = zetta::util::now_iso8601();
+        table.set_partition_manifest(std::move(manifest));
     }
 
     return result;

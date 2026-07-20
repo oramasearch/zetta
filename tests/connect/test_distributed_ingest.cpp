@@ -228,6 +228,27 @@ std::vector<std::unique_ptr<Member>> bring_up(std::uint16_t base_port,
     return members;
 }
 
+// How many `part:` entries for `table_id` this node's replicated document holds
+// versus how many its node tree has materialized. The two must converge: a
+// document entry the projection never materializes is invisible to the planner,
+// which is the shape #837 turned out to be (a tick recorded a version it had not
+// reconciled, and with no further write to move the version it never revisited
+// it). Reported on a convergence failure so the next one is diagnosable rather
+// than a bare timeout.
+std::string catalog_state(Member& member, const std::string& table_id) {
+    std::size_t in_document = 0;
+    for (const auto& [key, value] : member.replication.snapshot().items()) {
+        if (!key.starts_with("part:")) continue;
+        if (value.value("table", std::string{}) == table_id) ++in_document;
+    }
+    std::size_t in_tree = 0;
+    for (const auto& partition : member.node.dataset_partitions()) {
+        if (partition && partition->table() == table_id) ++in_tree;
+    }
+    return "document=" + std::to_string(in_document) +
+           " tree=" + std::to_string(in_tree);
+}
+
 // Patient: poll `ready` against a seconds-long deadline (never a fixed count).
 template <class Predicate>
 bool wait_until(Predicate ready,
@@ -438,7 +459,8 @@ TEST(DistributedIngest, CoLaunchFetchesEachChunkOnceAndLandsWhereItPulled) {
             return all.ok() && all.rows.size() == kTotalRows;
         },
         std::chrono::seconds(60)))
-        << "the scattered read never saw the whole dataset: " << all.error;
+        << "the scattered read never saw the whole dataset: " << all.error
+        << "\n  initiator: " << catalog_state(*members[0], table_id);
 
     std::set<std::int64_t> ids;
     std::int64_t total_amount = 0;
@@ -454,31 +476,59 @@ TEST(DistributedIngest, CoLaunchFetchesEachChunkOnceAndLandsWhereItPulled) {
     }
     EXPECT_EQ(total_amount, expected_amount);
 
-    // A MERGED aggregate over the same scatter-gather: count/sum add across the
-    // owners rather than being answered from the coordinator's own slice.
-    // (That every node is an equally valid coordinator is scatter-gather's own
-    // property — tests/query/test_distributed_select.cpp — and asserting it here
-    // would only be re-testing when the catalog has finished gossiping.)
-    const auto aggregated =
-        service.run("SELECT chunk, count(*), sum(amount) FROM datasets." +
-                        table_name + " GROUP BY chunk;",
-                    "");
-    ASSERT_TRUE(aggregated.ok()) << aggregated.error;
-    ASSERT_EQ(aggregated.rows.size(), kChunks);
-    std::int64_t merged_amount = 0;
-    std::uint64_t merged_rows = 0;
-    for (const Json& row : aggregated.rows) {
-        merged_rows += row.at("count").get<std::uint64_t>();
-        merged_amount += static_cast<std::int64_t>(row.at("sum_amount").get<double>());
-        EXPECT_EQ(row.at("count").get<std::uint64_t>(), kRowsPerChunk)
-            << "chunk " << row.at("chunk");
-    }
-    EXPECT_EQ(merged_rows, kTotalRows);
-    EXPECT_EQ(merged_amount, expected_amount);
-
-    // The peers' loops stop here: from now on this thread is the only one
-    // ticking, so their node trees (owner-thread-only) are safe to read.
+    // A MERGED aggregate over the same scatter-gather, run **from a peer** —
+    // a node that fetched only a third of the result and holds none of the
+    // initiator's inline chunk. count/sum must add across the owners, not be
+    // answered from that node's own slice.
+    //
+    // This used to run on the initiator to dodge #837: a partition whose `part:`
+    // entry had not gossiped to the peer yet was *invisible*, so it dropped out
+    // of the plan and the aggregate came back a plausible fraction with no
+    // error. With the partition manifest in place a short catalog FAILS the
+    // query instead, so waiting for `ok()` is a real convergence condition and
+    // not a race against a silent undercount.
+    //
+    // peer_one's loop stops first so this thread owns members[1]'s tree; the
+    // other two nodes keep ticking (members[0] here, members[2] on its own
+    // loop), which is what refreshes their responder snapshots.
     peer_one.stop();
+    QueryService peer_service{members[1]->node};
+    const std::string aggregate_sql =
+        "SELECT chunk, count(*), sum(amount) FROM datasets." + table_name +
+        " GROUP BY chunk;";
+    QueryService::Outcome aggregated;
+    ASSERT_TRUE(wait_until(
+        [&] {
+            members[0]->node.tick();
+            members[1]->node.tick();
+            aggregated = peer_service.run(aggregate_sql, "");
+            return aggregated.ok() && aggregated.rows.size() == kChunks;
+        },
+        std::chrono::seconds(60)))
+        << "the peer never saw the whole dataset: " << aggregated.error
+        << "\n  peer: " << catalog_state(*members[1], table_id);
+
+    // Converged: now it must answer the SAME totals every time, not once.
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        aggregated = peer_service.run(aggregate_sql, "");
+        ASSERT_TRUE(aggregated.ok()) << "attempt " << attempt << ": "
+                                     << aggregated.error;
+        ASSERT_EQ(aggregated.rows.size(), kChunks) << "attempt " << attempt;
+        std::int64_t merged_amount = 0;
+        std::uint64_t merged_rows = 0;
+        for (const Json& row : aggregated.rows) {
+            merged_rows += row.at("count").get<std::uint64_t>();
+            merged_amount +=
+                static_cast<std::int64_t>(row.at("sum_amount").get<double>());
+            EXPECT_EQ(row.at("count").get<std::uint64_t>(), kRowsPerChunk)
+                << "attempt " << attempt << ", chunk " << row.at("chunk");
+        }
+        EXPECT_EQ(merged_rows, kTotalRows) << "attempt " << attempt;
+        EXPECT_EQ(merged_amount, expected_amount) << "attempt " << attempt;
+    }
+
+    // The last peer loop stops here: from now on this thread is the only one
+    // ticking, so their node trees (owner-thread-only) are safe to read.
     peer_two.stop();
 
     // --- Property 2: land where you pulled ------------------------------------

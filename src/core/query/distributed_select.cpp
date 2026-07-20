@@ -13,6 +13,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
 #include "zetta/data/partition_body.hpp"
@@ -623,6 +624,38 @@ struct PlannedPartition {
     std::vector<std::string> owners;
 };
 
+// The table behind a `tbl:` id, or an empty handle when this node does not hold
+// it. Needed at plan time for the partition manifest.
+std::shared_ptr<zetta::data::Table> find_table_by_id(Node& node,
+                                                     const std::string& table_id) {
+    for (const std::string& name : node.database_names()) {
+        const std::shared_ptr<zetta::data::Database> database = node.find_database(name);
+        if (!database) continue;
+        if (auto table = database->find_table_by_id(table_id)) return table;
+    }
+    return nullptr;
+}
+
+// **The completeness check** (#837). A partition whose catalog entry has not
+// reached this node is *invisible*, not unreachable — the reachable-owner guard
+// below never fires for it, so without this the plan is simply short and the
+// answer comes back a fraction of the truth looking perfectly healthy.
+//
+// The dataset's manifest is the authority: it records how many `part:` entries the
+// finished write produced. When this node can see fewer, the dataset is degraded
+// here and the query FAILS, exactly as an unreachable owner already does.
+//
+// A table with no manifest is not checked — it was written before manifests
+// existed, or by a path that does not produce one — because failing every read of
+// such a dataset would be a far worse regression than the hole this closes.
+std::string catalog_completeness_error(Node& node, const std::string& table_id,
+                                       std::size_t visible) {
+    const std::shared_ptr<zetta::data::Table> table = find_table_by_id(node, table_id);
+    if (!table || !table->partition_manifest()) return {};
+    return zetta::data::catalog_shortfall(*table->partition_manifest(),
+                                          static_cast<std::uint64_t>(visible));
+}
+
 std::vector<PlannedPartition> plan_partitions(Node& node, const std::string& table_id) {
     std::vector<PlannedPartition> planned;
     for (const std::shared_ptr<zetta::data::DatasetPartition>& partition :
@@ -903,6 +936,15 @@ SelectOutcome DistributedSelect::execute(const SelectStmt& statement,
     refresh();  // the catalog may have moved since the last tick
 
     const std::vector<PlannedPartition> planned = plan_partitions(node_, table_id);
+    // Before anything is scattered: is this node's view of the catalog whole?
+    // A missing entry is invisible, so it must be caught by counting, not by
+    // failing to reach an owner.
+    if (std::string reason =
+            catalog_completeness_error(node_, table_id, planned.size());
+        !reason.empty()) {
+        outcome.error = std::move(reason);
+        return outcome;
+    }
     if (planned.empty()) return outcome;  // no placed partitions: an empty dataset
 
     const std::string& self = cluster_.node_id();
@@ -1003,6 +1045,15 @@ SelectOutcome select_over_partitions(Node& node, DistributedSelect* plane,
         outcome.columns = grouped_columns(statement);
     }
     const std::vector<PlannedPartition> planned = plan_partitions(node, table_id);
+    // The same completeness check the clustered path runs: a standalone node's
+    // catalog can be short too (a partition it never received, an entry dropped
+    // under it), and answering from what is left is the outcome #837 closes.
+    if (std::string reason =
+            catalog_completeness_error(node, table_id, planned.size());
+        !reason.empty()) {
+        outcome.error = std::move(reason);
+        return outcome;
+    }
     if (planned.empty()) return outcome;
 
     const std::string& self = node.node_id();

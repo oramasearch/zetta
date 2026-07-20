@@ -3,10 +3,12 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
 
+#include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/storage/engine.hpp"
@@ -29,7 +31,8 @@ public:
     Table(std::string id, std::string name, std::filesystem::path dir,
           zetta::cluster::ReplicationManager* replication = nullptr,
           ReplicationStrategy replication_strategy = {},
-          bool partition_only = false);
+          bool partition_only = false,
+          std::optional<DatasetManifestValue> partition_manifest = std::nullopt);
 
     const std::string& id() const { return id_; }
     const std::string& name() const { return name_; }
@@ -71,6 +74,32 @@ public:
     // on how the table must be read. Fixed at create time; there is no update
     // path (flipping it would strand rows on one side or the other).
     bool partition_only() const { return partition_only_; }
+
+    // The **partition manifest** (#837): how many partitions this dataset has,
+    // recorded once when the write that produced it completed. Empty when the
+    // table has never been written through the partitioned write path (or when
+    // the manifest has not gossiped to this node yet).
+    //
+    // This is the authority a reader checks its view of the `part:` catalog
+    // against. Without it a coordinator plans over the entries that happen to
+    // have reached it, and a partition still in flight is *invisible* rather
+    // than unreachable — so the query answers short and looks healthy. See
+    // dataset_manifest.hpp / docs/data/partition-manifest.md.
+    const std::optional<DatasetManifestValue>& partition_manifest() const {
+        return partition_manifest_;
+    }
+
+    // Record the manifest: **capture** it into the `mfst:<table-id>` CRDT key and
+    // rewrite table.json. Called once, by the node that completed the write —
+    // the partitioned write path for a local write, the ingest initiator (after
+    // the cluster-wide agreement) for a co-launched one. `value.table` is set to
+    // this table's id, so a caller cannot record a manifest under the wrong key.
+    void set_partition_manifest(DatasetManifestValue value);
+
+    // Apply a manifest that arrived from a peer (or was read back from disk):
+    // updates the projection + table.json with NO capture, like every other
+    // materialize path. An empty optional clears it.
+    void apply_partition_manifest(std::optional<DatasetManifestValue> value);
 
     zetta::storage::StorageEngine& store() { return *store_; }
     const zetta::storage::StorageEngine& store() const { return *store_; }
@@ -127,6 +156,7 @@ private:
     std::shared_ptr<Partitioner> partitioner_;  // null = not partitioned
     ReplicationStrategy replication_strategy_;  // ENT-35; default ReplicateToAll
     bool partition_only_ = false;               // #833; rows never captured
+    std::optional<DatasetManifestValue> partition_manifest_;  // #837
 };
 
 }  // namespace zetta::data

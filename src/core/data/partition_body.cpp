@@ -1,6 +1,8 @@
 #include "zetta/data/partition_body.hpp"
 
+#include <cstddef>
 #include <sstream>
+#include <unordered_map>
 #include <utility>
 
 #include "zetta/parquet/reader.hpp"
@@ -53,6 +55,65 @@ PartitionBodyReadResult read_jsonl(std::string_view body, std::string_view parti
         out.rows.push_back(std::move(row));
     }
     return out;
+}
+
+// The JSON family of one value — the coarse type a JSON Lines body can honestly
+// claim for a column (Parquet's physical types do not apply: the body fell back
+// to JSON Lines precisely because no flat scalar schema fitted).
+std::string_view json_family(const nlohmann::json& value) {
+    if (value.is_boolean()) return "boolean";
+    if (value.is_number_integer() || value.is_number_unsigned()) return "integer";
+    if (value.is_number()) return "number";
+    if (value.is_string()) return "string";
+    if (value.is_object()) return "object";
+    if (value.is_array()) return "array";
+    return "null";
+}
+
+// The schema of a JSON Lines body: every field any row carries, in first-seen
+// order, with the family its values share ("mixed" when they do not, "null" when
+// every value is null) and whether any row omits it or holds null for it.
+std::vector<PartitionBodyColumn> jsonl_schema(const std::vector<PartitionRow>& rows) {
+    std::vector<PartitionBodyColumn> columns;
+    std::unordered_map<std::string, std::size_t> index;
+    const auto note = [&](const std::string& name, const nlohmann::json& value) {
+        auto slot = index.find(name);
+        if (slot == index.end()) {
+            slot = index.emplace(name, columns.size()).first;
+            columns.push_back(PartitionBodyColumn{name, std::string(json_family(value)),
+                                                  /*optional=*/false});
+        }
+        PartitionBodyColumn& column = columns[slot->second];
+        const std::string_view family = json_family(value);
+        if (family == "null") {
+            column.optional = true;
+        } else if (column.type == "null") {
+            column.type = std::string(family);
+        } else if (column.type != family) {
+            // An integer column that later sees a real number widens; anything
+            // else genuinely mixes.
+            const bool numeric = (column.type == "integer" || column.type == "number") &&
+                                 (family == "integer" || family == "number");
+            column.type = numeric ? "number" : "mixed";
+        }
+    };
+    for (const PartitionRow& row : rows) {
+        if (!row.doc.is_object()) continue;
+        for (auto field = row.doc.begin(); field != row.doc.end(); ++field) {
+            note(field.key(), field.value());
+        }
+    }
+    // A field absent from some row reads back as null, so it is optional.
+    for (PartitionBodyColumn& column : columns) {
+        for (const PartitionRow& row : rows) {
+            if (row.doc.is_object() && !row.doc.contains(column.name)) {
+                column.optional = true;
+                break;
+            }
+        }
+    }
+    columns.push_back(PartitionBodyColumn{kIdColumn, "string", /*optional=*/false});
+    return columns;
 }
 
 std::string write_jsonl(const std::vector<PartitionRow>& rows) {
@@ -121,6 +182,16 @@ PartitionBodyWriteResult serialize_partition_body(const std::vector<PartitionRow
         if (written.ok()) {
             out.bytes = written.data;
             out.format = PartitionBodyFormat::Parquet;
+            // The body's own schema, recorded so the catalog can carry it: the
+            // same inference the writer just used, so what the catalog says the
+            // blob holds is what the blob holds.
+            const zetta::parquet::ParquetSchemaResult inferred =
+                zetta::parquet::infer_parquet_schema(flat);
+            for (const zetta::parquet::WriterColumn& column : inferred.columns) {
+                out.schema.push_back(PartitionBodyColumn{
+                    column.name, std::string(zetta::parquet::to_string(column.type)),
+                    column.optional});
+            }
             return out;
         }
         // The rows have no flat scalar schema (a nested value, a column mixing
@@ -130,6 +201,7 @@ PartitionBodyWriteResult serialize_partition_body(const std::vector<PartitionRow
 
     out.bytes = write_jsonl(rows);
     out.format = PartitionBodyFormat::Jsonl;
+    out.schema = jsonl_schema(rows);
     return out;
 }
 

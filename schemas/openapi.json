@@ -2705,6 +2705,18 @@
                         "database": {
                           "type": "string"
                         },
+                        "degraded": {
+                          "type": "boolean"
+                        },
+                        "degraded_reason": {
+                          "type": "string"
+                        },
+                        "expected_partitions": {
+                          "type": "integer"
+                        },
+                        "expected_rows": {
+                          "type": "integer"
+                        },
                         "format": {
                           "type": "string"
                         },
@@ -2767,7 +2779,11 @@
                         "rows",
                         "size_bytes",
                         "columns",
-                        "partitions"
+                        "partitions",
+                        "degraded",
+                        "degraded_reason",
+                        "expected_partitions",
+                        "expected_rows"
                       ],
                       "type": "object"
                     }
@@ -4656,6 +4672,18 @@
                               "database": {
                                 "type": "string"
                               },
+                              "degraded": {
+                                "type": "boolean"
+                              },
+                              "degraded_reason": {
+                                "type": "string"
+                              },
+                              "expected_partitions": {
+                                "type": "integer"
+                              },
+                              "expected_rows": {
+                                "type": "integer"
+                              },
                               "format": {
                                 "type": "string"
                               },
@@ -4718,7 +4746,11 @@
                               "rows",
                               "size_bytes",
                               "columns",
-                              "partitions"
+                              "partitions",
+                              "degraded",
+                              "degraded_reason",
+                              "expected_partitions",
+                              "expected_rows"
                             ],
                             "type": "object"
                           },

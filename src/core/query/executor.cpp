@@ -1531,6 +1531,15 @@ std::vector<nlohmann::json> dataset_rows(const Node& node) {
         row["partition_count"] = static_cast<int>(dataset.partitions.size());
         row["owner_nodes"] = join_comma(owner_union);
         row["placement"] = join_comma(placement_parts);
+        // Whether this node can see the WHOLE dataset (#837). `expected_*` come
+        // from the dataset's partition manifest (0 when it has none); `degraded`
+        // says `rows` above is a fraction, which is the state a reader must see
+        // instead of a plausible-looking undercount.
+        row["degraded"] = dataset.degraded;
+        row["degraded_reason"] = dataset.degraded_reason;
+        row["expected_partition_count"] =
+            static_cast<int>(dataset.expected_partitions);
+        row["expected_rows"] = dataset.expected_rows;
         rows.push_back(std::move(row));
     }
     return rows;

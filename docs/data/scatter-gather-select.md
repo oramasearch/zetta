@@ -55,6 +55,24 @@ its recorded owners; the remedy is re-running the ingest, or
 [promoting the dataset](promote-dataset.md) to a higher replication factor first
 so a lost node has a fallback.
 
+### 3. An incomplete catalog fails the query too (#837)
+
+The guard above only fires for a partition the coordinator can *see*. A partition
+whose `part:` entry has not reached this node is not unreachable — it is
+**invisible**: it never enters the plan, so nothing notices, and the query comes
+back a plausible fraction.
+
+So before anything is scattered, the coordinator counts the `part:` entries it
+holds against the dataset's [partition manifest](partition-manifest.md), the
+table-level record of how many the finished write produced. Short ⇒ the query
+fails with the same "the dataset is degraded" shape. Both entry points run it —
+the clustered `DistributedSelect::execute` and the standalone
+`select_over_partitions` — through the single rule
+`zetta::data::catalog_shortfall`, so the planner and `system.datasets` can never
+disagree. A table with **no** manifest is not checked (it predates them, or was
+written by a path that produces none): failing every read of such a dataset would
+be worse than the hole.
+
 ## Aggregates merge, they do not concatenate
 
 A responder returns a **partial** per group per aggregate — `{value, count}` —
@@ -126,9 +144,15 @@ elsewhere fails with the same unreachable-owner reason a dead peer would give.
   answer from either coordinator, with the peer's `scans_served()` proving the
   scan ran where the data is;
 - **RF=2**, where every partition has two owners and the answer is still exact;
-- an **unreachable owner failing** the query rather than answering short.
+- an **unreachable owner failing** the query rather than answering short;
+- an **incomplete catalog failing** it as well
+  (`tests/data/test_dataset_manifest.cpp` —
+  `AnIncompleteCatalogFailsTheScatterGatherSelect`, constructed deterministically
+  by dropping one `part:` entry while the manifest stands, plus
+  `ACompleteCatalogStillAnswers` for the no-false-positive direction).
 
-Related: [partition-only-tables.md](partition-only-tables.md),
+Related: [partition-manifest.md](partition-manifest.md),
+[partition-only-tables.md](partition-only-tables.md),
 [query.md](query.md), [dataset-partitions.md](dataset-partitions.md),
 [../indexing/distributed-fulltext.md](../indexing/distributed-fulltext.md).
 Issue: #833 section 5.

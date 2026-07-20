@@ -14,12 +14,14 @@
 #include "zetta/connect/distributed_fetch.hpp"
 #include "zetta/connect/http_transport.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/fetch_affinity_placement.hpp"
 #include "zetta/data/large_object.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/table.hpp"
 #include "zetta/node.hpp"
+#include "zetta/util/timestamp.hpp"
 #include "zetta/util/uuid.hpp"
 
 namespace zetta::connect {
@@ -56,6 +58,7 @@ struct TileOutcome {
     std::string detail;
     std::size_t partitions_fetched = 0;  // source chunks pulled by THIS node
     std::size_t rows = 0;
+    std::uint64_t bytes = 0;             // body bytes this node wrote
     std::vector<std::shared_ptr<data::DatasetPartition>> partitions;
 };
 
@@ -93,7 +96,8 @@ TileOutcome fetch_and_land_tile(Node& node, data::Database& database,
                                 std::uint32_t partition_count,
                                 std::size_t max_rows,
                                 std::size_t replication_factor,
-                                const std::vector<std::string>& members) {
+                                const std::vector<std::string>& members,
+                                bool coordinated) {
     TileOutcome outcome;
     std::vector<Json> rows = std::move(carried);
 
@@ -133,9 +137,14 @@ TileOutcome fetch_and_land_tile(Node& node, data::Database& database,
         partition_count, node.node_id(),
         std::min(std::max<std::size_t>(replication_factor, 1),
                  members.empty() ? std::size_t{1} : members.size())));
-    data::PartitionWriteResult written =
-        data::write_partitioned(node, database, table, members);
+    // A tile records no manifest: it knows only its own share, and a manifest
+    // describing a third of the dataset would fail every read of a healthy one
+    // (#837). The coordinator writes it from the cluster-wide totals the
+    // agreement below already produces.
+    data::PartitionWriteResult written = data::write_partitioned(
+        node, database, table, members, /*record_manifest=*/!coordinated);
     outcome.partitions = std::move(written.partitions);
+    outcome.bytes = written.bytes_written;
     if (!written.ok()) {
         outcome.detail = "partition: " + written.error;
         return outcome;
@@ -150,25 +159,33 @@ TileOutcome fetch_and_land_tile(Node& node, data::Database& database,
 // nothing (the round times out, or the survivors' collective is short a
 // contribution), a node whose fetch failed contributes 0, and a node that never
 // received the launch contributes nothing. `rows` comes back as the cluster-wide
-// total for free.
+// total for free — and so, in the same round, do the cluster-wide **partition
+// count and body size**, which is exactly the manifest the dataset needs (#837).
+// The coordinator cannot derive that count any other way: only non-empty
+// partitions get a catalog entry, so how many each tile produced is data.
 struct Agreement {
     bool ok = false;
     std::size_t rows = 0;
+    std::uint64_t partitions = 0;  // catalog entries written cluster-wide
+    std::uint64_t bytes = 0;       // body bytes written cluster-wide
     std::string detail;
 };
 
 Agreement agree_on_the_ingest(compute::JobCoordinator& coordinator,
                               const std::string& launch_id,
                               std::size_t roster_size, bool landed,
-                              std::size_t rows,
+                              std::size_t rows, std::uint64_t partitions,
+                              std::uint64_t bytes,
                               std::chrono::milliseconds timeout) {
     Agreement agreement;
     const std::string tag = std::string(kConnectorFetchCollectiveTag) + launch_id;
     const std::optional<std::vector<double>> reduced =
         coordinator.collectives().allreduce(
-            tag, {landed ? 1.0 : 0.0, static_cast<double>(rows)},
+            tag,
+            {landed ? 1.0 : 0.0, static_cast<double>(rows),
+             static_cast<double>(partitions), static_cast<double>(bytes)},
             zetta::cluster::CollectiveOp::Sum, timeout);
-    if (!reduced || reduced->size() != 2) {
+    if (!reduced || reduced->size() != 4) {
         agreement.detail =
             "the cluster did not agree on the ingest within " +
             std::to_string(timeout.count()) +
@@ -187,6 +204,8 @@ Agreement agree_on_the_ingest(compute::JobCoordinator& coordinator,
     }
     agreement.ok = true;
     agreement.rows = static_cast<std::size_t>((*reduced)[1]);
+    agreement.partitions = static_cast<std::uint64_t>((*reduced)[2]);
+    agreement.bytes = static_cast<std::uint64_t>((*reduced)[3]);
     return agreement;
 }
 
@@ -246,8 +265,8 @@ LaunchOutcome run_connector_fetch_launch(
     launch_validator().validate(request.payload, handler);
     if (handler.failed) {
         agree_on_the_ingest(*coordinator, request.id,
-                            request.participants.size(), /*landed=*/false, 0,
-                            kDefaultIngestCoordination);
+                            request.participants.size(), /*landed=*/false, 0, 0,
+                            0, kDefaultIngestCoordination);
         return LaunchOutcome{.ok = false,
                              .detail = "connector fetch payload: " + handler.reason};
     }
@@ -258,8 +277,8 @@ LaunchOutcome run_connector_fetch_launch(
 
     const auto decline = [&](std::string reason) {
         agree_on_the_ingest(*coordinator, request.id,
-                            request.participants.size(), /*landed=*/false, 0,
-                            timeout);
+                            request.participants.size(), /*landed=*/false, 0, 0,
+                            0, timeout);
         return LaunchOutcome{.ok = false, .detail = std::move(reason)};
     };
 
@@ -304,11 +323,11 @@ LaunchOutcome run_connector_fetch_launch(
         static_cast<std::uint32_t>(payload.at("partition_count").get<std::uint32_t>()),
         payload.at("max_rows").get<std::size_t>(),
         payload.at("replication_factor").get<std::size_t>(),
-        node.cluster_members());
+        node.cluster_members(), /*coordinated=*/true);
 
     const Agreement agreement = agree_on_the_ingest(
         *coordinator, request.id, request.participants.size(), outcome.ok,
-        outcome.rows, timeout);
+        outcome.rows, outcome.partitions.size(), outcome.bytes, timeout);
     if (!agreement.ok) {
         discard_ingest(node, *database, table->id());
         // Drop the table this node ADOPTED, not just its partitions: adopting
@@ -482,7 +501,8 @@ DistributedIngestResult run_distributed_connector_ingest(
         const TileOutcome outcome = fetch_and_land_tile(
             node, *database, *table, config, submitted.plan, rest,
             std::move(submitted.inline_rows.rows), options.partition_count,
-            options.max_rows, options.replication_factor, members);
+            options.max_rows, options.replication_factor, members,
+            /*coordinated=*/false);
         if (!outcome.ok) return fail(outcome.detail);
         result.partitions = outcome.partitions;
         result.partitions_fetched = outcome.partitions_fetched;
@@ -534,15 +554,31 @@ DistributedIngestResult run_distributed_connector_ingest(
     const TileOutcome outcome = fetch_and_land_tile(
         node, *database, *table, config, submitted.plan, slice,
         std::move(submitted.inline_rows.rows), options.partition_count,
-        options.max_rows, options.replication_factor, members);
+        options.max_rows, options.replication_factor, members,
+        /*coordinated=*/true);
 
     // All or nothing, cluster-wide.
     const Agreement agreement =
         agree_on_the_ingest(*coordinator, launch_id, roster.size(), outcome.ok,
-                            outcome.rows, options.coordination_timeout);
+                            outcome.rows, outcome.partitions.size(),
+                            outcome.bytes, options.coordination_timeout);
     if (!agreement.ok) {
         return fail(outcome.ok ? agreement.detail : outcome.detail);
     }
+
+    // The dataset is complete, and the allreduce just said how big it is. Record
+    // the manifest ONCE, here, on the initiator (#837): it is the authority every
+    // node — including this one — checks its view of the `part:` catalog against,
+    // so that a partition still in flight fails the query instead of quietly
+    // dropping out of the plan. Written under `mfst:<table-id>`, whose only
+    // writer is this call.
+    data::DatasetManifestValue manifest;
+    manifest.table = table->id();
+    manifest.partitions = agreement.partitions;
+    manifest.rows = agreement.rows;
+    manifest.bytes = agreement.bytes;
+    manifest.created = zetta::util::now_iso8601();
+    table->set_partition_manifest(std::move(manifest));
 
     result.partitions = outcome.partitions;
     result.partitions_fetched = outcome.partitions_fetched;

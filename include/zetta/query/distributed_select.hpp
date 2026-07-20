@@ -43,6 +43,12 @@
 //     the one outcome that must not ship. The error names the partition and its
 //     owners; the remedy is re-running the ingest (or promoting the dataset to a
 //     higher replication factor first).
+//   * **An incomplete catalog fails the query too** (#837). A partition whose
+//     `part:` entry has not gossiped here yet is not unreachable — it is
+//     *invisible*, so the guard above never fires and the plan is silently short.
+//     Before scattering, the coordinator counts the entries it can see against the
+//     dataset's [partition manifest](../data/dataset_manifest.hpp) and fails when
+//     it falls short, with the same "the dataset is degraded" shape.
 //
 // **Aggregates merge, they do not concatenate.** A responder returns a per-group
 // PARTIAL — `{value, count}` per aggregate — not a finished answer, because a

@@ -446,6 +446,7 @@ add_library(zetta-core STATIC
   src/core/index/distributed_fulltext.cpp
   src/core/index/search.cpp
   src/core/compute/compute_job.cpp
+  src/core/data/dataset_manifest.cpp
   src/core/data/dataset_partition.cpp
   src/core/data/fetch_affinity_placement.cpp
   src/core/data/rendezvous_placement.cpp
