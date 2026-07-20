@@ -29,6 +29,7 @@ tests/connect/test_connection_store.cpp      the store, its boundary, and the no
 tests/connect/test_distributed_fetch.cpp     the tiling's exactly-once property + the bounded concurrent read
 tests/connect/test_distributed_ingest.cpp    the cross-node ingest over a real loopback cluster
 tests/connect/test_native_http_transport.cpp the native client against a real loopback server
+src/core/testkit/cases_connect.cpp           cluster.connections + cluster.distributed_import — the in-app, GUI-runnable cases
 ```
 
 ## The shape
@@ -300,6 +301,13 @@ Anything that could mutate the source — `INSERT` / `UPDATE` / `DELETE` / `DROP
 rejected at the boundary **before a request is built**, so a write never reaches
 the network. Leading whitespace and `--` / `/* … */` comments are skipped so the
 guard sees the first real keyword.
+
+This, the replicate-to-all round-trip and the no-leak contract are also an **in-app
+test-suite case** —
+[`cluster.connections`](../testing/runbooks/test-cases/cluster.connections.md),
+runnable from Operations → Test suite and over the `testsuite_run` capability. It
+asserts the refusal by *counting transport calls*: a rejected write leaves the
+counter at zero, which is what "before a request is built" means in practice.
 
 ## Snowflake (the first connector)
 

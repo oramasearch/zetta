@@ -165,6 +165,26 @@ TEST(Testkit, DistributedCasesRunOnARealCluster) {
     EXPECT_EQ(uc1.outcome, TestOutcome::Pass) << uc1.error;
 }
 
+// The source-connector cases (#827, #833). Both stand up a real cluster and run
+// against an injected fake transport — no network, no credentials, no warehouse.
+TEST(Testkit, ConnectorCasesRunOnARealCluster) {
+    // #827: a saved connection reaches every node with its credential, a write
+    // statement never reaches the transport, no read surface carries the token,
+    // and the cells come back typed.
+    const TestResult connections =
+        run("cluster.connections", [](TestOptions& o) { o.set_int("nodes", 2); });
+    EXPECT_EQ(connections.outcome, TestOutcome::Pass) << connections.error;
+
+    // #833 section 7: the co-launched ingest — fetched exactly once cluster-wide,
+    // landed where it was pulled, no row on the replication plane, read back whole.
+    const TestResult import = run("cluster.distributed_import", [](TestOptions& o) {
+        o.set_int("nodes", 2);
+        o.set_int("chunks", 6);
+        o.set_int("rows", 4);
+    });
+    EXPECT_EQ(import.outcome, TestOutcome::Pass) << import.error;
+}
+
 TEST(Testkit, ExampleScriptCasesRunGreen) {
     // Every sim-Python example script registered in the catalog runs end to end
     // (parse -> IR -> gate -> run) and passes — the example programs ARE the tests.

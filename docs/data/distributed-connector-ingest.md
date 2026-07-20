@@ -16,6 +16,7 @@ include/zetta/connect/distributed_fetch.hpp   plan_fetch_assignments (the tiling
 include/zetta/data/fetch_affinity_placement.hpp  the placement that keeps a slice where it landed
 schemas/connector_fetch_launch.schema.json    the generated launch-payload schema
 tests/connect/test_distributed_ingest.cpp     the five properties, over a real loopback cluster
+src/core/testkit/cases_connect.cpp           cluster.distributed_import — the same properties as an in-app, GUI-runnable case
 ```
 
 ## The four steps
@@ -219,6 +220,13 @@ injected argument), and asserts:
    "re-run the ingest" reason, no dataset reported, and no table or
    `system.datasets` entry left on any node (see *Residue* above for what is
    deliberately not asserted).
+
+The first four of those are also an **in-app test-suite case** —
+[`cluster.distributed_import`](../testing/runbooks/test-cases/cluster.distributed_import.md),
+runnable from Operations → Test suite and over the `testsuite_run` capability, so
+the ingest can be demonstrated on a live cluster rather than only in CI. Property 5
+stays here: modelling a half-dead peer means leaving a node deliberately wedged,
+which is a poor thing to do to a panel run.
 
 See also [connector-query.md](connector-query.md) (the connector + the credential
 contract), [partition-only-tables.md](partition-only-tables.md) (why nothing
