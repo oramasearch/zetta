@@ -17,6 +17,16 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   persists.
 - **Reconcile/`materialize_*`/`apply_value` paths never emit audit events** — a
   peer's action arrives already-audited as its own replicated `audit:` key.
+- **Removal is a tombstone, never a key delete.** `ReplicationManager::remove`
+  writes `{"_removed": true}`; `snapshot()` omits tombstoned keys (so reconcile
+  still reads a removal as plain absence) and removal **wins** over a concurrent
+  write. Never reintroduce a CRDT map delete: it names only the predecessor
+  writes the deleting node had already merged, so an unseen write resurrects the
+  key on every node including the remover's (#838). A caller that must see
+  through the tombstone — `migrate_to_replication`, which would otherwise
+  re-capture a dropped entity from a stale disk projection — asks `knows_key()`.
+  `row:` keeps its own `{tbl, deleted:true}` shape, because reconcile has to see
+  that entry to route the delete to a table.
 - **Flat CRDT keys, one entity per UUID key** (`src/core/catalog.hpp` is the
   internal scheme): `node:` `db:` `tbl:` `row:` `lo:` `project:` `input:`
   `graph:` `deployment:` `run:` `model:` `job:` `index:` `principal:` `key:`

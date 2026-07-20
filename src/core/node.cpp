@@ -3044,8 +3044,18 @@ void Node::persist_replication() const {
 
 void Node::migrate_to_replication() {
     const nlohmann::json snapshot = replication_->snapshot();
+    // "Is this entity already in the document?" — and a REMOVED entity counts as
+    // already there. The snapshot omits tombstoned keys (that is what makes a
+    // removal look like absence to every reconcile pass), so asking the snapshot
+    // alone would read a deliberate drop as local-only data that predates
+    // replication and re-capture it on the next start — resurrecting, on disk,
+    // exactly what an operator dropped (#838). knows_key sees through the
+    // tombstone.
+    const auto already_replicated = [&](const std::string& key) {
+        return snapshot.contains(key) || replication_->knows_key(key);
+    };
     for (const auto& db : databases_) {
-        if (!snapshot.contains(catalog::database_key(db->id()))) {
+        if (!already_replicated(catalog::database_key(db->id()))) {
             // Carry the strategy (ENT-35); the default is omitted, so a
             // ReplicateToAll database migrates to the same db: value as before.
             nlohmann::json value{{"name", db->name()}};
@@ -3055,7 +3065,7 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::database_key(db->id()), value);
         }
         for (const auto& table : db->tables()) {
-            if (!snapshot.contains(catalog::table_key(table->id()))) {
+            if (!already_replicated(catalog::table_key(table->id()))) {
                 nlohmann::json value{{"db", db->id()}, {"name", table->name()}};
                 if (!table->replication_strategy().is_default()) {
                     value["replication"] =
@@ -3069,7 +3079,7 @@ void Node::migrate_to_replication() {
             // gained replication would be pruned by the very next reconcile —
             // and every read of that dataset would then plan with no authority.
             if (table->partition_manifest() &&
-                !snapshot.contains(catalog::manifest_key(table->id()))) {
+                !already_replicated(catalog::manifest_key(table->id()))) {
                 replication_->set(catalog::manifest_key(table->id()),
                                   to_json(*table->partition_manifest()));
             }
@@ -3080,7 +3090,7 @@ void Node::migrate_to_replication() {
             const zetta::storage::StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
                 const std::string& row_id = store.id_at(i);
-                if (snapshot.contains(catalog::row_key(row_id))) continue;
+                if (already_replicated(catalog::row_key(row_id))) continue;
                 // A row that cannot be read cannot be captured — leaving it out
                 // of the document is recoverable (the next capture retries it),
                 // capturing an empty row would replicate the loss.
@@ -3092,7 +3102,7 @@ void Node::migrate_to_replication() {
             }
         }
         for (const zetta::data::LargeObject& lo : db->large_objects().list()) {
-            if (!snapshot.contains(catalog::large_object_key(lo.id))) {
+            if (!already_replicated(catalog::large_object_key(lo.id))) {
                 replication_->set(catalog::large_object_key(lo.id),
                                   nlohmann::json{{"db", db->id()},
                                                  {"name", lo.name},
@@ -3102,71 +3112,71 @@ void Node::migrate_to_replication() {
         }
     }
     for (const auto& project : projects_) {
-        if (!snapshot.contains(catalog::project_key(project->id()))) {
+        if (!already_replicated(catalog::project_key(project->id()))) {
             replication_->set(catalog::project_key(project->id()),
                               project->metadata());
         }
         for (const auto& input : project->inputs()) {
-            if (!snapshot.contains(catalog::input_key(input->id()))) {
+            if (!already_replicated(catalog::input_key(input->id()))) {
                 replication_->set(catalog::input_key(input->id()),
                                   input->metadata());
             }
         }
         for (const auto& graph : project->graphs()) {
-            if (!snapshot.contains(catalog::graph_key(graph->id()))) {
+            if (!already_replicated(catalog::graph_key(graph->id()))) {
                 replication_->set(catalog::graph_key(graph->id()),
                                   graph->record());
             }
         }
     }
     for (const auto& deployment : deployments_) {
-        if (!snapshot.contains(catalog::deployment_key(deployment->id()))) {
+        if (!already_replicated(catalog::deployment_key(deployment->id()))) {
             replication_->set(catalog::deployment_key(deployment->id()),
                               deployment->metadata());
         }
     }
     for (const auto& run : runs_) {
-        if (!snapshot.contains(catalog::run_key(run->id()))) {
+        if (!already_replicated(catalog::run_key(run->id()))) {
             replication_->set(catalog::run_key(run->id()), run->metadata());
         }
     }
     for (const auto& model : models_) {
-        if (!snapshot.contains(catalog::model_key(model->id()))) {
+        if (!already_replicated(catalog::model_key(model->id()))) {
             replication_->set(catalog::model_key(model->id()),
                               model->metadata());
         }
     }
     for (const auto& index : indexes_) {
-        if (!snapshot.contains(catalog::index_key(index->id()))) {
+        if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
                               index->metadata());
         }
     }
     for (const auto& job : jobs_) {
-        if (!snapshot.contains(catalog::job_key(job->id()))) {
+        if (!already_replicated(catalog::job_key(job->id()))) {
             replication_->set(catalog::job_key(job->id()), job->metadata());
         }
     }
     for (const auto& partition : dataset_partitions_) {
-        if (!snapshot.contains(catalog::partition_key(partition->id()))) {
+        if (!already_replicated(catalog::partition_key(partition->id()))) {
             replication_->set(catalog::partition_key(partition->id()),
                               partition->metadata());
         }
     }
     for (const auto& principal : principals_) {
-        if (!snapshot.contains(catalog::principal_key(principal->id()))) {
+        if (!already_replicated(catalog::principal_key(principal->id()))) {
             replication_->set(catalog::principal_key(principal->id()),
                               principal->metadata());
         }
         for (const auto& key : principal->keys()) {
-            if (!snapshot.contains(catalog::access_key_key(key->id()))) {
+            if (!already_replicated(catalog::access_key_key(key->id()))) {
                 replication_->set(catalog::access_key_key(key->id()),
                                   key->metadata());
             }
         }
     }
     for (const auto& event : audit_events_) {
-        if (!snapshot.contains(catalog::audit_key(event->id()))) {
+        if (!already_replicated(catalog::audit_key(event->id()))) {
             replication_->set(catalog::audit_key(event->id()),
                               event->metadata());
         }

@@ -130,15 +130,20 @@ removal converges most reliably when the node holding a key removes it itself.
 Cleanup is asserted on every surface a caller reads: after a failed ingest the
 table is gone and nothing by that name appears in `system.datasets` on any node.
 
-What is **not** guaranteed is that every `part:` / `lo:` key has left the
-replicated document. A removal can be undone when a peer's gossip merge carries
-a copy of the document that still holds the key, so an orphaned catalog entry
-can linger. That is a property of the replication layer's delete-versus-merge
-behavior, not of the ingest — it applies equally to `drop_table`, `drop_job`,
-and every other `remove` — and there is no multi-node drop-convergence test in
-the tree today. The residue is invisible through every read surface, because the
-table it belongs to no longer exists. Worth its own issue; it is not something
-this path can fix locally.
+Orphaned `part:` / `lo:` keys used to be possible here. A removal could be undone
+when a peer's gossip merge carried a copy of the document that still held the key,
+which this path provokes by construction: the coordinator cleans up while
+participants are still writing their own entries, so its removals are *necessarily*
+concurrent with writes it has not seen.
+
+That was a property of the replication layer, not of the ingest — it applied
+equally to `drop_table`, `drop_job` and every other `remove` — and it is fixed
+there: removal now replicates as a **tombstone** and **wins** over a concurrent
+write, so a key removed here is gone on every node whatever order the merges
+happen in. See [../cluster/replication.md](../cluster/replication.md) →
+*Removal replicates as a tombstone*
+([#838](https://github.com/oramasearch/zetta/issues/838)), covered by
+`tests/cluster/test_drop_replication.cpp`.
 
 ## Adopting the initiator's table
 
@@ -216,10 +221,12 @@ injected argument), and asserts:
    plan over partitions whose catalog entries have reached it, and a `SELECT`
    run before then answers **short without an error** — worth knowing, and the
    same replication-convergence dependency the *Residue* note above describes.
+   (Convergence, not durability: a partition entry that has not arrived yet will,
+   and one that was removed stays removed — see *Residue*.)
 5. **A participant that stops mid-fetch fails the ingest** — with a
    "re-run the ingest" reason, no dataset reported, and no table or
-   `system.datasets` entry left on any node (see *Residue* above for what is
-   deliberately not asserted).
+   `system.datasets` entry left on any node, and the `part:` / `lo:` keys it had
+   already published are gone from the document too (see *Residue* above).
 
 The first four of those are also an **in-app test-suite case** —
 [`cluster.distributed_import`](../testing/runbooks/test-cases/cluster.distributed_import.md),

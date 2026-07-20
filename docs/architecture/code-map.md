@@ -51,7 +51,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     security.hpp            zetta::cluster::ClusterSecurity + generate/valid_join_token/derive_cluster_security/load_or_create_cluster_security/cluster_secret_schema — inter-node transport security (CTL-2/TB-3, #466): the join token derives the cluster CA (deterministic Ed25519), each node mints a CA-signed identity, persisted under <data_dir>/security/ with a schema-validated secret file (docs/cluster/security.md)
     signal.hpp              zetta::cluster::Signal/SignalHandler — ephemeral RPC/event/task signals + envelope encode/decode (ADR-28)
     collectives.hpp         zetta::cluster::Collectives — allreduce/broadcast/barrier/gather over the signal plane (#365); wire_bytes() + rounds_completed() live meters feed system.collective_rounds (#589)
-    replication.hpp         zetta::cluster::ReplicationManager — Automerge CRDT state
+    replication.hpp         zetta::cluster::ReplicationManager — Automerge CRDT state; remove() writes a TOMBSTONE (never a map delete) and knows_key() sees through it (#838)
     node_metrics.hpp        zetta::cluster::NodeMetrics/NodeMetricsSampler — live per-node host resource telemetry (CPU/memory/GPU+VRAM/storage/network), sampled from OS counters; ephemeral/observed, the source for system.node_metrics; graceful degradation to null when a counter is absent (#575 area 2, #581)
     node_telemetry.hpp      zetta::cluster::NodeTelemetryExchange + encode_node_metrics/decode_node_metrics/node_metrics_wire_schema — cluster-wide live telemetry over the signal plane (#584): each node broadcasts its own NodeMetrics as an ephemeral `node.metrics` event, a SignalHandler (the JobCoordinator's fallback) caches peers' by sender id; the schema-validated wire boundary; feeds the animated node-box gauges via Node::telemetry_snapshot(); not replicated
   data/                     the data model: databases, tables, partitioning + placement, large objects, datasets, imports
@@ -258,7 +258,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     security.cpp            zetta::cluster security material (the one OpenSSL-libcrypto user): join-token CSPRNG + deterministic Ed25519 CA derivation + per-node cert minting + PEM/secret-file persistence with the schema-validated boundary (#466)
     signal.cpp              zetta::cluster::Signal — envelope JSON form + JSON-Schema boundary (encode/decode)
     collectives.cpp         zetta::cluster::Collectives — collective rounds (star reduce/broadcast) + message JSON-Schema boundary
-    replication.cpp         replication CRDT adapter (the one automerge-cpp user)
+    replication.cpp         replication CRDT adapter (the one automerge-cpp user); tombstoned removal + the get_all() conflict scan that makes removal win over a concurrent write (#838)
     node_metrics.cpp        zetta::cluster::NodeMetricsSampler — per-platform OS-counter sampling (macOS mach/sysctl/getifaddrs, Linux /proc, POSIX statvfs), CPU/network rates from deltas; the source behind system.node_metrics (#581)
     node_telemetry.cpp      zetta::cluster::NodeTelemetryExchange — the node.metrics wire boundary (embedded draft-07 schema + pboettch validation, encode/decode) + the thread-safe peer cache (receive on the network thread, record local + snapshot on the loop thread, expire stale) (#584)
   data/
