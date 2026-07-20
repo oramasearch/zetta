@@ -72,3 +72,4 @@ Known rough edges, what to capture if it fails, who to ask.
 | [`env-4-ephemeral-burst`](env-4-ephemeral-burst.md) | [#113](https://github.com/oramasearch/zetta/issues/113) — `[ENV-4]` Ephemeral burst | not yet runnable — step 9 known flaky ([#824](https://github.com/oramasearch/zetta/issues/824)) |
 | [`env-5-managed-cloud`](env-5-managed-cloud.md) | [#114](https://github.com/oramasearch/zetta/issues/114) — `[ENV-5]` Managed cloud | not yet runnable — creating a managed cluster does not exist |
 | [`feat-7-tiered-storage`](feat-7-tiered-storage.md) | [#138](https://github.com/oramasearch/zetta/issues/138) — `[FEAT-7]` Tiered storage | not yet runnable — no tiering exists; step 1 is today's hard wall |
+| [`rel-7-gui-journey`](rel-7-gui-journey.md) | [#192](https://github.com/oramasearch/zetta/issues/192) — `[REL-7]` GUI as product surface | not yet run — all panels ship; nobody has walked it cold |
