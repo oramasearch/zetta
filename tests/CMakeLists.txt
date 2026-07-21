@@ -177,6 +177,7 @@ add_executable(zetta-tests
   agent/test_end_state_grader.cpp
   agent/test_task.cpp
   agent/test_sandbox.cpp
+  agent/test_rollout.cpp
   test_integrity.cpp
   test_schemas.cpp
 )

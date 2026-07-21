@@ -180,6 +180,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     task.hpp                zetta::agent::Task — a "game": id + description + initial EndState + available tool names + required EndState (its grader); readable + verifiable, is_trainable() only with a checkable criterion (#554) (FEAT-12; #555)
     tool_call.hpp           zetta::agent::ToolCall — one agent action: tool name + JSON arguments (MCP-shaped), plain data a policy emits and the sandbox applies (FEAT-12; #555)
     sandbox.hpp             zetta::agent::Sandbox/ToolEffect/ToolResult/ApplyOutcome — the world a rollout acts in: register tools (injected effects), apply a ToolCall to the EndState, report unknown-tool/tool-failed rather than silently ignore (FEAT-12; #555)
+    policy.hpp              zetta::agent::AgentPolicy/PolicyDecision/RolloutStep — the actor interface a rollout drives (the trained model plugs in here); next(step) emits the next ToolCall or stops (FEAT-12; #555)
+    rollout.hpp             zetta::agent::Rollout/RolloutTurn/run_rollout — drive a policy against a task's sandbox for ≤max_turns, capturing the trajectory (call+outcome) + final EndState; the turn budget bounds a non-stopping agent (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -382,6 +384,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   agent/
     grader.cpp              zetta::agent::EndStateGrader::grade — deterministic reward: count required facts satisfied in the observed end-state, score = matched/total in [0,1], passed = all matched with ≥1 required (zetta-core; #555)
     sandbox.cpp             zetta::agent::Sandbox — register_tool/has_tool/apply: look up the tool, run its effect against the world, map to Ok/UnknownTool/ToolFailed (unknown leaves the world untouched) (zetta-core; #555)
+    rollout.cpp             zetta::agent::run_rollout — the turn loop: ask the policy for the next decision, apply non-stop calls to the sandbox and record each turn, stop on a policy stop or the turn budget, return trajectory + final state (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)

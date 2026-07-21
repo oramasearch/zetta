@@ -30,6 +30,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The reward primitive** — `EndState` + `EndStateGrader` (below).
 - **The task/game** — `Task` (below).
 - **Tool calls + the sandbox** — `ToolCall` + `Sandbox` (below).
+- **The rollout** — `AgentPolicy` + `run_rollout` (below).
 
 ## The reward primitive (shipped)
 
@@ -66,6 +67,19 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   tool's effect and reports `Ok` / `UnknownTool` / `ToolFailed` — an unknown tool
   leaves the world untouched, never silently ignored, because a rollout that
   pretended a bad call succeeded would corrupt the reward.
+
+## The rollout (shipped)
+
+- **`AgentPolicy`** (`policy.hpp`) — the actor interface a rollout drives: given a
+  `RolloutStep` (the task, the current state, the turn), it returns a
+  `PolicyDecision` — the next `ToolCall`, or *stop*. **This is the interface the
+  trained model plugs into**; tests use a scripted policy behind the same
+  interface, which is what lets the whole loop be built with no model present.
+- **`run_rollout`** (`rollout.hpp`) — drive a policy against a task's `Sandbox`
+  for at most `max_turns` turns, applying and recording each call (including a
+  failed/unknown one, honestly), and return the trajectory + the final
+  `EndState`. The turn budget is a hard bound: an agent that never stops still
+  terminates, so there is always a final state to reward.
 
 ## Acceptance
 
