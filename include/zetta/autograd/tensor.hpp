@@ -119,4 +119,12 @@ Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets);
 // targets. Backward scatters each row's gradient back to its source row.
 Tensor row_slice(const Tensor& a, int start, int count);
 
+// The RLVR policy-gradient loss for one distribution: given `logits` [1, vocab] and
+// a batch of sampled `actions` with their group-relative `advantages`,
+// loss = -mean(advantage * log softmax(logits)[action]). A scalar. Backward:
+// dLogits_j = -(1/G) * sum_i advantage_i * (1[j == action_i] - softmax_j).
+Tensor policy_gradient_loss(const Tensor& logits,
+                            const std::vector<int>& actions,
+                            const std::vector<double>& advantages);
+
 }  // namespace zetta::autograd

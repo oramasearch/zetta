@@ -4,23 +4,50 @@
 #include <cmath>
 #include <cstddef>
 #include <functional>
+#include <random>
 #include <vector>
 
+#include "zetta/agent/advantage.hpp"
 #include "zetta/autograd/tensor.hpp"
 #include "zetta/autograd/transformer.hpp"
 
 namespace {
 
+using zetta::agent::group_advantages;
 using zetta::autograd::Adam;
 using zetta::autograd::causal_self_attention;
 using zetta::autograd::cross_entropy;
 using zetta::autograd::feed_forward;
+using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::row_slice;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
 using zetta::autograd::Transformer;
 using zetta::autograd::TransformerConfig;
 using zetta::autograd::zero_grad;
+
+// Softmax of a single logits row (host), and inverse-CDF sampling.
+std::vector<double> softmax_row(const std::vector<float>& row) {
+    double max_value = row[0];
+    for (float v : row) max_value = std::max(max_value, double(v));
+    std::vector<double> probs(row.size(), 0.0);
+    double sum_exp = 0.0;
+    for (std::size_t i = 0; i < row.size(); ++i) {
+        probs[i] = std::exp(row[i] - max_value);
+        sum_exp += probs[i];
+    }
+    for (double& p : probs) p /= sum_exp;
+    return probs;
+}
+
+int sample_from(const std::vector<double>& probs, double u) {
+    double cumulative = 0.0;
+    for (std::size_t i = 0; i < probs.size(); ++i) {
+        cumulative += probs[i];
+        if (u < cumulative) return static_cast<int>(i);
+    }
+    return static_cast<int>(probs.size()) - 1;
+}
 
 TransformerConfig small_config() {
     TransformerConfig config;
@@ -170,6 +197,53 @@ TEST(AutogradTransformer, OverfitsASequenceWithOurAutograd) {
             if (row[c] > row[best]) best = c;
         }
         EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
+    }
+}
+
+// RLVR on our own autograd: the transformer learns a verifiable game PURELY FROM
+// REWARD, never shown the answer. For prompt [0, q] it must emit answer(q); the
+// reward is 1 iff the sampled token is correct. Policy gradient through the whole
+// model + GRPO advantages + Adam drive each question's greedy answer to correct.
+TEST(AutogradTransformer, LearnsAVerifiableGameByPolicyGradient) {
+    Transformer model(small_config(), 5);  // vocab 12
+    Adam optimizer(/*learning_rate=*/1e-2F);
+    const std::vector<int> questions = {2, 5, 8};
+    const auto answer = [](int q) { return q + 2; };  // 4, 7, 10 — in vocab
+    const int vocab = model.config().vocab_size;
+
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<double> uniform(0.0, 1.0);
+    const int group = 24;
+
+    for (int step = 0; step < 400; ++step) {
+        const int q = questions[step % questions.size()];
+        const std::vector<int> prompt = {0, q};
+        const Tensor logits = model.forward(prompt);            // [2, vocab]
+        const Tensor last = row_slice(logits, 1, 1);            // [1, vocab]
+        const std::vector<double> probs = softmax_row(last.data());
+
+        std::vector<int> actions(group);
+        std::vector<double> rewards(group);
+        for (int i = 0; i < group; ++i) {
+            actions[i] = sample_from(probs, uniform(rng));
+            rewards[i] = actions[i] == answer(q) ? 1.0 : 0.0;
+        }
+        const std::vector<double> advantages = group_advantages(rewards);
+
+        zero_grad(model.parameters());
+        Tensor loss = policy_gradient_loss(last, actions, advantages);
+        loss.backward();
+        optimizer.step(model.parameters());
+    }
+
+    for (int q : questions) {
+        const Tensor logits = model.forward({0, q});
+        const float* row = logits.data().data() + 1 * vocab;  // last position
+        int best = 0;
+        for (int c = 1; c < vocab; ++c) {
+            if (row[c] > row[best]) best = c;
+        }
+        EXPECT_EQ(best, answer(q)) << "question " << q;
     }
 }
 

@@ -15,6 +15,7 @@ using zetta::autograd::embedding;
 using zetta::autograd::gelu;
 using zetta::autograd::matmul;
 using zetta::autograd::mul;
+using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::rms_norm;
 using zetta::autograd::row_softmax;
 using zetta::autograd::scale;
@@ -236,6 +237,14 @@ TEST(Autograd, CrossEntropyForwardAndGradient) {
                    [&](const Tensor& logits) {
                        return cross_entropy(logits, targets);
                    });
+}
+
+TEST(Autograd, PolicyGradientLossGradient) {
+    const std::vector<int> actions = {1, 3, 0};
+    const std::vector<double> advantages = {0.5, -0.3, 0.8};
+    check_gradient({0.5F, -1.0F, 2.0F, 0.25F}, {1, 4}, [&](const Tensor& logits) {
+        return policy_gradient_loss(logits, actions, advantages);
+    });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).

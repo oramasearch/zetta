@@ -410,6 +410,61 @@ Tensor row_slice(const Tensor& a, int start, int count) {
     return Tensor{node};
 }
 
+Tensor policy_gradient_loss(const Tensor& logits,
+                            const std::vector<int>& actions,
+                            const std::vector<double>& advantages) {
+    const int vocab = logits.shape()[1];
+    const int group = static_cast<int>(actions.size());
+
+    // softmax of the single logits row.
+    const float* x = logits.data().data();
+    float max_value = x[0];
+    for (int j = 1; j < vocab; ++j) {
+        if (x[j] > max_value) max_value = x[j];
+    }
+    std::vector<float> softmax(vocab, 0.0F);
+    float sum_exp = 0.0F;
+    for (int j = 0; j < vocab; ++j) {
+        softmax[j] = std::exp(x[j] - max_value);
+        sum_exp += softmax[j];
+    }
+    for (int j = 0; j < vocab; ++j) {
+        softmax[j] /= sum_exp;
+    }
+    const float log_sum = std::log(sum_exp) + max_value;  // for log softmax
+
+    float loss = 0.0F;
+    for (int i = 0; i < group; ++i) {
+        const float log_prob = x[actions[i]] - log_sum;
+        loss += static_cast<float>(advantages[i]) * log_prob;
+    }
+    loss = group > 0 ? -loss / static_cast<float>(group) : 0.0F;
+
+    auto node = make_node({loss}, {1});
+    node->parents = {logits.node()};
+    const std::shared_ptr<Node> logits_node = logits.node();
+    node->backward = [logits_node, softmax, actions, advantages, group,
+                      vocab](const std::vector<float>& g) {
+        if (group == 0) {
+            return;
+        }
+        const float scale_factor = g[0] / static_cast<float>(group);
+        // Per-action advantage mass, and the total advantage.
+        float total_advantage = 0.0F;
+        std::vector<float> advantage_at(vocab, 0.0F);
+        for (int i = 0; i < group; ++i) {
+            advantage_at[actions[i]] += static_cast<float>(advantages[i]);
+            total_advantage += static_cast<float>(advantages[i]);
+        }
+        for (int j = 0; j < vocab; ++j) {
+            // dLoss/dLogit_j = -(1/G) * (advantage_at_j - softmax_j * total).
+            logits_node->grad[j] +=
+                -scale_factor * (advantage_at[j] - softmax[j] * total_advantage);
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];
