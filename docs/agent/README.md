@@ -275,10 +275,12 @@ lets one distributed model train across a heterogeneous cluster:
   the whole pipeline (tokenizer → model → RLVR → decoded text) closed end to end.
 
 **To ingest an actual Qwen checkpoint** the remaining external-asset step is the
-downloaded multi-GB weights and Qwen's tokenizer — the **architecture parity**
-(RoPE / GQA / SwiGLU / QK-norm, HF tensor names + shapes) and the **safetensors
-loader** (incl. BF16) are now done and device-agnostic, so a real checkpoint's
-tensors line up and load by name.
+**downloaded multi-GB weights** alone — the **architecture parity** (RoPE / GQA /
+SwiGLU / QK-norm, HF tensor names + shapes), the **safetensors loader** (incl. BF16,
+single-file + sharded), and the **byte-level BPE tokenizer**
+([`../tokenizer/`](../tokenizer/README.md), incl. `tokenizer.json` loading) are now
+done and device-agnostic, so a real checkpoint's tensors line up and load by name
+and its text tokenizes exactly.
 
 ## The forward pass on the compute device (shipped)
 
@@ -294,10 +296,12 @@ This closed the reference-first training half. The **open-weights model** is now
 also built and RLVR-trained — device-agnostically on the autograd (the
 `QwenModel` + `grpo_step` sections above): the Qwen3 attention/weight-loading/
 generation/checkpoint I/O (`load_qwen_model` ⇄ `save_qwen_model`) are done and run
-on CPU / CUDA / MLX. What remains is **external assets + integration**: (1) the
-downloaded multi-GB Qwen weights and (2) Qwen's **tokenizer** (byte-level BPE) for
-natural-language tasks — the RLVR loop itself works in token-id space today — plus
-(3) wiring the `QwenModel` behind `AgentPolicy` for the #248 tool-calling eval.
+on CPU / CUDA / MLX, and the **byte-level BPE tokenizer** + text I/O (`generate_text`,
+`grpo_step_text`) close the loop in natural language. What remains is **external
+assets + integration**: (1) the downloaded multi-GB Qwen weights (the only external
+asset — the loader, tokenizer, and RLVR loop are all built and tested), and (2)
+wiring the `QwenModel` behind `AgentPolicy` for the #248 tool-calling eval + the
+sustained training campaign on the build box.
 
 ## Acceptance
 
