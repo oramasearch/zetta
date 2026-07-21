@@ -35,7 +35,22 @@ public:
         const std::vector<std::pair<std::string, std::string>>& merges,
         std::string* error = nullptr);
 
-    // Encode text to token ids (pre-tokenize → base symbols → BPE merges → ids).
+    // Load from GPT-2 / Qwen-style files: a vocab.json ({token: id}) and a
+    // merges.txt (an optional "#" comment header, then "first second" lines).
+    // std::nullopt (with a reason) if a file is missing or malformed.
+    static std::optional<BpeTokenizer> from_gpt2_files(
+        const std::string& vocab_json_path, const std::string& merges_txt_path,
+        std::string* error = nullptr);
+
+    // Register special tokens (e.g. <|endoftext|>, <|im_start|>). Each is matched
+    // as one atomic unit during encode — before pre-tokenization, longest match
+    // wins — and emitted as its id; decode reproduces its content. Also added to
+    // the vocab, so vocab_size and id lookups include it.
+    void add_special_tokens(
+        const std::vector<std::pair<std::string, int>>& specials);
+
+    // Encode text to token ids (special tokens split off first, then each ordinary
+    // span: pre-tokenize → base symbols → BPE merges → ids).
     std::vector<int> encode(std::string_view text) const;
 
     // Decode token ids back to text (ids → byte-level string → bytes → UTF-8).
@@ -58,6 +73,9 @@ private:
         int merged_id;
     };
 
+    // Encode one span that contains no special tokens, appending ids to `out`.
+    void encode_ordinary(std::string_view text, std::vector<int>& out) const;
+
     // Merge the base symbol ids of one pre-token in place, lowest-rank pair first.
     void apply_merges(std::vector<int>& symbols) const;
 
@@ -71,6 +89,7 @@ private:
     std::vector<std::string> id_to_token_;         // id → token ("" if unset)
     std::array<int, 256> byte_to_id_{};            // byte → its base symbol id (-1 if none)
     std::unordered_map<std::uint64_t, Merge> merges_;  // packed id pair → merge
+    std::unordered_map<std::string, int> special_tokens_;  // raw content → id
 };
 
 }  // namespace zetta::tokenizer

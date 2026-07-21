@@ -66,3 +66,11 @@ Built bottom-up (nibble-dev); shipped so far:
   Verified: arbitrary UTF-8 round-trips with no merges (the byte-level guarantee);
   merges build a word into one token in rank order; a leading space merges into a
   `Ġword` token; the lowest-rank pair wins first; accessors + empty-vocab rejection.
+- **Special tokens** — `add_special_tokens` registers atoms like `<|endoftext|>` /
+  `<|im_start|>`; encode matches them **before** pre-tokenization (longest match
+  wins) and emits their id, and decode reproduces their content. Verified: a
+  special token splits the surrounding text and round-trips.
+- **GPT-2 / Qwen file loading** — `from_gpt2_files(vocab.json, merges.txt)` loads
+  the classic pair: `vocab.json` (`{token: id}`) and `merges.txt` (a `#` header
+  then `first second` lines). Verified: a written vocab+merges loads and encodes/
+  decodes; missing files are rejected with a reason.

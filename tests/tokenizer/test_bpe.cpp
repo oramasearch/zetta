@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <fstream>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "temp_dir.hpp"
 #include "zetta/tokenizer/bpe.hpp"
 #include "zetta/tokenizer/byte_encoding.hpp"
 
@@ -104,6 +106,62 @@ TEST(Bpe, LowestRankPairMergesFirst) {
     ASSERT_TRUE(tok.has_value());
     // "abc" -> "ab" + "c" = [256, 'c'].
     EXPECT_EQ(tok->encode("abc"), (std::vector<int>{256, 'c'}));
+}
+
+// Special tokens are matched atomically before BPE, emitted as their id, and
+// reproduced on decode.
+TEST(Bpe, SpecialTokens) {
+    std::optional<BpeTokenizer> tok =
+        BpeTokenizer::from_vocab_and_merges(base_vocab(), {});
+    ASSERT_TRUE(tok.has_value());
+    tok->add_special_tokens({{"<|endoftext|>", 1000}, {"<|im_start|>", 1001}});
+
+    const std::vector<int> ids = tok->encode("hi<|endoftext|>bye");
+    // The special id appears between the two ordinary spans.
+    ASSERT_GE(ids.size(), 3U);
+    bool has_special = false;
+    for (int id : ids) {
+        if (id == 1000) has_special = true;
+    }
+    EXPECT_TRUE(has_special);
+    EXPECT_EQ(tok->decode(ids), "hi<|endoftext|>bye");
+    // A bare special token encodes to exactly its id, and round-trips.
+    EXPECT_EQ(tok->encode("<|im_start|>"), (std::vector<int>{1001}));
+    EXPECT_EQ(tok->decode({1001}), "<|im_start|>");
+}
+
+// Loading a GPT-2/Qwen-style vocab.json + merges.txt from disk.
+TEST(Bpe, LoadsFromGpt2Files) {
+    const zetta::test::TempDir temp;
+    const std::string vocab_path = (temp.path() / "vocab.json").string();
+    const std::string merges_path = (temp.path() / "merges.txt").string();
+
+    // A small vocab: base symbols for the letters we use + merged tokens.
+    std::ofstream vocab_out(vocab_path);
+    vocab_out << "{";
+    vocab_out << "\"h\":104,\"e\":101,\"l\":108,\"o\":111,";
+    vocab_out << "\"he\":256,\"ll\":257,\"hell\":258,\"hello\":259";
+    vocab_out << "}";
+    vocab_out.close();
+
+    std::ofstream merges_out(merges_path);
+    merges_out << "#version: 0.2\n";
+    merges_out << "h e\n";
+    merges_out << "l l\n";
+    merges_out << "he ll\n";
+    merges_out << "hell o\n";
+    merges_out.close();
+
+    std::string error;
+    const std::optional<BpeTokenizer> tok =
+        BpeTokenizer::from_gpt2_files(vocab_path, merges_path, &error);
+    ASSERT_TRUE(tok.has_value()) << error;
+    EXPECT_EQ(tok->encode("hello"), (std::vector<int>{259}));
+    EXPECT_EQ(tok->decode({259}), "hello");
+
+    EXPECT_FALSE(
+        BpeTokenizer::from_gpt2_files("/no/vocab.json", "/no/merges.txt", &error)
+            .has_value());
 }
 
 TEST(Bpe, AccessorsAndEmptyVocab) {
