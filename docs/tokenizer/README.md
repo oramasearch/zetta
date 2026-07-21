@@ -25,6 +25,7 @@ bytes → UTF-8 text.
 Built bottom-up (nibble-dev); shipped so far:
 
 - **The byte foundation** — `byte_encoding.hpp` (below).
+- **The pre-tokenizer** — `pre_tokenizer.hpp` (below).
 
 ## The byte foundation (shipped)
 
@@ -34,3 +35,19 @@ Built bottom-up (nibble-dev); shipped so far:
   leading-space marker) with its inverse `unicode_to_byte`. Verified: UTF-8
   round-trips (ASCII + multibyte + emoji), the byte↔unicode map is a bijection, and
   the known GPT-2 anchors hold.
+
+## The pre-tokenizer (shipped)
+
+- **`pre_tokenizer.hpp`** — `pre_tokenize(text)` reproduces the **Qwen2/Qwen3**
+  pre-tokenization pattern as a hand-written code-point scanner (std::regex cannot
+  express `\p{L}`/`\p{N}` or the trailing-whitespace lookahead). Each of the seven
+  regex alternatives is a matcher, tried in order (Perl leftmost-first): apostrophe
+  contractions, `[^\r\n\p{L}\p{N}]?\p{L}+` (a word with an optional single
+  non-alphanumeric lead — Qwen attaches a leading `.`/`(`, not just a space), single
+  digits, punctuation runs (optional leading space + trailing newlines), and three
+  whitespace rules that leave a single space to attach to the next word. Unicode
+  letter/number classification is exact for ASCII and covers the common scripts;
+  full-UCD parity for rare scripts is a documented refinement. Verified on ASCII
+  where the classification is exact — words, contractions (case-insensitive),
+  digits, punctuation, whitespace runs, code, and that the pieces always
+  concatenate back to the input byte-for-byte.
