@@ -87,6 +87,39 @@ bool QwenModel::set_weight(const std::string& name, const std::vector<float>& da
     return true;
 }
 
+SafeTensors QwenModel::to_safetensors() const {
+    SafeTensors tensors;
+    for (const auto& [name, position] : index_) {
+        const std::shared_ptr<Node>& node = parameters_[position].node();
+        tensors.emplace(name, SafeTensor{node->shape, node->data});
+    }
+    return tensors;
+}
+
+bool QwenModel::load_safetensors(const SafeTensors& tensors, LoadReport* report) {
+    bool complete = true;
+    for (const auto& [name, position] : index_) {
+        const auto found = tensors.find(name);
+        if (found == tensors.end()) {
+            if (report != nullptr) report->missing.push_back(name);
+            complete = false;
+            continue;
+        }
+        if (!set_weight(name, found->second.data)) {  // element-count mismatch
+            if (report != nullptr) report->mismatched.push_back(name);
+            complete = false;
+        }
+    }
+    if (report != nullptr) {
+        for (const auto& [name, tensor] : tensors) {
+            if (index_.find(name) == index_.end()) {
+                report->unexpected.push_back(name);
+            }
+        }
+    }
+    return complete;
+}
+
 Tensor QwenModel::forward(const std::vector<int>& ids) const {
     const auto proj = [&](const std::string& name) {
         // HF weight is [out, in]; our matmul(x, M) needs M [in, out].

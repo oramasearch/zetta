@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "zetta/autograd/safetensors.hpp"
 #include "zetta/autograd/tensor.hpp"
 
 // A Qwen3-parity decoder-only transformer on zetta's own autograd (#555;
@@ -61,6 +62,23 @@ public:
     // the name is unknown or the element count does not match the config's shape —
     // a non-throwing boundary (the caller reports the path-qualified reason).
     bool set_weight(const std::string& name, const std::vector<float>& data);
+
+    // Dump every parameter as an HF-name -> tensor map (to save a trained model or
+    // to round-trip through a .safetensors file).
+    SafeTensors to_safetensors() const;
+
+    // What a checkpoint load did not line up cleanly.
+    struct LoadReport {
+        std::vector<std::string> missing;      // model params absent from the file
+        std::vector<std::string> mismatched;   // name matched but element count differed
+        std::vector<std::string> unexpected;   // file tensors with no matching param
+    };
+
+    // Load parameters from a safetensors map by HF name (via set_weight, copying in
+    // place). Returns true iff every model parameter was present with a matching
+    // element count; extra tensors in the file are recorded in report->unexpected
+    // but do not fail the load. This is how a real Qwen checkpoint lands in the model.
+    bool load_safetensors(const SafeTensors& tensors, LoadReport* report = nullptr);
 
     // Logits [seq, vocab] for the token id sequence, through the full Qwen3 stack.
     Tensor forward(const std::vector<int>& ids) const;

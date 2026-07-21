@@ -62,3 +62,10 @@ across heterogeneous devices.
   foreign runtime — the always-compiled path that loads a Qwen checkpoint into a
   `QwenModel` by tensor name. Malformed input is a non-throwing boundary
   (`std::nullopt` + a reason).
+- **Checkpoint I/O on `QwenModel`** — `to_safetensors()` dumps every parameter as
+  an HF-named map; `load_safetensors()` loads one back by name (in place),
+  returning a `LoadReport` of any missing / mismatched / unexpected tensors. A
+  model dumped to a file and loaded into a fresh, differently-seeded model
+  produces identical logits — the exact path a real Qwen checkpoint takes
+  (verified with a synthetic checkpoint; the multi-GB weights aren't fetchable
+  here, but the format and load path are the same).

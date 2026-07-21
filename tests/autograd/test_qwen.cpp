@@ -2,9 +2,13 @@
 
 #include <cmath>
 #include <cstddef>
+#include <optional>
+#include <string>
 #include <vector>
 
+#include "temp_dir.hpp"
 #include "zetta/autograd/qwen.hpp"
+#include "zetta/autograd/safetensors.hpp"
 #include "zetta/autograd/tensor.hpp"
 #include "zetta/autograd/transformer.hpp"
 
@@ -14,8 +18,12 @@ using zetta::autograd::Adam;
 using zetta::autograd::cross_entropy;
 using zetta::autograd::QwenConfig;
 using zetta::autograd::QwenModel;
+using zetta::autograd::read_safetensors_file;
 using zetta::autograd::row_slice;
+using zetta::autograd::SafeTensor;
+using zetta::autograd::SafeTensors;
 using zetta::autograd::Tensor;
+using zetta::autograd::write_safetensors_file;
 using zetta::autograd::zero_grad;
 
 QwenConfig tiny_config() {
@@ -115,6 +123,77 @@ TEST(QwenModel, TiedEmbeddingsHaveNoLmHeadButStillProject) {
     for (float value : logits.data()) {
         EXPECT_TRUE(std::isfinite(value));
     }
+}
+
+// Loading a checkpoint: dump one model's weights to a .safetensors file, read it
+// back, and load it into a FRESH, differently-seeded model. Identical weights =>
+// identical logits (F32 is exact). This is exactly how a real Qwen checkpoint
+// lands in the model — proven here with a synthetic one (the multi-GB Qwen
+// weights can't be fetched in this environment; the format and the load path are
+// what matter, and they are the same).
+TEST(QwenModel, RoundTripsWeightsThroughASafetensorsFile) {
+    const QwenConfig config = tiny_config();
+    const QwenModel source(config, 11);
+    const std::vector<int> ids = {1, 4, 2, 7, 3};
+    const std::vector<float> expected = source.forward(ids).data();
+
+    const zetta::test::TempDir temp;
+    const std::string path = (temp.path() / "qwen.safetensors").string();
+    ASSERT_TRUE(write_safetensors_file(path, source.to_safetensors()));
+
+    QwenModel loaded(config, 999);  // different seed => different random init
+    const std::vector<float> before_load = loaded.forward(ids).data();
+    EXPECT_NE(before_load, expected);  // the two models start out different
+
+    const std::optional<SafeTensors> parsed = read_safetensors_file(path);
+    ASSERT_TRUE(parsed.has_value());
+    QwenModel::LoadReport report;
+    ASSERT_TRUE(loaded.load_safetensors(*parsed, &report));
+    EXPECT_TRUE(report.missing.empty());
+    EXPECT_TRUE(report.mismatched.empty());
+    EXPECT_TRUE(report.unexpected.empty());
+
+    EXPECT_EQ(loaded.forward(ids).data(), expected);  // now identical
+}
+
+// The load report is honest: a partial / wrong-sized / extra-tensor checkpoint is
+// surfaced, not silently accepted.
+TEST(QwenModel, LoadReportsMissingMismatchedAndUnexpected) {
+    const QwenConfig config = tiny_config();
+    QwenModel model(config, 2);
+
+    SafeTensors partial;
+    // A correctly-shaped tensor for one real parameter.
+    partial["model.norm.weight"] =
+        SafeTensor{{config.d_model}, std::vector<float>(config.d_model, 1.0F)};
+    // A real parameter name but the wrong element count.
+    partial["model.embed_tokens.weight"] = SafeTensor{{1}, {0.0F}};
+    // A tensor the model doesn't have.
+    partial["model.layers.99.self_attn.q_proj.weight"] = SafeTensor{{1}, {0.0F}};
+
+    QwenModel::LoadReport report;
+    EXPECT_FALSE(model.load_safetensors(partial, &report));
+    // model.norm.weight loaded; embed_tokens mismatched; many params missing.
+    EXPECT_FALSE(report.missing.empty());
+    EXPECT_EQ(report.mismatched, (std::vector<std::string>{"model.embed_tokens.weight"}));
+    EXPECT_EQ(report.unexpected,
+              (std::vector<std::string>{"model.layers.99.self_attn.q_proj.weight"}));
+}
+
+// Tied-embedding models round-trip too (no lm_head tensor in the dump).
+TEST(QwenModel, TiedEmbeddingsRoundTrip) {
+    QwenConfig config = tiny_config();
+    config.tie_word_embeddings = true;
+    const QwenModel source(config, 4);
+    const std::vector<int> ids = {3, 1, 2};
+    const std::vector<float> expected = source.forward(ids).data();
+
+    const SafeTensors dump = source.to_safetensors();
+    EXPECT_EQ(dump.count("lm_head.weight"), 0U);
+
+    QwenModel loaded(config, 77);
+    ASSERT_TRUE(loaded.load_safetensors(dump));
+    EXPECT_EQ(loaded.forward(ids).data(), expected);
 }
 
 // THE PAYOFF: the full Qwen3-parity stack — GQA + QK-norm + RoPE + SwiGLU +
