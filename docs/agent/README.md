@@ -29,6 +29,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 
 - **The reward primitive** — `EndState` + `EndStateGrader` (below).
 - **The task/game** — `Task` (below).
+- **Tool calls + the sandbox** — `ToolCall` + `Sandbox` (below).
 
 ## The reward primitive (shipped)
 
@@ -54,6 +55,17 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   are wired later, in the sandbox.
 
 [#554]: https://github.com/oramasearch/zetta/issues/554
+
+## Tool calls + the sandbox (shipped)
+
+- **`ToolCall`** (`tool_call.hpp`) — one agent action: a tool name + JSON
+  arguments, MCP-shaped. Plain data a policy emits and the sandbox applies.
+- **`Sandbox`** (`sandbox.hpp`) — the world a rollout acts in: it holds the
+  current `EndState` and a set of registered tools, each an **injected effect**
+  (`ToolEffect`: `world × args → ToolResult`). Applying a `ToolCall` runs that
+  tool's effect and reports `Ok` / `UnknownTool` / `ToolFailed` — an unknown tool
+  leaves the world untouched, never silently ignored, because a rollout that
+  pretended a bad call succeeded would corrupt the reward.
 
 ## Acceptance
 

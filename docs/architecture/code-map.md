@@ -178,6 +178,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
     grader.hpp              zetta::agent::Grade/EndStateGrader — the RLVR reward primitive: score an observed end-state against a task's required facts by exact match, reward in [0,1] + passed; criterion-free task grades nothing (negative control) (FEAT-12; #555)
     task.hpp                zetta::agent::Task — a "game": id + description + initial EndState + available tool names + required EndState (its grader); readable + verifiable, is_trainable() only with a checkable criterion (#554) (FEAT-12; #555)
+    tool_call.hpp           zetta::agent::ToolCall — one agent action: tool name + JSON arguments (MCP-shaped), plain data a policy emits and the sandbox applies (FEAT-12; #555)
+    sandbox.hpp             zetta::agent::Sandbox/ToolEffect/ToolResult/ApplyOutcome — the world a rollout acts in: register tools (injected effects), apply a ToolCall to the EndState, report unknown-tool/tool-failed rather than silently ignore (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -379,6 +381,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     playbook.cpp            zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
   agent/
     grader.cpp              zetta::agent::EndStateGrader::grade — deterministic reward: count required facts satisfied in the observed end-state, score = matched/total in [0,1], passed = all matched with ≥1 required (zetta-core; #555)
+    sandbox.cpp             zetta::agent::Sandbox — register_tool/has_tool/apply: look up the tool, run its effect against the world, map to Ok/UnknownTool/ToolFailed (unknown leaves the world untouched) (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
