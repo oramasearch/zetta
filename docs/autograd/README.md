@@ -46,7 +46,13 @@ across heterogeneous devices.
   (the last two split/reassemble attention heads). Every op is gradient-checked.
 - **`transformer.hpp`** — `causal_self_attention`, `grouped_query_attention`
   (the Qwen/LLaMA GQA: n_heads query heads over n_kv_heads shared key/value
-  heads, RoPE per head, causal SDPA; a QK-norm overload adds the Qwen3 per-head
-  RMSNorm on Q and K), `feed_forward`, `swiglu_feed_forward`, the `Transformer`
-  model, `Adam`, and `zero_grad`. Trains by overfit and by RLVR policy gradient
-  on the native engine.
+  heads, RoPE per head with a selectable base, causal SDPA; a QK-norm overload
+  adds the Qwen3 per-head RMSNorm on Q and K), `feed_forward`,
+  `swiglu_feed_forward`, the `Transformer` model, `Adam`, and `zero_grad`. Trains
+  by overfit and by RLVR policy gradient on the native engine.
+- **`qwen.hpp`** — `QwenConfig` + `QwenModel`, the Qwen3-parity decoder-only
+  transformer: embeddings → per-layer {RMSNorm → GQA+QK-norm+RoPE → RMSNorm →
+  SwiGLU} → final RMSNorm → lm_head, with parameters keyed by **Hugging Face
+  tensor names** (`model.embed_tokens.weight`, `model.layers.{L}.self_attn.*`,
+  …) so a real safetensors checkpoint loads by name (`set_weight`). Supports GQA,
+  QK-norm, tied embeddings, and the Qwen3 RoPE base.
