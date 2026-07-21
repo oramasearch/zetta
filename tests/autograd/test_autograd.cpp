@@ -13,6 +13,7 @@ using zetta::autograd::add_bias;
 using zetta::autograd::gelu;
 using zetta::autograd::matmul;
 using zetta::autograd::mul;
+using zetta::autograd::row_softmax;
 using zetta::autograd::scale;
 using zetta::autograd::silu;
 using zetta::autograd::sum;
@@ -130,6 +131,29 @@ TEST(Autograd, GeluGradient) {
 TEST(Autograd, SiluGradient) {
     check_gradient({-2.0F, -0.5F, 0.0F, 0.5F, 1.5F, 3.0F}, {2, 3},
                    [](const Tensor& p) { return sum(silu(p)); });
+}
+
+TEST(Autograd, RowSoftmaxRowsSumToOne) {
+    const Tensor logits = Tensor::leaf({1, 2, 3, -1, 0, 4}, {2, 3}, false);
+    const Tensor probs = row_softmax(logits);
+    for (int row = 0; row < 2; ++row) {
+        float total = 0.0F;
+        for (int col = 0; col < 3; ++col) total += probs.data()[row * 3 + col];
+        EXPECT_NEAR(total, 1.0F, 1e-6F);
+    }
+    // The equal-logits row [1,1,...] would be uniform; here larger logits get more.
+    EXPECT_GT(probs.data()[2], probs.data()[0]);  // row 0: logit 3 > logit 1
+}
+
+TEST(Autograd, RowSoftmaxGradient) {
+    // A non-trivial loss (sum of softmax alone is constant): weight the row
+    // probabilities by a fixed target so the gradient is non-zero.
+    const Tensor target =
+        Tensor::leaf({0.2F, 0.5F, 0.3F, 0.1F, 0.7F, 0.2F}, {2, 3}, false);
+    check_gradient({0.5F, -1.0F, 2.0F, 1.0F, 0.0F, -0.5F}, {2, 3},
+                   [&](const Tensor& p) {
+                       return sum(mul(row_softmax(p), target));
+                   });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).

@@ -89,4 +89,9 @@ Tensor gelu(const Tensor& a);
 // sigmoid(x)*(1 + x*(1-sigmoid(x))).
 Tensor silu(const Tensor& a);
 
+// Row-wise softmax of a [rows, cols] tensor (softmax over each row / the last axis)
+// — the attention weight nonlinearity. Numerically stable (subtracts the row max).
+// Backward per row: dX = Y ⊙ (dOut − sum(dOut ⊙ Y)).
+Tensor row_softmax(const Tensor& a);
+
 }  // namespace zetta::autograd

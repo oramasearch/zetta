@@ -212,6 +212,48 @@ Tensor silu(const Tensor& a) {
     return Tensor{node};
 }
 
+Tensor row_softmax(const Tensor& a) {
+    const int rows = a.shape()[0];
+    const int cols = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(rows) * cols, 0.0F);
+    for (int row = 0; row < rows; ++row) {
+        const float* x = a.data().data() + row * cols;
+        float max_value = x[0];
+        for (int col = 1; col < cols; ++col) {
+            if (x[col] > max_value) max_value = x[col];
+        }
+        float total = 0.0F;
+        for (int col = 0; col < cols; ++col) {
+            const float e = std::exp(x[col] - max_value);
+            out[row * cols + col] = e;
+            total += e;
+        }
+        for (int col = 0; col < cols; ++col) {
+            out[row * cols + col] /= total;
+        }
+    }
+
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    // Capture the output (softmax result) for the backward — Jacobian-vector product
+    // per row: dX_j = Y_j * (dOut_j - sum_k dOut_k * Y_k).
+    const std::vector<float> y = node->data;
+    node->backward = [a_node, y, rows, cols](const std::vector<float>& g) {
+        for (int row = 0; row < rows; ++row) {
+            float dot = 0.0F;
+            for (int col = 0; col < cols; ++col) {
+                dot += g[row * cols + col] * y[row * cols + col];
+            }
+            for (int col = 0; col < cols; ++col) {
+                a_node->grad[row * cols + col] +=
+                    y[row * cols + col] * (g[row * cols + col] - dot);
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];
