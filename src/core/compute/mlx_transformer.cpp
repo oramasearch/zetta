@@ -3,6 +3,7 @@
 #if defined(ZETTA_WITH_MLX)
 
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace zetta::compute::model {
@@ -61,6 +62,71 @@ mx::array causal_self_attention(const mx::array& x, const mx::array& wq,
     context = mx::transpose(context, std::vector<int>{1, 0, 2});  // [seq, n_heads, hd]
     context = mx::reshape(context, mx::Shape{seq, d_model});
     return mx::matmul(context, wo);
+}
+
+namespace {
+
+// Random init for a 2-D parameter, scaled small (like a transformer's).
+mx::array init_matrix(int rows, int cols, std::uint64_t seed) {
+    return mx::random::normal(mx::Shape{rows, cols}, mx::random::key(seed)) * 0.02F;
+}
+
+// The parameter index where layer `l`'s eight tensors begin (token + positional
+// embedding occupy 0 and 1).
+int layer_base(int layer) { return 2 + 8 * layer; }
+
+}  // namespace
+
+MlxTransformer::MlxTransformer(const TransformerConfig& config,
+                              std::uint64_t seed)
+    : config_(config) {
+    const int d = config.d_model;
+    std::uint64_t next = seed + 1;
+
+    parameters_.push_back(init_matrix(config.vocab_size, d, next++));  // token emb
+    parameters_.push_back(init_matrix(config.max_seq, d, next++));     // positional
+    for (int layer = 0; layer < config.n_layers; ++layer) {
+        parameters_.push_back(mx::ones(mx::Shape{d}, mx::float32));    // attn_norm
+        parameters_.push_back(init_matrix(d, d, next++));             // wq
+        parameters_.push_back(init_matrix(d, d, next++));             // wk
+        parameters_.push_back(init_matrix(d, d, next++));             // wv
+        parameters_.push_back(init_matrix(d, d, next++));             // wo
+        parameters_.push_back(mx::ones(mx::Shape{d}, mx::float32));    // ff_norm
+        parameters_.push_back(init_matrix(d, config.d_ff, next++));   // w1
+        parameters_.push_back(init_matrix(config.d_ff, d, next++));   // w2
+    }
+    parameters_.push_back(mx::ones(mx::Shape{d}, mx::float32));        // final_norm
+    parameters_.push_back(init_matrix(d, config.vocab_size, next++)); // output proj
+}
+
+mx::array MlxTransformer::forward(const TransformerConfig& config,
+                                 const std::vector<mx::array>& parameters,
+                                 const mx::array& token_ids) {
+    const int seq = token_ids.shape(0);
+    const mx::array positions = mx::astype(mx::arange(seq), mx::int32);
+
+    // Embed tokens + positions.
+    mx::array x = mx::take(parameters[0], token_ids, 0) +
+                  mx::take(parameters[1], positions, 0);
+
+    // Pre-norm residual blocks: attention then feed-forward.
+    for (int layer = 0; layer < config.n_layers; ++layer) {
+        const int base = layer_base(layer);
+        x = x + causal_self_attention(rms_norm(x, parameters[base + 0]),
+                                      parameters[base + 1], parameters[base + 2],
+                                      parameters[base + 3], parameters[base + 4],
+                                      config.n_heads);
+        x = x + feed_forward(rms_norm(x, parameters[base + 5]),
+                             parameters[base + 6], parameters[base + 7]);
+    }
+
+    const int final_norm = layer_base(config.n_layers);
+    x = rms_norm(x, parameters[final_norm]);
+    return mx::matmul(x, parameters[final_norm + 1]);  // logits [seq, vocab]
+}
+
+mx::array MlxTransformer::forward(const mx::array& token_ids) const {
+    return forward(config_, parameters_, token_ids);
 }
 
 }  // namespace zetta::compute::model

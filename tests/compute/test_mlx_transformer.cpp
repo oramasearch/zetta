@@ -18,7 +18,25 @@ namespace {
 namespace mx = mlx::core;
 using zetta::compute::model::causal_self_attention;
 using zetta::compute::model::feed_forward;
+using zetta::compute::model::MlxTransformer;
 using zetta::compute::model::rms_norm;
+using zetta::compute::model::TransformerConfig;
+
+TransformerConfig small_config() {
+    TransformerConfig config;
+    config.vocab_size = 16;
+    config.d_model = 16;
+    config.n_heads = 2;
+    config.n_layers = 2;
+    config.d_ff = 32;
+    config.max_seq = 8;
+    return config;
+}
+
+mx::array token_ids(const std::vector<int>& ids) {
+    return mx::array(ids.data(), mx::Shape{static_cast<int>(ids.size())},
+                     mx::int32);
+}
 
 mx::array weight(int rows, int cols, std::uint64_t seed) {
     return mx::random::normal(mx::Shape{rows, cols}, mx::random::key(seed)) * 0.1F;
@@ -96,6 +114,38 @@ TEST(MlxTransformer, AttentionIsCausal) {
     }
     EXPECT_LT(first_diff, 1e-4F);  // position 0 cannot see the future
     EXPECT_GT(last_diff, 1e-4F);   // the last position does see the change
+}
+
+TEST(MlxTransformer, ParameterCountMatchesLayout) {
+    TransformerConfig config = small_config();
+    config.n_layers = 3;
+    const MlxTransformer model(config, 1);
+    // token + positional embedding, 8 tensors per layer, final norm + projection.
+    EXPECT_EQ(model.parameters().size(),
+              static_cast<std::size_t>(2 + 8 * 3 + 2));
+}
+
+TEST(MlxTransformer, ForwardProducesFiniteLogits) {
+    const MlxTransformer model(small_config(), 42);
+    const mx::array ids = token_ids({1, 2, 3, 4, 5});
+    mx::array logits = model.forward(ids);
+    ASSERT_EQ(logits.shape(0), 5);
+    ASSERT_EQ(logits.shape(1), 16);
+    mx::eval(logits);
+    for (int i = 0; i < 5 * 16; ++i) {
+        EXPECT_TRUE(std::isfinite(logits.data<float>()[i]));
+    }
+}
+
+TEST(MlxTransformer, ForwardIsDeterministic) {
+    const MlxTransformer model(small_config(), 7);
+    const mx::array ids = token_ids({3, 1, 4, 1, 5});
+    mx::array a = model.forward(ids);
+    mx::array b = model.forward(ids);
+    mx::eval(a, b);
+    for (int i = 0; i < a.shape(0) * a.shape(1); ++i) {
+        EXPECT_FLOAT_EQ(a.data<float>()[i], b.data<float>()[i]);
+    }
 }
 
 }  // namespace

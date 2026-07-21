@@ -13,6 +13,9 @@
 // own before the full stack composes them.
 #if defined(ZETTA_WITH_MLX)
 
+#include <cstdint>
+#include <vector>
+
 #include <mlx/mlx.h>
 
 namespace zetta::compute::model {
@@ -50,6 +53,38 @@ mlx::core::array causal_self_attention(const mlx::core::array& x,
                                        const mlx::core::array& wk,
                                        const mlx::core::array& wv,
                                        const mlx::core::array& wo, int n_heads);
+
+// The full decoder-only transformer. Its parameters are a FLAT, fixed-order list of
+// mlx arrays — token embedding, positional embedding, then per layer {attn_norm, wq,
+// wk, wv, wo, ff_norm, w1, w2}, then final_norm and the output projection — so the
+// whole model can be differentiated at once with mx::value_and_grad (the next rung).
+// forward() runs the pre-norm residual stack (embed → N × (attention + MLP) → norm →
+// project) and returns logits [seq, vocab_size].
+class MlxTransformer {
+public:
+    explicit MlxTransformer(const TransformerConfig& config,
+                            std::uint64_t seed = 0);
+
+    const TransformerConfig& config() const { return config_; }
+
+    // The flat parameter list (the order forward() indexes) — what value_and_grad
+    // differentiates and the optimizer updates.
+    const std::vector<mlx::core::array>& parameters() const { return parameters_; }
+    std::vector<mlx::core::array>& parameters() { return parameters_; }
+
+    // Logits [seq, vocab] for token_ids [seq] (int32), from an explicit parameter
+    // list — a pure function of the parameters, so it is differentiable.
+    static mlx::core::array forward(const TransformerConfig& config,
+                                    const std::vector<mlx::core::array>& parameters,
+                                    const mlx::core::array& token_ids);
+
+    // forward() over this model's own parameters.
+    mlx::core::array forward(const mlx::core::array& token_ids) const;
+
+private:
+    TransformerConfig config_;
+    std::vector<mlx::core::array> parameters_;
+};
 
 }  // namespace zetta::compute::model
 
