@@ -10,6 +10,7 @@ namespace {
 
 using zetta::autograd::add;
 using zetta::autograd::add_bias;
+using zetta::autograd::cross_entropy;
 using zetta::autograd::embedding;
 using zetta::autograd::gelu;
 using zetta::autograd::matmul;
@@ -221,6 +222,20 @@ TEST(Autograd, EmbeddingGathersAndScatters) {
     check_gradient({10, 11, 20, 21, 30, 31}, {3, 2}, [&](const Tensor& t) {
         return sum(mul(embedding(t, ids), target));
     });
+}
+
+TEST(Autograd, CrossEntropyForwardAndGradient) {
+    // Uniform logits over 2 classes -> loss = log(2) regardless of target.
+    const Tensor uniform = Tensor::leaf({0, 0, 0, 0}, {2, 2}, false);
+    const Tensor loss = cross_entropy(uniform, {0, 1});
+    EXPECT_NEAR(loss.data()[0], std::log(2.0F), 1e-5F);
+
+    // Gradient check against finite differences.
+    const std::vector<int> targets = {2, 0};
+    check_gradient({0.5F, -1.0F, 2.0F, 1.0F, 0.0F, -0.5F}, {2, 3},
+                   [&](const Tensor& logits) {
+                       return cross_entropy(logits, targets);
+                   });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).

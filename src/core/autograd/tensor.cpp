@@ -346,6 +346,49 @@ Tensor embedding(const Tensor& table, const std::vector<int>& ids) {
     return Tensor{node};
 }
 
+Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets) {
+    const int rows = logits.shape()[0];
+    const int vocab = logits.shape()[1];
+    std::vector<float> softmax(static_cast<std::size_t>(rows) * vocab, 0.0F);
+    float total = 0.0F;
+
+    for (int row = 0; row < rows; ++row) {
+        const float* x = logits.data().data() + row * vocab;
+        float max_value = x[0];
+        for (int j = 1; j < vocab; ++j) {
+            if (x[j] > max_value) max_value = x[j];
+        }
+        float sum_exp = 0.0F;
+        for (int j = 0; j < vocab; ++j) {
+            const float e = std::exp(x[j] - max_value);
+            softmax[row * vocab + j] = e;
+            sum_exp += e;
+        }
+        for (int j = 0; j < vocab; ++j) {
+            softmax[row * vocab + j] /= sum_exp;
+        }
+        // loss_row = log(sum_exp) + max − x[target] = −log(softmax[target]).
+        total += std::log(sum_exp) + max_value - x[targets[row]];
+    }
+    total /= static_cast<float>(rows);
+
+    auto node = make_node({total}, {1});
+    node->parents = {logits.node()};
+    const std::shared_ptr<Node> logits_node = logits.node();
+    node->backward = [logits_node, softmax, targets, rows,
+                      vocab](const std::vector<float>& g) {
+        const float scale_factor = g[0] / static_cast<float>(rows);
+        for (int row = 0; row < rows; ++row) {
+            for (int j = 0; j < vocab; ++j) {
+                const float indicator = (j == targets[row]) ? 1.0F : 0.0F;
+                logits_node->grad[row * vocab + j] +=
+                    (softmax[row * vocab + j] - indicator) * scale_factor;
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];

@@ -109,4 +109,9 @@ Tensor transpose(const Tensor& a);
 // backward scatter-adds each row's gradient back into the selected table rows.
 Tensor embedding(const Tensor& table, const std::vector<int>& ids);
 
+// Mean cross-entropy of `logits` [rows, vocab] against integer `targets` [rows] —
+// the language-model loss. Numerically stable (log-sum-exp), returns a scalar.
+// Backward: dLogits[row, j] = (softmax[row, j] − 1[j == target]) / rows.
+Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets);
+
 }  // namespace zetta::autograd
