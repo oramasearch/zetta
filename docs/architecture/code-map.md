@@ -174,6 +174,9 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     gbdt_explain_job.hpp    zetta::ml::run_explain_job — run distributed TreeSHAP as a recorded `explain` ComputeJob: per-entity SHAP over a shard (parallel_for) + an allreduced global mean-|φ| driver ranking; single-node == multi-node (FEAT-6; #393)
     golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
     playbook.hpp            zetta::ml — UC-1 retention playbook: generate_playbook (deterministic driver→action→owner via PlaybookPolicy + frozen expected-retained-value priority risk×ARR×save_rate, ranked) behind a constrained PlaybookNarrator seam (default-Claude ConstrainedNarrator over an injected NarratorCompletion, validated at the playbook_entry schema boundary, never invents numbers; RulesEngineNarrator offline fallback) + OutcomeLog (FEAT-6; #397)
+  agent/
+    end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
+    grader.hpp              zetta::agent::Grade/EndStateGrader — the RLVR reward primitive: score an observed end-state against a task's required facts by exact match, reward in [0,1] + passed; criterion-free task grades nothing (negative control) (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -373,6 +376,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     gbdt_explain_job.cpp    run_explain_job — read the device-backed feature shard, per-entity tree_shap (parallel_for), allreduce the global mean-|φ| driver ranking, drive the `explain` job lifecycle (zetta-core; #393)
     golden_oracle.cpp       load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
     playbook.cpp            zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
+  agent/
+    grader.cpp              zetta::agent::EndStateGrader::grade — deterministic reward: count required facts satisfied in the observed end-state, score = matched/total in [0,1], passed = all matched with ≥1 required (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)

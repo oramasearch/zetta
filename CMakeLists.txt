@@ -539,6 +539,7 @@ add_library(zetta-core STATIC
   src/core/ml/local_featurize_train_job.cpp
   src/core/ml/golden_oracle.cpp
   src/core/ml/playbook.cpp
+  src/core/agent/grader.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

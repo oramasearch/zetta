@@ -174,6 +174,7 @@ add_executable(zetta-tests
   cluster/test_data_replication.cpp
   cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp
+  agent/test_end_state_grader.cpp
   test_integrity.cpp
   test_schemas.cpp
 )
