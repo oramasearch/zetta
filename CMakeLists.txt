@@ -592,6 +592,7 @@ add_library(zetta-core STATIC
   src/core/agent/neural_training.cpp
   src/core/agent/judge.cpp
   src/core/autograd/tensor.cpp
+  src/core/autograd/transformer.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

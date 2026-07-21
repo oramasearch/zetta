@@ -405,7 +405,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     golden_oracle.cpp       load_golden_oracle — parse + schema-validate (pboettch draft-07) the committed golden oracle fixture at the boundary + structural rules, GoldenOracle::to_json (zetta-core; #395)
     playbook.cpp            zetta::ml — playbook engine: PlaybookPolicy churn dictionary + hand-written JSON boundary, expected-retained-value priority + ranking, RulesEngineNarrator + ConstrainedNarrator (pboettch playbook_entry schema validation + semantic checks + fallback), generate_playbook, OutcomeLog (zetta-core; #397)
   autograd/
-    tensor.cpp              zetta::autograd — Node/Tensor + backward (topo-order reverse-mode), matmul (dA=dOut·Bᵀ, dB=Aᵀ·dOut) and sum; reference host kernels, gradient-checked (zetta-core; #555)
+    tensor.cpp              zetta::autograd — Node/Tensor + backward (topo-order reverse-mode) and the op library (matmul, transpose, add/mul/scale/add_bias, gelu/silu, row_softmax, rms_norm, embedding, cross_entropy); reference host kernels, gradient-checked (zetta-core; #555)
+    transformer.cpp         zetta::autograd::causal_self_attention/feed_forward — the decoder blocks composed from the autograd ops (QKᵀ·scale·mask·softmax·V, gelu MLP); backprop flows through via the graph (zetta-core; #555)
   agent/
     grader.cpp              zetta::agent::EndStateGrader::grade — deterministic reward: count required facts satisfied in the observed end-state, score = matched/total in [0,1], passed = all matched with ≥1 required (zetta-core; #555)
     sandbox.cpp             zetta::agent::Sandbox — register_tool/has_tool/apply: look up the tool, run its effect against the world, map to Ok/UnknownTool/ToolFailed (unknown leaves the world untouched) (zetta-core; #555)
