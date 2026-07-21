@@ -1,5 +1,6 @@
 #include "zetta/autograd/transformer.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +103,45 @@ Tensor causal_self_attention(const Tensor& x, const Tensor& wq, const Tensor& wk
 
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2) {
     return matmul(gelu(matmul(x, w1)), w2);
+}
+
+void zero_grad(std::vector<Tensor>& parameters) {
+    for (Tensor& parameter : parameters) {
+        std::vector<float>& grad = parameter.node()->grad;
+        std::fill(grad.begin(), grad.end(), 0.0F);
+    }
+}
+
+Adam::Adam(float learning_rate, float beta1, float beta2, float epsilon)
+    : learning_rate_(learning_rate),
+      beta1_(beta1),
+      beta2_(beta2),
+      epsilon_(epsilon) {}
+
+void Adam::step(std::vector<Tensor>& parameters) {
+    if (first_moment_.empty()) {
+        for (const Tensor& parameter : parameters) {
+            first_moment_.emplace_back(parameter.data().size(), 0.0F);
+            second_moment_.emplace_back(parameter.data().size(), 0.0F);
+        }
+    }
+    ++step_count_;
+    const float bias1 = 1.0F - std::pow(beta1_, step_count_);
+    const float bias2 = 1.0F - std::pow(beta2_, step_count_);
+
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+        std::vector<float>& data = parameters[i].node()->data;
+        const std::vector<float>& grad = parameters[i].node()->grad;
+        for (std::size_t j = 0; j < data.size(); ++j) {
+            first_moment_[i][j] =
+                beta1_ * first_moment_[i][j] + (1.0F - beta1_) * grad[j];
+            second_moment_[i][j] =
+                beta2_ * second_moment_[i][j] + (1.0F - beta2_) * grad[j] * grad[j];
+            const float m_hat = first_moment_[i][j] / bias1;
+            const float v_hat = second_moment_[i][j] / bias2;
+            data[j] -= learning_rate_ * m_hat / (std::sqrt(v_hat) + epsilon_);
+        }
+    }
 }
 
 }  // namespace zetta::autograd

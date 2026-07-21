@@ -52,4 +52,27 @@ private:
     std::vector<Tensor> parameters_;
 };
 
+// Zero the gradient of every parameter — call before each backward() so gradients
+// do not accumulate across training steps.
+void zero_grad(std::vector<Tensor>& parameters);
+
+// Adam over autograd Tensor leaves: step() updates each parameter in place from its
+// accumulated gradient, maintaining per-parameter first and second moments with
+// bias correction.
+class Adam {
+public:
+    explicit Adam(float learning_rate = 1e-3F, float beta1 = 0.9F,
+                  float beta2 = 0.999F, float epsilon = 1e-8F);
+    void step(std::vector<Tensor>& parameters);
+
+private:
+    float learning_rate_;
+    float beta1_;
+    float beta2_;
+    float epsilon_;
+    int step_count_ = 0;
+    std::vector<std::vector<float>> first_moment_;
+    std::vector<std::vector<float>> second_moment_;
+};
+
 }  // namespace zetta::autograd

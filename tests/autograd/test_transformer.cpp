@@ -11,12 +11,16 @@
 
 namespace {
 
+using zetta::autograd::Adam;
 using zetta::autograd::causal_self_attention;
+using zetta::autograd::cross_entropy;
 using zetta::autograd::feed_forward;
+using zetta::autograd::row_slice;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
 using zetta::autograd::Transformer;
 using zetta::autograd::TransformerConfig;
+using zetta::autograd::zero_grad;
 
 TransformerConfig small_config() {
     TransformerConfig config;
@@ -130,6 +134,43 @@ TEST(AutogradTransformer, ForwardIsDeterministic) {
     const Tensor a = model.forward({3, 1, 4, 1, 5});
     const Tensor b = model.forward({3, 1, 4, 1, 5});
     EXPECT_EQ(a.data(), b.data());
+}
+
+// THE PAYOFF: our own native autograd + Adam trains the real transformer to
+// memorize a sequence. The loss collapses and the model then predicts it greedily.
+// No framework — every gradient came from our backward closures.
+TEST(AutogradTransformer, OverfitsASequenceWithOurAutograd) {
+    Transformer model(small_config(), 3);
+    Adam optimizer(/*learning_rate=*/1e-2F);
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4};
+    const std::vector<int> targets(sequence.begin() + 1, sequence.end());
+    const int vocab = model.config().vocab_size;
+
+    float first_loss = 0.0F;
+    float last_loss = 0.0F;
+    for (int step = 0; step < 300; ++step) {
+        zero_grad(model.parameters());
+        const Tensor logits = model.forward(sequence);
+        const Tensor predicted =
+            row_slice(logits, 0, static_cast<int>(sequence.size()) - 1);
+        Tensor loss = cross_entropy(predicted, targets);
+        loss.backward();
+        optimizer.step(model.parameters());
+        if (step == 0) first_loss = loss.data()[0];
+        last_loss = loss.data()[0];
+    }
+    EXPECT_LT(last_loss, first_loss * 0.2F);  // the loss collapsed
+
+    // The model now predicts the sequence greedily: argmax(logits[t]) == seq[t+1].
+    const Tensor logits = model.forward(sequence);
+    for (std::size_t t = 0; t + 1 < sequence.size(); ++t) {
+        const float* row = logits.data().data() + t * vocab;
+        int best = 0;
+        for (int c = 1; c < vocab; ++c) {
+            if (row[c] > row[best]) best = c;
+        }
+        EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
+    }
 }
 
 }  // namespace
