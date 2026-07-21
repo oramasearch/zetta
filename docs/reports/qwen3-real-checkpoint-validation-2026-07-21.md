@@ -128,14 +128,47 @@ step 1  mean_reward 1.0     greedy " cat or a"   -> learned; stopped before coll
 The model shifted its answer **" dog" → " cat"** in two GRPO steps from reward
 alone. Notes: (1) the reward must be *reachable* — a target the policy never samples
 (e.g. forcing " Berlin" after "The capital of France is") gives zero gradient; a
-multi-token "contains the word" reward on an open prompt fixes that. (2) Unregularized
-RLVR at higher lr mode-collapses into degenerate repetition after convergence — a
-low lr + early-stop (or a reference-KL penalty, future work) keeps it stable.
+multi-token "contains the word" reward on an open prompt fixes that.
+
+### Sustained stability — the stabilizer is the learning rate, not a KL penalty
+
+Running the fused GPU `grpo_step` for **12 iterations** (group 8, 3 new tokens) makes
+the stability question concrete. The result is clean:
+
+```
+lr 1e-4, no regularizer:  reward [.###########]  11/12 rewarded, final greedy " cat or wait"
+```
+
+The policy learns " cat" by step 1 and **stays coherent and rewarded for the whole
+run** — no collapse. The earlier "mode collapse into degenerate repetition" was a
+**learning-rate artifact** (it appears at an aggressive lr ~3e-4); a moderate lr
+(1e-4) is the effective stabilizer.
+
+A **reference-KL penalty** — the standard RLHF/GRPO regularizer — was implemented and
+swept (both a per-sampled-token **k3** estimator and a **full-distribution forward
+KL** at every completion position, against a frozen copy of the initial policy). On
+this 0.6B **it did not help and actively hurt**:
+
+```
+lr 1e-4:  beta 0 → 11/12 (coherent)   beta 1 → 2/12   beta 3 → 2/12   beta 10 → 2/12   beta 30 → 4/12 (garbage)
+```
+
+The mechanism is a real mismatch, not a bug: the full-distribution KL puts gradient on
+**all ~152k vocab rows every step**, and **AdamW's per-coordinate normalization** turns
+that dense-but-small KL loss into a ~full-magnitude step across the *entire* vocab head
+each iteration, perturbing the output distribution far more than the sparse policy-
+gradient term and destabilizing faster than it anchors. The sparse k3 estimator is
+Adam-friendly but too weak to matter at a moderate lr. **Conclusion: ship unregularized
+GRPO at a moderate lr; the KL knob was removed rather than shipped as a
+tested-worse feature.** (A KL regularizer may still earn its place at larger scale /
+longer campaigns / with an SGD-style update for the KL term — that is future work, not a
+gap here.) Test: `FusedGpuRlvrLearnsStablyAtModerateLr`.
 
 ## Bottom line
 
 Every code-level layer of "RLVR post-training over open weights" (#555) is done and
 **verified against a real Qwen checkpoint**: the tokenizer is bit-exact, the model
 loads and generates correctly (42.9 tok/s fused-MLX / 13.5 tok/s CPU), and the real
-weights **train from reward** (" dog" → " cat"). What remains is scale (bigger
-checkpoints, a reference-KL regularizer, a sustained campaign) — not correctness.
+weights **train from reward** — both a two-step " dog" → " cat" shift and a **stable
+12-step campaign** (11/12 rewarded, no collapse). What remains is scale (bigger
+checkpoints, longer campaigns) — not correctness.

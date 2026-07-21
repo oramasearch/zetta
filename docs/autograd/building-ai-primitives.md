@@ -176,8 +176,14 @@ The reference kernels are correct first; speed comes from these, in order of imp
   whole group** (sequence policy gradient in a single MLX graph) → `AdamW`. Params
   are shared, so each update flows straight into the next round's rollouts. On the
   real Qwen3-0.6B it **learned " dog" → " cat" from reward in 2 steps at ~2.2 s/step**
-  (vs the CPU RLVR's ~6–21 s). *(Watch for the unregularized-RLVR mode collapse — low
-  lr + early-stop, or a reference-KL penalty; that's the last open modeling item.)*
+  (vs the CPU RLVR's ~6–21 s), and ran a **stable 12-step campaign (11/12 rewarded, no
+  collapse)**. *(Stability lever = the learning rate: unregularized GRPO is stable at a
+  moderate lr (1e-4); an aggressive lr (~3e-4) mode-collapses into degenerate repetition.
+  A reference-KL penalty — per-token k3 and full-distribution forward KL — was swept and
+  did NOT help at this scale: the dense KL puts gradient on all ~152k vocab rows, and
+  AdamW's per-coordinate normalization turns that into a full-vocab perturbation that
+  destabilizes faster than it anchors. It was removed, not shipped. See the
+  [validation report](../reports/qwen3-real-checkpoint-validation-2026-07-21.md).)*
 - For long contexts, a flash-attention-style fused attention could help, but MLX
   already fuses the graph — measure before hand-rolling.
 - **The `ComputeDevice` gemm (MLX GPU).** `matmul` and `matmul_transposed_b` route

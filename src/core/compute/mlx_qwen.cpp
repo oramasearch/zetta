@@ -532,6 +532,7 @@ mx::array MlxQwenModel::sequence_pg_loss(const std::vector<mx::array>& params,
 double MlxQwenModel::grpo_step(AdamW& optimizer, const std::vector<int>& prompt,
                                const CompletionReward& reward, int group_size,
                                int max_new_tokens, float temperature, std::mt19937& rng) {
+    const int prompt_len = static_cast<int>(prompt.size());
     // Roll out the group with the KV cache (fast, on-GPU, detached from the graph).
     std::vector<std::vector<int>> completions;
     std::vector<double> rewards;
@@ -553,8 +554,7 @@ double MlxQwenModel::grpo_step(AdamW& optimizer, const std::vector<int>& prompt,
     std::vector<double> advantages(static_cast<std::size_t>(group_size));
     for (int i = 0; i < group_size; ++i) advantages[i] = (rewards[i] - mean) / (stddev + 1e-8);
 
-    // One value_and_grad over the whole group (sequence PG, averaged) -> AdamW.
-    const int prompt_len = static_cast<int>(prompt.size());
+    // One value_and_grad over the whole group (sequence policy gradient) -> AdamW.
     const auto loss_fn = [&](const std::vector<mx::array>& params) {
         mx::array total = mx::zeros(mx::Shape{}, mx::float32);
         int contributing = 0;
@@ -562,7 +562,8 @@ double MlxQwenModel::grpo_step(AdamW& optimizer, const std::vector<int>& prompt,
             if (completions[i].empty()) continue;
             std::vector<int> full = prompt;
             full.insert(full.end(), completions[i].begin(), completions[i].end());
-            total = total + sequence_pg_loss(params, full, prompt_len, completions[i], advantages[i]);
+            total = total + sequence_pg_loss(params, full, prompt_len, completions[i],
+                                             advantages[i]);
             ++contributing;
         }
         return contributing > 0 ? total * (1.0F / contributing) : total;

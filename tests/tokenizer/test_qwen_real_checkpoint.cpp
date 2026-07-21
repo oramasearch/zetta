@@ -434,6 +434,56 @@ TEST(QwenRealCheckpoint, RlvrStepCpuVsFusedGpu) {
                  group, max_new, cpu_ms, gpu_ms, cpu_ms / gpu_ms);
 }
 
+// STABLE sustained RLVR: the fused GPU GRPO step, run for many iterations at a
+// moderate learning rate, learns the verifiable target AND stays rewarded (coherent)
+// instead of drifting into the reward-hacking mode collapse that GRPO falls into at an
+// aggressive lr. The stabilizer here is the learning rate, not a regularizer: a swept
+// reference-KL penalty (both a per-token k3 and a full-distribution forward KL) did NOT
+// help at this scale — the dense KL puts gradient on all ~152k vocab rows every step,
+// and Adam's per-coordinate normalization turns that into a full-vocab perturbation
+// that destabilizes faster than it anchors. See the validation report.
+TEST(QwenRealCheckpoint, FusedGpuRlvrLearnsStablyAtModerateLr) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<int> prompt = tokenizer->encode("I think the best pet is a");
+    const auto reward = [&](const std::vector<int>&, const std::vector<int>& c) {
+        return tokenizer->decode(c).find("cat") != std::string::npos ? 1.0 : 0.0;
+    };
+    const auto greedy = [&]() {
+        std::mt19937 g(0);
+        return tokenizer->decode(model->generate(prompt, 3, 0.0F, g));
+    };
+
+    zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-4F);
+    std::mt19937 rng(7);
+    double max_reward = 0.0;
+    int rewarded_steps = 0;
+    for (int step = 0; step < 12; ++step) {
+        const double mean_reward = model->grpo_step(optimizer, prompt, reward, /*group=*/8,
+                                                    /*max_new=*/3, /*temperature=*/1.0F, rng);
+        max_reward = std::max(max_reward, mean_reward);
+        if (mean_reward >= 0.5) ++rewarded_steps;
+        std::cerr << "[RLVR] step " << step << " reward=" << mean_reward
+                  << " greedy=\"" << greedy() << "\"\n";
+    }
+    std::cerr << "[RLVR] final greedy=\"" << greedy() << "\"  (" << rewarded_steps
+              << "/12 steps rewarded)\n";
+    // Learned the target, and stayed rewarded across the run — no collapse to 0 (a
+    // collapse leaves rewarded_steps tiny, as an aggressive lr or a dense KL does).
+    EXPECT_GT(max_reward, 0.5) << "should learn to sample the target";
+    EXPECT_GE(rewarded_steps, 8) << "reward collapsed — RLVR was not stable";
+    EXPECT_NE(greedy().find("cat"), std::string::npos)
+        << "the learned greedy answer should contain the target";
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace

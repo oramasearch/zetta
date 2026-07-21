@@ -114,7 +114,10 @@ public:
     // mx::value_and_grad over the whole group in a single MLX graph, then AdamW. The
     // parameters are shared, so the update flows straight into the next round's
     // rollouts. Returns the group's mean reward. This is blender-rl's GRPO, fully on
-    // the Metal GPU.
+    // the Metal GPU. Stable sustained RLVR comes from a moderate learning rate — an
+    // aggressive lr collapses the policy into reward-hacking repetition (see the
+    // validation report); a reference-KL penalty was explored and did not help on this
+    // scale (the dense form fights Adam's per-coordinate normalization).
     double grpo_step(AdamW& optimizer, const std::vector<int>& prompt,
                      const CompletionReward& reward, int group_size,
                      int max_new_tokens, float temperature, std::mt19937& rng);
@@ -129,8 +132,7 @@ private:
     // differentiable through `params`. tokens = prompt+completion, prompt_len = P.
     mlx::core::array sequence_pg_loss(const std::vector<mlx::core::array>& params,
                                       const std::vector<int>& tokens, int prompt_len,
-                                      const std::vector<int>& actions,
-                                      double advantage) const;
+                                      const std::vector<int>& actions, double advantage) const;
 
     QwenParams config_;
     std::vector<mlx::core::array> params_;  // ordered; see the class comment
