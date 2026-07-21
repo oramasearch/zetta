@@ -10,22 +10,65 @@
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <random>
 #include <vector>
 
 #include <mlx/mlx.h>
 
+#include "zetta/agent/advantage.hpp"
 #include "zetta/compute/mlx_transformer.hpp"
 
 namespace {
 
 namespace mx = mlx::core;
+using zetta::agent::group_advantages;
 using zetta::compute::model::AdamW;
 using zetta::compute::model::causal_self_attention;
 using zetta::compute::model::cross_entropy_next_token;
 using zetta::compute::model::feed_forward;
 using zetta::compute::model::MlxTransformer;
+using zetta::compute::model::policy_gradient_loss;
 using zetta::compute::model::rms_norm;
 using zetta::compute::model::TransformerConfig;
+
+// Softmax of the logits at the last position (read to host).
+std::vector<double> last_position_softmax(const mx::array& logits, int vocab) {
+    mx::array evaluated = logits;
+    mx::eval(evaluated);
+    const int seq = evaluated.shape(0);
+    const float* row = evaluated.data<float>() + (seq - 1) * vocab;
+    double max_logit = row[0];
+    for (int c = 1; c < vocab; ++c) max_logit = std::max(max_logit, double(row[c]));
+    std::vector<double> probs(vocab, 0.0);
+    double sum = 0.0;
+    for (int c = 0; c < vocab; ++c) {
+        probs[c] = std::exp(row[c] - max_logit);
+        sum += probs[c];
+    }
+    for (double& p : probs) p /= sum;
+    return probs;
+}
+
+int sample_from(const std::vector<double>& probs, double uniform_draw) {
+    double cumulative = 0.0;
+    for (std::size_t i = 0; i < probs.size(); ++i) {
+        cumulative += probs[i];
+        if (uniform_draw < cumulative) return static_cast<int>(i);
+    }
+    return static_cast<int>(probs.size()) - 1;
+}
+
+int argmax_last_position(const mx::array& logits, int vocab) {
+    mx::array evaluated = logits;
+    mx::eval(evaluated);
+    const int seq = evaluated.shape(0);
+    const float* row = evaluated.data<float>() + (seq - 1) * vocab;
+    int best = 0;
+    for (int c = 1; c < vocab; ++c) {
+        if (row[c] > row[best]) best = c;
+    }
+    return best;
+}
 
 TransformerConfig small_config() {
     TransformerConfig config;
@@ -194,6 +237,62 @@ TEST(MlxTransformer, OverfitsAShortSequenceWithAutodiffAndAdamW) {
             if (row[c] > row[best]) best = c;
         }
         EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
+    }
+}
+
+// The #555 objective, in miniature: the transformer learns a verifiable game PURELY
+// FROM REWARD (RLVR) — never shown the answer. For prompt [0, q] it must emit
+// answer(q); the reward is 1 iff the sampled answer token is correct. Policy
+// gradient (through the whole transformer) + GRPO advantages + AdamW drive the
+// output distribution to the right token for each question.
+TEST(MlxTransformer, LearnsAVerifiableGameByPolicyGradient) {
+    const TransformerConfig config = small_config();  // vocab 16
+    MlxTransformer model(config, 5);
+    AdamW optimizer(/*learning_rate=*/1e-2F);
+
+    const std::vector<int> questions = {2, 5, 8};
+    const auto answer = [](int q) { return q + 4; };  // 6, 9, 12 — distinct, in vocab
+
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<double> uniform(0.0, 1.0);
+    const int group = 24;
+
+    std::vector<int> argnums(model.parameters().size());
+    std::iota(argnums.begin(), argnums.end(), 0);
+
+    for (int step = 0; step < 600; ++step) {
+        const int q = questions[step % questions.size()];
+        const mx::array prompt = token_ids({0, q});
+
+        // Sample a group of answers from the current policy; reward = correct?
+        const std::vector<double> probs =
+            last_position_softmax(model.forward(prompt), config.vocab_size);
+        std::vector<int> actions(group);
+        std::vector<double> rewards(group);
+        for (int i = 0; i < group; ++i) {
+            actions[i] = sample_from(probs, uniform(rng));
+            rewards[i] = actions[i] == answer(q) ? 1.0 : 0.0;
+        }
+        const std::vector<double> advantages = group_advantages(rewards);
+
+        // Policy-gradient step through the transformer.
+        const std::function<mx::array(const std::vector<mx::array>&)> loss_fn =
+            [&](const std::vector<mx::array>& parameters) {
+                return policy_gradient_loss(config, parameters, prompt, actions,
+                                            advantages);
+            };
+        auto grad_fn = mx::value_and_grad(loss_fn, argnums);
+        auto [loss, gradients] = grad_fn(model.parameters());
+        optimizer.update(model.parameters(), gradients);
+    }
+
+    // After RLVR training the greedy answer for each question is correct — learned
+    // from reward alone.
+    for (int q : questions) {
+        EXPECT_EQ(argmax_last_position(model.forward(token_ids({0, q})),
+                                       config.vocab_size),
+                  answer(q))
+            << "question " << q;
     }
 }
 

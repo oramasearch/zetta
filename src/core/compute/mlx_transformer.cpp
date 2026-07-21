@@ -149,6 +149,32 @@ mx::array cross_entropy_next_token(const TransformerConfig& config,
     return -mx::mean(chosen, /*keepdims=*/false);
 }
 
+mx::array policy_gradient_loss(const TransformerConfig& config,
+                               const std::vector<mx::array>& parameters,
+                               const mx::array& prompt,
+                               const std::vector<int>& sampled_actions,
+                               const std::vector<double>& advantages) {
+    const int seq = prompt.shape(0);
+    const int group = static_cast<int>(sampled_actions.size());
+    const mx::array logits = MlxTransformer::forward(config, parameters, prompt);
+
+    // The policy is the softmax of the logits at the last position.
+    const mx::array last = mx::slice(logits, mx::Shape{seq - 1, 0},
+                                     mx::Shape{seq, config.vocab_size});
+    const mx::array log_probs = mx::reshape(
+        last - mx::logsumexp(last, std::vector<int>{-1}, true),
+        mx::Shape{config.vocab_size});
+
+    // Gather log pi(action) for each sampled action, weight by its advantage.
+    const mx::array actions(sampled_actions.data(), mx::Shape{group}, mx::int32);
+    const mx::array chosen = mx::take(log_probs, actions, 0);  // [group]
+    const std::vector<float> advantage_floats(advantages.begin(),
+                                              advantages.end());
+    const mx::array advantage(advantage_floats.data(), mx::Shape{group},
+                              mx::float32);
+    return -mx::mean(mx::multiply(advantage, chosen), /*keepdims=*/false);
+}
+
 AdamW::AdamW(float learning_rate, float beta1, float beta2, float epsilon,
              float weight_decay)
     : learning_rate_(learning_rate),

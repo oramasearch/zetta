@@ -96,6 +96,19 @@ mlx::core::array cross_entropy_next_token(
     const std::vector<mlx::core::array>& parameters,
     const mlx::core::array& token_ids);
 
+// The RLVR policy-gradient loss for one prompt: -mean(advantage * log pi(action)),
+// where pi is the softmax of the model's logits at the LAST position and the
+// actions were sampled from a prior forward pass (with their group-relative
+// advantages). A pure function of the parameters, so mx::value_and_grad
+// differentiates it end to end — the #555 objective through the real transformer.
+// No supervised target: the model learns only from the verifiable reward that fed
+// the advantages.
+mlx::core::array policy_gradient_loss(
+    const TransformerConfig& config,
+    const std::vector<mlx::core::array>& parameters, const mlx::core::array& prompt,
+    const std::vector<int>& sampled_actions,
+    const std::vector<double>& advantages);
+
 // AdamW over the transformer's flat parameter list. update() applies one step in
 // place, maintaining the first and second moment per parameter with bias correction
 // and decoupled weight decay.
