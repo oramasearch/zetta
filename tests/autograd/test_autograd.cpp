@@ -10,6 +10,7 @@ namespace {
 
 using zetta::autograd::add;
 using zetta::autograd::add_bias;
+using zetta::autograd::embedding;
 using zetta::autograd::gelu;
 using zetta::autograd::matmul;
 using zetta::autograd::mul;
@@ -19,6 +20,7 @@ using zetta::autograd::scale;
 using zetta::autograd::silu;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
+using zetta::autograd::transpose;
 
 // Check the analytic gradient (from backward() on the parameter) against a
 // finite-difference estimate. `build(param)` constructs the scalar loss from a
@@ -188,6 +190,36 @@ TEST(Autograd, RmsNormGradientWrtWeight) {
         Tensor::leaf({0.2F, 0.5F, 0.3F, 0.1F, 0.7F, 0.2F}, {2, 3}, false);
     check_gradient({0.5F, 1.2F, 0.8F}, {3}, [&](const Tensor& weight) {
         return sum(mul(rms_norm(x, weight), target));
+    });
+}
+
+TEST(Autograd, TransposeForwardAndGradient) {
+    const Tensor a = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);
+    const Tensor t = transpose(a);
+    ASSERT_EQ(t.shape(), (std::vector<int>{3, 2}));
+    EXPECT_EQ(t.data(), (std::vector<float>{1, 4, 2, 5, 3, 6}));
+
+    const Tensor target =
+        Tensor::leaf({0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F}, {3, 2}, false);
+    check_gradient({1, 2, 3, 4, 5, 6}, {2, 3}, [&](const Tensor& p) {
+        return sum(mul(transpose(p), target));
+    });
+}
+
+TEST(Autograd, EmbeddingGathersAndScatters) {
+    // table [vocab=3, dim=2].
+    const Tensor table =
+        Tensor::leaf({10, 11, 20, 21, 30, 31}, {3, 2}, false);
+    const std::vector<int> ids = {2, 0, 2};
+    const Tensor gathered = embedding(table, ids);
+    ASSERT_EQ(gathered.shape(), (std::vector<int>{3, 2}));
+    EXPECT_EQ(gathered.data(), (std::vector<float>{30, 31, 10, 11, 30, 31}));
+
+    // Gradient scatter-adds: id 2 is selected twice, id 0 once, id 1 never.
+    const Tensor target =
+        Tensor::leaf({0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F}, {3, 2}, false);
+    check_gradient({10, 11, 20, 21, 30, 31}, {3, 2}, [&](const Tensor& t) {
+        return sum(mul(embedding(t, ids), target));
     });
 }
 

@@ -100,4 +100,13 @@ Tensor row_softmax(const Tensor& a);
 // depends on all of them).
 Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps = 1e-5F);
 
+// Transpose a 2-D tensor: [m, n] -> [n, m]. Needed for K^T in attention. Backward:
+// dA = dOut^T.
+Tensor transpose(const Tensor& a);
+
+// Embedding lookup: gather rows of `table` [vocab, dim] at each id in `ids`,
+// producing [ids.size(), dim]. The ids are plain indices (not differentiable);
+// backward scatter-adds each row's gradient back into the selected table rows.
+Tensor embedding(const Tensor& table, const std::vector<int>& ids);
+
 }  // namespace zetta::autograd

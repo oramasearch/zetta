@@ -300,6 +300,52 @@ Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps) {
     return Tensor{node};
 }
 
+Tensor transpose(const Tensor& a) {
+    const int m = a.shape()[0];
+    const int n = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(m) * n, 0.0F);
+    for (int row = 0; row < m; ++row) {
+        for (int col = 0; col < n; ++col) {
+            out[col * m + row] = a.data()[row * n + col];
+        }
+    }
+    auto node = make_node(std::move(out), {n, m});
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    node->backward = [a_node, m, n](const std::vector<float>& g) {
+        for (int row = 0; row < m; ++row) {
+            for (int col = 0; col < n; ++col) {
+                a_node->grad[row * n + col] += g[col * m + row];
+            }
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor embedding(const Tensor& table, const std::vector<int>& ids) {
+    const int dim = table.shape()[1];
+    const int count = static_cast<int>(ids.size());
+    std::vector<float> out(static_cast<std::size_t>(count) * dim, 0.0F);
+    for (int i = 0; i < count; ++i) {
+        const int row = ids[i];
+        for (int d = 0; d < dim; ++d) {
+            out[i * dim + d] = table.data()[row * dim + d];
+        }
+    }
+    auto node = make_node(std::move(out), {count, dim});
+    node->parents = {table.node()};
+    const std::shared_ptr<Node> table_node = table.node();
+    node->backward = [table_node, ids, dim, count](const std::vector<float>& g) {
+        for (int i = 0; i < count; ++i) {
+            const int row = ids[i];
+            for (int d = 0; d < dim; ++d) {
+                table_node->grad[row * dim + d] += g[i * dim + d];
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];
