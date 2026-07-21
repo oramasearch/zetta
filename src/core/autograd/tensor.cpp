@@ -9,6 +9,7 @@
 #include "zetta/compute/compute_status.hpp"
 #include "zetta/compute/data_type.hpp"
 #include "zetta/compute/device_buffer.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta::autograd {
 
@@ -122,14 +123,47 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     if (device != nullptr) {
         out = device_gemm(*device, a.data(), b.data(), m, k, n, false, false);
     } else {
+        // Host reference kernel, spread across the shared runtime thread pool. Both
+        // ikj-ordered (cache-friendly contiguous column sweeps); we parallelize
+        // over whichever output axis is larger, because transformer inference has a
+        // tiny row count (a few tokens) but a huge column count (projections up to
+        // the 151936 vocab) — parallelizing over rows there gives no parallelism.
         out.assign(static_cast<std::size_t>(m) * n, 0.0F);
-        for (int row = 0; row < m; ++row) {
-            for (int inner = 0; inner < k; ++inner) {
-                const float a_value = a.data()[row * k + inner];
-                for (int col = 0; col < n; ++col) {
-                    out[row * n + col] += a_value * b.data()[inner * n + col];
-                }
-            }
+        const float* a_data = a.data().data();
+        const float* b_data = b.data().data();
+        float* out_data = out.data();
+        if (m >= n) {
+            runtime::parallel_for(
+                static_cast<std::size_t>(m),
+                [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+                    for (std::size_t row = row_begin; row < row_end; ++row) {
+                        float* out_row = out_data + row * n;
+                        const float* a_row = a_data + row * k;
+                        for (int inner = 0; inner < k; ++inner) {
+                            const float a_value = a_row[inner];
+                            const float* b_row = b_data + static_cast<std::size_t>(inner) * n;
+                            for (int col = 0; col < n; ++col) {
+                                out_row[col] += a_value * b_row[col];
+                            }
+                        }
+                    }
+                });
+        } else {
+            runtime::parallel_for(
+                static_cast<std::size_t>(n),
+                [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
+                    for (int row = 0; row < m; ++row) {
+                        float* out_row = out_data + static_cast<std::size_t>(row) * n;
+                        const float* a_row = a_data + static_cast<std::size_t>(row) * k;
+                        for (int inner = 0; inner < k; ++inner) {
+                            const float a_value = a_row[inner];
+                            const float* b_row = b_data + static_cast<std::size_t>(inner) * n;
+                            for (std::size_t col = col_begin; col < col_end; ++col) {
+                                out_row[col] += a_value * b_row[col];
+                            }
+                        }
+                    }
+                });
         }
     }
 
@@ -148,26 +182,43 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
             for (std::size_t i = 0; i < db.size(); ++i) b_node->grad[i] += db[i];
             return;
         }
-        // dA[row, inner] += sum_col g[row, col] * B[inner, col].
-        for (int row = 0; row < m; ++row) {
-            for (int inner = 0; inner < k; ++inner) {
-                float accumulated = 0.0F;
-                for (int col = 0; col < n; ++col) {
-                    accumulated += g[row * n + col] * b_node->data[inner * n + col];
+        // dA[row, inner] += sum_col g[row, col] * B[inner, col]. Parallel over
+        // rows — each thread writes a disjoint band of a_node->grad, no races.
+        const float* g_data = g.data();
+        const float* b_data = b_node->data.data();
+        float* a_grad = a_node->grad.data();
+        runtime::parallel_for(
+            static_cast<std::size_t>(m),
+            [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+                for (std::size_t row = row_begin; row < row_end; ++row) {
+                    const float* g_row = g_data + row * n;
+                    for (int inner = 0; inner < k; ++inner) {
+                        float accumulated = 0.0F;
+                        const float* b_row = b_data + static_cast<std::size_t>(inner) * n;
+                        for (int col = 0; col < n; ++col) {
+                            accumulated += g_row[col] * b_row[col];
+                        }
+                        a_grad[row * k + inner] += accumulated;
+                    }
                 }
-                a_node->grad[row * k + inner] += accumulated;
-            }
-        }
-        // dB[inner, col] += sum_row A[row, inner] * g[row, col].
-        for (int inner = 0; inner < k; ++inner) {
-            for (int col = 0; col < n; ++col) {
-                float accumulated = 0.0F;
-                for (int row = 0; row < m; ++row) {
-                    accumulated += a_node->data[row * k + inner] * g[row * n + col];
+            });
+        // dB[inner, col] += sum_row A[row, inner] * g[row, col]. Parallel over
+        // inner — each thread writes a disjoint band of b_node->grad.
+        const float* a_data = a_node->data.data();
+        float* b_grad = b_node->grad.data();
+        runtime::parallel_for(
+            static_cast<std::size_t>(k),
+            [&](std::size_t, std::size_t inner_begin, std::size_t inner_end) {
+                for (std::size_t inner = inner_begin; inner < inner_end; ++inner) {
+                    for (int col = 0; col < n; ++col) {
+                        float accumulated = 0.0F;
+                        for (int row = 0; row < m; ++row) {
+                            accumulated += a_data[row * k + inner] * g_data[row * n + col];
+                        }
+                        b_grad[inner * n + col] += accumulated;
+                    }
                 }
-                b_node->grad[inner * n + col] += accumulated;
-            }
-        }
+            });
     };
     return Tensor{node};
 }
