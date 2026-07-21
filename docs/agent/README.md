@@ -32,6 +32,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **Tool calls + the sandbox** — `ToolCall` + `Sandbox` (below).
 - **The rollout** — `AgentPolicy` + `run_rollout` (below).
 - **The reward** — the rubric + `reward_for_rollout` (below).
+- **The admission gate** — `admit_corpus` (below).
 
 ## The reward primitive (shipped)
 
@@ -93,6 +94,17 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   reward stays in `[0,1]` no matter which apply (the blender-rl rubric shape). The
   per-term breakdown is returned so a training run can see *why* a rollout scored
   what it did.
+
+## The admission gate (shipped)
+
+- **`admit_corpus`** (`admission_gate.hpp`) — a task corpus must *earn* admission
+  before it trains or evaluates the agent. Each `AdmissionCase` carries a task, a
+  **reference** end-state (must pass the grader) and **negative controls** (must
+  fail). The gate admits the corpus only if every reference passes, every negative
+  control fails, the corpus carries **at least one negative control**, and every
+  task is trainable — a corpus where nothing can fail is measuring nothing
+  (feat-12 step 3; the [#248](https://github.com/oramasearch/zetta/issues/248)
+  gate property). It returns *every* failure, so a corpus is fixed in one pass.
 
 ## Acceptance
 
