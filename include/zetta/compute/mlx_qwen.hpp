@@ -70,6 +70,39 @@ private:
     int position_ = 0;
 };
 
+// Fused MLX Qwen TRAINING: a differentiable full-sequence forward whose parameters
+// are MLX arrays, so mx::value_and_grad backprops through the whole Qwen3 stack in
+// one graph — one eval per step — and AdamW updates on the GPU. The training analog
+// of MlxQwenInference (GPU fine-tuning / RLVR), the same ~6× batched-forward win
+// applied to the gradient step. Parameters are ordered [embed, per-layer x11,
+// final norm, (lm_head)] — the autograd QwenModel order — so a checkpoint loads.
+class MlxQwenModel {
+public:
+    static std::optional<MlxQwenModel> from_directory(const std::string& directory,
+                                                      std::string* error = nullptr);
+
+    std::vector<mlx::core::array>& parameters() { return params_; }
+    const std::vector<mlx::core::array>& parameters() const { return params_; }
+    const QwenParams& config() const { return config_; }
+
+    // Full-sequence logits [seq, vocab], differentiable through `params`.
+    mlx::core::array forward(const std::vector<mlx::core::array>& params,
+                             const mlx::core::array& token_ids) const;
+
+    // Next-token cross-entropy over `token_ids` (a scalar), differentiable through
+    // `params` — hand this to mx::value_and_grad, then AdamW::update the result.
+    mlx::core::array next_token_loss(const std::vector<mlx::core::array>& params,
+                                     const mlx::core::array& token_ids) const;
+
+private:
+    MlxQwenModel(QwenParams config, std::vector<mlx::core::array> params,
+                 mlx::core::array inv_freq);
+
+    QwenParams config_;
+    std::vector<mlx::core::array> params_;  // ordered; see the class comment
+    mlx::core::array inv_freq_;
+};
+
 }  // namespace zetta::compute::model
 
 #endif  // ZETTA_WITH_MLX

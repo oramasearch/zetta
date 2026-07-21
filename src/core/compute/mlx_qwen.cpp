@@ -244,6 +244,155 @@ std::vector<int> MlxQwenInference::generate_greedy(const std::vector<int>& promp
     return generated;
 }
 
+// --- Fused MLX Qwen training -------------------------------------------------
+
+MlxQwenModel::MlxQwenModel(QwenParams config, std::vector<mx::array> params,
+                           mx::array inv_freq)
+    : config_(config), params_(std::move(params)), inv_freq_(std::move(inv_freq)) {}
+
+std::optional<MlxQwenModel> MlxQwenModel::from_directory(const std::string& directory,
+                                                        std::string* error) {
+    const auto fail = [&](std::string reason) -> std::optional<MlxQwenModel> {
+        if (error != nullptr) *error = std::move(reason);
+        return std::nullopt;
+    };
+    std::ifstream config_in(directory + "/config.json", std::ios::binary);
+    if (!config_in) return fail("mlx_qwen: cannot open " + directory + "/config.json");
+    std::ostringstream config_buffer;
+    config_buffer << config_in.rdbuf();
+    const nlohmann::json cfg =
+        nlohmann::json::parse(config_buffer.str(), nullptr, /*allow_exceptions=*/false);
+    if (cfg.is_discarded() || !cfg.is_object()) return fail("mlx_qwen: invalid config.json");
+
+    QwenParams config;
+    config.vocab_size = cfg.value("vocab_size", 0);
+    config.d_model = cfg.value("hidden_size", 0);
+    config.n_layers = cfg.value("num_hidden_layers", 0);
+    config.n_heads = cfg.value("num_attention_heads", 0);
+    config.n_kv_heads = cfg.value("num_key_value_heads", 0);
+    config.head_dim = cfg.contains("head_dim") && cfg["head_dim"].is_number_integer()
+                          ? cfg["head_dim"].get<int>()
+                          : (config.n_heads > 0 ? config.d_model / config.n_heads : 0);
+    config.d_ff = cfg.value("intermediate_size", 0);
+    config.rms_eps = cfg.value("rms_norm_eps", 1e-6F);
+    config.rope_base = cfg.value("rope_theta", 1000000.0F);
+    config.tie_word_embeddings = cfg.value("tie_word_embeddings", false);
+    if (config.n_heads <= 0 || config.n_kv_heads <= 0 || config.head_dim <= 0 ||
+        config.n_heads % config.n_kv_heads != 0) {
+        return fail("mlx_qwen: invalid head configuration");
+    }
+
+    std::map<std::string, mx::array> w =
+        read_safetensors_file(directory + "/model.safetensors");
+    if (w.empty()) return fail("mlx_qwen: no tensors in model.safetensors");
+
+    // Order the parameters: [embed, per-layer x11, final norm, (lm_head)].
+    std::vector<mx::array> params;
+    const auto push = [&](const std::string& name) -> bool {
+        const auto found = w.find(name);
+        if (found == w.end()) return false;
+        params.push_back(found->second);
+        return true;
+    };
+    if (!push("model.embed_tokens.weight")) return fail("mlx_qwen: missing embed_tokens");
+    for (int layer = 0; layer < config.n_layers; ++layer) {
+        const std::string p = "model.layers." + std::to_string(layer) + ".";
+        const char* suffixes[] = {
+            "input_layernorm.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
+            "self_attn.v_proj.weight", "self_attn.o_proj.weight", "self_attn.q_norm.weight",
+            "self_attn.k_norm.weight", "post_attention_layernorm.weight",
+            "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight"};
+        for (const char* s : suffixes) {
+            if (!push(p + s)) return fail("mlx_qwen: missing " + p + s);
+        }
+    }
+    if (!push("model.norm.weight")) return fail("mlx_qwen: missing model.norm");
+    if (!config.tie_word_embeddings && !push("lm_head.weight")) {
+        return fail("mlx_qwen: missing lm_head");
+    }
+
+    const int half = config.head_dim / 2;
+    std::vector<float> freqs(static_cast<std::size_t>(half));
+    for (int i = 0; i < half; ++i) {
+        freqs[i] = static_cast<float>(
+            std::pow(static_cast<double>(config.rope_base), -2.0 * i / config.head_dim));
+    }
+    mx::array inv_freq(freqs.data(), mx::Shape{half}, mx::float32);
+    return MlxQwenModel(config, std::move(params), std::move(inv_freq));
+}
+
+mx::array MlxQwenModel::forward(const std::vector<mx::array>& params,
+                                const mx::array& token_ids) const {
+    const int len = token_ids.shape(0);
+    const int d = config_.d_model, nh = config_.n_heads, nkv = config_.n_kv_heads;
+    const int hd = config_.head_dim, q_dim = nh * hd, group = nh / nkv;
+    const float scale = 1.0F / std::sqrt(static_cast<float>(hd));
+
+    mx::array x = mx::take(params[0], token_ids, 0);  // [len, d]
+
+    std::vector<float> pos(static_cast<std::size_t>(len));
+    for (int i = 0; i < len; ++i) pos[i] = static_cast<float>(i);
+    const mx::array positions(pos.data(), mx::Shape{len, 1}, mx::float32);
+    const mx::array angles =
+        mx::multiply(positions, mx::reshape(inv_freq_, mx::Shape{1, hd / 2}));
+    const mx::array cos = mx::reshape(mx::cos(angles), mx::Shape{len, 1, hd / 2});
+    const mx::array sin = mx::reshape(mx::sin(angles), mx::Shape{len, 1, hd / 2});
+
+    std::vector<float> mask_data(static_cast<std::size_t>(len) * len, 0.0F);
+    for (int i = 0; i < len; ++i) {
+        for (int j = i + 1; j < len; ++j) mask_data[i * len + j] = -1e9F;
+    }
+    const mx::array mask(mask_data.data(), mx::Shape{1, len, len}, mx::float32);
+
+    for (int layer = 0; layer < config_.n_layers; ++layer) {
+        const int b = 1 + 11 * layer;
+        const mx::array normed = rms_norm(x, params[b + 0], config_.rms_eps);
+        mx::array q = mx::matmul(normed, mx::transpose(params[b + 1]));
+        mx::array k = mx::matmul(normed, mx::transpose(params[b + 2]));
+        mx::array v = mx::matmul(normed, mx::transpose(params[b + 3]));
+        q = rms_norm(mx::reshape(q, mx::Shape{len, nh, hd}), params[b + 5], 1e-5F);
+        k = rms_norm(mx::reshape(k, mx::Shape{len, nkv, hd}), params[b + 6], 1e-5F);
+        v = mx::reshape(v, mx::Shape{len, nkv, hd});
+        q = apply_rope(q, cos, sin, len, nh, hd);
+        k = apply_rope(k, cos, sin, len, nkv, hd);
+        const mx::array ck = expand_kv(k, len, nkv, group, hd);
+        const mx::array cv = expand_kv(v, len, nkv, group, hd);
+        const mx::array qh = mx::transpose(q, std::vector<int>{1, 0, 2});
+        const mx::array kh = mx::transpose(ck, std::vector<int>{1, 0, 2});
+        const mx::array vh = mx::transpose(cv, std::vector<int>{1, 0, 2});
+        mx::array scores =
+            mx::matmul(qh, mx::transpose(kh, std::vector<int>{0, 2, 1})) * scale + mask;
+        const mx::array attn = mx::softmax(scores, std::vector<int>{-1});
+        mx::array context = mx::transpose(mx::matmul(attn, vh), std::vector<int>{1, 0, 2});
+        context = mx::reshape(context, mx::Shape{len, q_dim});
+        x = x + mx::matmul(context, mx::transpose(params[b + 4]));
+        const mx::array normed2 = rms_norm(x, params[b + 7], config_.rms_eps);
+        const mx::array gate = mx::matmul(normed2, mx::transpose(params[b + 8]));
+        const mx::array up = mx::matmul(normed2, mx::transpose(params[b + 9]));
+        const mx::array silu = mx::multiply(gate, mx::sigmoid(gate));
+        x = x + mx::matmul(mx::multiply(silu, up), mx::transpose(params[b + 10]));
+    }
+
+    const int norm_idx = 1 + 11 * config_.n_layers;
+    x = rms_norm(x, params[norm_idx], config_.rms_eps);
+    const mx::array& out_w = config_.tie_word_embeddings ? params[0] : params[norm_idx + 1];
+    return mx::matmul(x, mx::transpose(out_w));  // [len, vocab]
+}
+
+mx::array MlxQwenModel::next_token_loss(const std::vector<mx::array>& params,
+                                        const mx::array& token_ids) const {
+    const int len = token_ids.shape(0);
+    const mx::array logits = forward(params, token_ids);
+    const mx::array predicted =
+        mx::slice(logits, mx::Shape{0, 0}, mx::Shape{len - 1, config_.vocab_size});
+    const mx::array targets = mx::slice(token_ids, mx::Shape{1}, mx::Shape{len});
+    const mx::array log_probs =
+        predicted - mx::logsumexp(predicted, std::vector<int>{-1}, true);
+    const mx::array chosen =
+        mx::take_along_axis(log_probs, mx::reshape(targets, mx::Shape{len - 1, 1}), 1);
+    return -mx::mean(chosen, /*keepdims=*/false);
+}
+
 }  // namespace zetta::compute::model
 
 #endif  // ZETTA_WITH_MLX

@@ -14,8 +14,10 @@
 #include "zetta/tokenizer/bpe.hpp"
 
 #if defined(ZETTA_WITH_MLX)
+#include <numeric>
 #include "zetta/compute/mlx_device.hpp"
 #include "zetta/compute/mlx_qwen.hpp"
+#include "zetta/compute/mlx_transformer.hpp"  // AdamW
 #endif
 
 // Guarded integration test against a REAL Qwen3-0.6B checkpoint. It runs only when
@@ -273,6 +275,58 @@ TEST(QwenRealCheckpoint, FusedMlxGenerationMatchesCpuAndIsFast) {
     const double tps = timed.size() / std::chrono::duration<double>(t1 - t0).count();
     std::cerr << "[fused MLX generation] " << tps << " tok/s : \""
               << tokenizer->decode(timed) << "\"\n";
+}
+
+// THE FUSED MLX TRAINING KERNEL: mx::value_and_grad backprops through the whole
+// Qwen3 stack in one graph and AdamW updates on the GPU. Overfitting a sequence
+// must collapse the loss — real backprop through the real 0.6B weights on Metal.
+TEST(QwenRealCheckpoint, FusedMlxTrainingBackpropsThroughRealWeights) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    namespace mx = mlx::core;
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<int> ids = tokenizer->encode("The capital of France is Berlin");
+    const std::vector<int> ids32(ids.begin(), ids.end());
+    const mx::array tokens(ids32.data(), mx::Shape{static_cast<int>(ids.size())}, mx::int32);
+
+    const auto loss_fn = [&](const std::vector<mx::array>& p) {
+        return model->next_token_loss(p, tokens);
+    };
+    std::vector<int> argnums(model->parameters().size());
+    std::iota(argnums.begin(), argnums.end(), 0);
+    const auto grad_fn = mx::value_and_grad(loss_fn, argnums);
+    zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-4F);
+
+    using clock = std::chrono::steady_clock;
+    float first_loss = 0.0F;
+    float min_loss = 1e30F;
+    double step_ms = 0.0;
+    for (int step = 0; step < 8; ++step) {
+        const auto t0 = clock::now();
+        auto [loss, gradients] = grad_fn(model->parameters());
+        optimizer.update(model->parameters(), gradients);
+        mx::eval(model->parameters());
+        mx::eval(loss);
+        const auto t1 = clock::now();
+        const float l = loss.item<float>();
+        if (step == 0) first_loss = l;
+        min_loss = std::min(min_loss, l);
+        step_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        std::cerr << "[fused MLX train] step " << step << " loss=" << l << " ("
+                  << step_ms << " ms)\n";
+    }
+    // Backprop demonstrably reduces the loss (single-sequence Adam on a 0.6B model
+    // is noisy step-to-step, so we check the loss dropped, not that it's monotone).
+    EXPECT_LT(min_loss, first_loss * 0.5F) << "fused MLX backprop should reduce the loss";
+    std::cerr << "[fused MLX train] ~" << step_ms
+              << " ms / step (fwd+bwd+AdamW over 0.6B params on the GPU)\n";
 }
 
 #endif  // ZETTA_WITH_MLX

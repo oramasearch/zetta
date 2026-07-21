@@ -162,6 +162,17 @@ The reference kernels are correct first; speed comes from these, in order of imp
   generation/rollout path when a GPU is present; the CPU KV cache is the fallback.
   *(The lesson generalizes: to use a GPU, keep the whole computation on-device in
   one graph — op-by-op routing through the `ComputeDevice` never exploits it.)*
+- **Fused MLX training — done (`MlxQwenModel`), the fast GPU training path.** Same
+  fusion idea applied to the gradient step: a differentiable full-sequence Qwen3
+  forward whose parameters are MLX arrays, so `mx::value_and_grad` backprops through
+  the whole stack in **one graph** and `AdamW` updates on the GPU. Measured on the
+  real Qwen3-0.6B: **~290 ms per step** (fwd + bwd + AdamW over 0.6B params) vs
+  ~7–10 s on the CPU autograd — **~25–35×**. Verified by overfitting a sequence (the
+  loss drops through real backprop on Metal). This is the GPU path for fine-tuning /
+  RLVR gradient steps; the CPU autograd is the always-present reference. **Where else
+  to fuse:** the RLVR step (fused rollouts via `MlxQwenInference` + fused training),
+  and, for long contexts, a flash-attention-style fused attention (MLX already fuses
+  the graph, so measure before hand-rolling).
 - **The `ComputeDevice` gemm (MLX GPU).** `matmul` and `matmul_transposed_b` route
   through the active `ComputeDevice` (`set_compute_device`), so the model is
   device-agnostic: `QwenModel::forward` produces the same logits on CPU and the
