@@ -185,6 +185,7 @@ add_executable(zetta-tests
   agent/test_policy_gradient.cpp
   agent/test_training.cpp
   agent/test_sequence_training.cpp
+  agent/test_corpus_training.cpp
   agent/test_judge.cpp
   test_integrity.cpp
   test_schemas.cpp

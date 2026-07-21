@@ -549,6 +549,7 @@ add_library(zetta-core STATIC
   src/core/agent/policy_gradient.cpp
   src/core/agent/training.cpp
   src/core/agent/sequence_training.cpp
+  src/core/agent/corpus_training.cpp
   src/core/agent/judge.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp

@@ -39,6 +39,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The training loop** — `train_softmax_policy` (below) — learns to solve a real task.
 - **The LLM-judge fallback** — `Judge` + `resolve_grade` (below).
 - **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
+- **Curriculum + observability** — `train_over_corpus` (below).
 
 ## The reward primitive (shipped)
 
@@ -179,6 +180,14 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   turn's policy (trajectory-level credit). Proven on an **order-enforcing** task —
   the sandbox refuses to close an unassigned ticket, so the unique solution is
   `[assign, close]` and the loop learns to assign first, then close.
+
+## Curriculum + observability (shipped)
+
+- **`train_over_corpus`** (`corpus_training.hpp`) — trains a policy per task across a
+  corpus and returns a **per-task** report: each task's reward *before* and *after*
+  and whether it improved, plus `improved_count()` and `mean_reward_after()`. This
+  is the surface feat-12 step 5 asks for — you can see which games are attempted and
+  how they score, and *where the base is not improving*.
 
 This closes the reference-first training half. What remains is the **⚙️ real
 model**: an `MlxDevice` compute backend + an open-weights model behind

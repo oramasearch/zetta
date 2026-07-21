@@ -191,6 +191,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     judge.hpp               zetta::agent::Judge/GradeSource/ResolvedGrade/resolve_grade — the LLM-judge fallback (injected Judge): deterministic grader wins where a criterion exists, judge fires only where none does, ungradeable fails closed (FEAT-12; #555)
     sequence_policy.hpp     zetta::agent::SequencePolicy — a fixed-horizon multi-turn policy: one SoftmaxPolicy per turn over a shared action space; sample(turn,u) (FEAT-12; #555)
     sequence_training.hpp   zetta::agent::TrajectoryReward/train_sequence_policy — trajectory-level GRPO: sample a group of full trajectories, one advantage per trajectory applied to every turn's policy (FEAT-12; #555)
+    corpus_training.hpp     zetta::agent::TaskEnvironment/CorpusTrainingReport/train_over_corpus — curriculum training over a task corpus with per-task before/after reward + improved-count (feat-12 step 5 observability) (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -402,6 +403,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     training.cpp            zetta::agent::train_softmax_policy — per step: sample group_size actions via the injected uniform, score via the injected reward, GRPO advantages, gradient step, record the mean reward (zetta-core; #555)
     judge.cpp               zetta::agent::resolve_grade — deterministic grader when the task is_trainable, else the injected judge, else a failing Deterministic grade (fail closed) (zetta-core; #555)
     sequence_training.cpp   zetta::agent::train_sequence_policy — per step: sample group trajectories, GRPO advantages over trajectory rewards, apply each trajectory's advantage to every turn's policy_gradient_step (zetta-core; #555)
+    corpus_training.cpp     zetta::agent::train_over_corpus/CorpusTrainingReport — train one SoftmaxPolicy per task, record first/last mean reward + improved; improved_count/mean_reward_after aggregates (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
