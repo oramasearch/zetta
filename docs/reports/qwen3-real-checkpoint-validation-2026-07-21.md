@@ -96,10 +96,46 @@ ZETTA_QWEN_DIR=/path/to/qwen3-0.6b ctest --test-dir build -R QwenRealCheckpoint 
 The test (`tests/tokenizer/test_qwen_real_checkpoint.cpp`) is **skipped** when
 `ZETTA_QWEN_DIR` is unset, so the default build/CI needs no multi-GB download.
 
+## Result 4 — throughput (added 2026-07-21, same checkpoint)
+
+Optimizations landed after the correctness pass, all measured on the real
+Qwen3-0.6B (16-core Apple-Silicon):
+
+- **`matmul_transposed_b`** (no per-forward weight transpose) + **work-aware
+  `parallel_for` grain** (thread the layer matmuls, not just the lm_head): forward
+  **2.3 s → 226 ms** (~10×).
+- **KV cache** (`QwenInference`): greedy generation **0.4 → 13.5 tok/s** (~34×).
+- **MLX GPU (per-op routing):** device-agnostic and correct (max|CPU−MLX| ≈ 6e-5)
+  but **not** a generation win — token-by-token decoding drowns in per-op sync
+  (1.3 tok/s). It wins **~6×** on *batched* forwards (seq ≥ 128).
+- **Fused MLX kernel** (`MlxQwenInference`, whole decode as one MLX graph, KV cache
+  in GPU arrays, one eval/token): **42.9 tok/s** — same tokens as CPU, ~3× the
+  threaded CPU KV cache. The fast GPU inference path.
+
+## Result 5 — RLVR post-training on the real weights (2026-07-21)
+
+`grpo_step_text` (KV-cached rollouts + sequence policy gradient) run on the real
+0.6B, teaching a target word purely from a verifiable "completion contains the
+word" reward — never shown the answer:
+
+```
+prompt "I think the best pet is a"   target "cat"   (lr 1e-4, group 16, 3 new tokens)
+before: greedy = " dog. I"
+step 0  mean_reward 0.125   greedy " cat or a"
+step 1  mean_reward 1.0     greedy " cat or a"   -> learned; stopped before collapse
+```
+
+The model shifted its answer **" dog" → " cat"** in two GRPO steps from reward
+alone. Notes: (1) the reward must be *reachable* — a target the policy never samples
+(e.g. forcing " Berlin" after "The capital of France is") gives zero gradient; a
+multi-token "contains the word" reward on an open prompt fixes that. (2) Unregularized
+RLVR at higher lr mode-collapses into degenerate repetition after convergence — a
+low lr + early-stop (or a reference-KL penalty, future work) keeps it stable.
+
 ## Bottom line
 
 Every code-level layer of "RLVR post-training over open weights" (#555) is done and
 **verified against a real Qwen checkpoint**: the tokenizer is bit-exact, the model
-loads and generates correctly, and the weights train. What remains is scale
-(bigger checkpoints, a KV cache + accelerated `gemm` for throughput) and the
-sustained training campaign — not correctness.
+loads and generates correctly (42.9 tok/s fused-MLX / 13.5 tok/s CPU), and the real
+weights **train from reward** (" dog" → " cat"). What remains is scale (bigger
+checkpoints, a reference-KL regularizer, a sustained campaign) — not correctness.
