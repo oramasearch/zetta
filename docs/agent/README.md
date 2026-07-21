@@ -31,6 +31,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The task/game** — `Task` (below).
 - **Tool calls + the sandbox** — `ToolCall` + `Sandbox` (below).
 - **The rollout** — `AgentPolicy` + `run_rollout` (below).
+- **The reward** — the rubric + `reward_for_rollout` (below).
 
 ## The reward primitive (shipped)
 
@@ -80,6 +81,18 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   failed/unknown one, honestly), and return the trajectory + the final
   `EndState`. The turn budget is a hard bound: an agent that never stops still
   terminates, so there is always a final state to reward.
+
+## The reward (shipped)
+
+- **The rubric** (`reward.hpp`) — `reward_for_rollout(task, rollout)` scores a
+  whole rollout as a reward in `[0,1]`. The deterministic end-state grader is the
+  anchor (and sets `solved`), but the training signal is a **multi-term rubric** —
+  `end_state`, `right_tools` (calls that named a real tool), `right_args` (of
+  those, the ones that succeeded) — combined by **active-weight renormalization**:
+  only the terms a rollout exercised count, and their weights renormalize so the
+  reward stays in `[0,1]` no matter which apply (the blender-rl rubric shape). The
+  per-term breakdown is returned so a training run can see *why* a rollout scored
+  what it did.
 
 ## Acceptance
 

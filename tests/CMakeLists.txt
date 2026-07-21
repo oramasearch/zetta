@@ -178,6 +178,7 @@ add_executable(zetta-tests
   agent/test_task.cpp
   agent/test_sandbox.cpp
   agent/test_rollout.cpp
+  agent/test_reward.cpp
   test_integrity.cpp
   test_schemas.cpp
 )
