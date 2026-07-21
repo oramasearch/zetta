@@ -345,7 +345,8 @@ if(ZETTA_ENABLE_MLX)
   find_library(MLX_LIBRARY mlx REQUIRED)
   list(APPEND ZETTA_COMPUTE_SOURCES
     src/core/compute/mlx_device.cpp
-    src/core/compute/mlx_transformer.cpp)
+    src/core/compute/mlx_transformer.cpp
+    src/core/compute/safetensors.cpp)
   message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
 else()
   message(STATUS "MLX compute backend: disabled (CPU-only build). "
@@ -397,7 +398,9 @@ if(ZETTA_ENABLE_MLX)
   # libmlx pulls the Metal/Foundation frameworks it was built against.
   target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_MLX=1)
   target_include_directories(zetta-compute PRIVATE ${MLX_INCLUDE_DIR})
-  target_link_libraries(zetta-compute PRIVATE ${MLX_LIBRARY})
+  # nlohmann/json (header-only) for the safetensors header; the include path comes
+  # via the interface target set up above.
+  target_link_libraries(zetta-compute PRIVATE ${MLX_LIBRARY} nlohmann_json)
   if(APPLE)
     target_link_libraries(zetta-compute PRIVATE
       "-framework Metal" "-framework Foundation" "-framework QuartzCore"

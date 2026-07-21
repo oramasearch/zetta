@@ -194,6 +194,7 @@ add_executable(zetta-tests
   agent/test_judge.cpp
   compute/test_mlx_device.cpp
   compute/test_mlx_transformer.cpp
+  compute/test_safetensors.cpp
   test_integrity.cpp
   test_schemas.cpp
 )
