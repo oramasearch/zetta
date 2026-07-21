@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <random>
+#include <set>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -16,6 +17,59 @@
 #include "zetta/autograd/transformer.hpp"
 
 namespace zetta::autograd {
+
+namespace {
+
+// Load a sharded checkpoint: read a `model.safetensors.index.json` (its
+// `weight_map` maps each tensor name to the shard file that holds it), read each
+// referenced shard from the same directory, and merge them into one map. Returns
+// std::nullopt (with a reason) on a bad index or an unreadable/malformed shard.
+std::optional<SafeTensors> read_sharded_safetensors(
+    const std::filesystem::path& root, const std::filesystem::path& index_path,
+    std::string* error) {
+    const auto fail = [&](std::string reason) -> std::optional<SafeTensors> {
+        if (error != nullptr) *error = std::move(reason);
+        return std::nullopt;
+    };
+
+    std::ifstream in(index_path, std::ios::binary);
+    if (!in) {
+        return fail("load_qwen: cannot open " + index_path.string());
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const nlohmann::json index =
+        nlohmann::json::parse(buffer.str(), nullptr, /*allow_exceptions=*/false);
+    if (index.is_discarded() || !index.is_object() ||
+        !index.contains("weight_map") || !index.at("weight_map").is_object()) {
+        return fail("load_qwen: " + index_path.string() +
+                    " has no object 'weight_map'");
+    }
+
+    // The distinct shard files the weight_map references.
+    std::set<std::string> shard_files;
+    for (const auto& [name, file] : index.at("weight_map").items()) {
+        if (!file.is_string()) {
+            return fail("load_qwen: weight_map entry '" + name + "' is not a string");
+        }
+        shard_files.insert(file.get<std::string>());
+    }
+
+    SafeTensors merged;
+    for (const std::string& shard : shard_files) {
+        const std::optional<SafeTensors> part =
+            read_safetensors_file((root / shard).string(), error);
+        if (!part.has_value()) {
+            return std::nullopt;  // *error already set by read_safetensors_file
+        }
+        for (const auto& [name, tensor] : *part) {
+            merged.emplace(name, tensor);
+        }
+    }
+    return merged;
+}
+
+}  // namespace
 
 std::optional<QwenConfig> parse_qwen_config(std::string_view json,
                                             std::string* error) {
@@ -317,9 +371,19 @@ std::optional<QwenModel> load_qwen_model(const std::string& directory,
         return fail(reason);
     }
 
-    // model.safetensors -> the weights.
-    const std::optional<SafeTensors> tensors =
-        read_safetensors_file((root / "model.safetensors").string(), &reason);
+    // The weights: a single model.safetensors, or a sharded set indexed by
+    // model.safetensors.index.json (how real multi-GB Qwen checkpoints ship).
+    std::optional<SafeTensors> tensors;
+    const std::filesystem::path single = root / "model.safetensors";
+    const std::filesystem::path index = root / "model.safetensors.index.json";
+    if (std::filesystem::exists(single)) {
+        tensors = read_safetensors_file(single.string(), &reason);
+    } else if (std::filesystem::exists(index)) {
+        tensors = read_sharded_safetensors(root, index, &reason);
+    } else {
+        return fail("load_qwen: no model.safetensors or model.safetensors.index.json "
+                    "in " + directory);
+    }
     if (!tensors.has_value()) {
         return fail(reason);
     }

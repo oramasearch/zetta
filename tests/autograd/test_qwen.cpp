@@ -227,6 +227,66 @@ TEST(QwenModel, LoadsFromACheckpointDirectory) {
     EXPECT_EQ(loaded->forward(ids).data(), expected);  // identical weights + arch
 }
 
+// Real multi-GB Qwen checkpoints are SHARDED: many
+// model-0000N-of-0000M.safetensors files indexed by model.safetensors.index.json.
+// load_qwen_model reads the index, merges the shards, and loads by name.
+TEST(QwenModel, LoadsFromAShardedCheckpointDirectory) {
+    const QwenConfig config = tiny_config();
+    const QwenModel source(config, 11);
+    const std::vector<int> ids = {1, 5, 2, 7};
+    const std::vector<float> expected = source.forward(ids).data();
+
+    const zetta::test::TempDir temp;
+    std::ofstream(temp.path() / "config.json")
+        << R"({"vocab_size":24,"hidden_size":16,"num_hidden_layers":2,)"
+           R"("num_attention_heads":4,"num_key_value_heads":2,"head_dim":4,)"
+           R"("intermediate_size":32,"tie_word_embeddings":false})";
+
+    // Split the parameters across two shards, building the weight_map as we go.
+    const SafeTensors all = source.to_safetensors();
+    SafeTensors shard1;
+    SafeTensors shard2;
+    const std::string file1 = "model-00001-of-00002.safetensors";
+    const std::string file2 = "model-00002-of-00002.safetensors";
+    std::string weight_map = "{";
+    int i = 0;
+    for (const auto& entry : all) {
+        const bool first = (i % 2 == 0);
+        (first ? shard1 : shard2)[entry.first] = entry.second;
+        if (i != 0) weight_map += ",";
+        weight_map += "\"" + entry.first + "\":\"" + (first ? file1 : file2) + "\"";
+        ++i;
+    }
+    weight_map += "}";
+
+    ASSERT_TRUE(write_safetensors_file((temp.path() / file1).string(), shard1));
+    ASSERT_TRUE(write_safetensors_file((temp.path() / file2).string(), shard2));
+    std::ofstream(temp.path() / "model.safetensors.index.json")
+        << R"({"metadata":{"total_size":0},"weight_map":)" << weight_map << "}";
+
+    std::string error;
+    const std::optional<QwenModel> loaded =
+        load_qwen_model(temp.path().string(), &error);
+    ASSERT_TRUE(loaded.has_value()) << error;
+    EXPECT_EQ(loaded->forward(ids).data(), expected);
+}
+
+// An index that references a shard file that isn't there is an error, not a
+// silently partial load.
+TEST(QwenModel, ShardedLoadReportsMissingShard) {
+    const zetta::test::TempDir temp;
+    std::ofstream(temp.path() / "config.json")
+        << R"({"vocab_size":24,"hidden_size":16,"num_hidden_layers":2,)"
+           R"("num_attention_heads":4,"num_key_value_heads":2,"head_dim":4,)"
+           R"("intermediate_size":32})";
+    std::ofstream(temp.path() / "model.safetensors.index.json")
+        << R"({"weight_map":{"model.embed_tokens.weight":"nope.safetensors"}})";
+
+    std::string error;
+    EXPECT_FALSE(load_qwen_model(temp.path().string(), &error).has_value());
+    EXPECT_NE(error.find("nope.safetensors"), std::string::npos);
+}
+
 TEST(QwenModel, LoadFromDirectoryReportsMissingFilesAndBadCheckpoints) {
     const zetta::test::TempDir temp;
     std::string error;

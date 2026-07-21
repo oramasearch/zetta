@@ -76,8 +76,11 @@ across heterogeneous devices.
   "act" step of the RLVR loop. A model overfit on a sequence greedily *generates*
   that sequence — training and generation are mirror images.
 - **`load_qwen_model(dir)`** — the entry point: point it at a Hugging Face
-  checkpoint directory (`config.json` + `model.safetensors`) and get a
-  fully-loaded, ready-to-run `QwenModel` (config parsed, weights loaded by name).
-  Proven with a synthetic directory that round-trips to identical logits; a real
-  Qwen directory is the same two files, with only the multi-GB weights and the
-  tokenizer as the remaining external-asset step.
+  checkpoint directory and get a fully-loaded, ready-to-run `QwenModel` (config
+  parsed, weights loaded by name). Handles both a single `model.safetensors` and a
+  **sharded** checkpoint (`model.safetensors.index.json` + the
+  `model-0000N-of-0000M.safetensors` shards it maps — how real multi-GB Qwen ships)
+  by merging the shards. Proven with synthetic single-file and sharded directories
+  that round-trip to identical logits; a real Qwen directory is the same files,
+  with only the multi-GB weights and the tokenizer as the remaining external-asset
+  step.
