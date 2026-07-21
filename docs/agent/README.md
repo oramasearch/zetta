@@ -35,6 +35,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The admission gate** — `admit_corpus` (below).
 - **The reference policy** — `SoftmaxPolicy` (below), the CPU policy the training loop is proven on.
 - **GRPO advantages** — `group_advantages` (below).
+- **The policy-gradient step** — `policy_gradient_step` (below) — reward provably rises.
 
 ## The reward primitive (shipped)
 
@@ -127,6 +128,18 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   normalized by the group's spread. The group is its own baseline, so there is no
   learned value function; and a group that all agrees (already solved, or always
   failing) yields zero advantage and does not push the weights.
+
+## The policy-gradient step (shipped)
+
+- **`policy_gradient_step`** (`policy_gradient.hpp`) — one REINFORCE/GRPO ascent
+  step: from a batch of (sampled action, advantage), nudge the logits by
+  `learning_rate · Σ advantage · (1[j==a] − π_j)` (the gradient of `log π(a)` taken
+  at the sampling policy). Actions with positive advantage become more likely,
+  negative less. **Repeated over a task, the reward rises** — proven directly: a
+  bandit that starts uniform is trained to pick the reward-getting arm with
+  >0.9 probability. This is feat-12's "watch it improve", in miniature on the CPU
+  reference policy; the same loop drives a real MLX-backed model once it is swapped
+  in behind `AgentPolicy`.
 
 ## Acceptance
 

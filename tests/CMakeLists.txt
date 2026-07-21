@@ -182,6 +182,7 @@ add_executable(zetta-tests
   agent/test_admission_gate.cpp
   agent/test_softmax_policy.cpp
   agent/test_advantage.cpp
+  agent/test_policy_gradient.cpp
   test_integrity.cpp
   test_schemas.cpp
 )
