@@ -66,12 +66,46 @@ load **`zetta-dev`** for the repo-wide C++/build/commit conventions.
   `group_advantages` → `sequence_policy_gradient_loss`).
 - **Text:** `generate_text` (tokenizer + model).
 
-### Making it fast (in impact order)
-`parallel_for` over the **large** axis · pre-transpose weights for inference (avoid
-re-transposing the lm_head every forward) · a **KV cache** for generation (O(n²)→O(n))
-· the `ComputeDevice` gemm (CpuDevice threaded / MlxDevice GPU) · build with
-`-march=native` on a known-target box (opt-in, not a portable default; Release is
-already `-O3 -DNDEBUG`).
+### Making it fast — the custom-speedup playbook
+
+All of these are **built and measured on the real Qwen3-0.6B** (see
+[building-ai-primitives.md](../../../docs/autograd/building-ai-primitives.md) §
+Performance and the [report](../../../docs/reports/qwen3-real-checkpoint-validation-2026-07-21.md)).
+Apply them in this order; always measure against a real checkpoint.
+
+**CPU (the always-present path):**
+1. **Build flags** — Release is `-O3 -DNDEBUG`. Add **`-march=native`** on a
+   known-target box (build box / a node) for AVX/NEON on the matmul inner loops —
+   opt-in, *not* a portable default (breaks on older CPUs).
+2. **Don't transpose weights every forward** — HF weights are `[out,in]`;
+   `matmul(x, transpose(W))` re-materializes the transpose each call (the 151936×1024
+   lm_head = ~620 MB/forward). Use **`matmul_transposed_b(x, W)`** (`x·Wᵀ` over
+   contiguous rows). *(2.3 s → 1.4 s.)*
+3. **Thread the matmul over the LARGE axis, with a work-aware grain** — `parallel_for`'s
+   default grain is an *item count* (4096) tuned for cheap ops; a matmul column is a
+   whole dot product. Parallelize over `max(rows, cols)` and pick the grain by *work*
+   (inline below ~131k flops, else split across all workers) via the grained
+   `parallel_for` overload. Transformer inference has few tokens but wide projections,
+   so row-parallel gives no parallelism. *(1.4 s → 226 ms; the big CPU win.)*
+4. **KV cache for generation** — decoding re-forwards the whole sequence (O(n²)); a
+   per-layer K/V cache makes each token O(n). `QwenInference`. *(0.4 → 13.5 tok/s.)*
+
+**GPU (MLX) — the rule is: keep the WHOLE computation on-device in ONE graph.**
+5. **Never route autograd ops one-at-a-time through the `ComputeDevice` for GPU
+   inference** — each op uploads/downloads and forces an `mx::eval` sync; a 5-token
+   forward is *slower* on MLX (450 ms) than the threaded CPU (230 ms), and generation
+   is 1.3 tok/s. (Per-op MLX is still device-agnostic and *does* win ~6× on **batched**
+   forwards, seq ≥ 128 — compute dominates transfer there.)
+6. **Fused MLX kernels** (`zetta::compute::model`, `MlxQwenInference` /
+   `MlxQwenModel`) — build the whole forward / decode / training step / RLVR step as
+   **one MLX graph**, KV cache in MLX unified-memory arrays, **one `eval` per step**,
+   `mx::value_and_grad` for training. Measured: **inference 42.9 tok/s** (~3× CPU
+   KV-cache), **training ~290 ms/step** (~25–35× CPU), **fused GPU `grpo_step`
+   ~2.2 s/step** (learns " dog"→" cat"). This is the fast GPU path.
+
+Two orthogonal axes: **generation throughput** ← KV cache (CPU) or a fused decode
+graph (GPU); **batched compute** (training / long-seq forwards) ← MLX gemm / fused
+training. Match the tool to the workload.
 
 ## Validate against a real checkpoint
 
