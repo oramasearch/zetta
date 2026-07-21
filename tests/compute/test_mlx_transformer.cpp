@@ -31,6 +31,22 @@ using zetta::compute::model::policy_gradient_loss;
 using zetta::compute::model::rms_norm;
 using zetta::compute::model::TransformerConfig;
 
+TransformerConfig small_config() {
+    TransformerConfig config;
+    config.vocab_size = 16;
+    config.d_model = 16;
+    config.n_heads = 2;
+    config.n_layers = 2;
+    config.d_ff = 32;
+    config.max_seq = 8;
+    return config;
+}
+
+mx::array token_ids(const std::vector<int>& ids) {
+    return mx::array(ids.data(), mx::Shape{static_cast<int>(ids.size())},
+                     mx::int32);
+}
+
 // Softmax of the logits at the last position (read to host).
 std::vector<double> last_position_softmax(const mx::array& logits, int vocab) {
     mx::array evaluated = logits;
@@ -58,6 +74,25 @@ int sample_from(const std::vector<double>& probs, double uniform_draw) {
     return static_cast<int>(probs.size()) - 1;
 }
 
+// Overfit `model` to `sequence` with next-token cross-entropy (shared by the
+// autodiff and generation tests).
+void overfit_to_sequence(MlxTransformer& model, const TransformerConfig& config,
+                         const std::vector<int>& sequence, int steps) {
+    const mx::array ids = token_ids(sequence);
+    std::vector<int> argnums(model.parameters().size());
+    std::iota(argnums.begin(), argnums.end(), 0);
+    const std::function<mx::array(const std::vector<mx::array>&)> loss_fn =
+        [&](const std::vector<mx::array>& parameters) {
+            return cross_entropy_next_token(config, parameters, ids);
+        };
+    auto grad_fn = mx::value_and_grad(loss_fn, argnums);
+    AdamW optimizer(/*learning_rate=*/1e-2F);
+    for (int step = 0; step < steps; ++step) {
+        auto [loss, gradients] = grad_fn(model.parameters());
+        optimizer.update(model.parameters(), gradients);
+    }
+}
+
 int argmax_last_position(const mx::array& logits, int vocab) {
     mx::array evaluated = logits;
     mx::eval(evaluated);
@@ -68,22 +103,6 @@ int argmax_last_position(const mx::array& logits, int vocab) {
         if (row[c] > row[best]) best = c;
     }
     return best;
-}
-
-TransformerConfig small_config() {
-    TransformerConfig config;
-    config.vocab_size = 16;
-    config.d_model = 16;
-    config.n_heads = 2;
-    config.n_layers = 2;
-    config.d_ff = 32;
-    config.max_seq = 8;
-    return config;
-}
-
-mx::array token_ids(const std::vector<int>& ids) {
-    return mx::array(ids.data(), mx::Shape{static_cast<int>(ids.size())},
-                     mx::int32);
 }
 
 mx::array weight(int rows, int cols, std::uint64_t seed) {
@@ -294,6 +313,21 @@ TEST(MlxTransformer, LearnsAVerifiableGameByPolicyGradient) {
                   answer(q))
             << "question " << q;
     }
+}
+
+// The agent emits an action as text: after overfitting a sequence, greedy
+// generation continues it. Causality guarantees a prefix's last-position logits
+// equal the full sequence's at that position, so generation reproduces what was
+// learned — and it is deterministic.
+TEST(MlxTransformer, GeneratesTheLearnedContinuation) {
+    const TransformerConfig config = small_config();
+    MlxTransformer model(config, 3);
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4};
+    overfit_to_sequence(model, config, sequence, 250);
+
+    const std::vector<int> generated = model.generate({2, 5}, /*max_new_tokens=*/5);
+    EXPECT_EQ(generated, (std::vector<int>{7, 3, 9, 1, 4}));
+    EXPECT_EQ(model.generate({2, 5}, 5), generated);  // deterministic
 }
 
 }  // namespace

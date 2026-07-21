@@ -129,6 +129,37 @@ mx::array MlxTransformer::forward(const mx::array& token_ids) const {
     return forward(config_, parameters_, token_ids);
 }
 
+std::vector<int> MlxTransformer::generate(const TransformerConfig& config,
+                                          const std::vector<mx::array>& parameters,
+                                          const std::vector<int>& prompt,
+                                          int max_new_tokens) {
+    std::vector<int> tokens = prompt;
+    std::vector<int> generated;
+    generated.reserve(max_new_tokens);
+    for (int produced = 0; produced < max_new_tokens &&
+                           static_cast<int>(tokens.size()) < config.max_seq;
+         ++produced) {
+        const mx::array ids(tokens.data(),
+                            mx::Shape{static_cast<int>(tokens.size())}, mx::int32);
+        mx::array logits = forward(config, parameters, ids);
+        mx::eval(logits);
+        const int last = static_cast<int>(tokens.size()) - 1;
+        const float* row = logits.data<float>() + last * config.vocab_size;
+        int best = 0;
+        for (int candidate = 1; candidate < config.vocab_size; ++candidate) {
+            if (row[candidate] > row[best]) best = candidate;
+        }
+        tokens.push_back(best);
+        generated.push_back(best);
+    }
+    return generated;
+}
+
+std::vector<int> MlxTransformer::generate(const std::vector<int>& prompt,
+                                          int max_new_tokens) const {
+    return generate(config_, parameters_, prompt, max_new_tokens);
+}
+
 mx::array cross_entropy_next_token(const TransformerConfig& config,
                                    const std::vector<mx::array>& parameters,
                                    const mx::array& token_ids) {

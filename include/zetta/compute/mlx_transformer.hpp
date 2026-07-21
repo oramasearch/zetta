@@ -81,6 +81,17 @@ public:
     // forward() over this model's own parameters.
     mlx::core::array forward(const mlx::core::array& token_ids) const;
 
+    // Autoregressive greedy generation: repeatedly forward the growing sequence and
+    // append the argmax next token, up to max_new_tokens (bounded by max_seq).
+    // Returns the generated tokens (excluding the prompt) — how the agent emits an
+    // action as text, one token at a time. Deterministic (greedy).
+    static std::vector<int> generate(const TransformerConfig& config,
+                                     const std::vector<mlx::core::array>& parameters,
+                                     const std::vector<int>& prompt,
+                                     int max_new_tokens);
+    std::vector<int> generate(const std::vector<int>& prompt,
+                              int max_new_tokens) const;
+
 private:
     TransformerConfig config_;
     std::vector<mlx::core::array> parameters_;
