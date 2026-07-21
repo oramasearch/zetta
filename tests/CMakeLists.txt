@@ -202,6 +202,7 @@ add_executable(zetta-tests
   tokenizer/test_byte_encoding.cpp
   tokenizer/test_pre_tokenizer.cpp
   tokenizer/test_bpe.cpp
+  tokenizer/test_qwen_real_checkpoint.cpp
   compute/test_mlx_device.cpp
   compute/test_mlx_transformer.cpp
   compute/test_safetensors.cpp

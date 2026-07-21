@@ -91,3 +91,15 @@ across heterogeneous devices.
   Proven: a config round-trips through JSON, save→load is bit-identical, and an
   overfit model reloaded from a saved directory still generates its memorized
   sequence.
+
+## Validated against the real Qwen3-0.6B checkpoint
+
+This is not only synthetic: `load_qwen_model` loaded the **real** `Qwen/Qwen3-0.6B`
+`model.safetensors` (1.5 GB bf16), and the native model generated correct,
+coherent text — "The capital of France is" → " Paris. The capital of Italy",
+"2 + 2 =" → " 4", etc. Four native gradient steps then flipped its answer from
+"Paris" to a taught "Berlin", proving the real weights train through the autograd
+(the path `grpo_step` composes on). Full write-up:
+[`../reports/qwen3-real-checkpoint-validation-2026-07-21.md`](../reports/qwen3-real-checkpoint-validation-2026-07-21.md);
+locked in by the guarded `tests/tokenizer/test_qwen_real_checkpoint.cpp`
+(`ZETTA_QWEN_DIR`).

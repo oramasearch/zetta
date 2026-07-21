@@ -78,3 +78,13 @@ Built bottom-up (nibble-dev); shipped so far:
   the entry point paired with the model's `load_qwen_model`. Verified: a synthetic
   `tokenizer.json` in both merge formats loads and encodes/decodes (incl. its
   `added_tokens`), `from_directory` resolves it, and an empty directory is rejected.
+
+## Validated against the real Qwen3-0.6B tokenizer
+
+Loaded from the **real** `Qwen/Qwen3-0.6B` `tokenizer.json`, this tokenizer's
+`encode()` produces **token ids identical to the Hugging Face reference** on 9
+diverse strings (code, Unicode `café → π ≈ 3.14159`, contractions, whitespace,
+numbers, chat special tokens) with perfect round-trip — 9/9 exact match. The guarded
+test `tests/tokenizer/test_qwen_real_checkpoint.cpp` (runs only when
+`ZETTA_QWEN_DIR` is set) locks this in; full write-up in
+[`../reports/qwen3-real-checkpoint-validation-2026-07-21.md`](../reports/qwen3-real-checkpoint-validation-2026-07-21.md).
