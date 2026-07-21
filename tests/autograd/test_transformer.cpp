@@ -18,6 +18,7 @@ using zetta::autograd::Adam;
 using zetta::autograd::causal_self_attention;
 using zetta::autograd::cross_entropy;
 using zetta::autograd::feed_forward;
+using zetta::autograd::grouped_query_attention;
 using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::swiglu_feed_forward;
 using zetta::autograd::row_slice;
@@ -125,6 +126,108 @@ TEST(AutogradTransformer, SwigluGradientFlows) {
     check_gradient(small_weights(d * ff), {d, ff}, [&](const Tensor& w_gate) {
         return sum(swiglu_feed_forward(x, w_gate, w_up, w_down));
     });
+}
+
+// Grouped-query attention: n_heads=4 query heads over n_kv_heads=2 shared
+// key/value heads (group_size 2), head_dim 3. Gradient flows through the whole
+// block (RoPE per head + per-head SDPA + concat + wo) to wq.
+TEST(AutogradTransformer, GroupedQueryAttentionGradientFlows) {
+    const int seq = 4;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 3;
+    const int d_model = n_heads * head_dim;  // 12
+    const int kv_dim = n_kv_heads * head_dim;  // 6
+
+    const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    check_gradient(small_weights(d_model * d_model), {d_model, d_model},
+                   [&](const Tensor& wq) {
+                       return sum(grouped_query_attention(x, wq, wk, wv, wo, n_heads,
+                                                          n_kv_heads, head_dim));
+                   });
+}
+
+// The gradient also reaches the key projection, whose columns are shared across
+// each group of query heads (the defining property of GQA).
+TEST(AutogradTransformer, GroupedQueryAttentionGradientReachesSharedKv) {
+    const int seq = 3;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 2;
+    const int d_model = n_heads * head_dim;  // 8
+    const int kv_dim = n_kv_heads * head_dim;  // 4
+
+    const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
+    const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    check_gradient(small_weights(d_model * kv_dim), {d_model, kv_dim},
+                   [&](const Tensor& wk) {
+                       return sum(grouped_query_attention(x, wq, wk, wv, wo, n_heads,
+                                                          n_kv_heads, head_dim));
+                   });
+}
+
+TEST(AutogradTransformer, GroupedQueryAttentionShapeAndFiniteness) {
+    const int seq = 5;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 3;
+    const int d_model = n_heads * head_dim;
+    const int kv_dim = n_kv_heads * head_dim;
+    const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
+    const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor out =
+        grouped_query_attention(x, wq, wk, wv, wo, n_heads, n_kv_heads, head_dim);
+    ASSERT_EQ(out.shape(), (std::vector<int>{seq, d_model}));
+    for (float value : out.data()) {
+        EXPECT_TRUE(std::isfinite(value));
+    }
+}
+
+// GQA is causal: perturbing the last token cannot change position 0's output,
+// but must change the last position's.
+TEST(AutogradTransformer, GroupedQueryAttentionIsCausal) {
+    const int seq = 4;
+    const int n_heads = 2;
+    const int n_kv_heads = 1;
+    const int head_dim = 4;
+    const int d_model = n_heads * head_dim;  // 8
+    const int kv_dim = n_kv_heads * head_dim;  // 4
+    const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+
+    std::vector<float> x = small_weights(seq * d_model);
+    std::vector<float> x_perturbed = x;
+    for (int col = 0; col < d_model; ++col) {
+        x_perturbed[(seq - 1) * d_model + col] += 0.5F;
+    }
+    const Tensor out = grouped_query_attention(
+        Tensor::leaf(x, {seq, d_model}, false), wq, wk, wv, wo, n_heads, n_kv_heads,
+        head_dim);
+    const Tensor out_perturbed = grouped_query_attention(
+        Tensor::leaf(x_perturbed, {seq, d_model}, false), wq, wk, wv, wo, n_heads,
+        n_kv_heads, head_dim);
+
+    float first_diff = 0.0F;
+    float last_diff = 0.0F;
+    for (int col = 0; col < d_model; ++col) {
+        first_diff = std::max(
+            first_diff, std::abs(out.data()[col] - out_perturbed.data()[col]));
+        last_diff = std::max(last_diff,
+                             std::abs(out.data()[(seq - 1) * d_model + col] -
+                                      out_perturbed.data()[(seq - 1) * d_model + col]));
+    }
+    EXPECT_LT(first_diff, 1e-5F);  // position 0 cannot see the future
+    EXPECT_GT(last_diff, 1e-5F);   // the last position does
 }
 
 // Perturbing the last token must not change position 0's attention output (it

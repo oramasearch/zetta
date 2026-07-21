@@ -44,6 +44,8 @@ across heterogeneous devices.
   `row_softmax` · `rms_norm` · `transpose` · `embedding` · `cross_entropy` ·
   `row_slice` · `policy_gradient_loss` · `rope` · `col_slice` · `concat_cols`
   (the last two split/reassemble attention heads). Every op is gradient-checked.
-- **`transformer.hpp`** — `causal_self_attention`, `feed_forward`,
-  `swiglu_feed_forward`, the `Transformer` model, `Adam`, and `zero_grad`. Trains
-  by overfit and by RLVR policy gradient on the native engine.
+- **`transformer.hpp`** — `causal_self_attention`, `grouped_query_attention`
+  (the Qwen/LLaMA GQA: n_heads query heads over n_kv_heads shared key/value
+  heads, RoPE per head, causal SDPA), `feed_forward`, `swiglu_feed_forward`, the
+  `Transformer` model, `Adam`, and `zero_grad`. Trains by overfit and by RLVR
+  policy gradient on the native engine.

@@ -19,6 +19,22 @@ namespace zetta::autograd {
 Tensor causal_self_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
                              const Tensor& wv, const Tensor& wo);
 
+// Grouped-query causal self-attention (the Qwen/LLaMA attention). `x` is
+// [seq, d_model]; the projections pack heads into columns:
+//   wq [d_model, n_heads    * head_dim]
+//   wk [d_model, n_kv_heads * head_dim]
+//   wv [d_model, n_kv_heads * head_dim]
+//   wo [n_heads * head_dim, d_model]
+// Each of the n_heads query heads shares a key/value head with its group
+// (group_size = n_heads / n_kv_heads), so n_kv_heads == n_heads is plain
+// multi-head attention and n_kv_heads == 1 is multi-query. RoPE is applied
+// per head to Q and K, each head does scaled-dot-product attention under the
+// causal mask, and the head outputs are concatenated and projected by wo.
+// Requires n_heads % n_kv_heads == 0.
+Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
+                               const Tensor& wv, const Tensor& wo, int n_heads,
+                               int n_kv_heads, int head_dim);
+
 // Position-wise feed-forward: gelu(x @ w1) @ w2. x [seq, d_model],
 // w1 [d_model, d_ff], w2 [d_ff, d_model].
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2);

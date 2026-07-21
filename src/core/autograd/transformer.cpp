@@ -101,6 +101,59 @@ Tensor causal_self_attention(const Tensor& x, const Tensor& wq, const Tensor& wk
     return matmul(context, wo);
 }
 
+namespace {
+
+// The additive causal mask [seq, seq]: 0 on/below the diagonal, -inf above, so
+// after the softmax a position places no weight on the future.
+Tensor causal_mask(int seq) {
+    std::vector<float> mask(static_cast<std::size_t>(seq) * seq, 0.0F);
+    for (int i = 0; i < seq; ++i) {
+        for (int j = i + 1; j < seq; ++j) {
+            mask[i * seq + j] = -1e9F;
+        }
+    }
+    return Tensor::leaf(std::move(mask), {seq, seq}, false);
+}
+
+// Scaled-dot-product attention for one head: q, k, v are [seq, head_dim].
+// softmax((q kᵀ)/sqrt(head_dim) + causal_mask) · v -> [seq, head_dim].
+Tensor attend_one_head(const Tensor& q, const Tensor& k, const Tensor& v,
+                       const Tensor& mask, float scale_factor) {
+    Tensor scores = scale(matmul(q, transpose(k)), scale_factor);
+    scores = add(scores, mask);
+    return matmul(row_softmax(scores), v);
+}
+
+}  // namespace
+
+Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
+                               const Tensor& wv, const Tensor& wo, int n_heads,
+                               int n_kv_heads, int head_dim) {
+    const int seq = x.shape()[0];
+    const int group_size = n_heads / n_kv_heads;  // query heads per kv head
+    const float scale_factor = 1.0F / std::sqrt(static_cast<float>(head_dim));
+
+    const Tensor query = matmul(x, wq);  // [seq, n_heads    * head_dim]
+    const Tensor key = matmul(x, wk);    // [seq, n_kv_heads * head_dim]
+    const Tensor value = matmul(x, wv);  // [seq, n_kv_heads * head_dim]
+    const Tensor mask = causal_mask(seq);
+
+    std::vector<Tensor> head_outputs;
+    head_outputs.reserve(n_heads);
+    for (int head = 0; head < n_heads; ++head) {
+        const int kv_head = head / group_size;
+        // RoPE applied per head to Q and K so attention sees relative positions.
+        const Tensor q_head = rope(col_slice(query, head * head_dim, head_dim));
+        const Tensor k_head = rope(col_slice(key, kv_head * head_dim, head_dim));
+        const Tensor v_head = col_slice(value, kv_head * head_dim, head_dim);
+        head_outputs.push_back(
+            attend_one_head(q_head, k_head, v_head, mask, scale_factor));
+    }
+
+    const Tensor context = concat_cols(head_outputs);  // [seq, n_heads*head_dim]
+    return matmul(context, wo);
+}
+
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2) {
     return matmul(gelu(matmul(x, w1)), w2);
 }
