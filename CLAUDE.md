@@ -135,6 +135,7 @@ level can be trusted — a stale card is worse than none.
 | Devices, schedulers, jobs, autoscaler, near-data | [`docs/compute/`](docs/compute/README.md) |
 | DataFrames + distributed ops | [`docs/ddf/`](docs/ddf/README.md) |
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
+| **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
@@ -520,6 +521,11 @@ Project skills live in `.claude/skills/` (committed, shared):
   the safety rules and the prove-the-fault-landed discipline.
 - **add-use-case** — build a UC-N in the engine (compose-don't-invent, the
   FedEx-test rule, the nine-step recipe).
+- **native-ai-dev** — build AI natively: a model / layer / autograd op / tokenizer
+  / training or RLVR loop on `zetta::autograd` + the `ComputeDevice` seam + the BPE
+  tokenizer, **no foreign runtime** (ADR-17). The gradient-check discipline, the
+  Qwen exemplar, checkpoint load/save, generation, and the performance playbook.
+  Points at [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md).
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
 - **new-connector** — add a new source connector (pull rows from a warehouse /

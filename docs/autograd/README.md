@@ -35,6 +35,12 @@ across heterogeneous devices.
 
 ## Pages
 
+- **[building-ai-primitives.md](building-ai-primitives.md)** — **the playbook for
+  building any new model / layer / op / tokenizer / training loop natively on this
+  stack** (recipes, the gradient-check discipline, the Qwen exemplar, the
+  performance guide, real-checkpoint validation). Read it before building AI in
+  zetta; the [`native-ai-dev`](../../.claude/skills/native-ai-dev/SKILL.md) skill
+  drives it.
 - (this README — overview; `tensor.hpp` carries the engine + ops as they ship)
 
 ## Shipped
