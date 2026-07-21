@@ -42,4 +42,30 @@ TEST(Curriculum, ChurnNegativeControlsEachFail) {
     }
 }
 
+// Nibble 2: the reference/negatives are the facts of an ACTUALLY BUILT execution graph
+// (Connect->Clean->Model->Serve->Act), not hand-written strings.
+TEST(Curriculum, ChurnReferenceGraphFactsPassGrader) {
+    const EndStateGrader grader = churn_solution_case().task.grader();
+    const auto graph =
+        zetta::agent::build_churn_graph("gbdt", "shap", true, true, true);
+    EXPECT_TRUE(grader.grade(zetta::agent::churn_graph_facts(graph)).passed)
+        << "a correctly built churn graph should pass the grader";
+}
+
+TEST(Curriculum, ChurnDegenerateGraphsFailGrader) {
+    const EndStateGrader grader = churn_solution_case().task.grader();
+    using zetta::agent::build_churn_graph;
+    using zetta::agent::churn_graph_facts;
+    // LLM-only (his current approach), leaky features, and no calibration loop.
+    EXPECT_FALSE(
+        grader.grade(churn_graph_facts(build_churn_graph("llm", "none", true, true, true)))
+            .passed);
+    EXPECT_FALSE(
+        grader.grade(churn_graph_facts(build_churn_graph("gbdt", "shap", false, true, true)))
+            .passed);
+    EXPECT_FALSE(
+        grader.grade(churn_graph_facts(build_churn_graph("gbdt", "shap", true, true, false)))
+            .passed);
+}
+
 }  // namespace

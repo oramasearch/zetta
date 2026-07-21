@@ -3,8 +3,12 @@
 #include <string>
 #include <utility>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/agent/end_state.hpp"
 #include "zetta/agent/task.hpp"
+#include "zetta/ir/execution_graph.hpp"
+#include "zetta/ir/step_kind.hpp"
 
 namespace zetta::agent {
 namespace {
@@ -26,6 +30,61 @@ EndState churn_required() {
 
 }  // namespace
 
+ir::ExecutionGraph build_churn_graph(std::string model_kind, std::string explain,
+                                     bool leakage_free, bool calibrated,
+                                     bool calibration_loop) {
+    ir::ExecutionGraph graph;
+    const auto connect =
+        graph.add_node(ir::StepKind::Connect, "account events + communications");
+    const auto clean = graph.add_node(ir::StepKind::Clean, "point-in-time features",
+                                      {{"leakage_free", leakage_free}});
+    const auto model =
+        graph.add_node(ir::StepKind::Model, "churn risk model",
+                       {{"kind", std::move(model_kind)}, {"explain", std::move(explain)}});
+    const auto serve = graph.add_node(ir::StepKind::Serve, "risk scores",
+                                      {{"calibrated", calibrated}});
+    const auto act = graph.add_node(ir::StepKind::Act, "write-back + calibration",
+                                    {{"calibration_loop", calibration_loop}});
+    graph.add_edge(connect->id, clean->id);
+    graph.add_edge(clean->id, model->id);
+    graph.add_edge(model->id, serve->id);
+    graph.add_edge(serve->id, act->id);
+    return graph;
+}
+
+EndState churn_graph_facts(const ir::ExecutionGraph& graph) {
+    EndState facts;
+    facts.set("connect", !graph.nodes_of_kind(ir::StepKind::Connect).empty());
+
+    bool leakage_free = false;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Clean)) {
+        if (node->attributes.value("leakage_free", false)) leakage_free = true;
+    }
+    facts.set("leakage_free", leakage_free);
+
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Model)) {
+        if (node->attributes.contains("kind")) {
+            facts.set("model_kind", node->attributes.at("kind"));
+        }
+        if (node->attributes.contains("explain")) {
+            facts.set("explain", node->attributes.at("explain"));
+        }
+    }
+
+    bool calibrated = false;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Serve)) {
+        if (node->attributes.value("calibrated", false)) calibrated = true;
+    }
+    facts.set("calibrated", calibrated);
+
+    bool calibration_loop = false;
+    for (const auto& node : graph.nodes_of_kind(ir::StepKind::Act)) {
+        if (node->attributes.value("calibration_loop", false)) calibration_loop = true;
+    }
+    facts.set("calibration_loop", calibration_loop);
+    return facts;
+}
+
 AdmissionCase churn_solution_case() {
     const std::string description =
         "Build a churn-risk pipeline over the account events + communications: connect "
@@ -42,23 +101,22 @@ AdmissionCase churn_solution_case() {
     Task task{"uc1-churn", description, std::move(initial),
               {"connect", "clean", "model", "index", "serve", "act"}, churn_required()};
 
-    // Reference solution: every required fact satisfied.
-    EndState reference = churn_required();
+    // Reference solution: the facts of an actually-built correct churn graph.
+    EndState reference = churn_graph_facts(
+        build_churn_graph("gbdt", "shap", /*leakage_free=*/true, /*calibrated=*/true,
+                          /*calibration_loop=*/true));
 
-    // Negative controls — plausible-wrong solutions, each failing at least one required
-    // fact so the grader must discriminate:
+    // Negative controls — the facts of degenerate churn graphs, each failing one
+    // required fact so the grader must discriminate:
     //  1. his current approach: LLM scoring, not a trained gbdt (+ no SHAP);
     //  2. a leaky pipeline: features peek at the outcome;
     //  3. no calibration loop: scores are never checked against realized churn.
-    EndState llm_only = churn_required();
-    llm_only.set("model_kind", "llm");
-    llm_only.set("explain", "none");
-
-    EndState leaky = churn_required();
-    leaky.set("leakage_free", false);
-
-    EndState no_calibration = churn_required();
-    no_calibration.set("calibration_loop", false);
+    EndState llm_only = churn_graph_facts(
+        build_churn_graph("llm", "none", true, true, true));
+    EndState leaky = churn_graph_facts(
+        build_churn_graph("gbdt", "shap", /*leakage_free=*/false, true, true));
+    EndState no_calibration = churn_graph_facts(
+        build_churn_graph("gbdt", "shap", true, true, /*calibration_loop=*/false));
 
     return AdmissionCase{std::move(task), std::move(reference),
                          {std::move(llm_only), std::move(leaky), std::move(no_calibration)}};
