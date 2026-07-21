@@ -208,6 +208,19 @@ reference. RL is embarrassingly parallel:
   awaited via `block_on`. `identity_allreduce` on one node is the single-node run;
   a `Collectives`-backed allreduce on N nodes is the same training, distributed.
 
+## A neural policy trained end to end (shipped)
+
+- **`train_linear_policy_distributed`** (`neural_training.hpp`) — the capstone: a
+  real neural policy's **weights** are trained by the distributed, coroutine-native
+  RLVR loop, with the forward pass on the `ComputeDevice` (the GPU under
+  `MlxDevice`). The weight gradient is the policy gradient chained through the linear
+  layer — `dW[k][f] += A·(1[k==a] − π_k)·x[f]`, an outer product — accumulated over
+  the group and **allreduced** across the cluster, then `W += lr·dW`. Proven on a
+  **contextual** task (`[1,0] → action 0`, `[0,1] → action 1`) that a tabular policy
+  cannot solve: starting from `W = 0`, the policy learns to map each context to its
+  rewarding action. That is a real (if small) neural network trained end to end by
+  native distributed RLVR — the reference loop reproduced.
+
 ## The forward pass on the compute device (shipped)
 
 - **`LinearPolicy`** (`linear_policy.hpp`) — the bridge from the abstract policy to

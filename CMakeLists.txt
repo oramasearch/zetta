@@ -584,6 +584,7 @@ add_library(zetta-core STATIC
   src/core/agent/distributed.cpp
   src/core/agent/distributed_training.cpp
   src/core/agent/collectives_allreduce.cpp
+  src/core/agent/neural_training.cpp
   src/core/agent/judge.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp

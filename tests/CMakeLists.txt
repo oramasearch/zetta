@@ -190,6 +190,7 @@ add_executable(zetta-tests
   agent/test_distributed.cpp
   agent/test_distributed_training.cpp
   agent/test_collectives_allreduce.cpp
+  agent/test_neural_training.cpp
   agent/test_judge.cpp
   compute/test_mlx_device.cpp
   test_integrity.cpp
