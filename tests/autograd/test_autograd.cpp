@@ -18,6 +18,7 @@ using zetta::autograd::matmul;
 using zetta::autograd::mul;
 using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::rms_norm;
+using zetta::autograd::rope;
 using zetta::autograd::row_softmax;
 using zetta::autograd::scale;
 using zetta::autograd::set_compute_device;
@@ -277,6 +278,35 @@ TEST(Autograd, MatmulGradientOnComputeDevice) {
     check_gradient({0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F}, {3, 2},
                    [&](const Tensor& w) { return sum(matmul(x, w)); });
     set_compute_device(nullptr);
+}
+
+TEST(Autograd, RopeIsIdentityAtPositionZeroAndPreservesNorm) {
+    // 3 positions, d=4. Position 0 should be unchanged (angle 0); every position's
+    // row norm is preserved (RoPE is a rotation).
+    const std::vector<float> data = {1, 2, 3, 4, 0.5F, -1, 2, 1, -2, 3, 1, 0.5F};
+    const Tensor x = Tensor::leaf(data, {3, 4}, false);
+    const Tensor y = rope(x);
+
+    for (int col = 0; col < 4; ++col) {
+        EXPECT_NEAR(y.data()[col], data[col], 1e-6F);  // position 0 unchanged
+    }
+    for (int pos = 0; pos < 3; ++pos) {
+        float before = 0.0F;
+        float after = 0.0F;
+        for (int col = 0; col < 4; ++col) {
+            before += data[pos * 4 + col] * data[pos * 4 + col];
+            after += y.data()[pos * 4 + col] * y.data()[pos * 4 + col];
+        }
+        EXPECT_NEAR(before, after, 1e-4F) << "position " << pos;
+    }
+}
+
+TEST(Autograd, RopeGradient) {
+    const Tensor target =
+        Tensor::leaf({0.2F, 0.5F, 0.3F, 0.1F, 0.7F, 0.2F, 0.4F, 0.6F}, {2, 4},
+                     false);
+    check_gradient({1, 2, 3, 4, 0.5F, -1, 2, 1}, {2, 4},
+                   [&](const Tensor& x) { return sum(mul(rope(x), target)); });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).

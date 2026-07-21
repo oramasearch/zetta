@@ -533,6 +533,50 @@ Tensor policy_gradient_loss(const Tensor& logits,
     return Tensor{node};
 }
 
+Tensor rope(const Tensor& x, float base) {
+    const int seq = x.shape()[0];
+    const int d = x.shape()[1];
+    const int half = d / 2;
+    std::vector<float> out(static_cast<std::size_t>(seq) * d, 0.0F);
+    // Cache cos/sin per (position, pair) for the backward (the inverse rotation).
+    std::vector<float> cos_cache(static_cast<std::size_t>(seq) * half, 0.0F);
+    std::vector<float> sin_cache(static_cast<std::size_t>(seq) * half, 0.0F);
+
+    for (int pos = 0; pos < seq; ++pos) {
+        for (int i = 0; i < half; ++i) {
+            const double inv_freq =
+                std::pow(static_cast<double>(base), -2.0 * i / d);
+            const double angle = pos * inv_freq;
+            const float c = static_cast<float>(std::cos(angle));
+            const float s = static_cast<float>(std::sin(angle));
+            cos_cache[pos * half + i] = c;
+            sin_cache[pos * half + i] = s;
+            const float a = x.data()[pos * d + i];
+            const float b = x.data()[pos * d + i + half];
+            out[pos * d + i] = a * c - b * s;
+            out[pos * d + i + half] = b * c + a * s;
+        }
+    }
+
+    auto node = make_node(std::move(out), x.shape());
+    node->parents = {x.node()};
+    const std::shared_ptr<Node> a_node = x.node();
+    node->backward = [a_node, cos_cache, sin_cache, seq, d,
+                      half](const std::vector<float>& g) {
+        for (int pos = 0; pos < seq; ++pos) {
+            for (int i = 0; i < half; ++i) {
+                const float c = cos_cache[pos * half + i];
+                const float s = sin_cache[pos * half + i];
+                const float g0 = g[pos * d + i];
+                const float g1 = g[pos * d + i + half];
+                a_node->grad[pos * d + i] += g0 * c + g1 * s;
+                a_node->grad[pos * d + i + half] += -g0 * s + g1 * c;
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];

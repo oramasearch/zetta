@@ -140,4 +140,11 @@ Tensor policy_gradient_loss(const Tensor& logits,
                             const std::vector<int>& actions,
                             const std::vector<double>& advantages);
 
+// Rotary positional embedding (RoPE, the rotate_half convention Qwen/LLaMA use):
+// rotate the pair (i, i + d/2) of each row [seq, d] by angle = position *
+// base^(-2i/d). Applied to Q and K so attention sees relative positions. It is a
+// rotation — preserves each row's norm and is the identity at position 0 — and its
+// backward is the inverse rotation.
+Tensor rope(const Tensor& x, float base = 10000.0F);
+
 }  // namespace zetta::autograd
