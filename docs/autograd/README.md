@@ -21,14 +21,17 @@ which is what a transformer needs.
   gradient from `backward()` must match a finite-difference estimate. That is the
   standard proof an autograd op is right.
 
-## Device-agnostic execution (planned)
+## Device-agnostic execution (shipped)
 
-The reference kernels are plain host loops. The heavy op (matmul) routes through the
-`compute::ComputeDevice` seam in a later slice, so the same graph runs on
-`CpuDevice`, `CudaDevice`, or `MlxDevice` and one distributed model spans CPU + GPU +
-MLX nodes — the cluster using what each node has. Gradients are host floats, so the
-distributed allreduce (already built for the RLVR loop) combines them across
-heterogeneous devices.
+The reference kernels are plain host loops, but the heavy op (matmul, forward and
+backward) routes through the `compute::ComputeDevice` seam: `set_compute_device()`
+points the autograd at a `CpuDevice`, `CudaDevice`, or `MlxDevice` (thread-local, so
+each cluster node picks its own), and the *same graph* runs on it. Verified: the
+`Transformer` forward produces matching logits on the CPU and the MLX GPU
+(`AutogradDeviceAgnostic.TransformerForwardCpuEqualsMlx`), so one distributed model
+spans CPU + GPU + MLX nodes — the cluster uses what each node has. Gradients are host
+floats, so the distributed allreduce (already built for the RLVR loop) combines them
+across heterogeneous devices.
 
 ## Pages
 

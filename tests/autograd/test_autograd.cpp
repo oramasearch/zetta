@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "zetta/autograd/tensor.hpp"
+#include "zetta/compute/cpu_device.hpp"
 
 namespace {
 
@@ -19,10 +20,12 @@ using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::rms_norm;
 using zetta::autograd::row_softmax;
 using zetta::autograd::scale;
+using zetta::autograd::set_compute_device;
 using zetta::autograd::silu;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
 using zetta::autograd::transpose;
+using zetta::compute::CpuDevice;
 
 // Check the analytic gradient (from backward() on the parameter) against a
 // finite-difference estimate. `build(param)` constructs the scalar loss from a
@@ -245,6 +248,35 @@ TEST(Autograd, PolicyGradientLossGradient) {
     check_gradient({0.5F, -1.0F, 2.0F, 0.25F}, {1, 4}, [&](const Tensor& logits) {
         return policy_gradient_loss(logits, actions, advantages);
     });
+}
+
+// matmul routed through a ComputeDevice (CpuDevice) matches the host kernel — the
+// same graph, on a device.
+TEST(Autograd, MatmulOnComputeDeviceMatchesHost) {
+    const Tensor a = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);
+    const Tensor b = Tensor::leaf({1, 0, 0, 1, 1, 1}, {3, 2}, false);
+    const std::vector<float> host = matmul(a, b).data();
+
+    CpuDevice device;
+    set_compute_device(&device);
+    const std::vector<float> on_device = matmul(a, b).data();
+    set_compute_device(nullptr);
+
+    ASSERT_EQ(host.size(), on_device.size());
+    for (std::size_t i = 0; i < host.size(); ++i) {
+        EXPECT_NEAR(host[i], on_device[i], 1e-4F);
+    }
+}
+
+// The device-backed matmul's forward AND backward (gemm with transpose flags) are
+// correct — gradient-checked with a CpuDevice active.
+TEST(Autograd, MatmulGradientOnComputeDevice) {
+    CpuDevice device;
+    set_compute_device(&device);
+    const Tensor x = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);
+    check_gradient({0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F}, {3, 2},
+                   [&](const Tensor& w) { return sum(matmul(x, w)); });
+    set_compute_device(nullptr);
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).

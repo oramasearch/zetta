@@ -18,10 +18,23 @@
 // topological order, accumulating each parameter's gradient.
 //
 // The reference kernels here are plain host loops, verified by gradient checking
-// (analytic vs finite difference). Routing the heavy ops (matmul) through the
-// ComputeDevice seam — so the same graph runs on CpuDevice / CudaDevice / MlxDevice
-// and one distributed model spans them — is a later slice.
+// (analytic vs finite difference). The heavy op (matmul) can also route through the
+// ComputeDevice seam, so the same graph runs on CpuDevice / CudaDevice / MlxDevice
+// and one distributed model spans CPU + GPU + MLX nodes — the cluster uses what each
+// node has.
+namespace zetta::compute {
+class ComputeDevice;
+}
+
 namespace zetta::autograd {
+
+// Route the autograd's heavy op (matmul, forward and backward) onto a ComputeDevice.
+// nullptr (the default) uses the built-in host reference kernels. Thread-local, so
+// each cluster node / worker selects its own device; returns the previous device.
+// The device is captured per-op at construction, so a graph backpropagates on the
+// device it was built on.
+compute::ComputeDevice* set_compute_device(compute::ComputeDevice* device);
+compute::ComputeDevice* current_compute_device();
 
 struct Node {
     std::vector<float> data;

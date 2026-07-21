@@ -2,7 +2,13 @@
 
 #include <cmath>
 #include <cstddef>
+#include <span>
 #include <unordered_set>
+
+#include "zetta/compute/compute_device.hpp"
+#include "zetta/compute/compute_status.hpp"
+#include "zetta/compute/data_type.hpp"
+#include "zetta/compute/device_buffer.hpp"
 
 namespace zetta::autograd {
 
@@ -11,7 +17,51 @@ constexpr float kInvSqrt2 = 0.7071067811865476F;      // 1 / sqrt(2)
 constexpr float kSqrt2OverPi = 0.7978845608028654F;   // sqrt(2 / pi)
 
 float sigmoid(float x) { return 1.0F / (1.0F + std::exp(-x)); }
+
+thread_local compute::ComputeDevice* g_compute_device = nullptr;
+
+// C[rows, cols] = op(A) * op(B) on `device`, host floats in and out. `a` holds the
+// stored operand for op(A) (rows*inner elements), `b` for op(B) (inner*cols).
+// Returns empty on a device error.
+std::vector<float> device_gemm(compute::ComputeDevice& device,
+                               const std::vector<float>& a,
+                               const std::vector<float>& b, int rows, int inner,
+                               int cols, bool transpose_a, bool transpose_b) {
+    compute::DeviceBuffer buffer_a =
+        device.upload<float>(std::span<const float>(a));
+    compute::DeviceBuffer buffer_b =
+        device.upload<float>(std::span<const float>(b));
+    compute::DeviceBuffer buffer_c = device.allocate(
+        compute::DataType::Float32, static_cast<std::size_t>(rows) * cols);
+    if (buffer_a.empty() || buffer_b.empty() || buffer_c.empty()) {
+        return {};
+    }
+    compute::GemmParams params;
+    params.rows = rows;
+    params.inner = inner;
+    params.cols = cols;
+    params.alpha = 1.0;
+    params.beta = 0.0;
+    params.transpose_a = transpose_a;
+    params.transpose_b = transpose_b;
+    if (!device.gemm(params, buffer_a, buffer_b, buffer_c).ok()) {
+        return {};
+    }
+    std::vector<float> result(static_cast<std::size_t>(rows) * cols, 0.0F);
+    if (!device.download<float>(buffer_c, std::span<float>(result)).ok()) {
+        return {};
+    }
+    return result;
+}
 }  // namespace
+
+compute::ComputeDevice* set_compute_device(compute::ComputeDevice* device) {
+    compute::ComputeDevice* previous = g_compute_device;
+    g_compute_device = device;
+    return previous;
+}
+
+compute::ComputeDevice* current_compute_device() { return g_compute_device; }
 
 std::shared_ptr<Node> make_node(std::vector<float> data,
                                 std::vector<int> shape) {
@@ -64,13 +114,21 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     const int m = a.shape()[0];
     const int k = a.shape()[1];
     const int n = b.shape()[1];
+    // Capture the device at construction so the graph backpropagates on the device
+    // it was built on (nullptr = the host reference kernels).
+    compute::ComputeDevice* device = g_compute_device;
 
-    std::vector<float> out(static_cast<std::size_t>(m) * n, 0.0F);
-    for (int row = 0; row < m; ++row) {
-        for (int inner = 0; inner < k; ++inner) {
-            const float a_value = a.data()[row * k + inner];
-            for (int col = 0; col < n; ++col) {
-                out[row * n + col] += a_value * b.data()[inner * n + col];
+    std::vector<float> out;
+    if (device != nullptr) {
+        out = device_gemm(*device, a.data(), b.data(), m, k, n, false, false);
+    } else {
+        out.assign(static_cast<std::size_t>(m) * n, 0.0F);
+        for (int row = 0; row < m; ++row) {
+            for (int inner = 0; inner < k; ++inner) {
+                const float a_value = a.data()[row * k + inner];
+                for (int col = 0; col < n; ++col) {
+                    out[row * n + col] += a_value * b.data()[inner * n + col];
+                }
             }
         }
     }
@@ -79,7 +137,17 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     node->parents = {a.node(), b.node()};
     const std::shared_ptr<Node> a_node = a.node();
     const std::shared_ptr<Node> b_node = b.node();
-    node->backward = [a_node, b_node, m, k, n](const std::vector<float>& g) {
+    node->backward = [a_node, b_node, m, k, n, device](const std::vector<float>& g) {
+        if (device != nullptr) {
+            // dA = dOut * B^T [m,k]; dB = A^T * dOut [k,n].
+            const std::vector<float> da =
+                device_gemm(*device, g, b_node->data, m, n, k, false, true);
+            const std::vector<float> db =
+                device_gemm(*device, a_node->data, g, k, m, n, true, false);
+            for (std::size_t i = 0; i < da.size(); ++i) a_node->grad[i] += da[i];
+            for (std::size_t i = 0; i < db.size(); ++i) b_node->grad[i] += db[i];
+            return;
+        }
         // dA[row, inner] += sum_col g[row, col] * B[inner, col].
         for (int row = 0; row < m; ++row) {
             for (int inner = 0; inner < k; ++inner) {
