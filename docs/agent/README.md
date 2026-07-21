@@ -28,6 +28,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 (nibble-dev); shipped so far:
 
 - **The reward primitive** — `EndState` + `EndStateGrader` (below).
+- **The task/game** — `Task` (below).
 
 ## The reward primitive (shipped)
 
@@ -41,6 +42,18 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   negative-control discipline: a grader that catches nothing is measuring
   nothing). Where a task has no deterministic check, an LLM-judge fallback grader
   is a later slice behind this same `Grade`.
+
+## The task/game (shipped)
+
+- **`Task`** (`task.hpp`) — one enterprise tool-calling problem the agent trains
+  on and is graded against: an id, a readable description, an initial `EndState`,
+  the available tool names, and the required `EndState` that is its success
+  criterion. It hands out its deterministic `grader()`, and `is_trainable()` is
+  true only when the criterion is verifiable (at least one required fact) — a task
+  with nothing to check cannot enter the curriculum ([#554]). The tools' effects
+  are wired later, in the sandbox.
+
+[#554]: https://github.com/oramasearch/zetta/issues/554
 
 ## Acceptance
 

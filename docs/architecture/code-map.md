@@ -177,6 +177,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   agent/
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
     grader.hpp              zetta::agent::Grade/EndStateGrader — the RLVR reward primitive: score an observed end-state against a task's required facts by exact match, reward in [0,1] + passed; criterion-free task grades nothing (negative control) (FEAT-12; #555)
+    task.hpp                zetta::agent::Task — a "game": id + description + initial EndState + available tool names + required EndState (its grader); readable + verifiable, is_trainable() only with a checkable criterion (#554) (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
