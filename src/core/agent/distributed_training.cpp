@@ -1,6 +1,7 @@
 #include "zetta/agent/distributed_training.hpp"
 
 #include <cstddef>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -29,11 +30,15 @@ runtime::task<TrainingReport> train_softmax_policy_distributed(
             break;  // a rollout's I/O failed the join; stop with the curve so far
         }
 
+        // Step-unique tags so consecutive collective rounds never alias on a real
+        // cluster (every node issues the same tags in the same order, in lock-step).
+        const std::string suffix = "-" + std::to_string(step);
+
         // Global GRPO advantages for this node's rewards (allreduce of the group
         // statistics), then the distributed gradient step (allreduce of the
         // gradient). Either collective failing ends training.
         const std::vector<double> advantages =
-            distributed_group_advantages(rewards, allreduce);
+            distributed_group_advantages(rewards, allreduce, "grpo-adv" + suffix);
         if (advantages.size() != rewards.size()) {
             break;
         }
@@ -42,7 +47,8 @@ runtime::task<TrainingReport> train_softmax_policy_distributed(
             batch[i] = PolicySample{actions[i], advantages[i]};
         }
         if (!distributed_policy_gradient_step(policy, batch, allreduce,
-                                              config.learning_rate)) {
+                                              config.learning_rate,
+                                              "grpo-grad" + suffix)) {
             break;
         }
 
@@ -52,7 +58,7 @@ runtime::task<TrainingReport> train_softmax_policy_distributed(
             local_sum += value;
         }
         const std::vector<double> global = allreduce(
-            "reward-mean",
+            "reward-mean" + suffix,
             {local_sum, static_cast<double>(rewards.size())}, Reduce::Sum);
         const double mean =
             (global.size() == 2 && global[1] > 0.0) ? global[0] / global[1] : 0.0;
