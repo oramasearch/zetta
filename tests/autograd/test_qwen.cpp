@@ -6,12 +6,17 @@
 
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/autograd/tensor.hpp"
+#include "zetta/autograd/transformer.hpp"
 
 namespace {
 
+using zetta::autograd::Adam;
+using zetta::autograd::cross_entropy;
 using zetta::autograd::QwenConfig;
 using zetta::autograd::QwenModel;
+using zetta::autograd::row_slice;
 using zetta::autograd::Tensor;
+using zetta::autograd::zero_grad;
 
 QwenConfig tiny_config() {
     QwenConfig config;
@@ -109,6 +114,43 @@ TEST(QwenModel, TiedEmbeddingsHaveNoLmHeadButStillProject) {
     ASSERT_EQ(logits.shape(), (std::vector<int>{4, config.vocab_size}));
     for (float value : logits.data()) {
         EXPECT_TRUE(std::isfinite(value));
+    }
+}
+
+// THE PAYOFF: the full Qwen3-parity stack — GQA + QK-norm + RoPE + SwiGLU +
+// RMSNorm, HF-named params — trains on our own autograd. Adam collapses the loss
+// on a memorized sequence, and the model then predicts it greedily. Every
+// gradient came from our backward closures; there is no framework anywhere.
+TEST(QwenModel, OverfitsASequenceEndToEnd) {
+    QwenModel model(tiny_config(), 3);
+    Adam optimizer(/*learning_rate=*/1e-2F);
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4, 8};
+    const std::vector<int> targets(sequence.begin() + 1, sequence.end());
+    const int vocab = model.config().vocab_size;
+
+    float first_loss = 0.0F;
+    float last_loss = 0.0F;
+    for (int step = 0; step < 400; ++step) {
+        zero_grad(model.parameters());
+        const Tensor logits = model.forward(sequence);
+        const Tensor predicted =
+            row_slice(logits, 0, static_cast<int>(sequence.size()) - 1);
+        Tensor loss = cross_entropy(predicted, targets);
+        loss.backward();
+        optimizer.step(model.parameters());
+        if (step == 0) first_loss = loss.data()[0];
+        last_loss = loss.data()[0];
+    }
+    EXPECT_LT(last_loss, first_loss * 0.2F);  // the loss collapsed
+
+    const Tensor logits = model.forward(sequence);
+    for (std::size_t t = 0; t + 1 < sequence.size(); ++t) {
+        const float* row = logits.data().data() + t * vocab;
+        int best = 0;
+        for (int c = 1; c < vocab; ++c) {
+            if (row[c] > row[best]) best = c;
+        }
+        EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
     }
 }
 
