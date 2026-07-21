@@ -124,11 +124,23 @@ Tensor attend_one_head(const Tensor& q, const Tensor& k, const Tensor& v,
     return matmul(row_softmax(scores), v);
 }
 
-}  // namespace
+// One head's projection band, optionally RMSNorm'd (QK-norm) then RoPE-rotated.
+Tensor head_qk(const Tensor& projection, int head, int head_dim,
+               const Tensor& norm_weight) {
+    Tensor band = col_slice(projection, head * head_dim, head_dim);
+    if (norm_weight.valid()) {
+        band = rms_norm(band, norm_weight);  // per-head QK-norm (Qwen3)
+    }
+    return rope(band);
+}
 
-Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
-                               const Tensor& wv, const Tensor& wo, int n_heads,
-                               int n_kv_heads, int head_dim) {
+// Shared implementation. q_norm / k_norm are [head_dim] when QK-norm is used, or
+// invalid (default-constructed) Tensors to skip it.
+Tensor grouped_query_attention_impl(const Tensor& x, const Tensor& wq,
+                                    const Tensor& wk, const Tensor& wv,
+                                    const Tensor& wo, const Tensor& q_norm,
+                                    const Tensor& k_norm, int n_heads,
+                                    int n_kv_heads, int head_dim) {
     const int seq = x.shape()[0];
     const int group_size = n_heads / n_kv_heads;  // query heads per kv head
     const float scale_factor = 1.0F / std::sqrt(static_cast<float>(head_dim));
@@ -142,9 +154,8 @@ Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& 
     head_outputs.reserve(n_heads);
     for (int head = 0; head < n_heads; ++head) {
         const int kv_head = head / group_size;
-        // RoPE applied per head to Q and K so attention sees relative positions.
-        const Tensor q_head = rope(col_slice(query, head * head_dim, head_dim));
-        const Tensor k_head = rope(col_slice(key, kv_head * head_dim, head_dim));
+        const Tensor q_head = head_qk(query, head, head_dim, q_norm);
+        const Tensor k_head = head_qk(key, kv_head, head_dim, k_norm);
         const Tensor v_head = col_slice(value, kv_head * head_dim, head_dim);
         head_outputs.push_back(
             attend_one_head(q_head, k_head, v_head, mask, scale_factor));
@@ -152,6 +163,24 @@ Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& 
 
     const Tensor context = concat_cols(head_outputs);  // [seq, n_heads*head_dim]
     return matmul(context, wo);
+}
+
+}  // namespace
+
+Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
+                               const Tensor& wv, const Tensor& wo, int n_heads,
+                               int n_kv_heads, int head_dim) {
+    return grouped_query_attention_impl(x, wq, wk, wv, wo, /*q_norm=*/Tensor(),
+                                        /*k_norm=*/Tensor(), n_heads, n_kv_heads,
+                                        head_dim);
+}
+
+Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
+                               const Tensor& wv, const Tensor& wo,
+                               const Tensor& q_norm, const Tensor& k_norm,
+                               int n_heads, int n_kv_heads, int head_dim) {
+    return grouped_query_attention_impl(x, wq, wk, wv, wo, q_norm, k_norm, n_heads,
+                                        n_kv_heads, head_dim);
 }
 
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2) {

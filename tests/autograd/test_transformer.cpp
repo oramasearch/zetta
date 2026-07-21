@@ -230,6 +230,80 @@ TEST(AutogradTransformer, GroupedQueryAttentionIsCausal) {
     EXPECT_GT(last_diff, 1e-5F);   // the last position does
 }
 
+// Qwen3 QK-norm: the gradient flows to the per-head q_norm weight ([head_dim]),
+// through the RMSNorm applied to each query head before RoPE.
+TEST(AutogradTransformer, GroupedQueryAttentionQkNormGradientToQNorm) {
+    const int seq = 3;
+    const int n_heads = 4;
+    const int n_kv_heads = 2;
+    const int head_dim = 3;
+    const int d_model = n_heads * head_dim;  // 12
+    const int kv_dim = n_kv_heads * head_dim;  // 6
+
+    const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
+    const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor k_norm = Tensor::leaf(std::vector<float>(head_dim, 1.0F), {head_dim}, false);
+    check_gradient(std::vector<float>{0.9F, 1.0F, 1.1F}, {head_dim},
+                   [&](const Tensor& q_norm) {
+                       return sum(grouped_query_attention(x, wq, wk, wv, wo, q_norm,
+                                                          k_norm, n_heads, n_kv_heads,
+                                                          head_dim));
+                   });
+}
+
+// And to the k_norm weight.
+TEST(AutogradTransformer, GroupedQueryAttentionQkNormGradientToKNorm) {
+    const int seq = 3;
+    const int n_heads = 2;
+    const int n_kv_heads = 2;
+    const int head_dim = 3;
+    const int d_model = n_heads * head_dim;  // 6
+
+    const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
+    const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor q_norm = Tensor::leaf(std::vector<float>(head_dim, 1.0F), {head_dim}, false);
+    check_gradient(std::vector<float>{1.1F, 0.9F, 1.0F}, {head_dim},
+                   [&](const Tensor& k_norm) {
+                       return sum(grouped_query_attention(x, wq, wk, wv, wo, q_norm,
+                                                          k_norm, n_heads, n_kv_heads,
+                                                          head_dim));
+                   });
+}
+
+// QK-norm actually changes the attention output (proves it is applied, not
+// silently dropped): the unit-weight normalized variant differs from plain GQA.
+TEST(AutogradTransformer, QkNormChangesTheOutput) {
+    const int seq = 4;
+    const int n_heads = 2;
+    const int n_kv_heads = 1;
+    const int head_dim = 4;
+    const int d_model = n_heads * head_dim;  // 8
+    const int kv_dim = n_kv_heads * head_dim;  // 4
+    const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
+    const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
+    const Tensor ones = Tensor::leaf(std::vector<float>(head_dim, 1.0F), {head_dim}, false);
+
+    const Tensor plain =
+        grouped_query_attention(x, wq, wk, wv, wo, n_heads, n_kv_heads, head_dim);
+    const Tensor normed = grouped_query_attention(x, wq, wk, wv, wo, ones, ones,
+                                                  n_heads, n_kv_heads, head_dim);
+    ASSERT_EQ(plain.shape(), normed.shape());
+    float max_diff = 0.0F;
+    for (std::size_t i = 0; i < plain.data().size(); ++i) {
+        max_diff = std::max(max_diff, std::abs(plain.data()[i] - normed.data()[i]));
+    }
+    EXPECT_GT(max_diff, 1e-4F);
+}
+
 // Perturbing the last token must not change position 0's attention output (it
 // cannot see the future), but must change the last position's.
 TEST(AutogradTransformer, AttentionIsCausal) {

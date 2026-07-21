@@ -35,6 +35,16 @@ Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& 
                                const Tensor& wv, const Tensor& wo, int n_heads,
                                int n_kv_heads, int head_dim);
 
+// Grouped-query attention with QK-norm (the Qwen3 variant): before RoPE, each
+// head's query and key vector is RMSNorm'd by a learned weight — q_norm and
+// k_norm are both [head_dim], shared across heads (Qwen3's self_attn.q_norm /
+// self_attn.k_norm). This stabilizes attention logits. Otherwise identical to
+// the plain grouped_query_attention above.
+Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
+                               const Tensor& wv, const Tensor& wo,
+                               const Tensor& q_norm, const Tensor& k_norm,
+                               int n_heads, int n_kv_heads, int head_dim);
+
 // Position-wise feed-forward: gelu(x @ w1) @ w2. x [seq, d_model],
 // w1 [d_model, d_ff], w2 [d_ff, d_model].
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2);
