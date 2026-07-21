@@ -42,6 +42,17 @@ database. The columns:
 | `partition_count` | how many partitions the catalog records for it |
 | `owner_nodes` | the de-duplicated set of nodes holding any of its partitions |
 | `placement` | per-partition placement: `[start,end)@owner1\|owner2`, joined with `, ` (empty for a non-partitioned, replicate-to-all dataset) |
+| `degraded` | this node cannot see the whole dataset — `rows` above is a **fraction**, not a total (#837) |
+| `degraded_reason` | why, in words; empty unless `degraded` |
+| `expected_partition_count` | how many partitions the [partition manifest](partition-manifest.md) says the dataset HAS (0 = it has no manifest) |
+| `expected_rows` | how many rows the manifest says it has |
+
+**Degraded, never quietly short.** An agent reading `rows` must be able to tell a
+total from a fraction. When fewer `part:` entries are visible here than the
+manifest declares, the view says so — the same rule
+(`zetta::data::catalog_shortfall`) that makes the
+[scatter-gather `SELECT`](scatter-gather-select.md) *fail* rather than answer from
+a subset. A dataset with no manifest is never reported degraded.
 
 `WHERE` and projection work like any other system table, e.g.
 `SELECT dataset, rows, owner_nodes FROM system.datasets WHERE dataset = 'events'`.

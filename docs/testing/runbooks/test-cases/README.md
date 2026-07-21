@@ -60,6 +60,12 @@ case is headless-runnable.
 - [`cluster.fulltext_index`](cluster.fulltext_index.md) — per-partition full-text index, scatter-gather ranking (TC-13)
 - [`cluster.uc1_at_scale`](cluster.uc1_at_scale.md) — the UC-1-at-scale capstone: the cost-capped burst lifecycle around the distributed pipeline (TC-12)
 
+### Source connectors — `tests/testkit/test_testkit.cpp::ConnectorCasesRunOnARealCluster`
+Also `TestCategory::Distributed`; both run against an injected fake transport (no network, no credentials, no warehouse).
+- [`cluster.connections`](cluster.connections.md) — a saved connection reaches every node; writes refused before egress; the token on no read surface; typed cells (#827)
+- [`cluster.distributed_import`](cluster.distributed_import.md) — the co-launched ingest: each chunk fetched once cluster-wide, landed where it was pulled, zero rows re-replicated (#833)
+- [`cluster.import_participant_loss`](cluster.import_participant_loss.md) — all-or-nothing: a node that never drains the launch fails the whole ingest and leaves no residue (#840)
+
 ### Governance — `GovernanceCasesPass`
 - [`governance.access_control`](governance.access_control.md) — key-scoped access decisions (deny-by-default)
 - [`governance.audit`](governance.audit.md) — the immutable audit trail

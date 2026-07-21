@@ -67,6 +67,14 @@ public:
     // Whether this object's body is on disk here.
     bool has_body(const std::string& id) const;
 
+    // The on-disk path of an object's body, whether or not it is present yet.
+    // A body is content-addressed and written once, so the path is stable and
+    // the bytes behind it never change — which is what lets a **non-owner
+    // thread** read a body it was handed the path to (the scatter-gather SELECT
+    // reads partition bodies on the cluster's network thread, where the
+    // in-memory object index is off limits). Does NOT consult that index.
+    std::filesystem::path body_path(const std::string& id) const;
+
     // Delete a stored object (lo_unlink) + remove it from the CRDT. True if one
     // was removed.
     bool unlink(const std::string& id);

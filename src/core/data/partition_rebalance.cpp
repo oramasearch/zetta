@@ -36,7 +36,8 @@ bool partition_id_of(const DatasetPartition& partition, PartitionId& out) {
 
 RebalanceResult rebalance_partitions(
     Node& node, const std::vector<std::string>& members,
-    const std::vector<std::string>& previous_members) {
+    const std::vector<std::string>& previous_members,
+    bool include_fetch_affinity) {
     RebalanceResult result;
     if (members.empty()) return result;  // nowhere to place
 
@@ -50,6 +51,24 @@ RebalanceResult rebalance_partitions(
             continue;
         }
         const std::set<std::string> current_set = owner_set(current);
+
+        // **Fetch-affinity partitions are skipped by the OPPORTUNISTIC trigger**
+        // (#833 section 6). Their owner is the node whose disk holds the bytes,
+        // chosen because it is the node that pulled them — recomputing a hash on
+        // a membership change would order a shuffle of a dataset that was placed
+        // precisely to avoid one, and the dataset is a cache at RF=1 anyway (an
+        // owner that leaves means re-run the ingest, not re-place the entry).
+        //
+        // An EXPLICIT caller that means to re-shape what an ingest just wrote
+        // passes include_fetch_affinity — otherwise the skip above and the
+        // ingest's own rebalance would cancel each other out, which is exactly
+        // the trap this parameter exists to avoid.
+        if (!include_fetch_affinity && partition->stats().is_object() &&
+            partition->stats().value("placement", std::string{}) ==
+                "fetch_affinity") {
+            ++result.skipped;
+            continue;
+        }
 
         // Replicate-to-all detection: a partition owned by exactly the previous
         // full membership is replicate-to-all (SinglePartitioner / Hash /

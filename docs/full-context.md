@@ -63,6 +63,53 @@ driven **programmatically first** (MCP/REST) and **watched visually** (GUI).
 
 ## Current state (refresh me when it changes)
 
+- **In flight (branch `feat/dataset-from-connector-query`) — Parquet bodies, partition-only
+  datasets, scatter-gather SQL**: [#833](https://github.com/oramasearch/zetta/issues/833)
+  makes a connector result set a **cache the cluster holds on disk** rather than rows in the
+  document. Landed so far: a native Parquet **writer** (Thrift compact emitter, PLAIN pages,
+  Snappy) and `ParquetStore`/`ParquetLazyPtr`, a disk-backed paging `StorageEngine` whose row
+  handle survives the cache reaping its page ([data/parquet-writer.md](data/parquet-writer.md),
+  [data/parquet-store.md](data/parquet-store.md)); **partition bodies written as Parquet for
+  every dataset**, format sniffed from the bytes so legacy `.jsonl` bodies still read
+  ([data/partition-body.md](data/partition-body.md)); **partition-only tables**, whose rows are
+  never captured into the CRDT — the bodies plus the replicate-to-all catalog are the dataset,
+  and `system.datasets` counts from the catalog's row ranges
+  ([data/partition-only-tables.md](data/partition-only-tables.md)); **scatter-gather `SELECT`**
+  over them — one reachable owner per partition (exactly-once at RF>1), `WHERE` + projection
+  pushed near the data, aggregates merged (`avg` weighted by row count), an unreachable owner
+  **fails** the query ([data/scatter-gather-select.md](data/scatter-gather-select.md)); the
+  durable replication factor raised to **3, clamped to the node count** with connector result
+  sets explicitly at **1**; and **`promote_dataset`**, which raises a cache to the durable
+  factor by adding owners to the catalog and letting the bodies follow
+  ([data/promote-dataset.md](data/promote-dataset.md)); **fetch-affinity placement**, a
+  `Partitioner` whose owner is the node that pulled the slice, so a distributed ingest never
+  shuffles what it just wrote ([data/fetch-affinity-placement.md](data/fetch-affinity-placement.md));
+  the **cross-node co-launch** of the fetch — one node submits, the roster co-launches over
+  `run.launch`, every participant pulls ONLY its own tile straight from the source, landing it
+  as partition-only partitions it owns, with one `allreduce` making the ingest all-or-nothing
+  ([data/distributed-connector-ingest.md](data/distributed-connector-ingest.md)); and the 202
+  poll turned into a `runtime::delay` **timer** instead of a `sleep_for` (#832). All ten
+  sections of the issue are now implemented.
+
+  Since then, three more: the **partition manifest**, a table-level `mfst:<table-id>` record of
+  how many partitions a dataset HAS, so a reader can tell "I can see 6 of 8" from "there are 6"
+  and **fail** the query instead of answering a plausible fraction
+  ([#837](https://github.com/oramasearch/zetta/issues/837),
+  [data/partition-manifest.md](data/partition-manifest.md)) — which in turn surfaced a
+  **projection bug in `Node::tick`**: it recorded the CRDT version read at the *end* of the
+  tick as reflected, claiming credit for a peer merge the reconcile never saw, so the
+  projection stalled permanently short of the document (the root cause of #837's flake). And
+  the **partition scheduler**, which replaces `partition_count = 8` with a policy above
+  `Partitioner`: a 64 MiB target body size with a floor of partitions per node, capacity-aware
+  placement from live telemetry, and a `SourceLayout` that says whether a source's units are
+  flexible (fetch straight into the target shape — **no rebalance**) or fixed (fetch
+  source-shaped, then rebalance). Because a capacity-aware plan is not derivable per node, the
+  coordinator now **computes the plan once and ships it** in the launch payload, so
+  derive-don't-transmit is no longer a property of this path
+  ([data/partition-scheduler.md](data/partition-scheduler.md)). Known residue, worth its own issue: a `remove`
+  (a dropped `part:`/`lo:` key) can be undone by a peer's gossip merge, so a failed ingest can
+  leave orphaned catalog keys behind a table that no longer exists — a replication-layer
+  delete-versus-merge property, untested anywhere in the tree today.
 - **Shipped (this branch) — reachability-aware dialer + unified full-membership `system.nodes`**:
   [#803](https://github.com/oramasearch/zetta/issues/803) makes dial-out-only nodes
   first-class — a node with no routable address (behind NAT / a private VNet: a home

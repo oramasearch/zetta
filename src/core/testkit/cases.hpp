@@ -14,6 +14,7 @@ void register_ddf_cases(TestSuite& suite);
 void register_parquet_cases(TestSuite& suite);
 void register_ml_cases(TestSuite& suite);
 void register_distributed_cases(TestSuite& suite);
+void register_connect_cases(TestSuite& suite);
 void register_fulltext_cases(TestSuite& suite);
 void register_governance_cases(TestSuite& suite);
 void register_pipeline_cases(TestSuite& suite);

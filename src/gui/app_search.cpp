@@ -44,10 +44,16 @@ namespace zetta::gui {
 
 namespace {
 
-// "1.2 ms" style compact formatting for the provenance surfaces.
+// Compact latency for the provenance surfaces: microseconds under 10 ms — where
+// "%.1f ms" would round a real sub-millisecond search to an uninformative
+// "0.0 ms" — and milliseconds at or above 10 ms.
 std::string format_latency(double milliseconds) {
     char text[32];
-    std::snprintf(text, sizeof(text), "%.1f ms", milliseconds);
+    if (milliseconds < 10.0) {
+        std::snprintf(text, sizeof(text), "%.0f µs", milliseconds * 1000.0);
+    } else {
+        std::snprintf(text, sizeof(text), "%.1f ms", milliseconds);
+    }
     return text;
 }
 
@@ -74,7 +80,9 @@ std::optional<nlohmann::json> find_local_row(zetta::Node& node,
         const zetta::storage::StorageEngine& store = table->store();
         for (std::size_t i = 0; i < store.size(); ++i) {
             if (store.id_at(i) == row_id) {
-                return std::make_optional<nlohmann::json>(store.at(i));
+                const zetta::storage::ParquetLazyPtr row = store.at(i);
+                if (!row) return std::nullopt;
+                return std::make_optional<nlohmann::json>(*row);
             }
         }
     }
@@ -213,8 +221,11 @@ void App::draw_search() {
         if (ImGui::BeginCombo("##search-target", preview)) {
             for (const auto& index : search_indexes) {
                 const bool selected = index->id() == search_target_;
-                const std::string label =
-                    index->table() + " · " + index->backend();
+                // "##<id>" keeps the ImGui item id unique when two indexes share
+                // the same table + backend label (else ImGui flags a conflicting
+                // id); the id after "##" is not shown.
+                const std::string label = index->table() + " · " +
+                                          index->backend() + "##" + index->id();
                 if (ImGui::Selectable(label.c_str(), selected)) {
                     search_target_ = index->id();
                 }

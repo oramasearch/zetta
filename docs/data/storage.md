@@ -49,14 +49,30 @@ is pluggable:
 | `JsonlStore` | `storage/jsonl_store.hpp` | **Default.** JSON Lines on disk, chunked at 10k records/file; caches all records in memory for reads; loads existing chunks on construction. |
 | `JsonStore` | `storage/json_store.hpp` | In-memory only (no persistence). Kept for a future `:memory:` mode. |
 
+`at(i)` returns a [`ParquetLazyPtr`](lazy-rows.md), not a `const nlohmann::json&`
+— a handle that keeps the row alive for as long as the caller holds it. For the
+two engines above that handle is *borrowed* (two pointers into their own vectors,
+no allocation); a paging engine hands back a refcounted page that survives the
+store reclaiming it, and reports a failed read as a reason rather than as null.
+
 `add_row` appends a line to the active chunk immediately (append-open per
 row — simple and crash-resilient; can hold the stream open as an optimization
 later). Corrupt lines are skipped on load. Every row carries a stable id (its
 CRDT key): `add(id, doc)` stores it, `contains(id)` lets reconciliation apply a
 replicated row exactly once, and `id_at(i)` enumerates rows to replicate them.
 
-To add an engine, implement `StorageEngine` (`name`, `add`, `contains`, `size`,
-`at`, `id_at`) and construct it where a `Table` builds its store.
+`id_at` returns a `std::string` **by value**, not a reference. A reference obliged
+every engine to keep a string per row alive somewhere durable, so an engine that
+pages row *data* still had memory scaling with row count regardless of its cache
+budget ([#836](https://github.com/oramasearch/zetta/issues/836)). By value, an
+engine may *derive* an id instead of storing one — see
+[parquet-store.md](parquet-store.md) → *Ids are derived, not stored*. An
+always-resident engine just returns a copy.
+
+To add an engine, implement `StorageEngine` (`name`, `add`, `update`, `remove`,
+`contains`, `size`, `at`, `id_at`) and construct it where a `Table` builds its
+store. An engine that pages rows off disk also implements
+[`RowPageSource`](lazy-rows.md) so its handles can re-materialize.
 
 ## Preflight integrity check
 

@@ -1,0 +1,84 @@
+{
+  "$id": "https://zetta.orama.com/schemas/partition_scan_request.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "A scatter-gather SELECT's ask of one partition owner: scan these partitions of this table, filter them, and return rows or per-group aggregate partials (#833).",
+  "properties": {
+    "aggregates": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "column": {
+            "type": "string"
+          },
+          "func": {
+            "enum": [
+              "count",
+              "sum",
+              "min",
+              "max",
+              "avg"
+            ]
+          }
+        },
+        "required": [
+          "func"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "columns": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "group_by": {
+      "type": "string"
+    },
+    "partitions": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "table": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "where": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "ne",
+            "lt",
+            "le",
+            "gt",
+            "ge"
+          ]
+        },
+        "value": {}
+      },
+      "required": [
+        "column",
+        "op",
+        "value"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "table",
+    "partitions"
+  ],
+  "title": "PartitionScanRequest",
+  "type": "object"
+}

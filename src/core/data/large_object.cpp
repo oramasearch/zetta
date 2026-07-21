@@ -160,6 +160,10 @@ std::optional<std::string> LargeObjectStore::read(const std::string& id) const {
     return read_bytes(object_dir(id) / "blob");
 }
 
+fs::path LargeObjectStore::body_path(const std::string& id) const {
+    return object_dir(id) / "blob";
+}
+
 bool LargeObjectStore::has_body(const std::string& id) const {
     std::error_code ec;
     return fs::exists(object_dir(id) / "blob", ec);

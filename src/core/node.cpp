@@ -2,6 +2,7 @@
 
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/coordinated_launch.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/compute/job_coordinator.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/pipeline/executor.hpp"
@@ -143,17 +144,42 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
             dataset.format = store.name();
             dataset.replication =
                 std::string(to_string(table->replication_strategy().kind()));
-            dataset.rows = store.size();
 
             // Schema: the union of each row's object keys in first-seen order — the
             // engine is schemaless, so a dataset's schema is whatever its rows carry.
             std::unordered_set<std::string> seen;
-            for (std::size_t i = 0; i < store.size(); ++i) {
-                const nlohmann::json& row = store.at(i);
-                if (!row.is_object()) continue;
-                for (auto field = row.begin(); field != row.end(); ++field) {
-                    if (seen.insert(field.key()).second) {
-                        dataset.columns.push_back(field.key());
+            const auto note_column = [&](const std::string& column) {
+                if (seen.insert(column).second) dataset.columns.push_back(column);
+            };
+
+            // Row count + schema.
+            //
+            // A **partition-only** table (#833) does not hold the dataset in its
+            // local store: each node has only the slice it produced, and on a node
+            // that produced none the store is empty. Its row count and schema come
+            // from the partition catalog instead — replicate-to-all, so every node
+            // reports the same dataset, which is the whole point of the view.
+            if (table->partition_only()) {
+                for (const auto& partition : dataset_partitions_) {
+                    if (partition->table() != table->id()) continue;
+                    const zetta::data::PartitionRowRange& range =
+                        partition->row_range();
+                    if (range.end > range.start) dataset.rows += range.end - range.start;
+                    const nlohmann::json& stats = partition->stats();
+                    if (!stats.is_object()) continue;
+                    const auto columns = stats.find("columns");
+                    if (columns == stats.end() || !columns->is_array()) continue;
+                    for (const nlohmann::json& column : *columns) {
+                        if (column.is_string()) note_column(column.get<std::string>());
+                    }
+                }
+            } else {
+                dataset.rows = store.size();
+                for (std::size_t i = 0; i < store.size(); ++i) {
+                    const zetta::storage::ParquetLazyPtr row = store.at(i);
+                    if (!row || !row->is_object()) continue;
+                    for (auto field = row->begin(); field != row->end(); ++field) {
+                        note_column(field.key());
                     }
                 }
             }
@@ -178,6 +204,20 @@ std::vector<zetta::data::DatasetSummary> Node::datasets() const {
                     zetta::data::DatasetPlacement{partition->id(), partition->blob_ref(),
                                      range.start, range.end,
                                      partition->owner_nodes()});
+            }
+
+            // Degraded (#837): the manifest says how many catalog entries the
+            // finished dataset has. When fewer are visible here, `rows` above is
+            // a fraction of the truth — say so rather than under-report it. The
+            // planner fails the same query for the same reason, from the same
+            // rule (zetta::data::catalog_shortfall).
+            if (const auto& manifest = table->partition_manifest(); manifest) {
+                dataset.expected_partitions = manifest->partitions;
+                dataset.expected_rows = manifest->rows;
+                dataset.degraded_reason = zetta::data::catalog_shortfall(
+                    *manifest,
+                    static_cast<std::uint64_t>(dataset.partitions.size()));
+                dataset.degraded = !dataset.degraded_reason.empty();
             }
 
             result.push_back(std::move(dataset));
@@ -274,7 +314,21 @@ void Node::tick() {
     //    capture or a peer's gossip merged in on the network thread), reconcile
     //    the on-disk projection to match it. Reconcile only materializes (never
     //    captures), so it doesn't move the version — no feedback loop.
-    if (replication_ && replication_->version() != last_seen_version_) {
+    //
+    //    **The version is read BEFORE the snapshot, and that is the watermark
+    //    step 3 records** (#837). A peer's gossip merges on the *network*
+    //    thread, so a merge can land at any point during this tick. Reading the
+    //    version at the END (as this did) and recording it as reflected claims
+    //    credit for a merge this tick never saw: the projection skips it, and —
+    //    with no further write to move the version — never revisits it. The
+    //    partition catalog then stalls permanently short of the document, which
+    //    is exactly the "a peer sees 8 of 12 partitions forever" failure behind
+    //    #837. Recording the EARLIER version is the conservative direction: at
+    //    worst the next tick reconciles a snapshot it has already seen, which is
+    //    idempotent (reconcile only materializes).
+    const std::string version_at_pull =
+        replication_ ? replication_->version() : std::string{};
+    if (replication_ && version_at_pull != last_seen_version_) {
         const nlohmann::json snapshot = replication_->snapshot();
         reconcile_from_replication(snapshot);
         // 1b. Between jobs: when the cluster membership (node:<id> keys) changed,
@@ -291,13 +345,18 @@ void Node::tick() {
     //     `fulltext.query` scatter. Fingerprint-guarded (cheap when unchanged);
     //     local machinery only, nothing is captured.
     reconcile_search_indexes();
+    // 2c. SELECT plane (#833): refresh the network-thread-readable snapshot of
+    //     the partition-only partitions this node owns, so a peer's `sql.scan`
+    //     is answered from the current catalog without touching the Node tree
+    //     off the owner thread. Fingerprint-guarded; nothing is captured.
+    if (distributed_select_) distributed_select_->refresh();
     // 3. Persist if the document moved (a peer merge in step 1 or a run started
-    //    in step 2), and remember the version we have now reflected on disk.
+    //    in step 2), and remember the version we have now reflected on disk —
+    //    the one read at the TOP of the tick, never the current one (see step 1).
     if (replication_) {
-        std::string version = replication_->version();
-        if (version != last_seen_version_) {
+        if (replication_->version() != last_seen_version_) {
             persist_replication();
-            last_seen_version_ = std::move(version);
+            last_seen_version_ = version_at_pull;
         }
     }
     // 4. Telemetry plane (#584): sample this node's live host utilization and
@@ -431,6 +490,8 @@ void Node::start_coordinator() {
         *cluster_, telemetry_.get());
     launch_listener_->set_span_recorder(&span_recorder_);
     zetta::usecases::churn::install_churn_launch_runner(*launch_listener_, *this);
+    zetta::connect::install_connector_fetch_launch_runner(*launch_listener_,
+                                                          *this);
     coordinator_ = std::make_unique<compute::JobCoordinator>(*cluster_, workers,
                                                              launch_listener_.get());
     // Every job this coordinator runs (and every stolen task it executes for a
@@ -463,11 +524,21 @@ void Node::start_coordinator() {
     distributed_fulltext_ = std::make_unique<zetta::index::DistributedFulltextIndex>(
         *cluster_, std::move(search_backend), cluster_->signal_handler());
     search_build_fingerprints_.clear();  // a fresh plane holds no sub-indexes yet
+
+    // The scatter-gather SELECT plane (#833) chains over the search plane:
+    // `sql.scan` is served here, everything else routes on. Wired on EVERY
+    // clustered node — that is what lets any node answer for the partitions it
+    // owns — with its snapshot of those partitions refreshed by tick().
+    distributed_select_ = std::make_unique<zetta::query::DistributedSelect>(
+        *this, *cluster_, cluster_->signal_handler());
+    distributed_select_->refresh();
 }
 
 void Node::stop_coordinator() {
-    // Unwind in reverse wiring order: the search plane restores the compute
-    // plane's handler first, then the coordinator restores its own fallback.
+    // Unwind in reverse wiring order: the SELECT plane restores the search
+    // plane's handler, the search plane the compute plane's, then the
+    // coordinator restores its own fallback.
+    distributed_select_.reset();
     distributed_fulltext_.reset();
     search_build_fingerprints_.clear();
     if (!coordinator_) return;
@@ -777,6 +848,45 @@ std::shared_ptr<zetta::data::Database> Node::materialize_database(
     db->persist_meta();
     databases_.push_back(db);
     return db;
+}
+
+std::shared_ptr<zetta::data::Table> Node::adopt_replicated_table(
+    const std::string& database_id, const std::string& database_name,
+    const std::string& table_id, const std::string& table_name,
+    bool partition_only) {
+    // The keys are **captured**, not merely materialized — under the initiator's
+    // ids, with the value `create_database`/`create_table` would have written.
+    //
+    // Materializing alone deletes itself: a launch is a signal and arrives at
+    // once, while the `db:`/`tbl:` keys merge on the next gossip round up to
+    // half a second later, and `reconcile_databases` prunes a local database or
+    // table the document does not have — taking the directory, the rows and the
+    // partition bodies underneath it with it. Writing the identical value under
+    // the identical key is idempotent: when the initiator's copy merges there is
+    // nothing to reconcile. Only written when this node's document does not
+    // already carry the key, so an existing entry (with, say, a non-default
+    // replication strategy) is never overwritten with a narrower one.
+    if (replication_) {
+        const nlohmann::json snapshot = replication_->snapshot();
+        const std::string database_key = catalog::database_key(database_id);
+        if (!snapshot.contains(database_key)) {
+            replication_->set(database_key, nlohmann::json{{"name", database_name}});
+        }
+        const std::string table_key = catalog::table_key(table_id);
+        if (!snapshot.contains(table_key)) {
+            nlohmann::json value{{"db", database_id}, {"name", table_name}};
+            if (partition_only) value["partition_only"] = true;
+            replication_->set(table_key, value);
+        }
+    }
+    std::shared_ptr<zetta::data::Database> database =
+        find_database_by_id(database_id);
+    if (!database) database = materialize_database(database_id, database_name);
+    if (!database) return nullptr;
+    if (auto existing = database->find_table_by_id(table_id)) return existing;
+    return database->materialize_table(table_id, table_name,
+                                       database->replication_strategy(),
+                                       partition_only);
 }
 
 std::shared_ptr<zetta::data::Database> Node::find_database(const std::string& name) const {
@@ -2934,8 +3044,18 @@ void Node::persist_replication() const {
 
 void Node::migrate_to_replication() {
     const nlohmann::json snapshot = replication_->snapshot();
+    // "Is this entity already in the document?" — and a REMOVED entity counts as
+    // already there. The snapshot omits tombstoned keys (that is what makes a
+    // removal look like absence to every reconcile pass), so asking the snapshot
+    // alone would read a deliberate drop as local-only data that predates
+    // replication and re-capture it on the next start — resurrecting, on disk,
+    // exactly what an operator dropped (#838). knows_key sees through the
+    // tombstone.
+    const auto already_replicated = [&](const std::string& key) {
+        return snapshot.contains(key) || replication_->knows_key(key);
+    };
     for (const auto& db : databases_) {
-        if (!snapshot.contains(catalog::database_key(db->id()))) {
+        if (!already_replicated(catalog::database_key(db->id()))) {
             // Carry the strategy (ENT-35); the default is omitted, so a
             // ReplicateToAll database migrates to the same db: value as before.
             nlohmann::json value{{"name", db->name()}};
@@ -2945,27 +3065,44 @@ void Node::migrate_to_replication() {
             replication_->set(catalog::database_key(db->id()), value);
         }
         for (const auto& table : db->tables()) {
-            if (!snapshot.contains(catalog::table_key(table->id()))) {
+            if (!already_replicated(catalog::table_key(table->id()))) {
                 nlohmann::json value{{"db", db->id()}, {"name", table->name()}};
                 if (!table->replication_strategy().is_default()) {
                     value["replication"] =
                         table->replication_strategy().to_json();
                 }
+                if (table->partition_only()) value["partition_only"] = true;
                 replication_->set(catalog::table_key(table->id()), value);
             }
+            // The partition manifest (#837) migrates with the table. Without
+            // this, a manifest loaded from table.json on a node that has just
+            // gained replication would be pruned by the very next reconcile —
+            // and every read of that dataset would then plan with no authority.
+            if (table->partition_manifest() &&
+                !already_replicated(catalog::manifest_key(table->id()))) {
+                replication_->set(catalog::manifest_key(table->id()),
+                                  to_json(*table->partition_manifest()));
+            }
+            // A partition-only table's rows are deliberately absent from the
+            // document (#833) — migrating them in would undo exactly what the
+            // marker exists to prevent.
+            if (table->partition_only()) continue;
             const zetta::storage::StorageEngine& store = table->store();
             for (std::size_t i = 0; i < store.size(); ++i) {
                 const std::string& row_id = store.id_at(i);
-                if (!snapshot.contains(catalog::row_key(row_id))) {
-                    replication_->set(
-                        catalog::row_key(row_id),
-                        nlohmann::json{{"tbl", table->id()},
-                                       {"data", store.at(i)}});
-                }
+                if (already_replicated(catalog::row_key(row_id))) continue;
+                // A row that cannot be read cannot be captured — leaving it out
+                // of the document is recoverable (the next capture retries it),
+                // capturing an empty row would replicate the loss.
+                const zetta::storage::ParquetLazyPtr row = store.at(i);
+                if (!row) continue;
+                replication_->set(catalog::row_key(row_id),
+                                  nlohmann::json{{"tbl", table->id()},
+                                                 {"data", *row}});
             }
         }
         for (const zetta::data::LargeObject& lo : db->large_objects().list()) {
-            if (!snapshot.contains(catalog::large_object_key(lo.id))) {
+            if (!already_replicated(catalog::large_object_key(lo.id))) {
                 replication_->set(catalog::large_object_key(lo.id),
                                   nlohmann::json{{"db", db->id()},
                                                  {"name", lo.name},
@@ -2975,71 +3112,71 @@ void Node::migrate_to_replication() {
         }
     }
     for (const auto& project : projects_) {
-        if (!snapshot.contains(catalog::project_key(project->id()))) {
+        if (!already_replicated(catalog::project_key(project->id()))) {
             replication_->set(catalog::project_key(project->id()),
                               project->metadata());
         }
         for (const auto& input : project->inputs()) {
-            if (!snapshot.contains(catalog::input_key(input->id()))) {
+            if (!already_replicated(catalog::input_key(input->id()))) {
                 replication_->set(catalog::input_key(input->id()),
                                   input->metadata());
             }
         }
         for (const auto& graph : project->graphs()) {
-            if (!snapshot.contains(catalog::graph_key(graph->id()))) {
+            if (!already_replicated(catalog::graph_key(graph->id()))) {
                 replication_->set(catalog::graph_key(graph->id()),
                                   graph->record());
             }
         }
     }
     for (const auto& deployment : deployments_) {
-        if (!snapshot.contains(catalog::deployment_key(deployment->id()))) {
+        if (!already_replicated(catalog::deployment_key(deployment->id()))) {
             replication_->set(catalog::deployment_key(deployment->id()),
                               deployment->metadata());
         }
     }
     for (const auto& run : runs_) {
-        if (!snapshot.contains(catalog::run_key(run->id()))) {
+        if (!already_replicated(catalog::run_key(run->id()))) {
             replication_->set(catalog::run_key(run->id()), run->metadata());
         }
     }
     for (const auto& model : models_) {
-        if (!snapshot.contains(catalog::model_key(model->id()))) {
+        if (!already_replicated(catalog::model_key(model->id()))) {
             replication_->set(catalog::model_key(model->id()),
                               model->metadata());
         }
     }
     for (const auto& index : indexes_) {
-        if (!snapshot.contains(catalog::index_key(index->id()))) {
+        if (!already_replicated(catalog::index_key(index->id()))) {
             replication_->set(catalog::index_key(index->id()),
                               index->metadata());
         }
     }
     for (const auto& job : jobs_) {
-        if (!snapshot.contains(catalog::job_key(job->id()))) {
+        if (!already_replicated(catalog::job_key(job->id()))) {
             replication_->set(catalog::job_key(job->id()), job->metadata());
         }
     }
     for (const auto& partition : dataset_partitions_) {
-        if (!snapshot.contains(catalog::partition_key(partition->id()))) {
+        if (!already_replicated(catalog::partition_key(partition->id()))) {
             replication_->set(catalog::partition_key(partition->id()),
                               partition->metadata());
         }
     }
     for (const auto& principal : principals_) {
-        if (!snapshot.contains(catalog::principal_key(principal->id()))) {
+        if (!already_replicated(catalog::principal_key(principal->id()))) {
             replication_->set(catalog::principal_key(principal->id()),
                               principal->metadata());
         }
         for (const auto& key : principal->keys()) {
-            if (!snapshot.contains(catalog::access_key_key(key->id()))) {
+            if (!already_replicated(catalog::access_key_key(key->id()))) {
                 replication_->set(catalog::access_key_key(key->id()),
                                   key->metadata());
             }
         }
     }
     for (const auto& event : audit_events_) {
-        if (!snapshot.contains(catalog::audit_key(event->id()))) {
+        if (!already_replicated(catalog::audit_key(event->id()))) {
             replication_->set(catalog::audit_key(event->id()),
                               event->metadata());
         }
@@ -3099,10 +3236,13 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
         std::string database_id;
         std::string name;
         zetta::data::ReplicationStrategy strategy;
+        bool partition_only = false;  // #833; rows are never captured
     };
     std::map<std::string, TableEntry> tables;                 // id -> entry
     struct RowEntry { std::string table_id; nlohmann::json data; bool tombstone = false; };
     std::map<std::string, RowEntry> rows;                     // id -> entry
+    // Partition manifests (#837), keyed by the table they describe.
+    std::map<std::string, zetta::data::DatasetManifestValue> manifests;
     struct LargeObjectEntry {
         std::string database_id;
         std::string name;
@@ -3124,7 +3264,8 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
             tables.emplace(std::move(table_id),
                            TableEntry{value["db"].get<std::string>(),
                                       value["name"].get<std::string>(),
-                                      zetta::data::replication_strategy_from_meta(value)});
+                                      zetta::data::replication_strategy_from_meta(value),
+                                      value.value("partition_only", false)});
         } else if (std::string row_id =
                        catalog::id_after(key, catalog::kRowPrefix);
                    !row_id.empty() && value.is_object() &&
@@ -3137,6 +3278,15 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
                                   tombstone ? nlohmann::json()
                                             : value.value("data", nlohmann::json()),
                                   tombstone});
+        } else if (std::string manifest_table =
+                       catalog::id_after(key, catalog::kManifestPrefix);
+                   !manifest_table.empty()) {
+            // Validated at the boundary: a malformed manifest is ignored rather
+            // than adopted as the authority reads are failed against.
+            if (std::optional<zetta::data::DatasetManifestValue> parsed =
+                    zetta::data::parse_dataset_manifest_value(value)) {
+                manifests.emplace(std::move(manifest_table), std::move(*parsed));
+            }
         } else if (std::string lo_id =
                        catalog::id_after(key, catalog::kLargeObjectPrefix);
                    !lo_id.empty() && value.is_object() && value.contains("db")) {
@@ -3195,8 +3345,23 @@ void Node::reconcile_databases(const nlohmann::json& snapshot) {
     for (const auto& [id, entry] : tables) {
         auto db = find_database_by_id(entry.database_id);
         if (db && !db->find_table_by_id(id)) {
-            db->materialize_table(id, entry.name, entry.strategy);
+            db->materialize_table(id, entry.name, entry.strategy,
+                                  entry.partition_only);
         }
+    }
+    // Partition manifests (#837): the document is the source of truth, so a table
+    // whose `mfst:` key is absent has its local copy cleared — the same
+    // materialize-only rule every other reconcile path follows.
+    for (const auto& [table_id, entry] : tables) {
+        auto db = find_database_by_id(entry.database_id);
+        if (!db) continue;
+        auto table = db->find_table_by_id(table_id);
+        if (!table) continue;
+        const auto manifest = manifests.find(table_id);
+        table->apply_partition_manifest(
+            manifest == manifests.end()
+                ? std::nullopt
+                : std::optional<zetta::data::DatasetManifestValue>(manifest->second));
     }
     for (auto& [id, entry] : rows) {
         auto db_table = [&]() -> std::shared_ptr<zetta::data::Table> {

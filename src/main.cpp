@@ -7,6 +7,7 @@
 // only picks how to drive them.
 
 #include "zetta/cluster/cluster.hpp"
+#include "zetta/api/native_http_transport.hpp"
 #include "zetta/api/server.hpp"
 #include "zetta/headless.hpp"
 #include "zetta/cloud/local_provisioner.hpp"
@@ -248,6 +249,14 @@ int main(int argc, char** argv) {
         print_usage(argv[0]);
         return 0;
     }
+
+    // Install the native coroutine HTTPS client into the connector transport
+    // seam (#827). zetta-core declares the seam but links no HTTP library, so
+    // the real client is a zetta-api TU that registers itself here — before
+    // anything can serve a connector query. Without this a connector query
+    // fails with "no outbound HTTP transport is installed", which is exactly
+    // what a build that deliberately has no egress should do.
+    zetta::api::install_native_http_transport();
 
     // Provisioning env (#749): a burst/provisioned node is handed its cluster
     // coordinates as environment by the provisioner seam (ZETTA_SEED_PEER,
@@ -640,5 +649,8 @@ int main(int argc, char** argv) {
 
     cluster.stop();
     node.stop();
+    // Stop the outbound HTTP client's io_context + join its thread, after the
+    // last thing that could issue a connector query has gone.
+    zetta::api::shutdown_native_http_transport();
     return rc;
 }

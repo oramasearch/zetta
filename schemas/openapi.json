@@ -80,7 +80,7 @@
                     "type": "string"
                   },
                   "partition_count": {
-                    "description": "partitions to write (default 8)",
+                    "description": "partitions to write; omit to let the partition scheduler size them (a target body size, with a floor of partitions per node) instead of fixing a count",
                     "maximum": 4096,
                     "minimum": 1,
                     "type": "integer"
@@ -95,7 +95,7 @@
                     "type": "string"
                   },
                   "replication_factor": {
-                    "description": "owners per partition (default 1)",
+                    "description": "owners per partition (default 3, clamped to the node count)",
                     "minimum": 1,
                     "type": "integer"
                   },
@@ -1103,6 +1103,566 @@
         ]
       }
     },
+    "/v1/create_connection": {
+      "post": {
+        "description": "Save a named connector configuration (credential included) so a connector query can reference it by name instead of carrying the token in every request. The connection is stored replicate-to-all — every node holds it, which is what lets each node fetch its own stripe of a distributed query straight from the source. Saving an existing name replaces it. The token is never returned by any surface (list_connections and system.connections omit it). Requires orchestration:create_connection.",
+        "operationId": "create_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connector": {
+                    "additionalProperties": false,
+                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "properties": {
+                      "account": {
+                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "auth": {
+                        "default": "pat",
+                        "description": "How to present the bearer token.",
+                        "enum": [
+                          "pat",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "database": {
+                        "description": "Session database.",
+                        "type": "string"
+                      },
+                      "role": {
+                        "description": "Optional session role.",
+                        "type": "string"
+                      },
+                      "schema": {
+                        "description": "Session schema.",
+                        "type": "string"
+                      },
+                      "token": {
+                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": {
+                        "description": "Which connector implementation to use.",
+                        "enum": [
+                          "snowflake"
+                        ],
+                        "type": "string"
+                      },
+                      "warehouse": {
+                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "account",
+                      "token"
+                    ],
+                    "title": "ConnectorConfig",
+                    "type": "object"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "the name to save this connection under (letters, digits, '_' and '-'); saving an existing name replaces it",
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "connector"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connector": {
+                          "description": "the saved connector settings WITHOUT the credential — the token is never returned by any surface",
+                          "type": "object"
+                        },
+                        "created": {
+                          "description": "when the connection was last saved (ISO-8601 UTC)",
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "connector"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Save a source connection",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_dataset_from_query": {
+      "post": {
+        "description": "Run a read-only query against an external source (Snowflake) and load its rows into a new partitioned table placed across the cluster — the in-product path from a warehouse to a featurizable dataset, with no manual export. Only a single SELECT/WITH may run. Reaches the source over the network with your credentials, so it is consent-gated (audited as dataset_added; visible in system.datasets). Requires orchestration:create_dataset_from_query. Consent-gated: never executes on a plain call (#621).",
+        "operationId": "create_dataset_from_query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "connection": {
+                    "description": "the name of a saved connection (create_connection / list_connections) — use this instead of an inline connector so the credential never travels with the request",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "connector": {
+                    "additionalProperties": false,
+                    "description": "Where and how to reach an external source for a connector query. The token is a bearer credential and is never serialized back out.",
+                    "properties": {
+                      "account": {
+                        "description": "Source account identifier (for Snowflake, the host prefix, e.g. ab12345.us-east-1).",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "auth": {
+                        "default": "pat",
+                        "description": "How to present the bearer token.",
+                        "enum": [
+                          "pat",
+                          "oauth"
+                        ],
+                        "type": "string"
+                      },
+                      "database": {
+                        "description": "Session database.",
+                        "type": "string"
+                      },
+                      "role": {
+                        "description": "Optional session role.",
+                        "type": "string"
+                      },
+                      "schema": {
+                        "description": "Session schema.",
+                        "type": "string"
+                      },
+                      "token": {
+                        "description": "Bearer credential: a Snowflake programmatic access token, or an OAuth token.",
+                        "minLength": 1,
+                        "type": "string"
+                      },
+                      "type": {
+                        "description": "Which connector implementation to use.",
+                        "enum": [
+                          "snowflake"
+                        ],
+                        "type": "string"
+                      },
+                      "warehouse": {
+                        "description": "Compute warehouse (required for token auth on Snowflake).",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "account",
+                      "token"
+                    ],
+                    "title": "ConnectorConfig",
+                    "type": "object"
+                  },
+                  "database": {
+                    "description": "target database, created if absent (default datasets)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "max_rows": {
+                    "description": "cap on rows pulled from the source (default 100000)",
+                    "maximum": 10000000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "partition_count": {
+                    "description": "partitions to write; omit to let the partition scheduler size them (a target body size, with a floor of partitions per node) instead of fixing a count",
+                    "maximum": 4096,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "partitioned": {
+                    "description": "shard + place the rows across the cluster (default true)",
+                    "type": "boolean"
+                  },
+                  "query": {
+                    "description": "a single read-only SELECT (or WITH) to run against the source",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "replication_factor": {
+                    "description": "owners per partition (default 1 — a connector result set is a cache, re-pullable from its source; promote_dataset raises it)",
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "table_name": {
+                    "description": "name for the new table (default 'dataset')",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "query"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "columns": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "coordinated": {
+                          "description": "true when the fetch was co-launched across the cluster (every participant pulled its own tile straight from the source)",
+                          "type": "boolean"
+                        },
+                        "database": {
+                          "type": "string"
+                        },
+                        "participants": {
+                          "description": "the nodes that fetched a tile",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "partitions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "owner_nodes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "partition_id": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "partition_id",
+                              "owner_nodes"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "rows": {
+                          "type": "integer"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "table",
+                        "rows",
+                        "columns",
+                        "partitions"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create a dataset from a connector query",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/create_index": {
+      "post": {
+        "description": "Build a full-text index over a loaded table: records the Search index entity and builds the per-partition BM25F sub-indexes so `search` returns ranked hits (load the table first with add_dataset). Requires orchestration:create_index.",
+        "operationId": "create_index",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "backend": {
+                    "description": "the IndexBackend that builds it (default oramacore_fulltext, BM25F full-text; memory_search is the exact-match reference)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "database": {
+                    "description": "the table's database — needed only when the same table name exists in several databases",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "fields": {
+                    "description": "the fields to index (default: all of the table's columns)",
+                    "items": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "minItems": 1,
+                    "type": "array",
+                    "uniqueItems": true
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "kind": {
+                    "description": "index kind (default search — the only kind with a built-in backend today)",
+                    "enum": [
+                      "search",
+                      "vector",
+                      "feature"
+                    ],
+                    "type": "string"
+                  },
+                  "table": {
+                    "description": "the source table to index (load it first with add_dataset)",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "table"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "backend": {
+                          "type": "string"
+                        },
+                        "exposed": {
+                          "type": "boolean"
+                        },
+                        "fields": {
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "index_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "type": "string"
+                        },
+                        "table": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "index_id",
+                        "table",
+                        "kind",
+                        "backend",
+                        "fields",
+                        "exposed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Create index",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/create_project": {
       "post": {
         "description": "Create a new AI project (the central user-managed artifact); the project replicates to every node. Requires orchestration:create_project.",
@@ -1206,6 +1766,110 @@
           }
         },
         "summary": "Create project",
+        "tags": [
+          "action"
+        ]
+      }
+    },
+    "/v1/delete_connection": {
+      "post": {
+        "description": "Remove a saved source connection (and its stored credential) from every node. Returns removed=false when no connection had that name. Requires orchestration:delete_connection.",
+        "operationId": "delete_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "name": {
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "removed": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "removed"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Delete a saved connection",
         "tags": [
           "action"
         ]
@@ -2041,6 +2705,18 @@
                         "database": {
                           "type": "string"
                         },
+                        "degraded": {
+                          "type": "boolean"
+                        },
+                        "degraded_reason": {
+                          "type": "string"
+                        },
+                        "expected_partitions": {
+                          "type": "integer"
+                        },
+                        "expected_rows": {
+                          "type": "integer"
+                        },
                         "format": {
                           "type": "string"
                         },
@@ -2103,7 +2779,11 @@
                         "rows",
                         "size_bytes",
                         "columns",
-                        "partitions"
+                        "partitions",
+                        "degraded",
+                        "degraded_reason",
+                        "expected_partitions",
+                        "expected_rows"
                       ],
                       "type": "object"
                     }
@@ -2143,6 +2823,139 @@
           }
         },
         "summary": "Get one dataset",
+        "tags": [
+          "read"
+        ]
+      }
+    },
+    "/v1/get_graph": {
+      "get": {
+        "description": "Read one execution graph's full structure — its typed step nodes {id, kind, name} and directed edges {from, to, kind} — by project + graph name or uuid. No side effects. Requires api:query.",
+        "operationId": "get_graph",
+        "parameters": [
+          {
+            "description": "the graph's name or uuid",
+            "in": "query",
+            "name": "graph",
+            "required": true,
+            "schema": {
+              "description": "the graph's name or uuid",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "the owning project's name or uuid",
+            "in": "query",
+            "name": "project",
+            "required": true,
+            "schema": {
+              "description": "the owning project's name or uuid",
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "edges": {
+                          "items": {
+                            "description": "a connection: { from, to, kind }",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "nodes": {
+                          "items": {
+                            "description": "a step: { id, kind, name }",
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "project": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "graph_id",
+                        "name",
+                        "project",
+                        "nodes",
+                        "edges"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Get one graph",
         "tags": [
           "read"
         ]
@@ -2352,7 +3165,8 @@
                             "train",
                             "explain",
                             "score",
-                            "ddf"
+                            "ddf",
+                            "ingest"
                           ],
                           "type": "string"
                         },
@@ -3520,6 +4334,114 @@
         ]
       }
     },
+    "/v1/list_connections": {
+      "get": {
+        "description": "The saved source connections, credentials REDACTED — name, connector settings, and when each was saved. Same source as system.connections. Requires orchestration:list_connections.",
+        "operationId": "list_connections",
+        "parameters": [
+          {
+            "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+            "in": "query",
+            "name": "intent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "connections": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "connector": {
+                                "description": "the saved connector settings WITHOUT the credential — the token is never returned by any surface",
+                                "type": "object"
+                              },
+                              "created": {
+                                "description": "when the connection was last saved (ISO-8601 UTC)",
+                                "type": "string"
+                              },
+                              "name": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "connector"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        }
+                      },
+                      "required": [
+                        "connections"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "List saved connections",
+        "tags": [
+          "read"
+        ]
+      }
+    },
     "/v1/list_consent_requests": {
       "get": {
         "description": "Read every consent challenge on this node's ledger — pending, decided, and executed (with results). No side effects. Requires api:query.",
@@ -3750,6 +4672,18 @@
                               "database": {
                                 "type": "string"
                               },
+                              "degraded": {
+                                "type": "boolean"
+                              },
+                              "degraded_reason": {
+                                "type": "string"
+                              },
+                              "expected_partitions": {
+                                "type": "integer"
+                              },
+                              "expected_rows": {
+                                "type": "integer"
+                              },
                               "format": {
                                 "type": "string"
                               },
@@ -3812,7 +4746,11 @@
                               "rows",
                               "size_bytes",
                               "columns",
-                              "partitions"
+                              "partitions",
+                              "degraded",
+                              "degraded_reason",
+                              "expected_partitions",
+                              "expected_rows"
                             ],
                             "type": "object"
                           },
@@ -4882,6 +5820,169 @@
         ]
       }
     },
+    "/v1/promote_dataset": {
+      "post": {
+        "description": "Raise a dataset's replication factor (default 3, clamped to the node count) so a connector result set that landed as a cache at RF=1 stops being one copy with no backup. Adds owners to each partition in the catalog; the bodies then move to them over the existing large-object transport. Never removes an owner, so it can only make a dataset safer. Visible in system.dataset_partitions. Requires orchestration:promote_dataset.",
+        "operationId": "promote_dataset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "database": {
+                    "description": "the owning database (default datasets) — required when the same dataset name exists in several databases",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "dataset": {
+                    "description": "the dataset name (= the table name)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "replication_factor": {
+                    "description": "target owners per partition (default 3), clamped to the node count; a partition that already has at least this many owners is left alone — promotion never removes one",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "dataset"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "database": {
+                          "type": "string"
+                        },
+                        "partitions": {
+                          "type": "integer"
+                        },
+                        "promoted": {
+                          "description": "partitions whose owner set grew",
+                          "type": "integer"
+                        },
+                        "promotions": {
+                          "items": {
+                            "additionalProperties": false,
+                            "properties": {
+                              "owner_nodes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              "partition": {
+                                "type": "integer"
+                              },
+                              "partition_id": {
+                                "type": "string"
+                              },
+                              "previous_owner_nodes": {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "required": [
+                              "partition_id",
+                              "owner_nodes"
+                            ],
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "replication_factor": {
+                          "description": "the factor actually applied (clamped to the roster)",
+                          "type": "integer"
+                        },
+                        "table": {
+                          "type": "string"
+                        },
+                        "table_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "table",
+                        "replication_factor",
+                        "partitions",
+                        "promoted"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Promote a cached dataset to durable",
+        "tags": [
+          "action"
+        ]
+      }
+    },
     "/v1/run": {
       "post": {
         "description": "Execute a stored, gate-passing project graph: a churn-shaped graph runs the real engine over the live cluster and returns its run id immediately (poll get_run / system.runs); other graphs run structurally within the call. Requires orchestration:run. Long-running: returns the engine's durable handle immediately; poll progress through the read surface.",
@@ -5029,6 +6130,149 @@
         "summary": "Run a graph",
         "tags": [
           "job"
+        ]
+      }
+    },
+    "/v1/save_graph": {
+      "post": {
+        "description": "Persist an edited execution graph — its nodes + edges — back to a project graph, creating it when absent or replacing the existing one (replicated + audited, the visual editor's save path). Requires orchestration:save_graph.",
+        "operationId": "save_graph",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "edges": {
+                    "description": "the connections: each { from, to, kind }",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "graph": {
+                    "description": "the graph's name or uuid (created if absent)",
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "intent": {
+                    "description": "reserved: say what you are trying to do; recorded on the call's trace, stripped before schema validation",
+                    "type": "string"
+                  },
+                  "new_name": {
+                    "description": "rename the graph (optional)",
+                    "type": "string"
+                  },
+                  "nodes": {
+                    "description": "the steps: each { id, kind, name }",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "project": {
+                    "description": "the owning project's name or uuid",
+                    "minLength": 1,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "project",
+                  "graph",
+                  "nodes",
+                  "edges"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "duration_ms": {
+                      "type": "number"
+                    },
+                    "ok": {
+                      "const": true,
+                      "type": "boolean"
+                    },
+                    "span_id": {
+                      "type": "string"
+                    },
+                    "trace_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "additionalProperties": false,
+                      "properties": {
+                        "edges": {
+                          "type": "integer"
+                        },
+                        "graph_id": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "project": {
+                          "type": "string"
+                        },
+                        "steps": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "graph_id",
+                        "name",
+                        "steps",
+                        "edges",
+                        "project"
+                      ],
+                      "type": "object"
+                    }
+                  },
+                  "required": [
+                    "ok",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "duration_ms"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the call succeeded"
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the input, authorization, or addressed entity is at fault; the error carries the engine's reason verbatim"
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/error_envelope"
+                }
+              }
+            },
+            "description": "the engine refused or the owning loop is saturated (busy)"
+          }
+        },
+        "summary": "Save a graph",
+        "tags": [
+          "action"
         ]
       }
     },

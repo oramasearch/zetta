@@ -35,6 +35,14 @@ stays the single-host read view) nor the CRDT — telemetry is a measurement, no
 durable agreement, so it rides the ephemeral signal plane and goes stale in
 seconds.
 
+The freshness window (`snapshot(ttl)`, 8 s by default) is **half-open**: an entry is
+returned while its age is `< ttl` and dropped once it reaches `>= ttl`. The boundary
+is only observable at `ttl == 0`, which means *keep nothing* — the reading that makes
+a zero-length window say something. The earlier `>` comparison instead made a
+zero-length window mean "keep whatever was recorded in this same clock tick", so the
+answer depended on whether the steady clock advanced between two adjacent statements
+([#834](https://github.com/oramasearch/zetta/issues/834)).
+
 ## Columns
 
 | Column | Meaning |

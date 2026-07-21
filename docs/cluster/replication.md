@@ -25,6 +25,21 @@ global leader and no global election** — the cluster is equal peers (see
 [cluster.md](cluster.md)). This is the right default for the overwhelming
 majority of data (DDL, rows, metadata): it just merges.
 
+**That promise is asserted with the transport removed.**
+`Replication.AMeshOfThreeConvergesAfterConcurrentWrites`
+(`tests/cluster/test_replication.cpp`) drives three `ReplicationManager`s through
+300 rounds of concurrent local writes interleaved with one-way whole-document
+merges in arbitrary directions — the shape the cluster's 500 ms `SYNC` produces,
+including the partial views a mesh routinely delivers — then gossips to a fixed
+point and requires identical versions *and* identical content. It is
+deterministic (fixed seed), has no sockets, no threads and no clocks, so a
+failure there is unambiguously a merge bug. That matters because the equivalent
+property over real mTLS
+([`ClusterSecurity.MeshConvergesOverMutualTlsUnderSustainedLoad`](security.md))
+does intermittently fail, and this test is what separates "the CRDT lost a
+change" from "the link stopped carrying it" — currently the latter, see
+[#835](https://github.com/oramasearch/zetta/issues/835).
+
 A leader is needed **only for structures that require exclusivity** — locks,
 sequences, and other single-writer resources where "two holders at once" is
 incorrect. Those are the exception, not the rule, and they get a scoped
@@ -96,14 +111,74 @@ bytes; Automerge is hidden in the adapter `src/core/cluster/replication.cpp`, so
 of zetta stays decoupled from the backend.
 
 - `set(key, json)` — a local change (any JSON value, stored as JSON text in the CRDT).
-- `snapshot()` — the merged document as JSON.
+- `remove(key)` — a local removal. Writes a **tombstone**, see below.
+- `snapshot()` — the merged document as JSON, **live entries only**.
+- `knows_key(key)` — whether the document holds the key at all, *including* as a
+  tombstone. "Was this ever replicated?", as opposed to `snapshot()`'s "is it live
+  now?".
 - `save()` → bytes; `merge(bytes)` — exchange + merge with a peer, conflict-free.
-- `entry_count()` — number of top-level keys (zetta seeds one per node).
+- `entry_count()` — number of **live** top-level keys (zetta seeds one per node).
 - `version()` — a short fingerprint of the document's Automerge **heads** (the
   change-DAG leaves). Two nodes hold identical state exactly when their versions
   match — this is the "in sync" check. `"empty"` for an empty document.
 
 It is thread-safe (the cluster's network thread and local callers both touch it).
+
+## Removal replicates as a tombstone
+
+**`remove(key)` writes a tombstone value; it does not delete the key from the CRDT
+map.** The difference is load-bearing, and getting it wrong cost a real bug
+([#838](https://github.com/oramasearch/zetta/issues/838)).
+
+A CRDT map delete carries the set of predecessor writes the deleting node could see
+*at that moment*. Any write it had not yet merged is not named, so that write
+survives the delete verbatim — and the key comes back on every node the moment the
+write arrives, **including on the node that removed it**. That was observed
+directly: a key absent from a node's own snapshot immediately after the removal,
+present again milliseconds later, before any `tick()`.
+
+It is not a corner case. A coordinator cleaning up after a failed distributed
+ingest removes `part:` and `lo:` keys while participants are still writing their
+own, so the removal is *necessarily* concurrent with writes it cannot see. The same
+exposure applied to `drop_table`, `drop_job`, `drop_index`, `drop_database`,
+`drop_project` — every path that removed a key and relied on absence.
+
+The rules now:
+
+- A removal is an ordinary **value change** (`{"_removed": true}`), so it merges
+  like every other value change. Nothing about it depends on what the remover had
+  seen.
+- **Removal wins over a concurrent write.** `snapshot()` inspects *all* concurrent
+  values at a key (`Document::get_all`), not just the one Automerge picks as the
+  winner, and treats the key as absent if any of them is a tombstone. Asking only
+  the winner would be deterministic but arbitrary — and a half-removed entity is
+  exactly what #838 produced.
+- **A write causally after the removal re-creates the key**, normally. The writer
+  had already seen the tombstone, so this is a deliberate re-create; without it a
+  tombstone would make a name unusable forever.
+- `snapshot()` omits tombstoned keys, so a removal still looks like plain absence
+  to all 20-odd reconcile passes — they needed no change.
+- **`knows_key()` is how a caller sees through the tombstone.**
+  `Node::migrate_to_replication()` must: it re-captures local projections the
+  document does not hold, and a removed key is absent from the snapshot by
+  construction, so asking the snapshot alone would read a deliberate drop as
+  local-only data predating replication and put it straight back on the next start.
+
+`row:` keeps its own tombstone shape (`{tbl, deleted:true}`) and does **not** use
+`remove()`. A row tombstone is an entry reconcile has to *see* — it routes by the
+`tbl` field to find the table whose projection to update — whereas `_removed` means
+"treat this key as absent" and is filtered out. Distinct markers, so neither
+mechanism swallows the other.
+
+The cost is that a removed key stays in the document as a tombstone forever. That
+is the standard CRDT trade, it is already what `row:` deletes do, and it is small
+next to the change history the document carries anyway. Compaction is a separate
+question ([Status](#status--next-steps)).
+
+Covered by `tests/cluster/test_drop_replication.cpp`: a drop reaching a peer and
+staying gone through further gossip; a removal winning over a write it never saw; a
+causally-later write re-creating the key; and a restart not re-capturing a dropped
+entity. The middle two and the last fail without the tombstone.
 
 ## Gossip over the cluster
 
@@ -163,7 +238,10 @@ are a materialized *projection* of it.** Concretely:
   - `tbl:<tbl_uuid>` → `{ db: <db_uuid>, name }` — a table.
   - `row:<row_uuid>` → `{ tbl: <tbl_uuid>, seq, data: {…} }` — a row. The UUID key
     means two nodes inserting concurrently both survive (no collision); `seq`
-    gives a stable-ish order. Deletes remove the key (`remove()`).
+    gives a stable-ish order. A row delete writes its own tombstone value
+    (`{tbl, deleted:true}`) rather than calling `remove()` — reconcile has to
+    *see* it, because it routes by the `tbl` field to find the table whose
+    projection to update. See *Removal replicates as a tombstone* below.
   - `lo:<lo_uuid>` → `{ db, name, size, sha256 }` — large-object **metadata**
     only. The body is **not** in the document (it would bloat every node); it
     transfers peer-to-peer and is verified against `size` + `sha256`. See
@@ -206,6 +284,18 @@ are a materialized *projection* of it.** Concretely:
   document — creating missing databases/tables/rows (and dropping removed ones).
   Reconcile reads the CRDT and writes only disk, so it never loops back into the
   CRDT, and it is idempotent.
+
+  **The watermark is the version read at the TOP of the tick, never the current
+  one.** Peers merge on the network thread, so a merge can land at any moment
+  during a tick. `tick()` used to read `version()` again at the end and record
+  *that* as reflected — claiming credit for a merge the reconcile had never seen.
+  The projection then skipped it and, with no later write to move the version
+  again, **never revisited it**: the on-disk/in-memory view stalled permanently
+  short of the document. That is silent data loss at the projection layer, and it
+  is what made a peer see 8 of 12 partitions forever
+  ([#837](https://github.com/oramasearch/zetta/issues/837)). Recording the
+  earlier version is the conservative direction — at worst the next tick
+  reconciles a snapshot it has already applied, which is idempotent.
 - **Persistence:** the CRDT document is saved to `data_dir/replication.automerge`
   (Automerge `save()`), and `merge()`d back on startup, so replicated state
   survives restarts. On first run with pre-existing on-disk data, that data is

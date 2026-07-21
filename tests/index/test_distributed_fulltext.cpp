@@ -18,6 +18,7 @@
 #include "term_frequency_backend.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/data/database.hpp"
+#include "zetta/data/partition_body.hpp"
 #include "zetta/index/distributed_fulltext.hpp"
 #include "zetta/index/index_backend.hpp"
 #include "zetta/index/index_step_executor.hpp"  // read_index_partitions
@@ -458,17 +459,14 @@ TEST(DistributedFulltext, BuildsRealFulltextSubIndexesAndRanksLikeOracle) {
         const std::optional<std::string> body =
             database->large_objects().read(partition->blob_ref());
         ASSERT_TRUE(body) << "partition body missing: " << partition->blob_ref();
+        const zetta::data::PartitionBodyReadResult read =
+            zetta::data::read_partition_body(*body, partition->id());
+        ASSERT_TRUE(read.ok()) << read.error;
         std::size_t rows = 0;
         std::size_t matching = 0;
-        std::istringstream lines(*body);
-        std::string line;
-        while (std::getline(lines, line)) {
-            if (line.empty()) continue;
-            const nlohmann::json parsed =
-                nlohmann::json::parse(line, /*cb=*/nullptr, /*allow_exceptions=*/false);
-            ASSERT_TRUE(parsed.is_object() && parsed.contains("doc"));
+        for (const zetta::data::PartitionRow& row : read.rows) {
             ++rows;
-            if (matches_postgres(parsed.at("doc"))) ++matching;
+            if (matches_postgres(row.doc)) ++matching;
         }
         EXPECT_EQ(rows, 2u) << "partition '" << partition->id()
                             << "' lost the engineered one-match-one-miss shape";

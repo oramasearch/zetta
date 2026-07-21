@@ -30,7 +30,10 @@
 #include "zetta/compute/distributed_scheduler.hpp"
 #include "zetta/compute/job_autoscaler.hpp"
 #include "zetta/compute/scaling_policy.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
+#include "zetta/data/dataset_manifest.hpp"
 #include "zetta/data/dataset_partition.hpp"
+#include "zetta/data/partition_scheduler.hpp"
 #include "zetta/data/partitioner.hpp"
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/ddf/as_of.hpp"
@@ -65,6 +68,7 @@
 #include "zetta/pipeline/run.hpp"
 #include "zetta/pipeline/solution_catalog.hpp"
 #include "zetta/pipeline/validation.hpp"
+#include "zetta/query/distributed_select.hpp"
 #include "zetta/usecases/churn/churn_dataset.hpp"
 #include "zetta/usecases/churn/churn_solution.hpp"
 #include "zetta/usecases/churn/entity_resolution.hpp"
@@ -100,6 +104,10 @@ const std::vector<BoundarySchema>& boundary_schemas() {
          &zetta::index::fulltext_query_schema},
         {"fulltext_hits", "fulltext_hits.schema.json",
          &zetta::index::fulltext_hits_schema},
+        {"partition_scan_request", "partition_scan_request.schema.json",
+         &zetta::query::partition_scan_request_schema},
+        {"partition_scan_response", "partition_scan_response.schema.json",
+         &zetta::query::partition_scan_response_schema},
         // compute
         {"compute_job", "compute_job.schema.json",
          &zetta::compute::compute_job_value_schema},
@@ -120,8 +128,12 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"steal_result", "steal_result.schema.json",
          &zetta::compute::steal_result_schema},
         // data
+        {"dataset_manifest", "dataset_manifest.schema.json",
+         &zetta::data::dataset_manifest_value_schema},
         {"dataset_partition", "dataset_partition.schema.json",
          &zetta::data::dataset_partition_value_schema},
+        {"partition_plan", "partition_plan.schema.json",
+         &zetta::data::partition_plan_schema},
         {"partitioner", "partitioner.schema.json", &zetta::data::partitioner_schema},
         {"replication_strategy", "replication_strategy.schema.json",
          &zetta::data::replication_strategy_schema},
@@ -191,6 +203,9 @@ const std::vector<BoundarySchema>& boundary_schemas() {
         {"k8s_config", "k8s_config.schema.json", &zetta::cloud::k8s_config_schema},
         {"bare_metal_config", "bare_metal_config.schema.json",
          &zetta::cloud::bare_metal_config_schema},
+        // connect (the distributed connector ingest, #833)
+        {"connector_fetch_launch", "connector_fetch_launch.schema.json",
+         &zetta::connect::connector_fetch_launch_schema},
         // usecases/churn
         {"churn_coordinated_run", "churn_coordinated_run.schema.json",
          &zetta::usecases::churn::churn_coordinated_run_schema},

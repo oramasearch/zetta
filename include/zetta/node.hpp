@@ -36,6 +36,7 @@
 #include "zetta/cluster/node_telemetry.hpp"
 #include "zetta/compute/pipeline_instrumentation.hpp"
 #include "zetta/observability/trace.hpp"
+#include "zetta/query/distributed_select.hpp"
 #include "zetta/governance/policy.hpp"
 #include "zetta/governance/principal.hpp"
 #include "zetta/governance/role.hpp"
@@ -187,6 +188,24 @@ public:
         std::string name, zetta::data::ReplicationStrategy replication_strategy = {});
     std::shared_ptr<zetta::data::Database> find_database(const std::string& name) const;
     bool drop_database(const std::string& name);
+
+    // Adopt a database + table another node already created and captured, by
+    // their ids and **without capturing them again** — the reconcile path, made
+    // reachable ahead of the gossip that will deliver the same `db:`/`tbl:`
+    // keys. Returns the table (the existing handle when it is already present),
+    // or an empty handle if the database could not be materialized.
+    //
+    // The distributed connector ingest (#833 section 7) is why this is public:
+    // every participant must land its tile into the SAME table the initiator
+    // minted, and a participant executing a `run.launch` runs on the very
+    // thread that would otherwise deliver the `tbl:` key — so it cannot wait
+    // for gossip, and creating its own table would mint a second id for one
+    // logical dataset. Idempotent; safe to call after the key has arrived.
+    std::shared_ptr<zetta::data::Table> adopt_replicated_table(
+        const std::string& database_id, const std::string& database_name,
+        const std::string& table_id, const std::string& table_name,
+        bool partition_only);
+
     bool rename_database(const std::string& from, const std::string& to);
     std::vector<std::string> database_names() const;
     std::size_t database_count() const { return databases_.size(); }
@@ -349,6 +368,15 @@ public:
     // torn down in stop_coordinator(). Search goes through search(), not this.
     zetta::index::DistributedFulltextIndex* distributed_fulltext() {
         return distributed_fulltext_.get();
+    }
+
+    // The scatter-gather SELECT plane over the attached cluster (#833 section 5),
+    // or nullptr when no cluster is attached (standalone / before attach_cluster).
+    // Owned by the node: wired in start_coordinator() chained over the search
+    // plane's signal handler, torn down in stop_coordinator(). SQL goes through
+    // the Executor, not this. See query/distributed_select.hpp.
+    zetta::query::DistributedSelect* distributed_select() {
+        return distributed_select_.get();
     }
 
     // The IndexBackend the distributed fulltext machinery builds its
@@ -1091,6 +1119,7 @@ private:
     // fingerprint last built).
     std::shared_ptr<zetta::index::IndexBackend> search_backend_;
     std::unique_ptr<zetta::index::DistributedFulltextIndex> distributed_fulltext_;
+    std::unique_ptr<zetta::query::DistributedSelect> distributed_select_;
     std::map<std::string, std::string> search_build_fingerprints_;
 };
 

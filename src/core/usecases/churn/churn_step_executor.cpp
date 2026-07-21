@@ -207,9 +207,11 @@ zetta::pipeline::StepOutcome ChurnStepExecutor::run_clean(const ir::Node& step) 
     std::unordered_set<std::int64_t> local_entities;
     if (config_.accounts_store != nullptr) {
         for (std::size_t row = 0; row < config_.accounts_store->size(); ++row) {
-            const nlohmann::json& account = config_.accounts_store->at(row);
-            if (const auto entity = account.find(config_.entity_column);
-                entity != account.end() && entity->is_number_integer()) {
+            const zetta::storage::ParquetLazyPtr account =
+                config_.accounts_store->at(row);
+            if (!account) continue;
+            if (const auto entity = account->find(config_.entity_column);
+                entity != account->end() && entity->is_number_integer()) {
                 local_entities.insert(entity->get<std::int64_t>());
             }
         }

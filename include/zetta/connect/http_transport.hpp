@@ -1,0 +1,94 @@
+#pragma once
+
+#include <functional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "zetta/runtime.hpp"
+
+// The **outbound HTTP transport seam** for source connectors
+// ([#827](https://github.com/oramasearch/zetta/issues/827)).
+//
+// zetta-core embeds no HTTP client library and no warehouse driver (ADR-17): a
+// connector expresses *what* request to make, and the transport that actually
+// performs it is **injected**. That keeps every connector unit-testable against a
+// fake (no network, no credentials, no warehouse) and keeps the real egress path
+// in one replaceable place.
+//
+// **The real transport lives in `zetta-api`, not here.** zetta-core deliberately
+// does not link Beast2/Boost.HTTP — that isolation is the whole point of the
+// `zetta-api` target — so the native coroutine HTTPS client is implemented in
+// `src/core/api/native_http_transport.cpp` and **installed** into this seam at
+// startup (`api::install_native_http_transport`, called from `src/main.cpp`).
+// zetta-core therefore never sees an HTTP type: only `HttpRequest` /
+// `HttpResponse` cross the boundary. A build that never installs one (a unit
+// test, a headless tool) simply has no default transport, and a connector call
+// that needs one fails cleanly rather than reaching the network by accident.
+//
+// **Two shapes, one seam.** `HttpTransport` is the synchronous shape a
+// single-request caller wants; `AsyncHttpTransport` is the coroutine shape the
+// distributed fetch fans out with (`runtime::when_all` over N in-flight
+// exchanges). The installed pair is backed by the same client.
+//
+// **Credentials never ride in a log line.** `HttpRequest::secret_headers` names
+// the headers whose values are secret (the bearer token); no transport may put
+// such a value in an error string, a span attribute, or a log. See
+// docs/data/connector-query.md.
+namespace zetta::connect {
+
+// One outbound HTTP exchange, fully described. `headers` are name/value pairs
+// sent verbatim; `body` is the request entity (empty for GET).
+struct HttpRequest {
+    std::string method = "POST";
+    std::string url;
+    std::vector<std::pair<std::string, std::string>> headers;
+    std::string body;
+    int timeout_seconds = 60;
+
+    // Headers whose values are secret (an Authorization bearer, say). A
+    // transport must send them and then forget them: they may never appear in a
+    // reason string, a log line, or a process argument. Names are matched
+    // case-insensitively against `headers`.
+    std::vector<std::string> secret_headers;
+};
+
+// The result of one exchange. `error` is a **transport-level** failure (DNS,
+// TLS, timeout, connection reset) — distinct from an HTTP status the peer
+// returned, which arrives as a normal `status` + `body` for the caller to
+// interpret.
+struct HttpResponse {
+    int status = 0;
+    std::string body;
+    std::string error;
+
+    // The exchange completed AND the peer answered 2xx.
+    bool ok() const { return error.empty() && status >= 200 && status < 300; }
+};
+
+// The injected transport seam, synchronous shape. An empty HttpTransport means
+// "use the installed default".
+using HttpTransport = std::function<HttpResponse(const HttpRequest&)>;
+
+// The injected transport seam, coroutine shape — the one the distributed fetch
+// fans out with. Returns an `io_task` so it composes under `runtime::when_all` /
+// `runtime::timeout`; the error_code half is always clear (a transport failure
+// is reported in `HttpResponse::error`, keeping the non-throwing contract in one
+// place).
+using AsyncHttpTransport =
+    std::function<runtime::io_task<HttpResponse>(const HttpRequest&)>;
+
+// Install the process-wide default transport pair. Called once at startup by
+// `api::install_native_http_transport`. Passing empty functions uninstalls,
+// which is what a unit test wants so a stray connector call cannot reach the
+// network.
+void set_default_http_transport(HttpTransport synchronous,
+                                AsyncHttpTransport asynchronous);
+
+// The installed defaults. **Empty when nothing was installed** — a caller must
+// check before invoking (`run_connector_query` turns an empty one into a
+// path-qualified reason rather than a crash).
+const HttpTransport& default_http_transport();
+const AsyncHttpTransport& default_async_http_transport();
+
+}  // namespace zetta::connect

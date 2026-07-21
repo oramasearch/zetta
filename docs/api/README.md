@@ -31,6 +31,9 @@ MCP/HTTP work.
   `list_specs`/`get_spec` serving the OpenAPI document + every capability and
   boundary schema from their C++ accessors, drift-checked through one shared
   table.
+- [native-http-transport.md](native-http-transport.md) — the **outbound** HTTP
+  client (#827): the coroutine HTTPS client behind `connect::HttpTransport`, why
+  it lives in `zetta-api`, the sync/async shapes, and the no-leak contract.
 - [serving.md](serving.md) — governed HTTP serving (#648): expose_model /
   expose_index publish per-entity /v1/models/{name}/predict and
   /v1/indexes/{name}/search routes on every node (replicated exposure state,
@@ -156,6 +159,7 @@ under `/v1/<name>` ([rest-openapi.md](rest-openapi.md)).
 | `deploy` | action | orchestration:deploy | gate (RULE-1, failing check's reason verbatim) then place a graph; replicated + audited |
 | `run` | job | orchestration:run | execute a gate-passing graph — churn-shaped → the canonical runner (#637) on the live coordinator, run id returned immediately; else structural |
 | `add_dataset` | action | orchestration:add_dataset | load a local parquet/jsonl/json/csv file into a partitioned table placed across the cluster |
+| `create_index` | action | orchestration:create_index | build a Search index over a loaded table (records the entity + builds the per-partition BM25F sub-indexes) so `search` returns ranked hits — the public create path [`Node::create_index`](../indexing/node-search.md) names |
 | `testsuite_run` | job | orchestration:testsuite_run | start one in-app test case in the background; run id returned immediately, logs land with the terminal status |
 | `cloud_inspect` | action | orchestration:cloud_inspect | **consent-gated** read-only provider inspect (identity/regions via the provider CLI); result cached as `system.cloud_status` |
 | `detect_provisioners` | action | orchestration:detect_provisioners | **consent-gated** re-detect of the local CLIs' deployment contexts → `system.provisioners` |

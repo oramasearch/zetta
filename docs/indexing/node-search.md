@@ -24,9 +24,12 @@ zetta::index::SearchResult result = node.search(request, recorder, &trace);
 
 1. **Resolve.** `target` names a registered `Index` entity: an exact index id
    wins; otherwise the **most recently created Search-kind index** over the
-   table named `target`. No index → `NotFound` with the create_index hint.
-   Non-Search kinds are `Unsupported` (vector/semantic route here later,
-   behind the same request).
+   table named `target`. No index → `NotFound` with the create_index hint —
+   which now names a real capability: `create_index` builds a Search index over
+   a loaded table over MCP/REST (`orchestration:create_index`, [docs/api/README.md](../api/README.md),
+   [#825](https://github.com/oramasearch/zetta/issues/825)), so `add_dataset →
+   create_index → search` is fully API-driven. Non-Search kinds are
+   `Unsupported` (vector/semantic route here later, behind the same request).
 2. **Route.**
    - **Distributed (the default):** the table has ≥ 1 *placed* partition (a
      `DatasetPartition` with a body) AND a cluster is attached → the query goes

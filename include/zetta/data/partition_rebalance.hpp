@@ -66,6 +66,23 @@ struct RebalanceResult {
 // partition is treated as rendezvous-sharded (the pure "recompute rendezvous"
 // behavior).
 //
+// **Fetch-affinity partitions are skipped — by the OPPORTUNISTIC trigger only.**
+// `include_fetch_affinity` is false for the two automatic triggers (the
+// membership-change rebalance in `Node::tick`, and `add_nodes`): a fetch-affinity
+// partition's owner is the node whose disk holds the bytes, chosen because it is
+// the node that pulled them, so rehashing it there would order a shuffle of a
+// dataset that was placed precisely to avoid one — the two features would cancel
+// out.
+//
+// An ingest that genuinely needs to re-shape what it just wrote passes **true**,
+// which is a deliberate, explicit call and not a background event. Today nothing
+// does: the [partition scheduler](partition_scheduler.hpp) right-sizes the fetch,
+// and a **flexible** source (Snowflake's freely-assignable result chunks) lands
+// directly in the target shape, so there is nothing to move. The case that earns
+// it is a **fixed** source — a dataset published as N files, where the download
+// count is dictated by the source and the resting layout is not — which is a
+// later slice; this parameter is the injection point it drops into.
+//
 // Unplaced partitions (empty `owner_nodes`) and entries with no recorded partition
 // id are skipped. An empty `members` returns an empty result (nowhere to place).
 // Non-throwing; it only mutates the catalog (no physical body GC — a demoted
@@ -74,6 +91,7 @@ struct RebalanceResult {
 // docs/data/partition-rebalance.md.
 RebalanceResult rebalance_partitions(
     Node& node, const std::vector<std::string>& members,
-    const std::vector<std::string>& previous_members = {});
+    const std::vector<std::string>& previous_members = {},
+    bool include_fetch_affinity = false);
 
 }  // namespace zetta::data

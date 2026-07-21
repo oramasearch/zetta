@@ -71,7 +71,7 @@ LoopbackCluster::LoopbackCluster(std::size_t node_count, const LoopbackOptions& 
         NodeConfig node_config;
         node_config.data_dir = entry->dir.path().string();
         node_config.preflight = false;  // fresh scratch dir; nothing to check
-        if (options.replicated) {
+        if (options.replicated || options.attached) {
             // The live-process wiring: the CRDT document behind the Node, the
             // blob store behind the cluster link (bodies transfer peer-to-peer).
             entry->replication =
@@ -98,6 +98,17 @@ LoopbackCluster::LoopbackCluster(std::size_t node_count, const LoopbackOptions& 
         // Dial the actually-bound address (port_range may have stepped over a busy
         // port), so the next node's seed list is always correct.
         seeds.push_back(entry->cluster->listen_address());
+
+        if (options.attached) {
+            // The rest of the live-process wiring, in main()'s order: announce
+            // this node as a replicated member, then hand the cluster to the
+            // node so its compute plane (and the run.launch listener behind
+            // every co-launched job kind) comes up against it.
+            entry->replication->set(
+                "node:" + entry->id,
+                nlohmann::json{{"address", entry->cluster->listen_address()}});
+            entry->node->attach_cluster(*entry->cluster, options.worker_count);
+        }
         entries_.push_back(std::move(entry));
     }
 
@@ -148,6 +159,12 @@ void LoopbackCluster::announce_member(std::size_t index) {
     entry.replication->set(
         "node:" + entry.id,
         nlohmann::json{{"address", entry.cluster->listen_address()}});
+}
+
+nlohmann::json LoopbackCluster::replicated_document(std::size_t index) const {
+    const Entry& entry = *entries_.at(index);
+    if (!entry.replication) return nlohmann::json::object();
+    return entry.replication->snapshot();
 }
 
 // ----- synthetic churn dataset (in code, no on-disk fixture) -----------------

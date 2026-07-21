@@ -70,17 +70,23 @@ with an `error`):
    so a `HashPartitioner` (which reads its key columns) and `SinglePartitioner`
    simply ignore the extra field.
 
-2. **Serialize each non-empty partition's rows to bytes** — a **JSON Lines** blob,
-   one `{"_zid": <row-id>, "doc": <row>}` line per row, the same shape
-   [`JsonlStore`](storage.md) writes on disk, so a partition body is a
-   **self-describing slice of the table** (the row's CRDT id is preserved).
+2. **Serialize each non-empty partition's rows to bytes** — a
+   [**Parquet body**](partition-body.md): the rows' fields as columns, with each
+   row's CRDT id in a `_zid` column beside them, so a partition body is a
+   **self-describing slice of the table** that can be read a page at a time
+   ([`ParquetStore`](parquet-store.md)) and projected column by column. Rows a
+   flat, scalar Parquet schema cannot express (a nested value, a column mixing
+   types) fall back to the previous **JSON Lines** shape rather than being
+   coerced — `PartitionBodyWriteResult::format` says which, and the catalog
+   records it.
 
 3. **Store each partition's bytes as a large object** via the new
    `LargeObjectStore::import_bytes(name, bytes)` — so the body is fingerprinted
    (SHA-256), its `lo:<uuid>` metadata rides in the CRDT, and it transfers
    peer-to-peer + is verified against size + sha256 like any other
    [large-object body](large-objects.md). The blob is named
-   `partition-<table-id>-<partition>.jsonl`.
+   `partition-<table-id>-<partition>.parquet` (or `….jsonl` for a fallback body),
+   so its format is visible without opening it.
 
 4. **Record placement** as a [`DatasetPartition`](dataset-partitions.md) catalog
    entry per partition (`Node::create_dataset_partition` → captured into
@@ -92,7 +98,7 @@ with an `error`):
    | `blob_ref` | the large object's id (the body holding this partition's rows) |
    | `row_range` | the partition's `[start, end)` slice (see below) |
    | `owner_nodes` | `partitioner->place_partition(partition, members)` — primary first, then replicas |
-   | `stats` | `{ "partition": <id>, "rows": <count> }` (provenance; richer per-column pruning stats are a later slice) |
+   | `stats` | `{ "partition": <id>, "rows": <count>, "format": "parquet"\|"jsonl", "placement": <partitioner name>, "columns": [...] }` (provenance; richer per-column pruning stats are a later slice) |
 
 ## Row ranges — the cumulative slice
 
@@ -102,6 +108,14 @@ on — so the ranges **tile `[0, rows_written)`** with no gaps or overlaps. For 
 [`SinglePartitioner`](partitioner.md#singlepartitioner--the-trivial-baseline)
 baseline (one partition holding everything) this reduces to the whole table
 `[0, total)`.
+
+The range is **this call's** row space. When several nodes write into the same
+table — the [cross-node connector ingest](distributed-connector-ingest.md), where
+each participant lands its own tile — each node's ranges start at 0, so ranges
+from different nodes overlap. Nothing depends on them being globally unique:
+`system.datasets` sums range *sizes*, and the
+[scatter-gather SELECT](scatter-gather-select.md) uses `row_range.start` only to
+order the partitions it plans.
 
 This is deliberate. A [`HashPartitioner`](partitioner.md#hashpartitioner--hashkey-columns--p)
 **scatters** a partition's rows across the table's *original* ordinals (rows with

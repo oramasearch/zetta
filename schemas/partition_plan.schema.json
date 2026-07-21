@@ -1,0 +1,46 @@
+{
+  "$id": "https://oramasearch.github.io/zetta/schemas/partition_plan.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "The shape a dataset is written in, as the PartitionScheduler decided it (#833): how many partitions, the size each targets, which nodes own each one, and WHY. Capacity-aware placement reads live per-node telemetry, which differs per node, so the plan can no longer be derived independently on each participant — the coordinator computes it once and ships it in the connector-fetch launch payload.",
+  "properties": {
+    "owners": {
+      "description": "owners per partition, primary first; one entry per partition",
+      "items": {
+        "items": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "type": "array"
+    },
+    "partition_count": {
+      "maximum": 4096,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "replication_factor": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "target_bytes_per_partition": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "target_rows_per_partition": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "partition_count",
+    "owners",
+    "replication_factor"
+  ],
+  "title": "zetta.PartitionPlan",
+  "type": "object"
+}

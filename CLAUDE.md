@@ -22,6 +22,71 @@ instance. It runs in two modes:
 
 C++26, macOS-first, single statically-linked binary.
 
+## The first principle — native modern C++26, coroutine-based, cluster-native, distributed. ALWAYS
+
+**Every solution zetta ships is (1) native, modern C++26, (2) coroutine-based,
+(3) cluster-native, and (4) distributed. There are no exceptions, and "just for
+now" is not one.**
+
+- **Native, modern C++26.** No foreign runtime, no vendor SDK, no driver — and
+  **no shelling out to a CLI to do work the engine should do** (ADR-17). If a
+  capability needs a protocol, implement the protocol. If `zetta::runtime`
+  lacks a primitive you need, *add it there* — never route around it with a
+  subprocess. And **modern** is not decoration: coroutines over callbacks,
+  ranges and algorithms over index loops, concepts over SFINAE, value semantics
+  and RAII over manual lifetimes, `std::string`/`string_view`/`span` over raw
+  buffers and pointer arithmetic. C-with-classes is as much a violation of this
+  rule as a subprocess is. Follow the
+  [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/); the full
+  statement is [C++ conventions](#c-conventions) below.
+- **Coroutine-based.** zetta is a coroutine-native codebase, not a threaded one
+  with coroutines bolted on. Async work is an awaitable from
+  `zetta::runtime` (`task<T>` / `io_task<T>`, `spawn`, `when_all`,
+  `timeout`, `async_event`) — never a blocking mutex/condition-variable
+  surface, never a thread-per-request, never a sleep-poll loop. Concurrency is
+  expressed by composing awaitables (`when_all` over N in-flight operations),
+  which is also how a single node saturates its own link while the cluster
+  saturates all of them. A raw `std::mutex` is permitted only as the lowest
+  cross-thread handoff *inside* a backend adapter (the one TU that names the
+  backend library) — contained, commented, never in a public API.
+- **Cluster-native.** A node is an equal peer in a cluster, not a server that
+  happens to replicate. State is replicated state; work is *placed*, not
+  centralized.
+- **Distributed.** The unit of execution is the **cluster**, not the node.
+  Work fans out over owned partitions and combines through the collectives,
+  and the aggregate resource of N nodes — CPU, memory, disk, **and network
+  bandwidth** — is the resource being spent.
+
+**This includes AI — especially AI.** Featurization, training, scoring,
+explanation and search are native distributed C++ exactly like everything else:
+the histogram-GBDT trains by **gradient-histogram allreduce** across nodes,
+TreeSHAP explains natively, point-in-time featurize runs **compute-near-data**
+over owned partitions, and fulltext is **per-partition scatter-gather**. zetta
+does **not** embed Python / XGBoost / PyTorch to train, and it does **not** call
+a hosted model API to compute an answer (ADR-17). *"Just call an LLM for this
+part"* is the same violation as *"just shell out to curl"* — the model is the
+product, not a dependency. (The one sanctioned LLM use is the **optional,
+user-managed** playbook layer that writes narrative and picks a play from
+numbers the engine already computed — it never produces a number, and nothing
+depends on it.)
+
+**Anti-patterns that have actually shipped here. Do not repeat them:**
+
+| Looks done | Why it isn't |
+| --- | --- |
+| Shelling out to `curl` for an HTTP request | A subprocess is not native C++. `zetta::runtime::net` already has sockets + TLS, and Boost.HTTP is vendored — use them. |
+| Tiling work across N nodes, then running every tile on the coordinator | That is a parallel loop, not a distributed algorithm. It spends one node's bandwidth and N times nothing. |
+| "Single-node now, distribute later" | Valid ONLY as a reference implementation with the distributed path designed behind the same API — never as the shipped answer. |
+| Pulling a whole result set to one node, then sharding it | The data crosses the wire twice and the ingest is bounded by one link. Fetch where it lands. |
+| `std::this_thread::sleep_for` to poll a remote operation | Blocks a thread to wait. Compose an awaitable with a timer/`timeout` instead — a coroutine that is waiting should cost nothing. |
+| Embedding Python / XGBoost / PyTorch, or calling a model API, to train or infer | The model is the product. Implement it natively and distribute it (histogram-allreduce GBDT, native TreeSHAP). |
+
+**If you cannot see how a design distributes, it is not ready to build.** Say
+so and stop — do not ship the single-node version and call it done. The
+detailed statement of this rule, with the precedents to copy, is
+**Distributed-first — every algorithm scales at both levels** under
+[Conventions](#conventions).
+
 ## How these docs work — progressive disclosure
 
 This file holds only **identity, the load-bearing rules, build/test, and
@@ -168,8 +233,12 @@ GoogleTest, pboettch/json-schema-validator) comes via CMake `FetchContent`.
 
 - **Async/networking seams:** all coroutine/IO goes through `zetta::runtime`
   (`include/zetta/runtime.hpp`); networking through `zetta::runtime::net`,
-  included **only** by the adapter `src/core/cluster/cluster.cpp`. **Never name
-  `boost::capy` / `boost::corosio` directly** outside those seams.
+  included **only** by the two networking adapters —
+  `src/core/cluster/cluster.cpp` (inbound/peer traffic) and
+  `src/core/api/native_http_transport.cpp` (outbound client traffic, the
+  connector transport, #827). **Never name `boost::capy` / `boost::corosio`
+  directly** outside those seams — if the seam lacks a primitive, extend
+  `runtime.hpp` (that is where `when_all` / `timeout` came from).
 
 - **Coroutines first.** zetta is a coroutine-native codebase: async APIs are
   expressed as awaitables through the `zetta::runtime` seam (`task<T>`,
@@ -296,6 +365,12 @@ ADR-17) and structured to exploit ALL available hardware at BOTH levels:**
   and the cluster itself is elastic (the `Provisioner` seam can add local or
   cloud nodes, consent- and cost-gated), so "available hardware" includes
   hardware zetta can provision.
+- **Aggregate bandwidth counts as hardware.** Ingest and egress scale the same
+  way compute does: N nodes have N uplinks. Pulling an external result set
+  through one node wastes N-1 of them *and* puts the rows on the wire twice
+  (once to the coordinator, once to their eventual owner). Tile the work set,
+  fetch each tile on the node that will own it, and land it there — the
+  write-side mirror of compute-near-data.
 - **Machine level**: heavy numerics target the `ComputeDevice` seam
   (accelerator when present, CPU backend always) and data-parallel work fans
   across cores via `runtime::parallel_for` / the work-stealing scheduler.
@@ -319,6 +394,31 @@ status, sentence case, no em-dashes in product copy (use `·`/colons).
 or changing GUI**, and the load-bearing rendering notes in
 [`docs/gui/README.md`](docs/gui/README.md) (per-monitor scaling, render scale,
 idle loop + live resize, font rebuild).
+
+### Say what you mean — do not write "seam"
+
+**Never use the word "seam"** — in code comments, docs, commit messages, issues,
+PR text, or conversation. It reads as precise and carries no information: in
+this repo alone it has been used for at least four different things, so a
+sentence containing it cannot be acted on without going to read the code.
+
+Name the actual thing instead:
+
+| Instead of "seam", say… | When you mean | Examples here |
+| --- | --- | --- |
+| **interface** (or abstract base class) | a type with virtuals that implementations derive from | `StorageEngine`, `ComputeDevice`, `Partitioner`, `Provisioner`, `IndexBackend`, `Dialect`, `StepExecutor` |
+| **injection point** (or "an injected callback") | a `std::function` the caller supplies, so a test can pass a fake | `CommandRunner`, `HttpTransport`, `DatasetResolver`, `FleetSource` |
+| **boundary** | where untrusted input is validated, or where exceptions must not cross | the `from_json` validators; "no exceptions across the zetta-core **boundary**" |
+| **module split** (or "which target owns this") | which library/TU is allowed to name a backend | only `cluster.cpp` + `native_http_transport.cpp` name Corosio; `zetta-api` owns the HTTP libraries |
+
+The same applies to any word that sounds architectural but does not say what
+changes: prefer the concrete noun (the class, the function, the target) over the
+metaphor. If you cannot name the concrete thing, you do not yet understand the
+change well enough to describe it.
+
+**Legacy occurrences:** the word appears ~750 times across `docs/` and the
+source comments. Do **not** do a big-bang rename — replace it with the accurate
+word whenever you touch a file for another reason.
 
 ### C++ conventions
 
@@ -415,10 +515,16 @@ Project skills live in `.claude/skills/` (committed, shared):
 - **api-dev** — control-surface work: the capability registry, MCP/REST,
   auth/consent, the Beast2 adapter boundary.
 - **mcp-journeys** — author/run simulated user tests; the promotion rule.
+- **chaos-experiment** — inject one fault, assert the cluster *heals* within a
+  bounded deadline (hypothesis · fault · invariant · deadline · blast radius);
+  the safety rules and the prove-the-fault-landed discipline.
 - **add-use-case** — build a UC-N in the engine (compose-don't-invent, the
   FedEx-test rule, the nine-step recipe).
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
+- **new-connector** — add a new source connector (pull rows from a warehouse /
+  API into a partitioned dataset; the read-only guard, the injected transport,
+  typed cells, no vendor SDK).
 - **github-ops** — issues/PRs/CI via `gh` (priority `p1`–`p4` + area labels).
 - **skill-writer** — author new skills.
 - **perplexity** — generate a deep-research prompt from a topic.

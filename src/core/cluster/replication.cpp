@@ -45,11 +45,53 @@ void ReplicationManager::set(const std::string& key,
     });
 }
 
+namespace {
+
+// The tombstone a removal writes. `_removed` is deliberately distinct from the
+// `deleted` flag a `row:` tombstone carries: a row tombstone is a real entry that
+// reconcile must SEE (it routes by its `tbl` field to call materialize_row_delete),
+// whereas this marker means "treat this key as absent" and is filtered out of
+// every snapshot. The leading underscore marks it engine-internal, like `_zid`.
+constexpr std::string_view kRemovedMarker = "_removed";
+
+// Is this stored value a removal tombstone? Values are stored as JSON text, so
+// the cheap substring check gates the parse — the overwhelmingly common case is a
+// live entry, and every key is examined on every snapshot.
+bool is_tombstone(const std::string& encoded) {
+    if (encoded.find(kRemovedMarker) == std::string::npos) return false;
+    const nlohmann::json value =
+        nlohmann::json::parse(encoded, nullptr, /*allow_exceptions=*/false);
+    return value.is_object() && value.value(std::string(kRemovedMarker), false);
+}
+
+}  // namespace
+
 void ReplicationManager::remove(const std::string& key) {
+    // A tombstone VALUE, not a map delete — see the header for why (#838).
+    const std::string encoded =
+        nlohmann::json{{std::string(kRemovedMarker), true}}.dump();
     const std::lock_guard<std::mutex> lock(state_->mutex);
     state_->document.transact([&](am::Transaction& transaction) {
-        transaction.delete_key(am::root, key);
+        transaction.put(am::root, key, encoded);
     });
+}
+
+// Is the key tombstoned in ANY of its concurrent values? Two nodes that
+// concurrently remove and rewrite a key both survive the merge as conflicting
+// values at that key; asking `get` would return whichever one automerge picks as
+// the winner, which is deterministic but arbitrary. Asking all of them makes
+// removal win — the property a cleanup path needs, since a half-removed entity is
+// exactly what #838 produced.
+bool ReplicationManager::removed_locked(const std::string& key) const {
+    for (const am::Value& value : state_->document.get_all(am::root, key)) {
+        const auto* scalar = std::get_if<am::ScalarValue>(&value);
+        if (!scalar) continue;
+        if (const auto* text = std::get_if<std::string>(scalar);
+            text && is_tombstone(*text)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 nlohmann::json ReplicationManager::snapshot() const {
@@ -59,6 +101,7 @@ nlohmann::json ReplicationManager::snapshot() const {
         const std::optional<std::string> encoded =
             state_->document.get<std::string>(am::root, key);
         if (!encoded) continue;
+        if (is_tombstone(*encoded) || removed_locked(key)) continue;
         nlohmann::json value =
             nlohmann::json::parse(*encoded, nullptr, /*allow_exceptions=*/false);
         result[key] = value.is_discarded() ? nlohmann::json(*encoded)
@@ -67,9 +110,22 @@ nlohmann::json ReplicationManager::snapshot() const {
     return result;
 }
 
+bool ReplicationManager::knows_key(const std::string& key) const {
+    const std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->document.get<std::string>(am::root, key).has_value();
+}
+
 std::size_t ReplicationManager::entry_count() const {
     const std::lock_guard<std::mutex> lock(state_->mutex);
-    return state_->document.keys(am::root).size();
+    std::size_t live = 0;
+    for (const std::string& key : state_->document.keys(am::root)) {
+        const std::optional<std::string> encoded =
+            state_->document.get<std::string>(am::root, key);
+        if (!encoded) continue;
+        if (is_tombstone(*encoded) || removed_locked(key)) continue;
+        ++live;
+    }
+    return live;
 }
 
 std::string ReplicationManager::version() const {

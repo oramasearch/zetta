@@ -104,6 +104,15 @@
 //                          replicate-to-all so placement is globally visible
 //                          (ENT-36 / TBL-13); a top-level entity — see
 //                          dataset_partition.hpp / docs/data/dataset-partitions.md)
+//   mfst:<table-uuid>  -> { table, partitions, rows, bytes, partition_ids?,
+//                          created }  (a dataset's PARTITION MANIFEST — how many
+//                          part: entries the finished dataset has, so a reader
+//                          can tell "I can see 6 of 8" from "there are 6" and
+//                          fail the query rather than answer short (#837). Keyed
+//                          by the table id: one manifest per table, written once
+//                          by the node that completed the write, so the key has
+//                          exactly one writer — see data/dataset_manifest.hpp /
+//                          docs/data/partition-manifest.md)
 //
 // Each row/table/db owns its own key by UUID, so concurrent edits on different
 // nodes never collide; the UUID is also the on-disk folder name (databases,
@@ -127,6 +136,7 @@ inline constexpr std::string_view kPrincipalPrefix = "principal:";
 inline constexpr std::string_view kAccessKeyPrefix = "key:";
 inline constexpr std::string_view kAuditPrefix = "audit:";
 inline constexpr std::string_view kPartitionPrefix = "part:";
+inline constexpr std::string_view kManifestPrefix = "mfst:";
 inline constexpr std::string_view kUserPrefix = "user:";
 inline constexpr std::string_view kRolePrefix = "role:";
 inline constexpr std::string_view kTokenPrefix = "token:";
@@ -184,6 +194,12 @@ inline std::string audit_key(const std::string& audit_id) {
 }
 inline std::string partition_key(const std::string& partition_id) {
     return std::string(kPartitionPrefix) + partition_id;
+}
+// A dataset's partition manifest (#837) is keyed by the TABLE it describes — one
+// manifest per table, written once by the node that completed the write, so the
+// key has exactly one writer and can never lose a merge.
+inline std::string manifest_key(const std::string& table_id) {
+    return std::string(kManifestPrefix) + table_id;
 }
 inline std::string user_key(const std::string& user_id) {
     return std::string(kUserPrefix) + user_id;

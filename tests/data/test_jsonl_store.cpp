@@ -23,8 +23,8 @@ TEST(JsonlStore, AddSizeAndRead) {
     store.add("id-a", json{{"a", 1}});
     store.add("id-b", json{{"b", 2}});
     ASSERT_EQ(store.size(), 2u);
-    EXPECT_EQ(store.at(0)["a"].get<int>(), 1);
-    EXPECT_EQ(store.at(1)["b"].get<int>(), 2);
+    EXPECT_EQ(store.at(0)->at("a").get<int>(), 1);
+    EXPECT_EQ(store.at(1)->at("b").get<int>(), 2);
     // Rows carry their id (the CRDT key) for idempotent reconciliation.
     EXPECT_EQ(store.id_at(0), "id-a");
     EXPECT_TRUE(store.contains("id-b"));
@@ -40,8 +40,8 @@ TEST(JsonlStore, PersistsAndReloads) {
     }
     JsonlStore reloaded{tmp.path()};
     ASSERT_EQ(reloaded.size(), 2u);
-    EXPECT_EQ(reloaded.at(0)["x"].get<std::string>(), "hello");
-    EXPECT_EQ(reloaded.at(1)["y"].get<int>(), 42);
+    EXPECT_EQ(reloaded.at(0)->at("x").get<std::string>(), "hello");
+    EXPECT_EQ(reloaded.at(1)->at("y").get<int>(), 42);
     EXPECT_TRUE(reloaded.contains("rx"));  // ids survive a reload
     EXPECT_EQ(reloaded.id_at(1), "ry");
 }
@@ -59,8 +59,8 @@ TEST(JsonlStore, ChunksEveryTenThousandRecords) {
     // The record straddling the chunk boundary survives a reload.
     JsonlStore reloaded{tmp.path()};
     ASSERT_EQ(reloaded.size(), 10001u);
-    EXPECT_EQ(reloaded.at(9999)["i"].get<int>(), 9999);
-    EXPECT_EQ(reloaded.at(10000)["i"].get<int>(), 10000);
+    EXPECT_EQ(reloaded.at(9999)->at("i").get<int>(), 9999);
+    EXPECT_EQ(reloaded.at(10000)->at("i").get<int>(), 10000);
 }
 
 TEST(JsonlStore, SkipsCorruptLinesOnLoad) {
