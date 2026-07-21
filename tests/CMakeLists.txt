@@ -193,6 +193,7 @@ add_executable(zetta-tests
   agent/test_neural_training.cpp
   agent/test_judge.cpp
   agent/test_qwen_rlvr.cpp
+  agent/test_text_generation.cpp
   autograd/test_autograd.cpp
   autograd/test_transformer.cpp
   autograd/test_qwen.cpp

@@ -592,6 +592,7 @@ add_library(zetta-core STATIC
   src/core/agent/neural_training.cpp
   src/core/agent/judge.cpp
   src/core/agent/qwen_rlvr.cpp
+  src/core/agent/text_generation.cpp
   src/core/autograd/tensor.cpp
   src/core/autograd/transformer.cpp
   src/core/autograd/qwen.cpp

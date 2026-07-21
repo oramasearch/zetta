@@ -261,6 +261,12 @@ lets one distributed model train across a heterogeneous cluster:
   **`sequence_policy_gradient_loss`** step. Proven: the Qwen3-parity model learns
   to generate a target sequence **purely from reward, never shown the answer** —
   every gradient from the autograd's backward closures, no framework.
+- **`generate_text`** (`text_generation.hpp`) — **text in, text out**: compose the
+  byte-level BPE tokenizer ([`../tokenizer/`](../tokenizer/README.md)) with the
+  model — encode the prompt, autoregressively decode (greedy or sampled), and turn
+  just the new tokens back into text. Proven end to end: a model overfit on the
+  bytes of "orama" continues the text "o" → "rama". The surface a real Qwen
+  checkpoint + `BpeTokenizer::from_directory` present once both are loaded.
 
 **To ingest an actual Qwen checkpoint** the remaining external-asset step is the
 downloaded multi-GB weights and Qwen's tokenizer — the **architecture parity**

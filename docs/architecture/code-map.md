@@ -210,6 +210,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     neural_training.hpp     zetta::agent::ContextSource/ContextualRewardTask/train_linear_policy_distributed — distributed RLVR of a LinearPolicy's WEIGHTS: forward W·x on the device, weight-gradient outer product, allreduced; learns a contextual policy (FEAT-12; #555)
     corpus_training.hpp     zetta::agent::TaskEnvironment/CorpusTrainingReport/train_over_corpus — curriculum training over a task corpus with per-task before/after reward + improved-count (feat-12 step 5 observability) (FEAT-12; #555)
     qwen_rlvr.hpp           zetta::agent::CompletionReward/GrpoConfig/grpo_step — the capstone: GRPO/RLVR over the autograd QwenModel (sample group → verifiable reward → group advantages → sequence PG step); device-agnostic, no framework (FEAT-12; #555)
+    text_generation.hpp     zetta::agent::generate_text — text in/out: compose the BPE tokenizer + QwenModel (encode prompt → generate greedy/sampled → decode the new tokens) (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -440,6 +441,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     collectives_allreduce.cpp  zetta::agent::collectives_allreduce — Reduce→CollectiveOp map, forward to Collectives::allreduce with a timeout, value_or({}) so a failed round is a collective failure (zetta-core; #555)
     neural_training.cpp     zetta::agent::train_linear_policy_distributed — per step: forward W·x on the device per context, sample, when_all rewards, GRPO advantages, accumulate + allreduce dW = A·(1[a]-pi)⊗x, update W (zetta-core; #555)
     qwen_rlvr.cpp           zetta::agent::grpo_step — one GRPO/RLVR update over the autograd QwenModel: sample a group of completions, score, group_advantages, sum each completion's sequence_policy_gradient_loss (advantage over its tokens), backward + Adam (zetta-core; #555)
+    text_generation.cpp     zetta::agent::generate_text — encode(prompt) → model.generate(_greedy) → decode(new tokens); greedy + sampling overloads (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
