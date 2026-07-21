@@ -52,10 +52,19 @@ void Database::load() {
         const auto meta = nlohmann::json::parse(in, nullptr,
                                                 /*allow_exceptions=*/false);
         if (meta.is_discarded() || !meta.contains("name")) continue;
+        // The partition manifest (#837) comes back with the table, so a restarted
+        // node knows how many partitions its dataset has before the first gossip
+        // round. A manifest that fails the schema is dropped, not trusted: a
+        // corrupt count would fail every read of a healthy dataset.
+        std::optional<DatasetManifestValue> manifest;
+        if (const auto it = meta.find("manifest"); it != meta.end()) {
+            manifest = parse_dataset_manifest_value(*it);
+        }
         tables_.push_back(std::make_shared<Table>(
             entry.path().filename().string(),
             meta["name"].get<std::string>(), entry.path(), replication_,
-            replication_strategy_from_meta(meta)));
+            replication_strategy_from_meta(meta),
+            meta.value("partition_only", false), std::move(manifest)));
     }
     // Stable order for the UI (directory iteration order is unspecified).
     std::sort(tables_.begin(), tables_.end(),
@@ -63,7 +72,8 @@ void Database::load() {
 }
 
 std::shared_ptr<Table> Database::create_table(
-    std::string name, std::optional<ReplicationStrategy> replication_strategy) {
+    std::string name, std::optional<ReplicationStrategy> replication_strategy,
+    bool partition_only) {
     if (name.empty() || find_table(name)) return nullptr;
     // No explicit strategy → inherit this database's (ENT-35).
     const ReplicationStrategy strategy =
@@ -71,16 +81,19 @@ std::shared_ptr<Table> Database::create_table(
     const std::string id = zetta::util::new_uuid();
     if (replication_) {
         // The default (ReplicateToAll) is omitted, so the tbl: value is unchanged
-        // from before tables carried a strategy.
+        // from before tables carried a strategy. `partition_only` is likewise
+        // omitted when false (#833).
         nlohmann::json value{{"db", id_}, {"name", name}};
         if (!strategy.is_default()) value["replication"] = strategy.to_json();
+        if (partition_only) value["partition_only"] = true;
         replication_->set(catalog::table_key(id), value);
     }
-    return materialize_table(id, std::move(name), strategy);
+    return materialize_table(id, std::move(name), strategy, partition_only);
 }
 
 std::shared_ptr<Table> Database::materialize_table(
-    std::string id, std::string name, ReplicationStrategy strategy) {
+    std::string id, std::string name, ReplicationStrategy strategy,
+    bool partition_only) {
     if (auto existing = find_table_by_id(id)) return existing;
     const fs::path table_dir = dir_ / id;
     std::error_code ec;
@@ -88,7 +101,7 @@ std::shared_ptr<Table> Database::materialize_table(
     if (ec) return nullptr;
     auto table = std::make_shared<Table>(std::move(id), std::move(name),
                                          table_dir, replication_,
-                                         std::move(strategy));
+                                         std::move(strategy), partition_only);
     table->persist_meta();
     tables_.push_back(table);
     return table;
@@ -113,7 +126,12 @@ bool Database::drop_table(const std::string& name) {
         tables_.begin(), tables_.end(),
         [&](const std::shared_ptr<Table>& t) { return t->name() == name; });
     if (it == tables_.end()) return false;
-    if (replication_) replication_->remove(catalog::table_key((*it)->id()));
+    if (replication_) {
+        replication_->remove(catalog::table_key((*it)->id()));
+        // The manifest is keyed by the table, so it goes with it (#837) —
+        // otherwise a re-created table id would inherit a stale expected count.
+        replication_->remove(catalog::manifest_key((*it)->id()));
+    }
     std::error_code ec;
     fs::remove_all((*it)->dir(), ec);
     tables_.erase(it);

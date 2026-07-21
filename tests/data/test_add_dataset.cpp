@@ -32,6 +32,7 @@ namespace fs = std::filesystem;
 using zetta::data::AddDatasetOptions;
 using zetta::data::AddDatasetResult;
 using zetta::data::add_dataset_file;
+using zetta::data::add_dataset_rows;
 using zetta::data::Database;
 using zetta::data::DatasetSummary;
 using zetta::Node;
@@ -64,7 +65,7 @@ fs::path write_file(const fs::path& dir, const std::string& name,
 std::vector<nlohmann::json> table_rows(const Table& table) {
     std::vector<nlohmann::json> rows;
     const auto& store = table.store();
-    for (std::size_t i = 0; i < store.size(); ++i) rows.push_back(store.at(i));
+    for (std::size_t i = 0; i < store.size(); ++i) rows.push_back(*store.at(i));
     return rows;
 }
 
@@ -224,6 +225,105 @@ TEST(AddDataset, LoadsJsonArrayAsRows) {
     ASSERT_TRUE(result.ok()) << result.error;
     EXPECT_EQ(result.format, Format::Json);
     EXPECT_EQ(result.rows, 2u);
+}
+
+// =====================================================================
+// In-memory rows (add_dataset_rows) — the connector-query landing path
+// =====================================================================
+
+TEST(AddDataset, LoadsInMemoryRowsAsPartitionedTable) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    // The shape a connector query yields: already-decoded JSON documents.
+    std::vector<nlohmann::json> rows = {
+        {{"account_id", "acct_globex"}, {"mrr", 1200}, {"churned", false}},
+        {{"account_id", "acct_initech"}, {"mrr", 3400}, {"churned", true}},
+        {{"account_id", "acct_acme"}, {"mrr", 560}, {"churned", false}},
+    };
+
+    AddDatasetOptions options;
+    options.database = "churn";
+    options.table_name = "accounts";
+    const AddDatasetResult result = add_dataset_rows(node, rows, options);
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.format, Format::Jsonl);  // in-memory JSON documents
+    EXPECT_EQ(result.rows, 3u);
+    ASSERT_TRUE(result.table);
+    EXPECT_EQ(result.table->name(), "accounts");
+    EXPECT_EQ(result.database->name(), "churn");
+
+    // Partitioned + placed, exactly like the file path.
+    ASSERT_FALSE(result.partitions.empty());
+    for (const auto& partition : result.partitions) {
+        EXPECT_FALSE(partition->owner_nodes().empty());
+    }
+
+    // The rows landed verbatim.
+    const std::vector<nlohmann::json> stored = table_rows(*result.table);
+    ASSERT_EQ(stored.size(), 3u);
+    EXPECT_EQ(stored[0]["account_id"], "acct_globex");
+    EXPECT_EQ(stored[1]["mrr"], 3400);
+    EXPECT_EQ(stored[1]["churned"], true);
+
+    // Visible in system.datasets with its placement. (Bind the vector to a
+    // named local — find_dataset returns a pointer into it.)
+    const std::vector<DatasetSummary> datasets = node.datasets();
+    const DatasetSummary* summary = find_dataset(datasets, result.table->id());
+    ASSERT_NE(summary, nullptr);
+    EXPECT_EQ(summary->rows, 3u);
+    EXPECT_FALSE(summary->partitions.empty());
+
+    node.stop();
+}
+
+TEST(AddDataset, InMemoryRowsDefaultTableNameAndSpreadAcrossMembers) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    // No table_name → the "dataset" default; explicit membership spreads the
+    // partitions across more than one owner (rendezvous placement).
+    std::vector<nlohmann::json> rows;
+    for (int i = 0; i < 12; ++i) rows.push_back({{"id", i}});
+
+    AddDatasetOptions options;
+    options.members = {"node-a", "node-b", "node-c"};
+    const AddDatasetResult result = add_dataset_rows(node, rows, options);
+    ASSERT_TRUE(result.ok()) << result.error;
+    EXPECT_EQ(result.table->name(), "dataset");
+    EXPECT_EQ(result.database->name(), "datasets");  // default database
+
+    std::set<std::string> owners;
+    for (const auto& partition : result.partitions) {
+        for (const std::string& owner : partition->owner_nodes()) owners.insert(owner);
+    }
+    EXPECT_GT(owners.size(), 1u) << "partitions should spread across the cluster";
+
+    node.stop();
+}
+
+TEST(AddDataset, InMemoryRowsRecordTheAuditEvent) {
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    std::vector<nlohmann::json> rows = {{{"a", 1}}, {{"a", 2}}};
+    const AddDatasetResult result = add_dataset_rows(node, rows, {});
+    ASSERT_TRUE(result.ok()) << result.error;
+
+    bool audited = false;
+    for (const auto& event : node.audit_events()) {
+        if (event &&
+            event->action() == zetta::governance::AuditAction::DatasetAdded &&
+            event->target() == result.table->id()) {
+            audited = true;
+        }
+    }
+    EXPECT_TRUE(audited);
+
+    node.stop();
 }
 
 // =====================================================================
@@ -498,6 +598,59 @@ TEST(AddDataset, SyncAddRecordsTheAuditEvent) {
         }
     }
     EXPECT_TRUE(audited);
+
+    node.stop();
+}
+
+// #833 section 8 — a durable dataset is RF=3 by default, clamped to the node
+// count. It used to be RF=1, which was harmless only while a partitioned table
+// also replicated every row through the CRDT; once rows stop being captured the
+// factor is the only thing between a dataset and one copy with no backup.
+TEST(AddDataset, ReplicationFactorDefaultsToThreeClampedToTheNodeCount) {
+    EXPECT_EQ(AddDatasetOptions{}.replication_factor, 3u);
+
+    TempDir tmp;
+    Node node(config_for(tmp));
+    node.start();
+
+    std::vector<nlohmann::json> rows;
+    for (int i = 0; i < 24; ++i) rows.push_back(nlohmann::json{{"n", i}});
+
+    // A five-node roster: the default places three owners per partition.
+    AddDatasetOptions five;
+    five.table_name = "wide";
+    five.partition_count = 4;
+    five.members = {"node-1", "node-2", "node-3", "node-4", "node-5"};
+    const AddDatasetResult placed = add_dataset_rows(node, rows, five);
+    ASSERT_TRUE(placed.ok()) << placed.error;
+    ASSERT_FALSE(placed.partitions.empty());
+    for (const auto& partition : placed.partitions) {
+        EXPECT_EQ(partition->owner_nodes().size(), 3u);
+    }
+
+    // A two-node roster clamps to two — recording three owners where only two
+    // nodes exist would be a placement onto a node that is not there.
+    AddDatasetOptions two;
+    two.table_name = "narrow";
+    two.partition_count = 4;
+    two.members = {"node-1", "node-2"};
+    const AddDatasetResult clamped = add_dataset_rows(node, rows, two);
+    ASSERT_TRUE(clamped.ok()) << clamped.error;
+    ASSERT_FALSE(clamped.partitions.empty());
+    for (const auto& partition : clamped.partitions) {
+        EXPECT_EQ(partition->owner_nodes().size(), 2u);
+    }
+
+    // A single-node cluster (no roster given) still places successfully.
+    AddDatasetOptions alone;
+    alone.table_name = "solo";
+    alone.partition_count = 4;
+    const AddDatasetResult single = add_dataset_rows(node, rows, alone);
+    ASSERT_TRUE(single.ok()) << single.error;
+    ASSERT_FALSE(single.partitions.empty());
+    for (const auto& partition : single.partitions) {
+        EXPECT_EQ(partition->owner_nodes().size(), 1u);
+    }
 
     node.stop();
 }

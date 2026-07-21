@@ -1,0 +1,88 @@
+{
+  "$id": "https://zetta.orama.com/schemas/partition_scan_response.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "One partition owner's answer to a scatter-gather SELECT: the surviving rows per partition, or per-group aggregate PARTIALS carrying the row counts the merge weights them by (#833).",
+  "properties": {
+    "blocks": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "partition": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "rows": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "partition",
+          "rows"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "bytes_read": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "from": {
+      "type": "string"
+    },
+    "groups": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "aggregates": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "count": {
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "integral": {
+                  "type": "boolean"
+                },
+                "value": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "value",
+                "count"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "key": {}
+        },
+        "required": [
+          "key",
+          "aggregates"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "partitions_read": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "rows_scanned": {
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "from"
+  ],
+  "title": "PartitionScanResponse",
+  "type": "object"
+}

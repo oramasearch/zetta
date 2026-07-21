@@ -41,6 +41,7 @@ run / test.
 | [testing/](testing/README.md) | The in-app test suite, the sim-Python example-script harness, and per-test runbooks. |
 | [plans/](plans/README.md) | Forward-looking work plans (current state + next steps), distinct from shipped-slice docs. |
 | [research/](research/) | Long-form background material (not descriptions of shipped code): coroutine runtime design, per-cloud CLI compute guides. |
+| [reports/](reports/README.md) | Generated deliverables: test reports, benchmarks, audits, measured claims. Dated, and linked from the issue that asked for them. |
 
 ## Conventions for this tree
 

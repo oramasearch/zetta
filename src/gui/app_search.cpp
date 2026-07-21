@@ -80,7 +80,9 @@ std::optional<nlohmann::json> find_local_row(zetta::Node& node,
         const zetta::storage::StorageEngine& store = table->store();
         for (std::size_t i = 0; i < store.size(); ++i) {
             if (store.id_at(i) == row_id) {
-                return std::make_optional<nlohmann::json>(store.at(i));
+                const zetta::storage::ParquetLazyPtr row = store.at(i);
+                if (!row) return std::nullopt;
+                return std::make_optional<nlohmann::json>(*row);
             }
         }
     }

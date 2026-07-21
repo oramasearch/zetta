@@ -331,6 +331,15 @@ pre{margin:8px 0 0;padding:13px;white-space:pre-wrap;word-break:break-word;font-
 .fgrid .full{grid-column:1/-1;}
 @media (max-width:620px){.fgrid{grid-template-columns:1fr;}}
 
+/* A nested object input (the connector config on create_dataset_from_query,
+   #827): its own flat surface inside the dialog's grid, so the structure of
+   the input is visible instead of collapsed into one opaque text box. */
+.fgroup{border:1px solid var(--rule-hair);border-radius:10px;padding:2px 14px 12px;
+  margin:6px 0 2px;background:var(--canvas);}
+.fgroup>legend{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;
+  color:var(--ink-quiet);padding:0 6px;}
+.fgroup input[type=password]{letter-spacing:.12em;}
+
 .loginwrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;}
 .logincard{background:var(--white);border:1px solid var(--rule-emph);border-radius:14px;padding:26px;
   width:min(400px,94vw);display:flex;flex-direction:column;gap:14px;}

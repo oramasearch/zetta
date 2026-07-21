@@ -33,11 +33,35 @@ After adding one node to a cluster of N:
 ## How it works
 
 `rebalance_partitions(Node& node, const std::vector<std::string>& members,
-const std::vector<std::string>& previous_members = {})`
+const std::vector<std::string>& previous_members = {},
+bool include_fetch_affinity = false)`
 (`include/zetta/data/partition_rebalance.hpp`, `src/core/data/partition_rebalance.cpp`) is a
 pure, non-throwing function — a sibling of [`write_partitioned`](partitioned-write-path.md).
 For each **placed** partition in the catalog (`owner_nodes` non-empty):
 
+0. **Skip a fetch-affinity partition — unless the caller explicitly asked.** The
+   write path records the placing partitioner in `stats.placement`; an entry
+   placed by [`FetchAffinityPlacement`](fetch-affinity-placement.md) is left
+   alone. Its owner is the node whose disk holds the bytes — chosen because that
+   node *pulled* them — so recomputing a hash here would order a shuffle of a
+   dataset placed precisely to avoid one. A cached result set runs at RF=1, where
+   an owner leaving means "re-run the ingest", not "re-place the catalog entry".
+
+   **The skip is scoped to the OPPORTUNISTIC triggers**, which is what
+   `include_fetch_affinity = false` means: the membership-change rebalance in
+   `Node::tick`, and `add_nodes`. If it also swallowed an *ingest's own*
+   post-download rebalance, the two features would cancel each other out — the
+   skip exists to stop a background event undoing a deliberate placement, not to
+   stop a deliberate call. An explicit caller that means to re-shape what an
+   ingest just wrote passes `true`.
+
+   Today nothing does, and that is the design working: the
+   [partition scheduler](partition-scheduler.md) right-sizes the fetch, and a
+   **flexible** source (Snowflake's freely-assignable result chunks) lands
+   directly in the target shape, so most ingests have nothing to move. The case
+   that earns a rebalance is a **fixed**-unit source — a dataset published as N
+   files, where the source dictates the download count but not the resting layout
+   — which is a later slice; this parameter is the injection point it drops into.
 1. **Read its partition id** from the catalog entry's `stats.partition` (recorded by
    the [write path](partitioned-write-path.md)). An entry with no recorded id can't
    be HRW-recomputed, so it is skipped.

@@ -86,6 +86,10 @@ public:
 
     // This node + every peer whose last sample is within `ttl`, each tagged with
     // its age and whether it is the local node. Node-id ascending (deterministic).
+    //
+    // The freshness window is **half-open**: an entry is kept while `age < ttl` and
+    // dropped once `age >= ttl`. So `ttl == 0` keeps nothing, whatever the clock did
+    // between the record and the snapshot (#834).
     std::vector<NodeTelemetrySample> snapshot(
         std::chrono::duration<double> ttl = std::chrono::seconds(8)) const;
 

@@ -20,6 +20,7 @@
 #include "zetta/data/partitioner.hpp"
 #include "zetta/cloud/provisioner.hpp"
 #include "zetta/query/service.hpp"
+#include "zetta/data/fetch_affinity_placement.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
 #include "zetta/data/replicated_blob_store.hpp"
 #include "zetta/cluster/replication.hpp"
@@ -298,6 +299,52 @@ TEST(PartitionRebalance, ReplicateToAllPartitionsAreSkipped) {
     EXPECT_GE(result.skipped, 1u);
     // A replicate-to-all partition is unchanged (sharded rebalance is not its job).
     EXPECT_EQ(fx.node->dataset_partitions().front()->owner_nodes(), members);
+}
+
+// ---- fetch affinity: skipped opportunistically, moved on an explicit call -----
+
+// The two features must not cancel each other out (#833). The OPPORTUNISTIC
+// membership-change trigger skips a fetch-affinity partition — its owner is the
+// node whose disk holds the bytes, chosen precisely to avoid a shuffle, so
+// rehashing it there would order the shuffle the placement existed to prevent.
+// But an ingest that genuinely has to re-shape what it just wrote needs a call
+// that DOES run, or the skip silently swallows it.
+TEST(PartitionRebalance, FetchAffinityIsSkippedOpportunisticallyButMovesWhenAsked) {
+    TempDir tmp;
+    Fixture fx{tmp, /*count=*/40};
+    fx.table->set_partitioner(std::make_shared<zetta::data::FetchAffinityPlacement>(
+        /*partition_count=*/8, /*owner_node=*/"node-a", /*replication_factor=*/1));
+
+    const std::vector<std::string> members{"node-a", "node-b", "node-c"};
+    const auto write =
+        zetta::data::write_partitioned(*fx.node, *fx.database, *fx.table, members);
+    ASSERT_TRUE(write.ok()) << write.error;
+    ASSERT_GT(write.partitions.size(), 1u);
+    for (const auto& partition : fx.node->dataset_partitions()) {
+        ASSERT_EQ(partition->owner_nodes(), (std::vector<std::string>{"node-a"}))
+            << "fetch affinity places every partition on the fetching node";
+    }
+
+    // The opportunistic trigger (a member joined): nothing moves.
+    const std::vector<std::string> grown{"node-a", "node-b", "node-c", "node-d"};
+    const RebalanceResult opportunistic =
+        zetta::data::rebalance_partitions(*fx.node, grown, members);
+    EXPECT_EQ(opportunistic.moved, 0u);
+    EXPECT_GE(opportunistic.skipped, write.partitions.size());
+    for (const auto& partition : fx.node->dataset_partitions()) {
+        EXPECT_EQ(partition->owner_nodes(), (std::vector<std::string>{"node-a"}));
+    }
+
+    // The explicit call: it runs, and the partitions spread by rendezvous.
+    const RebalanceResult explicit_call = zetta::data::rebalance_partitions(
+        *fx.node, grown, members, /*include_fetch_affinity=*/true);
+    EXPECT_GT(explicit_call.moved, 0u);
+    std::set<std::string> owners;
+    for (const auto& partition : fx.node->dataset_partitions()) {
+        for (const std::string& owner : partition->owner_nodes()) owners.insert(owner);
+    }
+    EXPECT_GT(owners.size(), 1u)
+        << "an explicit rebalance of fetch-affinity partitions must actually move them";
 }
 
 // ---- the auto-trigger: a membership delta in the document drives a rebalance ----

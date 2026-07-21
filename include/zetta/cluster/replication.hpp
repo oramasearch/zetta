@@ -50,16 +50,39 @@ public:
     // may be any JSON (stored as a JSON string inside the CRDT).
     void set(const std::string& key, const nlohmann::json& value);
 
-    // Remove a top-level key (a local change). No-op if absent. Removal merges
-    // conflict-free like any other change.
+    // Remove a top-level key (a local change).
+    //
+    // This writes a TOMBSTONE value, it does not delete the key from the CRDT map,
+    // and the difference is load-bearing (#838). A map delete carries the set of
+    // predecessor writes the deleting node could see *at that moment*; any write
+    // it had not yet merged survives the delete verbatim, so the key comes back on
+    // every node the moment that write arrives — including on the node that
+    // removed it. A tombstone is an ordinary value change, so it merges like any
+    // other, and `snapshot()` treats a tombstoned key as absent.
+    //
+    // Removal WINS over a concurrent write: `snapshot()` inspects every concurrent
+    // value at a key, so a key is gone if *any* of them is a tombstone, whatever
+    // order the merges happened in. A write that is causally *after* the removal
+    // (the writer had already seen the tombstone) re-creates the key normally —
+    // that is a deliberate re-create, not a resurrection.
+    //
+    // The cost is that a removed key stays in the document as a tombstone. That
+    // is the standard CRDT trade and it is already what `row:` deletes do.
     void remove(const std::string& key);
 
-    // The merged document as JSON.
+    // The merged document as JSON — live entries only, tombstoned keys omitted.
     nlohmann::json snapshot() const;
 
-    // Number of top-level keys in the replicated document — a coarse "how much
-    // is replicated" count (zetta seeds one key per node, so this is the number
-    // of nodes the document knows about).
+    // Whether the document knows this key at all, INCLUDING as a tombstone. This
+    // is the question "was this ever replicated?", as opposed to `snapshot()`'s
+    // "is it live now?". Node::migrate_to_replication asks it: a key that is
+    // absent from the snapshot because it was removed must not be re-captured
+    // from a stale local projection on the next start (#838).
+    bool knows_key(const std::string& key) const;
+
+    // Number of LIVE top-level keys in the replicated document — a coarse "how
+    // much is replicated" count (zetta seeds one key per node, so this is the
+    // number of nodes the document knows about). Tombstones are not counted.
     std::size_t entry_count() const;
 
     // A short, stable fingerprint of the document's current Automerge heads
@@ -76,6 +99,10 @@ public:
 
 private:
     struct State;
+
+    // Whether any concurrent value at `key` is a tombstone. Caller holds the
+    // state mutex.
+    bool removed_locked(const std::string& key) const;
 
     std::unique_ptr<State> state_;
     std::string node_id_;  // this node's UUID (its Automerge actor id)

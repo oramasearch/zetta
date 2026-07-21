@@ -1,0 +1,65 @@
+# Docker build context excludes for the zetta source tree.
+#
+# The image Dockerfiles (zetta-bridge build/images/zetta-headless, .../zetta-e2e) use this
+# repository root as the build context and do `COPY . /src`. Without this file a host build
+# directory is copied in, and its CMakeCache.txt records absolute *host* paths, so the in-image
+# `cmake -S . -B build` aborts with "The current CMakeCache.txt directory ... is different than
+# the directory ... where CMakeCache.txt was created" (#839).
+#
+# Patterns are relative to the context root, so a bare name matches only at the top level.
+# That matters here: the vendored Boost-style submodules (capy, corosio, http, beast2) each
+# track a real `build/` directory of Jamfiles, and those are source — never exclude `**/build`.
+
+# ---- host build output (the #839 failure) ----
+/build/
+/build-*/
+/cmake-build-*/
+/_deps/
+
+# Stray CMake state at any depth is never source, and is what actually poisons the in-image
+# configure step.
+**/CMakeCache.txt
+**/CMakeFiles/
+**/cmake_install.cmake
+**/CTestTestfile.cmake
+**/compile_commands.json
+**/install_manifest.txt
+
+# ---- version control ----
+# The build needs no git: submodules are already checked out on disk and CMake never shells to git.
+.git
+.gitignore
+.gitmodules
+.github
+
+# ---- compiled artifacts anywhere in the tree ----
+**/*.o
+**/*.obj
+**/*.a
+**/*.so
+**/*.dylib
+**/*.dll
+**/*.exe
+
+# ---- node runtime data (a local run leaves a data_dir behind) ----
+/zetta-data/
+**/*.log
+
+# ---- editor / tooling / OS noise ----
+.cache/
+.claude/
+.vscode/
+.idea/
+**/*.iml
+**/*~
+**/*.swp
+**/*.swo
+**/.DS_Store
+
+# ---- local secrets / per-user config ----
+**/.env
+**/.env.local
+
+# ---- not needed to compile the binary ----
+# Kept deliberately short: docs and schemas are small, and schemas/ is drift-checked by the
+# test build, so only the genuinely large non-build inputs are listed here.

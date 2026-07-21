@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "description": "How many partitions a finished dataset HAS (#837) — the authority a reader compares its visible part: entries against, so an incomplete catalog fails the query instead of answering short.",
+  "properties": {
+    "bytes": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "created": {
+      "type": "string"
+    },
+    "partition_ids": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "partitions": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "rows": {
+      "minimum": 0,
+      "type": "integer"
+    },
+    "table": {
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "table",
+    "partitions"
+  ],
+  "title": "zetta.DatasetManifest",
+  "type": "object"
+}

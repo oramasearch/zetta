@@ -446,10 +446,14 @@ add_library(zetta-core STATIC
   src/core/index/distributed_fulltext.cpp
   src/core/index/search.cpp
   src/core/compute/compute_job.cpp
+  src/core/data/dataset_manifest.cpp
+  src/core/data/partition_scheduler.cpp
   src/core/data/dataset_partition.cpp
+  src/core/data/fetch_affinity_placement.cpp
   src/core/data/rendezvous_placement.cpp
   src/core/data/partition_writer.cpp
   src/core/data/partition_rebalance.cpp
+  src/core/data/promote_dataset.cpp
   src/core/governance/principal.cpp
   src/core/governance/access_key.cpp
   src/core/governance/scope.cpp
@@ -466,7 +470,10 @@ add_library(zetta-core STATIC
   src/core/governance/policy.cpp
   src/core/data/table.cpp
   src/core/data/partitioner.cpp
+  src/core/data/partition_body.cpp
+  src/core/storage/lazy_row.cpp
   src/core/storage/jsonl_store.cpp
+  src/core/storage/parquet_store.cpp
   src/core/util/uuid.cpp
   src/core/util/sha256.cpp
   src/core/util/timestamp.cpp
@@ -488,6 +495,12 @@ add_library(zetta-core STATIC
   src/core/data/import.cpp
   src/core/data/virtual_table.cpp
   src/core/data/add_dataset.cpp
+  src/core/connect/connection_store.cpp
+  src/core/connect/connector.cpp
+  src/core/connect/distributed_fetch.cpp
+  src/core/connect/distributed_ingest.cpp
+  src/core/connect/snowflake_protocol.cpp
+  src/core/connect/http_transport.cpp
   src/core/usecases/churn/churn_dataset.cpp
   src/core/pipeline/n8n_import.cpp
   src/core/pipeline/n8n_compile.cpp
@@ -495,6 +508,7 @@ add_library(zetta-core STATIC
   src/core/parquet/snappy.cpp
   src/core/parquet/column_decoder.cpp
   src/core/parquet/reader.cpp
+  src/core/parquet/writer.cpp
   src/core/input/python_frontend.cpp
   src/core/input/cluster_bindings.cpp
   src/core/input/datasets_bindings.cpp
@@ -539,6 +553,7 @@ add_library(zetta-core STATIC
   src/core/testkit/cases_parquet.cpp
   src/core/testkit/cases_ml.cpp
   src/core/testkit/cases_distributed.cpp
+  src/core/testkit/cases_connect.cpp
   src/core/testkit/cases_fulltext.cpp
   src/core/testkit/cases_governance.cpp
   src/core/testkit/cases_pipeline.cpp
@@ -551,6 +566,8 @@ add_library(zetta-core STATIC
   src/core/repl/governed_console.cpp
   src/core/query/postgres.cpp
   src/core/query/statement_builders.cpp
+  src/core/query/predicate.cpp
+  src/core/query/distributed_select.cpp
   src/core/query/executor.cpp
   src/core/query/service.cpp
   src/core/headless.cpp
@@ -626,17 +643,24 @@ endif()
 # -----------------------------------------------------------------------------
 # zetta-api — the embedded MCP server (docs/api/registry-design.md, #615).
 # The registry/bridge/observability core lives in zetta-core (HTTP-free); this
-# library holds the ONE Beast2 adapter TU. beast2/http/Boost.JSON link PRIVATE
-# so no HTTP type reaches consumers — the same isolation SDL/CUDA get.
+# library holds the HTTP adapter TUs — the Beast2 server (inbound) and the
+# native coroutine HTTPS client behind connect::HttpTransport (outbound, #827).
+# beast2/http/Boost.JSON link PRIVATE so no HTTP type reaches consumers — the
+# same isolation SDL/CUDA get. Corosio + its OpenSSL TLS provider are PRIVATE
+# here too: the client dials sockets through zetta::runtime::net exactly as the
+# cluster adapter does, and neither backend reaches zetta-core's surface.
 # -----------------------------------------------------------------------------
 add_library(zetta-api STATIC
-  src/core/api/http_server.cpp)
+  src/core/api/http_server.cpp
+  src/core/api/native_http_transport.cpp)
 target_compile_features(zetta-api PUBLIC cxx_std_26)
 target_link_libraries(zetta-api PUBLIC zetta-core)
 target_link_libraries(zetta-api PRIVATE
   Boost::beast2
   Boost::http
-  Boost::json)
+  Boost::json
+  Boost::corosio
+  Boost::corosio_openssl)
 
 # -----------------------------------------------------------------------------
 # zetta (the executable: headless core + the SDL3 + Dear ImGui headed UI)

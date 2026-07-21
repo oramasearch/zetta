@@ -26,6 +26,7 @@
 #include "zetta/api/llms.hpp"
 #include "zetta/api/mcp_docs.hpp"
 #include "zetta/api/rest.hpp"
+#include "zetta/connect/connection_store.hpp"
 #include "zetta/api/serving.hpp"
 #include "zetta/api/specs.hpp"
 #include "zetta/api/web_ui.hpp"
@@ -164,6 +165,55 @@ std::string form_field(const std::vector<std::pair<std::string, std::string>>& f
     return {};
 }
 
+// Build a capability input document from a submitted web-UI form (#827).
+//
+// The dialog renders a NESTED object property as a group of `parent.child`
+// controls, so decoding cannot be a flat pass any more: scalar properties are
+// coerced by the schema exactly as the REST query-string path does
+// (`rest_input_from_query`), and an object property is reassembled from its
+// `parent.child` fields and coerced against ITS sub-schema. Empty fields are
+// dropped so an untouched optional control does not become `""` and trip the
+// schema; an object whose every field was left blank is omitted entirely, which
+// is what lets create_dataset_from_query's either/or (a saved `connection` name
+// OR an inline `connector`) work from one form.
+nlohmann::json web_form_input(
+    const zetta::api::Capability& capability,
+    const std::vector<std::pair<std::string, std::string>>& fields) {
+    if (!capability.input_schema.is_object() ||
+        !capability.input_schema.contains("properties")) {
+        return nlohmann::json::object();
+    }
+    const nlohmann::json& properties = capability.input_schema["properties"];
+
+    std::vector<std::pair<std::string, std::string>> scalars;
+    nlohmann::json input = nlohmann::json::object();
+    for (auto it = properties.begin(); it != properties.end(); ++it) {
+        const nlohmann::json& property = it.value();
+        if (property.value("type", "string") == "object" &&
+            property.contains("properties")) {
+            std::vector<std::pair<std::string, std::string>> nested;
+            for (auto sub = property["properties"].begin();
+                 sub != property["properties"].end(); ++sub) {
+                const std::string value =
+                    form_field(fields, it.key() + "." + sub.key());
+                if (!value.empty()) nested.emplace_back(sub.key(), value);
+            }
+            if (!nested.empty()) {
+                input[it.key()] =
+                    zetta::api::rest_input_from_query(property, nested);
+            }
+            continue;
+        }
+        const std::string value = form_field(fields, it.key());
+        if (!value.empty()) scalars.emplace_back(it.key(), value);
+    }
+    for (auto& [key, value] : zetta::api::rest_input_from_query(capability, scalars)
+                                  .items()) {
+        input[key] = value;
+    }
+    return input;
+}
+
 // A query-string parameter, or `fallback` when absent.
 std::string query_param(const boost::http::route_params& route, std::string_view name,
                         std::string_view fallback) {
@@ -177,6 +227,10 @@ std::string query_param(const boost::http::route_params& route, std::string_view
 // name for anything unmapped.
 std::string humanize_action(const std::string& name) {
     if (name == "add_dataset") return "Load dataset";
+    if (name == "create_dataset_from_query") return "Load from a source";
+    if (name == "promote_dataset") return "Make durable";
+    if (name == "create_connection") return "Save a connection";
+    if (name == "delete_connection") return "Delete connection";
     if (name == "create_index") return "Create index";
     if (name == "expose_index") return "Expose index";
     if (name == "unexpose_index") return "Un-expose index";
@@ -314,8 +368,14 @@ nlohmann::json row_document(zetta::Node& node, const std::string& table,
         const std::shared_ptr<zetta::data::Table> found = database->find_table(table);
         if (!found) continue;
         const zetta::storage::StorageEngine& store = found->store();
-        for (std::size_t i = 0; i < store.size(); ++i)
-            if (store.id_at(i) == row_id) return store.at(i);
+        for (std::size_t i = 0; i < store.size(); ++i) {
+            if (store.id_at(i) != row_id) continue;
+            // An unreadable row (a paging engine's failed page read) renders as
+            // the empty object here, the same as a row that isn't there — this
+            // endpoint has no error channel for a row-level read failure.
+            const zetta::storage::ParquetLazyPtr row = store.at(i);
+            return row.value_or(nlohmann::json::object());
+        }
         return nlohmann::json::object();
     }
     return nlohmann::json::object();
@@ -989,9 +1049,108 @@ struct ApiServer::Impl {
         return options;
     }
 
+    // The saved source connections, so the connector dialog offers a picker
+    // instead of asking for a credential again (#827). Names only — the store's
+    // read surface never carries a token, and neither does this.
+    std::string connection_options(ApiContext& context) {
+        std::string options =
+            "<option value=\"\">\xE2\x80\x94 none: fill in the connector below "
+            "\xE2\x80\x94</option>";
+        for (const zetta::connect::SavedConnection& saved :
+             zetta::connect::list_connections(context.node))
+            options += form_option(saved.name + "  (" + saved.config.type + " / " +
+                                       saved.config.account + ")",
+                                   saved.name, false);
+        return options;
+    }
+
+    // Whether a schema property holds a credential — rendered as a masked input
+    // and never echoed back into the form. Matched on the property name because
+    // that is what the schema gives us; the connector's `token` is the case
+    // that matters today.
+    static bool is_secret_property(const std::string& key) {
+        return key == "token" || key == "secret" || key == "password" ||
+               key == "api_key";
+    }
+
+    // One scalar control. `name` is the form field name (which for a nested
+    // object property is `parent.child` — see nested_object_fields).
+    std::string form_control(const std::string& name, const std::string& label,
+                             const nlohmann::json& property, bool is_required,
+                             const std::string& options) {
+        const std::string description = property.value("description", "");
+        const std::string type = property.value("type", "string");
+        const bool full = label == "path" || label == "statement" ||
+                          label == "source" || label == "description" ||
+                          label == "query" || description.size() > 52;
+        std::string out = std::string("<div class=\"") + (full ? "full" : "") +
+                          "\"><label>" + web_ui_escape(label) +
+                          (is_required ? "<span class=\"req\">*</span>" : "") +
+                          "</label>";
+        if (!options.empty()) {
+            out += "<select name=\"" + web_ui_escape(name) + "\">" + options +
+                   "</select>";
+        } else {
+            const bool secret = is_secret_property(label);
+            out += std::string("<input ") + (secret ? "type=\"password\" " : "") +
+                   "name=\"" + web_ui_escape(name) + "\" placeholder=\"" +
+                   web_ui_escape(description.empty() ? type : description) + "\">";
+        }
+        out += "</div>";
+        return out;
+    }
+
+    // A nested object property rendered as its own labelled group of
+    // `parent.child` controls (#827). capability_form_fields only ever handled
+    // flat scalars, so a capability carrying a structured input — the connector
+    // config — had no usable dialog at all. Sub-properties keep the same
+    // required-first ordering and the same enum/picker treatment; a credential
+    // sub-property is masked.
+    std::string nested_object_fields(const std::string& key,
+                                     const nlohmann::json& property) {
+        if (!property.contains("properties") ||
+            !property["properties"].is_object()) {
+            return {};
+        }
+        const nlohmann::json& properties = property["properties"];
+        const nlohmann::json required =
+            property.value("required", nlohmann::json::array());
+        std::vector<std::string> order;
+        for (const auto& item : required)
+            if (item.is_string() && properties.contains(item.get<std::string>()))
+                order.push_back(item.get<std::string>());
+        const std::size_t required_count = order.size();
+        for (auto it = properties.begin(); it != properties.end(); ++it)
+            if (std::find(order.begin(), order.end(), it.key()) == order.end())
+                order.push_back(it.key());
+
+        std::string inner;
+        for (std::size_t index = 0; index < order.size(); ++index) {
+            const std::string& child = order[index];
+            const nlohmann::json& sub = properties[child];
+            std::string options;
+            if (sub.contains("enum"))
+                for (const auto& choice : sub["enum"])
+                    if (choice.is_string())
+                        options += form_option(choice.get<std::string>(),
+                                               choice.get<std::string>(),
+                                               sub.value("default", std::string()) ==
+                                                   choice.get<std::string>());
+            inner += form_control(key + "." + child, child, sub,
+                                  index < required_count, options);
+        }
+        return "<div class=\"full\"><fieldset class=\"fgroup\"><legend>" +
+               web_ui_escape(key) + "</legend><div class=\"fgrid\">" + inner +
+               "</div></fieldset></div>";
+    }
+
     // A section's icon for its action buttons.
     std::string action_icon(const std::string& name) {
         if (name == "add_dataset") return web_ui_icon("dataset");
+        if (name == "create_dataset_from_query") return web_ui_icon("dataset");
+        if (name == "promote_dataset") return web_ui_icon("dataset");
+        if (name == "create_connection" || name == "delete_connection")
+            return web_ui_icon("nodes");
         if (name == "create_index") return web_ui_icon("index");
         if (name == "expose_model" || name == "unexpose_model") return web_ui_icon("models");
         if (name == "add_nodes") return web_ui_icon("nodes");
@@ -1027,10 +1186,14 @@ struct ApiServer::Impl {
             const std::string& key = order[oi];
             const nlohmann::json& prop = properties[key];
             const bool is_required = oi < required_count;
-            const std::string description = prop.value("description", "");
-            const std::string type = prop.value("type", "string");
-            const bool full = key == "path" || key == "statement" || key == "source" ||
-                              key == "description" || description.size() > 52;
+
+            // A nested object gets its own group of `parent.child` controls
+            // rather than an unusable single text box (#827).
+            if (prop.value("type", "string") == "object" &&
+                prop.contains("properties")) {
+                fields += nested_object_fields(key, prop);
+                continue;
+            }
 
             std::string options;
             if (prop.contains("enum")) {
@@ -1046,20 +1209,13 @@ struct ApiServer::Impl {
                 options = model_options(context);
             } else if (key == "database") {
                 options = database_options(context);
+            } else if (key == "connection") {
+                options = connection_options(context);
             } else if (key == "backend") {
                 options = form_option("oramacore_fulltext (BM25F)", "oramacore_fulltext", true) +
                           form_option("memory_search (exact match)", "memory_search", false);
             }
-
-            fields += std::string("<div class=\"") + (full ? "full" : "") + "\"><label>" +
-                      web_ui_escape(key) +
-                      (is_required ? "<span class=\"req\">*</span>" : "") + "</label>";
-            if (!options.empty())
-                fields += "<select name=\"" + web_ui_escape(key) + "\">" + options + "</select>";
-            else
-                fields += "<input name=\"" + web_ui_escape(key) + "\" placeholder=\"" +
-                          web_ui_escape(description.empty() ? type : description) + "\">";
-            fields += "</div>";
+            fields += form_control(key, key, prop, is_required, options);
         }
         return fields;
     }
@@ -1670,7 +1826,14 @@ struct ApiServer::Impl {
             out += render_action_panel(
                 context, view, "dataset", "Datasets",
                 "tables loaded into the node \xC2\xB7 the source for search + training",
-                {"add_dataset"}, ptable("SELECT * FROM system.datasets", "ds"));
+                {"add_dataset", "create_dataset_from_query", "promote_dataset"},
+                ptable("SELECT * FROM system.datasets", "ds"));
+            out += render_action_panel(
+                context, view, "nodes", "Source connections",
+                "saved warehouse credentials, held on every node \xC2\xB7 pick one in "
+                "\"Load from a source\" instead of retyping a token",
+                {"create_connection", "delete_connection"},
+                ptable("SELECT * FROM system.connections", "conn"));
             out += render_action_panel(
                 context, view, "index", "Indexes",
                 "full-text / vector indexes over a table \xC2\xB7 create one to make a table searchable",
@@ -1847,15 +2010,7 @@ struct ApiServer::Impl {
                                                "</div>");
                     return;
                 }
-                std::vector<std::pair<std::string, std::string>> query;
-                if (capability->input_schema.is_object() &&
-                    capability->input_schema.contains("properties"))
-                    for (auto it = capability->input_schema["properties"].begin();
-                         it != capability->input_schema["properties"].end(); ++it) {
-                        const std::string value = form_field(fields, it.key());
-                        if (!value.empty()) query.emplace_back(it.key(), value);
-                    }
-                const nlohmann::json input = rest_input_from_query(*capability, query);
+                const nlohmann::json input = web_form_input(*capability, fields);
                 ApiContext context{node, cluster, user_id,
                                    zetta::observability::make_root_trace(), &node.span_recorder(),
                                    &background};

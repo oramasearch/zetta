@@ -28,6 +28,7 @@ add_executable(zetta-tests
   api/test_serving.cpp
   api/test_scoped_grants_api.cpp
   api/test_row_security_api.cpp
+  api/test_web_ui_forms.cpp
   util/test_uuid.cpp
   util/test_sha256.cpp
   util/test_fuzzy.cpp
@@ -39,7 +40,9 @@ add_executable(zetta-tests
   util/test_duration.cpp
   util/test_timestamp.cpp
   data/test_jsonl_store.cpp
+  data/test_lazy_row.cpp
   data/test_partitioner.cpp
+  data/test_fetch_affinity_placement.cpp
   data/test_rendezvous_placement.cpp
   data/test_database.cpp
   data/test_replication_strategy.cpp
@@ -72,12 +75,18 @@ add_executable(zetta-tests
   index/test_index_step_executor.cpp
   index/test_oramacore_fulltext_index.cpp
   index/test_distributed_fulltext.cpp
+  query/test_distributed_select.cpp
   index/test_node_search.cpp
   compute/test_compute_job.cpp
   compute/test_checkpoint.cpp
   data/test_dataset_partition.cpp
+  data/test_dataset_manifest.cpp
+  data/test_partition_body.cpp
+  data/test_partition_only.cpp
   data/test_partition_writer.cpp
+  data/test_promote_dataset.cpp
   data/test_partition_rebalance.cpp
+  data/test_partition_scheduler.cpp
   governance/test_access_control.cpp
   governance/test_users_roles_tokens.cpp
   governance/test_roles.cpp
@@ -132,6 +141,11 @@ add_executable(zetta-tests
   data/test_large_object.cpp
   data/test_import.cpp
   data/test_add_dataset.cpp
+  connect/test_connector.cpp
+  connect/test_connection_store.cpp
+  connect/test_distributed_fetch.cpp
+  connect/test_distributed_ingest.cpp
+  connect/test_native_http_transport.cpp
   usecases/churn/test_churn_dataset.cpp
   pipeline/test_n8n_import.cpp
   pipeline/test_n8n_compile.cpp
@@ -139,6 +153,8 @@ add_executable(zetta-tests
   data/test_parquet_snappy.cpp
   data/test_parquet_column_decoder.cpp
   data/test_parquet_reader.cpp
+  data/test_parquet_writer.cpp
+  data/test_parquet_store.cpp
   pipeline/test_python_frontend.cpp
   pipeline/test_python_engine_bindings.cpp
   pipeline/test_datasets_bindings.cpp
@@ -156,6 +172,7 @@ add_executable(zetta-tests
   cluster/test_collectives.cpp
   cluster/test_replication.cpp
   cluster/test_data_replication.cpp
+  cluster/test_drop_replication.cpp
   data/test_large_object_replication.cpp
   test_integrity.cpp
   test_schemas.cpp

@@ -14,7 +14,11 @@
 #include "zetta/api/specs.hpp"
 #include "zetta/cluster/cluster.hpp"
 #include "zetta/compute/compute_job.hpp"
+#include "zetta/connect/connection_store.hpp"
+#include "zetta/connect/connector.hpp"
+#include "zetta/connect/distributed_ingest.hpp"
 #include "zetta/data/add_dataset.hpp"
+#include "zetta/data/promote_dataset.hpp"
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset.hpp"
 #include "zetta/data/dataset_partition.hpp"
@@ -448,7 +452,14 @@ nlohmann::json dataset_summary_json(const zetta::data::DatasetSummary& dataset) 
                           {"rows", dataset.rows},
                           {"size_bytes", dataset.size_bytes},
                           {"columns", dataset.columns},
-                          {"partitions", std::move(partitions)}};
+                          {"partitions", std::move(partitions)},
+                          // #837: whether this node can see the WHOLE dataset.
+                          // An agent that reads `rows` must be able to tell a
+                          // total from a fraction.
+                          {"degraded", dataset.degraded},
+                          {"degraded_reason", dataset.degraded_reason},
+                          {"expected_partitions", dataset.expected_partitions},
+                          {"expected_rows", dataset.expected_rows}};
 }
 
 // The schema of dataset_summary_json — shared by get_dataset (the value) and
@@ -458,7 +469,8 @@ const nlohmann::json& dataset_summary_schema() {
         {"type", "object"},
         {"required",
          {"name", "database", "table_id", "format", "replication", "rows",
-          "size_bytes", "columns", "partitions"}},
+          "size_bytes", "columns", "partitions", "degraded", "degraded_reason",
+          "expected_partitions", "expected_rows"}},
         {"additionalProperties", false},
         {"properties",
          {{"name", {{"type", "string"}}},
@@ -484,7 +496,11 @@ const nlohmann::json& dataset_summary_schema() {
                 {"row_end", {{"type", "integer"}}},
                 {"owner_nodes",
                  {{"type", "array"},
-                  {"items", {{"type", "string"}}}}}}}}}}}}}};
+                  {"items", {{"type", "string"}}}}}}}}}}},
+          {"degraded", {{"type", "boolean"}}},
+          {"degraded_reason", {{"type", "string"}}},
+          {"expected_partitions", {{"type", "integer"}}},
+          {"expected_rows", {{"type", "integer"}}}}}};
     return schema;
 }
 
@@ -1016,9 +1032,9 @@ ApiResult handle_create_index(const nlohmann::json& input, ApiContext& context) 
     // row) when none are named — indexing everything is the sane default; a
     // caller passes fields only to narrow it.
     if (fields.empty() && source_table->store().size() > 0) {
-        const nlohmann::json& first_row = source_table->store().at(0);
-        if (first_row.is_object())
-            for (auto it = first_row.begin(); it != first_row.end(); ++it)
+        const zetta::storage::ParquetLazyPtr first_row = source_table->store().at(0);
+        if (first_row && first_row->is_object())
+            for (auto it = first_row->begin(); it != first_row->end(); ++it)
                 fields.push_back(it.key());
     }
     if (fields.empty()) {
@@ -2128,11 +2144,15 @@ const nlohmann::json& add_dataset_schema() {
            {{"type", "integer"},
             {"minimum", 1},
             {"maximum", 4096},
-            {"description", "partitions to write (default 8)"}}},
+            {"description",
+            "partitions to write; omit to let the partition scheduler "
+            "size them (a target body size, with a floor of partitions per "
+            "node) instead of fixing a count"}}},
           {"replication_factor",
            {{"type", "integer"},
             {"minimum", 1},
-            {"description", "owners per partition (default 1)"}}}}}};
+            {"description",
+             "owners per partition (default 3, clamped to the node count)"}}}}}};
     return schema;
 }
 
@@ -2165,8 +2185,11 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     options.database = input.value("database", options.database);
     options.table_name = input.value("table_name", options.table_name);
     options.partitioned = input.value("partitioned", options.partitioned);
-    options.partition_count =
-        input.value("partition_count", options.partition_count);
+    // Absent means AUTO — the scheduler targets a partition size instead of a
+    // constant (#833). A value present is a manual override, honoured exactly.
+    if (const auto it = input.find("partition_count"); it != input.end()) {
+        options.partition_count = it->get<std::uint32_t>();
+    }
     options.replication_factor =
         input.value("replication_factor", options.replication_factor);
     options.members = context.node.cluster_members();  // live placement roster
@@ -2188,6 +2211,462 @@ ApiResult handle_add_dataset(const nlohmann::json& input, ApiContext& context) {
     output["format"] = zetta::data::dataset_file::format_name(added.format);
     output["rows"] = added.rows;
     output["partitions"] = std::move(partitions);
+    return ApiResult::success(std::move(output));
+}
+
+// --- saved connections + create_dataset_from_query ----------------------------------
+
+// The connector config as an embeddable sub-schema: the code-owned
+// connector_config_schema() minus its document-level keys, so it nests cleanly
+// inside this capability's input schema (and therefore inside the OpenAPI doc).
+const nlohmann::json& connector_property_schema() {
+    static const nlohmann::json schema = [] {
+        nlohmann::json nested = zetta::connect::connector_config_schema();
+        nested.erase("$schema");
+        nested.erase("$id");
+        return nested;
+    }();
+    return schema;
+}
+
+// The shape every connection read surface returns — note the absence of a
+// `token` anywhere in it. `SavedConnection::to_redacted_json()` produces it from
+// `ConnectorConfig::to_json()`, which never emits the credential, so the
+// redaction is structural rather than a field someone must remember to strip.
+const nlohmann::json& saved_connection_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "connector"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}},
+          {"connector",
+           {{"type", "object"},
+            {"description",
+             "the saved connector settings WITHOUT the credential — the token "
+             "is never returned by any surface"}}},
+          {"created",
+           {{"type", "string"},
+            {"description", "when the connection was last saved (ISO-8601 UTC)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_connection_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "connector"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"maxLength", 64},
+            {"description",
+             "the name to save this connection under (letters, digits, '_' and "
+             "'-'); saving an existing name replaces it"}}},
+          {"connector", connector_property_schema()}}}};
+    return schema;
+}
+
+const nlohmann::json& create_connection_output_schema() {
+    return saved_connection_schema();
+}
+
+const nlohmann::json& list_connections_schema() {
+    static const nlohmann::json schema = {{"type", "object"},
+                                          {"additionalProperties", false},
+                                          {"properties", nlohmann::json::object()}};
+    return schema;
+}
+
+const nlohmann::json& list_connections_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"connections"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"connections",
+           {{"type", "array"}, {"items", saved_connection_schema()}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_connection_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}, {"minLength", 1}}}}}};
+    return schema;
+}
+
+const nlohmann::json& delete_connection_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"name", "removed"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"name", {{"type", "string"}}}, {"removed", {{"type", "boolean"}}}}}};
+    return schema;
+}
+
+ApiResult handle_create_connection(const nlohmann::json& input,
+                                   ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        zetta::connect::ConnectorConfig::from_json(input.at("connector"));
+    if (!config) {
+        return ApiResult::failure(
+            "invalid_input",
+            "connector: expected {type, account, token} with a known type "
+            "(and an optional auth of pat|oauth, database, schema, warehouse, "
+            "role)");
+    }
+    const std::string rejection =
+        zetta::connect::save_connection(context.node, name, *config);
+    if (!rejection.empty()) {
+        return ApiResult::failure("invalid_input", rejection);
+    }
+    const std::optional<zetta::connect::SavedConnection> saved =
+        zetta::connect::find_connection(context.node, name);
+    if (!saved) {
+        return ApiResult::failure("engine_error",
+                                  "connection '" + name + "' did not persist");
+    }
+    // Redacted on the way out — a create call never echoes the credential back.
+    return ApiResult::success(saved->to_redacted_json());
+}
+
+ApiResult handle_list_connections(const nlohmann::json& input,
+                                  ApiContext& context) {
+    (void)input;
+    nlohmann::json connections = nlohmann::json::array();
+    for (const zetta::connect::SavedConnection& saved :
+         zetta::connect::list_connections(context.node)) {
+        connections.push_back(saved.to_redacted_json());
+    }
+    nlohmann::json output;
+    output["connections"] = std::move(connections);
+    return ApiResult::success(std::move(output));
+}
+
+ApiResult handle_delete_connection(const nlohmann::json& input,
+                                   ApiContext& context) {
+    const std::string name = input.at("name").get<std::string>();
+    nlohmann::json output;
+    output["name"] = name;
+    output["removed"] = zetta::connect::remove_connection(context.node, name);
+    return ApiResult::success(std::move(output));
+}
+
+const nlohmann::json& create_dataset_from_query_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        // Exactly one of `connection` / `connector` is required; the schema
+        // cannot say "exactly one" without oneOf (which the query-string REST
+        // coercion does not model), so the handler enforces it and says which.
+        {"required", {"query"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"connection",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the name of a saved connection (create_connection / "
+             "list_connections) — use this instead of an inline connector so "
+             "the credential never travels with the request"}}},
+          {"connector", connector_property_schema()},
+          {"query",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "a single read-only SELECT (or WITH) to run against the source"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "target database, created if absent (default datasets)"}}},
+          {"table_name",
+           {{"type", "string"},
+            {"description", "name for the new table (default 'dataset')"}}},
+          {"max_rows",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 10000000},
+            {"description", "cap on rows pulled from the source (default "
+                            "100000)"}}},
+          {"partitioned",
+           {{"type", "boolean"},
+            {"description",
+             "shard + place the rows across the cluster (default true)"}}},
+          {"partition_count",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"maximum", 4096},
+            {"description",
+            "partitions to write; omit to let the partition scheduler "
+            "size them (a target body size, with a floor of partitions per "
+            "node) instead of fixing a count"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "owners per partition (default 1 — a connector result set is a "
+             "cache, re-pullable from its source; promote_dataset raises it)"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& create_dataset_from_query_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"database", "table", "rows", "columns", "partitions"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"rows", {{"type", "integer"}}},
+          {"columns", {{"type", "array"}, {"items", {{"type", "string"}}}}},
+          {"partitions",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"partition_id", "owner_nodes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"partition_id", {{"type", "string"}}},
+                {"owner_nodes",
+                 {{"type", "array"},
+                  {"items", {{"type", "string"}}}}}}}}}}},
+          {"coordinated",
+           {{"type", "boolean"},
+            {"description",
+             "true when the fetch was co-launched across the cluster (every "
+             "participant pulled its own tile straight from the source)"}}},
+          {"participants",
+           {{"type", "array"},
+            {"items", {{"type", "string"}}},
+            {"description", "the nodes that fetched a tile"}}}}}};
+    return schema;
+}
+
+// Resolve the connector this call should use: either a saved connection by name
+// (the credential stays on the cluster) or an inline connector object. Exactly
+// one; `reason` explains the rejection.
+std::optional<zetta::connect::ConnectorConfig> resolve_query_connector(
+    const nlohmann::json& input, ApiContext& context, std::string& reason) {
+    const bool has_connection = input.contains("connection");
+    const bool has_connector = input.contains("connector");
+    if (has_connection == has_connector) {
+        reason = has_connection
+                     ? "give either a saved 'connection' name or an inline "
+                       "'connector' object, not both"
+                     : "give either a saved 'connection' name or an inline "
+                       "'connector' object";
+        return std::nullopt;
+    }
+    if (has_connection) {
+        const std::string name = input.at("connection").get<std::string>();
+        const std::optional<zetta::connect::SavedConnection> saved =
+            zetta::connect::find_connection(context.node, name);
+        if (!saved) {
+            reason = "connection: no saved connection named '" + name +
+                     "' (list them with list_connections)";
+            return std::nullopt;
+        }
+        return saved->config;
+    }
+    std::optional<zetta::connect::ConnectorConfig> config =
+        zetta::connect::ConnectorConfig::from_json(input.at("connector"));
+    if (!config) {
+        reason =
+            "connector: expected {type, account, token} with a known type "
+            "(and an optional auth of pat|oauth, database, schema, warehouse, "
+            "role)";
+    }
+    return config;
+}
+
+ApiResult handle_create_dataset_from_query(const nlohmann::json& input,
+                                           ApiContext& context) {
+    std::string reason;
+    const std::optional<zetta::connect::ConnectorConfig> config =
+        resolve_query_connector(input, context, reason);
+    if (!config) {
+        return ApiResult::failure("invalid_input", reason);
+    }
+
+    zetta::connect::DistributedIngestOptions options;
+    // The SAVED CONNECTION name, when that is how the caller identified the
+    // source. It is what makes the cross-node co-launch possible: every node
+    // resolves the credential from its own replicated copy, so nothing secret
+    // rides the launch. An inline `connector` block leaves it empty, which
+    // degrades the ingest to this node alone.
+    options.connection = input.value("connection", std::string{});
+    options.query = input.at("query").get<std::string>();
+    options.max_rows = input.value("max_rows", static_cast<std::size_t>(100000));
+    options.database = input.value("database", options.database);
+    options.table_name = input.value("table_name", options.table_name);
+    // Absent means AUTO — the scheduler targets a partition size instead of a
+    // constant (#833). A value present is a manual override, honoured exactly.
+    if (const auto it = input.find("partition_count"); it != input.end()) {
+        options.partition_count = it->get<std::uint32_t>();
+    }
+    // A connector result set is a CACHE — re-pullable from its source and cheap
+    // to lose — so it is RF=1 by default, explicitly, against the engine's
+    // durable default of 3 (#833 section 8). promote_dataset upgrades one that
+    // turns out to be worth keeping.
+    options.replication_factor = input.value("replication_factor", std::size_t{1});
+
+    // Reaches the external source over the network (consent-gated above), from
+    // every participating node at once (#833 section 7).
+    const zetta::connect::DistributedIngestResult ingested =
+        zetta::connect::run_distributed_connector_ingest(context.node, *config,
+                                                         options);
+    if (!ingested.ok()) {
+        return ApiResult::failure("engine_error", ingested.error);
+    }
+    if (ingested.rows == 0) {
+        return ApiResult::failure(
+            "engine_error",
+            "the query returned no rows — nothing to load as a dataset");
+    }
+
+    nlohmann::json partitions = nlohmann::json::array();
+    for (const auto& partition : ingested.partitions) {
+        if (!partition) continue;
+        partitions.push_back({{"partition_id", partition->id()},
+                              {"owner_nodes", partition->owner_nodes()}});
+    }
+    nlohmann::json output;
+    output["database"] =
+        ingested.database ? ingested.database->name() : options.database;
+    output["table"] = ingested.table ? ingested.table->name() : "";
+    output["rows"] = ingested.rows;
+    output["columns"] = ingested.columns;
+    output["partitions"] = std::move(partitions);
+    output["coordinated"] = ingested.coordinated;
+    output["participants"] = ingested.participants;
+    return ApiResult::success(std::move(output));
+}
+
+// --- promote_dataset ----------------------------------------------------------------
+
+const nlohmann::json& promote_dataset_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required", {"dataset"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"dataset",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description", "the dataset name (= the table name)"}}},
+          {"database",
+           {{"type", "string"},
+            {"minLength", 1},
+            {"description",
+             "the owning database (default datasets) — required when the same "
+             "dataset name exists in several databases"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"minimum", 1},
+            {"description",
+             "target owners per partition (default 3), clamped to the node "
+             "count; a partition that already has at least this many owners is "
+             "left alone — promotion never removes one"}}}}}};
+    return schema;
+}
+
+const nlohmann::json& promote_dataset_output_schema() {
+    static const nlohmann::json schema = {
+        {"type", "object"},
+        {"required",
+         {"database", "table", "replication_factor", "partitions", "promoted"}},
+        {"additionalProperties", false},
+        {"properties",
+         {{"database", {{"type", "string"}}},
+          {"table", {{"type", "string"}}},
+          {"table_id", {{"type", "string"}}},
+          {"replication_factor",
+           {{"type", "integer"},
+            {"description", "the factor actually applied (clamped to the roster)"}}},
+          {"partitions", {{"type", "integer"}}},
+          {"promoted",
+           {{"type", "integer"},
+            {"description", "partitions whose owner set grew"}}},
+          {"promotions",
+           {{"type", "array"},
+            {"items",
+             {{"type", "object"},
+              {"required", {"partition_id", "owner_nodes"}},
+              {"additionalProperties", false},
+              {"properties",
+               {{"partition_id", {{"type", "string"}}},
+                {"partition", {{"type", "integer"}}},
+                {"previous_owner_nodes",
+                 {{"type", "array"}, {"items", {{"type", "string"}}}}},
+                {"owner_nodes",
+                 {{"type", "array"}, {"items", {{"type", "string"}}}}}}}}}}}}}};
+    return schema;
+}
+
+ApiResult handle_promote_dataset(const nlohmann::json& input, ApiContext& context) {
+    const std::string name = input.at("dataset").get<std::string>();
+    const std::string requested_database = input.value("database", std::string{});
+    // Resolve the dataset the same way get_dataset does: by name, with the
+    // database required only when the name is ambiguous.
+    std::vector<std::string> databases;
+    for (const zetta::data::DatasetSummary& dataset : context.node.datasets()) {
+        if (dataset.name != name) continue;
+        if (!requested_database.empty() && dataset.database != requested_database) {
+            continue;
+        }
+        databases.push_back(dataset.database);
+    }
+    if (databases.empty()) {
+        return ApiResult::failure(
+            "not_found",
+            "no dataset named '" + name + "'" +
+                (requested_database.empty()
+                     ? ""
+                     : " in database '" + requested_database + "'"));
+    }
+    if (databases.size() > 1) {
+        std::string names;
+        for (const std::string& database : databases) {
+            if (!names.empty()) names += ", ";
+            names += database;
+        }
+        return ApiResult::failure(
+            "engine_error", "dataset '" + name + "' exists in several databases (" +
+                                names + ") — pass \"database\" to pick one");
+    }
+
+    const std::size_t replication_factor = input.value(
+        "replication_factor",
+        static_cast<std::size_t>(zetta::data::kDefaultReplicationFactor));
+    const zetta::data::PromoteDatasetResult promoted = zetta::data::promote_dataset(
+        context.node, databases.front(), name, replication_factor,
+        context.node.cluster_members());
+    if (!promoted.ok()) {
+        return ApiResult::failure("engine_error", promoted.error);
+    }
+
+    nlohmann::json promotions = nlohmann::json::array();
+    for (const zetta::data::PartitionPromotion& promotion : promoted.promotions) {
+        promotions.push_back({{"partition_id", promotion.partition_uuid},
+                              {"partition", promotion.partition},
+                              {"previous_owner_nodes", promotion.from},
+                              {"owner_nodes", promotion.to}});
+    }
+    nlohmann::json output;
+    output["database"] = promoted.database;
+    output["table"] = promoted.table;
+    output["table_id"] = promoted.table_id;
+    output["replication_factor"] = promoted.replication_factor;
+    output["partitions"] = promoted.partitions;
+    output["promoted"] = promoted.promoted;
+    output["promotions"] = std::move(promotions);
     return ApiResult::success(std::move(output));
 }
 
@@ -2997,6 +3476,85 @@ void register_core_capabilities(Registry& registry) {
         /*mutates=*/true,
         /*requires_consent=*/false,
         handle_add_dataset});
+
+    registry.add(Capability{
+        "create_connection",
+        "Save a source connection",
+        "Save a named connector configuration (credential included) so a "
+        "connector query can reference it by name instead of carrying the "
+        "token in every request. The connection is stored replicate-to-all — "
+        "every node holds it, which is what lets each node fetch its own "
+        "stripe of a distributed query straight from the source. Saving an "
+        "existing name replaces it. The token is never returned by any "
+        "surface (list_connections and system.connections omit it).",
+        create_connection_schema(),
+        create_connection_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_connection"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_create_connection});
+
+    registry.add(Capability{
+        "list_connections",
+        "List saved connections",
+        "The saved source connections, credentials REDACTED — name, connector "
+        "settings, and when each was saved. Same source as "
+        "system.connections.",
+        list_connections_schema(),
+        list_connections_output_schema(),
+        CapabilityKind::Read,
+        Operation{CapabilityDomain::Orchestration, "list_connections"},
+        /*mutates=*/false,
+        /*requires_consent=*/false,
+        handle_list_connections});
+
+    registry.add(Capability{
+        "delete_connection",
+        "Delete a saved connection",
+        "Remove a saved source connection (and its stored credential) from "
+        "every node. Returns removed=false when no connection had that name.",
+        delete_connection_schema(),
+        delete_connection_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "delete_connection"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_delete_connection});
+
+    registry.add(Capability{
+        "create_dataset_from_query",
+        "Create a dataset from a connector query",
+        "Run a read-only query against an external source (Snowflake) and load "
+        "its rows into a new partitioned table placed across the cluster — the "
+        "in-product path from a warehouse to a featurizable dataset, with no "
+        "manual export. Only a single SELECT/WITH may run. Reaches the source "
+        "over the network with your credentials, so it is consent-gated "
+        "(audited as dataset_added; visible in system.datasets).",
+        create_dataset_from_query_schema(),
+        create_dataset_from_query_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "create_dataset_from_query"},
+        /*mutates=*/true,
+        /*requires_consent=*/true,
+        handle_create_dataset_from_query});
+
+    registry.add(Capability{
+        "promote_dataset",
+        "Promote a cached dataset to durable",
+        "Raise a dataset's replication factor (default 3, clamped to the node "
+        "count) so a connector result set that landed as a cache at RF=1 stops "
+        "being one copy with no backup. Adds owners to each partition in the "
+        "catalog; the bodies then move to them over the existing large-object "
+        "transport. Never removes an owner, so it can only make a dataset "
+        "safer. Visible in system.dataset_partitions.",
+        promote_dataset_schema(),
+        promote_dataset_output_schema(),
+        CapabilityKind::Action,
+        Operation{CapabilityDomain::Orchestration, "promote_dataset"},
+        /*mutates=*/true,
+        /*requires_consent=*/false,
+        handle_promote_dataset});
 
     registry.add(Capability{
         "testsuite_run",

@@ -101,6 +101,14 @@ churn solution (`usecases::churn::install_churn_launch_runner`):
   `tests/usecases/churn/test_churn_coordinated_launch.cpp`. The peer **re-runs
   the correctness gate** before co-running (RULE-1 holds on every member).
   See [churn-solution.md](../use-cases/churn-solution.md).
+- **A cross-node connector ingest** (`connect::install_connector_fetch_launch_runner`,
+  #833): the payload carries **no data at all** — a statement handle, the result
+  set's per-chunk row counts, the target table's ids, and a *saved-connection
+  name*. Each participant derives the same tiling from the roster, pulls only its
+  own tile straight from the source, and lands it as partitions it owns. The
+  participants then agree with one `allreduce` over the launch id, so a node that
+  stops mid-fetch fails the whole ingest. See
+  [../data/distributed-connector-ingest.md](../data/distributed-connector-ingest.md).
 - **Already-partitioned tables** (the #531/#533 near-data path): the natural
   second consumer — a launch kind whose runner calls
   `run_near_data_featurize_train_job` over the partitions the node already

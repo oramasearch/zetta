@@ -1,11 +1,12 @@
-# Parquet Snappy page decompression
+# Parquet Snappy page codec
 
 Parquet's default page codec is **SNAPPY**: each data page is stored as a Snappy
-*raw block*, and the reader must reverse it to get the page's bytes back.
-`zetta::parquet::snappy_decompress` is a small, self-contained native decoder for
-exactly that block form — the first slice of the native Parquet reader
-([ADR-32](https://github.com/oramasearch/zetta/issues/481): no Arrow /
-parquet-cpp dependency; issue #507).
+*raw block*, so the reader must reverse it to get the page's bytes back and the
+writer must produce it. `zetta::parquet` carries a small, self-contained native
+codec for exactly that block form — `snappy_decompress` came first with the
+native Parquet reader ([ADR-32](https://github.com/oramasearch/zetta/issues/481):
+no Arrow / parquet-cpp dependency; issue #507), and `snappy_compress` is the
+write side the native Parquet writer emits pages with (#833).
 
 It decodes the **raw block** format (google/snappy's
 [`format_description.txt`](https://github.com/google/snappy/blob/main/format_description.txt)),
@@ -22,6 +23,8 @@ added only if a target file needs it.
 |---|---|---|
 | `snappy_decompress(compressed)` | `SnappyResult` | Decompress one Snappy raw block (a data-page body). On success `result.ok()` is true and `result.data` holds the bytes; on malformed input `result.error` explains why. |
 | `snappy_uncompressed_length(compressed)` | `std::optional<std::uint32_t>` | Read just the block's declared uncompressed length from its leading varint, **without** decompressing — for cross-checking a page header's `uncompressed_page_size` before paying to decode. `std::nullopt` on a truncated / overlong varint. |
+| `snappy_compress(input)` | `SnappyResult` | Compress `input` into one Snappy raw block. `snappy_decompress(snappy_compress(x).data) == x` for every `x`; the only failure is an input longer than the 32-bit length preamble can describe. |
+| `snappy_compress_literals(input)` | `SnappyResult` | The literals-only **reference** encoder — see [Two encoders](#two-encoders-a-reference-and-a-compressor). |
 
 ```cpp
 #include "zetta/parquet/snappy.hpp"
@@ -34,8 +37,8 @@ const std::string& page_bytes = result.data;
 ```
 
 Decompression can fail on a truncated or malformed page, and zetta-core is
-compiled `-fexperimental-library` (no exceptions across the seam), so the decoder
-is **non-throwing**: it returns a result + reason rather than throwing or reading
+compiled `-fexperimental-library` (nothing may unwind across its boundary), so the
+decoder is **non-throwing**: it returns a result + reason rather than throwing or reading
 out of bounds. The compressed bytes arrive from disk or a peer, so the decoder
 treats them as a **trust boundary** — every read (the preamble varint, each tag,
 every literal length and back-reference) is bounds-checked, and the produced
@@ -61,6 +64,35 @@ bytes before the current position. It may **overlap** the region being written
 (`offset < length` → run-length expansion), so the decoder copies one byte at a
 time, the source index trailing the write index.
 
+## Two encoders: a reference and a compressor
+
+The compressor ships as **two layers**, and both stay in the build:
+
+| Function | What it emits | Why it exists |
+|---|---|---|
+| `snappy_compress_literals` | The preamble plus **one literal element** per input — no back-references at all. Output is always slightly *larger* than the input. | The **correctness baseline**. A block of pure literals is spec-valid Snappy, and the encoder is short enough to read for correctness by eye. |
+| `snappy_compress` | The same literal framing **plus** LZ77 back-references found through a hash table. | The shipped encoder — what actually makes a partition body smaller than the rows it holds. |
+
+Both are checked by the **same** round-trip property over the same inputs, which
+is the point of keeping the reference: a failure both encoders show is a framing
+or decoder bug, while a failure only the compressor shows is in the match search.
+This is the relationship `CpuDevice` has to `CudaDevice` — a slow, obviously
+correct implementation kept as the numerical reference for a fast one.
+
+`snappy_compress` finds matches with a hash table over 4-byte windows (google/
+snappy's multiplicative hash, at most 2^14 buckets, sized down for a small page).
+A bucket hit is only a *candidate*: the four bytes are compared before a copy is
+emitted, so a hash collision can only cost a missed match, never a wrong byte.
+After a match, the windows it skipped are indexed too, so a long match does not
+blind the table. If the result would still be bigger than the literal framing of
+the same bytes — possible on pathological input — the literal form is shipped
+instead, so a "compressed" page is never larger than an uncompressed one.
+
+Two limits are the format's, not the encoder's: a single copy element spans at
+most **64 bytes**, so even an infinitely repetitive input costs ~3 bytes per 64
+(≈4.7%); and a block's length preamble is **32-bit**, so an input above 4 GiB is
+rejected with a reason rather than truncated.
+
 ## Testing — byte-identical decode
 
 `tests/data/test_parquet_snappy.cpp` proves the acceptance ("snappy-compressed pages
@@ -83,6 +115,24 @@ is the published block format itself, made executable:
   offset, and a stream shorter or longer than its declared length — all rejected
   with a reason, never a crash.
 
+The **encoder** is tested by the round-trip property, run over both encoders so
+they are differentially compared:
+
+- **Every literal-length boundary** the tag encoding switches on — sizes
+  0/1/59/60/61/255/256/257/65535/65536/65537 and more — across five input shapes
+  (zeros, one repeated byte, deterministic pseudo-random noise, a repetitive
+  phrase with an embedded NUL, and every byte value cycled).
+- **A property-style sweep** — 400 generated inputs of varying length and
+  varying alphabet size, so matches appear at every density from "incompressible"
+  to "one byte repeated".
+- The declared preamble length is asserted to equal the input length in every
+  case, so a page header's `uncompressed_page_size` can be trusted.
+- **It actually compresses** — four page-shaped bodies (one byte repeated, a
+  repeated 16-byte pattern, PLAIN-encoded int64s of a counter, length-prefixed
+  strings from a four-word vocabulary) must each beat both the literals-only
+  reference and a stated ratio; and 50 KB of pseudo-random noise must *not* grow
+  by more than the framing overhead.
+
 ## How it fits
 
 This is the page-codec leaf of the native Parquet reader. The
@@ -93,4 +143,5 @@ call `snappy_decompress` on each compressed page before decoding PLAIN /
 dictionary / RLE values; and the
 [reader → DDF wiring (#508)](https://github.com/oramasearch/zetta/issues/508)
 turns those into typed [DDF](../ddf/ddf.md) columns. zstd page decompression is the
-sibling codec to add behind the same per-page seam when a target file needs it.
+sibling codec to add behind the same per-page codec dispatch when a target file
+needs it.

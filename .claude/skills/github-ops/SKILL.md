@@ -160,6 +160,40 @@ Assign issues you create to `homer6` (or `@me`) so the backlog isn't orphaned.
 
 ## Issues
 
+### Every issue carries a test script — a MANUAL one (required)
+
+**A test script is something you hand to a human tester.** They follow it and tell you
+whether it passed. It is a mostly high-level, human-understandable walkthrough of a **real
+user pursuing a real use case**.
+
+It is **not** a unit test, integration test, e2e test, testkit case, MCP journey, or any
+programmatic check. Those prove *the code does what the developer intended*; they belong
+under **Acceptance**. A test script proves *a real person trying to accomplish a real goal
+succeeds*. Automated green is evidence, not acceptance — the build can be entirely green
+while a customer with three bare servers still cannot get a cluster up.
+
+**Where they live:** `docs/testing/test-scripts/<slug>.md`, one file per script, referenced
+or duplicated in the GitHub issue/comment. See
+[`docs/testing/test-scripts/README.md`](../../../docs/testing/test-scripts/README.md).
+Do not confuse it with `docs/testing/runbooks/test-cases/` (testkit cases — code) or
+`docs/testing/mcp-journeys.md` (layers 1–2 are gtest tables). Those are automated; test
+scripts are for people.
+
+**Shape:** persona + goal → what they need before starting → numbered steps in **user
+language**, each with an observable outcome → one unambiguous pass criterion → status
+(passed / failed / not yet runnable) → notes for the tester.
+
+**Rules:**
+
+- **User language only** in the steps. No class names, source paths, function names, or
+  `ctest` invocations. If the tester would not type it or click it, it does not belong.
+- **Executable by someone who has never read the code.**
+- **Never close an issue as done until a human has run its script and it passed.** If you
+  close anyway, say why and cite the issue that inherits it.
+- **If no script exists, writing and running it is part of the issue's artifact.** Write it
+  into the issue anyway — stating in the user's terms what "done" means is often the most
+  useful thing a review produces.
+
 ### Create
 
 ```bash
@@ -172,10 +206,15 @@ gh issue create -R oramasearch/zetta \
 What's missing or wanted, and why.
 
 ## Approach
-Sketch of how (files/seams it touches). Note if design-only.
+Sketch of how (files/interfaces it touches). Note if design-only.
+
+## Test script
+A manual walkthrough a human tester can follow — persona, goal, numbered steps in user
+language with observable outcomes, one pass criterion, and its status. NOT a programmatic
+test. Link docs/testing/test-scripts/<slug>.md if it lives there.
 
 ## Acceptance
-- [ ] Observable check 1
+- [ ] The test script above has been run by a human and passed
 - [ ] Tests added/updated
 - [ ] Docs updated (CLAUDE.md / docs / skills)
 

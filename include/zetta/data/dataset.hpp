@@ -46,6 +46,20 @@ struct DatasetSummary {
                                        //   order (the engine is schemaless)
     std::vector<DatasetPlacement> partitions;  // partition placement across the
                                                //   cluster (empty = not partitioned)
+
+    // **Degraded** (#837): this node cannot see the whole dataset. The partition
+    // manifest says the dataset has `expected_partitions` catalog entries and
+    // `expected_rows` rows; fewer entries are visible here, so `rows` above is a
+    // FRACTION, not a total, and a read of this dataset fails rather than
+    // answering short. The view says so plainly instead of quietly
+    // under-reporting — the whole reason the manifest exists.
+    //
+    // A dataset with no manifest (written before manifests, or by a path that
+    // produces none) is never reported degraded: `expected_partitions` is 0.
+    bool degraded = false;
+    std::string degraded_reason;         // empty unless degraded
+    std::uint64_t expected_partitions = 0;  // 0 = no manifest on this node
+    std::uint64_t expected_rows = 0;
 };
 
 }  // namespace zetta::data

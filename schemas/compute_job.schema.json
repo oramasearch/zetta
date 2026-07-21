@@ -20,7 +20,8 @@
         "train",
         "explain",
         "score",
-        "ddf"
+        "ddf",
+        "ingest"
       ],
       "type": "string"
     },

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,6 +23,7 @@ class DatasetPartition;
 struct PartitionWriteResult {
     std::vector<std::shared_ptr<DatasetPartition>> partitions;
     std::size_t rows_written = 0;
+    std::uint64_t bytes_written = 0;  // body bytes across the partitions written
     std::string error;  // empty on success
 
     bool ok() const { return error.empty(); }
@@ -37,9 +39,13 @@ struct PartitionWriteResult {
 //      a `RoundRobinPartitioner` with its default surrogate field distributes
 //      evenly without the caller pre-stamping it (the doc's "the write path stamps
 //      the monotonic surrogate"). Other partitioners ignore the extra field.
-//   2. **serializes each non-empty partition's rows to bytes** — a JSON Lines blob,
-//      one `{"_zid": <row-id>, "doc": <row>}` line per row (the `JsonlStore`
-//      on-disk shape), so the body is a self-describing slice of the table.
+//   2. **serializes each non-empty partition's rows to bytes** — a **Parquet**
+//      body (`zetta::data::serialize_partition_body`): the rows' fields as
+//      columns with each row's CRDT id in a `_zid` column beside them, so the
+//      body is a self-describing slice of the table that can be read a page at a
+//      time and projected column by column. Rows a flat scalar schema cannot
+//      express fall back to the previous JSON Lines shape, recorded in the
+//      catalog's `stats.format`. See docs/data/partition-body.md.
 //   3. **stores each partition's bytes as a LargeObject** in `database`'s LO store
 //      (`LargeObjectStore::import_bytes`) — so the body is fingerprinted (SHA-256),
 //      its `lo:` metadata rides in the CRDT, and it gossips peer-to-peer like any
@@ -60,13 +66,27 @@ struct PartitionWriteResult {
 // row space instead. Only **non-empty** partitions get a blob + a catalog row, so
 // `partitions.size()` is the number of partitions that received data.
 //
+// It also, as step 5, **records the dataset's partition manifest** on the table
+// (`Table::set_partition_manifest`, captured into `mfst:<table-id>`): the number
+// of catalog entries the finished dataset has, its total rows and body bytes, and
+// the entry ids. That count is what lets a reader tell an incomplete view of the
+// catalog from a complete one and FAIL rather than answer short (#837) — see
+// docs/data/partition-manifest.md.
+//
 // `members` is the cluster membership placement is computed over (each a node id,
 // e.g. from `Cluster::node_ids()`); when empty it defaults to this node only
 // (`{node.node_id()}`), so a standalone call still records a concrete owner. The
 // table must have a partitioner configured — otherwise the result carries an
-// error and nothing is written. Non-throwing.
+// error and nothing is written.
+//
+// `record_manifest` is false for one **tile** of a cluster-wide write (the
+// cross-node connector ingest, #833 section 7): a tile knows only its own share,
+// and a manifest describing a third of the dataset would fail every read of a
+// perfectly healthy one. The coordinator writes the manifest there, from the
+// cluster-wide totals its allreduce already agrees on. Non-throwing.
 PartitionWriteResult write_partitioned(
     Node& node, Database& database, Table& table,
-    const std::vector<std::string>& members = {});
+    const std::vector<std::string>& members = {},
+    bool record_manifest = true);
 
 }  // namespace zetta::data

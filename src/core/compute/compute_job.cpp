@@ -31,7 +31,7 @@ const nlohmann::json& schema_document() {
       "properties": {
         "id":      { "type": "string" },
         "kind":    { "type": "string",
-                     "enum": ["featurize", "train", "explain", "score", "ddf"] },
+                     "enum": ["featurize", "train", "explain", "score", "ddf", "ingest"] },
         "status":  { "type": "string",
                      "enum": ["queued", "running", "succeeded", "failed"] },
         "project":        { "type": "string" },
@@ -101,6 +101,7 @@ std::string_view to_string(JobKind kind) {
         case JobKind::Explain:   return "explain";
         case JobKind::Score:     return "score";
         case JobKind::Ddf:       return "ddf";
+        case JobKind::Ingest:    return "ingest";
     }
     return "featurize";
 }
@@ -111,6 +112,7 @@ std::optional<JobKind> job_kind_from_string(std::string_view name) {
     if (name == "explain")   return JobKind::Explain;
     if (name == "score")     return JobKind::Score;
     if (name == "ddf")       return JobKind::Ddf;
+    if (name == "ingest")    return JobKind::Ingest;
     return std::nullopt;
 }
 

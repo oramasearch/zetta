@@ -42,7 +42,7 @@ TEST(ImportRecords, JsonArrayBecomesRows) {
     ASSERT_TRUE(r.ok()) << r.error;
     EXPECT_EQ(r.added, 3u);
     EXPECT_EQ(table->row_count(), 3u);
-    EXPECT_EQ(table->store().at(1)["a"].get<int>(), 2);
+    EXPECT_EQ(table->store().at(1)->at("a").get<int>(), 2);
 }
 
 TEST(ImportRecords, JsonSingleObjectBecomesOneRow) {

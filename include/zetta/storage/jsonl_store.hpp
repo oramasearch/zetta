@@ -37,12 +37,17 @@ public:
         return id_index_.contains(id);
     }
     std::size_t size() const override { return records_.size(); }
-    const nlohmann::json& at(std::size_t i) const override {
-        return records_.at(i);
+    // Always resident: the handle borrows the row and its id straight out of
+    // this store's own vectors — no page, no refcount, no allocation.
+    ParquetLazyPtr at(std::size_t i) const override {
+        if (i >= records_.size()) {
+            return ParquetLazyPtr::failed("jsonl store: row " + std::to_string(i) +
+                                          " is past the end (" +
+                                          std::to_string(records_.size()) + " rows)");
+        }
+        return ParquetLazyPtr(records_[i], ids_[i]);
     }
-    const std::string& id_at(std::size_t i) const override {
-        return ids_.at(i);
-    }
+    std::string id_at(std::size_t i) const override { return ids_.at(i); }
 
 private:
     static constexpr std::size_t kMissing = static_cast<std::size_t>(-1);

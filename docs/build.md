@@ -122,3 +122,36 @@ ctest --test-dir build --output-on-failure
 
 Tests (GoogleTest) live in `tests/`, link `zetta-core`, and cover the headless
 core only. Disable building them with `-DZETTA_BUILD_TESTS=OFF`.
+
+## Container builds (`.dockerignore`)
+
+The image Dockerfiles live outside this repo — `build/images/zetta-headless/` and
+`build/images/zetta-e2e/` in `zetta-bridge` — but they use **this repository root as the
+build context** and do `COPY . /src`, so the context is filtered by the `.dockerignore`
+here.
+
+It exists for a specific failure. Without it, a host `build/` directory is copied into
+the image, and its `CMakeCache.txt` records absolute *host* paths, so the in-image
+`cmake -S . -B build` aborts before compiling anything:
+
+```
+CMake Error: The current CMakeCache.txt directory /src/build/CMakeCache.txt is different
+than the directory /home/you/zetta/build where CMakeCache.txt was created.
+```
+
+Any machine that has ever run a local build hits this. The file also drops the context
+from ~1.1 GB to ~55 MB.
+
+Two things to know before editing it:
+
+- **Patterns are relative to the context root**, so a bare name matches only at the top
+  level. `/build/` excludes this repo's build output and nothing else.
+- **Never exclude `**/build`.** The vendored Boost-style submodules (`capy`, `corosio`,
+  `http`, `beast2`) each track a real `build/` directory of Jamfiles — that is source.
+
+Verify a change to it by measuring the context, not by reading the patterns:
+
+```bash
+printf 'FROM busybox\n' > /tmp/ctx.Dockerfile
+DOCKER_BUILDKIT=0 docker build -f /tmp/ctx.Dockerfile . 2>&1 | grep 'build context'
+```

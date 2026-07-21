@@ -46,7 +46,7 @@ std::set<std::string> skus(const zetta::data::Table& table) {
     std::set<std::string> result;
     const zetta::storage::StorageEngine& store = table.store();
     for (std::size_t i = 0; i < store.size(); ++i) {
-        result.insert(store.at(i).at("sku").get<std::string>());
+        result.insert(store.at(i)->at("sku").get<std::string>());
     }
     return result;
 }

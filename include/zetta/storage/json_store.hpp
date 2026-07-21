@@ -40,8 +40,17 @@ public:
         return id_index_.contains(id);
     }
     std::size_t size() const override { return docs_.size(); }
-    const nlohmann::json& at(std::size_t i) const override { return docs_.at(i); }
-    const std::string& id_at(std::size_t i) const override { return ids_.at(i); }
+    // Always resident: the handle borrows the row and its id out of this store's
+    // own vectors (see ParquetLazyPtr's borrowed state) — no allocation.
+    ParquetLazyPtr at(std::size_t i) const override {
+        if (i >= docs_.size()) {
+            return ParquetLazyPtr::failed("json store: row " + std::to_string(i) +
+                                          " is past the end (" +
+                                          std::to_string(docs_.size()) + " rows)");
+        }
+        return ParquetLazyPtr(docs_[i], ids_[i]);
+    }
+    std::string id_at(std::size_t i) const override { return ids_.at(i); }
 
     // Engine-specific full view, handy for callers that hold a JsonStore&.
     const std::vector<nlohmann::json>& all() const { return docs_; }

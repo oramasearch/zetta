@@ -14,7 +14,10 @@ split:
 
 - **`zetta::data::add_dataset_file`** (`include/zetta/data/add_dataset.hpp`,
   `src/core/data/add_dataset.cpp`) — the reusable engine backend. No SDL, so it is
-  headless-testable (`tests/data/test_add_dataset.cpp`).
+  headless-testable (`tests/data/test_add_dataset.cpp`). Its in-memory sibling
+  **`add_dataset_rows`** takes already-decoded rows instead of a file — the landing
+  path a [connector query](#add_dataset_rows--the-in-memory-sibling-the-connector-query-landing-path)
+  uses.
 - The headed affordance (`src/gui/app.cpp` + `src/gui/app_datasets.cpp`) — a
   button + drag-drop + a File-menu item that start an **`AsyncDatasetAdd`**
   off the UI thread (#624; see "The headed affordance" below).
@@ -79,15 +82,41 @@ The whole point of "as a partitioned table" is that the dataset's slices land on
 placement overlay and `system.dataset_partitions` then surface. So
 `add_dataset_file` configures the table with a
 [`RendezvousPlacement`](partitioner.md) partitioner
-(`AddDatasetOptions::partition_count` partitions, default 8; `replication_factor`
-owners each, default 1) and writes it through
-[`write_partitioned`](partitioned-write-path.md):
+(`replication_factor` owners each, **default 3, clamped to the node count**) and
+writes it through [`write_partitioned`](partitioned-write-path.md):
 
 - the **record→partition** half shards rows across the `P` partitions (FNV-1a of
   the row), and
 - the **partition→node** half is rendezvous / highest-random-weight placement, so
   each partition is owned by a deterministic subset of `AddDatasetOptions::members`
   (the cluster membership) — adding/removing a node moves only ~1/N of partitions.
+
+**How many partitions comes from the [partition
+scheduler](partition-scheduler.md), not from a constant.** It used to be
+`AddDatasetOptions::partition_count = 8` — eight because eight, which is wrong in
+both directions at once (eight footers and eight replicated catalog entries for a
+4 KB dataset; 25 GB blobs for a 200 GB one). The scheduler targets a partition
+*size*, with a floor of partitions per node so every node gets work, and weights
+placement by live node telemetry. `partition_count` is now
+`std::optional<std::uint32_t>`: absent means auto, a value is a manual override
+honoured exactly. The plan it emitted — count, size targets, owners, and its
+**rationale** — comes back on `AddDatasetResult::plan`.
+
+### Why the replication factor defaults to 3
+
+It defaulted to **1** until #833. That was harmless only because a partitioned
+table *also* replicated every row through the CRDT — belt and braces, and the
+belt was doing the work. The moment rows stop being captured
+([partition-only tables](partition-only-tables.md)), the factor is the only thing
+standing between a dataset and "one copy, no backup", so the durable default is
+**3, clamped to the roster** (`min(rf, members)`, and `members` falls back to
+this node alone) — a one- or two-node cluster still places successfully instead
+of recording owners that do not exist.
+
+The deliberate exception is a **connector result set**: a cache, re-pullable from
+its source, which [`create_dataset_from_query`](connector-query.md) passes at
+**RF=1** explicitly. Promoting one to the durable factor is a separate,
+deliberate act ([promote-dataset.md](promote-dataset.md)).
 
 `RendezvousPlacement` is chosen over `RoundRobinPartitioner` / `HashPartitioner`
 precisely because *their* `place_partition` is replicate-to-all (every node owns
@@ -106,6 +135,38 @@ The table name is derived from the file's basename (extension stripped, lowercas
 runs of non-alphanumerics folded to `_`, fallback `dataset`) and made unique within
 the database (`accounts`, then `accounts_2`, …) so loading the same file twice does
 not collide. `AddDatasetOptions::table_name` overrides it.
+
+## `add_dataset_rows` — the in-memory sibling (the connector-query landing path)
+
+Not every dataset starts as a file. `add_dataset_rows` takes **already-decoded
+rows** (JSON documents — exactly what `add_dataset_file` decodes a file into) and
+materializes them through the *same* create-table → add-rows → `write_partitioned`
+→ audit path:
+
+```cpp
+#include "zetta/data/add_dataset.hpp"
+
+AddDatasetResult add_dataset_rows(Node& node,
+                                  std::vector<nlohmann::json> rows,
+                                  const AddDatasetOptions& options = {});
+```
+
+This is the landing path a **connector query** uses
+([#827](https://github.com/oramasearch/zetta/issues/827)): the row producer's only
+job is to yield rows — Zetta shards and places them across the cluster. One
+logical dataset in, a distributed table out. Everything downstream is identical to
+the file path: the rows land in a uniquely named table, the partitions are
+HRW-placed via [`RendezvousPlacement`](partitioned-write-path.md), and the dataset
+shows up in `system.datasets` / `system.dataset_partitions` with a
+`dataset_added` audit event.
+
+Two small differences from the file path:
+
+- **Naming** — there is no filename to derive from, so `options.table_name` is used
+  directly (falling back to `dataset`), still made unique within the database.
+- **Format** — the result reports `Format::Jsonl`, since in-memory rows are JSON
+  documents (the same shape a `.jsonl` file decodes to). Only the audit note reads
+  it; there is no file to classify.
 
 ## The headed affordance
 

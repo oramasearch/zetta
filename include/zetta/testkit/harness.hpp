@@ -52,6 +52,18 @@ struct LoopbackOptions {
     // (false) is the membership-only substrate: real TCP + collectives, no
     // replicated catalog — the cheaper shape most distributed cases need.
     bool replicated = false;
+
+    // When true, each node additionally announces itself as a replicated member
+    // and its compute plane is wired to its cluster (`Node::attach_cluster`),
+    // finishing the live-process wiring. That call is what installs the
+    // `run.launch` listener, so **every co-launched job kind — the connector
+    // ingest included — exists only on an attached node**. Implies
+    // `replicated` (a launch names members by their replicated `node:` keys).
+    bool attached = false;
+
+    // Worker threads per attached node's JobCoordinator. Ignored unless
+    // `attached`.
+    unsigned worker_count = 2;
 };
 
 // A real, fully-connected loopback cluster of N nodes on the local host — each a
@@ -82,6 +94,15 @@ public:
     // no-op otherwise). A case that models a burst announces only its permanent
     // members and lets `apply_added_nodes` announce the burst ones.
     void announce_member(std::size_t index);
+
+    // The CRDT document node `index` currently holds — its replicated state, in
+    // the form the gossip path exchanges. An empty object in the membership-only
+    // substrate (no ReplicationManager behind the node).
+    //
+    // A case reads it for the *shape* of what replicated rather than for values:
+    // that a partition-only table put no `row:` entry on the wire, that a `part:`
+    // entry exists for every body a node wrote. Reading never mutates it.
+    nlohmann::json replicated_document(std::size_t index) const;
 
 private:
     struct Entry;

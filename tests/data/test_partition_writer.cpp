@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -13,6 +14,7 @@
 #include "zetta/data/database.hpp"
 #include "zetta/data/dataset_partition.hpp"
 #include "zetta/data/large_object.hpp"
+#include "zetta/data/partition_body.hpp"
 #include "zetta/node.hpp"
 #include "zetta/data/partition_writer.hpp"
 #include "zetta/data/partitioner.hpp"
@@ -20,6 +22,7 @@
 #include "zetta/data/rendezvous_placement.hpp"
 #include "zetta/data/replication_strategy.hpp"
 #include "zetta/data/table.hpp"
+#include "zetta/storage/engine.hpp"
 
 using zetta::data::Database;
 using zetta::data::HashPartitioner;
@@ -62,15 +65,14 @@ struct Fixture {
     std::shared_ptr<Table> table;
 };
 
-// Number of lines (rows) in a partition's serialized JSONL blob.
-std::size_t blob_line_count(const std::string& blob) {
-    std::size_t lines = 0;
-    std::istringstream in(blob);
-    std::string line;
-    while (std::getline(in, line)) {
-        if (!line.empty()) ++lines;
-    }
-    return lines;
+// The rows a partition's serialized body carries, read back through the shared
+// partition-body reader (which sniffs Parquet vs the legacy JSON Lines).
+std::vector<zetta::data::PartitionRow> body_rows(const std::string& blob,
+                                                 const std::string& partition_id) {
+    const zetta::data::PartitionBodyReadResult read =
+        zetta::data::read_partition_body(blob, partition_id);
+    EXPECT_TRUE(read.ok()) << read.error;
+    return read.rows;
 }
 
 // Assert the partition row ranges tile [0, total) contiguously with no gaps or
@@ -123,10 +125,10 @@ TEST(PartitionWriter, HashPartitionedLoadProducesBlobsAndCatalogRows) {
 
         const auto blob = fx.database->large_objects().read(partition->blob_ref());
         ASSERT_TRUE(blob) << "partition blob must be stored as a large object";
-        const std::size_t lines = blob_line_count(*blob);
+        const std::size_t rows = body_rows(*blob, partition->id()).size();
         // The catalog range size matches the blob's row count.
-        EXPECT_EQ(lines, partition->row_range().end - partition->row_range().start);
-        total_blob_rows += lines;
+        EXPECT_EQ(rows, partition->row_range().end - partition->row_range().start);
+        total_blob_rows += rows;
     }
     // Distinct blobs, and together they hold exactly the table's rows.
     EXPECT_EQ(blob_refs.size(), result.partitions.size());
@@ -148,24 +150,86 @@ TEST(PartitionWriter, BlobsCarryEveryRowExactlyOnce) {
     // Collect every row id across all partition blobs — the union must be exactly
     // the table's rows, each appearing once (no drops, no duplication).
     std::set<std::string> ids;
+    std::set<std::string> row_ids;
     for (const auto& partition : result.partitions) {
         const auto blob = fx.database->large_objects().read(partition->blob_ref());
         ASSERT_TRUE(blob);
-        std::istringstream in(*blob);
-        std::string line;
-        while (std::getline(in, line)) {
-            if (line.empty()) continue;
-            const auto doc = nlohmann::json::parse(line, nullptr, false);
-            ASSERT_FALSE(doc.is_discarded());
-            ASSERT_TRUE(doc.contains("_zid"));      // the JsonlStore shape
-            ASSERT_TRUE(doc.contains("doc"));
-            ids.insert(doc["doc"]["id"].get<std::string>());
+        // A Parquet body: PAR1 at both ends, the row id in its own column.
+        EXPECT_EQ(zetta::data::sniff_partition_body(*blob),
+                  zetta::data::PartitionBodyFormat::Parquet);
+        for (const zetta::data::PartitionRow& row : body_rows(*blob, partition->id())) {
+            ASSERT_TRUE(row.doc.is_object());
+            EXPECT_FALSE(row.doc.contains("_zid")) << "the id is the key, not a field";
+            EXPECT_FALSE(row.id.empty());
+            row_ids.insert(row.id);
+            ids.insert(row.doc["id"].get<std::string>());
         }
     }
+    EXPECT_EQ(row_ids.size(), 10u) << "every row keeps its own stable id";
     EXPECT_EQ(ids.size(), 10u);
     for (int i = 0; i < 10; ++i) {
         EXPECT_TRUE(ids.count("row-" + std::to_string(i))) << "missing row-" << i;
     }
+}
+
+// ---- the round trip: what was written is what reads back ----------------------
+
+TEST(PartitionWriter, RowsRoundTripThroughTheBodyReadPath) {
+    TempDir tmp;
+    Fixture fx{tmp, /*count=*/12};
+    fx.table->set_partitioner(std::make_shared<HashPartitioner>(
+        /*P=*/4, std::vector<std::string>{"id"}));
+
+    // What the table holds, before it is partitioned.
+    std::map<std::string, nlohmann::json> expected;
+    const zetta::storage::StorageEngine& store = fx.table->store();
+    for (std::size_t i = 0; i < store.size(); ++i) {
+        const auto row = store.at(i);
+        ASSERT_TRUE(row.ok()) << row.error();
+        expected.emplace(store.id_at(i), *row);
+    }
+
+    const PartitionWriteResult result = zetta::data::write_partitioned(
+        *fx.node, *fx.database, *fx.table);
+    ASSERT_TRUE(result.ok()) << result.error;
+
+    std::map<std::string, nlohmann::json> round_tripped;
+    for (const auto& partition : result.partitions) {
+        // The catalog records the body's format, and the body is Parquet.
+        ASSERT_TRUE(partition->stats().contains("format"));
+        EXPECT_EQ(partition->stats()["format"].get<std::string>(), "parquet");
+
+        const auto blob = fx.database->large_objects().read(partition->blob_ref());
+        ASSERT_TRUE(blob);
+        for (const zetta::data::PartitionRow& row :
+             body_rows(*blob, partition->id())) {
+            EXPECT_TRUE(round_tripped.emplace(row.id, row.doc).second)
+                << "row " << row.id << " appears in more than one partition";
+        }
+    }
+
+    // Every row, its id, and its value — identical, not merely equivalent.
+    EXPECT_EQ(round_tripped, expected);
+}
+
+// ---- the body is named for its format -----------------------------------------
+
+TEST(PartitionWriter, BodiesAreNamedParquet) {
+    TempDir tmp;
+    Fixture fx{tmp, /*count=*/5};
+    fx.table->set_partitioner(std::make_shared<SinglePartitioner>());
+
+    const PartitionWriteResult result = zetta::data::write_partitioned(
+        *fx.node, *fx.database, *fx.table);
+    ASSERT_TRUE(result.ok()) << result.error;
+
+    std::set<std::string> names;
+    for (const zetta::data::LargeObject& object : fx.database->large_objects().list()) {
+        names.insert(object.name);
+    }
+    ASSERT_EQ(names.size(), 1u);
+    const std::string& name = *names.begin();
+    EXPECT_TRUE(name.ends_with(".parquet")) << name;
 }
 
 // ---- single partitioner: one blob covering the whole table --------------------

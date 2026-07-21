@@ -17,6 +17,16 @@ touched domain's `docs/<domain>/README.md` before changing its code.
   persists.
 - **Reconcile/`materialize_*`/`apply_value` paths never emit audit events** — a
   peer's action arrives already-audited as its own replicated `audit:` key.
+- **Removal is a tombstone, never a key delete.** `ReplicationManager::remove`
+  writes `{"_removed": true}`; `snapshot()` omits tombstoned keys (so reconcile
+  still reads a removal as plain absence) and removal **wins** over a concurrent
+  write. Never reintroduce a CRDT map delete: it names only the predecessor
+  writes the deleting node had already merged, so an unseen write resurrects the
+  key on every node including the remover's (#838). A caller that must see
+  through the tombstone — `migrate_to_replication`, which would otherwise
+  re-capture a dropped entity from a stale disk projection — asks `knows_key()`.
+  `row:` keeps its own `{tbl, deleted:true}` shape, because reconcile has to see
+  that entry to route the delete to a table.
 - **Flat CRDT keys, one entity per UUID key** (`src/core/catalog.hpp` is the
   internal scheme): `node:` `db:` `tbl:` `row:` `lo:` `project:` `input:`
   `graph:` `deployment:` `run:` `model:` `job:` `index:` `principal:` `key:`
@@ -55,8 +65,13 @@ New capability = a new implementation of an existing seam: `StorageEngine`,
 (`FleetSource`, `IdentityHooks`, `NarratorCompletion`, `DatasetResolver`) keeps
 zetta-core free of HTTP/LLM/cloud SDKs and unit-testable against fakes.
 
-- Only `src/core/cluster/cluster.cpp` names Corosio (via `zetta::runtime::net`
-  — including the TLS surface, #466); OpenSSL libcrypto is named by exactly two
+- Exactly two TUs name Corosio (via `zetta::runtime::net`):
+  `src/core/cluster/cluster.cpp` for inbound/peer traffic — including the TLS
+  surface, #466 — and `src/core/api/native_http_transport.cpp` for outbound
+  client traffic (the native coroutine HTTPS client behind
+  `connect::HttpTransport`, #827; it lives in the `zetta-api` target because it
+  also needs Boost.HTTP, which zetta-core must never link).
+  OpenSSL libcrypto is named by exactly two
   TUs — `src/core/cluster/security.cpp` (join-token/CA/cert minting) and
   `src/core/governance/token_secret.cpp` (token-secret RAND/SHA-256/constant-time
   compare, #744); only `src/core/cluster/replication.cpp` names automerge-cpp.

@@ -104,7 +104,13 @@ ComputeStatus fill_chunks(const zetta::storage::StorageEngine& store, const std:
         host.reserve(length);
         for (std::size_t row = start; row < start + length; ++row) {
             Element value{};
-            const ComputeStatus status = extract<Element>(store.at(row), field, row, value);
+            const zetta::storage::ParquetLazyPtr handle = store.at(row);
+            if (!handle) {
+                return ComputeStatus::backend_error(
+                    "load_data_frame: row " + std::to_string(row) +
+                    " could not be read: " + handle.error());
+            }
+            const ComputeStatus status = extract<Element>(*handle, field, row, value);
             if (!status.ok()) return status;
             host.push_back(value);
         }
@@ -306,7 +312,9 @@ DataFrameSchema infer_schema(const zetta::storage::StorageEngine& store) {
     DataFrameSchema schema;
     const std::size_t row_count = store.size();
     if (row_count == 0) return schema;
-    const nlohmann::json& first = store.at(0);
+    const zetta::storage::ParquetLazyPtr first_row = store.at(0);
+    if (!first_row) return schema;  // unreadable first row → no inferable schema
+    const nlohmann::json& first = *first_row;
     if (!first.is_object()) return schema;
 
     // Seed candidate fields from the first row's numeric keys, recording whether
@@ -325,7 +333,14 @@ DataFrameSchema infer_schema(const zetta::storage::StorageEngine& store) {
         }
     }
     for (std::size_t row = 1; row < row_count; ++row) {
-        const nlohmann::json& doc = store.at(row);
+        const zetta::storage::ParquetLazyPtr handle = store.at(row);
+        // An unreadable row cannot vouch for any candidate: every survivor must
+        // be dense across every row, so a failed read drops them all.
+        if (!handle) {
+            for (Candidate& candidate : candidates) candidate.alive = false;
+            break;
+        }
+        const nlohmann::json& doc = *handle;
         for (Candidate& candidate : candidates) {
             if (!candidate.alive) continue;
             if (!doc.is_object() || !doc.contains(candidate.field) ||

@@ -5,6 +5,7 @@
 #include <charconv>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@
 #include "zetta/parquet/reader.hpp"
 #include "zetta/runtime.hpp"
 #include "zetta/data/partition_writer.hpp"
+#include "zetta/data/fetch_affinity_placement.hpp"
 #include "zetta/data/rendezvous_placement.hpp"
 #include "zetta/data/table.hpp"
 
@@ -339,12 +341,13 @@ std::vector<nlohmann::json> decode_dataset_file(
     return rows;
 }
 
-// Create (or find) the target database + a uniquely named table for `path`
-// (the first, cheap materialize step). Fills result.database / result.table;
-// on failure sets result.error.
-void create_target_table(Node& node, const fs::path& path,
-                         const AddDatasetOptions& options,
-                         AddDatasetResult& result) {
+// Create (or find) the target database + a uniquely named table with base name
+// `base` (the shared, cheap materialize step for both the file and the
+// in-memory-rows paths). Fills result.database / result.table; on failure sets
+// result.error.
+void create_named_target_table(Node& node, const std::string& base,
+                               const AddDatasetOptions& options,
+                               AddDatasetResult& result) {
     std::shared_ptr<Database> database = node.find_database(options.database);
     if (!database) database = node.create_database(options.database);
     if (!database) {
@@ -353,10 +356,12 @@ void create_target_table(Node& node, const fs::path& path,
     }
     result.database = database;
 
-    const std::string base =
-        options.table_name.empty() ? derive_table_name(path) : options.table_name;
     const std::string table_name = unique_table_name(*database, base);
-    std::shared_ptr<Table> table = database->create_table(table_name);
+    // A partition-only dataset (#833) is marked at create time: the marker rides
+    // in the tbl: value, so every node knows the rows live in the partition
+    // bodies rather than in the document before any row is written.
+    std::shared_ptr<Table> table = database->create_table(
+        table_name, std::nullopt, options.partition_only);
     if (!table) {
         result.error = "could not create table '" + table_name + "'";
         return;
@@ -364,15 +369,96 @@ void create_target_table(Node& node, const fs::path& path,
     result.table = table;
 }
 
+// Create (or find) the target database + a uniquely named table for `path`
+// (the file path's base name, unless overridden). Fills result.database /
+// result.table; on failure sets result.error.
+void create_target_table(Node& node, const fs::path& path,
+                         const AddDatasetOptions& options,
+                         AddDatasetResult& result) {
+    const std::string base =
+        options.table_name.empty() ? derive_table_name(path) : options.table_name;
+    create_named_target_table(node, base, options, result);
+}
+
+// The serialized size of a table's rows, estimated from an evenly-spread sample
+// rather than measured — the estimate feeds a size TARGET, and being a few
+// percent out moves the partition count by nothing, while dumping every row to
+// find out exactly would serialize the dataset twice.
+std::size_t estimate_table_bytes(const Table& table) {
+    const zetta::storage::StorageEngine& store = table.store();
+    const std::size_t rows = store.size();
+    if (rows == 0) return 0;
+    constexpr std::size_t kSampleRows = 64;
+    const std::size_t stride = std::max<std::size_t>(1, rows / kSampleRows);
+    std::size_t sampled = 0;
+    std::size_t bytes = 0;
+    for (std::size_t index = 0; index < rows; index += stride) {
+        const zetta::storage::ParquetLazyPtr row = store.at(index);
+        if (!row) continue;
+        bytes += row->dump().size();
+        ++sampled;
+    }
+    return sampled == 0 ? 0 : (bytes / sampled) * rows;
+}
+
 // Partition the populated table so its slices are placed across the cluster.
 // RendezvousPlacement shards rows into P partitions and HRW-places each onto
 // specific owner node(s) — so the placement actually spreads (vs. the
 // replicate-to-all strategies). Skip an empty dataset (nothing to place).
+//
+// **How many partitions comes from the scheduler** (#833), which is the ONE
+// place that decision is made — a size target plus a per-node floor rather than
+// a constant 8. `options.partition_count` is a manual override, honoured
+// exactly. The plan it emitted (count, targets, owners, rationale) is returned
+// on the result so the decision is observable.
 void partition_target_table(Node& node, const AddDatasetOptions& options,
                             AddDatasetResult& result) {
     if (!options.partitioned || result.rows == 0 || !result.table) return;
-    result.table->set_partitioner(std::make_shared<RendezvousPlacement>(
-        options.partition_count, options.replication_factor));
+    // Clamp the replication factor to the roster placement is computed over
+    // (#833 section 8): the default is 3, and a one- or two-node cluster must
+    // still place successfully rather than record owners that do not exist.
+    // write_partitioned falls back to this node alone when `members` is empty.
+    const std::size_t roster =
+        options.members.empty() ? std::size_t{1} : options.members.size();
+    const std::size_t replication_factor =
+        std::min(std::max<std::size_t>(options.replication_factor, 1), roster);
+
+    PartitionRequest ask;
+    ask.row_count = result.rows;
+    // The scheduler targets a partition SIZE, so it needs bytes. The caller
+    // rarely knows them, and serializing the whole dataset to find out would
+    // double the write — sample instead (see estimate_table_bytes).
+    ask.approx_bytes = options.approx_bytes > 0
+                           ? options.approx_bytes
+                           : estimate_table_bytes(*result.table);
+    // With fetch affinity these rows are THIS node's own slice and stay here, so
+    // the count is a per-node count — the plan is asked over the owning node
+    // alone. Otherwise the placement roster is the cluster (or this node, when
+    // the caller passed none).
+    ask.members = options.fetch_affinity_owner.empty()
+                      ? (options.members.empty()
+                             ? std::vector<std::string>{node.node_id()}
+                             : options.members)
+                      : std::vector<std::string>{options.fetch_affinity_owner};
+    ask.replication_factor = replication_factor;
+    ask.source = options.source;
+    ask.partition_count = options.partition_count;
+    ask.telemetry = node.telemetry_snapshot();
+    const PartitionScheduler& scheduler =
+        options.scheduler ? *options.scheduler : default_partition_scheduler();
+    result.plan = scheduler.plan(ask);
+
+    // Fetch affinity (#833 section 6) when the caller pulled this slice itself:
+    // the partitions stay on the node that produced them, so nothing shuffles
+    // after the write. Otherwise HRW, which spreads a locally-loaded dataset.
+    if (options.fetch_affinity_owner.empty()) {
+        result.table->set_partitioner(std::make_shared<RendezvousPlacement>(
+            result.plan.partition_count, replication_factor));
+    } else {
+        result.table->set_partitioner(std::make_shared<FetchAffinityPlacement>(
+            result.plan.partition_count, options.fetch_affinity_owner,
+            replication_factor));
+    }
     PartitionWriteResult written = write_partitioned(
         node, *result.database, *result.table, options.members);
     if (!written.ok()) {
@@ -415,6 +501,27 @@ AddDatasetResult add_dataset_file(Node& node, const fs::path& path,
 
     // Materialize into a table on the node.
     create_target_table(node, path, options, result);
+    if (!result.table) return result;
+
+    for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
+    result.rows = result.table->row_count();
+
+    partition_target_table(node, options, result);
+    audit_dataset_added(node, result);
+    return result;
+}
+
+AddDatasetResult add_dataset_rows(Node& node, std::vector<nlohmann::json> rows,
+                                  const AddDatasetOptions& options) {
+    AddDatasetResult result;
+    // In-memory rows are JSON documents — the same shape a jsonl file decodes
+    // to — so the dataset records the jsonl format (only the audit note reads
+    // it; there is no file to classify).
+    result.format = dataset_file::Format::Jsonl;
+
+    const std::string base =
+        options.table_name.empty() ? "dataset" : options.table_name;
+    create_named_target_table(node, base, options, result);
     if (!result.table) return result;
 
     for (nlohmann::json& row : rows) result.table->add_row(std::move(row));
