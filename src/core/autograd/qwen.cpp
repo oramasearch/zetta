@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
 #include <random>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -289,6 +292,54 @@ std::vector<int> QwenModel::generate(const std::vector<int>& prompt,
                                      int max_new_tokens, float temperature,
                                      std::mt19937& rng, int eos_id) const {
     return generate_impl(prompt, max_new_tokens, temperature, &rng, eos_id);
+}
+
+std::optional<QwenModel> load_qwen_model(const std::string& directory,
+                                         std::string* error) {
+    const auto fail = [&](std::string reason) -> std::optional<QwenModel> {
+        if (error != nullptr) *error = std::move(reason);
+        return std::nullopt;
+    };
+
+    const std::filesystem::path root(directory);
+
+    // config.json -> the architecture.
+    std::ifstream config_in(root / "config.json", std::ios::binary);
+    if (!config_in) {
+        return fail("load_qwen: cannot open " + (root / "config.json").string());
+    }
+    std::ostringstream config_buffer;
+    config_buffer << config_in.rdbuf();
+    std::string reason;
+    const std::optional<QwenConfig> config =
+        parse_qwen_config(config_buffer.str(), &reason);
+    if (!config.has_value()) {
+        return fail(reason);
+    }
+
+    // model.safetensors -> the weights.
+    const std::optional<SafeTensors> tensors =
+        read_safetensors_file((root / "model.safetensors").string(), &reason);
+    if (!tensors.has_value()) {
+        return fail(reason);
+    }
+
+    // Build the model and load every parameter by name.
+    QwenModel model(*config);
+    QwenModel::LoadReport report;
+    if (!model.load_safetensors(*tensors, &report)) {
+        std::string detail = "load_qwen: checkpoint does not cover the model —";
+        if (!report.missing.empty()) {
+            detail += " " + std::to_string(report.missing.size()) +
+                      " missing (e.g. " + report.missing.front() + ")";
+        }
+        if (!report.mismatched.empty()) {
+            detail += " " + std::to_string(report.mismatched.size()) +
+                      " mismatched (e.g. " + report.mismatched.front() + ")";
+        }
+        return fail(detail);
+    }
+    return model;
 }
 
 }  // namespace zetta::autograd

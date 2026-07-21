@@ -124,4 +124,15 @@ private:
     std::unordered_map<std::string, std::size_t> index_; // HF name -> position
 };
 
+// Load a Qwen model from a Hugging Face checkpoint directory: read
+// `<directory>/config.json` for the architecture (parse_qwen_config) and
+// `<directory>/model.safetensors` for the weights, build the QwenModel, and load
+// every parameter by name. Returns std::nullopt (with a reason in *error) if
+// either file is missing/malformed, or the checkpoint does not cover the model's
+// parameters (missing / mismatched tensors). THE entry point: point it at a
+// downloaded Qwen directory and get a trainable model. (Single-file
+// model.safetensors; sharded index.json is a later slice.)
+std::optional<QwenModel> load_qwen_model(const std::string& directory,
+                                         std::string* error = nullptr);
+
 }  // namespace zetta::autograd

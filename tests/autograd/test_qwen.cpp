@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <fstream>
 #include <optional>
 #include <random>
 #include <string>
@@ -17,6 +18,7 @@ namespace {
 
 using zetta::autograd::Adam;
 using zetta::autograd::cross_entropy;
+using zetta::autograd::load_qwen_model;
 using zetta::autograd::parse_qwen_config;
 using zetta::autograd::QwenConfig;
 using zetta::autograd::QwenModel;
@@ -195,6 +197,59 @@ TEST(QwenModel, RejectsMalformedConfig) {
     })";
     EXPECT_FALSE(parse_qwen_config(bad, &error).has_value());
     EXPECT_NE(error.find("multiple"), std::string::npos);
+}
+
+// THE ENTRY POINT: point load_qwen_model at a Hugging Face checkpoint directory
+// (config.json + model.safetensors) and get a fully-loaded, ready-to-run model.
+// Proven here with a synthetic directory whose config matches tiny_config; a real
+// Qwen directory is the same two files (only the weights + tokenizer differ, and
+// those are the external-asset step).
+TEST(QwenModel, LoadsFromACheckpointDirectory) {
+    const QwenConfig config = tiny_config();  // vocab 24, d 16, 2 layers, GQA 4/2
+    const QwenModel source(config, 11);
+    const std::vector<int> ids = {1, 5, 2, 7};
+    const std::vector<float> expected = source.forward(ids).data();
+
+    const zetta::test::TempDir temp;
+    // config.json matching tiny_config.
+    std::ofstream(temp.path() / "config.json")
+        << R"({"vocab_size":24,"hidden_size":16,"num_hidden_layers":2,)"
+           R"("num_attention_heads":4,"num_key_value_heads":2,"head_dim":4,)"
+           R"("intermediate_size":32,"rms_norm_eps":1e-6,"rope_theta":1000000.0,)"
+           R"("tie_word_embeddings":false})";
+    ASSERT_TRUE(write_safetensors_file((temp.path() / "model.safetensors").string(),
+                                       source.to_safetensors()));
+
+    std::string error;
+    const std::optional<QwenModel> loaded =
+        load_qwen_model(temp.path().string(), &error);
+    ASSERT_TRUE(loaded.has_value()) << error;
+    EXPECT_EQ(loaded->forward(ids).data(), expected);  // identical weights + arch
+}
+
+TEST(QwenModel, LoadFromDirectoryReportsMissingFilesAndBadCheckpoints) {
+    const zetta::test::TempDir temp;
+    std::string error;
+
+    // Empty directory: no config.json.
+    EXPECT_FALSE(load_qwen_model(temp.path().string(), &error).has_value());
+    EXPECT_NE(error.find("config.json"), std::string::npos);
+
+    // config.json present but no model.safetensors.
+    std::ofstream(temp.path() / "config.json")
+        << R"({"vocab_size":24,"hidden_size":16,"num_hidden_layers":2,)"
+           R"("num_attention_heads":4,"num_key_value_heads":2,"head_dim":4,)"
+           R"("intermediate_size":32})";
+    EXPECT_FALSE(load_qwen_model(temp.path().string(), &error).has_value());
+    EXPECT_NE(error.find("model.safetensors"), std::string::npos);
+
+    // A safetensors that doesn't cover the model's parameters.
+    SafeTensors sparse;
+    sparse["model.norm.weight"] = SafeTensor{{16}, std::vector<float>(16, 1.0F)};
+    ASSERT_TRUE(write_safetensors_file((temp.path() / "model.safetensors").string(),
+                                       sparse));
+    EXPECT_FALSE(load_qwen_model(temp.path().string(), &error).has_value());
+    EXPECT_NE(error.find("missing"), std::string::npos);
 }
 
 // Loading a checkpoint: dump one model's weights to a .safetensors file, read it

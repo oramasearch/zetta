@@ -75,3 +75,9 @@ across heterogeneous devices.
   decode) and `generate()` (temperature sampling with an rng), the autoregressive
   "act" step of the RLVR loop. A model overfit on a sequence greedily *generates*
   that sequence — training and generation are mirror images.
+- **`load_qwen_model(dir)`** — the entry point: point it at a Hugging Face
+  checkpoint directory (`config.json` + `model.safetensors`) and get a
+  fully-loaded, ready-to-run `QwenModel` (config parsed, weights loaded by name).
+  Proven with a synthetic directory that round-trips to identical logits; a real
+  Qwen directory is the same two files, with only the multi-GB weights and the
+  tokenizer as the remaining external-asset step.
