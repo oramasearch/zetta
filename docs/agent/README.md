@@ -37,6 +37,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **GRPO advantages** — `group_advantages` (below).
 - **The policy-gradient step** — `policy_gradient_step` (below) — reward provably rises.
 - **The training loop** — `train_softmax_policy` (below) — learns to solve a real task.
+- **The LLM-judge fallback** — `Judge` + `resolve_grade` (below).
 
 ## The reward primitive (shipped)
 
@@ -153,6 +154,19 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   change. Proven end to end: an integration test wires the reward to the real
   `Task → Sandbox → rollout → reward_for_rollout` pipeline and the loop learns to
   pick the tool call that solves the task.
+
+## The LLM-judge fallback (shipped)
+
+- **`Judge` + `resolve_grade`** (`judge.hpp`) — most tasks are graded
+  deterministically, but some have no deterministic check; for those an **injected
+  `Judge`** reads the task and the observed end-state and scores it. `resolve_grade`
+  uses the deterministic grader wherever a task has a verifiable criterion and
+  falls back to the judge **only** where none exists, recording which path produced
+  the grade (`GradeSource`) — feat-12 step 4, since a score that is mostly judged is
+  a softer claim. The deterministic grader always wins; an ungradeable task with no
+  judge **fails closed** (score 0), never a silent pass. The judge is injected so
+  the fallback logic is tested with a deterministic fake and no model; a real judge
+  (local by default, frontier only on #555's Orama-infra runs) implements it later.
 
 This closes the reference-first training half. What remains is the **⚙️ real
 model**: an `MlxDevice` compute backend + an open-weights model behind
