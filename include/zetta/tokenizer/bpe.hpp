@@ -42,6 +42,19 @@ public:
         const std::string& vocab_json_path, const std::string& merges_txt_path,
         std::string* error = nullptr);
 
+    // Load from a Hugging Face tokenizer.json (what Qwen ships as canonical): its
+    // model.vocab, model.merges (space-joined strings or [first, second] pairs),
+    // and added_tokens (registered as special tokens). std::nullopt + a reason on a
+    // missing/malformed file.
+    static std::optional<BpeTokenizer> from_tokenizer_json(
+        const std::string& path, std::string* error = nullptr);
+
+    // Load a tokenizer from a checkpoint directory: prefer <dir>/tokenizer.json,
+    // else <dir>/vocab.json + <dir>/merges.txt. THE entry point paired with the
+    // model's load_qwen_model. std::nullopt + a reason if neither is present/valid.
+    static std::optional<BpeTokenizer> from_directory(const std::string& directory,
+                                                      std::string* error = nullptr);
+
     // Register special tokens (e.g. <|endoftext|>, <|im_start|>). Each is matched
     // as one atomic unit during encode — before pre-tokenization, longest match
     // wins — and emitted as its id; decode reproduces its content. Also added to

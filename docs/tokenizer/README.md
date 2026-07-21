@@ -70,7 +70,11 @@ Built bottom-up (nibble-dev); shipped so far:
   `<|im_start|>`; encode matches them **before** pre-tokenization (longest match
   wins) and emits their id, and decode reproduces their content. Verified: a
   special token splits the surrounding text and round-trips.
-- **GPT-2 / Qwen file loading** — `from_gpt2_files(vocab.json, merges.txt)` loads
-  the classic pair: `vocab.json` (`{token: id}`) and `merges.txt` (a `#` header
-  then `first second` lines). Verified: a written vocab+merges loads and encodes/
-  decodes; missing files are rejected with a reason.
+- **File loading** — `from_gpt2_files(vocab.json, merges.txt)` loads the classic
+  pair; `from_tokenizer_json(tokenizer.json)` loads the single-file HF format Qwen
+  ships as canonical (`model.vocab`, `model.merges` in either the space-joined-string
+  or `[first, second]`-pair form, and `added_tokens` → special tokens);
+  `from_directory(dir)` prefers `tokenizer.json`, else `vocab.json` + `merges.txt` —
+  the entry point paired with the model's `load_qwen_model`. Verified: a synthetic
+  `tokenizer.json` in both merge formats loads and encodes/decodes (incl. its
+  `added_tokens`), `from_directory` resolves it, and an empty directory is rejected.

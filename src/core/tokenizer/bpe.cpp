@@ -2,6 +2,7 @@
 
 #include <climits>
 #include <cstddef>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -234,6 +235,89 @@ std::optional<BpeTokenizer> BpeTokenizer::from_gpt2_files(
     }
 
     return from_vocab_and_merges(std::move(vocab), merges, error);
+}
+
+std::optional<BpeTokenizer> BpeTokenizer::from_tokenizer_json(
+    const std::string& path, std::string* error) {
+    const auto fail = [&](std::string reason) -> std::optional<BpeTokenizer> {
+        if (error != nullptr) *error = std::move(reason);
+        return std::nullopt;
+    };
+
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return fail("bpe: cannot open " + path);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    const nlohmann::json root =
+        nlohmann::json::parse(buffer.str(), nullptr, /*allow_exceptions=*/false);
+    if (root.is_discarded() || !root.is_object() || !root.contains("model") ||
+        !root.at("model").is_object()) {
+        return fail("bpe: " + path + " has no 'model' object");
+    }
+    const nlohmann::json& model = root.at("model");
+    if (!model.contains("vocab") || !model.at("vocab").is_object() ||
+        !model.contains("merges") || !model.at("merges").is_array()) {
+        return fail("bpe: " + path + " model lacks vocab/merges");
+    }
+
+    std::unordered_map<std::string, int> vocab;
+    for (auto entry = model.at("vocab").begin(); entry != model.at("vocab").end();
+         ++entry) {
+        if (entry.value().is_number_integer()) {
+            vocab.emplace(entry.key(), entry.value().get<int>());
+        }
+    }
+
+    std::vector<std::pair<std::string, std::string>> merges;
+    for (const auto& merge : model.at("merges")) {
+        if (merge.is_string()) {  // older format: "first second"
+            const std::string joined = merge.get<std::string>();
+            const std::size_t space = joined.find(' ');
+            if (space != std::string::npos) {
+                merges.emplace_back(joined.substr(0, space), joined.substr(space + 1));
+            }
+        } else if (merge.is_array() && merge.size() == 2 && merge[0].is_string() &&
+                   merge[1].is_string()) {  // newer format: ["first", "second"]
+            merges.emplace_back(merge[0].get<std::string>(),
+                                merge[1].get<std::string>());
+        }
+    }
+
+    std::optional<BpeTokenizer> tokenizer =
+        from_vocab_and_merges(std::move(vocab), merges, error);
+    if (!tokenizer.has_value()) return std::nullopt;
+
+    // added_tokens (e.g. <|endoftext|>, <|im_start|>) → special tokens.
+    if (root.contains("added_tokens") && root.at("added_tokens").is_array()) {
+        std::vector<std::pair<std::string, int>> specials;
+        for (const auto& token : root.at("added_tokens")) {
+            if (token.is_object() && token.contains("content") &&
+                token.at("content").is_string() && token.contains("id") &&
+                token.at("id").is_number_integer()) {
+                specials.emplace_back(token.at("content").get<std::string>(),
+                                      token.at("id").get<int>());
+            }
+        }
+        tokenizer->add_special_tokens(specials);
+    }
+    return tokenizer;
+}
+
+std::optional<BpeTokenizer> BpeTokenizer::from_directory(
+    const std::string& directory, std::string* error) {
+    const std::filesystem::path root(directory);
+    if (std::filesystem::exists(root / "tokenizer.json")) {
+        return from_tokenizer_json((root / "tokenizer.json").string(), error);
+    }
+    if (std::filesystem::exists(root / "vocab.json") &&
+        std::filesystem::exists(root / "merges.txt")) {
+        return from_gpt2_files((root / "vocab.json").string(),
+                               (root / "merges.txt").string(), error);
+    }
+    if (error != nullptr) {
+        *error = "bpe: no tokenizer.json or vocab.json+merges.txt in " + directory;
+    }
+    return std::nullopt;
 }
 
 }  // namespace zetta::tokenizer

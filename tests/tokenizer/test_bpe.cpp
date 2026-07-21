@@ -164,6 +164,70 @@ TEST(Bpe, LoadsFromGpt2Files) {
             .has_value());
 }
 
+// Load a Hugging Face tokenizer.json (model.vocab + model.merges + added_tokens).
+TEST(Bpe, LoadsFromTokenizerJson) {
+    const zetta::test::TempDir temp;
+    const std::string path = (temp.path() / "tokenizer.json").string();
+    std::ofstream out(path);
+    out << R"({
+      "added_tokens": [
+        {"id": 1000, "content": "<|endoftext|>", "special": true}
+      ],
+      "model": {
+        "type": "BPE",
+        "vocab": {"h":104,"e":101,"l":108,"o":111,
+                  "he":256,"ll":257,"hell":258,"hello":259},
+        "merges": ["h e", "l l", "he ll", "hell o"]
+      }
+    })";
+    out.close();
+
+    std::string error;
+    const std::optional<BpeTokenizer> tok =
+        BpeTokenizer::from_tokenizer_json(path, &error);
+    ASSERT_TRUE(tok.has_value()) << error;
+    EXPECT_EQ(tok->encode("hello"), (std::vector<int>{259}));
+    EXPECT_EQ(tok->encode("<|endoftext|>"), (std::vector<int>{1000}));
+    EXPECT_EQ(tok->decode({259, 1000}), "hello<|endoftext|>");
+}
+
+// The newer merges format is an array of [first, second] pairs.
+TEST(Bpe, LoadsTokenizerJsonWithPairMerges) {
+    const zetta::test::TempDir temp;
+    const std::string path = (temp.path() / "tokenizer.json").string();
+    std::ofstream out(path);
+    out << R"({
+      "model": {
+        "vocab": {"h":104,"i":105,"hi":256},
+        "merges": [["h", "i"]]
+      }
+    })";
+    out.close();
+
+    std::string error;
+    const std::optional<BpeTokenizer> tok =
+        BpeTokenizer::from_tokenizer_json(path, &error);
+    ASSERT_TRUE(tok.has_value()) << error;
+    EXPECT_EQ(tok->encode("hi"), (std::vector<int>{256}));
+}
+
+// from_directory prefers tokenizer.json, falls back to vocab.json + merges.txt.
+TEST(Bpe, FromDirectory) {
+    const zetta::test::TempDir temp;
+    std::ofstream(temp.path() / "tokenizer.json")
+        << R"({"model":{"vocab":{"a":97,"b":98,"ab":256},"merges":["a b"]}})";
+    std::string error;
+    std::optional<BpeTokenizer> tok =
+        BpeTokenizer::from_directory(temp.path().string(), &error);
+    ASSERT_TRUE(tok.has_value()) << error;
+    EXPECT_EQ(tok->encode("ab"), (std::vector<int>{256}));
+
+    // An empty directory is rejected with a reason.
+    const zetta::test::TempDir empty;
+    EXPECT_FALSE(BpeTokenizer::from_directory(empty.path().string(), &error).has_value());
+    EXPECT_FALSE(error.empty());
+}
+
 TEST(Bpe, AccessorsAndEmptyVocab) {
     const std::optional<BpeTokenizer> tok =
         BpeTokenizer::from_vocab_and_merges(base_vocab(), {});
