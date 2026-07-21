@@ -68,4 +68,28 @@ TEST(Curriculum, ChurnDegenerateGraphsFailGrader) {
             .passed);
 }
 
+// Nibble 3: the reference solution as the AGENT'S OWN ACTIONS — a trajectory of tool
+// calls that, applied in a churn sandbox, builds a graph whose facts pass the grader.
+TEST(Curriculum, ChurnReferenceTrajectoryBuildsAPassingGraph) {
+    zetta::agent::Sandbox sandbox = zetta::agent::churn_sandbox();
+    for (const zetta::agent::ToolCall& call : zetta::agent::churn_reference_trajectory()) {
+        ASSERT_TRUE(sandbox.apply(call).ok()) << "tool '" << call.tool << "' should apply";
+    }
+    const EndStateGrader grader = churn_solution_case().task.grader();
+    EXPECT_TRUE(grader.grade(sandbox.state()).passed)
+        << "the reference trajectory should build a graph that passes the grader";
+}
+
+TEST(Curriculum, ChurnDegenerateTrajectoryFails) {
+    zetta::agent::Sandbox sandbox = zetta::agent::churn_sandbox();
+    // Charles's current approach: same steps, but the model tool is an LLM, not a gbdt.
+    std::vector<zetta::agent::ToolCall> trajectory = zetta::agent::churn_reference_trajectory();
+    for (zetta::agent::ToolCall& call : trajectory) {
+        if (call.tool == "model") call.arguments["kind"] = "llm";
+    }
+    for (const zetta::agent::ToolCall& call : trajectory) sandbox.apply(call);
+    const EndStateGrader grader = churn_solution_case().task.grader();
+    EXPECT_FALSE(grader.grade(sandbox.state()).passed);
+}
+
 }  // namespace

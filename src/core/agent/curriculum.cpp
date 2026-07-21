@@ -1,12 +1,16 @@
 #include "zetta/agent/curriculum.hpp"
 
+#include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/sandbox.hpp"
 #include "zetta/agent/task.hpp"
+#include "zetta/agent/tool_call.hpp"
 #include "zetta/ir/execution_graph.hpp"
 #include "zetta/ir/step_kind.hpp"
 
@@ -83,6 +87,56 @@ EndState churn_graph_facts(const ir::ExecutionGraph& graph) {
     }
     facts.set("calibration_loop", calibration_loop);
     return facts;
+}
+
+Sandbox churn_sandbox() {
+    // The tools mutate a shared execution graph; the graded end-state is always the
+    // facts of that graph (so the sandbox and build_churn_graph agree by construction).
+    const auto graph = std::make_shared<ir::ExecutionGraph>();
+    Sandbox sandbox;
+    sandbox.register_tool("connect", [graph](EndState& world, const nlohmann::json& args) {
+        graph->add_node(ir::StepKind::Connect, args.value("name", "source"));
+        world = churn_graph_facts(*graph);
+        return ToolResult::success();
+    });
+    sandbox.register_tool("clean", [graph](EndState& world, const nlohmann::json& args) {
+        graph->add_node(ir::StepKind::Clean, args.value("name", "clean"),
+                        {{"leakage_free", args.value("leakage_free", false)}});
+        world = churn_graph_facts(*graph);
+        return ToolResult::success();
+    });
+    sandbox.register_tool("model", [graph](EndState& world, const nlohmann::json& args) {
+        graph->add_node(ir::StepKind::Model, args.value("name", "model"),
+                        {{"kind", args.value("kind", "")},
+                         {"explain", args.value("explain", "none")}});
+        world = churn_graph_facts(*graph);
+        return ToolResult::success();
+    });
+    sandbox.register_tool("serve", [graph](EndState& world, const nlohmann::json& args) {
+        graph->add_node(ir::StepKind::Serve, args.value("name", "serve"),
+                        {{"calibrated", args.value("calibrated", false)}});
+        world = churn_graph_facts(*graph);
+        return ToolResult::success();
+    });
+    sandbox.register_tool("act", [graph](EndState& world, const nlohmann::json& args) {
+        graph->add_node(ir::StepKind::Act, args.value("name", "act"),
+                        {{"calibration_loop", args.value("calibration_loop", false)}});
+        world = churn_graph_facts(*graph);
+        return ToolResult::success();
+    });
+    return sandbox;
+}
+
+std::vector<ToolCall> churn_reference_trajectory() {
+    return {
+        ToolCall{"connect", {{"name", "account events + communications"}}},
+        ToolCall{"clean", {{"name", "point-in-time features"}, {"leakage_free", true}}},
+        ToolCall{"model",
+                 {{"name", "churn risk model"}, {"kind", "gbdt"}, {"explain", "shap"}}},
+        ToolCall{"serve", {{"name", "risk scores"}, {"calibrated", true}}},
+        ToolCall{"act",
+                 {{"name", "write-back + calibration"}, {"calibration_loop", true}}},
+    };
 }
 
 AdmissionCase churn_solution_case() {

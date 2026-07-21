@@ -1,9 +1,12 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "zetta/agent/admission_gate.hpp"
 #include "zetta/agent/end_state.hpp"
+#include "zetta/agent/sandbox.hpp"
+#include "zetta/agent/tool_call.hpp"
 #include "zetta/ir/execution_graph.hpp"
 
 // The base-agent training curriculum: authored, gated seed tasks (#866). Each is a
@@ -34,5 +37,16 @@ ir::ExecutionGraph build_churn_graph(std::string model_kind, std::string explain
 // calibrated / calibration_loop) from a built execution graph, so a task's reference is
 // the facts of an *actually built* graph, not hand-written strings.
 EndState churn_graph_facts(const ir::ExecutionGraph& graph);
+
+// A Sandbox with the churn graph-building tools registered — connect/clean/model/serve/
+// act — each mutating a shared `ir::ExecutionGraph` and refreshing the graded facts via
+// `churn_graph_facts`. This is the rollout substrate a policy acts in: the agent emits
+// tool calls, the sandbox builds the graph, the grader scores the resulting facts.
+Sandbox churn_sandbox();
+
+// The ordered tool calls that build the correct churn solution — the reference solution
+// as the agent's own actions (the series of execution-graph mutations). Applied to a
+// `churn_sandbox()`, they yield a graph whose facts pass the churn grader.
+std::vector<ToolCall> churn_reference_trajectory();
 
 }  // namespace zetta::agent
