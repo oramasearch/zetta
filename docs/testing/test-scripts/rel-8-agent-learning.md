@@ -1,6 +1,8 @@
 # The agent gets measurably better at my tools · `rel-8-agent-learning`
 
-**Issue:** https://github.com/oramasearch/zetta/issues/193 — `[REL-8]` the agent program
+**Issue:** https://github.com/oramasearch/zetta/issues/853 — per-customer fine-tune loop
+(moved here from #193/#555 on 2026-07-20: this is the acceptance for the *per-customer* loop
+that forks the Orama base agent; base production is #555, tested by `feat-12-base-agent.md`)
 **Persona:** a platform lead at a company with its own warehouse, its own internal tools and
 its own conventions. Generic models are mediocre at their stack — wrong table names, wrong
 join keys, wrong tool for the job. Their data cannot leave their network.
