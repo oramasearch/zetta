@@ -19,6 +19,7 @@ using zetta::autograd::causal_self_attention;
 using zetta::autograd::cross_entropy;
 using zetta::autograd::feed_forward;
 using zetta::autograd::policy_gradient_loss;
+using zetta::autograd::swiglu_feed_forward;
 using zetta::autograd::row_slice;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
@@ -111,6 +112,18 @@ TEST(AutogradTransformer, FeedForwardGradientFlows) {
     const Tensor w2 = Tensor::leaf(small_weights(ff * d), {ff, d}, false);
     check_gradient(small_weights(d * ff), {d, ff}, [&](const Tensor& w1) {
         return sum(feed_forward(x, w1, w2));
+    });
+}
+
+TEST(AutogradTransformer, SwigluGradientFlows) {
+    const int seq = 3;
+    const int d = 4;
+    const int ff = 6;
+    const Tensor x = Tensor::leaf(small_weights(seq * d), {seq, d}, false);
+    const Tensor w_up = Tensor::leaf(small_weights(d * ff), {d, ff}, false);
+    const Tensor w_down = Tensor::leaf(small_weights(ff * d), {ff, d}, false);
+    check_gradient(small_weights(d * ff), {d, ff}, [&](const Tensor& w_gate) {
+        return sum(swiglu_feed_forward(x, w_gate, w_up, w_down));
     });
 }
 

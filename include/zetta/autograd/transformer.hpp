@@ -23,6 +23,11 @@ Tensor causal_self_attention(const Tensor& x, const Tensor& wq, const Tensor& wk
 // w1 [d_model, d_ff], w2 [d_ff, d_model].
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2);
 
+// SwiGLU feed-forward (the Qwen/LLaMA MLP): (silu(x @ w_gate) ⊙ (x @ w_up)) @ w_down.
+// w_gate, w_up are [d_model, d_ff]; w_down is [d_ff, d_model].
+Tensor swiglu_feed_forward(const Tensor& x, const Tensor& w_gate,
+                           const Tensor& w_up, const Tensor& w_down);
+
 struct TransformerConfig {
     int vocab_size = 16;
     int d_model = 16;

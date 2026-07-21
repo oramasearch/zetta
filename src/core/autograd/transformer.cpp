@@ -105,6 +105,13 @@ Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2) {
     return matmul(gelu(matmul(x, w1)), w2);
 }
 
+Tensor swiglu_feed_forward(const Tensor& x, const Tensor& w_gate,
+                           const Tensor& w_up, const Tensor& w_down) {
+    const Tensor gate = silu(matmul(x, w_gate));
+    const Tensor up = matmul(x, w_up);
+    return matmul(mul(gate, up), w_down);
+}
+
 void zero_grad(std::vector<Tensor>& parameters) {
     for (Tensor& parameter : parameters) {
         std::vector<float>& grad = parameter.node()->grad;
