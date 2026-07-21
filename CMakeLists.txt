@@ -580,6 +580,7 @@ add_library(zetta-core STATIC
   src/core/agent/rollout.cpp
   src/core/agent/reward.cpp
   src/core/agent/admission_gate.cpp
+  src/core/agent/curriculum.cpp
   src/core/agent/softmax_policy.cpp
   src/core/agent/advantage.cpp
   src/core/agent/policy_gradient.cpp
