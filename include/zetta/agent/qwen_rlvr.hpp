@@ -2,10 +2,12 @@
 
 #include <functional>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/autograd/transformer.hpp"  // Adam, zero_grad
+#include "zetta/tokenizer/bpe.hpp"
 
 // RLVR post-training of the open-weights Qwen model on zetta's own autograd (#555;
 // docs/agent/README.md). This is blender-rl's GRPO loop reproduced native and
@@ -39,5 +41,20 @@ struct GrpoConfig {
 double grpo_step(autograd::QwenModel& model, autograd::Adam& optimizer,
                  const std::vector<int>& prompt, const CompletionReward& reward,
                  const GrpoConfig& config, std::mt19937& rng);
+
+// A verifiable reward over TEXT: given the prompt and one decoded completion,
+// return a real-valued reward.
+using TextCompletionReward =
+    std::function<double(const std::string& prompt, const std::string& completion)>;
+
+// The text-level GRPO/RLVR step: encode `prompt` with `tokenizer`, run one
+// grpo_step, and score each rollout by DECODING its completion tokens back to text
+// and passing that to `reward`. This is RLVR post-training in natural language —
+// the model learns to produce target text purely from a verifiable text reward,
+// composing the tokenizer with the token-level loop.
+double grpo_step_text(autograd::QwenModel& model, autograd::Adam& optimizer,
+                      const tokenizer::BpeTokenizer& tokenizer,
+                      const std::string& prompt, const TextCompletionReward& reward,
+                      const GrpoConfig& config, std::mt19937& rng);
 
 }  // namespace zetta::agent

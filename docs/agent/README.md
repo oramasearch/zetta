@@ -267,6 +267,12 @@ lets one distributed model train across a heterogeneous cluster:
   just the new tokens back into text. Proven end to end: a model overfit on the
   bytes of "orama" continues the text "o" → "rama". The surface a real Qwen
   checkpoint + `BpeTokenizer::from_directory` present once both are loaded.
+- **`grpo_step_text`** (`qwen_rlvr.hpp`) — **RLVR post-training in natural
+  language**: encode the text prompt, run one `grpo_step`, and score each rollout by
+  decoding its completion back to text for a verifiable `TextCompletionReward`.
+  Proven: the model learns to continue "a" with the target text "bc" **purely from
+  a text reward, never shown the answer**, and `generate_text` then produces it —
+  the whole pipeline (tokenizer → model → RLVR → decoded text) closed end to end.
 
 **To ingest an actual Qwen checkpoint** the remaining external-asset step is the
 downloaded multi-GB weights and Qwen's tokenizer — the **architecture parity**

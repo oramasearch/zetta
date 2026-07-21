@@ -67,4 +67,17 @@ double grpo_step(autograd::QwenModel& model, autograd::Adam& optimizer,
                                  : 0.0;
 }
 
+double grpo_step_text(autograd::QwenModel& model, autograd::Adam& optimizer,
+                      const tokenizer::BpeTokenizer& tokenizer,
+                      const std::string& prompt, const TextCompletionReward& reward,
+                      const GrpoConfig& config, std::mt19937& rng) {
+    const std::vector<int> prompt_ids = tokenizer.encode(prompt);
+    // Decode each rollout's completion tokens back to text before scoring.
+    const CompletionReward token_reward =
+        [&](const std::vector<int>&, const std::vector<int>& completion) {
+            return reward(prompt, tokenizer.decode(completion));
+        };
+    return grpo_step(model, optimizer, prompt_ids, token_reward, config, rng);
+}
+
 }  // namespace zetta::agent
