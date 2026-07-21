@@ -38,6 +38,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The policy-gradient step** — `policy_gradient_step` (below) — reward provably rises.
 - **The training loop** — `train_softmax_policy` (below) — learns to solve a real task.
 - **The LLM-judge fallback** — `Judge` + `resolve_grade` (below).
+- **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
 
 ## The reward primitive (shipped)
 
@@ -167,6 +168,17 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   judge **fails closed** (score 0), never a silent pass. The judge is injected so
   the fallback logic is tested with a deterministic fake and no model; a real judge
   (local by default, frontier only on #555's Orama-infra runs) implements it later.
+
+## Multi-turn training (shipped)
+
+- **`SequencePolicy` + `train_sequence_policy`** (`sequence_policy.hpp`,
+  `sequence_training.hpp`) — real tasks take several tool calls, so the policy emits
+  a *sequence*. `SequencePolicy` is a fixed-horizon policy (one `SoftmaxPolicy` per
+  turn); `train_sequence_policy` samples a group of full trajectories, turns their
+  rewards into GRPO advantages, and applies each trajectory's advantage to **every**
+  turn's policy (trajectory-level credit). Proven on an **order-enforcing** task —
+  the sandbox refuses to close an unassigned ticket, so the unique solution is
+  `[assign, close]` and the loop learns to assign first, then close.
 
 This closes the reference-first training half. What remains is the **⚙️ real
 model**: an `MlxDevice` compute backend + an open-weights model behind
