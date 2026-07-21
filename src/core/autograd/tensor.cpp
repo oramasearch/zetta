@@ -64,6 +64,18 @@ compute::ComputeDevice* set_compute_device(compute::ComputeDevice* device) {
 
 compute::ComputeDevice* current_compute_device() { return g_compute_device; }
 
+namespace {
+// Grain for runtime::parallel_for over `count` items each doing `work_per_item`
+// float ops: run inline (grain == count -> one chunk) when the total work is below
+// a dispatch-worth threshold, else split across all workers (grain 1). This makes
+// heavy-but-short matmuls (few tokens, wide projections) thread, while tiny ops
+// (unit tests) stay inline — the default item-count grain never threads them.
+std::size_t parallel_grain(std::size_t count, std::size_t work_per_item) {
+    constexpr std::size_t kMinChunkWork = 1u << 17;  // ~131k float ops per chunk
+    return count * work_per_item < kMinChunkWork ? count : 1;
+}
+}  // namespace
+
 std::shared_ptr<Node> make_node(std::vector<float> data,
                                 std::vector<int> shape) {
     auto node = std::make_shared<Node>();
@@ -135,6 +147,7 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
         if (m >= n) {
             runtime::parallel_for(
                 static_cast<std::size_t>(m),
+                parallel_grain(m, static_cast<std::size_t>(n) * k),
                 [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
                     for (std::size_t row = row_begin; row < row_end; ++row) {
                         float* out_row = out_data + row * n;
@@ -151,6 +164,7 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
         } else {
             runtime::parallel_for(
                 static_cast<std::size_t>(n),
+                parallel_grain(n, static_cast<std::size_t>(m) * k),
                 [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
                     for (int row = 0; row < m; ++row) {
                         float* out_row = out_data + static_cast<std::size_t>(row) * n;
@@ -189,6 +203,7 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
         float* a_grad = a_node->grad.data();
         runtime::parallel_for(
             static_cast<std::size_t>(m),
+            parallel_grain(m, static_cast<std::size_t>(k) * n),
             [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
                 for (std::size_t row = row_begin; row < row_end; ++row) {
                     const float* g_row = g_data + row * n;
@@ -208,6 +223,7 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
         float* b_grad = b_node->grad.data();
         runtime::parallel_for(
             static_cast<std::size_t>(k),
+            parallel_grain(k, static_cast<std::size_t>(m) * n),
             [&](std::size_t, std::size_t inner_begin, std::size_t inner_end) {
                 for (std::size_t inner = inner_begin; inner < inner_end; ++inner) {
                     for (int col = 0; col < n; ++col) {
@@ -247,13 +263,13 @@ Tensor matmul_transposed_b(const Tensor& a, const Tensor& b) {
     };
     if (m >= n) {
         runtime::parallel_for(
-            static_cast<std::size_t>(m),
+            static_cast<std::size_t>(m), parallel_grain(m, static_cast<std::size_t>(n) * k),
             [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
                 for (std::size_t row = row_begin; row < row_end; ++row) compute_row(row);
             });
     } else {
         runtime::parallel_for(
-            static_cast<std::size_t>(n),
+            static_cast<std::size_t>(n), parallel_grain(n, static_cast<std::size_t>(m) * k),
             [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
                 for (int row = 0; row < m; ++row) {
                     const float* a_row = a_data + static_cast<std::size_t>(row) * k;
@@ -280,7 +296,7 @@ Tensor matmul_transposed_b(const Tensor& a, const Tensor& b) {
         float* b_grad = b_node->grad.data();
         // dA[i,:] += sum_j g[i,j] * B[j,:] — axpy over contiguous rows, over rows i.
         runtime::parallel_for(
-            static_cast<std::size_t>(m),
+            static_cast<std::size_t>(m), parallel_grain(m, static_cast<std::size_t>(n) * k),
             [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
                 for (std::size_t i = row_begin; i < row_end; ++i) {
                     float* da_row = a_grad + i * k;
@@ -294,7 +310,7 @@ Tensor matmul_transposed_b(const Tensor& a, const Tensor& b) {
             });
         // dB[j,:] += sum_i g[i,j] * A[i,:] — axpy over contiguous rows, over j (n).
         runtime::parallel_for(
-            static_cast<std::size_t>(n),
+            static_cast<std::size_t>(n), parallel_grain(n, static_cast<std::size_t>(m) * k),
             [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
                 for (std::size_t j = col_begin; j < col_end; ++j) {
                     float* db_row = b_grad + j * k;

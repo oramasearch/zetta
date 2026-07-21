@@ -30,8 +30,12 @@ std::vector<float> matvec_transposed(const std::vector<float>& weight,
     const float* w = weight.data();
     const float* xd = x.data();
     float* od = out.data();
+    // Each output row is a length-`in_dim` dot product (heavy) — thread when the
+    // total work justifies it, else run inline (grain == count).
+    const std::size_t total = static_cast<std::size_t>(out_dim) * in_dim;
+    const std::size_t grain = total < (1u << 17) ? static_cast<std::size_t>(out_dim) : 1;
     runtime::parallel_for(
-        static_cast<std::size_t>(out_dim),
+        static_cast<std::size_t>(out_dim), grain,
         [&](std::size_t, std::size_t begin, std::size_t end) {
             for (std::size_t o = begin; o < end; ++o) {
                 const float* w_row = w + o * in_dim;

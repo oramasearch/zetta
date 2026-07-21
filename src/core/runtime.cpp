@@ -80,20 +80,26 @@ void spawn(task<> coroutine, std::function<void()> on_complete) {
         })(std::move(coroutine));
 }
 
-std::size_t parallel_chunks(std::size_t count) noexcept {
+std::size_t parallel_chunks(std::size_t count,
+                            std::size_t min_items_per_chunk) noexcept {
     if (count <= 1) return count;  // 0 -> 0, 1 -> 1
+    const std::size_t grain = min_items_per_chunk == 0 ? 1 : min_items_per_chunk;
     // Cap at the worker count, and never carve chunks smaller than the grain.
-    const std::size_t by_grain = count / kMinItemsPerChunk;
+    const std::size_t by_grain = count / grain;
     if (by_grain <= 1) return 1;  // small enough to run inline
     return std::min(worker_count(), by_grain);
 }
 
+std::size_t parallel_chunks(std::size_t count) noexcept {
+    return parallel_chunks(count, kMinItemsPerChunk);
+}
+
 void parallel_for(
-    std::size_t count,
+    std::size_t count, std::size_t min_items_per_chunk,
     const std::function<void(std::size_t, std::size_t, std::size_t)>& body) {
     if (count == 0) return;
 
-    const std::size_t chunks = parallel_chunks(count);
+    const std::size_t chunks = parallel_chunks(count, min_items_per_chunk);
     if (chunks <= 1) {
         body(0, 0, count);  // inline fast path — no pool dispatch
         return;
@@ -123,6 +129,12 @@ void parallel_for(
     }
 
     done.wait();
+}
+
+void parallel_for(
+    std::size_t count,
+    const std::function<void(std::size_t, std::size_t, std::size_t)>& body) {
+    parallel_for(count, kMinItemsPerChunk, body);
 }
 
 }  // namespace zetta::runtime
