@@ -94,4 +94,10 @@ Tensor silu(const Tensor& a);
 // Backward per row: dX = Y ⊙ (dOut − sum(dOut ⊙ Y)).
 Tensor row_softmax(const Tensor& a);
 
+// RMSNorm: normalize each row of `a` [rows, cols] to unit RMS, then scale by
+// `weight` [cols]. y[j] = a[j] / sqrt(mean(a²)+eps) * weight[j]. The transformer's
+// normalization. Its backward couples every element of a row (the normalizer
+// depends on all of them).
+Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps = 1e-5F);
+
 }  // namespace zetta::autograd

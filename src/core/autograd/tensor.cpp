@@ -254,6 +254,52 @@ Tensor row_softmax(const Tensor& a) {
     return Tensor{node};
 }
 
+Tensor rms_norm(const Tensor& a, const Tensor& weight, float eps) {
+    const int rows = a.shape()[0];
+    const int cols = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(rows) * cols, 0.0F);
+    std::vector<float> inverse_rms(rows, 0.0F);  // 1 / sqrt(mean(x²)+eps) per row
+
+    for (int row = 0; row < rows; ++row) {
+        const float* x = a.data().data() + row * cols;
+        float mean_square = 0.0F;
+        for (int col = 0; col < cols; ++col) {
+            mean_square += x[col] * x[col];
+        }
+        mean_square /= static_cast<float>(cols);
+        const float inv = 1.0F / std::sqrt(mean_square + eps);
+        inverse_rms[row] = inv;
+        for (int col = 0; col < cols; ++col) {
+            out[row * cols + col] = x[col] * inv * weight.data()[col];
+        }
+    }
+
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node(), weight.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    const std::shared_ptr<Node> weight_node = weight.node();
+    node->backward = [a_node, weight_node, inverse_rms, rows,
+                      cols](const std::vector<float>& g) {
+        for (int row = 0; row < rows; ++row) {
+            const float* x = a_node->data.data() + row * cols;
+            const float inv = inverse_rms[row];
+            const float inv_cubed = inv * inv * inv;
+            // dot = sum_j (dOut_j * weight_j) * x_j.
+            float dot = 0.0F;
+            for (int col = 0; col < cols; ++col) {
+                dot += g[row * cols + col] * weight_node->data[col] * x[col];
+            }
+            for (int col = 0; col < cols; ++col) {
+                const float gw = g[row * cols + col] * weight_node->data[col];
+                a_node->grad[row * cols + col] +=
+                    gw * inv - x[col] * dot * inv_cubed / static_cast<float>(cols);
+                weight_node->grad[col] += g[row * cols + col] * x[col] * inv;
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];

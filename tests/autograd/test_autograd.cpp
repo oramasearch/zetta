@@ -13,6 +13,7 @@ using zetta::autograd::add_bias;
 using zetta::autograd::gelu;
 using zetta::autograd::matmul;
 using zetta::autograd::mul;
+using zetta::autograd::rms_norm;
 using zetta::autograd::row_softmax;
 using zetta::autograd::scale;
 using zetta::autograd::silu;
@@ -154,6 +155,40 @@ TEST(Autograd, RowSoftmaxGradient) {
                    [&](const Tensor& p) {
                        return sum(mul(row_softmax(p), target));
                    });
+}
+
+TEST(Autograd, RmsNormGivesUnitRmsRows) {
+    const Tensor x = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);
+    const Tensor weight = Tensor::leaf({1, 1, 1}, {3}, false);
+    const Tensor y = rms_norm(x, weight);
+    for (int row = 0; row < 2; ++row) {
+        float mean_square = 0.0F;
+        for (int col = 0; col < 3; ++col) {
+            const float v = y.data()[row * 3 + col];
+            mean_square += v * v;
+        }
+        EXPECT_NEAR(mean_square / 3.0F, 1.0F, 1e-3F);
+    }
+}
+
+TEST(Autograd, RmsNormGradientWrtInput) {
+    const Tensor weight = Tensor::leaf({0.5F, 1.2F, 0.8F}, {3}, false);
+    const Tensor target =
+        Tensor::leaf({0.2F, 0.5F, 0.3F, 0.1F, 0.7F, 0.2F}, {2, 3}, false);
+    check_gradient({1.0F, -2.0F, 3.0F, 0.5F, 1.5F, -1.0F}, {2, 3},
+                   [&](const Tensor& x) {
+                       return sum(mul(rms_norm(x, weight), target));
+                   });
+}
+
+TEST(Autograd, RmsNormGradientWrtWeight) {
+    const Tensor x =
+        Tensor::leaf({1.0F, -2.0F, 3.0F, 0.5F, 1.5F, -1.0F}, {2, 3}, false);
+    const Tensor target =
+        Tensor::leaf({0.2F, 0.5F, 0.3F, 0.1F, 0.7F, 0.2F}, {2, 3}, false);
+    check_gradient({0.5F, 1.2F, 0.8F}, {3}, [&](const Tensor& weight) {
+        return sum(mul(rms_norm(x, weight), target));
+    });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).
