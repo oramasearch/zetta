@@ -81,4 +81,12 @@ Tensor scale(const Tensor& a, float factor);
 // dA += dOut, dBias[col] += sum over rows of dOut[:, col].
 Tensor add_bias(const Tensor& a, const Tensor& bias);
 
+// GELU (exact erf form): 0.5*x*(1+erf(x/sqrt(2))), elementwise. The transformer MLP
+// nonlinearity. Backward uses the analytic derivative.
+Tensor gelu(const Tensor& a);
+
+// SiLU / swish: x*sigmoid(x), elementwise — the SwiGLU activation. Backward:
+// sigmoid(x)*(1 + x*(1-sigmoid(x))).
+Tensor silu(const Tensor& a);
+
 }  // namespace zetta::autograd

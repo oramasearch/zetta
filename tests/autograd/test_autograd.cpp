@@ -10,9 +10,11 @@ namespace {
 
 using zetta::autograd::add;
 using zetta::autograd::add_bias;
+using zetta::autograd::gelu;
 using zetta::autograd::matmul;
 using zetta::autograd::mul;
 using zetta::autograd::scale;
+using zetta::autograd::silu;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
 
@@ -118,6 +120,16 @@ TEST(Autograd, AddBiasGradient) {
     const Tensor x = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);
     check_gradient({0.1F, 0.2F, 0.3F}, {3},
                    [&](const Tensor& bias) { return sum(add_bias(x, bias)); });
+}
+
+TEST(Autograd, GeluGradient) {
+    check_gradient({-2.0F, -0.5F, 0.0F, 0.5F, 1.5F, 3.0F}, {2, 3},
+                   [](const Tensor& p) { return sum(gelu(p)); });
+}
+
+TEST(Autograd, SiluGradient) {
+    check_gradient({-2.0F, -0.5F, 0.0F, 0.5F, 1.5F, 3.0F}, {2, 3},
+                   [](const Tensor& p) { return sum(silu(p)); });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).

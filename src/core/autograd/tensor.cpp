@@ -1,9 +1,17 @@
 #include "zetta/autograd/tensor.hpp"
 
+#include <cmath>
 #include <cstddef>
 #include <unordered_set>
 
 namespace zetta::autograd {
+
+namespace {
+constexpr float kInvSqrt2 = 0.7071067811865476F;      // 1 / sqrt(2)
+constexpr float kSqrt2OverPi = 0.7978845608028654F;   // sqrt(2 / pi)
+
+float sigmoid(float x) { return 1.0F / (1.0F + std::exp(-x)); }
+}  // namespace
 
 std::shared_ptr<Node> make_node(std::vector<float> data,
                                 std::vector<int> shape) {
@@ -159,6 +167,46 @@ Tensor scale(const Tensor& a, float factor) {
     node->backward = [a_node, factor](const std::vector<float>& g) {
         for (std::size_t i = 0; i < g.size(); ++i) {
             a_node->grad[i] += g[i] * factor;
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor gelu(const Tensor& a) {
+    std::vector<float> out(a.data().size(), 0.0F);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const float x = a.data()[i];
+        out[i] = 0.5F * x * (1.0F + std::erf(x * kInvSqrt2));
+    }
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    node->backward = [a_node](const std::vector<float>& g) {
+        for (std::size_t i = 0; i < g.size(); ++i) {
+            const float x = a_node->data[i];
+            const float derivative =
+                0.5F * (1.0F + std::erf(x * kInvSqrt2)) +
+                0.5F * x * kSqrt2OverPi * std::exp(-0.5F * x * x);
+            a_node->grad[i] += g[i] * derivative;
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor silu(const Tensor& a) {
+    std::vector<float> out(a.data().size(), 0.0F);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        const float x = a.data()[i];
+        out[i] = x * sigmoid(x);
+    }
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    node->backward = [a_node](const std::vector<float>& g) {
+        for (std::size_t i = 0; i < g.size(); ++i) {
+            const float x = a_node->data[i];
+            const float s = sigmoid(x);
+            a_node->grad[i] += g[i] * (s * (1.0F + x * (1.0F - s)));
         }
     };
     return Tensor{node};
