@@ -316,6 +316,8 @@ endif()
 
 option(ZETTA_ENABLE_CUDA
   "Build the optional CUDA compute backend (requires the CUDA toolkit)" OFF)
+option(ZETTA_ENABLE_MLX
+  "Build the optional MLX (Apple-Silicon/Metal) compute backend (requires libmlx)" OFF)
 
 set(ZETTA_COMPUTE_SOURCES
   src/core/compute/device_buffer.cpp
@@ -333,6 +335,19 @@ if(ZETTA_ENABLE_CUDA)
 else()
   message(STATUS "CUDA compute backend: disabled (CPU-only build). "
                  "Enable with -DZETTA_ENABLE_CUDA=ON on a host with the CUDA toolkit.")
+endif()
+
+if(ZETTA_ENABLE_MLX)
+  # MLX is a normal C++ library (no separate language, unlike CUDA): find its
+  # header + shared lib and add the backend TU. REQUIRED so an explicit opt-in
+  # fails loudly when libmlx is absent rather than silently dropping the backend.
+  find_path(MLX_INCLUDE_DIR mlx/mlx.h REQUIRED)
+  find_library(MLX_LIBRARY mlx REQUIRED)
+  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/mlx_device.cpp)
+  message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
+else()
+  message(STATUS "MLX compute backend: disabled (CPU-only build). "
+                 "Enable with -DZETTA_ENABLE_MLX=ON on a host with libmlx (macOS).")
 endif()
 
 add_library(zetta-compute STATIC ${ZETTA_COMPUTE_SOURCES})
@@ -370,6 +385,21 @@ if(ZETTA_ENABLE_CUDA)
   if(ZETTA_HAS_EXPERIMENTAL_LIBRARY)
     target_compile_options(zetta-compute PRIVATE
       $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-fexperimental-library>)
+  endif()
+endif()
+
+if(ZETTA_ENABLE_MLX)
+  # ZETTA_WITH_MLX is PUBLIC so consumers (the device registry, tests) guard their
+  # use of MlxDevice on it. The MLX headers + libmlx are PRIVATE so they link into
+  # the final binary without leaking into zetta-core's public surface. On macOS
+  # libmlx pulls the Metal/Foundation frameworks it was built against.
+  target_compile_definitions(zetta-compute PUBLIC ZETTA_WITH_MLX=1)
+  target_include_directories(zetta-compute PRIVATE ${MLX_INCLUDE_DIR})
+  target_link_libraries(zetta-compute PRIVATE ${MLX_LIBRARY})
+  if(APPLE)
+    target_link_libraries(zetta-compute PRIVATE
+      "-framework Metal" "-framework Foundation" "-framework QuartzCore"
+      "-framework Accelerate")
   endif()
 endif()
 

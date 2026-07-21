@@ -83,6 +83,25 @@ headers stay confined to that library — they never reach `zetta-core` — mirr
 how SDL/ImGui are kept out. See [compute-device.md](compute/compute-device.md) for the
 backend and its verification caveats.
 
+### Optional MLX compute backend (Apple Silicon)
+
+The **default portable accelerator on macOS** is MLX (`zetta::compute::MlxDevice`),
+Apple's array framework running on Metal. It is off by default; enable it on a Mac
+with `libmlx` (`brew install mlx`):
+
+```bash
+cmake -S . -B build -G Ninja -DZETTA_ENABLE_MLX=ON
+```
+
+This requires `mlx/mlx.h` + `libmlx` to be found (configure fails loudly otherwise)
+and compiles `src/core/compute/mlx_device.cpp`, linking the Metal/Foundation
+frameworks. The MLX headers stay confined to `zetta-compute` — they never reach
+`zetta-core`, same as CUDA. On Apple Silicon's unified memory a device buffer is a
+plain host allocation the GPU reads directly; the backend implements the memory
+model + `gemm`/`axpy` on the GPU (the tensor ops the model runtime needs), with
+`CpuDevice` as the always-present fallback. SYCL is the deferred cross-platform
+backend.
+
 ## Run
 
 ```bash
