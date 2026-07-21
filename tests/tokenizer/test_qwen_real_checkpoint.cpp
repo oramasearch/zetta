@@ -184,6 +184,57 @@ TEST(QwenRealCheckpoint, ForwardScalingCpuVsMlx) {
     }
 }
 
+// Generation tok/s: the KV-cached engine (plain-float host) vs the autograd
+// generate path on CPU and on MLX. Generation is token-by-token — tiny per-step
+// forwards — so per-op MLX sync should hurt, unlike the batched forward above.
+TEST(QwenRealCheckpoint, GenerationTokensPerSecondCpuVsMlx) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_BENCH") == nullptr) GTEST_SKIP() << "set ZETTA_BENCH=1";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+    const std::vector<int> prompt = tokenizer->encode("The capital of France is");
+    const int n = 16;
+
+    using clock = std::chrono::steady_clock;
+    const auto rate = [&](auto t0, auto t1, int tokens) {
+        return tokens / std::chrono::duration<double>(t1 - t0).count();
+    };
+
+    // KV-cached, plain-float host engine.
+    zetta::autograd::QwenInference engine(*model);
+    const auto k0 = clock::now();
+    const auto kv = engine.generate_greedy(prompt, n);
+    const auto k1 = clock::now();
+
+    // Autograd generate (re-forwards each token, no cache) on CPU.
+    zetta::autograd::set_compute_device(nullptr);
+    const auto a0 = clock::now();
+    model->generate_greedy(prompt, n);
+    const auto a1 = clock::now();
+
+    // Same autograd path on the MLX GPU.
+    zetta::compute::MlxDevice mlx;
+    zetta::autograd::set_compute_device(&mlx);
+    model->generate_greedy(prompt, 2);  // warm up
+    const auto g0 = clock::now();
+    model->generate_greedy(prompt, n);
+    const auto g1 = clock::now();
+    zetta::autograd::set_compute_device(nullptr);
+
+    std::fprintf(stderr,
+                 "\n[real Qwen3-0.6B generation, %d tokens]\n"
+                 "  KV-cached (CPU)        : %6.2f tok/s\n"
+                 "  autograd re-forward CPU: %6.2f tok/s\n"
+                 "  autograd re-forward MLX: %6.2f tok/s\n",
+                 n, rate(k0, k1, static_cast<int>(kv.size())), rate(a0, a1, n),
+                 rate(g0, g1, n));
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace
