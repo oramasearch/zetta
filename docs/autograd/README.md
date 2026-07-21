@@ -55,7 +55,9 @@ across heterogeneous devices.
   SwiGLU} → final RMSNorm → lm_head, with parameters keyed by **Hugging Face
   tensor names** (`model.embed_tokens.weight`, `model.layers.{L}.self_attn.*`,
   …) so a real safetensors checkpoint loads by name (`set_weight`). Supports GQA,
-  QK-norm, tied embeddings, and the Qwen3 RoPE base.
+  QK-norm, tied embeddings, and the Qwen3 RoPE base. `parse_qwen_config()` builds
+  the matching `QwenConfig` from a checkpoint's Hugging Face `config.json` (so the
+  right architecture is instantiated before its weights load).
 - **`safetensors.hpp`** — a host-float `.safetensors` reader/writer
   (`parse_safetensors` / `read_safetensors_file`, decoding **F32 and BF16** to
   host floats; `serialize_safetensors` / `write_safetensors_file`). No MLX, no

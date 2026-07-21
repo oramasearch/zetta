@@ -17,6 +17,7 @@ namespace {
 
 using zetta::autograd::Adam;
 using zetta::autograd::cross_entropy;
+using zetta::autograd::parse_qwen_config;
 using zetta::autograd::QwenConfig;
 using zetta::autograd::QwenModel;
 using zetta::autograd::read_safetensors_file;
@@ -124,6 +125,76 @@ TEST(QwenModel, TiedEmbeddingsHaveNoLmHeadButStillProject) {
     for (float value : logits.data()) {
         EXPECT_TRUE(std::isfinite(value));
     }
+}
+
+// A Hugging Face config.json (Qwen3 field names) builds the matching QwenConfig,
+// so the right architecture is instantiated from a checkpoint.
+TEST(QwenModel, ParsesHuggingFaceConfigJson) {
+    const std::string json = R"({
+        "architectures": ["Qwen3ForCausalLM"],
+        "vocab_size": 151936,
+        "hidden_size": 1024,
+        "num_hidden_layers": 28,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 8,
+        "head_dim": 128,
+        "intermediate_size": 3072,
+        "rms_norm_eps": 1e-6,
+        "rope_theta": 1000000.0,
+        "tie_word_embeddings": true
+    })";
+    const std::optional<QwenConfig> config = parse_qwen_config(json);
+    ASSERT_TRUE(config.has_value());
+    EXPECT_EQ(config->vocab_size, 151936);
+    EXPECT_EQ(config->d_model, 1024);
+    EXPECT_EQ(config->n_layers, 28);
+    EXPECT_EQ(config->n_heads, 16);
+    EXPECT_EQ(config->n_kv_heads, 8);
+    EXPECT_EQ(config->head_dim, 128);
+    EXPECT_EQ(config->d_ff, 3072);
+    EXPECT_FLOAT_EQ(config->rope_base, 1000000.0F);
+    EXPECT_TRUE(config->tie_word_embeddings);
+}
+
+// head_dim falls back to hidden_size / num_attention_heads when the config omits
+// it (older HF configs), and rope/eps take Qwen3 defaults.
+TEST(QwenModel, ConfigHeadDimFallsBackAndDefaultsApply) {
+    const std::string json = R"({
+        "vocab_size": 100,
+        "hidden_size": 64,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 2,
+        "intermediate_size": 128
+    })";
+    const std::optional<QwenConfig> config = parse_qwen_config(json);
+    ASSERT_TRUE(config.has_value());
+    EXPECT_EQ(config->head_dim, 8);  // 64 / 8
+    EXPECT_FALSE(config->tie_word_embeddings);
+    EXPECT_FLOAT_EQ(config->rope_base, QwenConfig{}.rope_base);  // default kept
+
+    // A config that parses can actually build a model.
+    const QwenModel model(*config, 1);
+    EXPECT_EQ(model.forward({1, 2, 3}).shape(), (std::vector<int>{3, config->vocab_size}));
+}
+
+TEST(QwenModel, RejectsMalformedConfig) {
+    std::string error;
+    EXPECT_FALSE(parse_qwen_config("not json", &error).has_value());
+    EXPECT_FALSE(error.empty());
+
+    // Missing a required field.
+    EXPECT_FALSE(parse_qwen_config(R"({"hidden_size": 64})", &error).has_value());
+    EXPECT_NE(error.find("vocab_size"), std::string::npos);
+
+    // Inconsistent head counts (n_heads not a multiple of n_kv_heads).
+    const std::string bad = R"({
+        "vocab_size": 100, "hidden_size": 64, "num_hidden_layers": 2,
+        "num_attention_heads": 7, "num_key_value_heads": 2,
+        "head_dim": 8, "intermediate_size": 128
+    })";
+    EXPECT_FALSE(parse_qwen_config(bad, &error).has_value());
+    EXPECT_NE(error.find("multiple"), std::string::npos);
 }
 
 // Loading a checkpoint: dump one model's weights to a .safetensors file, read it

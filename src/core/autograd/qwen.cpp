@@ -8,9 +8,80 @@
 #include <utility>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "zetta/autograd/transformer.hpp"
 
 namespace zetta::autograd {
+
+std::optional<QwenConfig> parse_qwen_config(std::string_view json,
+                                            std::string* error) {
+    const auto fail = [&](std::string reason) -> std::optional<QwenConfig> {
+        if (error != nullptr) *error = std::move(reason);
+        return std::nullopt;
+    };
+
+    const nlohmann::json root =
+        nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
+    if (root.is_discarded() || !root.is_object()) {
+        return fail("qwen config: not a valid JSON object");
+    }
+
+    // Every field a required integer, read non-throwing (sets *error and returns
+    // false on a missing / non-integer field).
+    bool ok = true;
+    const auto require_int = [&](const char* key, int* out) {
+        if (!ok) return;  // first failure wins
+        if (!root.contains(key) || !root.at(key).is_number_integer()) {
+            ok = false;
+            if (error != nullptr) {
+                *error = std::string("qwen config: missing/non-integer '") + key + "'";
+            }
+            return;
+        }
+        *out = root.at(key).get<int>();
+    };
+
+    QwenConfig config;
+    require_int("vocab_size", &config.vocab_size);
+    require_int("hidden_size", &config.d_model);
+    require_int("num_hidden_layers", &config.n_layers);
+    require_int("num_attention_heads", &config.n_heads);
+    require_int("num_key_value_heads", &config.n_kv_heads);
+    require_int("intermediate_size", &config.d_ff);
+    if (!ok) {
+        return std::nullopt;  // *error already set by require_int
+    }
+
+    // head_dim is explicit in Qwen3, but fall back to hidden_size/num_heads.
+    if (root.contains("head_dim") && root.at("head_dim").is_number_integer()) {
+        config.head_dim = root.at("head_dim").get<int>();
+    } else if (config.n_heads > 0) {
+        config.head_dim = config.d_model / config.n_heads;
+    }
+
+    // Optional floats/bools with sensible Qwen3 defaults.
+    if (root.contains("rms_norm_eps") && root.at("rms_norm_eps").is_number()) {
+        config.rms_eps = root.at("rms_norm_eps").get<float>();
+    }
+    if (root.contains("rope_theta") && root.at("rope_theta").is_number()) {
+        config.rope_base = root.at("rope_theta").get<float>();
+    }
+    if (root.contains("tie_word_embeddings") && root.at("tie_word_embeddings").is_boolean()) {
+        config.tie_word_embeddings = root.at("tie_word_embeddings").get<bool>();
+    }
+
+    if (config.vocab_size <= 0 || config.d_model <= 0 || config.n_layers <= 0 ||
+        config.n_heads <= 0 || config.n_kv_heads <= 0 || config.head_dim <= 0 ||
+        config.d_ff <= 0) {
+        return fail("qwen config: dimensions must be positive");
+    }
+    if (config.n_heads % config.n_kv_heads != 0) {
+        return fail("qwen config: num_attention_heads must be a multiple of "
+                    "num_key_value_heads");
+    }
+    return config;
+}
 
 QwenModel::QwenModel(const QwenConfig& config, std::uint64_t seed)
     : config_(config) {

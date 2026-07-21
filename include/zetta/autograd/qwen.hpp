@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <random>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -32,6 +34,17 @@ struct QwenConfig {
     float rope_base = 1000000.0F;     // RoPE θ (Qwen3 default)
     bool tie_word_embeddings = false; // reuse embed_tokens as the output projection
 };
+
+// Build a QwenConfig from a Hugging Face `config.json` body — the fields Qwen3
+// carries: vocab_size, hidden_size, num_hidden_layers, num_attention_heads,
+// num_key_value_heads, head_dim (falls back to hidden_size / num_attention_heads
+// if absent), intermediate_size, rms_norm_eps, rope_theta, tie_word_embeddings.
+// A non-throwing boundary: std::nullopt (with a reason in *error) if the JSON is
+// invalid, a required field is missing, or the head counts are inconsistent
+// (n_heads % n_kv_heads != 0). This is how the right architecture is instantiated
+// from a checkpoint before its weights load.
+std::optional<QwenConfig> parse_qwen_config(std::string_view json,
+                                            std::string* error = nullptr);
 
 // Hugging Face tensor names for this architecture (what a Qwen3 safetensors holds):
 //   model.embed_tokens.weight                              [vocab, d_model]
