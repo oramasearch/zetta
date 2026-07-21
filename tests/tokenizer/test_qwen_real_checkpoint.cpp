@@ -135,6 +135,55 @@ TEST(QwenRealCheckpoint, ForwardOnMlxGpuMatchesCpu) {
     EXPECT_EQ(gpu_next, 12095) << "MLX next-token argmax should be ' Paris'";
     EXPECT_LT(max_diff, 0.05) << "CPU vs MLX logits diverge too far";
 }
+// A scaling benchmark: the 5-token forward is where per-op MLX routing loses (sync
+// overhead > compute), but the projections are [seq, d] x [d, out], so the compute
+// grows with the sequence length. Sweep it and measure CPU (threaded host) vs MLX
+// GPU per forward to find where the GPU wins. Reports only — no assertions on time.
+TEST(QwenRealCheckpoint, ForwardScalingCpuVsMlx) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_BENCH") == nullptr) {
+        GTEST_SKIP() << "set ZETTA_BENCH=1 to run the (slow) scaling benchmark";
+    }
+
+    std::string error;
+    const std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+    const int vocab = model->config().vocab_size;
+
+    using clock = std::chrono::steady_clock;
+    const auto ms = [](auto d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+    zetta::compute::MlxDevice mlx;
+
+    std::cerr << "\n[real Qwen3-0.6B forward: CPU threaded vs MLX GPU]\n";
+    std::cerr << "  seq |   CPU ms |   MLX ms | speedup\n";
+    for (int seq : {8, 32, 128, 512}) {
+        std::vector<int> ids(static_cast<std::size_t>(seq));
+        for (int i = 0; i < seq; ++i) ids[i] = (i * 7 + 1) % vocab;
+
+        zetta::autograd::set_compute_device(nullptr);
+        const auto c0 = clock::now();
+        volatile float cpu_sink = model->forward(ids).data()[0];
+        const auto c1 = clock::now();
+        (void)cpu_sink;
+
+        zetta::autograd::set_compute_device(&mlx);
+        model->forward(ids);  // warm up
+        const auto m0 = clock::now();
+        volatile float mlx_sink = model->forward(ids).data()[0];
+        const auto m1 = clock::now();
+        (void)mlx_sink;
+        zetta::autograd::set_compute_device(nullptr);
+
+        const double cpu_ms = ms(c1 - c0);
+        const double mlx_ms = ms(m1 - m0);
+        std::fprintf(stderr, " %4d | %8.1f | %8.1f | %6.2fx\n", seq, cpu_ms, mlx_ms,
+                     cpu_ms / mlx_ms);
+    }
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace

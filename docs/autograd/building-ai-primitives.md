@@ -161,11 +161,21 @@ The reference kernels are correct first; speed comes from these, in order of imp
   Qwen3-0.6B (max|CPU−MLX| ≈ 6e-5). **But per-op routing is not a speed win for
   small forwards:** each op uploads/downloads and forces an `mx::eval` sync, so a
   5-token real-model forward is *slower* on MLX (~450 ms) than the threaded CPU
-  (~230 ms) — the sync overhead dominates the small compute. MLX pays off for
-  **large batched training** (compute dominates transfer) or a **fully-on-device
-  forward** (one lazy graph, one eval — what the native `MlxTransformer` does);
-  routing individual autograd ops through the GPU does not exploit it. Use the GPU
-  for big-batch training, the threaded CPU + KV cache for generation/rollouts.
+  (~230 ms) — the sync overhead dominates the small compute. **But it crosses over
+  fast** as the sequence (batch) grows — measured on the real Qwen3-0.6B forward:
+
+  | seq | CPU (threaded) | MLX GPU | speedup |
+  |----:|---------------:|--------:|--------:|
+  |   8 |     370 ms     |  503 ms | 0.74×   |
+  |  32 |    1483 ms     |  516 ms | 2.9×    |
+  | 128 |    5263 ms     |  846 ms | 6.2×    |
+  | 512 |   20496 ms     | 3393 ms | 6.0×    |
+
+  CPU scales ~linearly with seq; MLX stays nearly flat (the GPU absorbs the batch),
+  so it wins **~6× at training-scale sequences**. Rule of thumb: **MLX for batched
+  training / long sequences, the threaded CPU + KV cache for token-by-token
+  generation / RLVR rollouts.** (The benchmark is the opt-in guarded test
+  `QwenRealCheckpoint.ForwardScalingCpuVsMlx`, `ZETTA_QWEN_DIR` + `ZETTA_BENCH=1`.)
 - **Build flags.** Release is `-O3 -DNDEBUG`. Add **`-march=native`** on a
   known-target box (build box / a node) for AVX/NEON on the matmul inner loops —
   it is *not* a portable default (breaks on older CPUs), so gate it behind an
