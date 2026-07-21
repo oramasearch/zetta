@@ -389,6 +389,27 @@ Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets) {
     return Tensor{node};
 }
 
+Tensor row_slice(const Tensor& a, int start, int count) {
+    const int cols = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(count) * cols, 0.0F);
+    for (int k = 0; k < count; ++k) {
+        for (int col = 0; col < cols; ++col) {
+            out[k * cols + col] = a.data()[(start + k) * cols + col];
+        }
+    }
+    auto node = make_node(std::move(out), {count, cols});
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    node->backward = [a_node, start, count, cols](const std::vector<float>& g) {
+        for (int k = 0; k < count; ++k) {
+            for (int col = 0; col < cols; ++col) {
+                a_node->grad[(start + k) * cols + col] += g[k * cols + col];
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];

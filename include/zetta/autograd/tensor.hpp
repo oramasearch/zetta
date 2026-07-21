@@ -114,4 +114,9 @@ Tensor embedding(const Tensor& table, const std::vector<int>& ids);
 // Backward: dLogits[row, j] = (softmax[row, j] − 1[j == target]) / rows.
 Tensor cross_entropy(const Tensor& logits, const std::vector<int>& targets);
 
+// Select `count` contiguous rows starting at `start` from a [rows, cols] tensor ->
+// [count, cols]. Used to align next-token predictions (logits[0..seq-2]) with their
+// targets. Backward scatters each row's gradient back to its source row.
+Tensor row_slice(const Tensor& a, int start, int count);
+
 }  // namespace zetta::autograd

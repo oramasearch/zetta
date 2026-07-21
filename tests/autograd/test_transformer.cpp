@@ -15,6 +15,18 @@ using zetta::autograd::causal_self_attention;
 using zetta::autograd::feed_forward;
 using zetta::autograd::sum;
 using zetta::autograd::Tensor;
+using zetta::autograd::Transformer;
+using zetta::autograd::TransformerConfig;
+
+TransformerConfig small_config() {
+    TransformerConfig config;
+    config.vocab_size = 12;
+    config.d_model = 16;
+    config.n_layers = 2;
+    config.d_ff = 32;
+    config.max_seq = 8;
+    return config;
+}
 
 void check_gradient(const std::vector<float>& param,
                     const std::vector<int>& shape,
@@ -102,6 +114,22 @@ TEST(AutogradTransformer, AttentionIsCausal) {
     }
     EXPECT_LT(first_diff, 1e-5F);  // position 0 cannot see the future
     EXPECT_GT(last_diff, 1e-5F);   // the last position does
+}
+
+TEST(AutogradTransformer, ForwardProducesFiniteLogits) {
+    const Transformer model(small_config(), 42);
+    const Tensor logits = model.forward({1, 2, 3, 4, 5});
+    ASSERT_EQ(logits.shape(), (std::vector<int>{5, 12}));
+    for (float value : logits.data()) {
+        EXPECT_TRUE(std::isfinite(value));
+    }
+}
+
+TEST(AutogradTransformer, ForwardIsDeterministic) {
+    const Transformer model(small_config(), 7);
+    const Tensor a = model.forward({3, 1, 4, 1, 5});
+    const Tensor b = model.forward({3, 1, 4, 1, 5});
+    EXPECT_EQ(a.data(), b.data());
 }
 
 }  // namespace
