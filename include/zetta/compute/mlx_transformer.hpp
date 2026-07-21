@@ -86,6 +86,39 @@ private:
     std::vector<mlx::core::array> parameters_;
 };
 
+// The next-token cross-entropy loss (a scalar): predict token[t+1] from position t
+// across the sequence. It is a pure function of the parameters, so mx::value_and_grad
+// differentiates it end to end — the proof that real backprop trains the attention
+// and MLP weights. (The RLVR objective in the next rung is the same forward pass with
+// a policy-gradient loss in place of cross-entropy.)
+mlx::core::array cross_entropy_next_token(
+    const TransformerConfig& config,
+    const std::vector<mlx::core::array>& parameters,
+    const mlx::core::array& token_ids);
+
+// AdamW over the transformer's flat parameter list. update() applies one step in
+// place, maintaining the first and second moment per parameter with bias correction
+// and decoupled weight decay.
+class AdamW {
+public:
+    explicit AdamW(float learning_rate = 1e-3F, float beta1 = 0.9F,
+                   float beta2 = 0.999F, float epsilon = 1e-8F,
+                   float weight_decay = 0.0F);
+
+    void update(std::vector<mlx::core::array>& parameters,
+                const std::vector<mlx::core::array>& gradients);
+
+private:
+    float learning_rate_;
+    float beta1_;
+    float beta2_;
+    float epsilon_;
+    float weight_decay_;
+    int step_ = 0;
+    std::vector<mlx::core::array> first_moment_;
+    std::vector<mlx::core::array> second_moment_;
+};
+
 }  // namespace zetta::compute::model
 
 #endif  // ZETTA_WITH_MLX

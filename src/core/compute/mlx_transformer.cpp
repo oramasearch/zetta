@@ -129,6 +129,66 @@ mx::array MlxTransformer::forward(const mx::array& token_ids) const {
     return forward(config_, parameters_, token_ids);
 }
 
+mx::array cross_entropy_next_token(const TransformerConfig& config,
+                                   const std::vector<mx::array>& parameters,
+                                   const mx::array& token_ids) {
+    const int seq = token_ids.shape(0);
+    const mx::array logits = MlxTransformer::forward(config, parameters, token_ids);
+
+    // Predict token[t+1] from position t: logits[0..seq-2] against targets[1..seq-1].
+    const mx::array predicted =
+        mx::slice(logits, mx::Shape{0, 0}, mx::Shape{seq - 1, config.vocab_size});
+    const mx::array targets =
+        mx::slice(token_ids, mx::Shape{1}, mx::Shape{seq});  // [seq-1] int32
+
+    // log-softmax, then gather the log-probability of each target token.
+    const mx::array log_probs =
+        predicted - mx::logsumexp(predicted, std::vector<int>{-1}, true);
+    const mx::array target_index = mx::reshape(targets, mx::Shape{seq - 1, 1});
+    const mx::array chosen = mx::take_along_axis(log_probs, target_index, 1);
+    return -mx::mean(chosen, /*keepdims=*/false);
+}
+
+AdamW::AdamW(float learning_rate, float beta1, float beta2, float epsilon,
+             float weight_decay)
+    : learning_rate_(learning_rate),
+      beta1_(beta1),
+      beta2_(beta2),
+      epsilon_(epsilon),
+      weight_decay_(weight_decay) {}
+
+void AdamW::update(std::vector<mx::array>& parameters,
+                   const std::vector<mx::array>& gradients) {
+    if (first_moment_.empty()) {
+        for (const mx::array& parameter : parameters) {
+            first_moment_.push_back(
+                mx::zeros(parameter.shape(), parameter.dtype()));
+            second_moment_.push_back(
+                mx::zeros(parameter.shape(), parameter.dtype()));
+        }
+    }
+    ++step_;
+    const float bias_correction1 = 1.0F - std::pow(beta1_, step_);
+    const float bias_correction2 = 1.0F - std::pow(beta2_, step_);
+
+    for (std::size_t i = 0; i < parameters.size(); ++i) {
+        first_moment_[i] =
+            beta1_ * first_moment_[i] + (1.0F - beta1_) * gradients[i];
+        second_moment_[i] = beta2_ * second_moment_[i] +
+                            (1.0F - beta2_) * mx::square(gradients[i]);
+        const mx::array corrected_first = first_moment_[i] / bias_correction1;
+        const mx::array corrected_second = second_moment_[i] / bias_correction2;
+        const mx::array step =
+            corrected_first / (mx::sqrt(corrected_second) + epsilon_);
+        parameters[i] = parameters[i] -
+                        learning_rate_ * (step + weight_decay_ * parameters[i]);
+    }
+    // Realize the parameters and moments so the graph does not grow across steps.
+    mx::eval(parameters);
+    mx::eval(first_moment_);
+    mx::eval(second_moment_);
+}
+
 }  // namespace zetta::compute::model
 
 #endif  // ZETTA_WITH_MLX

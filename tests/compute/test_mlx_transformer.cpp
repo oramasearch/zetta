@@ -6,7 +6,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <numeric>
 #include <vector>
 
 #include <mlx/mlx.h>
@@ -16,7 +19,9 @@
 namespace {
 
 namespace mx = mlx::core;
+using zetta::compute::model::AdamW;
 using zetta::compute::model::causal_self_attention;
+using zetta::compute::model::cross_entropy_next_token;
 using zetta::compute::model::feed_forward;
 using zetta::compute::model::MlxTransformer;
 using zetta::compute::model::rms_norm;
@@ -145,6 +150,50 @@ TEST(MlxTransformer, ForwardIsDeterministic) {
     mx::eval(a, b);
     for (int i = 0; i < a.shape(0) * a.shape(1); ++i) {
         EXPECT_FLOAT_EQ(a.data<float>()[i], b.data<float>()[i]);
+    }
+}
+
+// The linchpin: real backprop (mx::value_and_grad through attention + MLP) + AdamW
+// must overfit a fixed sequence — the loss collapses and the model then predicts
+// the sequence greedily. If autodiff or the optimizer were wrong, this fails.
+TEST(MlxTransformer, OverfitsAShortSequenceWithAutodiffAndAdamW) {
+    const TransformerConfig config = small_config();
+    MlxTransformer model(config, 3);
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4};
+    const mx::array ids = token_ids(sequence);
+
+    std::vector<int> argnums(model.parameters().size());
+    std::iota(argnums.begin(), argnums.end(), 0);
+    const std::function<mx::array(const std::vector<mx::array>&)> loss_fn =
+        [&](const std::vector<mx::array>& parameters) {
+            return cross_entropy_next_token(config, parameters, ids);
+        };
+    auto grad_fn = mx::value_and_grad(loss_fn, argnums);
+
+    AdamW optimizer(/*learning_rate=*/1e-2F);
+    float first_loss = 0.0F;
+    float last_loss = 0.0F;
+    for (int step = 0; step < 250; ++step) {
+        auto [loss, gradients] = grad_fn(model.parameters());
+        mx::eval(loss);
+        const float value = loss.item<float>();
+        if (step == 0) first_loss = value;
+        last_loss = value;
+        optimizer.update(model.parameters(), gradients);
+    }
+    EXPECT_LT(last_loss, first_loss * 0.2F);  // the loss collapsed (overfit)
+
+    // The model now predicts the sequence greedily: argmax(logits[t]) == ids[t+1].
+    mx::array logits = model.forward(ids);
+    mx::eval(logits);
+    const int vocab = config.vocab_size;
+    for (std::size_t t = 0; t + 1 < sequence.size(); ++t) {
+        const float* row = logits.data<float>() + t * vocab;
+        int best = 0;
+        for (int c = 1; c < vocab; ++c) {
+            if (row[c] > row[best]) best = c;
+        }
+        EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
     }
 }
 
