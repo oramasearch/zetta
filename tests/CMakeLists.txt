@@ -192,6 +192,7 @@ add_executable(zetta-tests
   agent/test_collectives_allreduce.cpp
   agent/test_neural_training.cpp
   agent/test_judge.cpp
+  autograd/test_autograd.cpp
   compute/test_mlx_device.cpp
   compute/test_mlx_transformer.cpp
   compute/test_safetensors.cpp
