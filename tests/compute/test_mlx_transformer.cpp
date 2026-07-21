@@ -330,6 +330,103 @@ TEST(MlxTransformer, GeneratesTheLearnedContinuation) {
     EXPECT_EQ(model.generate({2, 5}, 5), generated);  // deterministic
 }
 
+using zetta::compute::model::distributed_adamw_step;
+using zetta::compute::model::flatten_arrays;
+using zetta::compute::model::unflatten_like;
+
+// The gradients of a fixed loss for a model (used to drive the distributed step).
+std::vector<mx::array> loss_gradients(const MlxTransformer& model,
+                                      const TransformerConfig& config,
+                                      const std::vector<int>& sequence) {
+    const mx::array ids = token_ids(sequence);
+    std::vector<int> argnums(model.parameters().size());
+    std::iota(argnums.begin(), argnums.end(), 0);
+    const std::function<mx::array(const std::vector<mx::array>&)> loss_fn =
+        [&](const std::vector<mx::array>& parameters) {
+            return cross_entropy_next_token(config, parameters, ids);
+        };
+    return mx::value_and_grad(loss_fn, argnums)(model.parameters()).second;
+}
+
+double max_abs_difference(const std::vector<mx::array>& a,
+                          const std::vector<mx::array>& b) {
+    const std::vector<double> flat_a = flatten_arrays(a);
+    const std::vector<double> flat_b = flatten_arrays(b);
+    double worst = 0.0;
+    for (std::size_t i = 0; i < flat_a.size(); ++i) {
+        worst = std::max(worst, std::abs(flat_a[i] - flat_b[i]));
+    }
+    return worst;
+}
+
+TEST(MlxTransformer, FlattenUnflattenRoundTrips) {
+    const MlxTransformer model(small_config(), 1);
+    const std::vector<double> flat = flatten_arrays(model.parameters());
+    const std::vector<mx::array> restored =
+        unflatten_like(flat, model.parameters());
+    ASSERT_EQ(restored.size(), model.parameters().size());
+    EXPECT_LT(max_abs_difference(restored, model.parameters()), 1e-6);
+}
+
+// With an identity allreduce the distributed step is a plain AdamW step.
+TEST(MlxTransformer, DistributedStepWithIdentityEqualsPlainAdamW) {
+    const TransformerConfig config = small_config();
+    MlxTransformer plain(config, 2);
+    MlxTransformer distributed(config, 2);  // identical init
+    const std::vector<int> sequence = {1, 2, 3, 4};
+    const std::vector<mx::array> gradients =
+        loss_gradients(plain, config, sequence);
+
+    AdamW optimizer_plain;
+    AdamW optimizer_distributed;
+    optimizer_plain.update(plain.parameters(), gradients);
+    distributed_adamw_step(distributed.parameters(), gradients,
+                           optimizer_distributed,
+                           [](const std::vector<double>& g) { return g; });
+
+    EXPECT_LT(max_abs_difference(plain.parameters(), distributed.parameters()),
+              1e-6);
+}
+
+// The distributed invariant: a step whose allreduce SUMS this node's gradient with a
+// peer's equals a single step with the summed gradient — data-parallel training of
+// the transformer is single-node == multi-node by construction.
+TEST(MlxTransformer, DistributedStepSumsGradientsAcrossNodes) {
+    const TransformerConfig config = small_config();
+    MlxTransformer combined(config, 4);
+    MlxTransformer sharded(config, 4);  // identical init
+
+    // Two nodes' gradients (from two different sequences).
+    const std::vector<mx::array> grad_a = loss_gradients(combined, config, {1, 2, 3});
+    const std::vector<mx::array> grad_b = loss_gradients(combined, config, {4, 5, 6});
+    const std::vector<double> peer = flatten_arrays(grad_b);
+
+    // Combined: one step with grad_a + grad_b.
+    const std::vector<double> summed_flat = [&] {
+        std::vector<double> local = flatten_arrays(grad_a);
+        for (std::size_t i = 0; i < local.size(); ++i) local[i] += peer[i];
+        return local;
+    }();
+    AdamW optimizer_combined;
+    optimizer_combined.update(combined.parameters(),
+                              unflatten_like(summed_flat, grad_a));
+
+    // Sharded: node A applies grad_a with an allreduce that adds peer B's gradient.
+    AdamW optimizer_sharded;
+    distributed_adamw_step(
+        sharded.parameters(), grad_a, optimizer_sharded,
+        [&](const std::vector<double>& local) {
+            std::vector<double> global(local.size(), 0.0);
+            for (std::size_t i = 0; i < local.size(); ++i) {
+                global[i] = local[i] + peer[i];
+            }
+            return global;
+        });
+
+    EXPECT_LT(max_abs_difference(combined.parameters(), sharded.parameters()),
+              1e-6);
+}
+
 }  // namespace
 
 #endif  // ZETTA_WITH_MLX

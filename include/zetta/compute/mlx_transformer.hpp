@@ -14,6 +14,7 @@
 #if defined(ZETTA_WITH_MLX)
 
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 #include <mlx/mlx.h>
@@ -142,6 +143,30 @@ private:
     std::vector<mlx::core::array> first_moment_;
     std::vector<mlx::core::array> second_moment_;
 };
+
+// Flatten a list of arrays into one contiguous host vector (each array row-major, in
+// order), and split a flat vector back into arrays matching a template's shapes.
+// These bridge the model's parameter/gradient tensors to the cluster's vector-based
+// allreduce.
+std::vector<double> flatten_arrays(const std::vector<mlx::core::array>& arrays);
+std::vector<mlx::core::array> unflatten_like(
+    const std::vector<double>& flat,
+    const std::vector<mlx::core::array>& shape_template);
+
+// The cross-node gradient combine (sum across nodes). Identity for a single node; a
+// Collectives-backed sum for the cluster — the same allreduce the rest of the RLVR
+// loop uses, over the flattened transformer gradient.
+using GradientAllReduce =
+    std::function<std::vector<double>(const std::vector<double>&)>;
+
+// One DISTRIBUTED AdamW step: flatten `gradients`, sum them across the cluster via
+// `allreduce`, unflatten, and apply. With an identity allreduce this is a plain
+// AdamW step; with a summing allreduce it is data-parallel distributed training of
+// the transformer — every node applies the same global gradient, so the model stays
+// identical across the cluster (single-node == multi-node).
+void distributed_adamw_step(std::vector<mlx::core::array>& parameters,
+                            const std::vector<mlx::core::array>& gradients,
+                            AdamW& optimizer, const GradientAllReduce& allreduce);
 
 }  // namespace zetta::compute::model
 

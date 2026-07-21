@@ -246,6 +246,47 @@ void AdamW::update(std::vector<mx::array>& parameters,
     mx::eval(second_moment_);
 }
 
+std::vector<double> flatten_arrays(const std::vector<mx::array>& arrays) {
+    std::vector<double> flat;
+    for (const mx::array& array : arrays) {
+        mx::array evaluated = array;
+        mx::eval(evaluated);
+        const float* data = evaluated.data<float>();
+        const std::size_t count = evaluated.size();
+        for (std::size_t i = 0; i < count; ++i) {
+            flat.push_back(data[i]);
+        }
+    }
+    return flat;
+}
+
+std::vector<mx::array> unflatten_like(
+    const std::vector<double>& flat, const std::vector<mx::array>& shape_template) {
+    std::vector<mx::array> arrays;
+    arrays.reserve(shape_template.size());
+    std::size_t offset = 0;
+    for (const mx::array& templated : shape_template) {
+        const std::size_t count = templated.size();
+        std::vector<float> chunk(count, 0.0F);
+        for (std::size_t i = 0; i < count; ++i) {
+            chunk[i] = static_cast<float>(flat[offset + i]);
+        }
+        arrays.push_back(mx::array(chunk.data(), templated.shape(), mx::float32));
+        offset += count;
+    }
+    return arrays;
+}
+
+void distributed_adamw_step(std::vector<mx::array>& parameters,
+                            const std::vector<mx::array>& gradients,
+                            AdamW& optimizer, const GradientAllReduce& allreduce) {
+    const std::vector<double> local = flatten_arrays(gradients);
+    const std::vector<double> global = allreduce(local);
+    const std::vector<mx::array> global_gradients =
+        unflatten_like(global, gradients);
+    optimizer.update(parameters, global_gradients);
+}
+
 }  // namespace zetta::compute::model
 
 #endif  // ZETTA_WITH_MLX
