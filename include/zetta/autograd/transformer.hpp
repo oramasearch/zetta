@@ -20,11 +20,12 @@ Tensor causal_self_attention(const Tensor& x, const Tensor& wq, const Tensor& wk
                              const Tensor& wv, const Tensor& wo);
 
 // Grouped-query causal self-attention (the Qwen/LLaMA attention). `x` is
-// [seq, d_model]; the projections pack heads into columns:
-//   wq [d_model, n_heads    * head_dim]
-//   wk [d_model, n_kv_heads * head_dim]
-//   wv [d_model, n_kv_heads * head_dim]
-//   wo [n_heads * head_dim, d_model]
+// [seq, d_model]; the projection weights are **Hugging Face layout `[out, in]`**
+// (applied as x·Wᵀ via matmul_transposed_b, so no transpose is materialized):
+//   wq [n_heads    * head_dim, d_model]
+//   wk [n_kv_heads * head_dim, d_model]
+//   wv [n_kv_heads * head_dim, d_model]
+//   wo [d_model, n_heads * head_dim]
 // Each of the n_heads query heads shares a key/value head with its group
 // (group_size = n_heads / n_kv_heads), so n_kv_heads == n_heads is plain
 // multi-head attention and n_kv_heads == 1 is multi-query. RoPE is applied
@@ -52,8 +53,9 @@ Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& 
 // w1 [d_model, d_ff], w2 [d_ff, d_model].
 Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2);
 
-// SwiGLU feed-forward (the Qwen/LLaMA MLP): (silu(x @ w_gate) ⊙ (x @ w_up)) @ w_down.
-// w_gate, w_up are [d_model, d_ff]; w_down is [d_ff, d_model].
+// SwiGLU feed-forward (the Qwen/LLaMA MLP): (silu(x·w_gateᵀ) ⊙ (x·w_upᵀ)) · w_downᵀ.
+// Weights are **Hugging Face layout `[out, in]`** (applied via matmul_transposed_b):
+// w_gate, w_up are [d_ff, d_model]; w_down is [d_model, d_ff].
 Tensor swiglu_feed_forward(const Tensor& x, const Tensor& w_gate,
                            const Tensor& w_up, const Tensor& w_down);
 

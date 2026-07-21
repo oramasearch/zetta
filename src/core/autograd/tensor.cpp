@@ -223,6 +223,92 @@ Tensor matmul(const Tensor& a, const Tensor& b) {
     return Tensor{node};
 }
 
+Tensor matmul_transposed_b(const Tensor& a, const Tensor& b) {
+    const int m = a.shape()[0];
+    const int k = a.shape()[1];
+    const int n = b.shape()[0];  // b is [n, k]; out is [m, n]
+
+    std::vector<float> out(static_cast<std::size_t>(m) * n, 0.0F);
+    const float* a_data = a.data().data();
+    const float* b_data = b.data().data();
+    float* out_data = out.data();
+
+    // out[i, j] = dot(a_row_i, b_row_j) — two contiguous rows. Parallelize over the
+    // larger output axis (inference: few rows, huge n -> over n).
+    const auto compute_row = [&](std::size_t row) {
+        const float* a_row = a_data + row * k;
+        float* out_row = out_data + row * n;
+        for (int j = 0; j < n; ++j) {
+            const float* b_row = b_data + static_cast<std::size_t>(j) * k;
+            float accumulated = 0.0F;
+            for (int l = 0; l < k; ++l) accumulated += a_row[l] * b_row[l];
+            out_row[j] = accumulated;
+        }
+    };
+    if (m >= n) {
+        runtime::parallel_for(
+            static_cast<std::size_t>(m),
+            [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+                for (std::size_t row = row_begin; row < row_end; ++row) compute_row(row);
+            });
+    } else {
+        runtime::parallel_for(
+            static_cast<std::size_t>(n),
+            [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
+                for (int row = 0; row < m; ++row) {
+                    const float* a_row = a_data + static_cast<std::size_t>(row) * k;
+                    float* out_row = out_data + static_cast<std::size_t>(row) * n;
+                    for (std::size_t j = col_begin; j < col_end; ++j) {
+                        const float* b_row = b_data + j * k;
+                        float accumulated = 0.0F;
+                        for (int l = 0; l < k; ++l) accumulated += a_row[l] * b_row[l];
+                        out_row[j] = accumulated;
+                    }
+                }
+            });
+    }
+
+    auto node = make_node(std::move(out), {m, n});
+    node->parents = {a.node(), b.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    const std::shared_ptr<Node> b_node = b.node();
+    node->backward = [a_node, b_node, m, k, n](const std::vector<float>& g) {
+        const float* g_data = g.data();
+        const float* a_data2 = a_node->data.data();
+        const float* b_data2 = b_node->data.data();
+        float* a_grad = a_node->grad.data();
+        float* b_grad = b_node->grad.data();
+        // dA[i,:] += sum_j g[i,j] * B[j,:] — axpy over contiguous rows, over rows i.
+        runtime::parallel_for(
+            static_cast<std::size_t>(m),
+            [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+                for (std::size_t i = row_begin; i < row_end; ++i) {
+                    float* da_row = a_grad + i * k;
+                    const float* g_row = g_data + i * n;
+                    for (int j = 0; j < n; ++j) {
+                        const float d = g_row[j];
+                        const float* b_row = b_data2 + static_cast<std::size_t>(j) * k;
+                        for (int l = 0; l < k; ++l) da_row[l] += d * b_row[l];
+                    }
+                }
+            });
+        // dB[j,:] += sum_i g[i,j] * A[i,:] — axpy over contiguous rows, over j (n).
+        runtime::parallel_for(
+            static_cast<std::size_t>(n),
+            [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
+                for (std::size_t j = col_begin; j < col_end; ++j) {
+                    float* db_row = b_grad + j * k;
+                    for (int i = 0; i < m; ++i) {
+                        const float d = g_data[static_cast<std::size_t>(i) * n + j];
+                        const float* a_row = a_data2 + static_cast<std::size_t>(i) * k;
+                        for (int l = 0; l < k; ++l) db_row[l] += d * a_row[l];
+                    }
+                }
+            });
+    };
+    return Tensor{node};
+}
+
 Tensor sum(const Tensor& a) {
     float total = 0.0F;
     for (float value : a.data()) {

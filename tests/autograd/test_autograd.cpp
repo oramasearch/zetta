@@ -17,6 +17,7 @@ using zetta::autograd::cross_entropy;
 using zetta::autograd::embedding;
 using zetta::autograd::gelu;
 using zetta::autograd::matmul;
+using zetta::autograd::matmul_transposed_b;
 using zetta::autograd::mul;
 using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::rms_norm;
@@ -374,6 +375,36 @@ TEST(Autograd, ConcatColsGradientReachesAllParts) {
     const Tensor weight = Tensor::leaf({0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F, 0.7F, 0.8F}, {2, 4}, false);
     check_gradient({1, 2, 3, 4}, {2, 2}, [&](const Tensor& p) {
         return sum(mul(concat_cols({p, other}), weight));
+    });
+}
+
+// matmul_transposed_b(a, b) == matmul(a, transpose(b)) — same result, but without
+// materializing the transpose (the real-checkpoint inference win).
+TEST(Autograd, MatmulTransposedBMatchesMatmulOfTranspose) {
+    const Tensor a = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);   // [m=2, k=3]
+    const Tensor b = Tensor::leaf({1, 0, -1, 2, 1, 0, 0, 3, 1, -1, 2, 1}, {4, 3}, false);  // [n=4, k=3]
+    const std::vector<float> direct = matmul_transposed_b(a, b).data();
+    const std::vector<float> viaTranspose = matmul(a, transpose(b)).data();
+    ASSERT_EQ(direct.size(), viaTranspose.size());
+    for (std::size_t i = 0; i < direct.size(); ++i) {
+        EXPECT_NEAR(direct[i], viaTranspose[i], 1e-4F) << "element " << i;
+    }
+}
+
+// Gradient flows correctly to BOTH operands of matmul_transposed_b.
+TEST(Autograd, MatmulTransposedBGradientToA) {
+    const Tensor b = Tensor::leaf({0.5F, -1.0F, 2.0F, 0.25F, 1.0F, 0.0F}, {2, 3}, false);
+    const Tensor weight = Tensor::leaf({0.3F, -0.7F, 1.1F, 0.2F}, {2, 2}, false);
+    check_gradient({1, 2, 3, 4, 5, 6}, {2, 3}, [&](const Tensor& a) {
+        return sum(mul(matmul_transposed_b(a, b), weight));  // a [2,3], b [2,3] -> [2,2]
+    });
+}
+
+TEST(Autograd, MatmulTransposedBGradientToB) {
+    const Tensor a = Tensor::leaf({1, 2, 3, 4, 5, 6}, {2, 3}, false);
+    const Tensor weight = Tensor::leaf({0.3F, -0.7F, 1.1F, 0.2F}, {2, 2}, false);
+    check_gradient({0.5F, -1.0F, 2.0F, 0.25F, 1.0F, 0.0F}, {2, 3}, [&](const Tensor& b) {
+        return sum(mul(matmul_transposed_b(a, b), weight));
     });
 }
 

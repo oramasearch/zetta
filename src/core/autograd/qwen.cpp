@@ -251,11 +251,9 @@ bool QwenModel::load_safetensors(const SafeTensors& tensors, LoadReport* report)
 }
 
 Tensor QwenModel::forward(const std::vector<int>& ids) const {
-    const auto proj = [&](const std::string& name) {
-        // HF weight is [out, in]; our matmul(x, M) needs M [in, out].
-        return transpose(weight(name));
-    };
-
+    // Weights stay in Hugging Face layout [out, in]; the attention/MLP blocks and
+    // the lm_head apply them via matmul_transposed_b (x·Wᵀ), so no weight is ever
+    // transposed on the forward — the dominant cost of running a real checkpoint.
     Tensor h = embedding(weight("model.embed_tokens.weight"), ids);  // [seq, d_model]
 
     for (int layer = 0; layer < config_.n_layers; ++layer) {
@@ -263,10 +261,10 @@ Tensor QwenModel::forward(const std::vector<int>& ids) const {
         const Tensor attn_in =
             rms_norm(h, weight(prefix + "input_layernorm.weight"), config_.rms_eps);
         const Tensor attn = grouped_query_attention(
-            attn_in, proj(prefix + "self_attn.q_proj.weight"),
-            proj(prefix + "self_attn.k_proj.weight"),
-            proj(prefix + "self_attn.v_proj.weight"),
-            proj(prefix + "self_attn.o_proj.weight"),
+            attn_in, weight(prefix + "self_attn.q_proj.weight"),
+            weight(prefix + "self_attn.k_proj.weight"),
+            weight(prefix + "self_attn.v_proj.weight"),
+            weight(prefix + "self_attn.o_proj.weight"),
             weight(prefix + "self_attn.q_norm.weight"),
             weight(prefix + "self_attn.k_norm.weight"), config_.n_heads,
             config_.n_kv_heads, config_.head_dim, config_.rope_base);
@@ -275,15 +273,15 @@ Tensor QwenModel::forward(const std::vector<int>& ids) const {
         const Tensor mlp_in = rms_norm(
             h, weight(prefix + "post_attention_layernorm.weight"), config_.rms_eps);
         const Tensor mlp = swiglu_feed_forward(
-            mlp_in, proj(prefix + "mlp.gate_proj.weight"),
-            proj(prefix + "mlp.up_proj.weight"), proj(prefix + "mlp.down_proj.weight"));
+            mlp_in, weight(prefix + "mlp.gate_proj.weight"),
+            weight(prefix + "mlp.up_proj.weight"), weight(prefix + "mlp.down_proj.weight"));
         h = add(h, mlp);
     }
 
     h = rms_norm(h, weight("model.norm.weight"), config_.rms_eps);
     const std::string output_name =
         config_.tie_word_embeddings ? "model.embed_tokens.weight" : "lm_head.weight";
-    return matmul(h, transpose(weight(output_name)));  // logits [seq, vocab]
+    return matmul_transposed_b(h, weight(output_name));  // logits [seq, vocab]
 }
 
 std::vector<int> QwenModel::generate_impl(const std::vector<int>& prompt,

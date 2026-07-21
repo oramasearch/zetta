@@ -132,15 +132,22 @@ native and device-agnostic.
 
 The reference kernels are correct first; speed comes from these, in order of impact:
 
-- **`parallel_for` over the *large* axis.** The matmul spreads across the pool, but
-  parallelize over the bigger of rows/cols — transformer inference has few tokens
+- **`parallel_for` over the *large* axis.** The matmul spreads across the pool,
+  parallelizing over the bigger of rows/cols — transformer inference has few tokens
   (small rows) and huge projections (up to the 151936 vocab), so row-parallel gives
-  no parallelism. `parallel_for` runs inline for small counts, so tiny ops pay
-  nothing.
-- **Pre-transpose weights for inference.** `matmul(x, transpose(W))` re-transposes
-  `W` every forward — for the 151936×1024 lm_head that copies ~620 MB per call,
-  which dominates real-model latency. Cache the transposed weights (or add a
-  transposed-B matmul variant) for the inference path.
+  no parallelism. **Caveat:** `parallel_for`'s grain (`kMinItemsPerChunk`, 4096)
+  only splits when `count > 8192`, so it threads the lm_head (n=151936) but runs the
+  layer projections (n ≤ 3072) inline — the grain is tuned for cheap element-wise
+  items, not heavy matmul columns. Long training sequences (large m·n) thread
+  naturally; short-sequence inference stays inline and is instead sped up by the KV
+  cache below. A work-aware grain for matmul is an open runtime tuning question.
+- **Don't transpose weights on the forward — use `matmul_transposed_b`.** HF weights
+  are `[out, in]`; `matmul(x, transpose(W))` materializes the transpose every call
+  (the 151936×1024 lm_head alone copies ~620 MB), which was ~40% of real-model
+  forward latency. `matmul_transposed_b(x, W)` computes `x·Wᵀ` directly over
+  contiguous rows (cache/SIMD-friendly). **Done** — `QwenModel` and the Qwen
+  attention/MLP keep weights in HF layout and never transpose on the forward
+  (2.3 s → 1.4 s on Qwen3-0.6B).
 - **KV cache for generation.** Without it, decoding token *t* re-forwards the whole
   sequence (O(n²)). A per-layer K/V cache makes each new token O(n). This is the
   single biggest generation win. *(Planned — see PR #857.)*

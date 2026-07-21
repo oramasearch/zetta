@@ -121,9 +121,10 @@ TEST(AutogradTransformer, SwigluGradientFlows) {
     const int d = 4;
     const int ff = 6;
     const Tensor x = Tensor::leaf(small_weights(seq * d), {seq, d}, false);
-    const Tensor w_up = Tensor::leaf(small_weights(d * ff), {d, ff}, false);
-    const Tensor w_down = Tensor::leaf(small_weights(ff * d), {ff, d}, false);
-    check_gradient(small_weights(d * ff), {d, ff}, [&](const Tensor& w_gate) {
+    // Hugging Face layout [out, in]: gate/up are [ff, d], down is [d, ff].
+    const Tensor w_up = Tensor::leaf(small_weights(ff * d), {ff, d}, false);
+    const Tensor w_down = Tensor::leaf(small_weights(d * ff), {d, ff}, false);
+    check_gradient(small_weights(ff * d), {ff, d}, [&](const Tensor& w_gate) {
         return sum(swiglu_feed_forward(x, w_gate, w_up, w_down));
     });
 }
@@ -140,8 +141,8 @@ TEST(AutogradTransformer, GroupedQueryAttentionGradientFlows) {
     const int kv_dim = n_kv_heads * head_dim;  // 6
 
     const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
-    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
-    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
     check_gradient(small_weights(d_model * d_model), {d_model, d_model},
                    [&](const Tensor& wq) {
@@ -162,9 +163,9 @@ TEST(AutogradTransformer, GroupedQueryAttentionGradientReachesSharedKv) {
 
     const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
     const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
-    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
-    check_gradient(small_weights(d_model * kv_dim), {d_model, kv_dim},
+    check_gradient(small_weights(d_model * kv_dim), {kv_dim, d_model},
                    [&](const Tensor& wk) {
                        return sum(grouped_query_attention(x, wq, wk, wv, wo, n_heads,
                                                           n_kv_heads, head_dim));
@@ -180,8 +181,8 @@ TEST(AutogradTransformer, GroupedQueryAttentionShapeAndFiniteness) {
     const int kv_dim = n_kv_heads * head_dim;
     const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
     const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
-    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
-    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
     const Tensor out =
         grouped_query_attention(x, wq, wk, wv, wo, n_heads, n_kv_heads, head_dim);
@@ -201,8 +202,8 @@ TEST(AutogradTransformer, GroupedQueryAttentionIsCausal) {
     const int d_model = n_heads * head_dim;  // 8
     const int kv_dim = n_kv_heads * head_dim;  // 4
     const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
-    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
-    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
 
     std::vector<float> x = small_weights(seq * d_model);
@@ -242,8 +243,8 @@ TEST(AutogradTransformer, GroupedQueryAttentionQkNormGradientToQNorm) {
 
     const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
     const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
-    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
-    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
     const Tensor k_norm = Tensor::leaf(std::vector<float>(head_dim, 1.0F), {head_dim}, false);
     check_gradient(std::vector<float>{0.9F, 1.0F, 1.1F}, {head_dim},
@@ -287,8 +288,8 @@ TEST(AutogradTransformer, QkNormChangesTheOutput) {
     const int kv_dim = n_kv_heads * head_dim;  // 4
     const Tensor x = Tensor::leaf(small_weights(seq * d_model), {seq, d_model}, false);
     const Tensor wq = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
-    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
-    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wk = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
+    const Tensor wv = Tensor::leaf(small_weights(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(small_weights(d_model * d_model), {d_model, d_model}, false);
     const Tensor ones = Tensor::leaf(std::vector<float>(head_dim, 1.0F), {head_dim}, false);
 
@@ -322,8 +323,8 @@ TEST(AutogradTransformer, RopeBaseChangesTheOutput) {
     };
     const Tensor x = Tensor::leaf(scaled(seq * d_model), {seq, d_model}, false);
     const Tensor wq = Tensor::leaf(scaled(d_model * d_model), {d_model, d_model}, false);
-    const Tensor wk = Tensor::leaf(scaled(d_model * kv_dim), {d_model, kv_dim}, false);
-    const Tensor wv = Tensor::leaf(scaled(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wk = Tensor::leaf(scaled(d_model * kv_dim), {kv_dim, d_model}, false);
+    const Tensor wv = Tensor::leaf(scaled(d_model * kv_dim), {kv_dim, d_model}, false);
     const Tensor wo = Tensor::leaf(scaled(d_model * d_model), {d_model, d_model}, false);
 
     const Tensor gpt = grouped_query_attention(x, wq, wk, wv, wo, n_heads, n_kv_heads,

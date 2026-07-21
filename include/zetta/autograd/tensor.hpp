@@ -77,6 +77,15 @@ std::shared_ptr<Node> make_node(std::vector<float> data, std::vector<int> shape)
 // dA += dOut * B^T, dB += A^T * dOut.
 Tensor matmul(const Tensor& a, const Tensor& b);
 
+// Matrix multiply with B transposed: a [m, k] * b^T where b is [n, k] (row j of b
+// holds output j's weights) -> [m, n]. out[i,j] = dot(a_row_i, b_row_j). This is
+// exactly a Hugging Face Linear (y = x·W^T, W stored [out, in]), so using it avoids
+// materializing transpose(W) on every forward — the dominant cost of running a real
+// checkpoint (the 151936x1024 lm_head transpose alone copies ~620 MB per call). The
+// dot products are over two contiguous rows (cache- and SIMD-friendly). Backward:
+// dA += dOut * B [m,k]; dB += dOut^T * A [n,k].
+Tensor matmul_transposed_b(const Tensor& a, const Tensor& b);
+
 // Sum all elements -> scalar [1]. Backward: each input element gets dOut.
 Tensor sum(const Tensor& a);
 

@@ -145,9 +145,11 @@ Tensor grouped_query_attention_impl(const Tensor& x, const Tensor& wq,
     const int group_size = n_heads / n_kv_heads;  // query heads per kv head
     const float scale_factor = 1.0F / std::sqrt(static_cast<float>(head_dim));
 
-    const Tensor query = matmul(x, wq);  // [seq, n_heads    * head_dim]
-    const Tensor key = matmul(x, wk);    // [seq, n_kv_heads * head_dim]
-    const Tensor value = matmul(x, wv);  // [seq, n_kv_heads * head_dim]
+    // Weights are Hugging Face layout [out, in]; matmul_transposed_b computes x·Wᵀ
+    // without materializing transpose(W) (the real-checkpoint inference win).
+    const Tensor query = matmul_transposed_b(x, wq);  // [seq, n_heads    * head_dim]
+    const Tensor key = matmul_transposed_b(x, wk);    // [seq, n_kv_heads * head_dim]
+    const Tensor value = matmul_transposed_b(x, wv);  // [seq, n_kv_heads * head_dim]
     const Tensor mask = causal_mask(seq);
 
     std::vector<Tensor> head_outputs;
@@ -162,7 +164,7 @@ Tensor grouped_query_attention_impl(const Tensor& x, const Tensor& wq,
     }
 
     const Tensor context = concat_cols(head_outputs);  // [seq, n_heads*head_dim]
-    return matmul(context, wo);
+    return matmul_transposed_b(context, wo);  // wo [d_model, n_heads*head_dim]
 }
 
 }  // namespace
@@ -190,9 +192,10 @@ Tensor feed_forward(const Tensor& x, const Tensor& w1, const Tensor& w2) {
 
 Tensor swiglu_feed_forward(const Tensor& x, const Tensor& w_gate,
                            const Tensor& w_up, const Tensor& w_down) {
-    const Tensor gate = silu(matmul(x, w_gate));
-    const Tensor up = matmul(x, w_up);
-    return matmul(mul(gate, up), w_down);
+    // Weights are Hugging Face layout [out, in]; matmul_transposed_b = x·Wᵀ.
+    const Tensor gate = silu(matmul_transposed_b(x, w_gate));  // w_gate [d_ff, d_model]
+    const Tensor up = matmul_transposed_b(x, w_up);            // w_up   [d_ff, d_model]
+    return matmul_transposed_b(mul(gate, up), w_down);         // w_down [d_model, d_ff]
 }
 
 void zero_grad(std::vector<Tensor>& parameters) {
