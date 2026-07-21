@@ -1,5 +1,7 @@
 #include "zetta/autograd/qwen.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <random>
 #include <string>
@@ -154,6 +156,68 @@ Tensor QwenModel::forward(const std::vector<int>& ids) const {
     const std::string output_name =
         config_.tie_word_embeddings ? "model.embed_tokens.weight" : "lm_head.weight";
     return matmul(h, transpose(weight(output_name)));  // logits [seq, vocab]
+}
+
+std::vector<int> QwenModel::generate_impl(const std::vector<int>& prompt,
+                                          int max_new_tokens, float temperature,
+                                          std::mt19937* rng, int eos_id) const {
+    const int vocab = config_.vocab_size;
+    std::vector<int> running = prompt;
+    std::vector<int> generated;
+    generated.reserve(static_cast<std::size_t>(max_new_tokens));
+
+    for (int produced = 0; produced < max_new_tokens; ++produced) {
+        const Tensor logits = forward(running);  // [seq, vocab]
+        const std::size_t last = running.size() - 1;
+        const float* row = logits.data().data() + last * vocab;
+
+        int next = 0;
+        if (temperature <= 0.0F || rng == nullptr) {
+            for (int c = 1; c < vocab; ++c) {
+                if (row[c] > row[next]) next = c;  // greedy argmax
+            }
+        } else {
+            // Sample from softmax(row / temperature), numerically stable.
+            float max_logit = row[0];
+            for (int c = 1; c < vocab; ++c) max_logit = std::max(max_logit, row[c]);
+            std::vector<double> probs(static_cast<std::size_t>(vocab), 0.0);
+            double sum_exp = 0.0;
+            for (int c = 0; c < vocab; ++c) {
+                probs[c] = std::exp((row[c] - max_logit) / temperature);
+                sum_exp += probs[c];
+            }
+            std::uniform_real_distribution<double> uniform(0.0, sum_exp);
+            const double threshold = uniform(*rng);
+            double cumulative = 0.0;
+            next = vocab - 1;
+            for (int c = 0; c < vocab; ++c) {
+                cumulative += probs[c];
+                if (threshold < cumulative) {
+                    next = c;
+                    break;
+                }
+            }
+        }
+
+        generated.push_back(next);
+        running.push_back(next);
+        if (eos_id >= 0 && next == eos_id) {
+            break;
+        }
+    }
+    return generated;
+}
+
+std::vector<int> QwenModel::generate_greedy(const std::vector<int>& prompt,
+                                            int max_new_tokens, int eos_id) const {
+    return generate_impl(prompt, max_new_tokens, /*temperature=*/0.0F,
+                         /*rng=*/nullptr, eos_id);
+}
+
+std::vector<int> QwenModel::generate(const std::vector<int>& prompt,
+                                     int max_new_tokens, float temperature,
+                                     std::mt19937& rng, int eos_id) const {
+    return generate_impl(prompt, max_new_tokens, temperature, &rng, eos_id);
 }
 
 }  // namespace zetta::autograd

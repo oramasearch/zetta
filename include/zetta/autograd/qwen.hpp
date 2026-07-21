@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <random>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -83,10 +84,27 @@ public:
     // Logits [seq, vocab] for the token id sequence, through the full Qwen3 stack.
     Tensor forward(const std::vector<int>& ids) const;
 
+    // Autoregressive greedy decode: append argmax(last-position logits) to the
+    // running sequence up to `max_new_tokens`, stopping early if `eos_id` (>= 0) is
+    // produced. Returns the generated tokens only (not the prompt). Deterministic.
+    // Re-forwards the whole sequence each step (no KV cache — a later optimization).
+    std::vector<int> generate_greedy(const std::vector<int>& prompt,
+                                     int max_new_tokens, int eos_id = -1) const;
+
+    // Autoregressive sampling: each next token is drawn from
+    // softmax(last-position logits / temperature) with `rng`. temperature <= 0
+    // falls back to greedy. This is the "act" step of the RLVR loop.
+    std::vector<int> generate(const std::vector<int>& prompt, int max_new_tokens,
+                              float temperature, std::mt19937& rng,
+                              int eos_id = -1) const;
+
 private:
     std::string layer_prefix(int layer) const;
     void add_parameter(const std::string& name, std::vector<float> data,
                        std::vector<int> shape);
+    std::vector<int> generate_impl(const std::vector<int>& prompt, int max_new_tokens,
+                                   float temperature, std::mt19937* rng,
+                                   int eos_id) const;
 
     QwenConfig config_;
     std::vector<Tensor> parameters_;                     // canonical, ordered

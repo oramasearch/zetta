@@ -69,3 +69,7 @@ across heterogeneous devices.
   produces identical logits — the exact path a real Qwen checkpoint takes
   (verified with a synthetic checkpoint; the multi-GB weights aren't fetchable
   here, but the format and load path are the same).
+- **Generation on `QwenModel`** — `generate_greedy()` (deterministic argmax
+  decode) and `generate()` (temperature sampling with an rng), the autoregressive
+  "act" step of the RLVR loop. A model overfit on a sequence greedily *generates*
+  that sequence — training and generation are mirror images.

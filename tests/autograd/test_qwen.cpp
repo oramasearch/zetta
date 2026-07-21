@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -230,6 +231,71 @@ TEST(QwenModel, OverfitsASequenceEndToEnd) {
             if (row[c] > row[best]) best = c;
         }
         EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
+    }
+}
+
+// Train a model to memorize `sequence` (next-token cross-entropy), returning it.
+QwenModel overfit_on(const std::vector<int>& sequence, std::uint64_t seed) {
+    QwenModel model(tiny_config(), seed);
+    Adam optimizer(/*learning_rate=*/1e-2F);
+    const std::vector<int> targets(sequence.begin() + 1, sequence.end());
+    for (int step = 0; step < 400; ++step) {
+        zero_grad(model.parameters());
+        const Tensor predicted =
+            row_slice(model.forward(sequence), 0, static_cast<int>(sequence.size()) - 1);
+        Tensor loss = cross_entropy(predicted, targets);
+        loss.backward();
+        optimizer.step(model.parameters());
+    }
+    return model;
+}
+
+TEST(QwenModel, GreedyGenerationIsDeterministicAndBounded) {
+    const QwenModel model(tiny_config(), 8);
+    const std::vector<int> a = model.generate_greedy({1, 2, 3}, 5);
+    const std::vector<int> b = model.generate_greedy({1, 2, 3}, 5);
+    EXPECT_EQ(a, b);              // deterministic
+    EXPECT_EQ(a.size(), 5U);     // exactly max_new_tokens
+    for (int token : a) {
+        EXPECT_GE(token, 0);
+        EXPECT_LT(token, model.config().vocab_size);
+    }
+}
+
+// Generation is the mirror of training: a model overfit on a sequence greedily
+// GENERATES that sequence's continuation from its first token.
+TEST(QwenModel, OverfitModelGeneratesTheMemorizedContinuation) {
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4, 8};
+    const QwenModel model = overfit_on(sequence, 3);
+    const std::vector<int> continuation =
+        model.generate_greedy({sequence.front()},
+                              static_cast<int>(sequence.size()) - 1);
+    const std::vector<int> expected(sequence.begin() + 1, sequence.end());
+    EXPECT_EQ(continuation, expected);
+}
+
+TEST(QwenModel, GenerationStopsAtEos) {
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4, 8};
+    const QwenModel model = overfit_on(sequence, 3);
+    // The memorized continuation is 5,7,3,9,1,4,8; stop as soon as 3 appears.
+    const std::vector<int> out =
+        model.generate_greedy({sequence.front()}, 20, /*eos_id=*/3);
+    ASSERT_FALSE(out.empty());
+    EXPECT_EQ(out.back(), 3);                 // stopped on the eos token
+    EXPECT_EQ(out, (std::vector<int>{5, 7, 3}));
+}
+
+TEST(QwenModel, SamplingIsReproducibleAndInVocab) {
+    const QwenModel model(tiny_config(), 8);
+    std::mt19937 rng_a(123);
+    std::mt19937 rng_b(123);
+    const std::vector<int> a = model.generate({1, 2}, 6, /*temperature=*/1.0F, rng_a);
+    const std::vector<int> b = model.generate({1, 2}, 6, /*temperature=*/1.0F, rng_b);
+    EXPECT_EQ(a, b);              // same seed => same samples
+    EXPECT_EQ(a.size(), 6U);
+    for (int token : a) {
+        EXPECT_GE(token, 0);
+        EXPECT_LT(token, model.config().vocab_size);
     }
 }
 
