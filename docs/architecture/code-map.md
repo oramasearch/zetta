@@ -180,7 +180,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   autograd/
     tensor.hpp              zetta::autograd::Node/Tensor/backward + the full op library (matmul, sum, add/mul/scale/add_bias, gelu/silu, row_softmax, rms_norm, transpose, embedding, cross_entropy, row_slice, policy_gradient_loss, sequence_policy_gradient_loss, rope, col_slice, concat_cols) — native reverse-mode autodiff (micrograd-shaped, tensor-valued); the RLVR model's training engine, no foreign runtime (ADR-17) (FEAT-12; #555)
     transformer.hpp         zetta::autograd — decoder blocks (causal_self_attention, grouped_query_attention with GQA/QK-norm/RoPE base, feed_forward, swiglu_feed_forward), the Transformer model, Adam, zero_grad (FEAT-12; #555)
-    qwen.hpp                zetta::autograd::QwenConfig/QwenModel — Qwen3-parity decoder keyed by Hugging Face tensor names, so a safetensors checkpoint loads by name (set_weight) (FEAT-12; #555)
+    qwen.hpp                zetta::autograd::QwenConfig/QwenModel — Qwen3-parity decoder keyed by Hugging Face tensor names, so a safetensors checkpoint loads by name (set_weight); generate/generate_greedy autoregressive decode (FEAT-12; #555)
     safetensors.hpp         zetta::autograd — host-float .safetensors reader/writer (parse/serialize + file I/O), decodes F32 + BF16 to host floats; no MLX, the always-compiled checkpoint path (FEAT-12; #555)
   agent/
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
@@ -205,6 +205,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     collectives_allreduce.hpp  zetta::agent::collectives_allreduce — adapt cluster::Collectives::allreduce to the injected AllReduce (Reduce→CollectiveOp, empty on failure); the real cross-node combine (FEAT-12; #555)
     neural_training.hpp     zetta::agent::ContextSource/ContextualRewardTask/train_linear_policy_distributed — distributed RLVR of a LinearPolicy's WEIGHTS: forward W·x on the device, weight-gradient outer product, allreduced; learns a contextual policy (FEAT-12; #555)
     corpus_training.hpp     zetta::agent::TaskEnvironment/CorpusTrainingReport/train_over_corpus — curriculum training over a task corpus with per-task before/after reward + improved-count (feat-12 step 5 observability) (FEAT-12; #555)
+    qwen_rlvr.hpp           zetta::agent::CompletionReward/GrpoConfig/grpo_step — the capstone: GRPO/RLVR over the autograd QwenModel (sample group → verifiable reward → group advantages → sequence PG step); device-agnostic, no framework (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -430,6 +431,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     distributed_training.cpp  zetta::agent::train_softmax_policy_distributed — per step: sample local group, co_await when_all over the reward io_tasks, distributed advantages + gradient step, allreduce the global mean reward; step-unique collective tags (zetta-core; #555)
     collectives_allreduce.cpp  zetta::agent::collectives_allreduce — Reduce→CollectiveOp map, forward to Collectives::allreduce with a timeout, value_or({}) so a failed round is a collective failure (zetta-core; #555)
     neural_training.cpp     zetta::agent::train_linear_policy_distributed — per step: forward W·x on the device per context, sample, when_all rewards, GRPO advantages, accumulate + allreduce dW = A·(1[a]-pi)⊗x, update W (zetta-core; #555)
+    qwen_rlvr.cpp           zetta::agent::grpo_step — one GRPO/RLVR update over the autograd QwenModel: sample a group of completions, score, group_advantages, sum each completion's sequence_policy_gradient_loss (advantage over its tokens), backward + Adam (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)

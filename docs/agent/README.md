@@ -241,11 +241,32 @@ model — not a linear layer:
   BF16 decode — the HuggingFace format). A trained model round-trips through the
   format exactly.
 
-**To ingest an actual Qwen checkpoint** additionally requires matching Qwen's
-architecture (RoPE, grouped-query attention, SwiGLU, QK-norm) so the safetensors
-tensor names + shapes line up, plus the downloaded multi-GB weights and Qwen's
-tokenizer. The format loader (incl. BF16) is done; that architecture parity + the
-weights are the remaining external-asset step.
+## The Qwen3-parity model, RLVR-trained on the native autograd (shipped, device-agnostic)
+
+The MLX slice above proved the loop on Metal. The **`zetta::autograd`** line
+([`docs/autograd/`](../autograd/README.md)) then rebuilt the actual model
+**device-agnostically** — on zetta's own reverse-mode autodiff, so the *same*
+graph runs on CPU / CUDA / MLX (the `ComputeDevice` it is built on), which is what
+lets one distributed model train across a heterogeneous cluster:
+
+- **`QwenModel`** (`autograd/qwen.hpp`) — a **Qwen3-parity** decoder: grouped-query
+  attention + **QK-norm** + **RoPE** (selectable θ) + **SwiGLU** + **RMSNorm**, with
+  parameters keyed by **Hugging Face tensor names**. A synthetic checkpoint
+  round-trips through a `.safetensors` file into a fresh model with identical
+  logits — the exact path a real Qwen checkpoint takes.
+- **`grpo_step`** (`qwen_rlvr.hpp`) — **the capstone**: blender-rl's GRPO loop over
+  that model, reproduced native. Sample a group of completions
+  (`QwenModel::generate`), score each with a `CompletionReward` (verifiable, a
+  check that runs), normalize to `group_advantages`, and take one
+  **`sequence_policy_gradient_loss`** step. Proven: the Qwen3-parity model learns
+  to generate a target sequence **purely from reward, never shown the answer** —
+  every gradient from the autograd's backward closures, no framework.
+
+**To ingest an actual Qwen checkpoint** the remaining external-asset step is the
+downloaded multi-GB weights and Qwen's tokenizer — the **architecture parity**
+(RoPE / GQA / SwiGLU / QK-norm, HF tensor names + shapes) and the **safetensors
+loader** (incl. BF16) are now done and device-agnostic, so a real checkpoint's
+tensors line up and load by name.
 
 ## The forward pass on the compute device (shipped)
 
