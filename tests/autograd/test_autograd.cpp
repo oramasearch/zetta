@@ -20,6 +20,7 @@ using zetta::autograd::matmul;
 using zetta::autograd::mul;
 using zetta::autograd::policy_gradient_loss;
 using zetta::autograd::rms_norm;
+using zetta::autograd::sequence_policy_gradient_loss;
 using zetta::autograd::rope;
 using zetta::autograd::row_softmax;
 using zetta::autograd::scale;
@@ -251,6 +252,44 @@ TEST(Autograd, PolicyGradientLossGradient) {
     check_gradient({0.5F, -1.0F, 2.0F, 0.25F}, {1, 4}, [&](const Tensor& logits) {
         return policy_gradient_loss(logits, actions, advantages);
     });
+}
+
+TEST(Autograd, SequencePolicyGradientLossGradient) {
+    const std::vector<int> actions = {2, 0, 3};  // one token per step (T=3)
+    check_gradient({0.5F, -1.0F, 2.0F, 0.25F,   // step 0 logits
+                    1.0F, 0.0F, -0.5F, 0.75F,   // step 1
+                    -0.3F, 0.6F, 0.1F, -1.2F},  // step 2
+                   {3, 4}, [&](const Tensor& logits) {
+                       return sequence_policy_gradient_loss(logits, actions, 0.7);
+                   });
+}
+
+// With advantage 1 the sequence PG loss is exactly the summed negative
+// log-likelihood — rows * cross_entropy — and the advantage scales it linearly.
+TEST(Autograd, SequencePolicyGradientMatchesScaledCrossEntropy) {
+    const std::vector<int> actions = {2, 0, 3};
+    const std::vector<float> data = {0.5F, -1.0F, 2.0F, 0.25F, 1.0F, 0.0F,
+                                     -0.5F, 0.75F, -0.3F, 0.6F, 0.1F, -1.2F};
+    const Tensor logits = Tensor::leaf(data, {3, 4}, false);
+
+    const float ce = cross_entropy(logits, actions).data()[0];
+    const float pg_one = sequence_policy_gradient_loss(logits, actions, 1.0).data()[0];
+    EXPECT_NEAR(pg_one, 3.0F * ce, 1e-4F);  // -sum log p == rows * mean(-log p)
+
+    const float pg_neg = sequence_policy_gradient_loss(logits, actions, -2.0).data()[0];
+    EXPECT_NEAR(pg_neg, -2.0F * pg_one, 1e-4F);  // advantage scales linearly
+}
+
+TEST(Autograd, SequencePolicyGradientZeroAdvantageIsZero) {
+    const std::vector<int> actions = {1, 2};
+    const Tensor logits =
+        Tensor::leaf({0.5F, -1.0F, 2.0F, 0.25F, 1.0F, 0.0F, -0.5F, 0.75F}, {2, 4}, true);
+    Tensor loss = sequence_policy_gradient_loss(logits, actions, 0.0);
+    EXPECT_FLOAT_EQ(loss.data()[0], 0.0F);
+    loss.backward();
+    for (float gradient : logits.grad()) {
+        EXPECT_FLOAT_EQ(gradient, 0.0F);
+    }
 }
 
 // matmul routed through a ComputeDevice (CpuDevice) matches the host kernel — the

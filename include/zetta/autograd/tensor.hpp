@@ -140,6 +140,18 @@ Tensor policy_gradient_loss(const Tensor& logits,
                             const std::vector<int>& actions,
                             const std::vector<double>& advantages);
 
+// The RLVR sequence policy-gradient (REINFORCE) loss for ONE completion: given
+// per-step `logits` [T, vocab] (row t is the distribution that produced token t),
+// the sampled `actions` [T], and a scalar group-relative `advantage`,
+// loss = -advantage * sum_t log softmax(logits[t])[action_t]. A scalar [1]. A
+// positive advantage pushes every chosen token's probability up, a negative one
+// pushes it down — that is how a whole sequence's verifiable reward flows back
+// into each token it emitted. Backward: dLogits[t, j] = -advantage * g *
+// (1[j == action_t] - softmax(logits[t])[j]).
+Tensor sequence_policy_gradient_loss(const Tensor& logits,
+                                     const std::vector<int>& actions,
+                                     double advantage);
+
 // Rotary positional embedding (RoPE, the rotate_half convention Qwen/LLaMA use):
 // rotate the pair (i, i + d/2) of each row [seq, d] by angle = position *
 // base^(-2i/d). Applied to Q and K so attention sees relative positions. It is a

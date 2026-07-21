@@ -533,6 +533,52 @@ Tensor policy_gradient_loss(const Tensor& logits,
     return Tensor{node};
 }
 
+Tensor sequence_policy_gradient_loss(const Tensor& logits,
+                                     const std::vector<int>& actions,
+                                     double advantage) {
+    const int rows = logits.shape()[0];
+    const int vocab = logits.shape()[1];
+    const float adv = static_cast<float>(advantage);
+
+    std::vector<float> softmax(static_cast<std::size_t>(rows) * vocab, 0.0F);
+    float log_prob_sum = 0.0F;
+    for (int row = 0; row < rows; ++row) {
+        const float* x = logits.data().data() + row * vocab;
+        float max_value = x[0];
+        for (int j = 1; j < vocab; ++j) {
+            if (x[j] > max_value) max_value = x[j];
+        }
+        float sum_exp = 0.0F;
+        for (int j = 0; j < vocab; ++j) {
+            const float e = std::exp(x[j] - max_value);
+            softmax[row * vocab + j] = e;
+            sum_exp += e;
+        }
+        for (int j = 0; j < vocab; ++j) {
+            softmax[row * vocab + j] /= sum_exp;
+        }
+        const float log_sum = std::log(sum_exp) + max_value;  // log softmax denom
+        log_prob_sum += x[actions[row]] - log_sum;
+    }
+    const float loss = -adv * log_prob_sum;
+
+    auto node = make_node({loss}, {1});
+    node->parents = {logits.node()};
+    const std::shared_ptr<Node> logits_node = logits.node();
+    node->backward = [logits_node, softmax, actions, adv, rows,
+                      vocab](const std::vector<float>& g) {
+        const float scale_factor = -adv * g[0];
+        for (int row = 0; row < rows; ++row) {
+            for (int j = 0; j < vocab; ++j) {
+                const float indicator = (j == actions[row]) ? 1.0F : 0.0F;
+                logits_node->grad[row * vocab + j] +=
+                    scale_factor * (indicator - softmax[row * vocab + j]);
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor rope(const Tensor& x, float base) {
     const int seq = x.shape()[0];
     const int d = x.shape()[1];
