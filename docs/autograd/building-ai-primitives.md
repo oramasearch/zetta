@@ -148,9 +148,12 @@ The reference kernels are correct first; speed comes from these, in order of imp
   contiguous rows (cache/SIMD-friendly). **Done** — `QwenModel` and the Qwen
   attention/MLP keep weights in HF layout and never transpose on the forward
   (2.3 s → 1.4 s on Qwen3-0.6B).
-- **KV cache for generation.** Without it, decoding token *t* re-forwards the whole
-  sequence (O(n²)). A per-layer K/V cache makes each new token O(n). This is the
-  single biggest generation win. *(Planned — see PR #857.)*
+- **KV cache for generation — done (`QwenInference`).** Without it, decoding token
+  *t* re-forwards the whole sequence (O(n²)). `QwenInference` is a plain-float
+  (no-autograd) forward that caches per-layer K/V and forwards one token at a time,
+  so each step is O(n) — verified to produce the same logits as `QwenModel::forward`.
+  On the real Qwen3-0.6B it took generation from **0.4 → 2.87 tok/s** (~7×). Use it
+  for generation / RLVR rollouts; training still uses the autograd forward.
 - **The `ComputeDevice` gemm.** Route matmul through `CpuDevice` (already
   pool-threaded) or **`MlxDevice`** (Apple-Silicon GPU, `-DZETTA_ENABLE_MLX=ON`) —
   the device is captured per-op, so training backprops on the same device.

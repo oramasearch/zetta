@@ -15,8 +15,59 @@
 #include <nlohmann/json.hpp>
 
 #include "zetta/autograd/transformer.hpp"
+#include "zetta/runtime.hpp"
 
 namespace zetta::autograd {
+
+namespace {
+
+// out[o] = dot(W_row_o, x), W is [out, in] (Hugging Face layout). Spread over the
+// output rows on the runtime thread pool (threads when out is large, e.g. lm_head).
+std::vector<float> matvec_transposed(const std::vector<float>& weight,
+                                     const std::vector<float>& x, int out_dim,
+                                     int in_dim) {
+    std::vector<float> out(static_cast<std::size_t>(out_dim), 0.0F);
+    const float* w = weight.data();
+    const float* xd = x.data();
+    float* od = out.data();
+    runtime::parallel_for(
+        static_cast<std::size_t>(out_dim),
+        [&](std::size_t, std::size_t begin, std::size_t end) {
+            for (std::size_t o = begin; o < end; ++o) {
+                const float* w_row = w + o * in_dim;
+                float acc = 0.0F;
+                for (int i = 0; i < in_dim; ++i) acc += w_row[i] * xd[i];
+                od[o] = acc;
+            }
+        });
+    return out;
+}
+
+// RMSNorm a vector in place: x[i] = x[i]/sqrt(mean(x²)+eps) * weight[i].
+void rms_norm_inplace(std::vector<float>& x, const std::vector<float>& weight,
+                      float eps) {
+    double sum_sq = 0.0;
+    for (float v : x) sum_sq += static_cast<double>(v) * v;
+    const float inv = 1.0F / std::sqrt(static_cast<float>(sum_sq / x.size()) + eps);
+    for (std::size_t i = 0; i < x.size(); ++i) x[i] = x[i] * inv * weight[i];
+}
+
+// Rotate one head vector [head_dim] by RoPE at `position` (rotate_half convention).
+void rope_inplace(float* head, int head_dim, int position, float base) {
+    const int half = head_dim / 2;
+    for (int i = 0; i < half; ++i) {
+        const double inv_freq = std::pow(static_cast<double>(base), -2.0 * i / head_dim);
+        const double angle = position * inv_freq;
+        const float c = static_cast<float>(std::cos(angle));
+        const float s = static_cast<float>(std::sin(angle));
+        const float a = head[i];
+        const float b = head[i + half];
+        head[i] = a * c - b * s;
+        head[i + half] = b * c + a * s;
+    }
+}
+
+}  // namespace
 
 namespace {
 
@@ -419,6 +470,149 @@ std::string serialize_qwen_config(const QwenConfig& config) {
     root["rope_theta"] = config.rope_base;
     root["tie_word_embeddings"] = config.tie_word_embeddings;
     return root.dump(2);
+}
+
+QwenInference::QwenInference(const QwenModel& model)
+    : model_(model), config_(model.config()) {
+    key_cache_.resize(static_cast<std::size_t>(config_.n_layers));
+    value_cache_.resize(static_cast<std::size_t>(config_.n_layers));
+}
+
+void QwenInference::reset() {
+    position_ = 0;
+    for (auto& cache : key_cache_) cache.clear();
+    for (auto& cache : value_cache_) cache.clear();
+}
+
+std::vector<float> QwenInference::step(int token_id) {
+    const int d = config_.d_model;
+    const int n_heads = config_.n_heads;
+    const int n_kv_heads = config_.n_kv_heads;
+    const int head_dim = config_.head_dim;
+    const int q_dim = n_heads * head_dim;
+    const int kv_dim = n_kv_heads * head_dim;
+    const int group = n_heads / n_kv_heads;
+    const int pos = position_;
+    const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
+    const auto& weight = [&](const std::string& name) -> const std::vector<float>& {
+        return model_.weight(name).node()->data;
+    };
+
+    // Embed the token (row token_id of the embedding table).
+    const std::vector<float>& embed = weight("model.embed_tokens.weight");
+    std::vector<float> x(embed.begin() + static_cast<std::size_t>(token_id) * d,
+                         embed.begin() + static_cast<std::size_t>(token_id + 1) * d);
+
+    for (int layer = 0; layer < config_.n_layers; ++layer) {
+        const std::string prefix = "model.layers." + std::to_string(layer) + ".";
+
+        // --- attention ---
+        std::vector<float> normed = x;
+        rms_norm_inplace(normed, weight(prefix + "input_layernorm.weight"),
+                         config_.rms_eps);
+        std::vector<float> q =
+            matvec_transposed(weight(prefix + "self_attn.q_proj.weight"), normed, q_dim, d);
+        std::vector<float> k =
+            matvec_transposed(weight(prefix + "self_attn.k_proj.weight"), normed, kv_dim, d);
+        std::vector<float> v =
+            matvec_transposed(weight(prefix + "self_attn.v_proj.weight"), normed, kv_dim, d);
+
+        // Per-head QK-norm (default eps 1e-5, matching the autograd GQA) then RoPE.
+        const std::vector<float>& q_norm = weight(prefix + "self_attn.q_norm.weight");
+        const std::vector<float>& k_norm = weight(prefix + "self_attn.k_norm.weight");
+        for (int h = 0; h < n_heads; ++h) {
+            std::vector<float> head(q.begin() + h * head_dim, q.begin() + (h + 1) * head_dim);
+            rms_norm_inplace(head, q_norm, 1e-5F);
+            rope_inplace(head.data(), head_dim, pos, config_.rope_base);
+            std::copy(head.begin(), head.end(), q.begin() + h * head_dim);
+        }
+        for (int kh = 0; kh < n_kv_heads; ++kh) {
+            std::vector<float> head(k.begin() + kh * head_dim, k.begin() + (kh + 1) * head_dim);
+            rms_norm_inplace(head, k_norm, 1e-5F);
+            rope_inplace(head.data(), head_dim, pos, config_.rope_base);
+            std::copy(head.begin(), head.end(), k.begin() + kh * head_dim);
+        }
+
+        // Append this position's K/V to the layer cache.
+        key_cache_[layer].insert(key_cache_[layer].end(), k.begin(), k.end());
+        value_cache_[layer].insert(value_cache_[layer].end(), v.begin(), v.end());
+
+        // Attend each query head over cached positions 0..pos of its KV head.
+        std::vector<float> context(static_cast<std::size_t>(q_dim), 0.0F);
+        for (int h = 0; h < n_heads; ++h) {
+            const int kv_head = h / group;
+            const float* q_head = q.data() + h * head_dim;
+            std::vector<float> scores(static_cast<std::size_t>(pos) + 1);
+            float max_score = -1e30F;
+            for (int p = 0; p <= pos; ++p) {
+                const float* k_p = key_cache_[layer].data() +
+                                   static_cast<std::size_t>(p) * kv_dim + kv_head * head_dim;
+                float s = 0.0F;
+                for (int i = 0; i < head_dim; ++i) s += q_head[i] * k_p[i];
+                s *= scale;
+                scores[p] = s;
+                if (s > max_score) max_score = s;
+            }
+            float sum_exp = 0.0F;
+            for (float& s : scores) {
+                s = std::exp(s - max_score);
+                sum_exp += s;
+            }
+            float* context_head = context.data() + h * head_dim;
+            for (int p = 0; p <= pos; ++p) {
+                const float w = scores[p] / sum_exp;
+                const float* v_p = value_cache_[layer].data() +
+                                   static_cast<std::size_t>(p) * kv_dim + kv_head * head_dim;
+                for (int i = 0; i < head_dim; ++i) context_head[i] += w * v_p[i];
+            }
+        }
+        const std::vector<float> attn_out =
+            matvec_transposed(weight(prefix + "self_attn.o_proj.weight"), context, d, q_dim);
+        for (int i = 0; i < d; ++i) x[i] += attn_out[i];
+
+        // --- SwiGLU MLP ---
+        std::vector<float> normed2 = x;
+        rms_norm_inplace(normed2, weight(prefix + "post_attention_layernorm.weight"),
+                         config_.rms_eps);
+        std::vector<float> gate =
+            matvec_transposed(weight(prefix + "mlp.gate_proj.weight"), normed2, config_.d_ff, d);
+        const std::vector<float> up =
+            matvec_transposed(weight(prefix + "mlp.up_proj.weight"), normed2, config_.d_ff, d);
+        for (int i = 0; i < config_.d_ff; ++i) {
+            const float g = gate[i];
+            gate[i] = (g / (1.0F + std::exp(-g))) * up[i];  // silu(g) * up
+        }
+        const std::vector<float> mlp =
+            matvec_transposed(weight(prefix + "mlp.down_proj.weight"), gate, d, config_.d_ff);
+        for (int i = 0; i < d; ++i) x[i] += mlp[i];
+    }
+
+    rms_norm_inplace(x, weight("model.norm.weight"), config_.rms_eps);
+    const std::string output_name =
+        config_.tie_word_embeddings ? "model.embed_tokens.weight" : "lm_head.weight";
+    std::vector<float> logits =
+        matvec_transposed(weight(output_name), x, config_.vocab_size, d);
+    ++position_;
+    return logits;
+}
+
+std::vector<int> QwenInference::generate_greedy(const std::vector<int>& prompt,
+                                                int max_new_tokens, int eos_id) {
+    reset();
+    std::vector<float> logits;
+    for (int token : prompt) logits = step(token);  // prefill
+
+    std::vector<int> generated;
+    for (int produced = 0; produced < max_new_tokens; ++produced) {
+        int best = 0;
+        for (int c = 1; c < config_.vocab_size; ++c) {
+            if (logits[c] > logits[best]) best = c;
+        }
+        generated.push_back(best);
+        if (eos_id >= 0 && best == eos_id) break;
+        logits = step(best);
+    }
+    return generated;
 }
 
 bool save_qwen_model(const QwenModel& model, const std::string& directory,

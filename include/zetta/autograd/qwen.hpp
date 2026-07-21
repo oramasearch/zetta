@@ -135,6 +135,39 @@ private:
 std::optional<QwenModel> load_qwen_model(const std::string& directory,
                                          std::string* error = nullptr);
 
+// Fast KV-cached autoregressive inference for a QwenModel. Generation needs no
+// gradients, so this is a plain-float forward (no autograd graph) that forwards ONE
+// token at a time: each new token's attention reads the cached key/value of all
+// prior tokens, so a step is O(sequence) instead of re-forwarding the whole
+// sequence through every layer (the O(n²) cost of QwenModel::generate). It produces
+// the same logits as QwenModel::forward. Weights are read from the model in Hugging
+// Face layout and applied as x·Wᵀ; the lm_head projection spreads over the runtime
+// thread pool. Not differentiable — for generation / RLVR rollouts, not training.
+class QwenInference {
+public:
+    explicit QwenInference(const QwenModel& model);
+
+    // Clear the KV cache and reset to position 0.
+    void reset();
+
+    // Forward one token at the current position: append its key/value to the cache
+    // and return its logits [vocab]. Advances the position by one.
+    std::vector<float> step(int token_id);
+
+    // Greedy decode: reset, run the prompt through the cache, then repeatedly step
+    // on the argmax until `max_new_tokens` or `eos_id` (>= 0). Returns the generated
+    // tokens (not the prompt) — same result as QwenModel::generate_greedy, faster.
+    std::vector<int> generate_greedy(const std::vector<int>& prompt,
+                                     int max_new_tokens, int eos_id = -1);
+
+private:
+    const QwenModel& model_;
+    QwenConfig config_;
+    int position_ = 0;
+    std::vector<std::vector<float>> key_cache_;    // per layer, flat [pos][n_kv*head_dim]
+    std::vector<std::vector<float>> value_cache_;
+};
+
 // Serialize a config to a Hugging Face `config.json` body (the fields
 // parse_qwen_config reads, so config -> json -> config round-trips).
 std::string serialize_qwen_config(const QwenConfig& config);

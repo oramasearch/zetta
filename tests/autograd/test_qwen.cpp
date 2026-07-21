@@ -21,6 +21,7 @@ using zetta::autograd::cross_entropy;
 using zetta::autograd::load_qwen_model;
 using zetta::autograd::parse_qwen_config;
 using zetta::autograd::QwenConfig;
+using zetta::autograd::QwenInference;
 using zetta::autograd::QwenModel;
 using zetta::autograd::read_safetensors_file;
 using zetta::autograd::save_qwen_model;
@@ -494,6 +495,48 @@ TEST(QwenModel, OverfitsASequenceEndToEnd) {
         }
         EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
     }
+}
+
+// The KV-cached inference engine produces the SAME logits as the full autograd
+// forward (its correctness gate) — position by position over a sequence.
+TEST(QwenInferenceCache, StepLogitsMatchForward) {
+    const QwenModel model(tiny_config(), 8);
+    const std::vector<int> ids = {1, 5, 2, 7, 3};
+    const Tensor full = model.forward(ids);  // [seq, vocab]
+    const int vocab = model.config().vocab_size;
+
+    QwenInference engine(model);
+    for (std::size_t t = 0; t < ids.size(); ++t) {
+        const std::vector<float> step_logits = engine.step(ids[t]);
+        ASSERT_EQ(step_logits.size(), static_cast<std::size_t>(vocab));
+        const float* forward_row = full.data().data() + t * vocab;
+        for (int c = 0; c < vocab; ++c) {
+            EXPECT_NEAR(step_logits[c], forward_row[c], 1e-3F)
+                << "position " << t << " logit " << c;
+        }
+    }
+}
+
+// And it greedily generates the identical tokens as the (slow) re-forwarding path.
+TEST(QwenInferenceCache, GreedyMatchesReforwardingGenerate) {
+    const QwenModel model(tiny_config(), 3);
+    const std::vector<int> prompt = {2, 5, 1};
+    const std::vector<int> slow = model.generate_greedy(prompt, 6);
+    QwenInference engine(model);
+    const std::vector<int> cached = engine.generate_greedy(prompt, 6);
+    EXPECT_EQ(cached, slow);
+}
+
+// A trained model's memorized continuation comes out of the cached path too.
+TEST(QwenInferenceCache, ReproducesOverfitContinuation) {
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4, 8};
+    const QwenModel model = overfit_on(sequence, 3);
+    QwenInference engine(model);
+    const std::vector<int> continuation =
+        engine.generate_greedy({sequence.front()},
+                               static_cast<int>(sequence.size()) - 1);
+    const std::vector<int> expected(sequence.begin() + 1, sequence.end());
+    EXPECT_EQ(continuation, expected);
 }
 
 TEST(QwenModel, GreedyGenerationIsDeterministicAndBounded) {

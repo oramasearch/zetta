@@ -81,6 +81,12 @@ across heterogeneous devices.
   decode) and `generate()` (temperature sampling with an rng), the autoregressive
   "act" step of the RLVR loop. A model overfit on a sequence greedily *generates*
   that sequence — training and generation are mirror images.
+- **`QwenInference`** — a fast **KV-cached** generation engine: a plain-float
+  (no-autograd) forward that caches per-layer key/value and forwards one token at a
+  time, so each step is O(seq) instead of re-forwarding the whole sequence. Produces
+  the same logits as `QwenModel::forward` (verified); on the real Qwen3-0.6B it took
+  greedy generation from 0.4 → 2.87 tok/s (~7×). For generation / RLVR rollouts;
+  training keeps the differentiable forward.
 - **`load_qwen_model(dir)`** — the entry point: point it at a Hugging Face
   checkpoint directory and get a fully-loaded, ready-to-run `QwenModel` (config
   parsed, weights loaded by name). Handles both a single `model.safetensors` and a
