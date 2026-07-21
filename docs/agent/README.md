@@ -36,6 +36,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The reference policy** — `SoftmaxPolicy` (below), the CPU policy the training loop is proven on.
 - **GRPO advantages** — `group_advantages` (below).
 - **The policy-gradient step** — `policy_gradient_step` (below) — reward provably rises.
+- **The training loop** — `train_softmax_policy` (below) — learns to solve a real task.
 
 ## The reward primitive (shipped)
 
@@ -140,6 +141,22 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   >0.9 probability. This is feat-12's "watch it improve", in miniature on the CPU
   reference policy; the same loop drives a real MLX-backed model once it is swapped
   in behind `AgentPolicy`.
+
+## The training loop (shipped)
+
+- **`train_softmax_policy`** (`training.hpp`) — the RLVR loop: each step samples a
+  group of actions, turns their rewards into GRPO advantages, and takes a
+  policy-gradient step, reporting the **mean reward per step** (the learning
+  curve). The **environment** (`RewardFunction`) and the **randomness**
+  (`UniformSource`) are injected, so the *same loop* trains the CPU reference
+  policy here and, later, a real model behind `AgentPolicy` — only those two
+  change. Proven end to end: an integration test wires the reward to the real
+  `Task → Sandbox → rollout → reward_for_rollout` pipeline and the loop learns to
+  pick the tool call that solves the task.
+
+This closes the reference-first training half. What remains is the **⚙️ real
+model**: an `MlxDevice` compute backend + an open-weights model behind
+`AgentPolicy`, then this same loop against it (see PR #857's ladder).
 
 ## Acceptance
 

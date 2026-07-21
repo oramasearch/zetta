@@ -187,6 +187,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     softmax_policy.hpp      zetta::agent::SoftmaxPolicy — the CPU reference policy: one logit per action, stable softmax probabilities, deterministic sample(u), log_prob; the training loop is proven on this before a real model plugs in (FEAT-12; #555)
     advantage.hpp           zetta::agent::GroupStats/group_stats/group_advantages — GRPO group-relative advantages (r_i-mean)/(stddev+eps): the RLVR training signal, group as its own baseline, zero when the group agrees (FEAT-12; #555)
     policy_gradient.hpp     zetta::agent::PolicySample/policy_gradient_step — one REINFORCE/GRPO ascent step: logit_j += lr·Σ advantage·(1[j==a]−pi_j); repeated over a task the reward rises (FEAT-12; #555)
+    training.hpp            zetta::agent::train_softmax_policy/TrainingConfig/TrainingReport — the RLVR loop: sample group → advantages → gradient step, N steps, reporting the mean-reward learning curve; environment + rng injected (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -395,6 +396,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     softmax_policy.cpp      zetta::agent::SoftmaxPolicy — stable softmax (subtract max), inverse-CDF sample with a rounding guard, log_prob = log(p[action]) (zetta-core; #555)
     advantage.cpp           zetta::agent::group_stats/group_advantages — mean + population stddev of a reward group, then (r-mean)/(stddev+eps) per rollout (zetta-core; #555)
     policy_gradient.cpp     zetta::agent::policy_gradient_step — probs at the sampling policy, accumulate advantage·(indicator−p) per logit over the batch, ascend by learning_rate (zetta-core; #555)
+    training.cpp            zetta::agent::train_softmax_policy — per step: sample group_size actions via the injected uniform, score via the injected reward, GRPO advantages, gradient step, record the mean reward (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)
