@@ -30,10 +30,12 @@ Tensor causal_self_attention(const Tensor& x, const Tensor& wq, const Tensor& wk
 // multi-head attention and n_kv_heads == 1 is multi-query. RoPE is applied
 // per head to Q and K, each head does scaled-dot-product attention under the
 // causal mask, and the head outputs are concatenated and projected by wo.
-// Requires n_heads % n_kv_heads == 0.
+// Requires n_heads % n_kv_heads == 0. `rope_base` is the RoPE θ (10000 for
+// GPT/LLaMA-1, 1000000 for Qwen3).
 Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
                                const Tensor& wv, const Tensor& wo, int n_heads,
-                               int n_kv_heads, int head_dim);
+                               int n_kv_heads, int head_dim,
+                               float rope_base = 10000.0F);
 
 // Grouped-query attention with QK-norm (the Qwen3 variant): before RoPE, each
 // head's query and key vector is RMSNorm'd by a learned weight — q_norm and
@@ -43,7 +45,8 @@ Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& 
 Tensor grouped_query_attention(const Tensor& x, const Tensor& wq, const Tensor& wk,
                                const Tensor& wv, const Tensor& wo,
                                const Tensor& q_norm, const Tensor& k_norm,
-                               int n_heads, int n_kv_heads, int head_dim);
+                               int n_heads, int n_kv_heads, int head_dim,
+                               float rope_base = 10000.0F);
 
 // Position-wise feed-forward: gelu(x @ w1) @ w2. x [seq, d_model],
 // w1 [d_model, d_ff], w2 [d_ff, d_model].

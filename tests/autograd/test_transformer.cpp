@@ -304,6 +304,45 @@ TEST(AutogradTransformer, QkNormChangesTheOutput) {
     EXPECT_GT(max_diff, 1e-4F);
 }
 
+// The RoPE base (θ) is a real knob: Qwen3 uses 1e6, GPT/LLaMA-1 use 1e4.
+// Different bases rotate positions >= 1 differently, so the attention output
+// must differ (position 0 is unaffected — RoPE is identity there).
+TEST(AutogradTransformer, RopeBaseChangesTheOutput) {
+    const int seq = 6;
+    const int n_heads = 2;
+    const int n_kv_heads = 1;
+    const int head_dim = 8;  // several frequency bands, so the base clearly bites
+    const int d_model = n_heads * head_dim;  // 16
+    const int kv_dim = n_kv_heads * head_dim;  // 8
+    // Order-1 magnitudes so the per-band rotation difference isn't damped to noise.
+    const auto scaled = [](int count) {
+        std::vector<float> w(count, 0.0F);
+        for (int i = 0; i < count; ++i) w[i] = 0.3F * static_cast<float>((i % 5) - 2);
+        return w;
+    };
+    const Tensor x = Tensor::leaf(scaled(seq * d_model), {seq, d_model}, false);
+    const Tensor wq = Tensor::leaf(scaled(d_model * d_model), {d_model, d_model}, false);
+    const Tensor wk = Tensor::leaf(scaled(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wv = Tensor::leaf(scaled(d_model * kv_dim), {d_model, kv_dim}, false);
+    const Tensor wo = Tensor::leaf(scaled(d_model * d_model), {d_model, d_model}, false);
+
+    const Tensor gpt = grouped_query_attention(x, wq, wk, wv, wo, n_heads, n_kv_heads,
+                                               head_dim, /*rope_base=*/10000.0F);
+    const Tensor qwen = grouped_query_attention(x, wq, wk, wv, wo, n_heads, n_kv_heads,
+                                                head_dim, /*rope_base=*/1000000.0F);
+    ASSERT_EQ(gpt.shape(), qwen.shape());
+    float first_diff = 0.0F;
+    float any_diff = 0.0F;
+    for (int col = 0; col < d_model; ++col) {
+        first_diff = std::max(first_diff, std::abs(gpt.data()[col] - qwen.data()[col]));
+    }
+    for (std::size_t i = 0; i < gpt.data().size(); ++i) {
+        any_diff = std::max(any_diff, std::abs(gpt.data()[i] - qwen.data()[i]));
+    }
+    EXPECT_LT(first_diff, 1e-6F);  // position 0: RoPE is identity, base irrelevant
+    EXPECT_GT(any_diff, 1e-4F);    // later positions rotate differently
+}
+
 // Perturbing the last token must not change position 0's attention output (it
 // cannot see the future), but must change the last position's.
 TEST(AutogradTransformer, AttentionIsCausal) {
