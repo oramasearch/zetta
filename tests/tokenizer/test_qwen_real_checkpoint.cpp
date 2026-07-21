@@ -15,6 +15,7 @@
 
 #if defined(ZETTA_WITH_MLX)
 #include "zetta/compute/mlx_device.hpp"
+#include "zetta/compute/mlx_qwen.hpp"
 #endif
 
 // Guarded integration test against a REAL Qwen3-0.6B checkpoint. It runs only when
@@ -233,6 +234,45 @@ TEST(QwenRealCheckpoint, GenerationTokensPerSecondCpuVsMlx) {
                  "  autograd re-forward MLX: %6.2f tok/s\n",
                  n, rate(k0, k1, static_cast<int>(kv.size())), rate(a0, a1, n),
                  rate(g0, g1, n));
+}
+
+// THE FUSED MLX KERNEL: the whole decode step is one MLX graph with the KV cache in
+// GPU arrays (one eval per token, no per-op sync). It must produce the same tokens
+// as the CPU KV-cached path, and it should generate FAST on the GPU — unlike the
+// per-op autograd routing which loses to the CPU.
+TEST(QwenRealCheckpoint, FusedMlxGenerationMatchesCpuAndIsFast) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    const std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenInference> fused =
+        zetta::compute::model::MlxQwenInference::from_directory(dir, &error);
+    ASSERT_TRUE(fused.has_value()) << error;
+
+    const std::vector<int> prompt = tokenizer->encode("The capital of France is");
+    const int n = 24;
+
+    // Same greedy tokens as the CPU KV-cached engine (the correctness gate).
+    zetta::autograd::QwenInference cpu(*model);
+    const std::vector<int> cpu_gen = cpu.generate_greedy(prompt, n);
+    const std::vector<int> mlx_gen = fused->generate_greedy(prompt, n);
+    EXPECT_EQ(mlx_gen, cpu_gen)
+        << "fused MLX: \"" << tokenizer->decode(mlx_gen) << "\" vs CPU \""
+        << tokenizer->decode(cpu_gen) << "\"";
+
+    // Tokens/sec on the GPU (warm up first — MLX compiles kernels lazily).
+    using clock = std::chrono::steady_clock;
+    fused->generate_greedy(prompt, 4);
+    const auto t0 = clock::now();
+    const std::vector<int> timed = fused->generate_greedy(prompt, 32);
+    const auto t1 = clock::now();
+    const double tps = timed.size() / std::chrono::duration<double>(t1 - t0).count();
+    std::cerr << "[fused MLX generation] " << tps << " tok/s : \""
+              << tokenizer->decode(timed) << "\"\n";
 }
 
 #endif  // ZETTA_WITH_MLX

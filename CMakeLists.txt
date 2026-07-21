@@ -346,6 +346,7 @@ if(ZETTA_ENABLE_MLX)
   list(APPEND ZETTA_COMPUTE_SOURCES
     src/core/compute/mlx_device.cpp
     src/core/compute/mlx_transformer.cpp
+    src/core/compute/mlx_qwen.cpp
     src/core/compute/safetensors.cpp)
   message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
 else()

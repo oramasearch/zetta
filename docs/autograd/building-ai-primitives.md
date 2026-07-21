@@ -152,8 +152,16 @@ The reference kernels are correct first; speed comes from these, in order of imp
   *t* re-forwards the whole sequence (O(n²)). `QwenInference` is a plain-float
   (no-autograd) forward that caches per-layer K/V and forwards one token at a time,
   so each step is O(n) — verified to produce the same logits as `QwenModel::forward`.
-  On the real Qwen3-0.6B it took generation from **0.4 → 2.87 tok/s** (~7×). Use it
-  for generation / RLVR rollouts; training still uses the autograd forward.
+  On the real Qwen3-0.6B: **13.5 tok/s** (CPU, threaded).
+- **Fused MLX generation — done (`MlxQwenInference`), the fast GPU path.** For real
+  GPU inference, don't route ops one-at-a-time (per-op sync kills it, 1.3 tok/s).
+  `MlxQwenInference` builds the **whole decode step as one MLX graph** with the KV
+  cache in MLX (unified-memory) arrays between steps — **one `eval` per token, no
+  per-op sync**. Same tokens as the CPU path, on the Metal GPU: **42.9 tok/s** on
+  the real Qwen3-0.6B (~3× the threaded CPU, ~32× per-op MLX). This is the
+  generation/rollout path when a GPU is present; the CPU KV cache is the fallback.
+  *(The lesson generalizes: to use a GPU, keep the whole computation on-device in
+  one graph — op-by-op routing through the `ComputeDevice` never exploits it.)*
 - **The `ComputeDevice` gemm (MLX GPU).** `matmul` and `matmul_transposed_b` route
   through the active `ComputeDevice` (`set_compute_device`), so the model is
   device-agnostic: `QwenModel::forward` produces the same logits on CPU and the
