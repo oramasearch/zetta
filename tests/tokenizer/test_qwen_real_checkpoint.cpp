@@ -15,6 +15,8 @@
 
 #if defined(ZETTA_WITH_MLX)
 #include <numeric>
+#include "zetta/agent/qwen_rlvr.hpp"       // CPU agent::grpo_step
+#include "zetta/autograd/transformer.hpp"  // autograd::Adam
 #include "zetta/compute/mlx_device.hpp"
 #include "zetta/compute/mlx_qwen.hpp"
 #include "zetta/compute/mlx_transformer.hpp"  // AdamW
@@ -379,6 +381,57 @@ TEST(QwenRealCheckpoint, FusedGpuRlvrLearnsOnRealWeights) {
     std::cerr << "[fused GPU RLVR] after: greedy=\"" << greedy() << "\"  ~" << step_ms
               << " ms / RLVR step (rollouts + group value_and_grad + AdamW on GPU)\n";
     EXPECT_GT(max_reward, 0.5) << "RLVR should learn to sample the target from reward";
+}
+
+// Head-to-head: one RLVR step, identical config, CPU (autograd grpo_step) vs the
+// fully-fused GPU grpo_step — the speedup the whole-step fusion buys.
+TEST(QwenRealCheckpoint, RlvrStepCpuVsFusedGpu) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+    if (std::getenv("ZETTA_BENCH") == nullptr) GTEST_SKIP() << "set ZETTA_BENCH=1";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::autograd::QwenModel> cpu_model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(cpu_model.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> gpu_model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(gpu_model.has_value()) << error;
+
+    const std::vector<int> prompt = tokenizer->encode("I think the best pet is a");
+    const auto reward = [&](const std::vector<int>&, const std::vector<int>& c) {
+        return tokenizer->decode(c).find("cat") != std::string::npos ? 1.0 : 0.0;
+    };
+    const int group = 8, max_new = 3;
+    const float temp = 1.0F;
+
+    using clock = std::chrono::steady_clock;
+    const auto ms = [](auto d) { return std::chrono::duration<double, std::milli>(d).count(); };
+
+    // CPU: autograd grpo_step (KV-cached rollouts + per-completion autograd backward).
+    zetta::autograd::Adam cpu_opt(1e-4F);
+    zetta::agent::GrpoConfig cfg;
+    cfg.group_size = group; cfg.max_new_tokens = max_new; cfg.temperature = temp;
+    std::mt19937 rng_cpu(7);
+    const auto c0 = clock::now();
+    zetta::agent::grpo_step(*cpu_model, cpu_opt, prompt, reward, cfg, rng_cpu);
+    const auto c1 = clock::now();
+
+    // GPU: fully-fused grpo_step (warm up once — MLX compiles kernels lazily).
+    zetta::compute::model::AdamW gpu_opt(1e-4F);
+    std::mt19937 rng_gpu(7);
+    gpu_model->grpo_step(gpu_opt, prompt, reward, group, max_new, temp, rng_gpu);
+    const auto g0 = clock::now();
+    gpu_model->grpo_step(gpu_opt, prompt, reward, group, max_new, temp, rng_gpu);
+    const auto g1 = clock::now();
+
+    const double cpu_ms = ms(c1 - c0), gpu_ms = ms(g1 - g0);
+    std::fprintf(stderr,
+                 "\n[real Qwen3-0.6B RLVR step, group %d x %d new tokens]\n"
+                 "  CPU (autograd)   : %8.0f ms\n"
+                 "  fused GPU        : %8.0f ms   (%.1fx)\n",
+                 group, max_new, cpu_ms, gpu_ms, cpu_ms / gpu_ms);
 }
 
 #endif  // ZETTA_WITH_MLX
