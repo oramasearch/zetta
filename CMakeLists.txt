@@ -581,6 +581,7 @@ add_library(zetta-core STATIC
   src/core/agent/sequence_training.cpp
   src/core/agent/corpus_training.cpp
   src/core/agent/linear_policy.cpp
+  src/core/agent/distributed.cpp
   src/core/agent/judge.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
