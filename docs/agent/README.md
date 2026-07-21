@@ -278,11 +278,14 @@ tensors line up and load by name.
   transformer later is just more layers behind this same interface; the RLVR loop
   above it does not change.
 
-This closes the reference-first training half; the remaining ⚙️ work is a real
-open-weights transformer (tokenizer, attention, weight loading) behind `AgentPolicy`
-plus the eval/checkpoint harness — see PR #857's ladder. What remains is the **⚙️ real
-model**: an `MlxDevice` compute backend + an open-weights model behind
-`AgentPolicy`, then this same loop against it (see PR #857's ladder).
+This closed the reference-first training half. The **open-weights model** is now
+also built and RLVR-trained — device-agnostically on the autograd (the
+`QwenModel` + `grpo_step` sections above): the Qwen3 attention/weight-loading/
+generation/checkpoint I/O (`load_qwen_model` ⇄ `save_qwen_model`) are done and run
+on CPU / CUDA / MLX. What remains is **external assets + integration**: (1) the
+downloaded multi-GB Qwen weights and (2) Qwen's **tokenizer** (byte-level BPE) for
+natural-language tasks — the RLVR loop itself works in token-id space today — plus
+(3) wiring the `QwenModel` behind `AgentPolicy` for the #248 tool-calling eval.
 
 ## Acceptance
 
