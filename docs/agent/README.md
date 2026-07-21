@@ -189,7 +189,19 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   is the surface feat-12 step 5 asks for — you can see which games are attempted and
   how they score, and *where the base is not improving*.
 
-This closes the reference-first training half. What remains is the **⚙️ real
+## The forward pass on the compute device (shipped)
+
+- **`LinearPolicy`** (`linear_policy.hpp`) — the bridge from the abstract policy to
+  **real tensor compute**: action logits are `W · x` computed on an injected
+  `ComputeDevice` via `gemm`, then softmax. The device is injected, so the *same*
+  forward pass runs on `CpuDevice` (the always-present reference, default build) and
+  on `MlxDevice` (the GPU) — verified to produce identical logits. A real
+  transformer later is just more layers behind this same interface; the RLVR loop
+  above it does not change.
+
+This closes the reference-first training half; the remaining ⚙️ work is a real
+open-weights transformer (tokenizer, attention, weight loading) behind `AgentPolicy`
+plus the eval/checkpoint harness — see PR #857's ladder. What remains is the **⚙️ real
 model**: an `MlxDevice` compute backend + an open-weights model behind
 `AgentPolicy`, then this same loop against it (see PR #857's ladder).
 

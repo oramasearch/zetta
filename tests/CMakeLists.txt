@@ -186,6 +186,7 @@ add_executable(zetta-tests
   agent/test_training.cpp
   agent/test_sequence_training.cpp
   agent/test_corpus_training.cpp
+  agent/test_linear_policy.cpp
   agent/test_judge.cpp
   compute/test_mlx_device.cpp
   test_integrity.cpp
