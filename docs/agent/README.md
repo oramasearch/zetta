@@ -221,6 +221,32 @@ reference. RL is embarrassingly parallel:
   rewarding action. That is a real (if small) neural network trained end to end by
   native distributed RLVR — the reference loop reproduced.
 
+## The real transformer, trained by RLVR (shipped, MLX)
+
+Native on MLX/Metal (`zetta::compute::model`, `-DZETTA_ENABLE_MLX=ON`), the actual
+model — not a linear layer:
+
+- **Architecture** — multi-head **causal self-attention** + GELU MLP + RMSNorm,
+  a stacked pre-norm decoder with token + positional embeddings (`mlx_transformer.hpp`).
+- **Real training** — `mx::value_and_grad` backprops through the whole stack; `AdamW`
+  updates the weights. Proven by overfitting a sequence (loss collapses).
+- **RLVR** — `policy_gradient_loss` trains the transformer *purely from a verifiable
+  reward* (GRPO advantages); it learns a game without ever being shown the answer.
+  blender-rl's core, in native C++26.
+- **Generation** — `generate()` decodes a tool call token by token.
+- **Distributed** — `distributed_adamw_step` allreduces the parameter gradients
+  (data-parallel; sharded step == combined step).
+- **Checkpoints** — `named_parameters()` / `load_named_parameters()` +
+  `save_checkpoint`/`load_checkpoint` via **safetensors** (`safetensors.hpp`, F32 +
+  BF16 decode — the HuggingFace format). A trained model round-trips through the
+  format exactly.
+
+**To ingest an actual Qwen checkpoint** additionally requires matching Qwen's
+architecture (RoPE, grouped-query attention, SwiGLU, QK-norm) so the safetensors
+tensor names + shapes line up, plus the downloaded multi-GB weights and Qwen's
+tokenizer. The format loader (incl. BF16) is done; that architecture parity + the
+weights are the remaining external-asset step.
+
 ## The forward pass on the compute device (shipped)
 
 - **`LinearPolicy`** (`linear_policy.hpp`) — the bridge from the abstract policy to

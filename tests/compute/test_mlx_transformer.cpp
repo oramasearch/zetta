@@ -17,11 +17,14 @@
 
 #include "zetta/agent/advantage.hpp"
 #include "zetta/compute/mlx_transformer.hpp"
+#include "zetta/compute/safetensors.hpp"
 
 namespace {
 
 namespace mx = mlx::core;
 using zetta::agent::group_advantages;
+using zetta::compute::model::deserialize_safetensors;
+using zetta::compute::model::serialize_safetensors;
 using zetta::compute::model::AdamW;
 using zetta::compute::model::causal_self_attention;
 using zetta::compute::model::cross_entropy_next_token;
@@ -425,6 +428,48 @@ TEST(MlxTransformer, DistributedStepSumsGradientsAcrossNodes) {
 
     EXPECT_LT(max_abs_difference(combined.parameters(), sharded.parameters()),
               1e-6);
+}
+
+// A trained model saved to safetensors and loaded into a freshly (differently)
+// initialized model reproduces its outputs exactly — the checkpoint round-trips
+// through the real format.
+TEST(MlxTransformer, CheckpointRoundTripsThroughSafetensors) {
+    const TransformerConfig config = small_config();
+    MlxTransformer trained(config, 3);
+    overfit_to_sequence(trained, config, {2, 5, 7, 3, 9, 1, 4}, 200);
+
+    const std::string checkpoint = serialize_safetensors(trained.named_parameters());
+
+    MlxTransformer restored(config, 99);  // different init
+    ASSERT_TRUE(
+        restored.load_named_parameters(deserialize_safetensors(checkpoint)));
+
+    // Identical forward outputs and identical generation after loading.
+    const mx::array ids = token_ids({2, 5, 7});
+    EXPECT_LT(max_abs_difference({trained.forward(ids)}, {restored.forward(ids)}),
+              1e-6);
+    EXPECT_EQ(restored.generate({2, 5}, 5), trained.generate({2, 5}, 5));
+}
+
+TEST(MlxTransformer, LoadRejectsMissingOrMismatchedTensors) {
+    const TransformerConfig config = small_config();
+    MlxTransformer model(config, 4);
+    const std::vector<double> before = flatten_arrays(model.parameters());
+
+    // Missing tensors.
+    EXPECT_FALSE(model.load_named_parameters({}));
+
+    // A present but wrong-shaped tensor.
+    std::map<std::string, mx::array> named = model.named_parameters();
+    named.at("token_embedding") = mx::zeros(mx::Shape{3, 3}, mx::float32);
+    EXPECT_FALSE(model.load_named_parameters(named));
+
+    // The model is untouched by a rejected load.
+    const std::vector<double> after = flatten_arrays(model.parameters());
+    ASSERT_EQ(before.size(), after.size());
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        EXPECT_DOUBLE_EQ(before[i], after[i]);
+    }
 }
 
 }  // namespace

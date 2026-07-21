@@ -3,8 +3,14 @@
 #if defined(ZETTA_WITH_MLX)
 
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <map>
+#include <string>
+#include <utility>
 #include <vector>
+
+#include "zetta/compute/safetensors.hpp"
 
 namespace zetta::compute::model {
 
@@ -158,6 +164,87 @@ std::vector<int> MlxTransformer::generate(const TransformerConfig& config,
 std::vector<int> MlxTransformer::generate(const std::vector<int>& prompt,
                                           int max_new_tokens) const {
     return generate(config_, parameters_, prompt, max_new_tokens);
+}
+
+namespace {
+
+// The ordered (name, parameter index) layout — the single source of truth for both
+// named_parameters() and load_named_parameters(), so save and load agree.
+std::vector<std::pair<std::string, std::size_t>> parameter_layout(
+    const TransformerConfig& config) {
+    std::vector<std::pair<std::string, std::size_t>> layout;
+    layout.emplace_back("token_embedding", 0);
+    layout.emplace_back("positional_embedding", 1);
+    for (int layer = 0; layer < config.n_layers; ++layer) {
+        const std::size_t base = static_cast<std::size_t>(layer_base(layer));
+        const std::string prefix = "layers." + std::to_string(layer) + ".";
+        layout.emplace_back(prefix + "attn_norm", base + 0);
+        layout.emplace_back(prefix + "wq", base + 1);
+        layout.emplace_back(prefix + "wk", base + 2);
+        layout.emplace_back(prefix + "wv", base + 3);
+        layout.emplace_back(prefix + "wo", base + 4);
+        layout.emplace_back(prefix + "ffn_norm", base + 5);
+        layout.emplace_back(prefix + "w1", base + 6);
+        layout.emplace_back(prefix + "w2", base + 7);
+    }
+    const std::size_t final_norm = static_cast<std::size_t>(layer_base(config.n_layers));
+    layout.emplace_back("final_norm", final_norm);
+    layout.emplace_back("output_projection", final_norm + 1);
+    return layout;
+}
+
+bool same_shape(const mx::array& a, const mx::array& b) {
+    if (a.ndim() != b.ndim()) {
+        return false;
+    }
+    for (std::size_t dimension = 0; dimension < a.ndim(); ++dimension) {
+        if (a.shape(static_cast<int>(dimension)) !=
+            b.shape(static_cast<int>(dimension))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+std::map<std::string, mx::array> MlxTransformer::named_parameters() const {
+    std::map<std::string, mx::array> named;
+    for (const auto& [name, index] : parameter_layout(config_)) {
+        named.emplace(name, parameters_[index]);
+    }
+    return named;
+}
+
+bool MlxTransformer::load_named_parameters(
+    const std::map<std::string, mx::array>& named) {
+    const auto layout = parameter_layout(config_);
+    // Validate first — every expected tensor present and shape-matching — so a bad
+    // checkpoint leaves the model untouched.
+    for (const auto& [name, index] : layout) {
+        const auto found = named.find(name);
+        if (found == named.end() ||
+            !same_shape(found->second, parameters_[index])) {
+            return false;
+        }
+    }
+    for (const auto& [name, index] : layout) {
+        parameters_[index] = named.at(name);
+    }
+    mx::eval(parameters_);
+    return true;
+}
+
+bool MlxTransformer::save_checkpoint(const std::string& path) const {
+    return write_safetensors_file(path, named_parameters());
+}
+
+bool MlxTransformer::load_checkpoint(const std::string& path) {
+    const std::map<std::string, mx::array> named = read_safetensors_file(path);
+    if (named.empty()) {
+        return false;
+    }
+    return load_named_parameters(named);
 }
 
 mx::array cross_entropy_next_token(const TransformerConfig& config,

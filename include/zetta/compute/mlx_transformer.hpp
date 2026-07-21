@@ -15,6 +15,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
+#include <string>
 #include <vector>
 
 #include <mlx/mlx.h>
@@ -31,6 +33,24 @@ struct TransformerConfig {
 
     int head_dim() const { return d_model / n_heads; }
 };
+
+// A realistically-sized native base config (a small-model shape). NOTE: this is
+// zetta's native decoder (learned positional embeddings, combined attention
+// projections, GELU MLP). Ingesting an actual HuggingFace Qwen checkpoint
+// additionally requires matching Qwen's architecture (RoPE, grouped-query
+// attention, SwiGLU, QK-norm) so the safetensors tensor names + shapes line up —
+// the format loader (safetensors.hpp, incl. BF16) is done; that architecture parity
+// is the remaining native-model work.
+inline TransformerConfig base_agent_config() {
+    TransformerConfig config;
+    config.vocab_size = 32000;
+    config.d_model = 512;
+    config.n_heads = 8;
+    config.n_layers = 8;
+    config.d_ff = 2048;
+    config.max_seq = 2048;
+    return config;
+}
 
 // RMSNorm: normalize each row of `x` [seq, d_model] to unit RMS, then scale by
 // `weight` [d_model].
@@ -92,6 +112,20 @@ public:
                                      int max_new_tokens);
     std::vector<int> generate(const std::vector<int>& prompt,
                               int max_new_tokens) const;
+
+    // The parameters as named tensors (a canonical name per tensor) — the view a
+    // checkpoint is written from and read into.
+    std::map<std::string, mlx::core::array> named_parameters() const;
+
+    // Load parameters by name, validating every expected tensor is present and
+    // shape-matches. Returns false (leaving the model unchanged) on any missing or
+    // mismatched tensor — a non-throwing boundary for untrusted checkpoints.
+    bool load_named_parameters(
+        const std::map<std::string, mlx::core::array>& named);
+
+    // Checkpoint I/O via safetensors (the HuggingFace format).
+    bool save_checkpoint(const std::string& path) const;
+    bool load_checkpoint(const std::string& path);
 
 private:
     TransformerConfig config_;
