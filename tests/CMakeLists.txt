@@ -193,12 +193,20 @@ add_executable(zetta-tests
   agent/test_neural_training.cpp
   agent/test_judge.cpp
   compute/test_mlx_device.cpp
+  compute/test_mlx_transformer.cpp
   test_integrity.cpp
   test_schemas.cpp
 )
 
 target_compile_features(zetta-tests PRIVATE cxx_std_26)
 target_include_directories(zetta-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# The MLX-backend tests (compute/test_mlx_transformer.cpp) include <mlx/mlx.h>
+# directly to exercise the tensor building blocks, so they need MLX's headers when
+# the backend is enabled. libmlx itself arrives transitively via zetta-compute.
+if(ZETTA_ENABLE_MLX)
+  target_include_directories(zetta-tests PRIVATE ${MLX_INCLUDE_DIR})
+endif()
 # Path to test fixture files (e.g. the n8n churn workflow) so tests can load
 # them at runtime without depending on the working directory; and the repo's
 # schemas/ dir, the generated home of the schema-as-code JSON Schemas (test_schemas).

@@ -343,7 +343,9 @@ if(ZETTA_ENABLE_MLX)
   # fails loudly when libmlx is absent rather than silently dropping the backend.
   find_path(MLX_INCLUDE_DIR mlx/mlx.h REQUIRED)
   find_library(MLX_LIBRARY mlx REQUIRED)
-  list(APPEND ZETTA_COMPUTE_SOURCES src/core/compute/mlx_device.cpp)
+  list(APPEND ZETTA_COMPUTE_SOURCES
+    src/core/compute/mlx_device.cpp
+    src/core/compute/mlx_transformer.cpp)
   message(STATUS "MLX compute backend: ENABLED (${MLX_LIBRARY})")
 else()
   message(STATUS "MLX compute backend: disabled (CPU-only build). "
