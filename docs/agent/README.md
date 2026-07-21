@@ -189,6 +189,25 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   is the surface feat-12 step 5 asks for — you can see which games are attempted and
   how they score, and *where the base is not improving*.
 
+## Distributed + coroutine-native (shipped)
+
+Per zetta's first principle (native C++26, coroutine-based, cluster-native,
+distributed), the training loop is not single-node synchronous — that is only the
+reference. RL is embarrassingly parallel:
+
+- **`distributed.hpp`** — the cross-node combine is an injected `AllReduce` (the
+  `zetta::ml::AllReduce` pattern). `distributed_group_advantages` allreduces
+  `{sum, sum-of-squares, count}` so every node normalizes by the **global** GRPO
+  statistics; `distributed_policy_gradient_step` allreduce-Sums each node's local
+  gradient and applies the same global update, so the policy stays bit-identical on
+  every node. Proven: a step with the batch **sharded across two nodes equals the
+  whole batch on one node** — single-node == multi-node by construction.
+- **`distributed_training.hpp`** — the coroutine loop: within a step this node's
+  rollouts **fan out via `runtime::when_all`** (each an `io_task`, so a real tool
+  call's I/O overlaps), then the step allreduces. Returns `runtime::task<TrainingReport>`,
+  awaited via `block_on`. `identity_allreduce` on one node is the single-node run;
+  a `Collectives`-backed allreduce on N nodes is the same training, distributed.
+
 ## The forward pass on the compute device (shipped)
 
 - **`LinearPolicy`** (`linear_policy.hpp`) — the bridge from the abstract policy to
