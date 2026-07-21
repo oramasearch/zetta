@@ -67,4 +67,18 @@ Tensor matmul(const Tensor& a, const Tensor& b);
 // Sum all elements -> scalar [1]. Backward: each input element gets dOut.
 Tensor sum(const Tensor& a);
 
+// Elementwise add of two same-shaped tensors. Backward: dA += dOut, dB += dOut.
+Tensor add(const Tensor& a, const Tensor& b);
+
+// Elementwise (Hadamard) product of two same-shaped tensors. Backward:
+// dA += dOut * B, dB += dOut * A.
+Tensor mul(const Tensor& a, const Tensor& b);
+
+// Multiply by a constant scalar. Backward: dA += dOut * factor.
+Tensor scale(const Tensor& a, float factor);
+
+// Add a per-column bias to each row: a [rows, cols] + bias [cols]. Backward:
+// dA += dOut, dBias[col] += sum over rows of dOut[:, col].
+Tensor add_bias(const Tensor& a, const Tensor& bias);
+
 }  // namespace zetta::autograd

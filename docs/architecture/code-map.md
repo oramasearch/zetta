@@ -178,7 +178,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     golden_oracle.hpp       zetta::ml::GoldenOracle/load_golden_oracle — the committed golden featurize/train/SHAP expectations format (validated boundary), for the native correctness oracle (RSK-8; #395)
     playbook.hpp            zetta::ml — UC-1 retention playbook: generate_playbook (deterministic driver→action→owner via PlaybookPolicy + frozen expected-retained-value priority risk×ARR×save_rate, ranked) behind a constrained PlaybookNarrator seam (default-Claude ConstrainedNarrator over an injected NarratorCompletion, validated at the playbook_entry schema boundary, never invents numbers; RulesEngineNarrator offline fallback) + OutcomeLog (FEAT-6; #397)
   autograd/
-    tensor.hpp              zetta::autograd::Node/Tensor/backward + matmul/sum — native reverse-mode autodiff (micrograd-shaped, tensor-valued); the RLVR model's training engine, no foreign runtime (ADR-17) (FEAT-12; #555)
+    tensor.hpp              zetta::autograd::Node/Tensor/backward + ops (matmul, sum, add, mul, scale, add_bias) — native reverse-mode autodiff (micrograd-shaped, tensor-valued); the RLVR model's training engine, no foreign runtime (ADR-17) (FEAT-12; #555)
   agent/
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
     grader.hpp              zetta::agent::Grade/EndStateGrader — the RLVR reward primitive: score an observed end-state against a task's required facts by exact match, reward in [0,1] + passed; criterion-free task grades nothing (negative control) (FEAT-12; #555)

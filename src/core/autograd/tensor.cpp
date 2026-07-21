@@ -112,4 +112,80 @@ Tensor sum(const Tensor& a) {
     return Tensor{node};
 }
 
+Tensor add(const Tensor& a, const Tensor& b) {
+    std::vector<float> out(a.data().size(), 0.0F);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = a.data()[i] + b.data()[i];
+    }
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node(), b.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    const std::shared_ptr<Node> b_node = b.node();
+    node->backward = [a_node, b_node](const std::vector<float>& g) {
+        for (std::size_t i = 0; i < g.size(); ++i) {
+            a_node->grad[i] += g[i];
+            b_node->grad[i] += g[i];
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor mul(const Tensor& a, const Tensor& b) {
+    std::vector<float> out(a.data().size(), 0.0F);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = a.data()[i] * b.data()[i];
+    }
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node(), b.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    const std::shared_ptr<Node> b_node = b.node();
+    node->backward = [a_node, b_node](const std::vector<float>& g) {
+        for (std::size_t i = 0; i < g.size(); ++i) {
+            a_node->grad[i] += g[i] * b_node->data[i];
+            b_node->grad[i] += g[i] * a_node->data[i];
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor scale(const Tensor& a, float factor) {
+    std::vector<float> out(a.data().size(), 0.0F);
+    for (std::size_t i = 0; i < out.size(); ++i) {
+        out[i] = a.data()[i] * factor;
+    }
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    node->backward = [a_node, factor](const std::vector<float>& g) {
+        for (std::size_t i = 0; i < g.size(); ++i) {
+            a_node->grad[i] += g[i] * factor;
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor add_bias(const Tensor& a, const Tensor& bias) {
+    const int rows = a.shape()[0];
+    const int cols = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(rows) * cols, 0.0F);
+    for (int row = 0; row < rows; ++row) {
+        for (int col = 0; col < cols; ++col) {
+            out[row * cols + col] = a.data()[row * cols + col] + bias.data()[col];
+        }
+    }
+    auto node = make_node(std::move(out), a.shape());
+    node->parents = {a.node(), bias.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    const std::shared_ptr<Node> bias_node = bias.node();
+    node->backward = [a_node, bias_node, rows, cols](const std::vector<float>& g) {
+        for (int row = 0; row < rows; ++row) {
+            for (int col = 0; col < cols; ++col) {
+                a_node->grad[row * cols + col] += g[row * cols + col];
+                bias_node->grad[col] += g[row * cols + col];
+            }
+        }
+    };
+    return Tensor{node};
+}
+
 }  // namespace zetta::autograd
