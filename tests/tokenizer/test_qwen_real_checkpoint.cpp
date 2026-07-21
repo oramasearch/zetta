@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
+#include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
@@ -8,6 +12,10 @@
 #include "zetta/autograd/qwen.hpp"
 #include "zetta/autograd/tensor.hpp"
 #include "zetta/tokenizer/bpe.hpp"
+
+#if defined(ZETTA_WITH_MLX)
+#include "zetta/compute/mlx_device.hpp"
+#endif
 
 // Guarded integration test against a REAL Qwen3-0.6B checkpoint. It runs only when
 // ZETTA_QWEN_DIR points at a directory holding config.json + tokenizer.json +
@@ -74,5 +82,59 @@ TEST(QwenRealCheckpoint, ModelGeneratesCorrectlyFromRealWeights) {
     EXPECT_EQ(best, 12095);
     EXPECT_EQ(tokenizer->decode({best}), " Paris");
 }
+
+#if defined(ZETTA_WITH_MLX)
+// The real model on the Apple-Silicon GPU (MLX): same argmax (" Paris") as the CPU
+// path, and a wall-clock comparison of the forward (host thread pool vs MLX gemm).
+TEST(QwenRealCheckpoint, ForwardOnMlxGpuMatchesCpu) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    const std::optional<zetta::autograd::QwenModel> model = load_qwen_model(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+    const std::vector<int> prompt = tokenizer->encode("The capital of France is");
+
+    using clock = std::chrono::steady_clock;
+    const auto ms = [](auto d) {
+        return std::chrono::duration<double, std::milli>(d).count();
+    };
+
+    const auto c0 = clock::now();
+    const std::vector<float> cpu = model->forward(prompt).data();
+    const auto c1 = clock::now();
+
+    zetta::compute::MlxDevice mlx;
+    zetta::autograd::set_compute_device(&mlx);
+    model->forward(prompt);  // warm up (MLX compiles kernels lazily on first use)
+    const auto m0 = clock::now();
+    const std::vector<float> gpu = model->forward(prompt).data();
+    const auto m1 = clock::now();
+    zetta::autograd::set_compute_device(nullptr);
+
+    ASSERT_EQ(cpu.size(), gpu.size());
+    const int vocab = model->config().vocab_size;
+    const std::size_t last = (prompt.size() - 1) * vocab;
+    int gpu_next = 0;
+    double max_diff = 0.0;
+    for (int c = 0; c < vocab; ++c) {
+        if (gpu[last + c] > gpu[last + gpu_next]) gpu_next = c;
+    }
+    for (std::size_t i = 0; i < cpu.size(); ++i) {
+        max_diff = std::max<double>(max_diff, std::abs(cpu[i] - gpu[i]));
+    }
+    std::cerr << "[real Qwen3-0.6B, 5-token forward] CPU " << ms(c1 - c0)
+              << " ms, MLX GPU " << ms(m1 - m0) << " ms; next token (MLX) = "
+              << gpu_next << "; max|CPU-MLX| over all logits = " << max_diff << "\n";
+
+    // Device-agnostic: the GPU forward agrees with the CPU forward (28 layers of
+    // f32 accumulation differ only slightly between the host kernel and MLX gemm),
+    // and the GPU still predicts " Paris" (id 12095).
+    EXPECT_EQ(gpu_next, 12095) << "MLX next-token argmax should be ' Paris'";
+    EXPECT_LT(max_diff, 0.05) << "CPU vs MLX logits diverge too far";
+}
+#endif  // ZETTA_WITH_MLX
 
 }  // namespace

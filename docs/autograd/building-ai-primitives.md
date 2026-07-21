@@ -154,9 +154,18 @@ The reference kernels are correct first; speed comes from these, in order of imp
   so each step is O(n) — verified to produce the same logits as `QwenModel::forward`.
   On the real Qwen3-0.6B it took generation from **0.4 → 2.87 tok/s** (~7×). Use it
   for generation / RLVR rollouts; training still uses the autograd forward.
-- **The `ComputeDevice` gemm.** Route matmul through `CpuDevice` (already
-  pool-threaded) or **`MlxDevice`** (Apple-Silicon GPU, `-DZETTA_ENABLE_MLX=ON`) —
-  the device is captured per-op, so training backprops on the same device.
+- **The `ComputeDevice` gemm (MLX GPU).** `matmul` and `matmul_transposed_b` route
+  through the active `ComputeDevice` (`set_compute_device`), so the model is
+  device-agnostic: `QwenModel::forward` produces the same logits on CPU and the
+  **`MlxDevice`** Apple-Silicon GPU (`-DZETTA_ENABLE_MLX=ON`) — verified on the real
+  Qwen3-0.6B (max|CPU−MLX| ≈ 6e-5). **But per-op routing is not a speed win for
+  small forwards:** each op uploads/downloads and forces an `mx::eval` sync, so a
+  5-token real-model forward is *slower* on MLX (~450 ms) than the threaded CPU
+  (~230 ms) — the sync overhead dominates the small compute. MLX pays off for
+  **large batched training** (compute dominates transfer) or a **fully-on-device
+  forward** (one lazy graph, one eval — what the native `MlxTransformer` does);
+  routing individual autograd ops through the GPU does not exploit it. Use the GPU
+  for big-batch training, the threaded CPU + KV cache for generation/rollouts.
 - **Build flags.** Release is `-O3 -DNDEBUG`. Add **`-march=native`** on a
   known-target box (build box / a node) for AVX/NEON on the matmul inner loops —
   it is *not* a portable default (breaks on older CPUs), so gate it behind an

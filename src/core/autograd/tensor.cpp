@@ -243,52 +243,71 @@ Tensor matmul_transposed_b(const Tensor& a, const Tensor& b) {
     const int m = a.shape()[0];
     const int k = a.shape()[1];
     const int n = b.shape()[0];  // b is [n, k]; out is [m, n]
+    // Route the heavy op onto a ComputeDevice (MLX GPU / CUDA) when one is active,
+    // else the host thread-pool kernels. Captured per-op so backprop runs on the
+    // same device the graph was built on.
+    compute::ComputeDevice* device = g_compute_device;
 
-    std::vector<float> out(static_cast<std::size_t>(m) * n, 0.0F);
-    const float* a_data = a.data().data();
-    const float* b_data = b.data().data();
-    float* out_data = out.data();
-
-    // out[i, j] = dot(a_row_i, b_row_j) — two contiguous rows. Parallelize over the
-    // larger output axis (inference: few rows, huge n -> over n).
-    const auto compute_row = [&](std::size_t row) {
-        const float* a_row = a_data + row * k;
-        float* out_row = out_data + row * n;
-        for (int j = 0; j < n; ++j) {
-            const float* b_row = b_data + static_cast<std::size_t>(j) * k;
-            float accumulated = 0.0F;
-            for (int l = 0; l < k; ++l) accumulated += a_row[l] * b_row[l];
-            out_row[j] = accumulated;
-        }
-    };
-    if (m >= n) {
-        runtime::parallel_for(
-            static_cast<std::size_t>(m), parallel_grain(m, static_cast<std::size_t>(n) * k),
-            [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
-                for (std::size_t row = row_begin; row < row_end; ++row) compute_row(row);
-            });
+    std::vector<float> out;
+    if (device != nullptr) {
+        // a[m,k] · (b[n,k])ᵀ  — b is the transposed operand.
+        out = device_gemm(*device, a.data(), b.data(), m, k, n, false, true);
     } else {
-        runtime::parallel_for(
-            static_cast<std::size_t>(n), parallel_grain(n, static_cast<std::size_t>(m) * k),
-            [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
-                for (int row = 0; row < m; ++row) {
-                    const float* a_row = a_data + static_cast<std::size_t>(row) * k;
-                    float* out_row = out_data + static_cast<std::size_t>(row) * n;
-                    for (std::size_t j = col_begin; j < col_end; ++j) {
-                        const float* b_row = b_data + j * k;
-                        float accumulated = 0.0F;
-                        for (int l = 0; l < k; ++l) accumulated += a_row[l] * b_row[l];
-                        out_row[j] = accumulated;
+        out.assign(static_cast<std::size_t>(m) * n, 0.0F);
+        const float* a_data = a.data().data();
+        const float* b_data = b.data().data();
+        float* out_data = out.data();
+        // out[i, j] = dot(a_row_i, b_row_j) — two contiguous rows. Parallelize over
+        // the larger output axis (inference: few rows, huge n -> over n).
+        const auto compute_row = [&](std::size_t row) {
+            const float* a_row = a_data + row * k;
+            float* out_row = out_data + row * n;
+            for (int j = 0; j < n; ++j) {
+                const float* b_row = b_data + static_cast<std::size_t>(j) * k;
+                float accumulated = 0.0F;
+                for (int l = 0; l < k; ++l) accumulated += a_row[l] * b_row[l];
+                out_row[j] = accumulated;
+            }
+        };
+        if (m >= n) {
+            runtime::parallel_for(
+                static_cast<std::size_t>(m), parallel_grain(m, static_cast<std::size_t>(n) * k),
+                [&](std::size_t, std::size_t row_begin, std::size_t row_end) {
+                    for (std::size_t row = row_begin; row < row_end; ++row) compute_row(row);
+                });
+        } else {
+            runtime::parallel_for(
+                static_cast<std::size_t>(n), parallel_grain(n, static_cast<std::size_t>(m) * k),
+                [&](std::size_t, std::size_t col_begin, std::size_t col_end) {
+                    for (int row = 0; row < m; ++row) {
+                        const float* a_row = a_data + static_cast<std::size_t>(row) * k;
+                        float* out_row = out_data + static_cast<std::size_t>(row) * n;
+                        for (std::size_t j = col_begin; j < col_end; ++j) {
+                            const float* b_row = b_data + j * k;
+                            float accumulated = 0.0F;
+                            for (int l = 0; l < k; ++l) accumulated += a_row[l] * b_row[l];
+                            out_row[j] = accumulated;
+                        }
                     }
-                }
-            });
+                });
+        }
     }
 
     auto node = make_node(std::move(out), {m, n});
     node->parents = {a.node(), b.node()};
     const std::shared_ptr<Node> a_node = a.node();
     const std::shared_ptr<Node> b_node = b.node();
-    node->backward = [a_node, b_node, m, k, n](const std::vector<float>& g) {
+    node->backward = [a_node, b_node, m, k, n, device](const std::vector<float>& g) {
+        if (device != nullptr) {
+            // dA = dOut · B [m,k]; dB = dOutᵀ · A [n,k].
+            const std::vector<float> da =
+                device_gemm(*device, g, b_node->data, m, n, k, false, false);
+            const std::vector<float> db =
+                device_gemm(*device, g, a_node->data, n, m, k, true, false);
+            for (std::size_t i = 0; i < da.size(); ++i) a_node->grad[i] += da[i];
+            for (std::size_t i = 0; i < db.size(); ++i) b_node->grad[i] += db[i];
+            return;
+        }
         const float* g_data = g.data();
         const float* a_data2 = a_node->data.data();
         const float* b_data2 = b_node->data.data();
