@@ -198,6 +198,7 @@ add_executable(zetta-tests
   autograd/test_qwen.cpp
   autograd/test_safetensors.cpp
   autograd/test_device_agnostic.cpp
+  tokenizer/test_byte_encoding.cpp
   compute/test_mlx_device.cpp
   compute/test_mlx_transformer.cpp
   compute/test_safetensors.cpp

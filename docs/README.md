@@ -32,7 +32,8 @@ run / test.
 | [ddf/](ddf/README.md) | The distributed dataframe: the frame core and its local + distributed ops (scan/filter/project, sort, join, group-by, as-of, featurize). |
 | [ml/](ml/README.md) | Native ML: histogram GBDT training, calibration, batch scoring / rank-at-risk, exact TreeSHAP, the Model entity, the native correctness oracle. |
 | [agent/](agent/README.md) | The native RLVR agent (#555 base, #853 per-customer): the deterministic reward grader, and — as they ship — rollouts and the training loop. The model Orama post-trains and ships. |
-| [autograd/](autograd/README.md) | zetta's own reverse-mode autodiff engine (native C++26, no foreign runtime): the `Tensor` value graph + `backward()`, the training math the RLVR model is built on. |
+| [autograd/](autograd/README.md) | zetta's own reverse-mode autodiff engine (native C++26, no foreign runtime): the `Tensor` value graph + `backward()`, the Qwen3-parity model, checkpoint I/O, and the RLVR training math the agent is built on. |
+| [tokenizer/](tokenizer/README.md) | The native byte-level BPE tokenizer (GPT-2 / Qwen family): text ⇄ token ids for the model — UTF-8 codec + byte↔unicode map, pre-tokenizer, merges, vocab, HF-format loading. |
 | [pipeline/](pipeline/README.md) | AI projects and their inputs, the ExecutionGraph IR, the compilers (intent / n8n / sim-Python), the correctness gate, deploy + the reconcile control plane, runs, the solution catalog. |
 | [indexing/](indexing/README.md) | The pluggable `IndexBackend` seam, the oramacore-cpp full-text backend, the index step executor, distributed full-text. |
 | [api/](api/README.md) | The programmatic control surface: the capability registry, the MCP server + REST rendering, auth/consent, the main-thread bridge. |

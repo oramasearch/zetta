@@ -182,6 +182,8 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     transformer.hpp         zetta::autograd — decoder blocks (causal_self_attention, grouped_query_attention with GQA/QK-norm/RoPE base, feed_forward, swiglu_feed_forward), the Transformer model, Adam, zero_grad (FEAT-12; #555)
     qwen.hpp                zetta::autograd::QwenConfig/QwenModel + parse_qwen_config/load_qwen_model — Qwen3-parity decoder keyed by Hugging Face tensor names, so a safetensors checkpoint loads by name (set_weight); generate/generate_greedy autoregressive decode; load_qwen_model reads a HF checkpoint dir (config.json + model.safetensors) (FEAT-12; #555)
     safetensors.hpp         zetta::autograd — host-float .safetensors reader/writer (parse/serialize + file I/O), decodes F32 + BF16 to host floats; no MLX, the always-compiled checkpoint path (FEAT-12; #555)
+  tokenizer/
+    byte_encoding.hpp       zetta::tokenizer — UTF-8 codec (utf8_decode/encode, malformed→U+FFFD) + the GPT-2 reversible byte↔unicode map (byte_to_unicode/unicode_to_byte); the byte foundation of the BPE tokenizer (FEAT-12; #555)
   agent/
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
     grader.hpp              zetta::agent::Grade/EndStateGrader — the RLVR reward primitive: score an observed end-state against a task's required facts by exact match, reward in [0,1] + passed; criterion-free task grades nothing (negative control) (FEAT-12; #555)
@@ -413,6 +415,8 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     transformer.cpp         zetta::autograd::causal_self_attention/grouped_query_attention/feed_forward/swiglu_feed_forward — the decoder blocks composed from the autograd ops (per-head RoPE·QK-norm·scaled SDPA under a causal mask, SwiGLU MLP); backprop flows through via the graph (zetta-core; #555)
     qwen.cpp                zetta::autograd::QwenModel + parse_qwen_config — assembles the Qwen3 stack (embed → RMSNorm/GQA+QK-norm/RMSNorm/SwiGLU per layer → norm → lm_head) with HF-named params; transposes HF [out,in] Linear weights into the autograd's matmul layout; to_safetensors/load_safetensors round-trip a checkpoint by name; generate_greedy/generate autoregressively decode; parse_qwen_config reads a HF config.json; load_qwen_model reads config.json + model.safetensors (single-file or sharded via model.safetensors.index.json) from a directory; save_qwen_model/serialize_qwen_config write a checkpoint dir back out (ship a post-trained checkpoint) (zetta-core; #555)
     safetensors.cpp         zetta::autograd — host safetensors parse/serialize (8-byte LE header length + JSON header + contiguous LE data), F32/BF16 decode, non-throwing bounds checks; no foreign runtime (zetta-core; #555)
+  tokenizer/
+    byte_encoding.cpp       zetta::tokenizer — non-throwing UTF-8 decode/encode + the GPT-2 bytes_to_unicode table (printable bytes→self, rest→U+0100+) and its inverse (zetta-core; #555)
   agent/
     grader.cpp              zetta::agent::EndStateGrader::grade — deterministic reward: count required facts satisfied in the observed end-state, score = matched/total in [0,1], passed = all matched with ≥1 required (zetta-core; #555)
     sandbox.cpp             zetta::agent::Sandbox — register_tool/has_tool/apply: look up the tool, run its effect against the world, map to Ok/UnknownTool/ToolFailed (unknown leaves the world untouched) (zetta-core; #555)
