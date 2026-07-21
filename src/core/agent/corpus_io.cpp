@@ -152,6 +152,53 @@ std::string dump_corpus_jsonl(const std::vector<AdmissionCase>& corpus) {
     return out;
 }
 
+nlohmann::json to_json(const CorpusTask& task) {
+    nlohmann::json object = to_json(task.admission);
+    object["tier"] = task.tier;
+    object["difficulty"] = task.difficulty;
+    object["held_out"] = task.held_out;
+    object["tags"] = task.tags;
+    return object;
+}
+
+std::optional<CorpusTask> corpus_task_from_json(const nlohmann::json& value,
+                                                std::string* error) {
+    std::optional<AdmissionCase> admission = admission_case_from_json(value, error);
+    if (!admission) return std::nullopt;
+    CorpusTask task{std::move(*admission)};  // rest use default member initializers
+    if (value.contains("tier") && value["tier"].is_number_integer()) {
+        task.tier = value["tier"].get<int>();
+    }
+    if (value.contains("difficulty") && value["difficulty"].is_number()) {
+        task.difficulty = value["difficulty"].get<double>();
+    }
+    if (value.contains("held_out") && value["held_out"].is_boolean()) {
+        task.held_out = value["held_out"].get<bool>();
+    }
+    if (value.contains("tags") && value["tags"].is_array()) {
+        for (const auto& tag : value["tags"]) {
+            if (tag.is_string()) task.tags.push_back(tag.get<std::string>());
+        }
+    }
+    return task;
+}
+
+std::vector<AdmissionCase> training_cases(const std::vector<CorpusTask>& corpus) {
+    std::vector<AdmissionCase> out;
+    for (const CorpusTask& task : corpus) {
+        if (!task.held_out) out.push_back(task.admission);
+    }
+    return out;
+}
+
+std::vector<AdmissionCase> held_out_cases(const std::vector<CorpusTask>& corpus) {
+    std::vector<AdmissionCase> out;
+    for (const CorpusTask& task : corpus) {
+        if (task.held_out) out.push_back(task.admission);
+    }
+    return out;
+}
+
 std::optional<std::vector<AdmissionCase>> load_corpus_jsonl(const std::string& text,
                                                             std::string* error) {
     std::vector<AdmissionCase> corpus;

@@ -34,4 +34,24 @@ std::string dump_corpus_jsonl(const std::vector<AdmissionCase>& corpus);
 std::optional<std::vector<AdmissionCase>> load_corpus_jsonl(const std::string& text,
                                                             std::string* error);
 
+// A corpus task is an admission case plus its **difficulty metadata** (blender-rl:
+// "difficulty is a data field, not a folder", and "hold out to measure generalization").
+// The curriculum is a *query* over this metadata, not a set of folders.
+struct CorpusTask {
+    AdmissionCase admission;
+    int tier = 0;              // coarse difficulty bucket
+    double difficulty = 0.0;   // fine difficulty score in [0,1]
+    bool held_out = false;     // excluded from training, to measure generalization
+    std::vector<std::string> tags;  // skill tags the curriculum can query on
+};
+
+nlohmann::json to_json(const CorpusTask& task);
+std::optional<CorpusTask> corpus_task_from_json(const nlohmann::json& value,
+                                                std::string* error);
+
+// Curriculum queries over the difficulty metadata: the cases to train on (not held out)
+// and the held-out cases used only to measure generalization.
+std::vector<AdmissionCase> training_cases(const std::vector<CorpusTask>& corpus);
+std::vector<AdmissionCase> held_out_cases(const std::vector<CorpusTask>& corpus);
+
 }  // namespace zetta::agent

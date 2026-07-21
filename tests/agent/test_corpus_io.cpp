@@ -18,9 +18,13 @@ using zetta::agent::admission_case_from_json;
 using zetta::agent::AdmissionCase;
 using zetta::agent::admit_corpus;
 using zetta::agent::churn_solution_case;
+using zetta::agent::corpus_task_from_json;
+using zetta::agent::CorpusTask;
 using zetta::agent::dump_corpus_jsonl;
+using zetta::agent::held_out_cases;
 using zetta::agent::load_corpus_jsonl;
 using zetta::agent::to_json;
+using zetta::agent::training_cases;
 
 TEST(CorpusIo, ChurnCaseRoundTripsThroughJson) {
     const AdmissionCase original = churn_solution_case();
@@ -67,6 +71,29 @@ TEST(CorpusIo, TaskWithoutCriterionIsRejected) {
         &error);
     EXPECT_FALSE(corpus.has_value());
     EXPECT_FALSE(error.empty());
+}
+
+// Nibble 5: difficulty is a data field, and a held-out slice measures generalization.
+TEST(CorpusIo, CorpusTaskRoundTripsWithDifficulty) {
+    const CorpusTask task{churn_solution_case(), /*tier=*/1, /*difficulty=*/0.4,
+                          /*held_out=*/false, {"churn", "tabular"}};
+    std::string error;
+    const auto restored = corpus_task_from_json(to_json(task), &error);
+    ASSERT_TRUE(restored.has_value()) << error;
+    EXPECT_EQ(restored->tier, 1);
+    EXPECT_DOUBLE_EQ(restored->difficulty, 0.4);
+    EXPECT_FALSE(restored->held_out);
+    EXPECT_EQ(restored->tags, (std::vector<std::string>{"churn", "tabular"}));
+    EXPECT_TRUE(admit_corpus({restored->admission}).admitted);
+}
+
+TEST(CorpusIo, TrainingAndHeldOutSplit) {
+    const std::vector<CorpusTask> corpus = {
+        {churn_solution_case(), 1, 0.4, /*held_out=*/false, {}},
+        {churn_solution_case(), 3, 0.9, /*held_out=*/true, {}},
+    };
+    EXPECT_EQ(training_cases(corpus).size(), 1U);
+    EXPECT_EQ(held_out_cases(corpus).size(), 1U);
 }
 
 }  // namespace
