@@ -200,6 +200,7 @@ add_executable(zetta-tests
   autograd/test_device_agnostic.cpp
   tokenizer/test_byte_encoding.cpp
   tokenizer/test_pre_tokenizer.cpp
+  tokenizer/test_bpe.cpp
   compute/test_mlx_device.cpp
   compute/test_mlx_transformer.cpp
   compute/test_safetensors.cpp

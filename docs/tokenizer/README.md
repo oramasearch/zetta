@@ -26,6 +26,7 @@ Built bottom-up (nibble-dev); shipped so far:
 
 - **The byte foundation** — `byte_encoding.hpp` (below).
 - **The pre-tokenizer** — `pre_tokenizer.hpp` (below).
+- **The BPE tokenizer** — `bpe.hpp` (below).
 
 ## The byte foundation (shipped)
 
@@ -51,3 +52,17 @@ Built bottom-up (nibble-dev); shipped so far:
   where the classification is exact — words, contractions (case-insensitive),
   digits, punctuation, whitespace runs, code, and that the pieces always
   concatenate back to the input byte-for-byte.
+
+## The BPE tokenizer (shipped)
+
+- **`bpe.hpp`** — `BpeTokenizer`: `from_vocab_and_merges` builds it from a
+  byte-level vocab (token → id) and an ordered merge list; `encode` runs the full
+  pipeline (pre-tokenize → base symbol ids → BPE merges → ids) and `decode` runs it
+  backwards. Because the base vocab covers all 256 byte characters, **any** text
+  round-trips exactly. **Fast by construction:** the merge loop works entirely on
+  integer symbol ids, with each candidate pair looked up as a single packed-`uint64`
+  hash key — no string concatenation/allocation in the hot path (the naive
+  "join the token strings and hash that" allocates on every pair of every step).
+  Verified: arbitrary UTF-8 round-trips with no merges (the byte-level guarantee);
+  merges build a word into one token in rank order; a leading space merges into a
+  `Ġword` token; the lowest-rank pair wins first; accessors + empty-vocab rejection.

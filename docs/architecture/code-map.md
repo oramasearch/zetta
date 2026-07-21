@@ -185,6 +185,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
   tokenizer/
     byte_encoding.hpp       zetta::tokenizer — UTF-8 codec (utf8_decode/encode, malformed→U+FFFD) + the GPT-2 reversible byte↔unicode map (byte_to_unicode/unicode_to_byte); the byte foundation of the BPE tokenizer (FEAT-12; #555)
     pre_tokenizer.hpp       zetta::tokenizer::pre_tokenize — the Qwen2/Qwen3 pre-tokenization regex as a hand-written code-point scanner (contractions, words w/ optional non-alnum lead, single digits, punctuation runs, whitespace) (FEAT-12; #555)
+    bpe.hpp                 zetta::tokenizer::BpeTokenizer — byte-level BPE encode/decode (from_vocab_and_merges); integer-id merge loop with packed-uint64 pair keys (no string alloc in the hot path); all-256-byte base vocab → exact round-trip (FEAT-12; #555)
   agent/
     end_state.hpp           zetta::agent::EndState — a rollout's observable end-state as a set of named JSON facts (header-only value type); the input a deterministic grader checks (FEAT-12; #555)
     grader.hpp              zetta::agent::Grade/EndStateGrader — the RLVR reward primitive: score an observed end-state against a task's required facts by exact match, reward in [0,1] + passed; criterion-free task grades nothing (negative control) (FEAT-12; #555)
@@ -419,6 +420,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
   tokenizer/
     byte_encoding.cpp       zetta::tokenizer — non-throwing UTF-8 decode/encode + the GPT-2 bytes_to_unicode table (printable bytes→self, rest→U+0100+) and its inverse (zetta-core; #555)
     pre_tokenizer.cpp       zetta::tokenizer::pre_tokenize — decode-with-byte-offsets + seven ordered alternative matchers (Perl leftmost-first) reproducing the Qwen pattern; ASCII-exact letter/number classification + common scripts (zetta-core; #555)
+    bpe.cpp                 zetta::tokenizer::BpeTokenizer — builds byte→id + packed-uint64 merge tables; apply_merges (lowest-rank pair first, merge all occurrences); encode/decode compose pre_tokenize + byte map + merges (zetta-core; #555)
   agent/
     grader.cpp              zetta::agent::EndStateGrader::grade — deterministic reward: count required facts satisfied in the observed end-state, score = matched/total in [0,1], passed = all matched with ≥1 required (zetta-core; #555)
     sandbox.cpp             zetta::agent::Sandbox — register_tool/has_tool/apply: look up the tool, run its effect against the world, map to Ok/UnknownTool/ToolFailed (unknown leaves the world untouched) (zetta-core; #555)
