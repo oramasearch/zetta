@@ -406,4 +406,53 @@ std::optional<QwenModel> load_qwen_model(const std::string& directory,
     return model;
 }
 
+std::string serialize_qwen_config(const QwenConfig& config) {
+    nlohmann::json root;
+    root["architectures"] = nlohmann::json::array({"Qwen3ForCausalLM"});
+    root["model_type"] = "qwen3";
+    root["vocab_size"] = config.vocab_size;
+    root["hidden_size"] = config.d_model;
+    root["num_hidden_layers"] = config.n_layers;
+    root["num_attention_heads"] = config.n_heads;
+    root["num_key_value_heads"] = config.n_kv_heads;
+    root["head_dim"] = config.head_dim;
+    root["intermediate_size"] = config.d_ff;
+    root["rms_norm_eps"] = config.rms_eps;
+    root["rope_theta"] = config.rope_base;
+    root["tie_word_embeddings"] = config.tie_word_embeddings;
+    return root.dump(2);
+}
+
+bool save_qwen_model(const QwenModel& model, const std::string& directory,
+                     std::string* error) {
+    const auto fail = [&](std::string reason) {
+        if (error != nullptr) *error = std::move(reason);
+        return false;
+    };
+
+    const std::filesystem::path root(directory);
+    std::error_code ec;
+    std::filesystem::create_directories(root, ec);
+    if (ec) {
+        return fail("save_qwen: cannot create directory " + directory + ": " +
+                    ec.message());
+    }
+
+    std::ofstream config_out(root / "config.json", std::ios::binary);
+    if (!config_out) {
+        return fail("save_qwen: cannot write " + (root / "config.json").string());
+    }
+    config_out << serialize_qwen_config(model.config());
+    if (!config_out) {
+        return fail("save_qwen: failed writing " + (root / "config.json").string());
+    }
+
+    if (!write_safetensors_file((root / "model.safetensors").string(),
+                                model.to_safetensors())) {
+        return fail("save_qwen: cannot write " +
+                    (root / "model.safetensors").string());
+    }
+    return true;
+}
+
 }  // namespace zetta::autograd

@@ -23,6 +23,8 @@ using zetta::autograd::parse_qwen_config;
 using zetta::autograd::QwenConfig;
 using zetta::autograd::QwenModel;
 using zetta::autograd::read_safetensors_file;
+using zetta::autograd::save_qwen_model;
+using zetta::autograd::serialize_qwen_config;
 using zetta::autograd::row_slice;
 using zetta::autograd::SafeTensor;
 using zetta::autograd::SafeTensors;
@@ -40,6 +42,22 @@ QwenConfig tiny_config() {
     config.head_dim = 4;
     config.d_ff = 32;
     return config;
+}
+
+// Train a model to memorize `sequence` (next-token cross-entropy), returning it.
+QwenModel overfit_on(const std::vector<int>& sequence, std::uint64_t seed) {
+    QwenModel model(tiny_config(), seed);
+    Adam optimizer(/*learning_rate=*/1e-2F);
+    const std::vector<int> targets(sequence.begin() + 1, sequence.end());
+    for (int step = 0; step < 400; ++step) {
+        zero_grad(model.parameters());
+        const Tensor predicted =
+            row_slice(model.forward(sequence), 0, static_cast<int>(sequence.size()) - 1);
+        Tensor loss = cross_entropy(predicted, targets);
+        loss.backward();
+        optimizer.step(model.parameters());
+    }
+    return model;
 }
 
 TEST(QwenModel, ForwardProducesFiniteLogitsOfTheRightShape) {
@@ -197,6 +215,64 @@ TEST(QwenModel, RejectsMalformedConfig) {
     })";
     EXPECT_FALSE(parse_qwen_config(bad, &error).has_value());
     EXPECT_NE(error.find("multiple"), std::string::npos);
+}
+
+// A config serializes to config.json and parses back unchanged.
+TEST(QwenModel, ConfigJsonRoundTrips) {
+    const QwenConfig config = tiny_config();
+    const std::optional<QwenConfig> back =
+        parse_qwen_config(serialize_qwen_config(config));
+    ASSERT_TRUE(back.has_value());
+    EXPECT_EQ(back->vocab_size, config.vocab_size);
+    EXPECT_EQ(back->d_model, config.d_model);
+    EXPECT_EQ(back->n_layers, config.n_layers);
+    EXPECT_EQ(back->n_heads, config.n_heads);
+    EXPECT_EQ(back->n_kv_heads, config.n_kv_heads);
+    EXPECT_EQ(back->head_dim, config.head_dim);
+    EXPECT_EQ(back->d_ff, config.d_ff);
+    EXPECT_FLOAT_EQ(back->rope_base, config.rope_base);
+    EXPECT_EQ(back->tie_word_embeddings, config.tie_word_embeddings);
+}
+
+// save_qwen_model writes a directory that load_qwen_model reads back identically —
+// the checkpoint I/O is a faithful round-trip.
+TEST(QwenModel, SaveThenLoadRoundTrips) {
+    const QwenModel source(tiny_config(), 21);
+    const std::vector<int> ids = {3, 1, 4, 1};
+    const std::vector<float> expected = source.forward(ids).data();
+
+    const zetta::test::TempDir temp;
+    const std::string dir = (temp.path() / "checkpoint").string();
+    std::string error;
+    ASSERT_TRUE(save_qwen_model(source, dir, &error)) << error;
+
+    const std::optional<QwenModel> loaded = load_qwen_model(dir, &error);
+    ASSERT_TRUE(loaded.has_value()) << error;
+    EXPECT_EQ(loaded->forward(ids).data(), expected);
+}
+
+// The shippable-checkpoint story: overfit a model, SAVE it, reload it, and the
+// reloaded model has the trained behavior — a post-trained base agent persists.
+TEST(QwenModel, TrainedModelPersistsThroughSave) {
+    const std::vector<int> sequence = {2, 5, 7, 3, 9, 1, 4, 8};
+    const QwenModel trained = overfit_on(sequence, 3);
+    const std::vector<int> expected_continuation(sequence.begin() + 1, sequence.end());
+    ASSERT_EQ(trained.generate_greedy({sequence.front()},
+                                      static_cast<int>(sequence.size()) - 1),
+              expected_continuation);
+
+    const zetta::test::TempDir temp;
+    const std::string dir = (temp.path() / "trained").string();
+    std::string error;
+    ASSERT_TRUE(save_qwen_model(trained, dir, &error)) << error;
+
+    const std::optional<QwenModel> reloaded = load_qwen_model(dir, &error);
+    ASSERT_TRUE(reloaded.has_value()) << error;
+    // The reloaded checkpoint generates the memorized continuation just as the
+    // trained model did.
+    EXPECT_EQ(reloaded->generate_greedy({sequence.front()},
+                                        static_cast<int>(sequence.size()) - 1),
+              expected_continuation);
 }
 
 // THE ENTRY POINT: point load_qwen_model at a Hugging Face checkpoint directory
@@ -418,22 +494,6 @@ TEST(QwenModel, OverfitsASequenceEndToEnd) {
         }
         EXPECT_EQ(best, sequence[t + 1]) << "position " << t;
     }
-}
-
-// Train a model to memorize `sequence` (next-token cross-entropy), returning it.
-QwenModel overfit_on(const std::vector<int>& sequence, std::uint64_t seed) {
-    QwenModel model(tiny_config(), seed);
-    Adam optimizer(/*learning_rate=*/1e-2F);
-    const std::vector<int> targets(sequence.begin() + 1, sequence.end());
-    for (int step = 0; step < 400; ++step) {
-        zero_grad(model.parameters());
-        const Tensor predicted =
-            row_slice(model.forward(sequence), 0, static_cast<int>(sequence.size()) - 1);
-        Tensor loss = cross_entropy(predicted, targets);
-        loss.backward();
-        optimizer.step(model.parameters());
-    }
-    return model;
 }
 
 TEST(QwenModel, GreedyGenerationIsDeterministicAndBounded) {

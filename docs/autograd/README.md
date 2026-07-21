@@ -84,3 +84,10 @@ across heterogeneous devices.
   that round-trip to identical logits; a real Qwen directory is the same files,
   with only the multi-GB weights and the tokenizer as the remaining external-asset
   step.
+- **`save_qwen_model(model, dir)`** + **`serialize_qwen_config`** — the inverse:
+  write a `config.json` + `model.safetensors` directory that `load_qwen_model`
+  reads back identically. This is how a **post-trained base-agent checkpoint is
+  shipped** — load a base, RLVR post-train it, save the improved checkpoint.
+  Proven: a config round-trips through JSON, save→load is bit-identical, and an
+  overfit model reloaded from a saved directory still generates its memorized
+  sequence.

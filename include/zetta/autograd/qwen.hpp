@@ -135,4 +135,17 @@ private:
 std::optional<QwenModel> load_qwen_model(const std::string& directory,
                                          std::string* error = nullptr);
 
+// Serialize a config to a Hugging Face `config.json` body (the fields
+// parse_qwen_config reads, so config -> json -> config round-trips).
+std::string serialize_qwen_config(const QwenConfig& config);
+
+// Save a model to a Hugging Face checkpoint directory: write
+// `<directory>/config.json` and `<directory>/model.safetensors` (single file),
+// creating the directory if needed. Returns false (with a reason in *error) if the
+// directory can't be created or a file can't be written. The inverse of
+// load_qwen_model — how a post-trained base-agent checkpoint is shipped (load a
+// base -> RLVR post-train -> save the improved checkpoint).
+bool save_qwen_model(const QwenModel& model, const std::string& directory,
+                     std::string* error = nullptr);
+
 }  // namespace zetta::autograd
