@@ -34,6 +34,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The reward** — the rubric + `reward_for_rollout` (below).
 - **The admission gate** — `admit_corpus` (below).
 - **The reference policy** — `SoftmaxPolicy` (below), the CPU policy the training loop is proven on.
+- **GRPO advantages** — `group_advantages` (below).
 
 ## The reward primitive (shipped)
 
@@ -117,6 +118,15 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   doctrine (the GBDT precedent): advantages, the gradient step, and the loop are
   proven against it, then a real MLX-backed model is swapped in behind the same
   interface without touching the training machinery. SYCL is deferred.
+
+## GRPO advantages (shipped)
+
+- **`group_advantages`** (`advantage.hpp`) — the RLVR training signal. Given the
+  rewards of a *group* of rollouts on the same task, each advantage is
+  `(r_i − mean) / (stddev + ε)` — how much better than the group that rollout did,
+  normalized by the group's spread. The group is its own baseline, so there is no
+  learned value function; and a group that all agrees (already solved, or always
+  failing) yields zero advantage and does not push the weights.
 
 ## Acceptance
 
