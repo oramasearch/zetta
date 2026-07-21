@@ -577,6 +577,73 @@ Tensor rope(const Tensor& x, float base) {
     return Tensor{node};
 }
 
+Tensor col_slice(const Tensor& a, int start, int count) {
+    const int rows = a.shape()[0];
+    const int cols = a.shape()[1];
+    std::vector<float> out(static_cast<std::size_t>(rows) * count, 0.0F);
+    for (int row = 0; row < rows; ++row) {
+        for (int c = 0; c < count; ++c) {
+            out[row * count + c] = a.data()[row * cols + start + c];
+        }
+    }
+    auto node = make_node(std::move(out), {rows, count});
+    node->parents = {a.node()};
+    const std::shared_ptr<Node> a_node = a.node();
+    node->backward = [a_node, start, count, rows, cols](const std::vector<float>& g) {
+        for (int row = 0; row < rows; ++row) {
+            for (int c = 0; c < count; ++c) {
+                a_node->grad[row * cols + start + c] += g[row * count + c];
+            }
+        }
+    };
+    return Tensor{node};
+}
+
+Tensor concat_cols(const std::vector<Tensor>& parts) {
+    const int rows = parts[0].shape()[0];
+    int total_cols = 0;
+    for (const Tensor& part : parts) {
+        total_cols += part.shape()[1];
+    }
+    std::vector<float> out(static_cast<std::size_t>(rows) * total_cols, 0.0F);
+    int offset = 0;
+    for (const Tensor& part : parts) {
+        const int width = part.shape()[1];
+        for (int row = 0; row < rows; ++row) {
+            for (int c = 0; c < width; ++c) {
+                out[row * total_cols + offset + c] = part.data()[row * width + c];
+            }
+        }
+        offset += width;
+    }
+
+    auto node = make_node(std::move(out), {rows, total_cols});
+    for (const Tensor& part : parts) {
+        node->parents.push_back(part.node());
+    }
+    std::vector<std::shared_ptr<Node>> part_nodes;
+    std::vector<int> widths;
+    for (const Tensor& part : parts) {
+        part_nodes.push_back(part.node());
+        widths.push_back(part.shape()[1]);
+    }
+    node->backward = [part_nodes, widths, rows,
+                      total_cols](const std::vector<float>& g) {
+        int offset = 0;
+        for (std::size_t p = 0; p < part_nodes.size(); ++p) {
+            const int width = widths[p];
+            for (int row = 0; row < rows; ++row) {
+                for (int c = 0; c < width; ++c) {
+                    part_nodes[p]->grad[row * width + c] +=
+                        g[row * total_cols + offset + c];
+                }
+            }
+            offset += width;
+        }
+    };
+    return Tensor{node};
+}
+
 Tensor add_bias(const Tensor& a, const Tensor& bias) {
     const int rows = a.shape()[0];
     const int cols = a.shape()[1];

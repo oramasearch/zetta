@@ -147,4 +147,14 @@ Tensor policy_gradient_loss(const Tensor& logits,
 // backward is the inverse rotation.
 Tensor rope(const Tensor& x, float base = 10000.0F);
 
+// Select `count` contiguous COLUMNS starting at `start` from [rows, cols] ->
+// [rows, count] — used to split a projection into attention heads. Backward
+// scatters each column's gradient back to its source column.
+Tensor col_slice(const Tensor& a, int start, int count);
+
+// Concatenate tensors along their columns: parts each [rows, cols_i] -> [rows,
+// sum cols_i] — used to reassemble attention heads. Backward splits the gradient
+// back to each part.
+Tensor concat_cols(const std::vector<Tensor>& parts);
+
 }  // namespace zetta::autograd

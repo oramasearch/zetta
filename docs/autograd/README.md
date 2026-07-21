@@ -39,4 +39,11 @@ across heterogeneous devices.
 
 ## Shipped
 
-- **`tensor.hpp`** — `Node`, `Tensor`, `backward()`; ops `matmul` and `sum`.
+- **`tensor.hpp`** — `Node`, `Tensor`, `backward()`, and the transformer op set:
+  `matmul` · `sum` · `add` · `mul` · `scale` · `add_bias` · `gelu` · `silu` ·
+  `row_softmax` · `rms_norm` · `transpose` · `embedding` · `cross_entropy` ·
+  `row_slice` · `policy_gradient_loss` · `rope` · `col_slice` · `concat_cols`
+  (the last two split/reassemble attention heads). Every op is gradient-checked.
+- **`transformer.hpp`** — `causal_self_attention`, `feed_forward`,
+  `swiglu_feed_forward`, the `Transformer` model, `Adam`, and `zero_grad`. Trains
+  by overfit and by RLVR policy gradient on the native engine.

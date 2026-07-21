@@ -11,6 +11,8 @@ namespace {
 
 using zetta::autograd::add;
 using zetta::autograd::add_bias;
+using zetta::autograd::col_slice;
+using zetta::autograd::concat_cols;
 using zetta::autograd::cross_entropy;
 using zetta::autograd::embedding;
 using zetta::autograd::gelu;
@@ -307,6 +309,33 @@ TEST(Autograd, RopeGradient) {
                      false);
     check_gradient({1, 2, 3, 4, 0.5F, -1, 2, 1}, {2, 4},
                    [&](const Tensor& x) { return sum(mul(rope(x), target)); });
+}
+
+TEST(Autograd, ColSliceAndConcatRoundTrip) {
+    // Split a [2,4] into two [2,2] column halves and concat back -> identity.
+    const Tensor x = Tensor::leaf({1, 2, 3, 4, 5, 6, 7, 8}, {2, 4}, false);
+    const Tensor left = col_slice(x, 0, 2);
+    const Tensor right = col_slice(x, 2, 2);
+    ASSERT_EQ(left.data(), (std::vector<float>{1, 2, 5, 6}));
+    ASSERT_EQ(right.data(), (std::vector<float>{3, 4, 7, 8}));
+    const Tensor joined = concat_cols({left, right});
+    EXPECT_EQ(joined.data(), x.data());
+}
+
+TEST(Autograd, ColSliceGradient) {
+    const Tensor target = Tensor::leaf({0.1F, 0.2F, 0.3F, 0.4F}, {2, 2}, false);
+    check_gradient({1, 2, 3, 4, 5, 6}, {2, 3}, [&](const Tensor& x) {
+        return sum(mul(col_slice(x, 1, 2), target));
+    });
+}
+
+TEST(Autograd, ConcatColsGradientReachesAllParts) {
+    // Gradient flows to a parameter used in one concatenated part.
+    const Tensor other = Tensor::leaf({9, 9, 9, 9}, {2, 2}, false);
+    const Tensor weight = Tensor::leaf({0.1F, 0.2F, 0.3F, 0.4F, 0.5F, 0.6F, 0.7F, 0.8F}, {2, 4}, false);
+    check_gradient({1, 2, 3, 4}, {2, 2}, [&](const Tensor& p) {
+        return sum(mul(concat_cols({p, other}), weight));
+    });
 }
 
 // A composed, nonlinear-in-the-parameter graph: loss = sum((X·W) ⊙ (X·W)).
