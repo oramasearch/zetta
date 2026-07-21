@@ -136,6 +136,7 @@ level can be trusted — a stale card is worse than none.
 | DataFrames + distributed ops | [`docs/ddf/`](docs/ddf/README.md) |
 | GBDT, calibration, scoring, TreeSHAP, Model | [`docs/ml/`](docs/ml/README.md) |
 | **Building a model / layer / autograd op / tokenizer / training or RLVR loop natively** (no foreign runtime) | [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md) + the **native-ai-dev** skill · the autograd engine [`docs/autograd/`](docs/autograd/README.md) · the tokenizer [`docs/tokenizer/`](docs/tokenizer/README.md) · the RLVR agent [`docs/agent/`](docs/agent/README.md) |
+| **Generating RLVR training data / a task corpus** (from a solutions catalog or a customer's data) | the **rlvr-training-data** skill · the agent domain [`docs/agent/`](docs/agent/README.md) · reference to reproduce: `homer6/blender-rl` |
 | Projects, IR, compilers, gate, deploy, runs, catalog | [`docs/pipeline/`](docs/pipeline/README.md) |
 | Indexes (full-text, distributed) | [`docs/indexing/`](docs/indexing/README.md) |
 | MCP tools, REST routes, the capability registry | [`docs/api/`](docs/api/README.md) — registry-design.md is the settled design |
@@ -526,6 +527,12 @@ Project skills live in `.claude/skills/` (committed, shared):
   tokenizer, **no foreign runtime** (ADR-17). The gradient-check discipline, the
   Qwen exemplar, checkpoint load/save, generation, and the performance playbook.
   Points at [`docs/autograd/building-ai-primitives.md`](docs/autograd/building-ai-primitives.md).
+- **rlvr-training-data** — generate the verifiable-reward **training corpora** that
+  train the agents, following blender-rl's *grow by generation, gate by verification*
+  method: reference solutions + negative-control **discrimination** + the admission
+  gate + difficulty tiers + a held-out split, synthesized from a solutions catalog
+  (→ a private HF dataset) or a customer's schema (→ Postgres). Reproduces (does not
+  embed) `homer6/blender-rl`'s dataset strategy.
 - **new-input** — add a new input language/format (parser + executor that
   re-implements its behavior in zetta's runtime).
 - **new-connector** — add a new source connector (pull rows from a warehouse /
