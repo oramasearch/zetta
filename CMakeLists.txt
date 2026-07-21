@@ -544,6 +544,7 @@ add_library(zetta-core STATIC
   src/core/agent/rollout.cpp
   src/core/agent/reward.cpp
   src/core/agent/admission_gate.cpp
+  src/core/agent/softmax_policy.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

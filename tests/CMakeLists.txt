@@ -180,6 +180,7 @@ add_executable(zetta-tests
   agent/test_rollout.cpp
   agent/test_reward.cpp
   agent/test_admission_gate.cpp
+  agent/test_softmax_policy.cpp
   test_integrity.cpp
   test_schemas.cpp
 )

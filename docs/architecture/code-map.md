@@ -184,6 +184,7 @@ include/zetta/              zetta-core PUBLIC API (no SDL/ImGui here)
     rollout.hpp             zetta::agent::Rollout/RolloutTurn/run_rollout — drive a policy against a task's sandbox for ≤max_turns, capturing the trajectory (call+outcome) + final EndState; the turn budget bounds a non-stopping agent (FEAT-12; #555)
     reward.hpp              zetta::agent::RolloutReward/RubricTerm/RubricWeights/rubric_reward/reward_for_rollout — the RLVR reward: rubric terms (right end-state/tools/args) combined by active-weight renormalization into [0,1] + per-term breakdown (blender-rl shape) (FEAT-12; #555)
     admission_gate.hpp      zetta::agent::AdmissionCase/AdmissionResult/admit_corpus — the corpus integrity gate: every reference passes its grader, every negative control fails, ≥1 negative control exists, every task trainable (FEAT-12; #555/#248)
+    softmax_policy.hpp      zetta::agent::SoftmaxPolicy — the CPU reference policy: one logit per action, stable softmax probabilities, deterministic sample(u), log_prob; the training loop is proven on this before a real model plugs in (FEAT-12; #555)
   index/
     index_kind.hpp          zetta::index::IndexKind — the search/vector/feature index-type taxonomy (header-only enum + names) (ENT-39/ENT-40)
     index_backend.hpp       zetta::index::IndexBackend/IndexSpec/IndexStatus/IndexPartition/IndexQuery — the build(over partitions)/query/drop seam (ADR-34; no-throw status)
@@ -389,6 +390,7 @@ src/core/                   zetta-core impl (api/: registry.cpp (incl. the #621 
     rollout.cpp             zetta::agent::run_rollout — the turn loop: ask the policy for the next decision, apply non-stop calls to the sandbox and record each turn, stop on a policy stop or the turn budget, return trajectory + final state (zetta-core; #555)
     reward.cpp              zetta::agent::rubric_reward/reward_for_rollout — renormalized weighted average of active rubric terms; build end_state (grader) + right_tools (known/total calls) + right_args (ok/known calls) from a rollout (zetta-core; #555)
     admission_gate.cpp      zetta::agent::admit_corpus/to_string — check each case's reference passes + controls fail via the grader, require ≥1 negative control corpus-wide, reject untrainable tasks; collect every failure (zetta-core; #555/#248)
+    softmax_policy.cpp      zetta::agent::SoftmaxPolicy — stable softmax (subtract max), inverse-CDF sample with a rounding guard, log_prob = log(p[action]) (zetta-core; #555)
   index/
     index.cpp               zetta::index::Index — IndexValue to_json/parse + Index JSON Schema (pboettch) + persist/apply (parse_index_value) (ENT-39/ENT-40)
     index_registry.cpp      zetta::index::IndexRegistry resolve + IndexSpec::key() + index_spec_from_node (IR `index` step → IndexSpec boundary)

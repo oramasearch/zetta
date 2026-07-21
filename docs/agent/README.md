@@ -33,6 +33,7 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The rollout** — `AgentPolicy` + `run_rollout` (below).
 - **The reward** — the rubric + `reward_for_rollout` (below).
 - **The admission gate** — `admit_corpus` (below).
+- **The reference policy** — `SoftmaxPolicy` (below), the CPU policy the training loop is proven on.
 
 ## The reward primitive (shipped)
 
@@ -105,6 +106,17 @@ Pages land here one per shipped slice. The domain is being built bottom-up
   task is trainable — a corpus where nothing can fail is measuring nothing
   (feat-12 step 3; the [#248](https://github.com/oramasearch/zetta/issues/248)
   gate property). It returns *every* failure, so a corpus is fixed in one pass.
+
+## The reference policy (shipped)
+
+- **`SoftmaxPolicy`** (`softmax_policy.hpp`) — a tiny parametric policy: one logit
+  per action, a numerically-stable `softmax` for the probabilities, a
+  **deterministic** `sample(uniform_draw)` (so rollouts and tests reproduce), and
+  `log_prob` for the policy gradient. This is the **CPU reference policy the RLVR
+  training loop is built and tested on**, following zetta's reference-first
+  doctrine (the GBDT precedent): advantages, the gradient step, and the loop are
+  proven against it, then a real MLX-backed model is swapped in behind the same
+  interface without touching the training machinery. SYCL is deferred.
 
 ## Acceptance
 
