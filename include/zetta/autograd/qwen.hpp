@@ -160,6 +160,12 @@ public:
     std::vector<int> generate_greedy(const std::vector<int>& prompt,
                                      int max_new_tokens, int eos_id = -1);
 
+    // Sampling decode through the cache: each next token drawn from
+    // softmax(logits / temperature) with `rng` (temperature <= 0 is greedy). The
+    // fast rollout path for RLVR — the same distribution as QwenModel::generate.
+    std::vector<int> generate(const std::vector<int>& prompt, int max_new_tokens,
+                              float temperature, std::mt19937& rng, int eos_id = -1);
+
 private:
     const QwenModel& model_;
     QwenConfig config_;

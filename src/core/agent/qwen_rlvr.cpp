@@ -14,7 +14,10 @@ double grpo_step(autograd::QwenModel& model, autograd::Adam& optimizer,
                  const GrpoConfig& config, std::mt19937& rng) {
     const int prompt_len = static_cast<int>(prompt.size());
 
-    // Roll out the group and score each completion.
+    // Roll out the group and score each completion. Generation uses the KV-cached
+    // inference engine (no gradients needed for rollouts) — much faster than
+    // re-forwarding the whole sequence per token, so the group is cheap.
+    autograd::QwenInference engine(model);
     std::vector<std::vector<int>> completions;
     std::vector<double> rewards;
     completions.reserve(static_cast<std::size_t>(config.group_size));
@@ -22,7 +25,7 @@ double grpo_step(autograd::QwenModel& model, autograd::Adam& optimizer,
     double reward_sum = 0.0;
     for (int i = 0; i < config.group_size; ++i) {
         std::vector<int> completion =
-            model.generate(prompt, config.max_new_tokens, config.temperature, rng);
+            engine.generate(prompt, config.max_new_tokens, config.temperature, rng);
         const double value = reward(prompt, completion);
         reward_sum += value;
         completions.push_back(std::move(completion));
