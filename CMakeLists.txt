@@ -594,6 +594,7 @@ add_library(zetta-core STATIC
   src/core/autograd/tensor.cpp
   src/core/autograd/transformer.cpp
   src/core/autograd/qwen.cpp
+  src/core/autograd/safetensors.cpp
   src/core/compute/cpu_device.cpp
   src/core/compute/device_registry.cpp
   src/core/compute/work_stealing_scheduler.cpp

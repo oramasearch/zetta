@@ -56,3 +56,9 @@ across heterogeneous devices.
   tensor names** (`model.embed_tokens.weight`, `model.layers.{L}.self_attn.*`,
   …) so a real safetensors checkpoint loads by name (`set_weight`). Supports GQA,
   QK-norm, tied embeddings, and the Qwen3 RoPE base.
+- **`safetensors.hpp`** — a host-float `.safetensors` reader/writer
+  (`parse_safetensors` / `read_safetensors_file`, decoding **F32 and BF16** to
+  host floats; `serialize_safetensors` / `write_safetensors_file`). No MLX, no
+  foreign runtime — the always-compiled path that loads a Qwen checkpoint into a
+  `QwenModel` by tensor name. Malformed input is a non-throwing boundary
+  (`std::nullopt` + a reason).

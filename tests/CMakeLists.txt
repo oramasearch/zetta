@@ -195,6 +195,7 @@ add_executable(zetta-tests
   autograd/test_autograd.cpp
   autograd/test_transformer.cpp
   autograd/test_qwen.cpp
+  autograd/test_safetensors.cpp
   autograd/test_device_agnostic.cpp
   compute/test_mlx_device.cpp
   compute/test_mlx_transformer.cpp
