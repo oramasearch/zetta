@@ -12,12 +12,16 @@
 // zetta-compute where MLX is linked, never in zetta-core (like mlx_transformer).
 #if defined(ZETTA_WITH_MLX)
 
+#include <functional>
 #include <map>
 #include <optional>
+#include <random>
 #include <string>
 #include <vector>
 
 #include <mlx/mlx.h>
+
+#include "zetta/compute/mlx_transformer.hpp"  // AdamW
 
 namespace zetta::compute::model {
 
@@ -94,13 +98,46 @@ public:
     mlx::core::array next_token_loss(const std::vector<mlx::core::array>& params,
                                      const mlx::core::array& token_ids) const;
 
+    // KV-cached sampling generation over the CURRENT parameters (fast GPU rollouts):
+    // each next token is drawn from softmax(logits / temperature) with `rng`
+    // (temperature <= 0 is greedy). One MLX eval per token, cache in GPU arrays.
+    std::vector<int> generate(const std::vector<int>& prompt, int max_new_tokens,
+                              float temperature, std::mt19937& rng, int eos_id = -1);
+
+    // Verifiable reward over a completion: (prompt ids, completion ids) -> reward.
+    using CompletionReward =
+        std::function<double(const std::vector<int>&, const std::vector<int>&)>;
+
+    // THE FULLY-FUSED GPU RLVR STEP: roll out `group_size` completions with the
+    // KV-cached inference (fast), score each with `reward`, turn the group's rewards
+    // into group-relative advantages, and take ONE sequence policy-gradient step —
+    // mx::value_and_grad over the whole group in a single MLX graph, then AdamW. The
+    // parameters are shared, so the update flows straight into the next round's
+    // rollouts. Returns the group's mean reward. This is blender-rl's GRPO, fully on
+    // the Metal GPU.
+    double grpo_step(AdamW& optimizer, const std::vector<int>& prompt,
+                     const CompletionReward& reward, int group_size,
+                     int max_new_tokens, float temperature, std::mt19937& rng);
+
 private:
     MlxQwenModel(QwenParams config, std::vector<mlx::core::array> params,
                  mlx::core::array inv_freq);
 
+    // One KV-cached decode step over params_ at cache_pos_: returns the logits.
+    std::vector<float> cached_step(int token_id);
+    // Advantage-weighted sum of the completion's token log-probs (a scalar),
+    // differentiable through `params`. tokens = prompt+completion, prompt_len = P.
+    mlx::core::array sequence_pg_loss(const std::vector<mlx::core::array>& params,
+                                      const std::vector<int>& tokens, int prompt_len,
+                                      const std::vector<int>& actions,
+                                      double advantage) const;
+
     QwenParams config_;
     std::vector<mlx::core::array> params_;  // ordered; see the class comment
     mlx::core::array inv_freq_;
+    std::vector<mlx::core::array> key_cache_;    // per layer, for cached rollouts
+    std::vector<mlx::core::array> value_cache_;
+    int cache_pos_ = 0;
 };
 
 }  // namespace zetta::compute::model

@@ -329,6 +329,58 @@ TEST(QwenRealCheckpoint, FusedMlxTrainingBackpropsThroughRealWeights) {
               << " ms / step (fwd+bwd+AdamW over 0.6B params on the GPU)\n";
 }
 
+// THE FULLY-FUSED GPU RLVR LOOP: rollouts (KV-cached MLX) + a group value_and_grad
+// (one MLX graph) + AdamW, params shared so updates flow into the next rollout. It
+// learns a target on the real 0.6B purely from a verifiable reward, on the GPU.
+TEST(QwenRealCheckpoint, FusedGpuRlvrLearnsOnRealWeights) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR to run";
+
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenModel> model =
+        zetta::compute::model::MlxQwenModel::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<int> prompt = tokenizer->encode("I think the best pet is a");
+    const std::string target = "cat";
+    const auto reward = [&](const std::vector<int>&, const std::vector<int>& completion) {
+        return tokenizer->decode(completion).find(target) != std::string::npos ? 1.0 : 0.0;
+    };
+
+    zetta::compute::model::AdamW optimizer(/*learning_rate=*/1e-4F);
+    std::mt19937 rng(7);
+    using clock = std::chrono::steady_clock;
+
+    const auto greedy = [&]() {
+        std::mt19937 g(0);
+        return tokenizer->decode(model->generate(prompt, 3, 0.0F, g));
+    };
+    std::cerr << "[fused GPU RLVR] before: greedy = \"" << greedy() << "\"\n";
+
+    double max_reward = 0.0;
+    double step_ms = 0.0;
+    bool learned_greedy = false;
+    for (int step = 0; step < 12; ++step) {
+        const auto t0 = clock::now();
+        const double mean_reward = model->grpo_step(optimizer, prompt, reward,
+                                                    /*group=*/8, /*max_new=*/3,
+                                                    /*temperature=*/1.0F, rng);
+        const auto t1 = clock::now();
+        step_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const std::string g = greedy();
+        max_reward = std::max(max_reward, mean_reward);
+        if (g.find(target) != std::string::npos) learned_greedy = true;
+        std::cerr << "[fused GPU RLVR] step " << step << " reward=" << mean_reward
+                  << " (" << step_ms << " ms) greedy=\"" << g << "\"\n";
+        if (learned_greedy && mean_reward >= 0.75) break;  // learned + stable
+    }
+    std::cerr << "[fused GPU RLVR] after: greedy=\"" << greedy() << "\"  ~" << step_ms
+              << " ms / RLVR step (rollouts + group value_and_grad + AdamW on GPU)\n";
+    EXPECT_GT(max_reward, 0.5) << "RLVR should learn to sample the target from reward";
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace
