@@ -41,6 +41,8 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The training-data corpus** — `curriculum` + `corpus_io`: the gated churn seed,
   graph-derived facts, the reference tool-call trajectory, JSONL, and difficulty/held-out
   (below). Operating the generators: [`training-data-runbook.md`](training-data-runbook.md).
+- **Why it works** — [`rlvr-to-production.md`](rlvr-to-production.md): how the corpus →
+  RLVR → the *same* correctness gate makes your production pipelines correct by construction.
 - **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
 - **Curriculum + observability** — `train_over_corpus` (below).
 
