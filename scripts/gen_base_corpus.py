@@ -18,6 +18,15 @@ docs/plan into catalog.json, schema-valid) — not raw markdown — and per use 
   5. streams the `CorpusTask` JSONL to --out (Ctrl-C leaves a valid partial), and
   6. (optionally) pushes to a PRIVATE HuggingFace dataset.
 
+Beyond the (entirely supervised-tabular) catalog it also emits two built-in FAMILIES with
+FIXED, discriminating targets — only the phrasing varies, so they work offline too:
+  - SEARCH (--search-count) — upload a dataset, index it, serve ranked RETRIEVAL (keyword /
+    semantic / hybrid); negatives are LLM-guessing, a LIKE scan, unranked results, and
+  - ABSTAIN (--abstain-count) — an out-of-scope ask the agent must DECLINE, not fabricate a
+    pipeline for; negatives are fabricated model/search solutions.
+Without them a catalog-only agent borrows the churn template for search and hallucinates a
+pipeline for "write me a poem" (observed in the trained 0.6B).
+
 `--self-test` is fully offline (format + gate + schema). All credentials + config are read
 from the ENVIRONMENT (never hardcoded):
   OPENROUTER_API_KEY / OPENROUTER_MODEL   frontier generation (default anthropic/claude-sonnet-4.5)
@@ -215,6 +224,13 @@ the task as transforming it into the correct solution.
 - Ground the required facts + reference in the provided SOLUTION SPEC and map them onto \
 the METHODOLOGY TOOLBOX components.
 
+Fit the required facts to THIS use case's real solution family — do NOT default to \
+churn/binary. Choose `model_kind` from what the problem actually is: binary or multi-class \
+classification, value/quantity regression, time-series or quantile forecasting, \
+ranking/uplift, or clustering/segmentation. Name outcome/label facts after THIS problem (a \
+non-churn task must NEVER carry a churn label), and include ONLY facts that apply (a \
+forecasting task has temporal validation + a horizon, not calibration of a churn label).
+
 Return ONLY a JSON object:
 { "task": {"id","description","initial_state":{...},"tool_names":["connect","clean",
     "model","index","serve","act"],"required":{...}},
@@ -270,13 +286,32 @@ def _extract_json(content: Any, model: str) -> dict[str, Any]:
         raise RuntimeError(f"non-JSON from '{model}': {content[:200]!r}") from exc
 
 
-def openrouter_generate(use_case: dict[str, Any], grounding: str, solution: str,
-                        toolbox: str, style: str,
-                        current_state: dict[str, str] | None) -> dict[str, Any]:
-    key = os.environ["OPENROUTER_API_KEY"]  # required for generation
+def _openrouter_chat(system: str, user: str) -> dict[str, Any]:
+    """One OpenRouter chat call, returning the reply's JSON object. Credentials + model come
+    from the env (OPENROUTER_API_KEY / OPENROUTER_MODEL / OPENROUTER_MAX_TOKENS)."""
+    key = os.environ["OPENROUTER_API_KEY"]  # required for any generation
     model = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
     import requests  # lazy
 
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {key}"},
+        json={"model": model, "temperature": 0.7,
+              "max_tokens": int(os.environ.get("OPENROUTER_MAX_TOKENS", "4000")),
+              "messages": [{"role": "system", "content": system},
+                           {"role": "user", "content": user}]},
+        timeout=120)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
+    choices = resp.json().get("choices") or []
+    if not choices:
+        raise RuntimeError(f"no choices from '{model}'")
+    return _extract_json((choices[0].get("message") or {}).get("content"), model)
+
+
+def openrouter_generate(use_case: dict[str, Any], grounding: str, solution: str,
+                        toolbox: str, style: str,
+                        current_state: dict[str, str] | None) -> dict[str, Any]:
     parts = [
         f"Use case: {use_case['id']} — {use_case['name']} (band {use_case.get('band','?')}).",
         f"Phrasing style: {style}.",
@@ -293,22 +328,222 @@ def openrouter_generate(use_case: dict[str, Any], grounding: str, solution: str,
     if grounding:
         parts.append(f"External grounding:\n{grounding}")
     parts.append("Author one discriminating task in the given style. Output ONLY the JSON object.")
+    return _openrouter_chat(GENERATION_SYSTEM, "\n\n".join(parts))
 
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        json={"model": model, "temperature": 0.7,
-              "max_tokens": int(os.environ.get("OPENROUTER_MAX_TOKENS", "4000")),
-              "messages": [
-                  {"role": "system", "content": GENERATION_SYSTEM},
-                  {"role": "user", "content": "\n\n".join(parts)}]},
-        timeout=120)
-    if resp.status_code >= 400:
-        raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
-    choices = resp.json().get("choices") or []
-    if not choices:
-        raise RuntimeError(f"no choices from '{model}'")
-    return _extract_json((choices[0].get("message") or {}).get("content"), model)
+
+# ---------------------------------------------------------------------------
+# Built-in solution FAMILIES beyond the supervised-tabular catalog. Every catalog use case
+# is supervised/tabular (churn, forecasting, fraud, ...), so a base agent trained on the
+# catalog alone borrows that template for SEARCH and never learns to DECLINE an OUT-OF-SCOPE
+# ask (it hallucinates a pipeline for "write me a poem"). These two families fix both. Their
+# `required` facts are FIXED — a guaranteed-clean, discriminating target — and only the
+# DESCRIPTION varies (frontier-phrased when OPENROUTER_API_KEY is set, the base intent
+# verbatim otherwise, so a family is valid + gated even fully offline).
+# ---------------------------------------------------------------------------
+
+# --- SEARCH: upload a dataset, index it, serve retrieval (ir Index + Serve). It answers by
+#     RETRIEVING ranked records from the corpus, never by an LLM guessing. Variants differ by
+#     index kind: keyword (bm25f) / meaning (semantic) / both (hybrid). ---
+_SEARCH_BASE = {
+    "connect": True,           # upload / connect the dataset
+    "index": True,             # build an index over it (ir::StepKind::Index)
+    "retrieval": True,         # answer by retrieving matching records
+    "ranked": True,            # relevance-ranked, not an unordered scan
+    "serves_search": True,     # expose a search endpoint (expose_index)
+    "grounded_in_data": True,  # results come from the corpus, never hallucinated
+}
+SEARCH_VARIANTS: dict[str, dict[str, Any]] = {
+    "fulltext": {**_SEARCH_BASE, "index_kind": "bm25f"},
+    "semantic": {**_SEARCH_BASE, "index_kind": "semantic", "embeddings": True},
+    "hybrid": {**_SEARCH_BASE, "index_kind": "hybrid", "embeddings": True},
+}
+# (base intent, variant) — real "upload it and make it searchable" asks.
+SEARCH_INTENTS: list[tuple[str, str]] = [
+    ("We have 50,000 support articles — let people search them in plain English.", "semantic"),
+    ("Upload our product catalog and let customers search it by keyword.", "fulltext"),
+    ("Index our contracts so legal can find the right clause fast.", "hybrid"),
+    ("Make our internal engineering wiki searchable.", "fulltext"),
+    ("Load our past support tickets so agents can find similar resolved ones.", "semantic"),
+    ("Our application logs are huge — give us fast full-text search over them.", "fulltext"),
+    ("Ingest our FAQ and return the closest matching entries to a question.", "semantic"),
+    ("Search across our PDFs and spreadsheets by meaning, not just exact words.", "hybrid"),
+    ("Put our research library behind a search box.", "hybrid"),
+    ("Let shoppers find products by describing what they want, not exact SKUs.", "semantic"),
+]
+
+SEARCH_DESCRIBE_SYSTEM = """You write ONLY the natural-language DESCRIPTION of a search/\
+retrieval task for an agent that builds data pipelines (upload a dataset, index it, serve \
+search). The correct solution is fixed elsewhere — do NOT output any solution facts. Given a \
+base intent, a search kind, and a phrasing style, write a realistic request: a company with a \
+concrete dataset (documents, tickets, a catalog, logs, contracts, ...) to upload and make \
+searchable. For the 'paste current approach' style, embed what they do today (a SQL LIKE \
+query, an Elasticsearch snippet, or 'we paste it into ChatGPT') and ask to improve it. Return \
+ONLY JSON: {"description": "...", "initial_state": {"data.<name>": true}, "tags": ["..."]}"""
+
+
+def _search_negatives(required: dict[str, Any]) -> list[dict[str, Any]]:
+    """Plausible-wrong search solutions — each flips >= 1 required fact so it fails."""
+    return [
+        # ask an LLM instead of building an index (the anti-pattern) — no index, hallucinates
+        {**required, "index": False, "index_kind": "llm", "retrieval": False,
+         "grounded_in_data": False},
+        # substring / SQL LIKE scan — no real index, results unranked
+        {**required, "index": False, "index_kind": "substring", "ranked": False},
+        # retrieves, but returns matches unranked (no relevance ordering)
+        {**required, "ranked": False},
+    ]
+
+
+def _search_row(task_id: str, variant: str, description: str,
+                initial_state: dict[str, Any], extra_tags: list[str]) -> dict[str, Any]:
+    required = SEARCH_VARIANTS[variant]
+    return {
+        "task": {
+            "id": task_id,
+            "description": description,
+            "initial_state": initial_state or {"data.corpus": True},
+            "tool_names": ["connect", "clean", "index", "serve"],
+            "required": dict(required),
+        },
+        "reference": dict(required),
+        "negative_controls": _search_negatives(required),
+        "tier": 2, "difficulty": 0.4, "held_out": False,
+        "tags": ["search", "retrieval", variant, "uc:SEARCH", *extra_tags],
+    }
+
+
+def describe_search(intent: str, variant: str,
+                    style: str) -> tuple[str, dict[str, Any], list[str]]:
+    """Phrase a search intent (frontier model, optional). Falls back to the base intent
+    verbatim with no API key — the fixed required facts already make the task valid + gated."""
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        return intent, {"data.corpus": True}, []
+    index_kind = SEARCH_VARIANTS[variant]["index_kind"]
+    user = (f"Base intent: {intent}\nSearch kind: {variant} (index_kind={index_kind}).\n"
+            f"Phrasing style: {style}.\nWrite the description.")
+    try:
+        out = _openrouter_chat(SEARCH_DESCRIBE_SYSTEM, user)
+    except Exception as exc:  # noqa: BLE001 - phrasing is optional; degrade to the base intent
+        print(f"  SEARCH: describe fell back ({exc})", file=sys.stderr)
+        return intent, {"data.corpus": True}, []
+    description = str(out.get("description") or "").strip() or intent
+    initial_state = out.get("initial_state") if isinstance(out.get("initial_state"), dict) else {}
+    tags = [t for t in (out.get("tags") or []) if isinstance(t, str)]
+    return description, initial_state or {"data.corpus": True}, tags
+
+
+def generate_search_corpus(target: int,
+                           existing: dict[str, int] | None = None) -> Iterator[dict[str, Any]]:
+    """Yield validated + gated SEARCH tasks (fixed retrieval facts, varied phrasing), cycling
+    intents x styles. Resumes from the `uc:SEARCH` count in `existing`."""
+    have = (existing or {}).get("SEARCH", 0)
+    need = target - have
+    if need <= 0:
+        print(f"  SEARCH: already complete ({have}), skipping", file=sys.stderr)
+        return
+    combos = [(intent, variant, style)
+              for (intent, variant) in SEARCH_INTENTS for style in STYLES]
+    for i in range(need):
+        intent, variant, style = combos[(have + i) % len(combos)]
+        description, initial_state, extra_tags = describe_search(intent, variant, style)
+        row = _search_row(f"search-{variant}-{have + i}", variant, description,
+                          initial_state, extra_tags)
+        ok, reason = validate_task(row)
+        if not ok:
+            print(f"  SEARCH: DROPPED ({reason})", file=sys.stderr)
+            continue
+        admitted, reason = gate_task(row)
+        if not admitted:
+            print(f"  SEARCH: DROPPED (gate): {reason}", file=sys.stderr)
+            continue
+        print(f"  SEARCH/{variant}: admitted ({style.split(',')[0]})", file=sys.stderr)
+        yield row
+
+
+# --- ABSTAIN: an OUT-OF-SCOPE request (not a data/AI-pipeline problem) the agent must
+#     DECLINE rather than fabricate a pipeline. The correct end-state is the abstain marker;
+#     every negative is a fabricated solution (it FAILED to decline). ---
+ABSTAIN_REQUIRED = {"abstain": True, "in_scope": False}
+ABSTAIN_NEGATIVES: list[dict[str, Any]] = [
+    {"abstain": False, "in_scope": True, "model_kind": "gbdt", "calibrated": True},  # built a model
+    {"abstain": False, "in_scope": True, "index_kind": "bm25f", "retrieval": True},  # built a search
+    {"abstain": False, "in_scope": True},                                            # just answered it
+]
+ABSTAIN_INTENTS = [
+    "Write me a poem about the ocean.",
+    "What's the capital of France?",
+    "Book me a flight to Tokyo next week.",
+    "Tell me a joke.",
+    "Translate 'good morning' into Japanese.",
+    "What is 47 times 89?",
+    "Summarize the plot of Hamlet.",
+    "Recommend a good Italian restaurant near me.",
+    "Draft a birthday message for my coworker.",
+    "What's the weather going to be tomorrow?",
+    "Explain how photosynthesis works.",
+    "Set a reminder for my dentist appointment.",
+]
+ABSTAIN_MORE_SYSTEM = """You produce OUT-OF-SCOPE user messages for an agent that builds \
+data/AI pipelines. Each message must be something the agent should politely DECLINE — NOT a \
+data or modeling task: general knowledge, chit-chat, creative writing, math, translation, \
+booking/errands, another tool's job. Do NOT mention datasets, models, predictions, search, \
+or pipelines. Return ONLY JSON: {"messages": ["...", "..."]}"""
+
+
+def _abstain_row(task_id: str, message: str) -> dict[str, Any]:
+    return {
+        "task": {
+            "id": task_id,
+            "description": message,
+            "initial_state": {},
+            "tool_names": TOOL_NAMES,
+            "required": dict(ABSTAIN_REQUIRED),
+        },
+        "reference": dict(ABSTAIN_REQUIRED),
+        "negative_controls": [dict(control) for control in ABSTAIN_NEGATIVES],
+        "tier": 0, "difficulty": 0.2, "held_out": False,
+        "tags": ["abstain", "out-of-scope", "uc:ABSTAIN"],
+    }
+
+
+def _more_abstain_intents(count: int) -> list[str]:
+    """Optionally expand the out-of-scope pool with the frontier model (for diversity)."""
+    if count <= 0 or not os.environ.get("OPENROUTER_API_KEY"):
+        return []
+    try:
+        out = _openrouter_chat(ABSTAIN_MORE_SYSTEM,
+                               f"Produce {count} varied out-of-scope messages.")
+    except Exception as exc:  # noqa: BLE001 - expansion is optional
+        print(f"  ABSTAIN: expansion skipped ({exc})", file=sys.stderr)
+        return []
+    return [m for m in (out.get("messages") or []) if isinstance(m, str) and m.strip()]
+
+
+def generate_abstain_corpus(target: int,
+                            existing: dict[str, int] | None = None) -> Iterator[dict[str, Any]]:
+    """Yield validated + gated ABSTAIN tasks (out-of-scope -> decline). Resumes from the
+    `uc:ABSTAIN` count; uses the built-in pool, optionally expanded by the frontier model."""
+    have = (existing or {}).get("ABSTAIN", 0)
+    need = target - have
+    if need <= 0:
+        print(f"  ABSTAIN: already complete ({have}), skipping", file=sys.stderr)
+        return
+    intents = list(ABSTAIN_INTENTS)
+    if need > len(intents):
+        intents += _more_abstain_intents(need - len(intents))
+    for i in range(need):
+        message = intents[(have + i) % len(intents)]
+        row = _abstain_row(f"abstain-{have + i}", message)
+        ok, reason = validate_task(row)
+        if not ok:
+            print(f"  ABSTAIN: DROPPED ({reason})", file=sys.stderr)
+            continue
+        admitted, reason = gate_task(row)
+        if not admitted:
+            print(f"  ABSTAIN: DROPPED (gate): {reason}", file=sys.stderr)
+            continue
+        print("  ABSTAIN: admitted", file=sys.stderr)
+        yield row
 
 
 def _attribute(row: dict[str, Any], keywords: dict[str, list[str]]) -> str | None:
@@ -429,7 +664,28 @@ def self_test() -> int:
     for i, control in enumerate(row["negative_controls"]):
         bad, _ = gate_task({**row, "reference": control})
         assert not bad, f"negative control {i} should NOT pass the grader"
-    print("self-test OK: churn seed is schema-valid, admitted, and discriminates.")
+    # SEARCH family — each variant is schema-valid, admitted, and discriminates.
+    for variant in SEARCH_VARIANTS:
+        search = _search_row(f"search-{variant}-0", variant, "Make our docs searchable.",
+                             {"data.corpus": True}, [])
+        ok, reason = validate_task(search)
+        assert ok, f"search {variant} must be schema-valid: {reason}"
+        admitted, reason = gate_task(search)
+        assert admitted, f"search {variant} must be admitted: {reason}"
+        for i, control in enumerate(search["negative_controls"]):
+            assert not gate_task({**search, "reference": control})[0], \
+                f"search {variant} negative {i} should NOT pass"
+    # ABSTAIN family — an out-of-scope task declines; a fabricated solution fails.
+    abstain = _abstain_row("abstain-0", "Write me a poem about the ocean.")
+    ok, reason = validate_task(abstain)
+    assert ok, f"abstain must be schema-valid: {reason}"
+    admitted, reason = gate_task(abstain)
+    assert admitted, f"abstain must be admitted: {reason}"
+    for i, control in enumerate(abstain["negative_controls"]):
+        assert not gate_task({**abstain, "reference": control})[0], \
+            f"abstain negative {i} should NOT pass"
+    print("self-test OK: churn + search (x3 variants) + abstain are schema-valid, admitted, "
+          "and discriminate.")
     return 0
 
 
@@ -441,6 +697,10 @@ def main() -> int:
     parser.add_argument("--plan-dir", default=default_plan_dir())
     parser.add_argument("--catalog", help="prebuilt catalog.json (else built from --plan-dir)")
     parser.add_argument("--per-use-case", type=int, default=20)
+    parser.add_argument("--search-count", type=int, default=40,
+                        help="SEARCH tasks (upload + index + serve retrieval); 0 to skip")
+    parser.add_argument("--abstain-count", type=int, default=24,
+                        help="ABSTAIN tasks (out-of-scope -> decline); 0 to skip")
     parser.add_argument("--current-state", action="append", metavar="UC-N=path",
                         help="hydrate a real current-state artifact for a use case (repeatable)")
     parser.add_argument("--append", action="store_true",
@@ -466,14 +726,23 @@ def main() -> int:
               file=sys.stderr)
     print(f"catalog: {len(catalog.get('use_cases', []))} use cases, "
           f"{len(catalog.get('solutions', []))} solutions; "
-          f"{args.per_use_case} samples each", file=sys.stderr)
+          f"{args.per_use_case} samples each; families: search={args.search_count}, "
+          f"abstain={args.abstain_count}", file=sys.stderr)
+
+    def generate_all() -> Iterator[dict[str, Any]]:
+        # supervised catalog first (churn seed included), then the built-in families.
+        yield from generate_corpus(catalog, args.per_use_case, current_states,
+                                   existing, emit_seeds=not resuming)
+        if args.search_count > 0:
+            yield from generate_search_corpus(args.search_count, existing)
+        if args.abstain_count > 0:
+            yield from generate_abstain_corpus(args.abstain_count, existing)
 
     count = 0
     mode = "a" if args.append else "w"
     try:
         with open(args.out, mode, encoding="utf-8") as handle:
-            for row in generate_corpus(catalog, args.per_use_case, current_states,
-                                       existing, emit_seeds=not resuming):
+            for row in generate_all():
                 handle.write(json.dumps(row) + "\n")
                 handle.flush()  # durable per task, so Ctrl-C leaves a valid partial corpus
                 count += 1
