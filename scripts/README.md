@@ -17,13 +17,14 @@ generate task games (OpenRouter/Claude) → **gate** each through a mirror of th
 native loader (`agent/corpus_io.hpp`) consumes → optionally push to a private HF dataset.
 
 ```bash
-python3 gen_base_corpus.py --self-test               # offline: format + gate (no net/deps)
-python3 gen_base_corpus.py --out corpus.jsonl --per-use-case 3
-python3 gen_base_corpus.py --out corpus.jsonl --push # + upload to $HF_DATASET_REPO
+uv run gen_base_corpus.py --self-test               # offline: format + gate (no net)
+uv run gen_base_corpus.py --out corpus.jsonl --per-use-case 3
+uv run gen_base_corpus.py --out corpus.jsonl --push # + upload to $HF_DATASET_REPO
 ```
 Env: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (default `anthropic/claude-sonnet-4.5`),
 `PERPLEXITY_API_KEY` (optional), `HF_TOKEN`, `HF_DATASET_REPO`, `ORAMA_PLAN_DIR`.
-Deps (only for real generation): `pip install requests huggingface_hub`.
+Deps (`requests`, `huggingface-hub`) are declared inline (PEP 723) and resolved by
+`uv run` — no manual install.
 
 ### `gen_synthetic_churn_pg.py` — frontier → local Postgres (Charles's schema)
 Synthesize accounts + communications in the exact schema recovered from Charles's n8n
@@ -32,13 +33,16 @@ Synthesize accounts + communications in the exact schema recovered from Charles'
 no live-Snowflake dependency.
 
 ```bash
-python3 gen_synthetic_churn_pg.py --self-test         # offline: schema + signal (no DB/API)
-python3 gen_synthetic_churn_pg.py --dry-run           # print DDL + a sample account
-python3 gen_synthetic_churn_pg.py --accounts 500      # create schema + insert
-python3 gen_synthetic_churn_pg.py --accounts 500 --realistic   # + frontier-written comms
+uv run gen_synthetic_churn_pg.py --self-test         # offline: schema + signal (no DB/API)
+uv run gen_synthetic_churn_pg.py --dry-run           # print DDL + a sample account
+createdb orama_churn_synth                            # one-time (the default target)
+uv run gen_synthetic_churn_pg.py --accounts 500      # create schema + insert
+uv run gen_synthetic_churn_pg.py --accounts 500 --realistic   # + frontier-written comms
 ```
-Env: `DATABASE_URL` or `PG*` (host/port/user/password/database), `OPENROUTER_API_KEY`
-(only with `--realistic`). Deps (only for insert): `pip install psycopg2-binary`.
+Target DB precedence: `DATABASE_URL` > `--database` > `PGDATABASE` > `orama_churn_synth`
+(the explicit default — never libpq's implicit user-named DB; the script prints the
+resolved target). `OPENROUTER_API_KEY` only for `--realistic`. Deps (`requests`,
+`psycopg2-binary`) are declared inline (PEP 723) and resolved by `uv run`.
 
 ## Gate discipline
 The Python gate is a **pre-filter**; the **authoritative** gate is the native

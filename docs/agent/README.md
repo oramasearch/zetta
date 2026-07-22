@@ -38,6 +38,9 @@ Pages land here one per shipped slice. The domain is being built bottom-up
 - **The policy-gradient step** — `policy_gradient_step` (below) — reward provably rises.
 - **The training loop** — `train_softmax_policy` (below) — learns to solve a real task.
 - **The LLM-judge fallback** — `Judge` + `resolve_grade` (below).
+- **The training-data corpus** — `curriculum` + `corpus_io`: the gated churn seed,
+  graph-derived facts, the reference tool-call trajectory, JSONL, and difficulty/held-out
+  (below). Operating the generators: [`training-data-runbook.md`](training-data-runbook.md).
 - **Multi-turn training** — `SequencePolicy` + `train_sequence_policy` (below).
 - **Curriculum + observability** — `train_over_corpus` (below).
 
@@ -302,6 +305,21 @@ assets + integration**: (1) the downloaded multi-GB Qwen weights (the only exter
 asset — the loader, tokenizer, and RLVR loop are all built and tested), and (2)
 wiring the `QwenModel` behind `AgentPolicy` for the #248 tool-calling eval + the
 sustained training campaign on the build box.
+
+## The training-data corpus (shipped)
+
+The gated seed corpus + its on-disk format (#866), grown the blender-rl way — *grow by
+generation, gate by verification*. `agent/curriculum.hpp` holds the first seed:
+`churn_solution_case()`, Charles's churn game (Motive UC-1) as a **discriminating**
+`AdmissionCase` — its required end-state is a correct churn solution (connect →
+leakage-free features → gbdt + SHAP → calibrated serve → calibration loop), built as a
+real `ir::ExecutionGraph` (`build_churn_graph` / `churn_graph_facts`) and reachable as the
+agent's own tool-call trajectory (`churn_sandbox` / `churn_reference_trajectory`); the
+reference passes, the negatives (LLM-only, leaky, uncalibrated) each fail. `agent/corpus_io.hpp`
+is the JSONL the frontier-model generators emit and the native loader consumes
+(non-throwing), plus `CorpusTask` difficulty metadata + the held-out split. The generators
+and how to run them: [**`training-data-runbook.md`**](training-data-runbook.md) +
+[`../../scripts/README.md`](../../scripts/README.md).
 
 ## Acceptance
 

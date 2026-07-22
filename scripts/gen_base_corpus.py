@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["requests", "huggingface-hub"]
+# ///
 """Generate the base-agent RLVR training corpus from the solutions catalog (zetta#866).
 
 Method: blender-rl's *grow by generation, gate by verification* (see the
@@ -23,10 +27,10 @@ All credentials + config are read from the ENVIRONMENT (never hardcoded):
   ORAMA_PLAN_DIR        the solutions catalog dir (default: the repo's sibling
                         solutions-designs/docs/plan)
 
-Usage:
-  python3 gen_base_corpus.py --self-test                 # offline: format + gate
-  python3 gen_base_corpus.py --out corpus.jsonl --per-use-case 3
-  python3 gen_base_corpus.py --out corpus.jsonl --push   # + upload to HF_DATASET_REPO
+Usage (always via `uv run`; deps are declared inline above, PEP 723):
+  uv run gen_base_corpus.py --self-test                 # offline: format + gate
+  uv run gen_base_corpus.py --out corpus.jsonl --per-use-case 3
+  uv run gen_base_corpus.py --out corpus.jsonl --push   # + upload to HF_DATASET_REPO
 """
 from __future__ import annotations
 
