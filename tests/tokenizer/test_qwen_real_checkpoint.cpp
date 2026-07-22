@@ -595,6 +595,38 @@ TEST(QwenRealCheckpoint, SftBaseAgentOnCorpus) {
     std::cerr << "[SFT base agent] checkpoint saved + reloaded from " << out_dir << "\n";
 }
 
+// Judge the trained base agent: feed it realistic user inputs (varied phrasings, a pasted
+// current state, a vague ask) and print the greedy generations. Inspection only — point
+// ZETTA_QWEN_DIR at the TRAINED checkpoint (or the base weights, to compare). No asserts.
+TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
+    const char* dir = qwen_dir();
+    if (dir == nullptr) GTEST_SKIP() << "set ZETTA_QWEN_DIR (the trained checkpoint) to run";
+    std::string error;
+    const std::optional<BpeTokenizer> tokenizer = BpeTokenizer::from_directory(dir, &error);
+    ASSERT_TRUE(tokenizer.has_value()) << error;
+    std::optional<zetta::compute::model::MlxQwenInference> model =
+        zetta::compute::model::MlxQwenInference::from_directory(dir, &error);
+    ASSERT_TRUE(model.has_value()) << error;
+
+    const std::vector<std::string> user_inputs = {
+        "I want to predict which customers are about to cancel.",
+        "Score our sales leads by how likely they are to close.",
+        "We have a pile of overdue invoices — help me prioritize collections.",
+        "Forecast demand for our products next quarter.",
+        "Here's what we do today: a Gemini prompt reads support tickets and guesses churn "
+        "risk. Make it better.",
+        "What should I even build with my customer and billing data?",
+    };
+    std::cerr << "\n===== trained base agent — generations (" << dir << ") =====\n";
+    for (const std::string& input : user_inputs) {
+        model->reset();
+        const std::string prompt = input + "\n\nCorrect solution (facts):\n";
+        const std::vector<int> generated =
+            model->generate_greedy(tokenizer->encode(prompt), /*max_new_tokens=*/80);
+        std::cerr << "\nUSER : " << input << "\nAGENT: " << tokenizer->decode(generated) << "\n";
+    }
+}
+
 #endif  // ZETTA_WITH_MLX
 
 }  // namespace
