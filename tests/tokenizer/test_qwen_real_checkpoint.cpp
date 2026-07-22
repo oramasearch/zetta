@@ -609,13 +609,36 @@ TEST(QwenRealCheckpoint, GenerateFromTrainedBaseAgent) {
     ASSERT_TRUE(model.has_value()) << error;
 
     const std::vector<std::string> user_inputs = {
-        "I want to predict which customers are about to cancel.",
-        "Score our sales leads by how likely they are to close.",
-        "We have a pile of overdue invoices — help me prioritize collections.",
-        "Forecast demand for our products next quarter.",
-        "Here's what we do today: a Gemini prompt reads support tickets and guesses churn "
-        "risk. Make it better.",
-        "What should I even build with my customer and billing data?",
+        // --- core supervised use cases, varied phrasings ---
+        "Which of my subscribers are likely to cancel next month?",
+        "Rank inbound demo requests by how likely they are to become paying customers.",
+        "We have thousands of overdue invoices — who should our collections team call first?",
+        "Forecast how many units of each SKU we'll sell next month.",
+        "Flag credit-card transactions that look fraudulent in real time.",
+        "Suggest the products each shopper is most likely to buy next.",
+        "Group our customers into meaningful segments for marketing.",
+        "Estimate the lifetime value of a new customer at signup.",
+        "Tell my sales team which accounts are ready for an upsell.",
+        "Predict which machines on the factory floor will fail soon.",
+        "Decide whether a loan applicant is likely to default.",
+        "Which of my employees are at risk of quitting?",
+        "Predict whether a website visitor will sign up.",
+        "Warn me before a product runs out of stock.",
+        "Recommend the best price for each product to maximize revenue.",
+        // --- text / unstructured use cases ---
+        "Analyze our customer reviews and tell me how people feel about us.",
+        "Automatically route incoming support tickets to the right team.",
+        "Sort incoming contracts into categories automatically.",
+        "Let users search our support docs in plain English.",
+        "We have duplicate customer records across systems — help us merge them.",
+        // --- current-state pastes (improve what they have) ---
+        "Today a Zapier flow emails us when a user's usage drops. Can you do better?",
+        "Our n8n workflow calls GPT-4 on each ticket to guess if the account will churn. "
+        "Make it more reliable.",
+        // --- stress cases: vague, multi-intent, off-domain ---
+        "I have a bunch of customer and billing data and want to use AI. Where do I start?",
+        "I want to predict churn and also forecast next quarter's revenue.",
+        "Write me a poem about the ocean.",
     };
     std::cerr << "\n===== trained base agent — generations (" << dir << ") =====\n";
     for (const std::string& input : user_inputs) {
