@@ -64,6 +64,16 @@ Every sample is validated against
 and **gated**: `suggestions` and `distractors` must be disjoint, and there must be ≥ 1
 distractor (else the sample can't teach restraint).
 
+### Search/retrieval, not just supervised models
+
+The plan catalog is entirely supervised-tabular, so the generator injects a
+**search/retrieval** use case (**UC-25**) the catalog lacks. When a customer's data state
+holds a **free-text corpus** — support articles, tickets, contracts, application logs, a
+wiki — Auto-Suggest should recognize it and suggest *upload → index → serve ranked search*
+(the base agent's SEARCH family builds it). When the state is purely structured numeric
+tables, UC-25 is a **distractor** — there is nothing to search. This mirrors the base
+corpus's own search family, so the two models agree on when search is the right answer.
+
 ## Status
 
 - **Built:** the training-data generator + schema (`scripts/gen_autosuggest_corpus.py`,

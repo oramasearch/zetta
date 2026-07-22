@@ -332,6 +332,14 @@ is the JSONL the frontier-model generators emit and the native loader consumes
 and how to run them: [**`training-data-runbook.md`**](training-data-runbook.md) +
 [`../../scripts/README.md`](../../scripts/README.md).
 
+Beyond the (supervised-tabular) solutions catalog the base generator also emits two built-in
+**families** with fixed, discriminating targets, because a catalog-only agent borrows the
+churn template for search and hallucinates a pipeline for an out-of-scope ask (both observed
+when judging the trained 0.6B): **SEARCH** — *upload a dataset, index it, serve ranked
+retrieval* (fulltext/semantic/hybrid; negatives are LLM-guessing, a `LIKE` scan, unranked)
+— and **ABSTAIN** — an out-of-scope request the agent must **decline** (`{abstain, in_scope:
+false}`) rather than fabricate a solution for. Both pass the native `admit_corpus` gate.
+
 ## Acceptance
 
 The whole base-agent programme is validated by the manual test script

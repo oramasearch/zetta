@@ -57,8 +57,9 @@ uv run scripts/gen_synthetic_churn_pg.py --dry-run     # DDL + a sample account
 ```
 
 Expected: the catalog is schema-valid (24 use cases / 11 components / 21 methods / 12
-solutions); the churn seed is schema-valid + discriminates; churned accounts escalate
-more than retained (signal present).
+solutions); the base-corpus self-test reports *churn + search (×3 variants) + abstain* are
+schema-valid + discriminate; the auto-suggest self-test reports *churn + search + zero*;
+churned accounts escalate more than retained (signal present).
 
 **The structured catalog.** `build_catalog.py` is the one place that reads `docs/plan`
 markdown, projecting it into a `catalog.json` validated against
@@ -93,6 +94,23 @@ default 4000, caps output per call — which also avoids the 402 when credits ar
 `--push` uploads
 `corpus.jsonl` to the private `HF_DATASET_REPO`. Review the file before pushing.
 
+**Built-in families beyond the catalog.** The plan catalog is entirely supervised-tabular,
+so an agent trained on it alone borrows the churn template for search and hallucinates a
+pipeline for an out-of-scope ask (both seen in the trained 0.6B). The generator also emits
+two families with **fixed, discriminating targets** — only the phrasing varies, so they run
+even offline (no API key needed for these):
+
+- **`--search-count` (default 40)** — SEARCH: *upload a dataset, index it, serve ranked
+  retrieval* (fulltext `bm25f` / semantic / hybrid). Required facts are search-shaped
+  (`index`, `retrieval`, `ranked`, `serves_search`, `grounded_in_data`); negatives are
+  LLM-guessing (no index), a SQL `LIKE` scan, and unranked results. Maps to ir Index + Serve.
+- **`--abstain-count` (default 24)** — ABSTAIN: an out-of-scope request (`write me a poem`)
+  the agent must **decline** (`{abstain: true, in_scope: false}`), not fabricate a solution
+  for; negatives are fabricated model/search solutions.
+
+Both resume off their own `uc:SEARCH` / `uc:ABSTAIN` tags, so a plain `--append` tops them
+up too. Pass `--search-count 0` / `--abstain-count 0` to skip a family.
+
 ## Step 3 — re-gate with the native authority (recommended)
 
 The Python gate is a pre-filter; the **authoritative** gate is the native
@@ -118,6 +136,13 @@ or no use cases) so the model learns to suggest 0-to-many, and each sample carri
 discrimination signal. Every sample is validated against
 [`schemas/autosuggest.schema.json`](../../scripts/schemas/autosuggest.schema.json) and
 gated (suggestions and distractors disjoint; ≥ 1 distractor).
+
+Like the base corpus, it injects a **search/retrieval** use case (**UC-25**) the plan
+catalog lacks: when the data state has a **free-text corpus** (articles, tickets, contracts,
+logs), Auto-Suggest should recognize it and suggest *upload → index → serve search*; when
+the state is purely structured numeric tables, UC-25 is a **distractor** (nothing to
+search). So the zero-suggestion scenario stays the "abstain" of this model — garbage data
+supports nothing.
 
 ## Step 5 — synthetic churn data (→ local Postgres)
 

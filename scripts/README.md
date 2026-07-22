@@ -30,9 +30,17 @@ in rotating phrasing **styles** (same outcome asked many ways) with an optional 
 → **gate** through a mirror of the native `admit_corpus` → stream `CorpusTask` JSONL the
 native loader (`agent/corpus_io.hpp`) consumes → optionally push to a private HF dataset.
 
+Beyond the (supervised-tabular) catalog it emits two built-in **families** with fixed,
+discriminating targets (only the phrasing varies, so they generate even offline): **SEARCH**
+(`--search-count`, default 40) — upload a dataset, index it, serve ranked retrieval
+(fulltext/semantic/hybrid) — and **ABSTAIN** (`--abstain-count`, default 24) — an
+out-of-scope ask the agent must decline, not build a pipeline for. Without them a
+catalog-only agent borrows the churn template for search and hallucinates a pipeline for
+"write me a poem".
+
 ```bash
-uv run gen_base_corpus.py --self-test               # offline: schema + gate
-uv run gen_base_corpus.py --out corpus.jsonl        # 20 samples / use case (default)
+uv run gen_base_corpus.py --self-test               # offline: churn + search + abstain gate
+uv run gen_base_corpus.py --out corpus.jsonl        # 20/use case + 40 search + 24 abstain
 uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
 uv run gen_base_corpus.py --out corpus.jsonl --append --push
 ```
@@ -48,7 +56,10 @@ and suggests zero-to-many use cases as *prompts* that feed the agent. Per use ca
 rotates **single / multi / zero** scenarios, generates a data state + suggestions (+
 **distractors** the data can't support) → **validate** against
 [`schemas/autosuggest.schema.json`](schemas/autosuggest.schema.json) → **gate**
-(suggestions and distractors disjoint; ≥ 1 distractor) → stream JSONL → optional push.
+(suggestions and distractors disjoint; ≥ 1 distractor) → stream JSONL → optional push. It
+also injects a **search/retrieval** use case (**UC-25**) the catalog lacks: a free-text
+corpus (articles, tickets, contracts, logs) should be suggested as *upload → index → serve
+search*, and is a distractor when only structured numeric data is present.
 
 ```bash
 uv run gen_autosuggest_corpus.py --self-test        # offline: schema + discrimination
