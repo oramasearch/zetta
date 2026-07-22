@@ -23,6 +23,7 @@ All credentials + config are read from the ENVIRONMENT (never hardcoded):
   OPENROUTER_API_KEY    frontier generation (Claude/GPT/... via OpenRouter)
   OPENROUTER_MODEL      default: anthropic/claude-sonnet-4.5
   PERPLEXITY_API_KEY    grounding the data shapes (optional; skipped if absent)
+  PERPLEXITY_MODEL      default: sonar-pro
   HF_TOKEN, HF_DATASET_REPO   the private dataset to push to (only with --push)
   ORAMA_PLAN_DIR        the solutions catalog dir (default: the repo's sibling
                         solutions-designs/docs/plan)
@@ -182,9 +183,13 @@ leakage_free, calibrated). Provide at least 3 negative controls that are plausib
 
 
 def perplexity_ground(use_case: dict[str, str]) -> str:
+    """Ground the data shape with Perplexity (sonar-pro by default). Optional and
+    non-fatal: no key / HTTP error / bad response returns "" and logs — grounding must
+    never crash the generation run."""
     key = os.environ.get("PERPLEXITY_API_KEY")
     if not key:
         return ""
+    model = os.environ.get("PERPLEXITY_MODEL", "sonar-pro")
     import requests  # lazy
 
     prompt = (
@@ -192,14 +197,18 @@ def perplexity_ground(use_case: dict[str, str]) -> str:
         "typical input data shape (tables + key columns), the standard modeling "
         "methodology, and the common leakage/calibration pitfalls. 6 sentences max."
     )
-    resp = requests.post(
-        "https://api.perplexity.ai/chat/completions",
-        headers={"Authorization": f"Bearer {key}"},
-        json={"model": "sonar", "messages": [{"role": "user", "content": prompt}]},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    try:
+        resp = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": model, "messages": [{"role": "user", "content": prompt}]},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]["content"]
+    except Exception as exc:  # noqa: BLE001 - grounding is optional; degrade, don't crash
+        print(f"  {use_case['id']}: grounding skipped ({exc})", file=sys.stderr)
+        return ""
 
 
 def _extract_json(content: Any, model: str) -> dict[str, Any]:

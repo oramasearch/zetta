@@ -20,7 +20,8 @@ is [`agent/corpus_io.hpp`](../../include/zetta/agent/corpus_io.hpp) +
   |---|---|---|
   | `OPENROUTER_API_KEY` | base-corpus generation, `--realistic` comms | Claude via OpenRouter |
   | `OPENROUTER_MODEL` | " | default `anthropic/claude-sonnet-4.5` |
-  | `PERPLEXITY_API_KEY` | grounding data shapes | optional; skipped if unset |
+  | `PERPLEXITY_API_KEY` | grounding data shapes | optional; skipped if unset (non-fatal) |
+  | `PERPLEXITY_MODEL` | " | default `sonar-pro` |
   | `HF_TOKEN`, `HF_DATASET_REPO` | pushing the corpus | the **private** dataset target |
   | `DATABASE_URL` or `PG*` | synthetic churn insert | local Postgres; DB defaults to `orama_churn_synth` |
   | `ORAMA_PLAN_DIR` | the solutions catalog | default: sibling `solutions-designs/docs/plan` |
