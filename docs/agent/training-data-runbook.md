@@ -25,6 +25,20 @@ is [`agent/corpus_io.hpp`](../../include/zetta/agent/corpus_io.hpp) +
   | `DATABASE_URL` or `PG*` | synthetic churn insert | local Postgres; DB defaults to `orama_churn_synth` |
   | `ORAMA_PLAN_DIR` | the solutions catalog | default: sibling `solutions-designs/docs/plan` |
 
+## Step 0 — one-time setup
+
+```bash
+# uv, if not already installed (resolves each script's inline deps on first run)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# the synthetic-churn generator's default target DB (Postgres must be running)
+pg_isready && createdb orama_churn_synth
+```
+
+Only the synthetic-churn generator (Step 4) needs Postgres; the base corpus (Steps 1–3)
+does not. Create `orama_churn_synth` once here, or skip it and point Step 4 at another DB
+via `DATABASE_URL` / `--database` / `PGDATABASE`.
+
 ## Step 1 — verify offline (no network, no DB)
 
 Always self-test first; both are fully offline:
@@ -60,11 +74,10 @@ a reasonable follow-up; until then the native gate runs as part of training in #
 ## Step 4 — synthetic churn data (→ local Postgres)
 
 **Target DB precedence:** `DATABASE_URL` > `--database` > `PGDATABASE` >
-`orama_churn_synth` (the explicit default — *not* libpq's implicit user-named DB). The
-script prints the resolved target before inserting. Create the default once:
+`orama_churn_synth` (the explicit default — *not* libpq's implicit user-named DB; created
+in Step 0). The script prints the resolved target before inserting.
 
 ```bash
-createdb orama_churn_synth                                            # one-time
 uv run scripts/gen_synthetic_churn_pg.py --accounts 500              # → orama_churn_synth
 uv run scripts/gen_synthetic_churn_pg.py --accounts 500 --database motive_demo
 uv run scripts/gen_synthetic_churn_pg.py --accounts 500 --realistic # frontier-written comms
