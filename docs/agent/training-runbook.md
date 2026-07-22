@@ -6,9 +6,10 @@ is the step *after* the data is generated — see the
 method + why it works: [`rlvr-to-production.md`](rlvr-to-production.md); the two models
 (agent vs. pipeline model): [`model-lifecycle.md`](model-lifecycle.md).
 
-> **Status (2026-07-22).** The per-step training machinery is **built and validated on the
-> real Qwen3-0.6B**; the full-corpus training driver + install + eval are the **in-flight
-> #863/#859 work**. Each step below marks what's ready vs. in progress.
+> **Status (2026-07-22).** The **SFT training driver is built** (Step 1) — it trains the
+> 0.6B on the corpus and saves a reloadable checkpoint (`MlxQwenModel::save`). The RLVR
+> neural-policy wire-up (#859), install (Step 3), and the #248 acceptance eval remain in
+> flight. Each step marks what's ready vs. in progress.
 
 ## Prerequisites
 
@@ -40,28 +41,37 @@ ZETTA_CORPUS=data/corpus.jsonl ./build/tests/zetta-tests \
 Expected: *"494 tasks loaded … 0 rejected"* — every task loads via `agent/corpus_io.hpp`
 and is admitted (reference passes, negatives each fail). **Ready.**
 
-## Step 1 — the training run (0.6B)
+## Step 1 — the training run (0.6B) — **ready**
 
-The per-step machinery (all **ready**, on `compute::model::MlxQwenModel`):
+The SFT driver `SftBaseAgentOnCorpus` (a guarded test in
+`tests/tokenizer/test_qwen_real_checkpoint.cpp`) loads the 0.6B, re-gates the corpus with
+the native authority, renders each task as **intent → the required-facts solution**, and
+fine-tunes with `next_token_loss` + `AdamW` on the GPU (~290 ms/step), then saves + reloads
+the checkpoint.
 
-- **SFT-first** (fastest, most reliable): `next_token_loss` + `AdamW` over each task's
-  intent → reference solution. Loss drops through real backprop on Metal (~290 ms/step).
-- **RLVR fast-follow:** `grpo_step` — KV-cached rollouts → the deterministic grader
+```bash
+# a full pass over the corpus (raise steps for more epochs); MLX build required
+ZETTA_QWEN_DIR=<qwen3-0.6b> ZETTA_CORPUS=data/corpus.jsonl \
+  ZETTA_SFT_EXAMPLES=494 ZETTA_SFT_STEPS=1500 \
+  ZETTA_CHECKPOINT_OUT=data/checkpoints/base-agent-0.6b \
+  ./build/tests/zetta-tests --gtest_filter='QwenRealCheckpoint.SftBaseAgentOnCorpus'
+```
+
+Expected: the loss drops (a 30-step smoke run went 4.6 → 0.4) and a complete, reloadable
+checkpoint lands in `ZETTA_CHECKPOINT_OUT`.
+
+- **RLVR fast-follow (#859):** `grpo_step` — KV-cached rollouts → the deterministic grader
   (`agent/grader.hpp`, the task's `required` facts) → group-relative advantages → one
-  policy-gradient step. Stable at a moderate lr (~5× the CPU path). Same corpus tasks;
-  the grader *is* the reward.
+  policy-gradient step (stable at a moderate lr, ~5× the CPU path). The remaining wire-up
+  is the neural policy → the graph-building sandbox so the reward is the native grader over
+  the agent's tool calls; the per-step RLVR machinery is validated (`FusedGpuRlvr*`).
 
-**In progress (#863/#859):** the driver that loads the whole corpus (`load_corpus_jsonl`),
-renders each task into a training example, and loops SFT→RLVR over all 494 — plus wiring
-the neural policy to the graph-building sandbox so `grpo_step`'s reward is the native
-grader over the agent's tool calls (#859). Until that lands, training is exercised on the
-validated per-task path (the `FusedMlxTraining*` / `FusedGpuRlvr*` guarded tests).
+## Step 2 — checkpoint — **ready**
 
-## Step 2 — checkpoint
-
-`save_qwen_model(model, dir)` writes the fine-tuned checkpoint (config + safetensors,
-HF-named), loadable by `load_qwen_model` / `MlxQwenModel::from_directory` for the next
-round and for serving. **Ready.**
+`MlxQwenModel::save(out_dir, source_dir)` writes the fine-tuned weights as
+`model.safetensors` (re-attaching the HF tensor names) and copies `config.json` + the
+tokenizer, so `from_directory(out_dir)` reloads the trained base agent — the SFT driver
+above does this at the end. (`save_qwen_model` is the CPU-path equivalent.)
 
 ## Step 3 — install as the main agent
 
