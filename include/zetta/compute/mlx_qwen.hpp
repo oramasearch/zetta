@@ -122,7 +122,17 @@ public:
                      const CompletionReward& reward, int group_size,
                      int max_new_tokens, float temperature, std::mt19937& rng);
 
+    // Save the (possibly fine-tuned) parameters as a loadable checkpoint: writes
+    // model.safetensors from `params_` (re-attaching the HF tensor names) into `out_dir`
+    // and copies config.json + the tokenizer files from `source_dir`, so
+    // `from_directory(out_dir)` round-trips a trained model. Non-throwing.
+    bool save(const std::string& out_dir, const std::string& source_dir,
+              std::string* error = nullptr) const;
+
 private:
+    // The HF tensor names in `params_` order (the inverse of from_directory's load order).
+    std::vector<std::string> param_names() const;
+
     MlxQwenModel(QwenParams config, std::vector<mlx::core::array> params,
                  mlx::core::array inv_freq);
 

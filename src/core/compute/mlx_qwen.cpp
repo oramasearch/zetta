@@ -3,12 +3,19 @@
 #if defined(ZETTA_WITH_MLX)
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <numeric>
 #include <random>
 #include <sstream>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -21,6 +28,15 @@ namespace zetta::compute::model {
 namespace mx = mlx::core;
 
 namespace {
+
+// The 11 per-layer HF tensor suffixes, in load order (shared by from_directory + save).
+constexpr std::array<std::string_view, 11> kLayerSuffixes = {
+    "input_layernorm.weight",       "self_attn.q_proj.weight",
+    "self_attn.k_proj.weight",      "self_attn.v_proj.weight",
+    "self_attn.o_proj.weight",      "self_attn.q_norm.weight",
+    "self_attn.k_norm.weight",      "post_attention_layernorm.weight",
+    "mlp.gate_proj.weight",         "mlp.up_proj.weight",
+    "mlp.down_proj.weight"};
 
 // RMSNorm over the last axis, scaled by `weight` (broadcasts over leading axes).
 mx::array qwen_rms_norm(const mx::array& x, const mx::array& weight, float eps) {
@@ -307,13 +323,10 @@ std::optional<MlxQwenModel> MlxQwenModel::from_directory(const std::string& dire
     if (!push("model.embed_tokens.weight")) return fail("mlx_qwen: missing embed_tokens");
     for (int layer = 0; layer < config.n_layers; ++layer) {
         const std::string p = "model.layers." + std::to_string(layer) + ".";
-        const char* suffixes[] = {
-            "input_layernorm.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
-            "self_attn.v_proj.weight", "self_attn.o_proj.weight", "self_attn.q_norm.weight",
-            "self_attn.k_norm.weight", "post_attention_layernorm.weight",
-            "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight"};
-        for (const char* s : suffixes) {
-            if (!push(p + s)) return fail("mlx_qwen: missing " + p + s);
+        for (const std::string_view suffix : kLayerSuffixes) {
+            std::string name = p;
+            name.append(suffix);
+            if (!push(name)) return fail("mlx_qwen: missing " + name);
         }
     }
     if (!push("model.norm.weight")) return fail("mlx_qwen: missing model.norm");
@@ -329,6 +342,55 @@ std::optional<MlxQwenModel> MlxQwenModel::from_directory(const std::string& dire
     }
     mx::array inv_freq(freqs.data(), mx::Shape{half}, mx::float32);
     return MlxQwenModel(config, std::move(params), std::move(inv_freq));
+}
+
+std::vector<std::string> MlxQwenModel::param_names() const {
+    // The inverse of from_directory's load order: [embed, per-layer x11, norm, (lm_head)].
+    std::vector<std::string> names;
+    names.reserve(params_.size());
+    names.push_back("model.embed_tokens.weight");
+    for (int layer = 0; layer < config_.n_layers; ++layer) {
+        const std::string p = "model.layers." + std::to_string(layer) + ".";
+        for (const std::string_view suffix : kLayerSuffixes) {
+            std::string name = p;
+            name.append(suffix);
+            names.push_back(std::move(name));
+        }
+    }
+    names.push_back("model.norm.weight");
+    if (!config_.tie_word_embeddings) names.push_back("lm_head.weight");
+    return names;
+}
+
+bool MlxQwenModel::save(const std::string& out_dir, const std::string& source_dir,
+                        std::string* error) const {
+    const std::vector<std::string> names = param_names();
+    if (names.size() != params_.size()) {
+        if (error != nullptr) {
+            *error = "mlx_qwen: param name/count mismatch (" + std::to_string(names.size()) +
+                     " names vs " + std::to_string(params_.size()) + " params)";
+        }
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(out_dir, ec);
+    std::unordered_map<std::string, mx::array> tensors;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        mx::array param = params_[i];
+        mx::eval(param);  // realize before writing
+        tensors.emplace(names[i], param);
+    }
+    mx::save_safetensors(out_dir + "/model.safetensors", tensors);
+    // Copy config.json + the tokenizer files so from_directory(out_dir) round-trips.
+    for (const char* file : {"config.json", "tokenizer.json", "tokenizer_config.json",
+                             "generation_config.json"}) {
+        const std::filesystem::path src = std::filesystem::path(source_dir) / file;
+        if (std::filesystem::exists(src, ec)) {
+            std::filesystem::copy_file(src, std::filesystem::path(out_dir) / file,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+        }
+    }
+    return true;
 }
 
 mx::array MlxQwenModel::forward(const std::vector<mx::array>& params,
