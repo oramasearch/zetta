@@ -25,11 +25,17 @@ from the ENVIRONMENT (never hardcoded):
   HF_TOKEN, HF_DATASET_REPO               the private dataset to push to (only with --push)
   ORAMA_PLAN_DIR                          the solutions catalog dir (docs/plan)
 
+Streams each task to --out as it is admitted (Ctrl-C keeps a valid partial). `--append`
+**auto-resumes**: it reads the existing file, attributes each task to its use case (by the
+`uc:` tag, or a use-case-name keyword match for older untagged rows), and tops each use
+case up to --per-use-case — so re-running after an interruption or a credit top-up never
+duplicates. `OPENROUTER_MAX_TOKENS` (default 4000) caps output per call.
+
 Usage (always via `uv run`; deps declared inline above, PEP 723):
   uv run gen_base_corpus.py --self-test
   uv run gen_base_corpus.py --out corpus.jsonl                       # 20 samples per use case
-  uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
-  uv run gen_base_corpus.py --out corpus.jsonl --append --push
+  uv run gen_base_corpus.py --out corpus.jsonl --append              # resume where it left off
+  uv run gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json --append --push
 """
 from __future__ import annotations
 
@@ -291,9 +297,11 @@ def openrouter_generate(use_case: dict[str, Any], grounding: str, solution: str,
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
-        json={"model": model, "temperature": 0.7, "messages": [
-            {"role": "system", "content": GENERATION_SYSTEM},
-            {"role": "user", "content": "\n\n".join(parts)}]},
+        json={"model": model, "temperature": 0.7,
+              "max_tokens": int(os.environ.get("OPENROUTER_MAX_TOKENS", "4000")),
+              "messages": [
+                  {"role": "system", "content": GENERATION_SYSTEM},
+                  {"role": "user", "content": "\n\n".join(parts)}]},
         timeout=120)
     if resp.status_code >= 400:
         raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
@@ -303,24 +311,77 @@ def openrouter_generate(use_case: dict[str, Any], grounding: str, solution: str,
     return _extract_json((choices[0].get("message") or {}).get("content"), model)
 
 
+def _attribute(row: dict[str, Any], keywords: dict[str, list[str]]) -> str | None:
+    """Which use case an existing row belongs to: the `uc:<id>` tag if present (exact),
+    else a keyword match of the use-case name against the task's id/description/tags — so
+    resume works on rows written before the tag existed."""
+    for tag in row.get("tags") or []:
+        if isinstance(tag, str) and tag.startswith("uc:"):
+            return tag[3:]
+    task = row.get("task") or {}
+    text = " ".join([str(task.get("id", "")), str(task.get("description", ""))]
+                    + [t for t in row.get("tags") or [] if isinstance(t, str)]).lower()
+    best, best_hits = None, 0
+    for uc_id, words in keywords.items():
+        hits = sum(1 for word in words if word in text)
+        if hits > best_hits:
+            best, best_hits = uc_id, hits
+    return best if best_hits >= 1 else None
+
+
+def resume_counts(path: str, use_cases: list[dict[str, Any]]) -> dict[str, int]:
+    """Count tasks per use case already in the file we're appending to, so generation
+    tops each use case up toward --per-use-case instead of duplicating. Attribution is by
+    the `uc:` tag, falling back to a use-case-name keyword match for untagged rows."""
+    counts: dict[str, int] = {}
+    if not os.path.exists(path):
+        return counts
+    keywords = {u["id"]: sorted({w for w in re.findall(r"[a-z]{4,}", u["name"].lower())})
+                for u in use_cases}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            uc = _attribute(row, keywords)
+            if uc:
+                counts[uc] = counts.get(uc, 0) + 1
+    return counts
+
+
 def generate_corpus(catalog: dict[str, Any], per_use_case: int,
-                    current_states: dict[str, dict[str, str]]) -> Iterator[dict[str, Any]]:
-    """Yield validated + gated CorpusTask rows — churn seed first, then per use case.
-    A generator so the caller streams each task to disk (Ctrl-C keeps a partial)."""
-    yield churn_self_test_row()  # sample #1, no API
+                    current_states: dict[str, dict[str, str]],
+                    existing: dict[str, int] | None = None,
+                    emit_seeds: bool = True) -> Iterator[dict[str, Any]]:
+    """Yield validated + gated CorpusTask rows — churn seed first, then per use case. Each
+    row is tagged `uc:<id>`. `existing` (from resume_counts) tops each use case up toward
+    `per_use_case`; `emit_seeds=False` skips the seed when resuming. A generator, so the
+    caller streams each task (Ctrl-C keeps a partial)."""
+    existing = existing or {}
+    if emit_seeds:
+        yield churn_self_test_row()  # sample #1, no API
     solutions = {s["uc"]: s.get("text", "") for s in catalog.get("solutions", []) if "uc" in s}
     toolbox = methodology_toolbox(catalog)
     paste_index = len(STYLES) - 1
     for use_case in catalog.get("use_cases", []):
+        uc = use_case["id"]
+        target = per_use_case - existing.get(uc, 0)
+        if target <= 0:
+            print(f"  {uc}: already complete ({existing.get(uc, 0)}), skipping", file=sys.stderr)
+            continue
         grounding = perplexity_ground(use_case)
-        solution = solutions.get(use_case["id"], "")
-        for i in range(per_use_case):
+        solution = solutions.get(uc, "")
+        for i in range(target):
             style = STYLES[i % len(STYLES)]
-            current = current_states.get(use_case["id"]) if i % len(STYLES) == paste_index else None
+            current = current_states.get(uc) if i % len(STYLES) == paste_index else None
             try:
                 row = openrouter_generate(use_case, grounding, solution, toolbox, style, current)
             except Exception as exc:  # noqa: BLE001 - a bad generation is skipped, logged
-                print(f"  {use_case['id']}: generation failed: {exc}", file=sys.stderr)
+                print(f"  {uc}: generation failed: {exc}", file=sys.stderr)
                 continue
             # A correct solution satisfies exactly the criterion: force the reference to
             # include every required fact by construction, so gating turns on whether the
@@ -328,15 +389,19 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int,
             required = (row.get("task") or {}).get("required")
             if isinstance(required, dict) and required:
                 row["reference"] = {**(row.get("reference") or {}), **required}
+            if not isinstance(row.get("tags"), list):
+                row["tags"] = []
+            if f"uc:{uc}" not in row["tags"]:
+                row["tags"].append(f"uc:{uc}")  # provenance, so --resume can skip it
             ok, reason = validate_task(row)
             if not ok:
-                print(f"  {use_case['id']}: DROPPED ({reason})", file=sys.stderr)
+                print(f"  {uc}: DROPPED ({reason})", file=sys.stderr)
                 continue
             admitted, reason = gate_task(row)
             if not admitted:
-                print(f"  {use_case['id']}: DROPPED (gate): {reason}", file=sys.stderr)
+                print(f"  {uc}: DROPPED (gate): {reason}", file=sys.stderr)
                 continue
-            print(f"  {use_case['id']}: admitted ({style.split(',')[0]})", file=sys.stderr)
+            print(f"  {uc}: admitted ({style.split(',')[0]})", file=sys.stderr)
             yield row
 
 
@@ -379,7 +444,8 @@ def main() -> int:
     parser.add_argument("--current-state", action="append", metavar="UC-N=path",
                         help="hydrate a real current-state artifact for a use case (repeatable)")
     parser.add_argument("--append", action="store_true",
-                        help="append to --out instead of overwriting")
+                        help="append to --out and AUTO-RESUME — read what's already there "
+                             "and top each use case up to --per-use-case (no duplication)")
     parser.add_argument("--push", action="store_true",
                         help="upload --out to the private HF_DATASET_REPO")
     args = parser.parse_args()
@@ -391,6 +457,13 @@ def main() -> int:
 
     catalog = load_catalog(args.plan_dir, args.catalog)
     current_states = parse_current_states(args.current_state)
+    # Auto-resume: appending to a non-empty file reads it and continues where it left off.
+    resuming = args.append and os.path.exists(args.out) and os.path.getsize(args.out) > 0
+    existing = resume_counts(args.out, catalog.get("use_cases", [])) if resuming else {}
+    if resuming:
+        print(f"resume: {sum(existing.values())} tasks already in {args.out} across "
+              f"{len(existing)} use cases — topping up to {args.per_use_case} each",
+              file=sys.stderr)
     print(f"catalog: {len(catalog.get('use_cases', []))} use cases, "
           f"{len(catalog.get('solutions', []))} solutions; "
           f"{args.per_use_case} samples each", file=sys.stderr)
@@ -399,7 +472,8 @@ def main() -> int:
     mode = "a" if args.append else "w"
     try:
         with open(args.out, mode, encoding="utf-8") as handle:
-            for row in generate_corpus(catalog, args.per_use_case, current_states):
+            for row in generate_corpus(catalog, args.per_use_case, current_states,
+                                       existing, emit_seeds=not resuming):
                 handle.write(json.dumps(row) + "\n")
                 handle.flush()  # durable per task, so Ctrl-C leaves a valid partial corpus
                 count += 1

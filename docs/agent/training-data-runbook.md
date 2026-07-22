@@ -74,7 +74,7 @@ the **methodology toolbox**. Every generated task is validated against
 export OPENROUTER_API_KEY=…  PERPLEXITY_API_KEY=…  HF_TOKEN=…  HF_DATASET_REPO=<owner>/<name>
 uv run scripts/gen_base_corpus.py --out corpus.jsonl                 # 20 samples per use case
 uv run scripts/gen_base_corpus.py --out corpus.jsonl --current-state UC-1=charles.n8n.json
-uv run scripts/gen_base_corpus.py --out corpus.jsonl --append        # accumulate onto a corpus
+uv run scripts/gen_base_corpus.py --out corpus.jsonl --append        # resume where it left off
 uv run scripts/gen_base_corpus.py --out corpus.jsonl --push          # after reviewing corpus.jsonl
 ```
 
@@ -82,10 +82,15 @@ Generates **20 samples per use case by default**, each phrased in a rotating **s
 (the same outcome asked many ways) so the agent learns intent invariance, and some
 transforming a pasted **current state** — pass `--current-state UC-N=path` to hydrate a
 real artifact (e.g. Charles's n8n). Each admitted task is **written + flushed to `--out`
-as it is generated**, so a Ctrl-C mid-run leaves a valid partial corpus (`--append`
-accumulates instead of overwriting). Each is **validated against `task.schema.json` and
-gated** (reference passes, negatives each fail); dropped tasks are logged to stderr with
-the reason. `--push` uploads
+as it is generated**, so a Ctrl-C mid-run (or an OpenRouter credit-out) leaves a valid
+partial corpus. Re-running with **`--append` auto-resumes**: it reads the existing file,
+attributes each task to its use case (by the `uc:` tag, or a use-case-name keyword match
+for rows written before tagging), and **tops each use case up to `--per-use-case` without
+duplicating** — so after a top-up you just re-run the same command with `--append`. Each
+task is **validated against `task.schema.json` and gated** (reference passes, negatives
+each fail); dropped tasks are logged to stderr with the reason. (`OPENROUTER_MAX_TOKENS`,
+default 4000, caps output per call — which also avoids the 402 when credits are low.)
+`--push` uploads
 `corpus.jsonl` to the private `HF_DATASET_REPO`. Review the file before pushing.
 
 ## Step 3 — re-gate with the native authority (recommended)

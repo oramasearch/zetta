@@ -22,10 +22,13 @@ scripts/schemas/autosuggest.schema.json and gated (suggestions and distractors d
 Env: OPENROUTER_API_KEY / OPENROUTER_MODEL, HF_TOKEN, HF_DATASET_REPO (the Auto-Suggest
 dataset — separate from the agent corpus), ORAMA_PLAN_DIR.
 
+`--append` **auto-resumes** (reads the file, tops each use case up to --per-use-case; no
+duplication). `OPENROUTER_MAX_TOKENS` (default 4000) caps output per call.
+
 Usage (via uv):
   uv run gen_autosuggest_corpus.py --self-test
   uv run gen_autosuggest_corpus.py --out autosuggest.jsonl        # 20 samples per use case
-  uv run gen_autosuggest_corpus.py --out autosuggest.jsonl --append --push
+  uv run gen_autosuggest_corpus.py --out autosuggest.jsonl --append  # resume; --push to upload
 """
 from __future__ import annotations
 
@@ -226,9 +229,11 @@ def openrouter_generate(supported: list[dict[str, str]], distractors: list[dict[
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}"},
-        json={"model": model, "temperature": 0.7, "messages": [
-            {"role": "system", "content": GENERATION_SYSTEM},
-            {"role": "user", "content": "\n\n".join(parts)}]},
+        json={"model": model, "temperature": 0.7,
+              "max_tokens": int(os.environ.get("OPENROUTER_MAX_TOKENS", "4000")),
+              "messages": [
+                  {"role": "system", "content": GENERATION_SYSTEM},
+                  {"role": "user", "content": "\n\n".join(parts)}]},
         timeout=120)
     if resp.status_code >= 400:
         raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
@@ -238,12 +243,63 @@ def openrouter_generate(supported: list[dict[str, str]], distractors: list[dict[
     return _extract_json((choices[0].get("message") or {}).get("content"), model)
 
 
-def generate_corpus(catalog: dict[str, Any], per_use_case: int,
-                    seed: int) -> Iterator[dict[str, Any]]:
-    """Yield validated + gated Auto-Suggest samples — churn + zero seeds first, then per
-    use case rotating single / multi / zero scenarios."""
-    yield churn_self_test_sample()
-    yield zero_self_test_sample()
+def _attribute(row: dict[str, Any], keywords: dict[str, list[str]]) -> str | None:
+    """Which anchor use case a row belongs to: the `anchor:<id>` tag if present; else a
+    single-suggestion sample's one suggestion; else a keyword match — so resume works on
+    rows written before the tag existed."""
+    for tag in row.get("tags") or []:
+        if isinstance(tag, str) and tag.startswith("anchor:"):
+            return tag[7:]
+    suggestions = row.get("suggestions") or []
+    if len(suggestions) == 1 and isinstance(suggestions[0], dict):
+        match = re.search(r"UC-\d+", str(suggestions[0].get("use_case", "")))
+        if match:
+            return match.group(0)
+    data_state = row.get("data_state") or {}
+    text = " ".join([str(data_state.get("description", ""))]
+                    + [str(s.get("name", "")) for s in suggestions if isinstance(s, dict)]
+                    + [t for t in row.get("tags") or [] if isinstance(t, str)]).lower()
+    best, best_hits = None, 0
+    for uc_id, words in keywords.items():
+        hits = sum(1 for word in words if word in text)
+        if hits > best_hits:
+            best, best_hits = uc_id, hits
+    return best if best_hits >= 1 else None
+
+
+def resume_counts(path: str, use_cases: list[dict[str, Any]]) -> dict[str, int]:
+    """Count samples per anchor use case already in the file we're appending to (tag, or a
+    fallback for untagged rows), so generation tops each use case up instead of duplicating."""
+    counts: dict[str, int] = {}
+    if not os.path.exists(path):
+        return counts
+    keywords = {u["id"]: sorted({w for w in re.findall(r"[a-z]{4,}", u["name"].lower())})
+                for u in use_cases}
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            uc = _attribute(row, keywords)
+            if uc:
+                counts[uc] = counts.get(uc, 0) + 1
+    return counts
+
+
+def generate_corpus(catalog: dict[str, Any], per_use_case: int, seed: int,
+                    existing: dict[str, int] | None = None,
+                    emit_seeds: bool = True) -> Iterator[dict[str, Any]]:
+    """Yield validated + gated Auto-Suggest samples — churn + zero seeds first, then per use
+    case rotating single / multi / zero scenarios. Each row is tagged `anchor:<id>`;
+    `existing`/`emit_seeds` support auto-resume (see gen_base_corpus)."""
+    existing = existing or {}
+    if emit_seeds:
+        yield churn_self_test_sample()
+        yield zero_self_test_sample()
     rng = random.Random(seed)
     use_cases = [{"id": u["id"], "name": u["name"]} for u in catalog.get("use_cases", [])]
     solutions = {s["uc"]: s.get("text", "") for s in catalog.get("solutions", []) if "uc" in s}
@@ -251,15 +307,20 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int,
         return
     modes = ["single", "multi", "single", "multi", "zero"]  # ~20% zero-suggestion
     for anchor in use_cases:
+        target = per_use_case - existing.get(anchor["id"], 0)
+        if target <= 0:
+            print(f"  {anchor['id']}: already complete ({existing.get(anchor['id'], 0)}), "
+                  f"skipping", file=sys.stderr)
+            continue
         others = [u for u in use_cases if u["id"] != anchor["id"]]
-        for i in range(per_use_case):
-            mode = modes[i % len(modes)]
+        for i in range(target):
+            scenario = modes[i % len(modes)]
             pool = others[:]
             rng.shuffle(pool)
-            if mode == "zero":
+            if scenario == "zero":
                 supported: list[dict[str, str]] = []
                 distractors = [anchor] + pool[:rng.randint(1, 2)]
-            elif mode == "multi":
+            elif scenario == "multi":
                 supported = [anchor] + pool[:rng.randint(1, 2)]
                 distractors = pool[3:3 + rng.randint(1, 2)] or pool[-1:]
             else:  # single
@@ -268,18 +329,22 @@ def generate_corpus(catalog: dict[str, Any], per_use_case: int,
             try:
                 row = openrouter_generate(supported, distractors, solutions.get(anchor["id"], ""))
             except Exception as exc:  # noqa: BLE001
-                print(f"  {anchor['id']}/{mode}: generation failed: {exc}", file=sys.stderr)
+                print(f"  {anchor['id']}/{scenario}: generation failed: {exc}", file=sys.stderr)
                 continue
             row = normalize_sample(row)
+            if not isinstance(row.get("tags"), list):
+                row["tags"] = []
+            if f"anchor:{anchor['id']}" not in row["tags"]:
+                row["tags"].append(f"anchor:{anchor['id']}")  # provenance for --resume
             ok, reason = validate_sample(row)
             if not ok:
-                print(f"  {anchor['id']}/{mode}: DROPPED ({reason})", file=sys.stderr)
+                print(f"  {anchor['id']}/{scenario}: DROPPED ({reason})", file=sys.stderr)
                 continue
             admitted, reason = gate_sample(row)
             if not admitted:
-                print(f"  {anchor['id']}/{mode}: DROPPED (gate): {reason}", file=sys.stderr)
+                print(f"  {anchor['id']}/{scenario}: DROPPED (gate): {reason}", file=sys.stderr)
                 continue
-            print(f"  {anchor['id']}/{mode}: admitted "
+            print(f"  {anchor['id']}/{scenario}: admitted "
                   f"({len(row.get('suggestions', []))} suggestions)", file=sys.stderr)
             yield row
 
@@ -321,7 +386,9 @@ def main() -> int:
     parser.add_argument("--catalog", help="prebuilt catalog.json (else built from --plan-dir)")
     parser.add_argument("--per-use-case", type=int, default=20)
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--append", action="store_true")
+    parser.add_argument("--append", action="store_true",
+                        help="append to --out and AUTO-RESUME — read what's already there "
+                             "and top each use case up to --per-use-case (no duplication)")
     parser.add_argument("--push", action="store_true",
                         help="upload --out to the private HF_DATASET_REPO")
     args = parser.parse_args()
@@ -332,13 +399,20 @@ def main() -> int:
         parser.error("--out is required (or use --self-test)")
 
     catalog = load_catalog(args.plan_dir, args.catalog)
+    resuming = args.append and os.path.exists(args.out) and os.path.getsize(args.out) > 0
+    existing = resume_counts(args.out, catalog.get("use_cases", [])) if resuming else {}
+    if resuming:
+        print(f"resume: {sum(existing.values())} samples already in {args.out} across "
+              f"{len(existing)} use cases — topping up to {args.per_use_case} each",
+              file=sys.stderr)
     print(f"catalog: {len(catalog.get('use_cases', []))} use cases; "
           f"{args.per_use_case} samples each", file=sys.stderr)
     count = 0
     mode = "a" if args.append else "w"
     try:
         with open(args.out, mode, encoding="utf-8") as handle:
-            for row in generate_corpus(catalog, args.per_use_case, args.seed):
+            for row in generate_corpus(catalog, args.per_use_case, args.seed,
+                                       existing, emit_seeds=not resuming):
                 handle.write(json.dumps(row) + "\n")
                 handle.flush()
                 count += 1

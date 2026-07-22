@@ -39,7 +39,7 @@ uv run gen_base_corpus.py --out corpus.jsonl --append --push
 Env: `OPENROUTER_API_KEY`, `OPENROUTER_MODEL` (default `anthropic/claude-sonnet-4.5`),
 `PERPLEXITY_API_KEY` + `PERPLEXITY_MODEL` (optional, default `sonar-pro`), `HF_TOKEN`,
 `HF_DATASET_REPO`, `ORAMA_PLAN_DIR`. Streams to `--out` (Ctrl-C keeps a valid partial);
-`--append` accumulates; `--catalog catalog.json` reuses a prebuilt catalog. Deps
+`--append` auto-resumes (reads the file, tops up, no duplication); `--catalog catalog.json` reuses a prebuilt catalog. Deps
 (`requests`, `huggingface-hub`, `jsonschema`) are inline (PEP 723), resolved by `uv run`.
 
 ### `gen_autosuggest_corpus.py` — catalog → Auto-Suggest corpus (#554)
