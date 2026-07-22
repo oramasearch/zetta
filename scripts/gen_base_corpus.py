@@ -197,6 +197,28 @@ def perplexity_ground(use_case: dict[str, str]) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+def _extract_json(content: Any, model: str) -> dict[str, Any]:
+    """Pull the JSON object out of a model reply — tolerating ```json fences, prose
+    around it, or a content-block list — and fail with a useful reason otherwise."""
+    if isinstance(content, list):  # some providers return a list of blocks
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    text = (content or "").strip()
+    if not text:
+        raise RuntimeError(
+            f"empty content from '{model}' — verify the model id (set OPENROUTER_MODEL)")
+    fence = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.DOTALL)
+    if fence:
+        text = fence.group(1)
+    else:
+        start, end = text.find("{"), text.rfind("}")
+        if 0 <= start < end:
+            text = text[start:end + 1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"non-JSON from '{model}': {content[:200]!r}") from exc
+
+
 def openrouter_generate(use_case: dict[str, str], grounding: str) -> dict[str, Any]:
     key = os.environ["OPENROUTER_API_KEY"]  # required for generation
     model = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4.5")
@@ -205,7 +227,7 @@ def openrouter_generate(use_case: dict[str, str], grounding: str) -> dict[str, A
     user = (
         f"Use case: {use_case['id']} — {use_case['name']} (band {use_case['band']}).\n"
         f"Grounding:\n{grounding or '(none)'}\n\n"
-        "Author one discriminating task as specified. JSON only."
+        "Author one discriminating task as specified. Output ONLY the JSON object."
     )
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -216,13 +238,17 @@ def openrouter_generate(use_case: dict[str, str], grounding: str) -> dict[str, A
                 {"role": "system", "content": GENERATION_SYSTEM},
                 {"role": "user", "content": user},
             ],
-            "response_format": {"type": "json_object"},
+            "temperature": 0.7,
         },
         timeout=120,
     )
-    resp.raise_for_status()
-    content = resp.json()["choices"][0]["message"]["content"]
-    return json.loads(content)
+    if resp.status_code >= 400:  # surface model-not-found / auth errors verbatim
+        raise RuntimeError(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
+    payload = resp.json()
+    choices = payload.get("choices") or []
+    if not choices:
+        raise RuntimeError(f"no choices from '{model}': {json.dumps(payload)[:300]}")
+    return _extract_json((choices[0].get("message") or {}).get("content"), model)
 
 
 def generate_corpus(plan_dir: str, per_use_case: int) -> list[dict[str, Any]]:
